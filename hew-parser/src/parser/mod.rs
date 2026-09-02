@@ -639,6 +639,20 @@ impl Drop for NoStructLiteralGuard {
     }
 }
 
+/// Restores the `block_arm_body` restriction to its previous value on drop.
+/// Same shape as [`NoStructLiteralGuard`]: it holds the shared cell so the
+/// restriction is lifted on every early `return`/`?` path out of the arm body.
+pub(crate) struct BlockArmBodyGuard {
+    cell: Rc<Cell<bool>>,
+    prev: bool,
+}
+
+impl Drop for BlockArmBodyGuard {
+    fn drop(&mut self) {
+        self.cell.set(self.prev);
+    }
+}
+
 /// Snapshot of parser position for speculative (backtracking) parses.
 pub(crate) struct SavedPos {
     pos: usize,
@@ -683,6 +697,16 @@ pub struct Parser<'src> {
     /// can restore the previous value on drop without borrowing the parser for
     /// its whole lifetime.
     pub(crate) no_struct_literal: Rc<Cell<bool>>,
+    /// Set for exactly one `parse_expr_bp` call: the body of a match arm whose
+    /// opening token starts a block (`{`, `if`, `match`, …). Such an arm needs
+    /// no trailing comma, so the token after its closing `}` is the next arm's
+    /// pattern — and a pattern may open with `.` (`.Ok(v) => …`). Without this,
+    /// the postfix loop reads that `.` as member access on the block and the
+    /// arm swallows the next pattern.
+    ///
+    /// `parse_expr_bp` takes and clears it, so the restriction applies to the
+    /// arm body itself and never to expressions nested inside it.
+    pub(crate) block_arm_body: Rc<Cell<bool>>,
     /// End byte of the most recently consumed token (absolute).
     ///
     /// For a full-program parse this starts at 0.  For an f-string sub-parser

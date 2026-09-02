@@ -102,6 +102,7 @@ impl<'src> Parser<'src> {
             scope_expr_depth: 0,
             fork_block_depth: 0,
             no_struct_literal: Rc::new(Cell::new(false)),
+            block_arm_body: Rc::new(Cell::new(false)),
             last_token_end: offset,
         }
     }

@@ -197,6 +197,24 @@ impl Parser<'_> {
         }
     }
 
+    /// Mark the next `parse_expr_bp` call as a block-opened match-arm body and
+    /// return a guard that clears the mark on drop. See
+    /// [`Parser::block_arm_body`].
+    pub(crate) fn set_block_arm_body(&self) -> BlockArmBodyGuard {
+        let prev = self.block_arm_body.replace(true);
+        BlockArmBodyGuard {
+            cell: Rc::clone(&self.block_arm_body),
+            prev,
+        }
+    }
+
+    /// Read and clear the block-arm-body mark. Called once at the top of
+    /// `parse_expr_bp` so only the outermost parse of the arm body sees it and
+    /// expressions nested inside the block keep ordinary postfix parsing.
+    pub(crate) fn take_block_arm_body(&self) -> bool {
+        self.block_arm_body.replace(false)
+    }
+
     /// Parse an `if`/`while` condition or `match` scrutinee. In this position a
     /// bare identifier directly followed by `{` opens the block, never a struct
     /// literal, so the `no_struct_literal` restriction is set for the duration
@@ -224,6 +242,9 @@ impl Parser<'_> {
     )]
     pub(crate) fn parse_expr_bp(&mut self, min_bp: u8) -> Option<Spanned<Expr>> {
         let start = self.peek_span().start;
+        // Taken (not read) so the restriction covers this expression only: the
+        // statements inside the arm's block parse with ordinary postfix rules.
+        let block_arm_body = self.take_block_arm_body();
 
         // `&expr` is not an expression in Hew. `&` is infix bitwise-and and the
         // type-level borrow marker (`&T`, ABI substrate); there is no
@@ -350,6 +371,20 @@ impl Parser<'_> {
 
             // Try postfix first (highest precedence)
             match self.peek() {
+                // A block-opened match-arm body ends at its closing `}`. A `.`
+                // followed by an identifier there is the next arm's pattern
+                // (`.Ok(v) => …`), which is the only spelling of a contextual
+                // variant pattern — the same `Dot`+identifier pair
+                // `is_match_arm_pattern_start` already reads as an arm start.
+                // Reading it as member access on the block would swallow the
+                // pattern and report "expected pattern, found `=>`".
+                Some(Token::Dot)
+                    if block_arm_body
+                        && Self::is_block_expr(&lhs.0)
+                        && matches!(self.peek_at(self.pos + 1), Some(Token::Identifier(_))) =>
+                {
+                    break;
+                }
                 Some(Token::Dot) => {
                     lhs = self.parse_dot_postfix(lhs)?;
                     continue;

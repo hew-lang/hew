@@ -53,9 +53,50 @@ fn generator_iteration_creates_no_os_threads() {
 
     let dir = support::tempdir();
     let path = dir.path().join("generator_thread_fence.hew");
-    std::fs::write(
-        &path,
-        r#"
+    std::fs::write(&path, GENERATOR_THREAD_FENCE_SOURCE)
+        .expect("write generator thread-fence fixture");
+
+    let output = run_bounded_hew_run(&path, dir.path());
+    assert!(
+        output.status.success(),
+        "generator thread-fence fixture should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    for (form, expected_iters) in [
+        ("genfn", 500),
+        ("genblock", 3),
+        ("asyncgen", 50),
+        ("recvgen", 200),
+    ] {
+        assert_generator_surface_ran_clean(&stdout, form, expected_iters);
+    }
+}
+
+/// A surface that yields nothing would trivially show `peak == pre`;
+/// requiring the iteration count too means an empty loop cannot pass.
+fn assert_generator_surface_ran_clean(stdout: &str, form: &str, expected_iters: i64) {
+    let pre = value_after_label(stdout, &format!("pre-{form}"));
+    let peak = value_after_label(stdout, &format!("peak-{form}"));
+    let iters = value_after_label(stdout, &format!("iters-{form}"));
+    assert_eq!(
+        iters, expected_iters,
+        "{form}: expected {expected_iters} loop iterations, got {iters}; stdout:\n{stdout}"
+    );
+    assert_eq!(
+        peak, pre,
+        "{form}: generator iteration must create no OS threads (pre={pre}, peak={peak}); \
+         stdout:\n{stdout}"
+    );
+}
+
+/// Fixture for `generator_iteration_creates_no_os_threads`: samples the
+/// thread count before each of the four generator surfaces' loops, tracks
+/// the peak across every iteration, and counts iterations so a surface that
+/// yields nothing cannot pass on a vacuous `peak == pre`.
+const GENERATOR_THREAD_FENCE_SOURCE: &str = r#"
 import std.fs;
 
 fn threads() -> i64 {
@@ -87,18 +128,24 @@ fn main() {
     // gen fn + for-in
     let pre_genfn = threads();
     var peak_genfn = pre_genfn;
+    var iters_genfn = 0;
     for v in counter(500) {
         let t = threads();
         if t > peak_genfn { peak_genfn = t; }
+        iters_genfn = iters_genfn + 1;
+        if v < 0 { println("unreachable"); }
     }
     println("pre-genfn");
     println(pre_genfn);
     println("peak-genfn");
     println(peak_genfn);
+    println("iters-genfn");
+    println(iters_genfn);
 
     // gen {} block
     let pre_genblock = threads();
     var peak_genblock = pre_genblock;
+    var iters_genblock = 0;
     let g = gen {
         yield 1;
         yield 2;
@@ -107,60 +154,52 @@ fn main() {
     for v in g {
         let t = threads();
         if t > peak_genblock { peak_genblock = t; }
+        iters_genblock = iters_genblock + 1;
+        if v < 0 { println("unreachable"); }
     }
     println("pre-genblock");
     println(pre_genblock);
     println("peak-genblock");
     println(peak_genblock);
+    println("iters-genblock");
+    println(iters_genblock);
 
     // async gen fn + for await
     let pre_asyncgen = threads();
     var peak_asyncgen = pre_asyncgen;
+    var iters_asyncgen = 0;
     for await v in aticks(50) {
         let t = threads();
         if t > peak_asyncgen { peak_asyncgen = t; }
+        iters_asyncgen = iters_asyncgen + 1;
+        if v < 0 { println("unreachable"); }
     }
     println("pre-asyncgen");
     println(pre_asyncgen);
     println("peak-asyncgen");
     println(peak_asyncgen);
+    println("iters-asyncgen");
+    println(iters_asyncgen);
 
     // receive gen fn + for await (cross-actor stream producer)
     let e = spawn Emitter;
     let pre_recvgen = threads();
     var peak_recvgen = pre_recvgen;
+    var iters_recvgen = 0;
     for await v in e.ticks(200) {
         let t = threads();
         if t > peak_recvgen { peak_recvgen = t; }
+        iters_recvgen = iters_recvgen + 1;
+        if v < 0 { println("unreachable"); }
     }
     println("pre-recvgen");
     println(pre_recvgen);
     println("peak-recvgen");
     println(peak_recvgen);
+    println("iters-recvgen");
+    println(iters_recvgen);
 }
-"#,
-    )
-    .expect("write generator thread-fence fixture");
-
-    let output = run_bounded_hew_run(&path, dir.path());
-    assert!(
-        output.status.success(),
-        "generator thread-fence fixture should run; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-
-    for form in ["genfn", "genblock", "asyncgen", "recvgen"] {
-        let pre = value_after_label(&stdout, &format!("pre-{form}"));
-        let peak = value_after_label(&stdout, &format!("peak-{form}"));
-        assert_eq!(
-            peak, pre,
-            "{form}: generator iteration must create no OS threads (pre={pre}, peak={peak}); \
-             stdout:\n{stdout}"
-        );
-    }
-}
+"#;
 
 /// U370: `fork` children each get a dedicated `std::thread::spawn` OS
 /// thread today (`hew-runtime/src/task_scope.rs:1479`), one per child,
@@ -173,8 +212,9 @@ fn main() {
 ///
 /// Parameterized over N so a per-child leak (this) is distinguishable from a
 /// constant per-scope overhead: every N must show the fixture over by exactly
-/// `N + 1`, not by some N-independent constant. Every N runs to completion
-/// (no fail-fast) so a partial ratchet run always carries the full evidence.
+/// `N + 1` (visible in the failure message's `delta=` field), not by some
+/// N-independent constant. Every N runs to completion (no fail-fast) so a
+/// partial ratchet run always carries the full evidence.
 #[test]
 fn fork_children_create_no_os_threads() {
     require_codegen();
@@ -202,18 +242,6 @@ fn fork_children_create_no_os_threads() {
             pre,
             "N={n}: fork children must not create OS threads while parked on a \
              long sleep; full run: {}",
-            report()
-        );
-    }
-    // A per-N breakdown that survives even when the assertion above never
-    // fires (e.g. after a partial P4 landing changes the failure shape):
-    // every delta must scale with N, not sit at a fixed constant.
-    for &(n, pre, during) in &results {
-        assert_eq!(
-            during - pre,
-            n + 1,
-            "N={n}: delta must be exactly N+1 (N nappers + 1 reporter), not a \
-             constant; full run: {}",
             report()
         );
     }

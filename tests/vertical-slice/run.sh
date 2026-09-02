@@ -2376,6 +2376,42 @@ run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wr
 grep -q 'cron.parse: invalid expression' "${stderr_output}"
 run_accept_expect_status "std_panic_wrappers_success" 0
 
+# Negative controls for the std error-message-function deletions: each
+# function was replaced by an `impl Display for <ErrorType>`, and the deleted
+# public name must no longer resolve. Pinning the checker's "no function"
+# diagnostic (rather than a bare non-zero exit) keeps an unrelated future
+# break in the fixture from passing vacuously.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/encrypt_error_message_removed.hew" \
+    "no function \`error_message\` in module \`encrypt\`" \
+    "encrypt_error_message_removed"
+echo "PASS encrypt_error_message_removed (reject)"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/fs_io_error_message_removed.hew" \
+    "no function \`io_error_message\` in module \`fs\`" \
+    "fs_io_error_message_removed"
+echo "PASS fs_io_error_message_removed (reject)"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/jwt_error_message_removed.hew" \
+    "no function \`error_message\` in module \`jwt\`" \
+    "jwt_error_message_removed"
+echo "PASS jwt_error_message_removed (reject)"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/net_error_message_removed.hew" \
+    "no function \`net_error_message\` in module \`net\`" \
+    "net_error_message_removed"
+echo "PASS net_error_message_removed (reject)"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/net_write_error_message_removed.hew" \
+    "no function \`write_error_message\` in module \`net\`" \
+    "net_write_error_message_removed"
+echo "PASS net_write_error_message_removed (reject)"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/path_error_message_removed.hew" \
+    "no function \`path_error_message\` in module \`path\`" \
+    "path_error_message_removed"
+echo "PASS path_error_message_removed (reject)"
+
 # F1.3: a trap in main/free-fn context must emit a diagnostic to stderr and
 # never be silent. The fixture triggers an out-of-bounds Vec index in main;
 # hew_trap_with_code emits "hew: trap in main context: <kind>" before the

@@ -11,13 +11,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hew_hir::{IntentKind, SiteId, ValueClass};
 use hew_parser::ast::{BinaryOp, UnaryOp};
-#[cfg(test)]
-use hew_sir::CallableInstance;
 use hew_sir::{
     BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemCallConv,
     SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemTerminator, UseMode, ValueDef, ValueId,
+    SemTerminator, ValueDef, ValueId,
 };
+#[cfg(test)]
+use hew_sir::{CallableInstance, OwnKind};
 #[cfg(test)]
 use hew_types::DefId;
 use hew_types::ResolvedTy;
@@ -1423,7 +1423,6 @@ impl<'a> VirtualRawLowerer<'a> {
                 let mut fields = Vec::with_capacity(elements.len());
                 for (index, (element, expected_ty)) in elements.iter().zip(element_tys).enumerate()
                 {
-                    Self::require_read(element, "SIR tuple.make element")?;
                     let actual_ty = self.value_type(element.value)?;
                     if actual_ty != expected_ty {
                         return Err(SirMirLoweringError::unsupported(format!(
@@ -1437,7 +1436,6 @@ impl<'a> VirtualRawLowerer<'a> {
                 RawValueOp::TupleMake { dest, fields }
             }
             SemOpKind::TupleGet { tuple, index } => {
-                Self::require_read(tuple, "SIR tuple.get operand")?;
                 let tuple_ty = self.value_type(tuple.value)?;
                 let ResolvedTy::Tuple(element_tys) = tuple_ty else {
                     return Err(SirMirLoweringError::unsupported(format!(
@@ -1470,6 +1468,36 @@ impl<'a> VirtualRawLowerer<'a> {
                     index: *index,
                 }
             }
+            // The §1.3 ownership operations, the P1 literal producers, the
+            // structural-equality ops and `rt.call` have no realization on this
+            // bridge. The refusal that the operand mode used to carry lives
+            // here, on the operation kind, which is what a use's mode is.
+            SemOpKind::ConstF64(_)
+            | SemOpKind::ConstChar(_)
+            | SemOpKind::ConstUnit
+            | SemOpKind::ConstDuration(_)
+            | SemOpKind::ConstStr(_)
+            | SemOpKind::ConstBytes(_)
+            | SemOpKind::StrEq { .. }
+            | SemOpKind::BytesEq { .. }
+            | SemOpKind::RtCall { .. }
+            | SemOpKind::CopyValue { .. }
+            | SemOpKind::DestroyValue { .. }
+            | SemOpKind::BeginBorrow { .. }
+            | SemOpKind::EndBorrow { .. }
+            | SemOpKind::Move { .. }
+            | SemOpKind::Fork { .. }
+            | SemOpKind::Destructure { .. }
+            | SemOpKind::AllocPlace { .. }
+            | SemOpKind::LoadCopy { .. }
+            | SemOpKind::LoadTake { .. }
+            | SemOpKind::StoreInit { .. }
+            | SemOpKind::StoreAssign { .. }
+            | SemOpKind::EndLifetime { .. } => {
+                return Err(SirMirLoweringError::unsupported(
+                    "ownership-aware SIR operations have no realization on this bridge",
+                ));
+            }
             SemOpKind::Unary { .. }
             | SemOpKind::Binary { .. }
             | SemOpKind::Cast { .. }
@@ -1486,7 +1514,6 @@ impl<'a> VirtualRawLowerer<'a> {
     fn lower_terminator(&mut self, terminator: &SemTerminator) -> Result<(), SirMirLoweringError> {
         match terminator {
             SemTerminator::Return { value: Some(value) } => {
-                Self::require_read(value, "SIR virtual return value")?;
                 if self.value_type(value.value)? != &self.function.return_ty {
                     return Err(SirMirLoweringError::unsupported(
                         "SIR virtual return value type does not match the function return type",
@@ -1512,6 +1539,11 @@ impl<'a> VirtualRawLowerer<'a> {
             SemTerminator::Return { value: None } => Err(SirMirLoweringError::unsupported(
                 "non-unit SIR function has a value-less virtual return",
             )),
+            SemTerminator::Trap { .. } | SemTerminator::Suspend { .. } => {
+                Err(SirMirLoweringError::unsupported(
+                    "SIR trap and suspend terminators have no realization on this bridge",
+                ))
+            }
             SemTerminator::Goto(_) | SemTerminator::Branch { .. } | SemTerminator::Unreachable => {
                 Err(SirMirLoweringError::unsupported(
                     "the raw virtual-value slice admits only an ordinary Return terminator",
@@ -1538,10 +1570,6 @@ impl<'a> VirtualRawLowerer<'a> {
                 value.0
             ))
         })
-    }
-
-    fn require_read(operand: &Operand, context: &str) -> Result<(), SirMirLoweringError> {
-        RawLowerer::require_read(operand, context)
     }
 
     fn finish(self) -> (Vec<ResolvedTy>, Vec<BasicBlock>) {
@@ -1739,7 +1767,6 @@ impl<'a> RawLowerer<'a> {
                 self.lower_binary(*op, lhs, rhs, dest, &result_ty)?;
             }
             SemOpKind::Cast { value, to } => {
-                Self::require_read(value, "cast")?;
                 let from_ty = self.value_type(value.value)?.clone();
                 if to != &result_ty || !from_ty.can_explicitly_numeric_cast_to(to) {
                     return Err(SirMirLoweringError::unsupported(
@@ -1759,6 +1786,36 @@ impl<'a> RawLowerer<'a> {
                 ));
             }
             SemOpKind::Call { .. } => unreachable!("calls return before value-result lowering"),
+            // The §1.3 ownership operations, the P1 literal producers, the
+            // structural-equality ops and `rt.call` have no realization on this
+            // bridge. The refusal that the operand mode used to carry lives
+            // here, on the operation kind, which is what a use's mode is.
+            SemOpKind::ConstF64(_)
+            | SemOpKind::ConstChar(_)
+            | SemOpKind::ConstUnit
+            | SemOpKind::ConstDuration(_)
+            | SemOpKind::ConstStr(_)
+            | SemOpKind::ConstBytes(_)
+            | SemOpKind::StrEq { .. }
+            | SemOpKind::BytesEq { .. }
+            | SemOpKind::RtCall { .. }
+            | SemOpKind::CopyValue { .. }
+            | SemOpKind::DestroyValue { .. }
+            | SemOpKind::BeginBorrow { .. }
+            | SemOpKind::EndBorrow { .. }
+            | SemOpKind::Move { .. }
+            | SemOpKind::Fork { .. }
+            | SemOpKind::Destructure { .. }
+            | SemOpKind::AllocPlace { .. }
+            | SemOpKind::LoadCopy { .. }
+            | SemOpKind::LoadTake { .. }
+            | SemOpKind::StoreInit { .. }
+            | SemOpKind::StoreAssign { .. }
+            | SemOpKind::EndLifetime { .. } => {
+                return Err(SirMirLoweringError::unsupported(
+                    "ownership-aware SIR operations have no realization on this bridge",
+                ));
+            }
         }
         Ok(())
     }
@@ -1791,7 +1848,7 @@ impl<'a> RawLowerer<'a> {
                     callable.symbol
                 )));
             }
-            (false, [ValueDef { id, ty }]) if ty == &callable.signature.return_ty => {
+            (false, [ValueDef { id, ty, .. }]) if ty == &callable.signature.return_ty => {
                 Some(self.value_place(*id)?)
             }
             (false, [ValueDef { ty, .. }]) => {
@@ -1821,7 +1878,6 @@ impl<'a> RawLowerer<'a> {
         for (index, (argument, parameter)) in
             args.iter().zip(&callable.signature.params).enumerate()
         {
-            Self::require_read(argument, "direct call")?;
             let actual = self.value_type(argument.value)?;
             if actual != &parameter.ty || parameter.passing != SemParamPassing::ReadOnly {
                 return Err(SirMirLoweringError::unsupported(format!(
@@ -1851,7 +1907,6 @@ impl<'a> RawLowerer<'a> {
         dest: Place,
         result_ty: &ResolvedTy,
     ) -> Result<(), SirMirLoweringError> {
-        Self::require_read(operand, "unary operation")?;
         let operand_ty = self.value_type(operand.value)?.clone();
         let operand_place = self.value_place(operand.value)?;
         match op {
@@ -1898,8 +1953,6 @@ impl<'a> RawLowerer<'a> {
         dest: Place,
         result_ty: &ResolvedTy,
     ) -> Result<(), SirMirLoweringError> {
-        Self::require_read(lhs, "binary operation")?;
-        Self::require_read(rhs, "binary operation")?;
         let lhs_ty = self.value_type(lhs.value)?.clone();
         let rhs_ty = self.value_type(rhs.value)?.clone();
         let lhs_place = self.value_place(lhs.value)?;
@@ -2030,7 +2083,6 @@ impl<'a> RawLowerer<'a> {
     fn lower_terminator(&mut self, terminator: &SemTerminator) -> Result<(), SirMirLoweringError> {
         match terminator {
             SemTerminator::Return { value: Some(value) } => {
-                Self::require_read(value, "SIR return value")?;
                 if self.value_type(value.value)? != &self.function.return_ty {
                     return Err(SirMirLoweringError::unsupported(
                         "SIR return value type does not match function return type",
@@ -2061,7 +2113,6 @@ impl<'a> RawLowerer<'a> {
                 then_target,
                 else_target,
             } => {
-                Self::require_read(condition, "SIR branch condition")?;
                 if self.value_type(condition.value)? != &ResolvedTy::Bool {
                     return Err(SirMirLoweringError::unsupported(
                         "SIR branch condition must have bool type",
@@ -2078,6 +2129,11 @@ impl<'a> RawLowerer<'a> {
                 })
             }
             SemTerminator::Unreachable => self.terminate(Terminator::Unreachable),
+            SemTerminator::Trap { .. } | SemTerminator::Suspend { .. } => {
+                Err(SirMirLoweringError::unsupported(
+                    "SIR trap and suspend terminators have no realization on this bridge",
+                ))
+            }
         }
     }
 
@@ -2105,7 +2161,6 @@ impl<'a> RawLowerer<'a> {
         self.current = forwarding;
         let mut copies = Vec::with_capacity(edge.args.len());
         for (source, target) in edge.args.iter().zip(&target_args) {
-            Self::require_read(source, "SIR edge argument")?;
             let source_ty = self.value_type(source.value)?;
             if source_ty != &target.ty {
                 return Err(SirMirLoweringError::unsupported(
@@ -2132,22 +2187,12 @@ impl<'a> RawLowerer<'a> {
     }
 
     fn single_result(operation: &SemOp) -> Result<(ValueId, ResolvedTy), SirMirLoweringError> {
-        let [ValueDef { id, ty }] = operation.results.as_slice() else {
+        let [ValueDef { id, ty, .. }] = operation.results.as_slice() else {
             return Err(SirMirLoweringError::unsupported(
                 "the initial SIR-to-MIR bridge requires exactly one result per operation",
             ));
         };
         Ok((*id, ty.clone()))
-    }
-
-    fn require_read(operand: &Operand, context: &str) -> Result<(), SirMirLoweringError> {
-        if operand.mode != UseMode::Read {
-            return Err(SirMirLoweringError::unsupported(format!(
-                "{context} uses {:?}; ownership-aware SIR operand lowering is not enabled yet",
-                operand.mode
-            )));
-        }
-        Ok(())
     }
 
     fn value_type(&self, value: ValueId) -> Result<&ResolvedTy, SirMirLoweringError> {
@@ -2290,7 +2335,6 @@ mod tests {
             },
             call_conv: SemCallConv::Default,
             kind: SemCallableKind::HewDirect,
-            effect_summary: hew_sir::EffectSummary::Unknown,
         }
     }
 
@@ -2315,6 +2359,9 @@ mod tests {
             root_unit_callables,
             entry_callable,
             functions,
+            type_facts: BTreeMap::new(),
+            string_literals: BTreeMap::new(),
+            bytes_literals: BTreeMap::new(),
         }
     }
 
@@ -2322,14 +2369,13 @@ mod tests {
         ValueDef {
             id: ValueId(id),
             ty,
+            own: OwnKind::None,
+            provenance: None,
         }
     }
 
     fn operand(id: u32) -> Operand {
-        Operand {
-            value: ValueId(id),
-            mode: UseMode::Read,
-        }
+        Operand { value: ValueId(id) }
     }
 
     fn op(id: u32, result: ValueDef, kind: SemOpKind) -> SemOp {
@@ -2361,6 +2407,8 @@ mod tests {
             params: vec![BlockArg {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
+                provenance: None,
             }],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
@@ -2372,6 +2420,7 @@ mod tests {
                     value: Some(operand(0)),
                 },
             }],
+            places: Vec::new(),
         }
     }
 
@@ -2392,6 +2441,7 @@ mod tests {
                 ops: Vec::new(),
                 terminator: SemTerminator::Unreachable,
             }],
+            places: Vec::new(),
         }
     }
 
@@ -2407,10 +2457,14 @@ mod tests {
                 BlockArg {
                     value: ValueId(0),
                     ty: ResolvedTy::Bool,
+                    own: OwnKind::None,
+                    provenance: None,
                 },
                 BlockArg {
                     value: ValueId(1),
                     ty: ResolvedTy::Bool,
+                    own: OwnKind::None,
+                    provenance: None,
                 },
             ],
             return_ty: ResolvedTy::Bool,
@@ -2431,6 +2485,7 @@ mod tests {
                     value: Some(operand(2)),
                 },
             }],
+            places: Vec::new(),
         }
     }
 
@@ -2476,6 +2531,7 @@ mod tests {
                     value: Some(operand(3)),
                 },
             }],
+            places: Vec::new(),
         }
     }
 
@@ -2496,10 +2552,14 @@ mod tests {
                 BlockArg {
                     value: ValueId(0),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 },
                 BlockArg {
                     value: ValueId(1),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 },
             ],
             return_ty: ResolvedTy::I64,
@@ -2528,6 +2588,7 @@ mod tests {
                     value: Some(operand(3)),
                 },
             }],
+            places: Vec::new(),
         }
     }
 
@@ -2808,10 +2869,14 @@ mod tests {
                 BlockArg {
                     value: ValueId(0),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 },
                 BlockArg {
                     value: ValueId(1),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 },
             ],
             return_ty: ResolvedTy::I64,
@@ -2849,6 +2914,8 @@ mod tests {
                     args: vec![BlockArg {
                         value: ValueId(4),
                         ty: ResolvedTy::I64,
+                        own: OwnKind::None,
+                        provenance: None,
                     }],
                     ops: vec![
                         op(2, definition(5, ResolvedTy::I64), SemOpKind::ConstI64(1)),
@@ -2872,6 +2939,8 @@ mod tests {
                     args: vec![BlockArg {
                         value: ValueId(7),
                         ty: ResolvedTy::I64,
+                        own: OwnKind::None,
+                        provenance: None,
                     }],
                     ops: vec![
                         op(4, definition(8, ResolvedTy::I64), SemOpKind::ConstI64(2)),
@@ -2895,6 +2964,8 @@ mod tests {
                     args: vec![BlockArg {
                         value: ValueId(10),
                         ty: ResolvedTy::I64,
+                        own: OwnKind::None,
+                        provenance: None,
                     }],
                     ops: vec![
                         op(6, definition(11, ResolvedTy::I64), SemOpKind::ConstI64(3)),
@@ -2913,6 +2984,7 @@ mod tests {
                     },
                 },
             ],
+            places: Vec::new(),
         };
 
         let module = test_module(vec![function.clone()]);
@@ -3037,12 +3109,15 @@ mod tests {
                 args: vec![BlockArg {
                     value: ValueId(0),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
                     value: Some(operand(0)),
                 },
             }],
+            places: Vec::new(),
         };
 
         let module = test_module(vec![function.clone()]);
@@ -3089,6 +3164,7 @@ mod tests {
                     },
                 },
             ],
+            places: Vec::new(),
         };
         let module = test_module(vec![function.clone()]);
 
@@ -3117,14 +3193,20 @@ mod tests {
                 BlockArg {
                     value: ValueId(0),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 },
                 BlockArg {
                     value: ValueId(1),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 },
                 BlockArg {
                     value: ValueId(2),
                     ty: ResolvedTy::Bool,
+                    own: OwnKind::None,
+                    provenance: None,
                 },
             ],
             return_ty: ResolvedTy::I64,
@@ -3152,10 +3234,14 @@ mod tests {
                         BlockArg {
                             value: ValueId(3),
                             ty: ResolvedTy::I64,
+                            own: OwnKind::None,
+                            provenance: None,
                         },
                         BlockArg {
                             value: ValueId(4),
                             ty: ResolvedTy::I64,
+                            own: OwnKind::None,
+                            provenance: None,
                         },
                     ],
                     ops: Vec::new(),
@@ -3164,6 +3250,7 @@ mod tests {
                     },
                 },
             ],
+            places: Vec::new(),
         };
         let module = test_module(vec![function.clone()]);
         let lowered = lower_sir_function(&module, &function)
@@ -3225,6 +3312,8 @@ mod tests {
             params: vec![BlockArg {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
+                provenance: None,
             }],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
@@ -3247,6 +3336,7 @@ mod tests {
                     value: Some(operand(2)),
                 },
             }],
+            places: Vec::new(),
         };
         let caller = SemFunction {
             id: ItemId(0),
@@ -3289,6 +3379,7 @@ mod tests {
                     value: Some(operand(3)),
                 },
             }],
+            places: Vec::new(),
         };
         let module = test_module(vec![caller, callee]);
         let component = lower_closed_scalar_component(&module, &[CallableId(1)])
@@ -3449,6 +3540,8 @@ mod tests {
             params: vec![BlockArg {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
+                provenance: None,
             }],
             return_ty: ResolvedTy::Unit,
             entry: BlockId(0),
@@ -3458,6 +3551,7 @@ mod tests {
                 ops: Vec::new(),
                 terminator: SemTerminator::Return { value: None },
             }],
+            places: Vec::new(),
         };
         let caller = SemFunction {
             id: ItemId(0),
@@ -3484,6 +3578,7 @@ mod tests {
                 ],
                 terminator: SemTerminator::Return { value: None },
             }],
+            places: Vec::new(),
         };
         let component =
             lower_closed_scalar_component(&test_module(vec![caller, callee]), &[CallableId(1)])
@@ -3552,6 +3647,7 @@ mod tests {
                     value: Some(operand(0)),
                 },
             }],
+            places: Vec::new(),
         };
         let mut module = test_module(vec![caller]);
         module.callables.push(SemCallable {
@@ -3567,7 +3663,6 @@ mod tests {
             },
             call_conv: SemCallConv::Default,
             kind: SemCallableKind::HewDirect,
-            effect_summary: hew_sir::EffectSummary::Unknown,
         });
 
         let error = lower_closed_scalar_component(&module, &[CallableId(0)])
@@ -3602,6 +3697,7 @@ mod tests {
                     value: Some(operand(0)),
                 },
             }],
+            places: Vec::new(),
         };
         let mut duplicate = function.clone();
         duplicate.id = ItemId(1);
@@ -3649,6 +3745,7 @@ mod tests {
                     value: Some(operand(0)),
                 },
             }],
+            places: Vec::new(),
         };
         let mut module = test_module(vec![function]);
 

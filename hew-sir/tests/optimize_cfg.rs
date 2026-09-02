@@ -2,17 +2,17 @@ use hew_hir::ItemId;
 use hew_sir::{
     canonicalize_constant_cfg, canonicalize_module_constant_cfg, verify_function, verify_module,
     BlockArg, BlockId, CallableId, CallableInstance, CfgCanonicalizationReport,
-    CfgDiscardSafetyReason, Edge, EffectSummary, FunctionSourceOrigin, OpId, Operand, Provenance,
+    CfgDiscardSafetyReason, Edge, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance,
     SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
     SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
-    SirOptimizationError, UseMode, ValueDef, ValueId,
+    SirOptimizationError, ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
+use std::collections::BTreeMap;
 
 fn read(value: u32) -> Operand {
     Operand {
         value: ValueId(value),
-        mode: UseMode::Read,
     }
 }
 
@@ -20,6 +20,8 @@ fn value(id: u32, ty: ResolvedTy) -> ValueDef {
     ValueDef {
         id: ValueId(id),
         ty,
+        own: OwnKind::None,
+        provenance: None,
     }
 }
 
@@ -45,7 +47,6 @@ fn callable_for(function: &SemFunction) -> SemCallable {
         },
         call_conv: SemCallConv::Default,
         kind: SemCallableKind::HewDirect,
-        effect_summary: EffectSummary::Unknown,
     }
 }
 
@@ -56,6 +57,9 @@ fn module(function: SemFunction) -> SemModule {
         root_unit_callables: Vec::new(),
         entry_callable: None,
         functions: vec![function],
+        type_facts: BTreeMap::new(),
+        string_literals: BTreeMap::new(),
+        bytes_literals: BTreeMap::new(),
     }
 }
 
@@ -76,6 +80,7 @@ fn function(
         return_ty,
         entry: BlockId(0),
         blocks,
+        places: Vec::new(),
     }
 }
 
@@ -86,10 +91,14 @@ fn false_same_target_diamond() -> SemFunction {
             BlockArg {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
+                provenance: None,
             },
             BlockArg {
                 value: ValueId(1),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
+                provenance: None,
             },
         ],
         ResolvedTy::I64,
@@ -133,6 +142,8 @@ fn false_same_target_diamond() -> SemFunction {
                 args: vec![BlockArg {
                     value: ValueId(4),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
@@ -200,7 +211,7 @@ fn compaction_preserves_every_surviving_non_block_identity_and_fact() {
             .expect("every remap target must name an output block");
 
         // These equalities jointly cover block-argument and operation
-        // ValueIds, OpIds, types, provenance, operands, and UseModes.
+        // ValueIds, OpIds, types, provenance and operands.
         assert_eq!(canonical.args, former.args);
         assert_eq!(canonical.ops, former.ops);
 
@@ -381,6 +392,8 @@ fn compaction_accepts_a_newly_dead_block_that_reads_an_entry_parameter() {
         vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
+            own: OwnKind::None,
+            provenance: None,
         }],
         ResolvedTy::Bool,
         vec![
@@ -505,6 +518,8 @@ fn compaction_remaps_multiblock_loop_edges_after_dead_block_removal() {
         vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
+            own: OwnKind::None,
+            provenance: None,
         }],
         ResolvedTy::Unit,
         vec![
@@ -630,6 +645,8 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
         vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
+            own: OwnKind::None,
+            provenance: None,
         }],
         ResolvedTy::I64,
         vec![
@@ -850,6 +867,9 @@ fn module_canonicalization_rejects_an_invalid_body_atomically() {
         root_unit_callables: Vec::new(),
         entry_callable: None,
         functions: vec![valid, invalid],
+        type_facts: BTreeMap::new(),
+        string_literals: BTreeMap::new(),
+        bytes_literals: BTreeMap::new(),
     };
     let before = module.clone();
 

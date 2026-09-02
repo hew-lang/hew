@@ -4,7 +4,7 @@ use crate::OpId;
 use crate::{
     BlockId, CallableId, CallableInstance, GenericTemplateId, SemCallConv, SemCallable,
     SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemTerminator, SirInstanceKey, UseMode, UseSite, ValueId,
+    SemSignature, SemTerminator, SirInstanceKey, UseSite, ValueId,
 };
 use hew_hir::{monomorph::function_monomorph_symbol, substitute_type_params};
 use hew_types::ResolvedTy;
@@ -100,16 +100,6 @@ pub enum SirDiagnosticKind {
     InvalidOperation {
         op: OpId,
         reason: String,
-    },
-    /// The initial scalar SIR surface is intentionally read-only even though
-    /// operands retain the broader ownership vocabulary for later slices.
-    /// Keeping the exact use site makes malformed edge/return/condition uses
-    /// fail at the SIR stage rather than reaching ownership MIR silently.
-    InvalidUseMode {
-        site: UseSite,
-        expected: UseMode,
-        actual: UseMode,
-        context: &'static str,
     },
     BranchConditionType {
         value: ValueId,
@@ -293,8 +283,13 @@ pub(crate) fn verify_cfg_discard_safety(
                     ));
                 }
             }
-            operation.kind.visit_operands(|operand, use_| {
-                if matches!(use_.mode, UseMode::Move | UseMode::Consume) {
+            // An operand carries no mode: what a use does to its value is
+            // the op it feeds, so the obligation question is asked of the
+            // operation kind. A terminator in the admitted domain transfers no
+            // obligation of its own - a `Suspend`'s `Move` inputs do, and they
+            // arrive with the phase that emits one.
+            if operation.kind.transfers_obligation() {
+                operation.kind.visit_operands(|operand, use_| {
                     diagnostics.push(cfg_discard_diag(
                         original,
                         block.id,
@@ -303,29 +298,12 @@ pub(crate) fn verify_cfg_discard_safety(
                                 op: operation.id,
                                 operand,
                                 value: use_.value,
-                                mode: use_.mode,
                             },
                         },
                     ));
-                }
-            });
-        }
-        block.terminator.visit_operands(|operand, use_| {
-            if matches!(use_.mode, UseMode::Move | UseMode::Consume) {
-                diagnostics.push(cfg_discard_diag(
-                    original,
-                    block.id,
-                    CfgDiscardSafetyReason::DropObligationUse {
-                        site: UseSite::Terminator {
-                            block: block.id,
-                            operand,
-                            value: use_.value,
-                            mode: use_.mode,
-                        },
-                    },
-                ));
+                });
             }
-        });
+        }
     }
 
     diagnostics
@@ -419,7 +397,6 @@ fn verify_function_with_context(
         for op in &block.ops {
             verify_operation_shape(function, op, &types, callable_context, &mut diagnostics);
         }
-        verify_terminator_operand_modes(function, block.id, &block.terminator, &mut diagnostics);
         block.terminator.visit_successors(|edge| {
             let Some(target) = blocks.get(&edge.target) else {
                 diagnostics.push(diag(function, SirDiagnosticKind::UnknownBlock(edge.target)));
@@ -938,19 +915,6 @@ fn verify_operation_shape(
     callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    operation.visit_operands(|operand, use_| {
-        require_read_use(
-            function,
-            UseSite::Operation {
-                op: operation.id,
-                operand,
-                value: use_.value,
-                mode: use_.mode,
-            },
-            operation_operand_context(&operation.kind, operand),
-            diagnostics,
-        );
-    });
     if let SemOpKind::Call { callee, args } = &operation.kind {
         verify_direct_call_operation(
             function,
@@ -1211,6 +1175,38 @@ fn verify_operation_shape(
         }
         SemOpKind::Call { .. } => unreachable!("calls return before value-result validation"),
         SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => {}
+        // The §1.3 ownership operations, the P1 literal producers, the
+        // structural-equality ops and `rt.call` have no producer on this route
+        // yet, and the rules that admit them are rules 1-6, which are the
+        // verifier lane's. Until those land the relation table refuses rather
+        // than admitting an operation nothing checks.
+        SemOpKind::ConstF64(_)
+        | SemOpKind::ConstChar(_)
+        | SemOpKind::ConstUnit
+        | SemOpKind::ConstDuration(_)
+        | SemOpKind::ConstStr(_)
+        | SemOpKind::ConstBytes(_)
+        | SemOpKind::StrEq { .. }
+        | SemOpKind::BytesEq { .. }
+        | SemOpKind::RtCall { .. }
+        | SemOpKind::CopyValue { .. }
+        | SemOpKind::DestroyValue { .. }
+        | SemOpKind::BeginBorrow { .. }
+        | SemOpKind::EndBorrow { .. }
+        | SemOpKind::Move { .. }
+        | SemOpKind::Fork { .. }
+        | SemOpKind::Destructure { .. }
+        | SemOpKind::AllocPlace { .. }
+        | SemOpKind::LoadCopy { .. }
+        | SemOpKind::LoadTake { .. }
+        | SemOpKind::StoreInit { .. }
+        | SemOpKind::StoreAssign { .. }
+        | SemOpKind::EndLifetime { .. } => invalid_operation(
+            function,
+            operation.id,
+            "operation is outside the verified SIR relation table".to_string(),
+            diagnostics,
+        ),
     }
 }
 
@@ -1331,62 +1327,6 @@ fn verify_direct_call_operation(
     }
 }
 
-fn require_read_use(
-    function: &SemFunction,
-    site: UseSite,
-    context: &'static str,
-    diagnostics: &mut Vec<SirDiagnostic>,
-) {
-    let mode = match site {
-        UseSite::Operation { mode, .. } | UseSite::Terminator { mode, .. } => mode,
-    };
-    if mode != UseMode::Read {
-        diagnostics.push(diag(
-            function,
-            SirDiagnosticKind::InvalidUseMode {
-                site,
-                expected: UseMode::Read,
-                actual: mode,
-                context,
-            },
-        ));
-    }
-}
-
-fn operation_operand_context(kind: &SemOpKind, operand: crate::OperandSlot) -> &'static str {
-    match kind {
-        SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => "operation operand",
-        SemOpKind::TupleMake { .. } => "tuple.make element",
-        SemOpKind::TupleGet { .. } => "tuple.get operand",
-        SemOpKind::Unary { .. } => "unary operand",
-        SemOpKind::Binary { .. } if operand.0 == 0 => "binary left operand",
-        SemOpKind::Binary { .. } => "binary right operand",
-        SemOpKind::Cast { .. } => "cast operand",
-        SemOpKind::Call { .. } => "direct call argument",
-    }
-}
-
-fn verify_terminator_operand_modes(
-    function: &SemFunction,
-    block: BlockId,
-    terminator: &SemTerminator,
-    diagnostics: &mut Vec<SirDiagnostic>,
-) {
-    terminator.visit_operands(|operand, use_| {
-        require_read_use(
-            function,
-            UseSite::Terminator {
-                block,
-                operand,
-                value: use_.value,
-                mode: use_.mode,
-            },
-            terminator.operand_context(operand),
-            diagnostics,
-        );
-    });
-}
-
 fn invalid_operation(
     function: &SemFunction,
     op: OpId,
@@ -1399,6 +1339,10 @@ fn invalid_operation(
     ));
 }
 
+#[expect(
+    clippy::match_same_arms,
+    reason = "a checked terminator with no rule and one with no relation stated are distinct cases"
+)]
 fn verify_terminator_shape(
     function: &SemFunction,
     terminator: &SemTerminator,
@@ -1448,6 +1392,11 @@ fn verify_terminator_shape(
             }
         }
         SemTerminator::Return { .. } | SemTerminator::Goto(_) | SemTerminator::Unreachable => {}
+        // `Trap` carries no operand and `Suspend`'s shape rules - the
+        // cancel-edge and resume-edge orderings of §1.5 - belong to the phase
+        // that emits one. Neither has a producer on this route, so this table
+        // states no relation for them rather than inventing one.
+        SemTerminator::Trap { .. } | SemTerminator::Suspend { .. } => {}
     }
 }
 
@@ -1539,20 +1488,33 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<ValueId> {
 #[cfg(test)]
 mod cfg_discard_safety_tests {
     use super::{verify_cfg_discard_safety, CfgDiscardSafetyReason, SirDiagnosticKind};
+    use crate::ownership::OwnKind;
     use crate::{
-        BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemFunction,
-        SemTerminator, UseMode, UseSite, ValueId,
+        BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, OpId, Operand, Provenance,
+        SemBlock, SemFunction, SemOp, SemOpKind, SemTerminator, UseSite, ValueId,
     };
     use hew_hir::ItemId;
     use hew_types::{DefId, ResolvedTy};
 
-    fn operand(value: u32, mode: UseMode) -> Operand {
+    fn operand(value: u32) -> Operand {
         Operand {
             value: ValueId(value),
-            mode,
         }
     }
 
+    fn param(value: u32, ty: ResolvedTy) -> BlockArg {
+        BlockArg {
+            value: ValueId(value),
+            ty,
+            own: OwnKind::None,
+            provenance: None,
+        }
+    }
+
+    /// A discarded block whose ops discharge an ownership obligation is unsafe
+    /// to discard: the obligation would never be consumed on the surviving
+    /// path. The obligation is named by the operation now, not by a mode on the
+    /// operand it reads.
     #[test]
     fn records_a_discarded_ownership_discharge_as_a_drop_obligation() {
         let original = SemFunction {
@@ -1562,25 +1524,17 @@ mod cfg_discard_safety_tests {
             name: "discarded_drop_obligation".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::Unknown,
-            params: vec![
-                BlockArg {
-                    value: ValueId(0),
-                    ty: ResolvedTy::Bool,
-                },
-                BlockArg {
-                    value: ValueId(1),
-                    ty: ResolvedTy::I64,
-                },
-            ],
+            params: vec![param(0, ResolvedTy::Bool), param(1, ResolvedTy::I64)],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
+            places: Vec::new(),
             blocks: vec![
                 SemBlock {
                     id: BlockId(0),
                     args: Vec::new(),
                     ops: Vec::new(),
                     terminator: SemTerminator::Branch {
-                        condition: operand(0, UseMode::Read),
+                        condition: operand(0),
                         then_target: Edge {
                             target: BlockId(1),
                             args: Vec::new(),
@@ -1596,15 +1550,20 @@ mod cfg_discard_safety_tests {
                     args: Vec::new(),
                     ops: Vec::new(),
                     terminator: SemTerminator::Return {
-                        value: Some(operand(1, UseMode::Read)),
+                        value: Some(operand(1)),
                     },
                 },
                 SemBlock {
                     id: BlockId(2),
                     args: Vec::new(),
-                    ops: Vec::new(),
+                    ops: vec![SemOp {
+                        id: OpId(0),
+                        results: Vec::new(),
+                        kind: SemOpKind::DestroyValue { value: operand(1) },
+                        provenance: Provenance::Synthesized,
+                    }],
                     terminator: SemTerminator::Return {
-                        value: Some(operand(1, UseMode::Consume)),
+                        value: Some(operand(1)),
                     },
                 },
             ],
@@ -1621,11 +1580,84 @@ mod cfg_discard_safety_tests {
             SirDiagnosticKind::UnsafeCfgDiscard {
                 block: BlockId(2),
                 reason: CfgDiscardSafetyReason::DropObligationUse {
-                    site: UseSite::Terminator {
-                        mode: UseMode::Consume,
-                        ..
-                    }
+                    site: UseSite::Operation { op: OpId(0), .. }
                 }
+            }
+        )));
+    }
+
+    /// The counterfactual: a discarded block whose ops read their operands
+    /// without transferring an obligation is not reported for one.
+    #[test]
+    fn a_discarded_pure_block_is_not_a_drop_obligation() {
+        let original = SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("discarded_pure_block"),
+            name: "discarded_pure_block".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: vec![param(0, ResolvedTy::Bool), param(1, ResolvedTy::I64)],
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            places: Vec::new(),
+            blocks: vec![
+                SemBlock {
+                    id: BlockId(0),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SemTerminator::Branch {
+                        condition: operand(0),
+                        then_target: Edge {
+                            target: BlockId(1),
+                            args: Vec::new(),
+                        },
+                        else_target: Edge {
+                            target: BlockId(2),
+                            args: Vec::new(),
+                        },
+                    },
+                },
+                SemBlock {
+                    id: BlockId(1),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SemTerminator::Return {
+                        value: Some(operand(1)),
+                    },
+                },
+                SemBlock {
+                    id: BlockId(2),
+                    args: Vec::new(),
+                    ops: vec![SemOp {
+                        id: OpId(0),
+                        results: vec![crate::ValueDef {
+                            id: ValueId(2),
+                            ty: ResolvedTy::I64,
+                            own: OwnKind::None,
+                            provenance: None,
+                        }],
+                        kind: SemOpKind::ConstI64(7),
+                        provenance: Provenance::Synthesized,
+                    }],
+                    terminator: SemTerminator::Return {
+                        value: Some(operand(2)),
+                    },
+                },
+            ],
+        };
+        let mut rewritten = original.clone();
+        rewritten.blocks[0].terminator = SemTerminator::Goto(Edge {
+            target: BlockId(1),
+            args: Vec::new(),
+        });
+
+        let diagnostics = verify_cfg_discard_safety(&original, &rewritten);
+        assert!(!diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::UnsafeCfgDiscard {
+                reason: CfgDiscardSafetyReason::DropObligationUse { .. },
+                ..
             }
         )));
     }

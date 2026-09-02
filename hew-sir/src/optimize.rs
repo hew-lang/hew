@@ -128,13 +128,16 @@ fn canonicalize_verified_function(
                     else_target.clone()
                 }
             }),
-            SemTerminator::Return { .. } | SemTerminator::Goto(_) | SemTerminator::Unreachable => {
-                None
-            }
+            SemTerminator::Return { .. }
+            | SemTerminator::Goto(_)
+            | SemTerminator::Trap { .. }
+            | SemTerminator::Suspend { .. }
+            | SemTerminator::Unreachable => None,
         };
         if let Some(edge) = selected {
-            // Retain the whole selected edge: its forwarded values and their
-            // semantic ownership modes are part of the CFG meaning.
+            // Retain the whole selected edge: its forwarded values are part of
+            // the CFG meaning, and §1.4 pins their ownership kinds to the
+            // target's block arguments.
             block.terminator = SemTerminator::Goto(edge);
             folded_branches += 1;
         }

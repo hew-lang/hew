@@ -2,26 +2,26 @@ use hew_hir::ItemId;
 use hew_parser::ast::BinaryOp;
 use hew_sir::{
     build_def_use, dump_sir, replace_all_uses, replace_use, verify_function_in_module,
-    verify_module, BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet, EffectSummary,
-    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, RewriteError,
-    SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
-    SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
-    SirInstanceKey, UseMode, UseSite, ValueDef, ValueId,
+    verify_module, BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet,
+    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, OwnKind, Provenance,
+    RewriteError, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
+    SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
+    SirInstanceKey, UseSite, ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
+use std::collections::BTreeMap;
 
 fn definition(id: u32) -> ValueDef {
     ValueDef {
         id: ValueId(id),
         ty: ResolvedTy::I64,
+        own: OwnKind::None,
+        provenance: None,
     }
 }
 
 fn read(value: ValueId) -> Operand {
-    Operand {
-        value,
-        mode: UseMode::Read,
-    }
+    Operand { value }
 }
 
 fn callable_for(function: &SemFunction) -> SemCallable {
@@ -46,7 +46,6 @@ fn callable_for(function: &SemFunction) -> SemCallable {
         },
         call_conv: SemCallConv::Default,
         kind: SemCallableKind::HewDirect,
-        effect_summary: EffectSummary::Unknown,
     }
 }
 
@@ -66,6 +65,9 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         root_unit_callables: Vec::new(),
         entry_callable: None,
         functions,
+        type_facts: BTreeMap::new(),
+        string_literals: BTreeMap::new(),
+        bytes_literals: BTreeMap::new(),
     }
 }
 
@@ -99,6 +101,7 @@ fn unit_function(
             ops: Vec::new(),
             terminator: SemTerminator::Return { value: None },
         }],
+        places: Vec::new(),
     }
 }
 
@@ -119,10 +122,14 @@ fn block_arguments_are_ssa_join_values() {
             BlockArg {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
+                provenance: None,
             },
             BlockArg {
                 value: ValueId(1),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
+                provenance: None,
             },
         ],
         return_ty: ResolvedTy::I64,
@@ -143,17 +150,13 @@ fn block_arguments_are_ssa_join_values() {
                         results: vec![ValueDef {
                             id: ValueId(3),
                             ty: ResolvedTy::Bool,
+                            own: OwnKind::None,
+                            provenance: None,
                         }],
                         kind: SemOpKind::Binary {
                             op: BinaryOp::Greater,
-                            lhs: Operand {
-                                value: ValueId(0),
-                                mode: UseMode::Read,
-                            },
-                            rhs: Operand {
-                                value: ValueId(2),
-                                mode: UseMode::Read,
-                            },
+                            lhs: Operand { value: ValueId(0) },
+                            rhs: Operand { value: ValueId(2) },
                         },
                         provenance: Provenance::Synthesized,
                     },
@@ -175,6 +178,8 @@ fn block_arguments_are_ssa_join_values() {
                 args: vec![BlockArg {
                     value: ValueId(4),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 ops: vec![
                     SemOp {
@@ -188,14 +193,8 @@ fn block_arguments_are_ssa_join_values() {
                         results: vec![definition(6)],
                         kind: SemOpKind::Binary {
                             op: BinaryOp::Add,
-                            lhs: Operand {
-                                value: ValueId(4),
-                                mode: UseMode::Read,
-                            },
-                            rhs: Operand {
-                                value: ValueId(5),
-                                mode: UseMode::Read,
-                            },
+                            lhs: Operand { value: ValueId(4) },
+                            rhs: Operand { value: ValueId(5) },
                         },
                         provenance: Provenance::Synthesized,
                     },
@@ -210,6 +209,8 @@ fn block_arguments_are_ssa_join_values() {
                 args: vec![BlockArg {
                     value: ValueId(7),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 ops: vec![
                     SemOp {
@@ -223,14 +224,8 @@ fn block_arguments_are_ssa_join_values() {
                         results: vec![definition(9)],
                         kind: SemOpKind::Binary {
                             op: BinaryOp::Add,
-                            lhs: Operand {
-                                value: ValueId(7),
-                                mode: UseMode::Read,
-                            },
-                            rhs: Operand {
-                                value: ValueId(8),
-                                mode: UseMode::Read,
-                            },
+                            lhs: Operand { value: ValueId(7) },
+                            rhs: Operand { value: ValueId(8) },
                         },
                         provenance: Provenance::Synthesized,
                     },
@@ -245,6 +240,8 @@ fn block_arguments_are_ssa_join_values() {
                 args: vec![BlockArg {
                     value: ValueId(10),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 ops: vec![
                     SemOp {
@@ -258,14 +255,8 @@ fn block_arguments_are_ssa_join_values() {
                         results: vec![definition(12)],
                         kind: SemOpKind::Binary {
                             op: BinaryOp::Multiply,
-                            lhs: Operand {
-                                value: ValueId(10),
-                                mode: UseMode::Read,
-                            },
-                            rhs: Operand {
-                                value: ValueId(11),
-                                mode: UseMode::Read,
-                            },
+                            lhs: Operand { value: ValueId(10) },
+                            rhs: Operand { value: ValueId(11) },
                         },
                         provenance: Provenance::Synthesized,
                     },
@@ -275,6 +266,7 @@ fn block_arguments_are_ssa_join_values() {
                 },
             },
         ],
+        places: Vec::new(),
     };
     let module = module(vec![function]);
     assert!(
@@ -347,7 +339,6 @@ fn the_function_index_reports_a_bodyless_callable_as_absent() {
         },
         call_conv: SemCallConv::Default,
         kind: SemCallableKind::HewDirect,
-        effect_summary: EffectSummary::Unknown,
     });
 
     let index = module.function_index();
@@ -377,12 +368,15 @@ fn verifier_rejects_entry_block_arguments() {
             args: vec![BlockArg {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
+                provenance: None,
             }],
             ops: Vec::new(),
             terminator: SemTerminator::Return {
                 value: Some(read(ValueId(0))),
             },
         }],
+        places: Vec::new(),
     }]);
 
     assert!(verify_module(&module).iter().any(|diagnostic| matches!(
@@ -412,6 +406,7 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
             ops: Vec::new(),
             terminator: SemTerminator::Return { value: None },
         }],
+        places: Vec::new(),
     };
     let caller = SemFunction {
         id: ItemId(1),
@@ -437,6 +432,7 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
             }],
             terminator: SemTerminator::Return { value: None },
         }],
+        places: Vec::new(),
     };
     let mut valid = module(vec![unit_helper, caller]);
     assert!(
@@ -497,6 +493,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
                 },
             },
         ],
+        places: Vec::new(),
     };
     let non_contiguous_diagnostics = verify_module(&module(vec![non_contiguous]));
     assert!(non_contiguous_diagnostics.iter().any(|diagnostic| matches!(
@@ -541,6 +538,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
                 }),
             },
         ],
+        places: Vec::new(),
     };
     let out_of_order_diagnostics = verify_module(&module(vec![out_of_order]));
     assert!(out_of_order_diagnostics.iter().any(|diagnostic| matches!(
@@ -563,28 +561,16 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
 fn operation_effects_are_derived_and_conservative() {
     let checked_add = SemOpKind::Binary {
         op: BinaryOp::Add,
-        lhs: Operand {
-            value: ValueId(0),
-            mode: UseMode::Read,
-        },
-        rhs: Operand {
-            value: ValueId(1),
-            mode: UseMode::Read,
-        },
+        lhs: Operand { value: ValueId(0) },
+        rhs: Operand { value: ValueId(1) },
     };
     assert_eq!(checked_add.effects(), EffectSet::MAY_TRAP);
     assert!(checked_add.effects().may_trap());
 
     let wrapping_add = SemOpKind::Binary {
         op: BinaryOp::WrappingAdd,
-        lhs: Operand {
-            value: ValueId(0),
-            mode: UseMode::Read,
-        },
-        rhs: Operand {
-            value: ValueId(1),
-            mode: UseMode::Read,
-        },
+        lhs: Operand { value: ValueId(0) },
+        rhs: Operand { value: ValueId(1) },
     };
     assert!(wrapping_add.effects().is_pure());
 
@@ -595,11 +581,10 @@ fn operation_effects_are_derived_and_conservative() {
     assert_eq!(unresolved_call.effects(), EffectSet::UNKNOWN_CALL);
     assert!(unresolved_call.effects().contains(EffectSet::MAY_TRAP));
     assert!(unresolved_call.effects().may_trap());
-    assert_eq!(EffectSummary::MayTrap.effects(), EffectSet::MAY_TRAP);
 }
 
 #[test]
-fn verifier_checks_resolved_direct_call_signature_and_use_mode() {
+fn verifier_checks_resolved_direct_call_signature() {
     let target = SemFunction {
         id: ItemId(0),
         callable: CallableId(0),
@@ -610,6 +595,8 @@ fn verifier_checks_resolved_direct_call_signature_and_use_mode() {
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::I64,
+            own: OwnKind::None,
+            provenance: None,
         }],
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -621,6 +608,7 @@ fn verifier_checks_resolved_direct_call_signature_and_use_mode() {
                 value: Some(read(ValueId(0))),
             },
         }],
+        places: Vec::new(),
     };
     let caller = SemFunction {
         id: ItemId(1),
@@ -632,6 +620,8 @@ fn verifier_checks_resolved_direct_call_signature_and_use_mode() {
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
+            own: OwnKind::None,
+            provenance: None,
         }],
         return_ty: ResolvedTy::Bool,
         entry: BlockId(0),
@@ -643,13 +633,12 @@ fn verifier_checks_resolved_direct_call_signature_and_use_mode() {
                 results: vec![ValueDef {
                     id: ValueId(1),
                     ty: ResolvedTy::Bool,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 kind: SemOpKind::Call {
                     callee: CallableId(0),
-                    args: vec![Operand {
-                        value: ValueId(0),
-                        mode: UseMode::BorrowShared,
-                    }],
+                    args: vec![Operand { value: ValueId(0) }],
                 },
                 provenance: Provenance::Synthesized,
             }],
@@ -657,16 +646,9 @@ fn verifier_checks_resolved_direct_call_signature_and_use_mode() {
                 value: Some(read(ValueId(1))),
             },
         }],
+        places: Vec::new(),
     };
     let diagnostics = verify_module(&module(vec![target, caller]));
-    assert!(diagnostics.iter().any(|diagnostic| matches!(
-        &diagnostic.kind,
-        SirDiagnosticKind::InvalidUseMode {
-            actual: UseMode::BorrowShared,
-            context: "direct call argument",
-            ..
-        }
-    )));
     assert!(diagnostics.iter().any(|diagnostic| matches!(
         &diagnostic.kind,
         SirDiagnosticKind::InvalidOperation { reason, .. }
@@ -707,6 +689,7 @@ fn verifier_rejects_unknown_direct_callable() {
                 value: Some(read(ValueId(0))),
             },
         }],
+        places: Vec::new(),
     };
     assert!(verify_module(&module(vec![function]))
         .iter()
@@ -744,6 +727,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
                 value: Some(read(ValueId(0))),
             },
         }],
+        places: Vec::new(),
     };
     let caller = SemFunction {
         id: ItemId(1),
@@ -769,6 +753,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
             }],
             terminator: SemTerminator::Return { value: None },
         }],
+        places: Vec::new(),
     };
     assert!(verify_module(&module(vec![scalar_callee, caller]))
         .iter()
@@ -784,7 +769,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
 }
 
 #[test]
-fn verifier_rejects_eager_logical_ops_and_ownership_modes_without_an_owner() {
+fn verifier_rejects_eager_logical_ops() {
     let module = module(vec![SemFunction {
         id: ItemId(0),
         callable: CallableId(0),
@@ -795,6 +780,8 @@ fn verifier_rejects_eager_logical_ops_and_ownership_modes_without_an_owner() {
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
+            own: OwnKind::None,
+            provenance: None,
         }],
         return_ty: ResolvedTy::Bool,
         entry: BlockId(0),
@@ -806,17 +793,13 @@ fn verifier_rejects_eager_logical_ops_and_ownership_modes_without_an_owner() {
                 results: vec![ValueDef {
                     id: ValueId(1),
                     ty: ResolvedTy::Bool,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 kind: SemOpKind::Binary {
                     op: BinaryOp::And,
-                    lhs: Operand {
-                        value: ValueId(0),
-                        mode: UseMode::BorrowShared,
-                    },
-                    rhs: Operand {
-                        value: ValueId(0),
-                        mode: UseMode::Consume,
-                    },
+                    lhs: Operand { value: ValueId(0) },
+                    rhs: Operand { value: ValueId(0) },
                 },
                 provenance: Provenance::Synthesized,
             }],
@@ -824,25 +807,10 @@ fn verifier_rejects_eager_logical_ops_and_ownership_modes_without_an_owner() {
                 value: Some(read(ValueId(1))),
             },
         }],
+        places: Vec::new(),
     }]);
 
     let diagnostics = verify_module(&module);
-    assert!(diagnostics.iter().any(|diagnostic| matches!(
-        &diagnostic.kind,
-        SirDiagnosticKind::InvalidUseMode {
-            actual: UseMode::BorrowShared,
-            context: "binary left operand",
-            ..
-        }
-    )));
-    assert!(diagnostics.iter().any(|diagnostic| matches!(
-        &diagnostic.kind,
-        SirDiagnosticKind::InvalidUseMode {
-            actual: UseMode::Consume,
-            context: "binary right operand",
-            ..
-        }
-    )));
     assert!(diagnostics.iter().any(|diagnostic| matches!(
         &diagnostic.kind,
         SirDiagnosticKind::InvalidOperation { reason, .. }
@@ -868,6 +836,7 @@ fn verifier_rejects_duplicate_semantic_and_emitted_function_identities() {
             ops: Vec::new(),
             terminator: SemTerminator::Return { value: None },
         }],
+        places: Vec::new(),
     };
     let diagnostics = verify_module(&module(vec![function.clone(), function]));
     assert!(diagnostics
@@ -958,6 +927,8 @@ fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_a
         vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::I64,
+            own: OwnKind::None,
+            provenance: None,
         }],
     ));
     assert!(verify_module(&parameterized_main)
@@ -986,6 +957,8 @@ fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_a
                 results: vec![ValueDef {
                     id: ValueId(0),
                     ty: ResolvedTy::Bool,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 kind: SemOpKind::ConstBool(true),
                 provenance: Provenance::Synthesized,
@@ -994,6 +967,7 @@ fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_a
                 value: Some(read(ValueId(0))),
             },
         }],
+        places: Vec::new(),
     };
     let bool_main = entry_module(bool_main);
     assert!(verify_module(&bool_main).iter().any(|diagnostic| matches!(
@@ -1013,6 +987,8 @@ fn function_verifier_keeps_callable_table_diagnostics() {
         vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::I64,
+            own: OwnKind::None,
+            provenance: None,
         }],
     );
     let mut module = module(vec![function.clone()]);
@@ -1051,6 +1027,7 @@ fn verifier_rejects_value_carrying_return_from_unit_function() {
                 value: Some(read(ValueId(0))),
             },
         }],
+        places: Vec::new(),
     };
 
     let diagnostics = verify_module(&module(vec![function]));
@@ -1063,6 +1040,10 @@ fn verifier_rejects_value_carrying_return_from_unit_function() {
     );
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one complete hand-built body makes every rewrite site auditable in one place"
+)]
 fn rewrite_fixture() -> SemFunction {
     SemFunction {
         id: ItemId(0),
@@ -1075,18 +1056,26 @@ fn rewrite_fixture() -> SemFunction {
             BlockArg {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
+                provenance: None,
             },
             BlockArg {
                 value: ValueId(1),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
+                provenance: None,
             },
             BlockArg {
                 value: ValueId(2),
                 ty: ResolvedTy::Bool,
+                own: OwnKind::None,
+                provenance: None,
             },
             BlockArg {
                 value: ValueId(7),
                 ty: ResolvedTy::Bool,
+                own: OwnKind::None,
+                provenance: None,
             },
         ],
         return_ty: ResolvedTy::I64,
@@ -1122,6 +1111,8 @@ fn rewrite_fixture() -> SemFunction {
                 args: vec![BlockArg {
                     value: ValueId(4),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Goto(Edge {
@@ -1134,6 +1125,8 @@ fn rewrite_fixture() -> SemFunction {
                 args: vec![BlockArg {
                     value: ValueId(5),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Goto(Edge {
@@ -1146,6 +1139,8 @@ fn rewrite_fixture() -> SemFunction {
                 args: vec![BlockArg {
                     value: ValueId(6),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
@@ -1153,6 +1148,7 @@ fn rewrite_fixture() -> SemFunction {
                 },
             },
         ],
+        places: Vec::new(),
     }
 }
 
@@ -1165,25 +1161,21 @@ fn def_use_sites_are_deterministic_and_support_precise_rewrites() {
             op: OpId(0),
             operand: OperandSlot(0),
             value: ValueId(0),
-            mode: UseMode::Read,
         },
         UseSite::Operation {
             op: OpId(0),
             operand: OperandSlot(1),
             value: ValueId(0),
-            mode: UseMode::Read,
         },
         UseSite::Terminator {
             block: BlockId(0),
             operand: OperandSlot(1),
             value: ValueId(0),
-            mode: UseMode::Read,
         },
         UseSite::Terminator {
             block: BlockId(0),
             operand: OperandSlot(2),
             value: ValueId(0),
-            mode: UseMode::Read,
         },
     ];
     assert_eq!(index.uses_of(ValueId(0)), expected_x_uses);
@@ -1237,7 +1229,6 @@ fn def_use_sites_are_deterministic_and_support_precise_rewrites() {
             block: BlockId(3),
             operand: OperandSlot(0),
             value: ValueId(6),
-            mode: UseMode::Read,
         }
     );
     assert_eq!(
@@ -1254,27 +1245,6 @@ fn def_use_sites_are_deterministic_and_support_precise_rewrites() {
     assert!(
         verify_module(&module(vec![function])).is_empty(),
         "slot-addressed rewrites must preserve a valid scalar SIR graph"
-    );
-}
-
-#[test]
-fn indexed_rewrites_refuse_a_stale_ownership_mode() {
-    let mut function = rewrite_fixture();
-    let site = build_def_use(&function)
-        .uses_of(ValueId(0))
-        .first()
-        .copied()
-        .expect("fixture must have an operation use of its first parameter");
-    function.blocks[0].ops[0].visit_operands_mut(|slot, operand| {
-        if slot == OperandSlot(0) {
-            operand.mode = UseMode::Move;
-        }
-    });
-
-    assert_eq!(
-        replace_use(&mut function, site, ValueId(1)),
-        Err(RewriteError::StaleUseSite(site)),
-        "a replacement indexed before an ownership-mode rewrite must fail closed"
     );
 }
 
@@ -1322,7 +1292,7 @@ fn indexed_rewrites_refuse_a_stale_operand_value() {
     assert_eq!(
         replace_use(&mut function, site, ValueId(0)),
         Err(RewriteError::StaleUseSite(site)),
-        "an old index must not replace a different value in the same slot and mode"
+        "an old index must not replace a different value in the same slot"
     );
 }
 
@@ -1359,255 +1329,6 @@ fn operand_and_successor_visitors_centralize_cfg_rewrites() {
         ],
         "the terminator visitor must cover the condition and both edge operands in slot order"
     );
-}
-
-#[test]
-fn dump_preserves_operand_modes_at_branch_edge_and_return_boundaries() {
-    let function = SemFunction {
-        id: ItemId(0),
-        callable: CallableId(0),
-        declaration: DefId::for_test("dump_modes"),
-        name: "dump_modes".to_string(),
-        span: 0..0,
-        source_origin: FunctionSourceOrigin::Unknown,
-        params: vec![
-            BlockArg {
-                value: ValueId(0),
-                ty: ResolvedTy::I64,
-            },
-            BlockArg {
-                value: ValueId(1),
-                ty: ResolvedTy::Bool,
-            },
-        ],
-        return_ty: ResolvedTy::I64,
-        entry: BlockId(0),
-        blocks: vec![
-            SemBlock {
-                id: BlockId(0),
-                args: Vec::new(),
-                ops: Vec::new(),
-                terminator: SemTerminator::Branch {
-                    condition: Operand {
-                        value: ValueId(1),
-                        mode: UseMode::BorrowShared,
-                    },
-                    then_target: Edge {
-                        target: BlockId(1),
-                        args: vec![Operand {
-                            value: ValueId(0),
-                            mode: UseMode::Move,
-                        }],
-                    },
-                    else_target: Edge {
-                        target: BlockId(2),
-                        args: vec![Operand {
-                            value: ValueId(0),
-                            mode: UseMode::BorrowMut,
-                        }],
-                    },
-                },
-            },
-            SemBlock {
-                id: BlockId(1),
-                args: vec![BlockArg {
-                    value: ValueId(2),
-                    ty: ResolvedTy::I64,
-                }],
-                ops: Vec::new(),
-                terminator: SemTerminator::Return {
-                    value: Some(Operand {
-                        value: ValueId(2),
-                        mode: UseMode::Consume,
-                    }),
-                },
-            },
-            SemBlock {
-                id: BlockId(2),
-                args: vec![BlockArg {
-                    value: ValueId(3),
-                    ty: ResolvedTy::I64,
-                }],
-                ops: Vec::new(),
-                terminator: SemTerminator::Return {
-                    value: Some(read(ValueId(3))),
-                },
-            },
-        ],
-    };
-
-    assert_eq!(
-        dump_sir(&module(vec![function])),
-        concat!(
-            "fn dump_modes(%0: i64, %1: bool) -> i64 {\n",
-            "bb0:\n",
-            "    branch borrow %1, bb1(move %0), bb2(borrow_mut %0)\n",
-            "bb1(%2: i64):\n",
-            "    return consume %2\n",
-            "bb2(%3: i64):\n",
-            "    return %3\n",
-            "}\n"
-        )
-    );
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one complete malformed CFG fixture makes every scalar terminator-use boundary auditable"
-)]
-fn verifier_rejects_nonread_operands_at_every_scalar_cfg_boundary() {
-    let function = SemFunction {
-        id: ItemId(0),
-        callable: CallableId(0),
-        declaration: DefId::for_test("bad_modes"),
-        name: "bad_modes".to_string(),
-        span: 0..0,
-        source_origin: FunctionSourceOrigin::Unknown,
-        params: vec![
-            BlockArg {
-                value: ValueId(0),
-                ty: ResolvedTy::I64,
-            },
-            BlockArg {
-                value: ValueId(1),
-                ty: ResolvedTy::Bool,
-            },
-        ],
-        return_ty: ResolvedTy::I64,
-        entry: BlockId(0),
-        blocks: vec![
-            SemBlock {
-                id: BlockId(0),
-                args: Vec::new(),
-                ops: Vec::new(),
-                terminator: SemTerminator::Branch {
-                    condition: Operand {
-                        value: ValueId(1),
-                        mode: UseMode::BorrowShared,
-                    },
-                    then_target: Edge {
-                        target: BlockId(1),
-                        args: vec![Operand {
-                            value: ValueId(0),
-                            mode: UseMode::Move,
-                        }],
-                    },
-                    else_target: Edge {
-                        target: BlockId(2),
-                        args: vec![Operand {
-                            value: ValueId(0),
-                            mode: UseMode::BorrowMut,
-                        }],
-                    },
-                },
-            },
-            SemBlock {
-                id: BlockId(1),
-                args: vec![BlockArg {
-                    value: ValueId(2),
-                    ty: ResolvedTy::I64,
-                }],
-                ops: Vec::new(),
-                terminator: SemTerminator::Return {
-                    value: Some(Operand {
-                        value: ValueId(2),
-                        mode: UseMode::Consume,
-                    }),
-                },
-            },
-            SemBlock {
-                id: BlockId(2),
-                args: vec![BlockArg {
-                    value: ValueId(3),
-                    ty: ResolvedTy::I64,
-                }],
-                ops: Vec::new(),
-                terminator: SemTerminator::Goto(Edge {
-                    target: BlockId(3),
-                    args: vec![Operand {
-                        value: ValueId(3),
-                        mode: UseMode::Move,
-                    }],
-                }),
-            },
-            SemBlock {
-                id: BlockId(3),
-                args: vec![BlockArg {
-                    value: ValueId(4),
-                    ty: ResolvedTy::I64,
-                }],
-                ops: Vec::new(),
-                terminator: SemTerminator::Return {
-                    value: Some(read(ValueId(4))),
-                },
-            },
-        ],
-    };
-    let diagnostics = verify_module(&module(vec![function]));
-    let expected = [
-        (
-            UseSite::Terminator {
-                block: BlockId(0),
-                operand: OperandSlot(0),
-                value: ValueId(1),
-                mode: UseMode::BorrowShared,
-            },
-            "branch condition",
-        ),
-        (
-            UseSite::Terminator {
-                block: BlockId(0),
-                operand: OperandSlot(1),
-                value: ValueId(0),
-                mode: UseMode::Move,
-            },
-            "branch then-edge argument",
-        ),
-        (
-            UseSite::Terminator {
-                block: BlockId(0),
-                operand: OperandSlot(2),
-                value: ValueId(0),
-                mode: UseMode::BorrowMut,
-            },
-            "branch else-edge argument",
-        ),
-        (
-            UseSite::Terminator {
-                block: BlockId(1),
-                operand: OperandSlot(0),
-                value: ValueId(2),
-                mode: UseMode::Consume,
-            },
-            "return value",
-        ),
-        (
-            UseSite::Terminator {
-                block: BlockId(2),
-                operand: OperandSlot(0),
-                value: ValueId(3),
-                mode: UseMode::Move,
-            },
-            "goto edge argument",
-        ),
-    ];
-    for (site, context) in expected {
-        assert!(
-            diagnostics.iter().any(|diagnostic| matches!(
-                &diagnostic.kind,
-                SirDiagnosticKind::InvalidUseMode {
-                    site: actual_site,
-                    expected: UseMode::Read,
-                    actual,
-                    context: actual_context,
-                } if *actual_site == site && *actual == match site {
-                    UseSite::Operation { mode, .. } | UseSite::Terminator { mode, .. } => mode
-                } && *actual_context == context
-            )),
-            "missing exact non-Read diagnostic for {site:?}: {diagnostics:#?}"
-        );
-    }
 }
 
 /// The entry is the program's one monomorphic root body.

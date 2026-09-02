@@ -267,6 +267,12 @@ pub fn classify_element_with(
 pub struct VecElementProfile {
     pub abi: Option<VecElementToken>,
     pub is_owned: bool,
+    /// LEGACY (P5) - a layout-shaped copy predicate.
+    ///
+    /// The §1.1 class table is the one authority for whether a type is
+    /// bit-copyable. This field survives because its readers are in
+    /// `hew-mir/src/{return_provenance,lower/expr}.rs`, and that lowering is
+    /// the parity harness's second leg until it is deleted at P5.
     pub is_copy_layout: bool,
     pub is_function_like: bool,
     pub is_abstract: bool,

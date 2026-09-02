@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmtKind,
@@ -6,11 +6,12 @@ use hew_hir::{
 };
 use hew_types::{CallTarget, DefId, ResolvedTy};
 
+use crate::ownership::{BindingProvenance, OwnKind};
 use crate::{
-    BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSummary, FunctionSourceOrigin,
-    GenericTemplateId, OpId, Operand, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable,
-    SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemTerminator, SirInstanceKey, UseMode, ValueDef, ValueId,
+    BlockArg, BlockId, CallableId, CallableInstance, Edge, FunctionSourceOrigin, GenericTemplateId,
+    OpId, Operand, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind,
+    SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature,
+    SemTerminator, SirInstanceKey, ValueDef, ValueId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -353,7 +354,6 @@ impl<'a> CallableTable<'a> {
                 signature,
                 call_conv: SemCallConv::Default,
                 kind: SemCallableKind::HewDirect,
-                effect_summary: EffectSummary::Unknown,
             });
         }
         generic_templates.sort_by(|left, right| left.id.cmp(&right.id));
@@ -687,7 +687,6 @@ impl<'a> InstanceService<'a> {
             signature,
             call_conv: SemCallConv::Default,
             kind: SemCallableKind::HewDirect,
-            effect_summary: EffectSummary::Unknown,
         });
         self.by_instance.insert(key, id);
         self.states.push(CallableState::Queued);
@@ -789,6 +788,16 @@ impl<'a> InstanceService<'a> {
             root_unit_callables: table.root_unit_callables,
             entry_callable: table.entry_callable,
             functions,
+            // MARKED SHORTCUT — the module ships with an empty fact table.
+            // WHY: `lower_module` takes a `HirModule` and no
+            // `TypeCheckOutput`, so `TypeCheckOutput::type_facts` is not in
+            // reach at this boundary.
+            // WHEN: HIR-to-SIR lowering threads the checker output through.
+            // WHAT: the projection of `type_facts` over the types these bodies
+            // mention is carried here, and rules 5 and 6 read it.
+            type_facts: BTreeMap::new(),
+            string_literals: BTreeMap::new(),
+            bytes_literals: BTreeMap::new(),
         }
     }
 
@@ -917,15 +926,38 @@ fn is_initial_scalar_return(ty: &ResolvedTy) -> bool {
 /// because the first scalar SIR slice cannot realize it yet. Callers use the
 /// returned mode to reject unsupported ownership semantics at the HIR → SIR
 /// boundary, preserving a precise implementation gap for later domains.
-fn use_mode_from_hir_intent(intent: IntentKind) -> Result<UseMode, String> {
+/// The §1.2 ownership kind of a value of `ty`.
+///
+/// MARKED SHORTCUT — the class is read against an empty declaration context.
+/// WHY: `lower_module` takes a `HirModule` and no `TypeCheckOutput`, so §1.1's
+/// declaration facts are not in reach here. Every user `Named` type therefore
+/// classes `UnknownDeclaration` and this refuses, which is the fail-closed
+/// answer for a domain that admits only scalars and tuples of scalars.
+/// WHEN: HIR-to-SIR lowering threads the checker output through, and with it
+/// `TypeCheckOutput::type_facts`.
+/// WHAT: the context is built from that table and this reads a decided fact
+/// rather than recomputing one.
+fn own_kind_of(ty: &ResolvedTy) -> Result<OwnKind, String> {
+    hew_types::ValueClass::of_ty(ty, &hew_types::ClassContext::empty())
+        .map(OwnKind::of_class)
+        .map_err(|error| {
+            format!(
+                "SIR cannot decide the ownership kind of `{}`: {error}",
+                ty.user_facing()
+            )
+        })
+}
+
+fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
     match intent {
-        IntentKind::Read => Ok(UseMode::Read),
-        IntentKind::Modify => Ok(UseMode::BorrowMut),
-        // HIR's `Consume` is an ownership transfer to a receiving semantic
-        // operation/callee, whereas `Discharge` releases an obligation with
-        // no receiver. SIR preserves that distinction as Move vs Consume.
-        IntentKind::Consume => Ok(UseMode::Move),
-        IntentKind::Discharge => Ok(UseMode::Consume),
+        IntentKind::Read => Ok(()),
+        // HIR's `Modify`, `Consume` and `Discharge` each need a SIR ownership
+        // operation - `begin_borrow`, `move`, `destroy_value` - that the
+        // initial scalar domain does not emit. Naming the intent rather than a
+        // mode keeps the refusal precise without reviving the deleted mode set.
+        IntentKind::Modify | IntentKind::Consume | IntentKind::Discharge => Err(format!(
+            "HIR {intent:?} intent needs a SIR ownership operation; initial scalar SIR admits only read operands"
+        )),
         IntentKind::Capture => Err(
             "HIR Capture intent requires closure/COW capture semantics that the initial scalar SIR slice does not model"
                 .to_string(),
@@ -940,16 +972,6 @@ fn use_mode_from_hir_intent(intent: IntentKind) -> Result<UseMode, String> {
     }
 }
 
-fn initial_scalar_use_mode(intent: IntentKind) -> Result<UseMode, String> {
-    let mode = use_mode_from_hir_intent(intent)?;
-    if mode != UseMode::Read {
-        return Err(format!(
-            "HIR {intent:?} intent maps to SIR {mode:?}; initial scalar SIR admits only Read operands"
-        ));
-    }
-    Ok(mode)
-}
-
 /// Lower a value flowing into a binding or function return in the initial
 /// no-drop scalar/tuple domain.
 ///
@@ -961,20 +983,19 @@ fn initial_scalar_use_mode(intent: IntentKind) -> Result<UseMode, String> {
 /// rule, not a general weakening of `Move`: actual operand positions remain
 /// read-only in this slice, and every ownership-bearing transfer fails closed
 /// until ownership/layout MIR can realize it.
-fn initial_value_transfer_mode(
+fn require_initial_value_transfer(
     intent: IntentKind,
     ty: &hew_types::ResolvedTy,
     context: &str,
 ) -> Result<(), String> {
-    let mode = use_mode_from_hir_intent(intent).map_err(|reason| format!("{context}: {reason}"))?;
-    match mode {
-        UseMode::Read | UseMode::Move if is_initial_value_type(ty) => Ok(()),
-        UseMode::Read | UseMode::Move => Err(format!(
-            "{context}: HIR intent maps to SIR {mode:?} for ownership-bearing `{}`; initial SIR only aliases BitCopy scalar/tuple binding/return flow",
+    match intent {
+        IntentKind::Read | IntentKind::Consume if is_initial_value_type(ty) => Ok(()),
+        IntentKind::Read | IntentKind::Consume => Err(format!(
+            "{context}: HIR {intent:?} intent transfers ownership-bearing `{}`; initial SIR only aliases BitCopy scalar/tuple binding/return flow",
             ty.user_facing()
         )),
         other => Err(format!(
-            "{context}: HIR intent maps to SIR {other:?}; initial scalar/tuple binding/return flow admits only Read or BitCopy Move"
+            "{context}: HIR {other:?} intent; initial scalar/tuple binding/return flow admits only a read or a BitCopy transfer"
         )),
     }
 }
@@ -984,7 +1005,7 @@ fn lower_initial_value_transfer(
     expr: &HirExpr,
     context: &str,
 ) -> Result<ValueId, String> {
-    initial_value_transfer_mode(expr.intent, &builder.ty(&expr.ty), context)?;
+    require_initial_value_transfer(expr.intent, &builder.ty(&expr.ty), context)?;
     builder.lower_expr(expr)
 }
 
@@ -996,12 +1017,11 @@ fn lower_initial_value_transfer(
 /// transfers control to the caller; HIR marks that transfer `Consume`, which
 /// is harmless for `Unit` but must not be rechecked as an ordinary operand use.
 fn lower_initial_unit_return(builder: &mut Builder<'_, '_>, expr: &HirExpr) -> Result<(), String> {
-    let mode = use_mode_from_hir_intent(expr.intent)
-        .map_err(|reason| format!("unit return value: {reason}"))?;
     let ty = builder.ty(&expr.ty);
-    if !matches!(mode, UseMode::Read | UseMode::Move) || ty != ResolvedTy::Unit {
+    if !matches!(expr.intent, IntentKind::Read | IntentKind::Consume) || ty != ResolvedTy::Unit {
         return Err(format!(
-            "unit return value: HIR intent maps to SIR {mode:?} for `{}`; initial SIR admits only Read or Unit Move return transfer",
+            "unit return value: HIR {:?} intent for `{}`; initial SIR admits only a read or a Unit transfer return",
+            expr.intent,
             ty.user_facing()
         ));
     }
@@ -1116,9 +1136,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let value = ValueId(values);
                 values += 1;
                 bindings.insert(param.id, value);
+                let own = own_kind_of(&ty)?;
                 Ok(BlockArg {
                     value,
                     ty,
+                    own,
+                    provenance: Some(BindingProvenance {
+                        name: param.name.clone(),
+                        span: param.span.clone(),
+                        mutable: param.mutable,
+                    }),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -1190,6 +1217,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             return_ty: self.callable.signature.return_ty.clone(),
             entry: BlockId(0),
             blocks,
+            // No P1 program produces a function-owned place: HIR-to-SIR
+            // construction does mem2reg and the only escape hatch, an extern
+            // `&`/`&mut` on a local, has no producer on this route yet.
+            places: Vec::new(),
         })
     }
 
@@ -1200,11 +1231,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// prevents a source move/borrow/discharge from being silently weakened
     /// into a reusable SIR value during the migration.
     fn lower_read_operand(&mut self, expr: &HirExpr, context: &str) -> Result<Operand, String> {
-        let mode = initial_scalar_use_mode(expr.intent)
+        require_initial_scalar_read(expr.intent)
             .map_err(|reason| format!("{context}: {reason}"))?;
         Ok(Operand {
             value: self.lower_expr(expr)?,
-            mode,
         })
     }
 
@@ -1238,7 +1268,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         }
                         Some(expr) => Some(Operand {
                             value: lower_initial_value_transfer(self, expr, "return value")?,
-                            mode: UseMode::Read,
                         }),
                         None => None,
                     };
@@ -1279,7 +1308,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// no semantic value to define, but the call itself must remain in SIR so
     /// later lowering can realize its call/continuation CFG edge.
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
-        initial_scalar_use_mode(expr.intent)
+        require_initial_scalar_read(expr.intent)
             .map_err(|reason| format!("discarded expression: {reason}"))?;
         if matches!(expr.kind, HirExprKind::Call { .. }) {
             self.lower_direct_call(expr, false)?;
@@ -1588,9 +1617,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let then_block = self.new_block(Vec::new());
         let else_block = self.new_block(Vec::new());
         let join_value = self.fresh_value();
+        let join_ty = self.ty(&whole.ty);
         let join_block = self.new_block(vec![BlockArg {
             value: join_value,
-            ty: self.ty(&whole.ty),
+            own: own_kind_of(&join_ty)?,
+            ty: join_ty,
+            provenance: None,
         }]);
         self.set_terminator(SemTerminator::Branch {
             condition,
@@ -1664,9 +1696,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let evaluate_right = self.new_block(Vec::new());
         let short_circuit = self.new_block(Vec::new());
         let result = self.fresh_value();
+        let join_ty = self.ty(&whole.ty);
         let join = self.new_block(vec![BlockArg {
             value: result,
-            ty: self.ty(&whole.ty),
+            own: own_kind_of(&join_ty)?,
+            ty: join_ty,
+            provenance: None,
         }]);
         let (then_target, else_target) = if short_circuit_value {
             (short_circuit, evaluate_right)
@@ -1701,10 +1736,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let constant = self.emit(whole, SemOpKind::ConstBool(short_circuit_value))?;
         self.set_terminator(SemTerminator::Goto(Edge {
             target: join,
-            args: vec![Operand {
-                value: constant,
-                mode: UseMode::Read,
-            }],
+            args: vec![Operand { value: constant }],
         }))?;
 
         self.current = join;
@@ -1713,11 +1745,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<ValueId, String> {
         let value = self.fresh_value();
+        let result_ty = self.ty(&expr.ty);
         let op = SemOp {
             id: OpId(self.ops),
             results: vec![ValueDef {
                 id: value,
-                ty: self.ty(&expr.ty),
+                own: own_kind_of(&result_ty)?,
+                ty: result_ty,
+                provenance: None,
             }],
             kind,
             provenance: Provenance::Site(expr.site),
@@ -1779,31 +1814,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 #[cfg(test)]
 mod tests {
     use super::{
-        initial_scalar_use_mode, initial_value_transfer_mode, is_initial_value_type,
-        use_mode_from_hir_intent, PendingBlock,
+        is_initial_value_type, own_kind_of, require_initial_scalar_read,
+        require_initial_value_transfer, PendingBlock,
     };
-    use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemTerminator, UseMode};
+    use crate::ownership::OwnKind;
+    use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemTerminator};
     use hew_hir::IntentKind;
     use hew_types::ResolvedTy;
 
     #[test]
-    fn hir_intents_map_once_and_initial_scalar_sir_fails_closed() {
-        assert_eq!(
-            use_mode_from_hir_intent(IntentKind::Read),
-            Ok(UseMode::Read)
-        );
-        assert_eq!(
-            use_mode_from_hir_intent(IntentKind::Modify),
-            Ok(UseMode::BorrowMut)
-        );
-        assert_eq!(
-            use_mode_from_hir_intent(IntentKind::Consume),
-            Ok(UseMode::Move)
-        );
-        assert_eq!(
-            use_mode_from_hir_intent(IntentKind::Discharge),
-            Ok(UseMode::Consume)
-        );
+    fn only_a_read_intent_reaches_an_initial_scalar_operand() {
+        assert_eq!(Ok(()), require_initial_scalar_read(IntentKind::Read));
 
         for intent in [
             IntentKind::Modify,
@@ -1813,10 +1834,10 @@ mod tests {
             IntentKind::Yield,
             IntentKind::Unknown,
         ] {
-            let reason = initial_scalar_use_mode(intent)
-                .expect_err("non-Read or unresolved HIR intent must not become a scalar SIR Read");
+            let reason = require_initial_scalar_read(intent)
+                .expect_err("a non-read HIR intent must not become a scalar SIR operand");
             assert!(
-                reason.contains("initial scalar SIR")
+                reason.contains("ownership operation")
                     || reason.contains("requires")
                     || reason.contains("not a legal"),
                 "the failure must explain why {intent:?} is outside the current SIR ownership domain: {reason}"
@@ -1826,16 +1847,20 @@ mod tests {
 
     #[test]
     fn scalar_and_tuple_binding_transfers_admit_only_bitcopy_values() {
-        assert!(initial_value_transfer_mode(IntentKind::Consume, &ResolvedTy::I64, "test").is_ok());
-        assert!(initial_value_transfer_mode(IntentKind::Read, &ResolvedTy::Bool, "test").is_ok());
+        assert!(
+            require_initial_value_transfer(IntentKind::Consume, &ResolvedTy::I64, "test").is_ok()
+        );
+        assert!(
+            require_initial_value_transfer(IntentKind::Read, &ResolvedTy::Bool, "test").is_ok()
+        );
         let tuple = ResolvedTy::Tuple(vec![
             ResolvedTy::I64,
             ResolvedTy::Tuple(vec![ResolvedTy::Bool]),
         ]);
         assert!(is_initial_value_type(&tuple));
-        assert!(initial_value_transfer_mode(IntentKind::Consume, &tuple, "test").is_ok());
+        assert!(require_initial_value_transfer(IntentKind::Consume, &tuple, "test").is_ok());
         for intent in [IntentKind::Read, IntentKind::Consume] {
-            let error = initial_value_transfer_mode(intent, &ResolvedTy::String, "test")
+            let error = require_initial_value_transfer(intent, &ResolvedTy::String, "test")
                 .expect_err(
                     "an ownership-bearing transfer must stay outside the SIR value-only subset",
                 );
@@ -1845,6 +1870,30 @@ mod tests {
                 "the transfer diagnostic must explain that this would erase ownership: {error}",
             );
         }
+    }
+
+    /// The ownership kind of every value this lowering mints comes from the
+    /// §1.1 class table, and a type the table cannot class is refused rather
+    /// than defaulted.
+    #[test]
+    fn lowering_reads_the_ownership_kind_from_the_class_table() {
+        assert_eq!(Ok(OwnKind::None), own_kind_of(&ResolvedTy::I64));
+        assert_eq!(
+            Ok(OwnKind::None),
+            own_kind_of(&ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]))
+        );
+        assert_eq!(Ok(OwnKind::Owned), own_kind_of(&ResolvedTy::String));
+        let refused = own_kind_of(&ResolvedTy::Named {
+            name: "Conn".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        })
+        .expect_err("a user declaration is not in reach on this route and must be refused");
+        assert!(
+            refused.contains("no declaration facts"),
+            "the refusal must name the missing declaration: {refused}"
+        );
     }
 
     #[test]

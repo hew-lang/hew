@@ -11,6 +11,7 @@ mod dump;
 mod lower;
 mod model;
 mod optimize;
+mod ownership;
 mod verify;
 
 pub use analysis::{
@@ -23,15 +24,19 @@ pub use lower::{
     SirSourceStatus,
 };
 pub use model::{
-    BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet, EffectSummary,
-    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, SemAbiParam,
-    SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemFunctionIndex,
-    SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
-    SirInstanceKey, SuccessorSlot, UseMode, UseSite, ValueDef, ValueId,
+    BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet, FunctionSourceOrigin,
+    GenericTemplateId, OpId, Operand, OperandSlot, Provenance, SemAbiParam, SemBlock, SemCallConv,
+    SemCallable, SemCallableKind, SemFunction, SemFunctionIndex, SemGenericTemplate, SemModule,
+    SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirInstanceKey, SuccessorSlot,
+    SuspendInput, UseSite, ValueDef, ValueId,
 };
 pub use optimize::{
     canonicalize_constant_cfg, canonicalize_module_constant_cfg, CfgCanonicalizationReport,
     SirOptimizationError,
+};
+pub use ownership::{
+    BindingProvenance, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, StringLiteralId,
+    SuspendInputMode, SuspendKind, TrapKind,
 };
 pub use verify::{
     verify_function, verify_function_in_module, verify_module, CfgDiscardSafetyReason,

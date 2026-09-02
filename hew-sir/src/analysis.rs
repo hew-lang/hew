@@ -304,7 +304,6 @@ pub fn build_def_use(function: &SemFunction) -> DefUseIndex {
                         op: op.id,
                         operand,
                         value: use_.value,
-                        mode: use_.mode,
                     });
             });
         }
@@ -317,7 +316,6 @@ pub fn build_def_use(function: &SemFunction) -> DefUseIndex {
                     block: block.id,
                     operand,
                     value: use_.value,
-                    mode: use_.mode,
                 });
         });
     }
@@ -354,12 +352,7 @@ pub fn replace_use(
     replacement: ValueId,
 ) -> Result<(), RewriteError> {
     let replaced = match site {
-        UseSite::Operation {
-            op,
-            operand,
-            value,
-            mode,
-        } => {
+        UseSite::Operation { op, operand, value } => {
             let Some(operation) = function
                 .blocks
                 .iter_mut()
@@ -368,13 +361,12 @@ pub fn replace_use(
             else {
                 return Err(RewriteError::UnknownOperation(op));
             };
-            operation.replace_operand_at(operand, value, mode, replacement)
+            operation.replace_operand_at(operand, value, replacement)
         }
         UseSite::Terminator {
             block,
             operand,
             value,
-            mode,
         } => {
             let Some(block) = function
                 .blocks
@@ -385,7 +377,7 @@ pub fn replace_use(
             };
             block
                 .terminator
-                .replace_operand_at(operand, value, mode, replacement)
+                .replace_operand_at(operand, value, replacement)
         }
     };
     if replaced {
@@ -441,13 +433,12 @@ mod tests {
     use super::{build_cfg_index, compute_dominators, EdgeRef};
     use crate::{
         BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemFunction,
-        SemTerminator, SuccessorSlot, UseMode, ValueId,
+        SemTerminator, SuccessorSlot, ValueId,
     };
 
     fn read(value: u32) -> Operand {
         Operand {
             value: ValueId(value),
-            mode: UseMode::Read,
         }
     }
 
@@ -478,10 +469,13 @@ mod tests {
             params: vec![BlockArg {
                 value: ValueId(0),
                 ty: ResolvedTy::Bool,
+                own: crate::ownership::OwnKind::None,
+                provenance: None,
             }],
             return_ty: ResolvedTy::Unit,
             entry: BlockId(0),
             blocks,
+            places: Vec::new(),
         }
     }
 

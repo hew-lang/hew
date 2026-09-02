@@ -1,0 +1,49 @@
+id: no-new-copy-predicate
+language: rust
+severity: error
+message: >-
+  New copy/heap predicate outside hew-types. Whether a type is bit-copyable, and
+  whether it owns heap, are decided once by the §1.1 class table
+  (hew_types::ValueClass::of_ty) and published as TypeFacts.
+note: >-
+  Read hew_types::ValueClass::of_ty through a ClassContext, or read the decided
+  fact from TypeCheckOutput.type_facts. A second predicate is how
+  `(i64, i64)` came to be Copy under one authority and CowValue under another
+  (docs/internal/ir-ladder.md §1.1). If a genuinely new authority is needed, it
+  belongs in hew-types beside the class table.
+files:
+  - "hew-hir/src/**"
+  - "hew-mir/src/**"
+  - "hew-codegen-rs/src/**"
+  - "hew-sir/src/**"
+  - "hew-compile/src/**"
+  - "hew-cli/src/**"
+  - "hew-analysis/src/**"
+  - "hew-lsp/src/**"
+  - "hew-wasm/src/**"
+ignores:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  # The four predicates that existed when the class table landed. Each is a
+  # reader of the legacy lowering path, which is the parity harness's second
+  # leg, and each is on the §9 deletion ledger with phase P5:
+  #   hew-mir/src/model.rs        ty_owns_heap, container_ingress_is_copy_in
+  #   hew-mir/src/ownership.rs    OwnershipFacts::owns_heap
+  #   hew-codegen-rs/src/llvm.rs  resolved_ty_element_owns_heap_for_owned_vec
+  # The list is closed and shrinks with the legacy route; it is not an opt-out
+  # a new predicate may be added to.
+  - "hew-mir/src/model.rs"
+  - "hew-mir/src/ownership.rs"
+  - "hew-codegen-rs/src/llvm.rs"
+rule:
+  any:
+    - pattern: fn $NAME($$$ARGS) -> bool { $$$BODY }
+    - pattern: pub fn $NAME($$$ARGS) -> bool { $$$BODY }
+    - pattern: const fn $NAME($$$ARGS) -> bool { $$$BODY }
+    - pattern: pub const fn $NAME($$$ARGS) -> bool { $$$BODY }
+constraints:
+  NAME:
+    regex: "(^|_)(is_copy|owns_heap)"

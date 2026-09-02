@@ -340,6 +340,15 @@ pub fn lookup_type_marker_for_ty(
     type_classes.get(name).map(|(marker, _)| *marker)
 }
 
+/// LEGACY (P5) - the legacy lowerer's value class.
+///
+/// `hew_types::ValueClass` is the one authority (ir-ladder §1.1): it is total
+/// over `ResolvedTy`, has no `Unknown`, and reads a declaration's marker and
+/// members through a `ClassContext`. This enum survives because every one of
+/// its consumers is in `hew-mir/src/lower/**`, and that lowering is the parity
+/// harness's second leg until the legacy route is deleted at P5. Deleting
+/// `Unknown` here would widen what that leg lowers, which is exactly what the
+/// oracle must not do mid-migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueClass {
     BitCopy,
@@ -359,7 +368,10 @@ pub enum ValueClass {
 }
 
 impl ValueClass {
-    /// Resolve a type's value-class.
+    /// LEGACY (P5) - resolve a type's value-class for the legacy lowerer.
+    ///
+    /// `hew_types::ValueClass::of_ty` is the authority that replaces this; it
+    /// is deleted with the legacy lowering path at P5.
     ///
     /// For `ResolvedTy::Named { name, .. }`, looks up the marker in the
     /// supplied `TypeClassTable`:

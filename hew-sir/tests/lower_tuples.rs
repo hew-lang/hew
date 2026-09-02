@@ -1,8 +1,8 @@
 use hew_hir::{lower_program_host_target, ItemId, ResolutionCtx};
 use hew_sir::{
     build_def_use, dump_sir, lower_module, verify_function, verify_module, BlockId, CallableId,
-    CallableInstance, EffectSet, FunctionSourceOrigin, OpId, Operand, Provenance, SemBlock,
-    SemFunction, SemOp, SemOpKind, SemTerminator, UseMode, ValueDef, ValueId,
+    CallableInstance, EffectSet, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance,
+    SemBlock, SemFunction, SemOp, SemOpKind, SemTerminator, ValueDef, ValueId,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, DefId, ResolvedTy};
 
@@ -66,12 +66,11 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
         SemOpKind::TupleMake { elements }
             if elements.iter().map(|element| element.value).collect::<Vec<_>>()
                 == vec![ops[0].results[0].id, ops[1].results[0].id]
-                && elements.iter().all(|element| element.mode == UseMode::Read)
     ));
     assert!(matches!(
         &ops[3].kind,
         SemOpKind::TupleGet { tuple, index: 0 }
-            if tuple.value == tuple_value.id && tuple.mode == UseMode::Read
+            if tuple.value == tuple_value.id
     ));
     assert!(ops[2].kind.effects().is_pure());
     assert!(ops[3].kind.effects().is_pure());
@@ -208,6 +207,8 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
                     results: vec![ValueDef {
                         id: ValueId(0),
                         ty: ResolvedTy::I64,
+                        own: OwnKind::None,
+                        provenance: None,
                     }],
                     kind: SemOpKind::ConstI64(0),
                     provenance: Provenance::Synthesized,
@@ -217,12 +218,11 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
                     results: vec![ValueDef {
                         id: ValueId(1),
                         ty: ResolvedTy::I64,
+                        own: OwnKind::None,
+                        provenance: None,
                     }],
                     kind: SemOpKind::TupleMake {
-                        elements: vec![Operand {
-                            value: ValueId(0),
-                            mode: UseMode::Read,
-                        }],
+                        elements: vec![Operand { value: ValueId(0) }],
                     },
                     provenance: Provenance::Synthesized,
                 },
@@ -231,24 +231,21 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
                     results: vec![ValueDef {
                         id: ValueId(2),
                         ty: ResolvedTy::I64,
+                        own: OwnKind::None,
+                        provenance: None,
                     }],
                     kind: SemOpKind::TupleGet {
-                        tuple: Operand {
-                            value: ValueId(0),
-                            mode: UseMode::Read,
-                        },
+                        tuple: Operand { value: ValueId(0) },
                         index: 0,
                     },
                     provenance: Provenance::Synthesized,
                 },
             ],
             terminator: SemTerminator::Return {
-                value: Some(Operand {
-                    value: ValueId(2),
-                    mode: UseMode::Read,
-                }),
+                value: Some(Operand { value: ValueId(2) }),
             },
         }],
+        places: Vec::new(),
     };
 
     let diagnostics = verify_function(&function);

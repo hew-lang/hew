@@ -34,7 +34,7 @@ fn main() {
     let roundtrip_ciphertext = encrypt.seal(roundtrip_seal_key, "hew survives");
     match encrypt.try_open(roundtrip_open_key, roundtrip_ciphertext) {
         .Ok(plaintext) => testing.assert_eq_str(plaintext, "hew survives"),
-        .Err(err) => panic(f"try_open unexpectedly failed: {encrypt.error_message(err)}"),
+        .Err(err) => panic(f"try_open unexpectedly failed: {err}"),
     }
     let tamper_seal_key = test_key();
     let tamper_open_key = test_key();
@@ -48,7 +48,7 @@ fn main() {
                 CryptoError.AuthFailed => {
                     survived = true;
                 },
-                _ => panic(f"expected AuthFailed, got {encrypt.error_message(err)}"),
+                _ => panic(f"expected AuthFailed, got {err}"),
             }
         },
     }

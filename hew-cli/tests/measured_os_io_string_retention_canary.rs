@@ -34,7 +34,7 @@ fn all_measured_wrappers() -> i64 {
     let direct_file = fs.read("/tmp/hew-os-io-retention-input.txt");
     let streamed_file = match fs.try_read("/tmp/hew-os-io-retention-input.txt") {
         Ok(text) => text,
-        Err(error) => fs.io_error_message(error),
+        Err(error) => to_string(error),
     };
     let absolute = path.absolute(".");
     let glob_len = match path.try_glob("/tmp/hew-os-io-retention-*.txt") {
@@ -46,7 +46,7 @@ fn all_measured_wrappers() -> i64 {
                 None => 0,
             }
         },
-        Err(error) => path.path_error_message(error).len(),
+        Err(error) => to_string(error).len(),
     };
     let dns_direct = dns.lookup_host("127.0.0.1");
     let dns_timed = dns.lookup_host_timed("127.0.0.1", 1000);
@@ -95,9 +95,9 @@ const SYMBOLS: &[&str] = &[
 /// and neutralizes the carrier slot before releasing it on every exit.
 const STRING_OWNER_SLOTS: &[&str] = &[
     // os.args, os.env, cwd, home_dir, hostname, temp_dir, stdin line/all,
-    // fs.read, fs.try_read, path.absolute, path_error_message, dns direct /
-    // timed, and the two process-output field clones. These are every slot the
-    // witness releases through `hew_string_drop` — the compress `Err(reason)`
+    // fs.read, fs.try_read, path.absolute, the path-error Display dispatch,
+    // dns direct / timed, and the two process-output field clones. These are
+    // every slot the witness releases through `hew_string_drop` — the compress `Err(reason)`
     // and process `output.stdout`/`stderr` ORIGINALS are freed by their
     // composite's recursive `EnumInPlace`/record drop (asserted below), not a
     // caller `hew_string_drop`, so no separate compress-error owner slot exists.

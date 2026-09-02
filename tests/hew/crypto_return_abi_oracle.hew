@@ -22,7 +22,7 @@ fn main() {
     let ciphertext = encrypt.seal(key, "hew crypto ABI survives");
     match encrypt.try_open(key, ciphertext) {
         .Ok(plaintext) => testing.assert_eq_str(plaintext, "hew crypto ABI survives"),
-        .Err(err) => panic(f"try_open unexpectedly failed: {encrypt.error_message(err)}"),
+        .Err(err) => panic(f"try_open unexpectedly failed: {err}"),
     }
     println("crypto return ABI oracle passed");
 }

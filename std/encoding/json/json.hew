@@ -30,6 +30,14 @@ pub enum ParseError {
     Invalid(string);
 }
 
+impl Display for ParseError {
+    fn fmt(err: ParseError) -> string {
+        match err {
+            ParseError.Invalid(message) => message,
+        }
+    }
+}
+
 /// An opaque JSON value.
 ///
 /// Represents any JSON type: null, bool, integer, float, string, array,

@@ -499,10 +499,10 @@ what plan §6's last decision row ("name-keyed call-site joins in codegen")
 forbids. `BuiltinLinkage::PrintIntercept` is itself marked transitional in
 source (`hew-hir/src/stdlib_catalog.rs:58-64`).
 
-Decision: **P1 mints one `RuntimeCallFamily` per distinct runtime symbol behind
-a catalog endpoint** — keyed by symbol, not by endpoint (**D-CATALOG-2**, third
-pass; the second revision said "per endpoint" and that rule cannot be applied,
-see the sub-decision below) — taking the symbol from the linkage row
+Decision: **P1 mints one `RuntimeCallFamily` per catalog endpoint, keyed by the
+endpoint id, with the symbol taken from the linkage row and not required to be
+unique** (**D-CATALOG-2**; the third pass keyed it by symbol instead, and that
+half is superseded — see the sub-decision below) — the symbol coming from the linkage row
 (`PrintIntercept.runtime_symbol`, `RuntimeFfiShim.symbol`, `ToStringShim.symbol`,
 `StringCloneShim.symbol`), and the call lowers as an ordinary `rt.call{family}`
 joined by `MirCallableKey`. `CompilerIntrinsic`, `CalleeNameDispatchOnly`,
@@ -536,11 +536,16 @@ tests/vertical-slice/accept/string_split_nonempty.*` returns only the `.hew`,
 so it is a status-only fixture (run.sh:5856) with no transcript to be parity
 against.
 
-**Sub-decision — minting is keyed by symbol, with parameterized variants where
-endpoints share one (D-CATALOG-2).** The second revision's rule ("one family per
-catalog endpoint … taking the symbol from the linkage row") is not applicable as
-written, because the endpoint→symbol map is many-to-one while §6 requires the
-symbol side to be single-valued. Three collisions, each verified:
+**Sub-decision — the endpoint is the key and the symbol is not (D-CATALOG-2).**
+The endpoint→symbol map is many-to-one. The third pass read that as a reason to
+key by symbol, because §6 stated the symbol side had to be single-valued; the
+reconciliation reverses it, because the endpoint id is what the checker has
+already resolved at the call site and it is unique by construction, while a
+symbol is not a key any lowering can use. §6's constraint is restated as
+endpoint↔family; `from_c_symbol` keeps its arms for the symbols it already
+answers for and gains none for a shared catalog symbol. Three collisions, each
+verified, and each one now a set of sibling families sharing a symbol rather
+than one parameterized variant:
 
 - `const PRINT_RUNTIME: &str = "hew_print_value";` (`hew-hir/src/stdlib_catalog.rs:365`)
   is the `runtime_symbol` of the `print_entry!` macro (`:464-478`), instantiated
@@ -553,26 +558,35 @@ symbol side to be single-valued. Three collisions, each verified:
 - `to_string_str` (`:714-720`) and `clone_str` (`:1037-1043`) both carry
   `hew_string_clone` through `StringCloneShim`.
 
-Decision: **one top-level `RuntimeCallFamily` variant per distinct symbol**, and
-where several endpoints share a symbol the variant is **parameterized** — the
+Decision: **one `RuntimeCallFamily` per catalog endpoint, keyed by the endpoint
+id**, with the symbol read off that endpoint's linkage row and shared freely.
+Where the endpoints of one group differ only in call operands the group may be
+spelled as a parameterized variant — the
 `MathIntrinsic`/`VecScalar`/`SinkWrite` precedent already in the enum, which
-contributes one variant each to the 231. Concretely P1 mints `CatalogPrint{kind,
-newline}` → `hew_print_value`, `CatalogToString{width}` over the six
-`to_string_*` symbols (the u16/u32 share is inside one variant and so is not a
-collision), `StringLength` → `hew_string_length`, and one plain variant per
-distinct `assert*`/`panic`/`exit`/`random.*` symbol (each of those is unique).
+contributes one top-level variant each to the 231 — and that is a spelling
+convenience, not the key: `CatalogPrint{kind, newline}` → `hew_print_value` is
+sixteen endpoints in one variant precisely because `kind` and `newline` **are**
+the endpoint distinction and they are already call operands
+(`hew_print_value(kind: u8, bits: u64, newline: bool)`, `print.rs:185`).
+`CatalogToString{width}` covers the six `to_string_*` endpoints the same way;
+`StringLength` → `hew_string_length` and one plain family per
+`assert*`/`panic`/`exit`/`random.*` endpoint are the unshared cases.
 
 Two endpoints mint **nothing** because their symbol already has a family, and
-reuse is the rule that keeps the map single-valued: `string_concat` →
+reuse keeps the enum from carrying two names for one call: `string_concat` →
 `RuntimeCallFamily::StringConcat` (`hew-types/src/runtime_call.rs:1635`) and
 `len_vec` → `VecLen` (`:1706`) — which is a second, independent reason `len_vec`
 is not P1 work, on top of the receiver-type argument in the row above.
 
-The §6 constraint is restated to match (see the brace-group note there): the map
-is a bijection between **exported symbols and top-level variants**, not between
-symbols and endpoints. That is exactly what `RuntimeCallFamily::from_c_symbol`
-(`runtime_call.rs:1424`) needs to be a function, and it is the property
-D-BYTESLEN turns on.
+The §6 constraint is restated to match (see the brace-group note there), and
+D-CATALOG-2 settles which half survives: **the family is keyed by the endpoint
+id, and a symbol may back more than one family.** `from_c_symbol`
+(`runtime_call.rs:1424`) stays a function on the symbols it *does* answer for —
+that is the property D-BYTESLEN turns on, and it is why a symbol that already
+has a family is reused rather than twinned — but it stops being *total* over the
+catalog: `from_c_symbol("hew_print_value")` would have 16 answers, so the
+catalog endpoints that share a symbol get **no** `from_c_symbol` arm and the
+lowering joins on the endpoint the checker already resolved instead.
 
 The second revision's open flag on this row — "unverified that every one is an
 exported C symbol" — **closes positively**. Spot-checked against
@@ -788,12 +802,13 @@ group's variant count. Three conventions the notation carries:
 - Two variants do **not** take their group's suffix and are written out:
   `HashMapNew`/`HashMapNewWithLayout` and `HashSetNew`/`HashSetNewWithLayout`
   (`runtime_call.rs:487-495`, `508-510` — the constructor surface form is a
-  second callee identity, catalogued because the map between **exported symbols
-  and top-level variants** must be a bijection: `from_c_symbol`
-  (`runtime_call.rs:1424`) has to be a function, and D-BYTESLEN turns on it.
-  **The bijection is symbol↔variant, never symbol↔endpoint** — several catalog
-  endpoints share one symbol, which is why D-CATALOG-2 mints parameterized
-  variants rather than one per endpoint). The first revision folded them into the `…Layout` brace group and
+  second callee identity, catalogued because `from_c_symbol`
+  (`runtime_call.rs:1424`) has to be a function on the symbols it answers for,
+  and D-BYTESLEN turns on it. **It is not total, and the catalog is where it
+  stops**: several catalog endpoints share one symbol (16 share
+  `hew_print_value`), so under D-CATALOG-2 those endpoints are keyed by endpoint
+  id, their symbol comes from the linkage row, and none of them gets a
+  `from_c_symbol` arm). The first revision folded them into the `…Layout` brace group and
   so named `HashMapNewLayout` and `HashSetNewWithLayoutLayout`, neither of which
   exists.
 
@@ -828,7 +843,7 @@ reason) and the twenty open-set `std` externs of D-EXTERN-P1 (nineteen
 | `HashMap{ContainsKey,Clear,Clone,Entries,Free,Get,Insert,Keys,Len,Remove,Values}Layout` + `HashMapNew` + `HashMapNewWithLayout` (13) | `m.insert(k, v)`, `m.get(k)` | key/value `O` operands `move`d on insert; `Get` → `G`/`copy_value` (`CompilerCallKind::HashMapGetCloneLayoutOption`); `Remove` → `O Option<V>` (`HashMapRemoveTakeLayout`); overwrite-key release done by the runtime via glue | `CallRuntimeAbi` + `LayoutProbe` | `hew_hashmap_*_layout` | P2 | `assign.rs` (InsertLayout), `expr.rs:5580-5623`, `8296`; codegen `layout.rs:2747/2861/4839` key/value drop_fn deleted | — |
 | `HashSet{Contains,Clear,Clone,Free,Insert,IsEmpty,Len,Remove,ToVec}Layout` + `HashSetNew` + `HashSetNewWithLayout` (11) | `set.insert(s)` | as HashMap | same | `hew_hashset_*_layout` | P2 | `expr.rs:5656-5677` | — |
 | `CompilerCallKind::{HashMapGetCloneLayoutOption, HashMapGetCloneLayoutIndex, HashMapRemoveTakeLayout, SupervisorPoolGetOption, LayoutProbe(kind), IdentityAggregate(kind), ClosurePairVec(kind)}` (7) | (compiler-synthesized helpers) | `LayoutProbe`/`IdentityAggregate` become `TargetLayout` facts, not calls; the Get/Remove/Pool kinds are the `rt.call` rows above; `ClosurePairVec` collapses into the Vec glue row | `CompilerCall` deleted | — | P2 (P4 for pool) | `hew-mir/src/model.rs:3780`; producers in `expr.rs`/`actor.rs:834` | — |
-| **catalog builtins (0 families today — P1 mints them, D-CATALOG §3.3)**: `println_{i32,i64,u8,u32,u64,f64,bool,str}`, `print_*`, `assert`, `assert_eq`, `assert_ne`, `to_string_*`, `len_str`, `string_concat`, `panic`, `exit`, `random.*` (`len_vec` is a catalog endpoint too but needs a `Vec` receiver, so it lands with the §6 `Vec` row at P2 — see §3.3) | `println(x)`, `assert_eq(a, b)`, `s.len()` | `rt.call{family}`: `G` string/bytes operands inside a `borrow`, `N` scalars; print/assert results `N`; `to_string_*`/`string_concat` → `O string` | `Terminator::Call` to the catalog symbol today; `CallRuntimeAbi` once the families exist | the `runtime_symbol`/`symbol` field of each endpoint's `BuiltinLinkage` row (`hew-hir/src/stdlib_catalog.rs:53-130`: `PrintIntercept`, `RuntimeFfiShim`, `ToStringShim`, `StringCloneShim`). **The second revision's "unverified that every one is an exported C symbol" flag closes positively** — the spot-check is under D-CATALOG-2 in §3.3. **Minting is keyed by symbol, not by endpoint** (D-CATALOG-2): sixteen print endpoints share `hew_print_value`, `to_string_u16`/`to_string_u32` share `hew_uint_to_string`, `to_string_str`/`clone_str` share `hew_string_clone`, so P1 mints one parameterized variant per shared symbol and reuses `StringConcat`/`VecLen` where the symbol already has a family | **P1** | `expr.rs:3484-3555` `CallTarget::Builtin` arm + codegen callee-name interception; both deleted in P5 | — |
+| **catalog builtins (0 families today — P1 mints them, D-CATALOG §3.3)**: `println_{i32,i64,u8,u32,u64,f64,bool,str}`, `print_*`, `assert`, `assert_eq`, `assert_ne`, `to_string_*`, `len_str`, `string_concat`, `panic`, `exit`, `random.*` (`len_vec` is a catalog endpoint too but needs a `Vec` receiver, so it lands with the §6 `Vec` row at P2 — see §3.3) | `println(x)`, `assert_eq(a, b)`, `s.len()` | `rt.call{family}`: `G` string/bytes operands inside a `borrow`, `N` scalars; print/assert results `N`; `to_string_*`/`string_concat` → `O string` | `Terminator::Call` to the catalog symbol today; `CallRuntimeAbi` once the families exist | the `runtime_symbol`/`symbol` field of each endpoint's `BuiltinLinkage` row (`hew-hir/src/stdlib_catalog.rs:53-130`: `PrintIntercept`, `RuntimeFfiShim`, `ToStringShim`, `StringCloneShim`). **The second revision's "unverified that every one is an exported C symbol" flag closes positively** — the spot-check is under D-CATALOG-2 in §3.3. **Minting is keyed by endpoint, and the symbol is not a key** (D-CATALOG-2): sixteen print endpoints share `hew_print_value`, `to_string_u16`/`to_string_u32` share `hew_uint_to_string`, `to_string_str`/`clone_str` share `hew_string_clone`, so P1 mints one family per endpoint, each taking its symbol from its own linkage row, and reuses `StringConcat`/`VecLen` where the symbol already has a family | **P1** | `expr.rs:3484-3555` `CallTarget::Builtin` arm + codegen callee-name interception; both deleted in P5 | — |
 | `MathIntrinsic{Sqrt,Exp,Log,Sin,Cos,AbsI,MinI,MaxI,AbsF,MinF,MaxF,Pow,Floor,Ceil,Round}` (15) | `sqrt(x)` | `rt.call` (`N`)→`N` | `CallRuntimeAbi`/LLVM intrinsic | libm | P1 | checker `calls.rs`/`registration.rs` → `Call{Runtime}` route (b) | — |
 | `Duration{Abs,Hours,IsZero,Micros,Millis,Mins,Nanos,Secs}`, `Instant{Now,Elapsed,DurationSince}` (11) | `d.secs()`, `Instant.now()` | (`N`)→`N` | `CallRuntimeAbi` | `hew_duration_*`, `hew_instant_*` | P1 | `runtime_builtins.rs:741` duration, `813` instant (NYIs 750, 828) | — |
 | `Metric{CounterRegister,GaugeRegister,HistogramRegisterSimple}` (3) | `metrics.counter("app.requests")` | `G` string name → `N` i64 slot id | `CallRuntimeAbi` | `hew_metric_*_register*` | **P2** (D-METRIC) — the only callers are the `metrics.counter`/`gauge`/`histogram` free functions, whose bodies build a record (`Counter { id: id }`, `std/metrics/metrics.hew:182-248` — `StructInit`, P2) and whose rejection path is `panic(f"…")` (interpolation, P2); the `try_*` twins return `Result<Counter, MetricsError>` (`metrics.hew:194-202`, needs `agg.make`/`switch_enum`) | `runtime_builtins.rs:123-134` → `metrics_runtime_calls.rs:68` `lower_metric_runtime_call` (NYI 88) | — |

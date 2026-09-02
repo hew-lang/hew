@@ -1360,18 +1360,19 @@ test-example-expectations-selftest:
 
 # Python only; no artifacts.
 
-# Check ```hew fenced blocks in docs/ against hew check.
-# Extracts each fence from the Markdown guides and docs/language/*.hew module
-# doc blocks into .tmp/doc-fences/, runs `hew check` on each, and applies the
-# ratchet from scripts/doc-test-expected-failures.txt so known-failing fences
-# do not block the gate while new failures always do.
+# Check ```hew fenced blocks in docs/ and std/ against hew check.
+# Extracts each fence from the Markdown guides, docs/language/*.hew module
+# doc blocks, and every std/**/*.hew doc comment into .tmp/doc-fences/, runs
+# `hew check` on each, and applies the ratchet from
+# scripts/doc-test-expected-failures.txt so known-failing fences do not block
+# the gate while new failures always do.
 #
 # Skip-annotated fences (<!-- doctest: skip --> or preceding NYI callout) are
 # never compiled — they describe aspirational or not-yet-implemented surfaces.
 # Fail-closed default: a fence is compiled unless explicitly skipped.
 #
-# Run `make test-doc-examples` after any docs/ change to confirm no fence
-# regressions were introduced.
+# Run `make test-doc-examples` after any docs/ or std/ change to confirm no
+# fence regressions were introduced.
 test-doc-examples: hew-native
 	@HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh doc-fences
 

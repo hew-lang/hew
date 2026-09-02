@@ -938,7 +938,8 @@ hew_corpus_diagnostic() {
 
 # ── Corpus: doc-fences ────────────────────────────────────────────────────────
 #
-# Extracts every ```hew fence from the language guide and the spec into
+# Extracts every ```hew fence from the language guide, the spec, the
+# docs/language/*.hew modules, and every std/**/*.hew doc comment into
 # individual files, then type-checks each one. A fence whose preceding five
 # lines carry a "Not yet implemented" callout or a `<!-- doctest: skip -->`
 # comment is SKIPPED — spec-ahead-of-implementation is not drift when a plan
@@ -962,6 +963,10 @@ DOC_FENCE_SOURCES=(
     "docs/specs/HEW-SPEC-2026.md:spec"
 )
 DOC_FENCE_LANGUAGE_DIR="$REPO_ROOT/docs/language"
+# Overridable so a test can point extraction at a small fixture tree instead
+# of the real std/ (hundreds of fences) to exercise the tri-state extractor.
+DOC_FENCE_STD_DIR="${DOC_FENCE_STD_DIR:-$REPO_ROOT/std}"
+STD_FENCE_SOURCES=()
 
 # Substrings that, in the five lines before a ```hew fence, mark it skippable.
 DOC_FENCE_NYI_PATTERNS=("Not yet implemented" "doctest: skip" "doctest:skip")
@@ -988,6 +993,42 @@ doc_fence_add_language_sources() {
 
     if ((found == 0)); then
         echo "error: no language documentation modules found in $DOC_FENCE_LANGUAGE_DIR" >&2
+        exit 1
+    fi
+}
+
+# std/**/*.hew doc comments use a different fencing convention than the guide
+# and spec: item-level `///` comments (not only module-level `//!`), and a
+# BARE ``` open (implicit hew — the only language std fences are written in)
+# rather than an explicit ```hew tag. A handful of fences carry an explicit
+# non-hew tag (e.g. ```text) that must stay excluded. doc_fence_extract's
+# open condition (`stripped == '```hew'` only) and prefix strip (`//!` only)
+# don't cover either case, so std gets its own enumerator and extractor
+# instead of overloading the guide/spec one and risking a change in behaviour
+# there.
+# STD_FENCE_SOURCES pairs carry the ABSOLUTE file path (unlike
+# DOC_FENCE_SOURCES's REPO_ROOT-relative paths) because DOC_FENCE_STD_DIR is
+# overridable to a fixture tree outside REPO_ROOT for testing; run_doc_fences
+# uses the std entries as-is instead of rejoining them under REPO_ROOT.
+doc_fence_add_std_sources() {
+    local std_file relative_path slug
+    local found=0
+
+    if [[ ! -d "$DOC_FENCE_STD_DIR" ]]; then
+        echo "error: standard library directory not found: $DOC_FENCE_STD_DIR" >&2
+        exit 1
+    fi
+
+    while IFS= read -r std_file; do
+        found=1
+        relative_path="${std_file#"$DOC_FENCE_STD_DIR"/}"
+        slug="${relative_path%.hew}"
+        slug="${slug//\//-}"
+        STD_FENCE_SOURCES+=("$std_file:std-$slug")
+    done < <(find "$DOC_FENCE_STD_DIR" -type f -name '*.hew' -not -path '*/target/*' -print | LC_ALL=C sort)
+
+    if ((found == 0)); then
+        echo "error: no standard library modules found in $DOC_FENCE_STD_DIR" >&2
         exit 1
     fi
 }
@@ -1023,6 +1064,90 @@ doc_fence_extract() {
         line="${lines[$i]}"
         stripped="${line%%$'\r'}"
         if [[ "$stripped" != '```hew' ]]; then
+            ((i += 1))
+            continue
+        fi
+
+        fence_num=$((fence_num + 1))
+        printf -v fence_id "%s-%04d" "$prefix" "$fence_num"
+
+        skip=0
+        for ((j = i > 5 ? i - 5 : 0; j < i; j++)); do
+            ctx_line="${lines[$j]}"
+            for marker in "${DOC_FENCE_NYI_PATTERNS[@]}"; do
+                if [[ "$ctx_line" == *"$marker"* ]]; then
+                    skip=1
+                    break 2
+                fi
+            done
+        done
+
+        ((i += 1))
+        content=""
+        while ((i < total)); do
+            fline="${lines[$i]}"
+            fstripped="${fline%%$'\r'}"
+            if [[ "$fstripped" == '```' ]]; then
+                ((i += 1))
+                break
+            fi
+            content="${content}${fline}"$'\n'
+            ((i += 1))
+        done
+
+        outfile="$DOC_FENCE_OUTDIR/${fence_id}.hew"
+        printf '%s' "$content" >"$outfile"
+
+        DOC_FENCE_IDS+=("$fence_id")
+        DOC_FENCE_SKIPPED+=("$skip")
+    done
+}
+
+# std's counterpart to doc_fence_extract: strips both `//!` and `///` doc
+# prefixes, and tracks a third "inside a non-hew fence" state so a bare ```
+# that closes e.g. a ```text block is never mistaken for the open of the next
+# implicit-hew fence (which is itself opened by a bare ```, since std never
+# tags its own fences ```hew). Content lines outside any comment prefix have
+# already been blanked by the strip pass, so a fence body line is never
+# confused with a fence delimiter.
+doc_fence_extract_std() {
+    local filepath="$1"
+    local prefix="$2"
+    local lines=()
+    local line total fence_num i stripped fence_id skip j ctx_line marker
+    local content fline fstripped outfile in_other=0
+
+    while IFS= read -r line; do
+        case "$line" in
+        '//!'*)
+            line="${line#//!}"
+            line="${line# }"
+            ;;
+        '///'*)
+            line="${line#///}"
+            line="${line# }"
+            ;;
+        *) line="" ;;
+        esac
+        lines+=("$line")
+    done <"$filepath"
+
+    total="${#lines[@]}"
+    fence_num=0
+    i=0
+
+    while ((i < total)); do
+        line="${lines[$i]}"
+        stripped="${line%%$'\r'}"
+
+        if ((in_other)); then
+            [[ "$stripped" == '```' ]] && in_other=0
+            ((i += 1))
+            continue
+        fi
+
+        if [[ "$stripped" != '```' && "$stripped" != '```hew' ]]; then
+            [[ "$stripped" == '```'* ]] && in_other=1
             ((i += 1))
             continue
         fi
@@ -1105,7 +1230,7 @@ run_doc_fences() {
     mkdir -p "$DOC_FENCE_OUTDIR"
     doc_fence_add_language_sources
 
-    echo "==> Doc-test harness: extracting hew fences from docs/"
+    echo "==> Doc-test harness: extracting hew fences from docs/ and std/"
     for entry in "${DOC_FENCE_SOURCES[@]}"; do
         doc_path="${entry%%:*}"
         prefix="${entry##*:}"
@@ -1116,6 +1241,15 @@ run_doc_fences() {
         fi
         echo "  Scanning: $doc_path"
         doc_fence_extract "$full_path" "$prefix"
+    done
+
+    echo "  Scanning: std/ (standard library doc fences)"
+    doc_fence_add_std_sources
+    for entry in "${STD_FENCE_SOURCES[@]}"; do
+        # Unlike DOC_FENCE_SOURCES, entries here already carry an absolute
+        # path (see doc_fence_add_std_sources) — do not rejoin with REPO_ROOT.
+        full_path="${entry%%:*}"
+        doc_fence_extract_std "$full_path" "${entry##*:}"
     done
 
     total_fences="${#DOC_FENCE_IDS[@]}"

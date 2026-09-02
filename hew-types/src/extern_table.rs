@@ -29,21 +29,11 @@
 //! the declaration must not fall out of the unsafe/extern indexes while the
 //! rest of the program is checked.
 //!
-//! Registered but contract-less declarations (`declaration_only`) cover the
-//! two extern surfaces with no comparable ABI contract:
-//! * registry-backed stdlib imports — their signature metadata is a legacy
-//!   presentation surface (short-owner spellings), not a source contract;
-//! * codegen-intercepted layout-witness builtins (`hew_channel_*_layout`) —
-//!   their declared signatures are arity placeholders for the stdlib impl
-//!   bodies, the real out-parameter ABI is emitted by codegen.
-//!
-//! WHEN OBSOLETE (`declaration_only`): when registry imports resolve through
-//! compiled source surfaces carrying real contracts, and the channel witness
-//! ABI is expressible in an extern block, fold both into minted contracts.
-//! Both are design-maturity prerequisites, so this lands in the rc2 identity
-//! continuation, not in rc1.
+//! Registry metadata and codegen-intercepted layout witnesses are lookup/ABI
+//! adapters, not source declarations. They therefore do not acquire fake
+//! `DefId`s or participate in this unsafe-declaration index.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use hew_parser::ast::Span;
 
@@ -117,9 +107,6 @@ pub struct ExternTable {
     /// opaque-handle method resolution probe (mirrors the legacy
     /// first-match scan over source declarations).
     by_symbol_and_module: HashMap<(String, Option<String>), DefId>,
-    /// Extern declarations that gate `unsafe` but carry no comparable ABI
-    /// contract (see module docs).
-    declaration_only: HashSet<DefId>,
 }
 
 impl ExternTable {
@@ -213,6 +200,28 @@ impl ExternTable {
         );
     }
 
+    /// Record a registry-loaded C function as an extern declaration.
+    ///
+    /// Registry metadata is a lookup mirror of a shipped module's extern
+    /// surface, not a source declaration: the function keeps its `unsafe`
+    /// gate and provenance but does not join the source-provenance probe
+    /// (`by_symbol_and_module`) that opaque-handle resolution walks.
+    pub(crate) fn register_registry_declaration(
+        &mut self,
+        declaration: DefId,
+        symbol: String,
+        declaring_module: Option<String>,
+    ) {
+        self.declarations.insert(
+            declaration,
+            ExternDeclaration {
+                contract: None,
+                symbol,
+                declaring_module,
+            },
+        );
+    }
+
     fn record_declaration(&mut self, declaration: DefId, record: ExternDeclaration) {
         if !record.symbol.is_empty() {
             self.by_symbol_and_module
@@ -222,17 +231,11 @@ impl ExternTable {
         self.declarations.insert(declaration, record);
     }
 
-    /// Record an extern declaration that gates `unsafe` but carries no
-    /// comparable ABI contract (see module docs).
-    pub(crate) fn register_declaration_only(&mut self, declaration: DefId) {
-        self.declaration_only.insert(declaration);
-    }
-
     /// Whether `declaration` names a registered extern declaration — the
     /// `unsafe`-gating authority.
     #[must_use]
     pub fn requires_unsafe(&self, declaration: &str) -> bool {
-        self.declarations.contains_key(declaration) || self.declaration_only.contains(declaration)
+        self.declarations.contains_key(declaration)
     }
 
     /// The declaration record for a fn-sig declaration key — the call-site

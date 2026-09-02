@@ -2571,6 +2571,107 @@ mod tests {
         );
     }
 
+    /// A file-imported item reaches HIR lowering on two surfaces: its file's
+    /// module-graph entry and, after `flatten_file_import_items`, the root
+    /// `Program::items`. The checker must have minted ONE declaration for it,
+    /// and that identity is the one the call site and the lowered HIR item
+    /// carry; a second root-owned mint would split every downstream join.
+    #[test]
+    fn flattened_file_import_declares_one_identity_per_item() {
+        let dir = tempfile::tempdir().expect("create file-import fixture dir");
+        write_source(
+            dir.path(),
+            "helper.hew",
+            "pub fn helper_value() -> i64 { 7 }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"helper.hew\";\n\nfn main() -> i64 { helper_value() }\n",
+        );
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+            .expect("file-import fixture must type-check");
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("type checking was enabled");
+
+        let is_helper = |item: &Item| matches!(item, Item::Function(f) if f.name == "helper_value");
+        let in_graph = state.program.module_graph.as_ref().is_some_and(|graph| {
+            graph
+                .modules
+                .values()
+                .any(|module| module.items.iter().any(|(item, _)| is_helper(item)))
+        });
+        let in_root_items = state.program.items.iter().any(|(item, _)| is_helper(item));
+        assert!(
+            in_graph && in_root_items,
+            "the fixture must present the helper on both checker surfaces \
+             (graph: {in_graph}, flattened root items: {in_root_items})"
+        );
+
+        let minted: Vec<hew_types::DefId> = tco
+            .identity
+            .declarations()
+            .map(|(_, declaration)| declaration.clone())
+            .filter(|declaration| {
+                declaration
+                    .full_path()
+                    .rsplit(['.', ':'])
+                    .next()
+                    .is_some_and(|leaf| leaf == "helper_value")
+            })
+            .collect();
+        assert_eq!(
+            minted.len(),
+            1,
+            "one physical declaration must mint exactly one DefId: {minted:?}"
+        );
+
+        let call_target = tco
+            .direct_call_targets
+            .values()
+            .find_map(|target| match target {
+                hew_types::check::CallTarget::User(declaration)
+                    if declaration.full_path().ends_with("helper_value") =>
+                {
+                    Some(declaration.clone())
+                }
+                _ => None,
+            })
+            .expect("main's call must resolve to the helper's user target");
+        assert_eq!(call_target, minted[0]);
+
+        let hir = hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "file-import fixture must lower without HIR diagnostics: {:#?}",
+            hir.diagnostics
+        );
+        let lowered: Vec<hew_types::DefId> = hir
+            .module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hew_hir::HirItem::Function(function) if function.name == "helper_value" => {
+                    Some(function.declaration.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lowered,
+            vec![minted[0].clone()],
+            "HIR must lower the helper once, under the checker-minted identity"
+        );
+    }
+
     #[test]
     fn imported_private_externs_publish_exact_direct_call_symbols() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))

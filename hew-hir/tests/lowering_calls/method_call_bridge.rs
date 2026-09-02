@@ -393,7 +393,8 @@ fn method_call_without_rewrite_fails_closed() {
 
     // W4.015: behavior pin — empty method_call_rewrites must fail closed
     // with MethodCallNoRewrite instead of silently lowering a method call.
-    let empty_tc = TypeCheckOutput::default();
+    let mut empty_tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    empty_tc.method_call_rewrites.clear();
     let lower_output = lower_program(
         &parsed.program,
         &empty_tc,

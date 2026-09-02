@@ -23,7 +23,7 @@ use hew_hir::{
     ResolutionCtx,
 };
 use hew_parser::ast::{Expr, Item, Stmt, StringPart};
-use hew_types::{module_registry::ModuleRegistry, Checker, SpanKey, Ty, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker, SpanKey, Ty};
 
 fn lower_checked(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -257,7 +257,8 @@ fn fstring_without_display_fmt_lang_item_is_fail_closed() {
 
     // W4.015: behavior pin — empty lang-item registry must make display
     // dispatch fail closed instead of fabricating a Display::fmt symbol.
-    let mut tc = TypeCheckOutput::default();
+    let mut tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    tc.lang_items = hew_types::LangItemRegistry::default();
     if let StringPart::Expr((_, sp)) = &parts[1] {
         tc.insert_expr_type(
             SpanKey {
@@ -337,7 +338,8 @@ fn fstring_named_type_without_impl_is_fail_closed() {
 
     // W4.015: behavior pin — poisoned fn_registry input must surface as a
     // CheckerBoundaryViolation in display dispatch substitution.
-    let mut tc = TypeCheckOutput::default();
+    let mut tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    tc.lang_items = hew_types::LangItemRegistry::default();
     tc.lang_items.insert(
         hew_types::LANG_ITEM_DISPLAY_FMT,
         hew_types::LangItemBinding {

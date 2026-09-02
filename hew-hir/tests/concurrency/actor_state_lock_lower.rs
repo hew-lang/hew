@@ -1,7 +1,7 @@
 use hew_hir::{
     dump_hir, lower_program, HirActorStateGuard, HirDiagnosticKind, HirItem, ResolutionCtx,
 };
-use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn lower_checked(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -91,9 +91,11 @@ fn missing_guard_fact_fails_closed() {
         parsed.errors
     );
 
+    let mut tco = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    tco.actor_handler_state_guards.clear();
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &tco,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );

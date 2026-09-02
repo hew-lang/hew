@@ -1746,9 +1746,7 @@ impl Checker {
             span,
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::Extern {
-                    declaration: crate::identity::mint_def_id(
-                        extern_identity.signature_key.clone(),
-                    ),
+                    declaration: declaration_key.clone(),
                     endpoint: extern_identity.endpoint.clone(),
                     trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
                 },
@@ -2149,10 +2147,21 @@ impl Checker {
     ) {
         let c_symbol = c_symbol.into();
         let source_declaration = source_declaration.into();
-        let target = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).map_or_else(
-            || CallTarget::User(crate::identity::mint_def_id(source_declaration)),
-            CallTarget::Runtime,
-        );
+        let target = if let Some(family) =
+            crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol)
+        {
+            CallTarget::Runtime(family)
+        } else {
+            self.identity
+                .declaration_by_path(&source_declaration)
+                .cloned()
+                .map_or_else(
+                    || CallTarget::Builtin {
+                        endpoint: c_symbol.clone(),
+                    },
+                    CallTarget::User,
+                )
+        };
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteModuleQualifiedToFunction {

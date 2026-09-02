@@ -308,6 +308,8 @@ fn shipped_std_candidate_inventory() -> (BTreeSet<String>, OpaqueResourceCandida
         module_doc: None,
     };
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.mint_module_identities(&program);
+    checker.mint_source_declaration_identities(&program);
     checker.register_builtins();
     checker.collect_types(&program);
     checker.collect_declared_type_param_names(&program);
@@ -713,6 +715,8 @@ fn checker_with_registered_module(source: &str, module_path: &[&str]) -> Checker
         module_doc: None,
     };
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.mint_module_identities(&program);
+    checker.mint_source_declaration_identities(&program);
     checker.register_builtins();
     checker.collect_types(&program);
     checker.collect_declared_type_param_names(&program);
@@ -774,6 +778,8 @@ fn checker_with_resolved_module_graph(sources: &[(&[&str], &str)]) -> Checker {
         module_doc: None,
     };
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.mint_module_identities(&program);
+    checker.mint_source_declaration_identities(&program);
     checker.register_builtins();
     checker.collect_types(&program);
     checker.collect_declared_type_param_names(&program);

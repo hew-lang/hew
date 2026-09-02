@@ -409,13 +409,11 @@ pub struct TypeCheckOutput {
     /// catalog consumed by MIR's
     /// `register_builtin_monomorphic_enum_layouts`.
     pub internal_builtin_enum_names: HashSet<String>,
-    /// The compile's identity interner (rc1-F1 stage A): module identities
-    /// minted once at `check_program` entry, provenance-invariant (root vs
-    /// import vs dual-import of one source resolve to one `ModuleId`). The
-    /// canonical fn-sig identity of a root free function is
-    /// [`crate::identity::IdentityTable::root_fn_identity`]; later stages key
-    /// declaration registries by IDs minted here.
-    pub identity: crate::identity::IdentityTable,
+    /// The compile's single module and source-declaration identity authority.
+    /// Root, import, and alias routes converge before later stages look up an
+    /// exact declaration occurrence; no downstream canonical-string alias is
+    /// published.
+    pub identity: crate::IdentityView,
     /// The compile's single-owner extern contract table (rc1-F1 stage B):
     /// one C symbol resolves under exactly one [`crate::extern_table::ExternContract`],
     /// minted at the first declaration; later declarations must agree and
@@ -424,17 +422,10 @@ pub struct TypeCheckOutput {
     pub extern_contracts: crate::extern_table::ExternTable,
     /// Function signatures keyed by declaration identity.
     ///
-    /// Key shapes: `{module}.{name}` for module free functions,
-    /// `Type::method` for methods, bare names for builtins/externs and for
-    /// legacy-rendered root free functions. Inside the checker the root
-    /// unit's free functions are keyed CANONICALLY (`{root_module}.{name}`,
-    /// minted through `identity`); at this publication boundary they are
-    /// re-rendered to the legacy bare spelling because HIR
-    /// (`hew-hir/src/lower.rs` `fn_sigs` clone) and hew-analysis still
-    /// resolve root functions by source spelling.
-    /// WHEN OBSOLETE: the rc2 identity continuation's render-canonicalization
-    /// stage re-keys consumers by `DefId`; the render then disappears and
-    /// canonical keys publish as-is.
+    /// Key shapes: `{module}.{name}` for source free functions,
+    /// `Type::method` for methods, and bare names for builtins. Source
+    /// declarations publish only their canonical spelling; this map remains
+    /// a name-keyed semantic registry until consumers move to `DefId`.
     pub fn_sigs: HashMap<String, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
@@ -1317,7 +1308,7 @@ impl Default for TypeCheckOutput {
             user_clone_record_seeds: Vec::new(),
             type_defs: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
-            identity: crate::identity::IdentityTable::new(),
+            identity: crate::IdentityView::default(),
             extern_contracts: crate::extern_table::ExternTable::new(),
             fn_sigs: HashMap::new(),
             direct_call_targets: HashMap::new(),
@@ -2666,6 +2657,9 @@ pub struct Checker {
     /// is the fail-closed fallback when no item table was recorded. `None` for
     /// root items and source-less hand-built graphs.
     pub(super) current_item_source: Option<std::path::PathBuf>,
+    /// Source-order discriminator used only for source-less AST inventories
+    /// whose top-level declarations all carry the synthetic `0..0` span.
+    pub(super) current_item_ordinal: usize,
     /// Type names declared per source FILE (populated during type
     /// collection from per-item attribution). This is the lexical authority
     /// behind extern-signature nominal identity: a bare name in an extern
@@ -3765,6 +3759,7 @@ impl Checker {
             module_item_sources: HashMap::new(),
             source_file_span_indices: HashMap::new(),
             current_item_source: None,
+            current_item_ordinal: 0,
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             protected_prelude_declaration_collisions: HashSet::new(),

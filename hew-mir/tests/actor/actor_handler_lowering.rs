@@ -154,6 +154,7 @@ fn receive(
     body: HirBlock,
 ) -> HirActorReceiveFn {
     HirActorReceiveFn {
+        declaration: hew_types::DefId::for_test(format!("Actor::{name}")),
         name: name.to_string(),
         is_generator,
         params,
@@ -194,6 +195,7 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
     HirActorDecl {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::for_test(name),
         name: name.to_string(),
         defining_module: None,
         state_fields: vec![HirField {
@@ -204,6 +206,7 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
             span: 0..0,
         }],
         init: Some(hew_hir::HirActorInit {
+            declaration: hew_types::DefId::for_test(format!("{name}::<init>")),
             params: vec![init_param],
             body: init_body,
         }),
@@ -553,6 +556,8 @@ fn supervisor_child_layout_mirrors_cycle_capable_actor_metadata() {
     let sup = HirSupervisorDecl {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::for_test("App"),
+        bootstrap_declaration: hew_types::DefId::for_test("App::<bootstrap>"),
         name: "App".to_string(),
         params: Vec::new(),
         strategy: None,
@@ -1677,6 +1682,7 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
             HirLifecycleHook {
                 kind: HirLifecycleHookKind::Start,
                 name: "boot".to_string(),
+                declaration: hew_types::DefId::for_test("boot"),
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
                 body: block(&mut ids, vec![start_return], None, ResolvedTy::Unit),
@@ -1685,6 +1691,7 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
             HirLifecycleHook {
                 kind: HirLifecycleHookKind::Crash,
                 name: "crashed".to_string(),
+                declaration: hew_types::DefId::for_test("crashed"),
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
                 body: block(&mut ids, vec![crash_return], None, ResolvedTy::Unit),
@@ -1693,6 +1700,7 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
             HirLifecycleHook {
                 kind: HirLifecycleHookKind::Upgrade,
                 name: "upgrade".to_string(),
+                declaration: hew_types::DefId::for_test("upgrade"),
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
                 body: block(&mut ids, vec![upgrade_return], None, ResolvedTy::Unit),
@@ -1774,6 +1782,7 @@ fn actor_lifecycle_stop_lowers_to_actor_handler_function() {
         actor.lifecycle_hooks = vec![HirLifecycleHook {
             kind: HirLifecycleHookKind::Stop,
             name: "shutdown".to_string(),
+            declaration: hew_types::DefId::for_test("shutdown"),
             params: vec![],
             return_ty: ResolvedTy::Unit,
             body: block(&mut ids, vec![stop_return], None, ResolvedTy::Unit),
@@ -1822,6 +1831,7 @@ fn actor_multiple_stop_hooks_lower_to_distinct_indexed_symbols_without_collision
             HirLifecycleHook {
                 kind: HirLifecycleHookKind::Stop,
                 name: "cleanup_a".to_string(),
+                declaration: hew_types::DefId::for_test("cleanup_a"),
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
                 body: block(&mut ids, vec![stop_return_a], None, ResolvedTy::Unit),
@@ -1830,6 +1840,7 @@ fn actor_multiple_stop_hooks_lower_to_distinct_indexed_symbols_without_collision
             HirLifecycleHook {
                 kind: HirLifecycleHookKind::Stop,
                 name: "cleanup_b".to_string(),
+                declaration: hew_types::DefId::for_test("cleanup_b"),
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
                 body: block(&mut ids, vec![stop_return_b], None, ResolvedTy::Unit),
@@ -1956,6 +1967,7 @@ fn actor_lifecycle_crash_lowers_to_actor_handler_function() {
         actor.lifecycle_hooks = vec![HirLifecycleHook {
             kind: HirLifecycleHookKind::Crash,
             name: "handle_crash".to_string(),
+            declaration: hew_types::DefId::for_test("handle_crash"),
             params: vec![],
             return_ty: ResolvedTy::Unit,
             body: block(&mut ids, vec![crash_return], None, ResolvedTy::Unit),
@@ -2000,6 +2012,7 @@ fn exit_hook_with_uncanonicalized_payload_fails_closed_before_raw_mir() {
     watcher.lifecycle_hooks = vec![HirLifecycleHook {
         kind: HirLifecycleHookKind::Exit,
         name: "on_exit".to_string(),
+        declaration: hew_types::DefId::for_test("on_exit"),
         params: vec![note],
         return_ty: ResolvedTy::Unit,
         body: block(&mut ids, vec![exit_return], None, ResolvedTy::Unit),

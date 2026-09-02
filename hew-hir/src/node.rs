@@ -280,6 +280,7 @@ pub enum HirConstValue {
 pub struct HirConst {
     pub id: ItemId,
     pub node: HirNodeId,
+    pub declaration: DefId,
     pub name: String,
     /// Declared, checker-resolved type of the const (`i64`, `String`, ...).
     pub ty: ResolvedTy,
@@ -464,6 +465,8 @@ impl HirImplBlock {
 pub struct HirActorDecl {
     pub id: ItemId,
     pub node: HirNodeId,
+    /// Exact checker-owned actor declaration identity.
+    pub declaration: DefId,
     pub name: String,
     /// Defining-module identity of this actor declaration.
     ///
@@ -557,6 +560,7 @@ impl HirActorDecl {
 /// Lowered `init` block on an actor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorInit {
+    pub declaration: DefId,
     pub params: Vec<HirBinding>,
     pub body: HirBlock,
 }
@@ -564,6 +568,7 @@ pub struct HirActorInit {
 /// Lowered `receive fn` on an actor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorReceiveFn {
+    pub declaration: DefId,
     pub name: String,
     pub is_generator: bool,
     pub params: Vec<HirBinding>,
@@ -604,6 +609,7 @@ pub enum HirActorStateGuard {
 /// Lowered plain method on an actor (not a lifecycle hook).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorMethod {
+    pub declaration: DefId,
     pub name: String,
     pub params: Vec<HirBinding>,
     pub return_ty: ResolvedTy,
@@ -618,6 +624,7 @@ pub struct HirActorMethod {
 /// (`resolve_on_hook_kind`); unknown / malformed kinds never reach HIR.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirLifecycleHook {
+    pub declaration: DefId,
     pub kind: HirLifecycleHookKind,
     pub name: String,
     pub params: Vec<HirBinding>,
@@ -765,6 +772,9 @@ impl HirMachineDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirMachineState {
+    pub declaration: DefId,
+    pub entry_declaration: Option<DefId>,
+    pub exit_declaration: Option<DefId>,
     pub name: String,
     pub fields: Vec<HirField>,
     /// Whether this state has an `entry { ... }` lifecycle block.
@@ -795,6 +805,7 @@ pub struct HirMachineState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirMachineEvent {
+    pub declaration: DefId,
     pub name: String,
     pub fields: Vec<HirField>,
     pub span: Span,
@@ -802,6 +813,7 @@ pub struct HirMachineEvent {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirMachineTransition {
+    pub declaration: DefId,
     pub event_name: String,
     pub source_state: String,
     pub target_state: String,
@@ -854,6 +866,8 @@ pub struct HirMachineTransition {
 pub struct HirRecordDecl {
     pub id: ItemId,
     pub node: HirNodeId,
+    /// Exact checker-owned record declaration identity.
+    pub declaration: DefId,
     pub name: String,
     /// Defining-module identity of this record declaration.
     ///
@@ -906,6 +920,10 @@ impl HirRecordDecl {
 pub struct HirSupervisorDecl {
     pub id: ItemId,
     pub node: HirNodeId,
+    /// Exact checker-owned supervisor declaration identity.
+    pub declaration: DefId,
+    /// Exact source-owned identity projected by the later bootstrap adapter.
+    pub bootstrap_declaration: DefId,
     pub name: String,
     /// Construction-time config parameters (`supervisor App(config: T)`). Bound
     /// in scope throughout the body so child init-arg exprs can reference them.

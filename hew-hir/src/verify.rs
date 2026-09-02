@@ -869,7 +869,10 @@ struct Verifier {
     aggregate_payloads: HashMap<SiteId, Vec<SiteId>>,
     aggregate_transfer_payloads: HashSet<SiteId>,
     resource_record_constructors: HashSet<SiteId>,
-    resource_record_types: HashSet<DefId>,
+    /// Canonical-name projection of exact admitted resource declaration IDs.
+    /// Used only because `ResolvedTy::Named` has not yet gained a `DefId`
+    /// carrier; no identity is reconstructed from this string.
+    resource_record_types: HashSet<String>,
     /// Registered resource-record types whose declared `close` is their ENTIRE
     /// release plan — the three-clause [`crate::declared_release`] admission.
     /// A construction of one is an adoption the program owns. A construction
@@ -900,7 +903,7 @@ impl Verifier {
             .type_classes
             .lifecycle_registry()
             .resource_records()
-            .map(|lifecycle| lifecycle.resource_declaration.clone())
+            .map(|lifecycle| lifecycle.resource_declaration.full_path().to_string())
             .collect();
         self.declared_release_types = crate::declared_release::declared_release_type_names(module);
         for item in &module.items {
@@ -2002,10 +2005,7 @@ impl Verifier {
                 self.aggregate_transfer_payloads
                     .extend(payloads.iter().map(|payload| payload.site));
                 if let ResolvedTy::Named { name, .. } = &expr.ty {
-                    if self
-                        .resource_record_types
-                        .contains(&DefId::legacy_reconstruct_from_full_path(name))
-                    {
+                    if self.resource_record_types.contains(name) {
                         self.resource_record_constructors.insert(expr.site);
                         if self.declared_release_types.contains(name.as_str()) {
                             self.declared_release_constructors.insert(expr.site);

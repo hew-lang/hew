@@ -23,7 +23,7 @@
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
 use hew_parser::ast::{Expr, Item, Stmt};
 use hew_types::ty::TypeVar;
-use hew_types::{CallTarget, DefId, SpanKey, Ty, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, CallTarget, Checker, DefId, SpanKey, Ty};
 
 /// `foo()` in a function body, with the call-site `expr_types` entry
 /// poisoned as an unresolved inference variable, must produce
@@ -69,7 +69,7 @@ fn poisoned_expr_types_emits_checker_boundary_violation() {
     };
     // W4.015: behavior pin — hand-poison expr_types with an unresolved
     // TypeVar to cover the permanent CheckerBoundaryViolation path.
-    let mut tc = TypeCheckOutput::default();
+    let mut tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     tc.insert_expr_type(span_key.clone(), Ty::Var(TypeVar(0)));
     // Ordinary calls now require a checker-selected structured target before
     // HIR may lower them.  Keep that independent authority intact so this

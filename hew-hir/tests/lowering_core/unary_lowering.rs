@@ -1,6 +1,6 @@
 use hew_hir::{lower_program, HirDiagnosticKind, HirExpr, HirExprKind, HirItem, ResolutionCtx};
 use hew_parser::ast::UnaryOp;
-use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn checked_lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -70,9 +70,12 @@ fn unary_missing_checker_type_info_fails_closed() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let mut tco = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    tco.expr_types.clear();
+    tco.resolved_expr_types.clear();
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &tco,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );

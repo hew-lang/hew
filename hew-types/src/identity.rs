@@ -1,21 +1,158 @@
-//! Interned, provenance-invariant compile-time identity (rc1-F1 stage A).
+//! Interned, provenance-invariant compile-time identity.
 //!
-//! The `IdentityTable` is the single minting authority for module identity in
+//! The `IdentityTable` is the single minting authority for module and source
+//! declaration identity in
 //! a compile. It is owned by the checker, minted once at `check_program`
 //! entry from the module graph, and published in `TypeCheckOutput` so later
 //! pipeline stages consume identity instead of re-deriving it from spellings.
 //!
-//! Stage A scope: `ModuleId` interning (dedicated by canonical source, so a
-//! dual-imported or root-vs-imported source resolves to ONE identity) and the
-//! canonical fn-sig key mint for the root compilation unit. Later stages
-//! (B-F of the identity-substrate lane) extend the table to declaration
-//! `DefId`s are minted here and threaded through HIR/MIR/codegen. Downstream
-//! code must carry these identities rather than reconstructing them from names.
+//! A dual-imported or root-vs-imported source resolves to one module identity,
+//! and an exact source declaration resolves to one `DefId`. Downstream code
+//! must carry these identities rather than reconstructing them from names.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::{DefId, NominalId};
+
+/// Closed classification of source declarations and source-owned child bodies.
+///
+/// Together with [`DeclarationOccurrence`], this distinguishes declarations
+/// which share an enclosing item span (actor and machine children). Adding a
+/// new source declaration form therefore requires an explicit identity design
+/// choice instead of silently falling back to a name-derived identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DeclarationKind {
+    Const,
+    Function,
+    ExternFunction,
+    Type,
+    TypeAlias,
+    Record,
+    Trait,
+    TraitMethod,
+    TypeMethod,
+    ImplMethod,
+    Actor,
+    ActorInit,
+    ActorReceive,
+    ActorMethod,
+    Supervisor,
+    SupervisorBootstrap,
+    Machine,
+    MachineState,
+    MachineEvent,
+    MachineStateEntry,
+    MachineStateExit,
+    MachineTransition,
+}
+
+/// Exact source occurrence of a declaration.
+///
+/// `item_start..item_end` identifies the top-level parsed item in one source
+/// module. `ordinal` is zero for the item itself and is the source-order index
+/// among children of the same [`DeclarationKind`]. It is deliberately not a
+/// display name: renamed import routes and aliases must converge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DeclarationOccurrence {
+    module: Option<ModuleId>,
+    item_start: usize,
+    item_end: usize,
+    synthetic_item_ordinal: u32,
+    kind: DeclarationKind,
+    ordinal: u32,
+}
+
+impl DeclarationOccurrence {
+    #[must_use]
+    pub fn new(
+        module: Option<ModuleId>,
+        item_span: &std::ops::Range<usize>,
+        kind: DeclarationKind,
+        ordinal: usize,
+    ) -> Self {
+        Self::new_with_synthetic_ordinal(module, item_span, 0, kind, ordinal)
+    }
+
+    /// Construct an occurrence with an explicit discriminator for source-less
+    /// AST inventories whose spans are synthetic (`0..0`). Real source spans
+    /// deliberately ignore this value so route-dependent module assembly
+    /// order can never split one physical declaration.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either ordinal exceeds the compiler's `u32` occurrence
+    /// representation.
+    #[must_use]
+    pub fn new_with_synthetic_ordinal(
+        module: Option<ModuleId>,
+        item_span: &std::ops::Range<usize>,
+        synthetic_item_ordinal: usize,
+        kind: DeclarationKind,
+        ordinal: usize,
+    ) -> Self {
+        Self {
+            module,
+            item_start: item_span.start,
+            item_end: item_span.end,
+            synthetic_item_ordinal: if item_span.is_empty() {
+                u32::try_from(synthetic_item_ordinal)
+                    .expect("more than u32::MAX synthetic source declarations in one module")
+            } else {
+                0
+            },
+            kind,
+            ordinal: u32::try_from(ordinal)
+                .expect("more than u32::MAX same-kind child declarations in one item"),
+        }
+    }
+
+    #[must_use]
+    pub fn module(self) -> Option<ModuleId> {
+        self.module
+    }
+
+    #[must_use]
+    pub fn kind(self) -> DeclarationKind {
+        self.kind
+    }
+}
+
+/// A declaration claim contradicted the identity already established by the
+/// same source occurrence or canonical path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeclarationIdentityError {
+    OccurrenceAlreadyDeclared {
+        occurrence: DeclarationOccurrence,
+        established_path: String,
+        conflicting_path: String,
+    },
+    PathAlreadyDeclared {
+        path: String,
+        established_occurrence: DeclarationOccurrence,
+        conflicting_occurrence: DeclarationOccurrence,
+    },
+}
+
+impl std::fmt::Display for DeclarationIdentityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OccurrenceAlreadyDeclared {
+                established_path,
+                conflicting_path,
+                ..
+            } => write!(
+                f,
+                "source declaration was already assigned `{established_path}`, not `{conflicting_path}`"
+            ),
+            Self::PathAlreadyDeclared { path, .. } => {
+                write!(f, "declaration path `{path}` was claimed by two source declarations")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DeclarationIdentityError {}
 
 /// Unforgeable witness that a declaration path was resolved canonically.
 ///
@@ -79,19 +216,30 @@ struct ModuleEntry {
     canonical_path: String,
 }
 
+const SYNTHETIC_ROOT_PATH: &str = "#synthetic-root";
+
+#[derive(Debug, Clone)]
+struct DeclarationEntry {
+    occurrence: DeclarationOccurrence,
+    declaration: DefId,
+}
+
 /// The per-compile identity interner. One instance per `check_program` run;
 /// published in `TypeCheckOutput`.
 #[derive(Debug, Clone, Default)]
-pub struct IdentityTable {
+pub(crate) struct IdentityTable {
     entries: Vec<ModuleEntry>,
     by_source: HashMap<PathBuf, ModuleId>,
     by_path: HashMap<String, ModuleId>,
     root: Option<ModuleId>,
+    declarations: Vec<DeclarationEntry>,
+    declarations_by_occurrence: HashMap<DeclarationOccurrence, usize>,
+    declarations_by_path: HashMap<String, usize>,
 }
 
 impl IdentityTable {
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -106,7 +254,7 @@ impl IdentityTable {
     /// Mint (or resolve) the identity of a graph module with canonical dotted
     /// path `canonical_path`. Dedupe axis is the canonical source: a second
     /// spelling reaching the same source resolves to the existing identity.
-    pub fn mint_module(&mut self, canonical_path: &str, sources: &[PathBuf]) -> ModuleId {
+    pub(crate) fn mint_module(&mut self, canonical_path: &str, sources: &[PathBuf]) -> ModuleId {
         let source_key = sources.first().map(|s| Self::intern_source_key(s));
         if let Some(key) = &source_key {
             if let Some(existing) = self.by_source.get(key) {
@@ -136,9 +284,9 @@ impl IdentityTable {
     /// diagnostics render bare leaves).
     ///
     /// Returns `None` when the root has no source (synthetic roots, unit-test
-    /// programs without source paths): such a root keeps the legacy bare
-    /// namespace by design.
-    pub fn mint_root_module(&mut self, sources: &[PathBuf]) -> Option<ModuleId> {
+    /// programs without source paths). Callers must establish the explicit
+    /// synthetic-root occurrence authority instead.
+    pub(crate) fn mint_root_module(&mut self, sources: &[PathBuf]) -> Option<ModuleId> {
         let source = sources.first()?;
         let source_key = Self::intern_source_key(source);
         if let Some(existing) = self.by_source.get(&source_key) {
@@ -169,6 +317,18 @@ impl IdentityTable {
         self.root
     }
 
+    /// Establish a non-colliding occurrence authority for a source-less root.
+    /// Its display/canonical-name projection remains absent: the reserved
+    /// path exists only to distinguish declaration occurrences.
+    pub(crate) fn mint_synthetic_root(&mut self) -> ModuleId {
+        if let Some(root) = self.root {
+            return root;
+        }
+        let id = self.insert(SYNTHETIC_ROOT_PATH.to_string(), None);
+        self.root = Some(id);
+        id
+    }
+
     fn insert(&mut self, canonical_path: String, canonical_source: Option<PathBuf>) -> ModuleId {
         let id = ModuleId(
             u32::try_from(self.entries.len()).expect("more than u32::MAX modules in one compile"),
@@ -194,7 +354,7 @@ impl IdentityTable {
     /// render is genuinely unique — a THIRD colliding file must not
     /// re-derive the second's suffixed render): a false split diagnoses
     /// loudly, a false merge would equate two declarations.
-    pub fn mint_source_file_module(&mut self, assembler: &str, source: &Path) -> ModuleId {
+    pub(crate) fn mint_source_file_module(&mut self, assembler: &str, source: &Path) -> ModuleId {
         let source_key = Self::intern_source_key(source);
         if let Some(existing) = self.by_source.get(&source_key) {
             return *existing;
@@ -228,6 +388,12 @@ impl IdentityTable {
             .copied()
     }
 
+    /// Resolve a graph module's canonical dotted path to its interned identity.
+    #[must_use]
+    pub fn module_for_path(&self, canonical_path: &str) -> Option<ModuleId> {
+        self.by_path.get(canonical_path).copied()
+    }
+
     /// Canonical dotted render of a source file's minted identity.
     #[must_use]
     pub fn module_path_for_source(&self, source: &Path) -> Option<&str> {
@@ -250,20 +416,179 @@ impl IdentityTable {
     /// Canonical dotted render of the root unit, when one was minted.
     #[must_use]
     pub fn root_module_path(&self) -> Option<&str> {
-        self.root.map(|id| self.module_path(id))
+        self.root
+            .map(|id| self.module_path(id))
+            .filter(|path| *path != SYNTHETIC_ROOT_PATH)
     }
 
-    /// Canonical fn-sig identity of a free function declared by the ROOT
-    /// unit: `{root}.{name}` — the same key the declaration mints when its
-    /// module is imported. `None` when no root identity was minted (bare
-    /// legacy namespace) or when `name` is not a bare free-function spelling.
-    #[must_use]
-    pub fn root_fn_identity(&self, name: &str) -> Option<String> {
-        if name.contains('.') || name.contains("::") {
-            return None;
+    /// Establish exactly one identity for a source declaration.
+    ///
+    /// Repeating the same claim is idempotent (the same source may be visited
+    /// through multiple import routes). Either axis disagreeing is rejected;
+    /// there is no alias insertion or reconstruction fallback.
+    pub(crate) fn declare(
+        &mut self,
+        occurrence: DeclarationOccurrence,
+        canonical_path: impl Into<String>,
+    ) -> Result<DefId, DeclarationIdentityError> {
+        let canonical_path = canonical_path.into();
+        if let Some(&index) = self.declarations_by_occurrence.get(&occurrence) {
+            let established = &self.declarations[index];
+            if established.declaration.full_path() == canonical_path {
+                return Ok(established.declaration.clone());
+            }
+            return Err(DeclarationIdentityError::OccurrenceAlreadyDeclared {
+                occurrence,
+                established_path: established.declaration.full_path().to_string(),
+                conflicting_path: canonical_path,
+            });
         }
-        let root = self.root_module_path()?;
-        Some(format!("{root}.{name}"))
+        if let Some(&index) = self.declarations_by_path.get(&canonical_path) {
+            let established = &self.declarations[index];
+            return Err(DeclarationIdentityError::PathAlreadyDeclared {
+                path: canonical_path,
+                established_occurrence: established.occurrence,
+                conflicting_occurrence: occurrence,
+            });
+        }
+
+        let declaration = mint_def_id(canonical_path.clone());
+        let index = self.declarations.len();
+        self.declarations.push(DeclarationEntry {
+            occurrence,
+            declaration: declaration.clone(),
+        });
+        self.declarations_by_occurrence.insert(occurrence, index);
+        self.declarations_by_path.insert(canonical_path, index);
+        Ok(declaration)
+    }
+
+    /// Resolve an exact source occurrence while the checker still owns the
+    /// mutable authority.
+    #[must_use]
+    pub(crate) fn declaration(&self, occurrence: DeclarationOccurrence) -> Option<&DefId> {
+        self.declarations_by_occurrence
+            .get(&occurrence)
+            .map(|&index| &self.declarations[index].declaration)
+    }
+
+    /// Resolve a canonical declaration path established by the checker.
+    /// This is a name-resolution index into the same authority, not a mint.
+    #[must_use]
+    pub fn declaration_by_path(&self, canonical_path: &str) -> Option<&DefId> {
+        self.declarations_by_path
+            .get(canonical_path)
+            .map(|&index| &self.declarations[index].declaration)
+    }
+
+    /// Whether this source module already contributed declaration rows.
+    ///
+    /// Registry mirrors can re-parse source that the module graph already
+    /// inventoried. They are lookup adapters, not a second source authority;
+    /// callers use this predicate to avoid claiming a second set of spans for
+    /// the same declarations.
+    #[must_use]
+    pub(crate) fn module_has_declarations(&self, module: ModuleId) -> bool {
+        self.declarations
+            .iter()
+            .any(|entry| entry.occurrence.module() == Some(module))
+    }
+
+    /// Consume and freeze the checker-owned minting table for downstream
+    /// publication. No mutable authority coexists with an accepted view.
+    #[must_use]
+    pub(crate) fn freeze(self) -> IdentityView {
+        IdentityView {
+            entries: self.entries,
+            by_source: self.by_source,
+            by_path: self.by_path,
+            root: self.root,
+            declarations: self.declarations,
+            declarations_by_occurrence: self.declarations_by_occurrence,
+            declarations_by_path: self.declarations_by_path,
+        }
+    }
+}
+
+/// Immutable checker-to-lowering identity handoff.
+///
+/// This type intentionally exposes lookup only. Downstream crates cannot mint
+/// modules or declarations, nor turn a display spelling into a new `DefId`.
+#[derive(Debug, Clone, Default)]
+pub struct IdentityView {
+    entries: Vec<ModuleEntry>,
+    by_source: HashMap<PathBuf, ModuleId>,
+    by_path: HashMap<String, ModuleId>,
+    root: Option<ModuleId>,
+    declarations: Vec<DeclarationEntry>,
+    declarations_by_occurrence: HashMap<DeclarationOccurrence, usize>,
+    declarations_by_path: HashMap<String, usize>,
+}
+
+impl IdentityView {
+    #[must_use]
+    pub fn module_for_source(&self, source: &Path) -> Option<ModuleId> {
+        self.by_source
+            .get(&IdentityTable::intern_source_key(source))
+            .copied()
+    }
+
+    #[must_use]
+    pub fn module_for_path(&self, canonical_path: &str) -> Option<ModuleId> {
+        self.by_path.get(canonical_path).copied()
+    }
+
+    #[must_use]
+    pub fn module_path(&self, id: ModuleId) -> &str {
+        &self.entries[id.0 as usize].canonical_path
+    }
+
+    #[must_use]
+    pub fn module_path_for_source(&self, source: &Path) -> Option<&str> {
+        self.module_for_source(source)
+            .map(|module| self.module_path(module))
+    }
+
+    #[must_use]
+    pub fn root_module(&self) -> Option<ModuleId> {
+        self.root
+    }
+
+    #[must_use]
+    pub fn root_module_path(&self) -> Option<&str> {
+        self.root
+            .map(|module| self.module_path(module))
+            .filter(|path| *path != SYNTHETIC_ROOT_PATH)
+    }
+
+    #[must_use]
+    pub fn declaration(&self, occurrence: DeclarationOccurrence) -> Option<&DefId> {
+        self.declarations_by_occurrence
+            .get(&occurrence)
+            .map(|&index| &self.declarations[index].declaration)
+    }
+
+    #[must_use]
+    pub fn declaration_by_path(&self, canonical_path: &str) -> Option<&DefId> {
+        self.declarations_by_path
+            .get(canonical_path)
+            .map(|&index| &self.declarations[index].declaration)
+    }
+
+    #[must_use]
+    pub fn nominal(&self, occurrence: DeclarationOccurrence) -> Option<NominalId> {
+        self.declaration(occurrence)
+            .cloned()
+            .map(NominalId::from_minted_declaration)
+    }
+
+    /// Every established declaration with its exact source occurrence, in
+    /// mint order. Read-only: tests and tooling inventory the table with it;
+    /// nothing downstream may derive a new identity from the rows.
+    pub fn declarations(&self) -> impl Iterator<Item = (DeclarationOccurrence, &DefId)> {
+        self.declarations
+            .iter()
+            .map(|entry| (entry.occurrence, &entry.declaration))
     }
 }
 
@@ -358,24 +683,64 @@ mod tests {
     }
 
     #[test]
-    fn sourceless_root_keeps_bare_namespace() {
+    fn sourceless_root_has_occurrence_identity_but_keeps_bare_namespace() {
         let mut table = IdentityTable::new();
         assert_eq!(table.mint_root_module(&[]), None);
+        assert_eq!(table.mint_synthetic_root(), table.root_module().unwrap());
         assert_eq!(table.root_module_path(), None);
-        assert_eq!(table.root_fn_identity("helper"), None);
     }
 
     #[test]
-    fn root_fn_identity_rejects_non_free_fn_spellings() {
+    fn declaration_routes_converge_on_source_occurrence() {
         let mut table = IdentityTable::new();
-        table
-            .mint_root_module(&[PathBuf::from("/x/prog.hew")])
-            .expect("root mints");
-        assert_eq!(
-            table.root_fn_identity("helper").as_deref(),
-            Some("prog.helper")
-        );
-        assert_eq!(table.root_fn_identity("Type::method"), None);
-        assert_eq!(table.root_fn_identity("mod.helper"), None);
+        let source = PathBuf::from("/nonexistent/pkg/worker.hew");
+        let imported = table.mint_module("pkg.worker", std::slice::from_ref(&source));
+        let rooted = table
+            .mint_root_module(std::slice::from_ref(&source))
+            .expect("source-backed root");
+        assert_eq!(imported, rooted);
+        let occurrence =
+            DeclarationOccurrence::new(Some(imported), &(10..40), DeclarationKind::Function, 0);
+        let first = table
+            .declare(occurrence, "pkg.worker.run")
+            .expect("first claim");
+        let second = table
+            .declare(occurrence, "pkg.worker.run")
+            .expect("same route-independent claim");
+        assert_eq!(first, second);
+        assert_eq!(table.freeze().declaration(occurrence), Some(&first));
+    }
+
+    #[test]
+    fn same_leaf_in_different_modules_has_distinct_identity() {
+        let mut table = IdentityTable::new();
+        let left = table.mint_module("left", &[PathBuf::from("/nonexistent/left.hew")]);
+        let right = table.mint_module("right", &[PathBuf::from("/nonexistent/right.hew")]);
+        let left_occurrence =
+            DeclarationOccurrence::new(Some(left), &(0..8), DeclarationKind::Type, 0);
+        let right_occurrence =
+            DeclarationOccurrence::new(Some(right), &(0..8), DeclarationKind::Type, 0);
+        let left_id = table.declare(left_occurrence, "left.Item").unwrap();
+        let right_id = table.declare(right_occurrence, "right.Item").unwrap();
+        assert_ne!(left_id, right_id);
+    }
+
+    #[test]
+    fn contradictory_declaration_claims_fail_closed() {
+        let mut table = IdentityTable::new();
+        let module = table.mint_module("m", &[PathBuf::from("/nonexistent/m.hew")]);
+        let first = DeclarationOccurrence::new(Some(module), &(0..8), DeclarationKind::Function, 0);
+        let second =
+            DeclarationOccurrence::new(Some(module), &(9..17), DeclarationKind::Function, 0);
+        table.declare(first, "m.run").unwrap();
+        assert!(matches!(
+            table.declare(first, "m.stop"),
+            Err(DeclarationIdentityError::OccurrenceAlreadyDeclared { .. })
+        ));
+        assert!(matches!(
+            table.declare(second, "m.run"),
+            Err(DeclarationIdentityError::PathAlreadyDeclared { .. })
+        ));
+        assert!(table.freeze().declaration(second).is_none());
     }
 }

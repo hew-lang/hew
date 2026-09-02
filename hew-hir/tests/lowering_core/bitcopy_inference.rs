@@ -45,9 +45,14 @@ fn lower_no_tc(source: &str) -> hew_hir::LowerOutput {
         "parse errors: {:?}",
         parsed.errors
     );
+    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    let identity_only = TypeCheckOutput {
+        identity: checked.identity,
+        ..TypeCheckOutput::default()
+    };
     lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &identity_only,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     )

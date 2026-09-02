@@ -88,6 +88,7 @@ fn receive_fn(
     params: Vec<HirBinding>,
 ) -> HirActorReceiveFn {
     HirActorReceiveFn {
+        declaration: hew_types::DefId::for_test(format!("Actor::{name}")),
         name: name.to_string(),
         is_generator,
         params,
@@ -125,6 +126,7 @@ fn minimal_actor(
     HirActorDecl {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::for_test(name),
         name: name.to_string(),
         defining_module: None,
         state_fields: vec![HirField {
@@ -135,6 +137,7 @@ fn minimal_actor(
             span: 0..0,
         }],
         init: Some(hew_hir::HirActorInit {
+            declaration: hew_types::DefId::for_test(format!("{name}::<init>")),
             params: vec![binding(ids, "initial", ResolvedTy::I64)],
             body: init_body,
         }),

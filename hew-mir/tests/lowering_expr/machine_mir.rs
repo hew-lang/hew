@@ -260,6 +260,9 @@ fn transition_body_carrying_field(
 
 fn make_state(name: &str) -> HirMachineState {
     HirMachineState {
+        declaration: hew_types::DefId::for_test(format!("Machine::state {name}")),
+        entry_declaration: None,
+        exit_declaration: None,
         name: name.to_string(),
         fields: Vec::<HirField>::new(),
         has_entry: false,
@@ -274,6 +277,9 @@ fn make_state(name: &str) -> HirMachineState {
 
 fn make_state_with_fields(name: &str, fields: Vec<HirField>) -> HirMachineState {
     HirMachineState {
+        declaration: hew_types::DefId::for_test(format!("Machine::state {name}")),
+        entry_declaration: None,
+        exit_declaration: None,
         name: name.to_string(),
         fields,
         has_entry: false,
@@ -288,6 +294,7 @@ fn make_state_with_fields(name: &str, fields: Vec<HirField>) -> HirMachineState 
 
 fn make_event(name: &str) -> HirMachineEvent {
     HirMachineEvent {
+        declaration: hew_types::DefId::for_test(format!("Machine::event {name}")),
         name: name.to_string(),
         fields: Vec::<HirField>::new(),
         span: 0..0,
@@ -311,6 +318,9 @@ fn make_transition(
     target_idx: usize,
 ) -> HirMachineTransition {
     HirMachineTransition {
+        declaration: hew_types::DefId::for_test(format!(
+            "{machine_name}::<transition {event_name} {source}>"
+        )),
         event_name: event_name.to_string(),
         source_state: source.to_string(),
         target_state: target.to_string(),
@@ -401,6 +411,9 @@ fn transition_bodies_entry_exit_reenter() {
         is_opaque: false,
     };
     let idle = HirMachineState {
+        declaration: hew_types::DefId::for_test("Lifecycle::state Idle"),
+        entry_declaration: None,
+        exit_declaration: Some(hew_types::DefId::for_test("Lifecycle::state Idle::<exit>")),
         name: "Idle".to_string(),
         fields: Vec::new(),
         has_entry: false,
@@ -416,6 +429,13 @@ fn transition_bodies_entry_exit_reenter() {
         span: 0..0,
     };
     let active = HirMachineState {
+        declaration: hew_types::DefId::for_test("Lifecycle::state Active"),
+        entry_declaration: Some(hew_types::DefId::for_test(
+            "Lifecycle::state Active::<entry>",
+        )),
+        exit_declaration: Some(hew_types::DefId::for_test(
+            "Lifecycle::state Active::<exit>",
+        )),
         name: "Active".to_string(),
         fields: Vec::new(),
         has_entry: true,
@@ -682,6 +702,7 @@ fn resource_field_transition_out_drops() {
     let file_handle_record = HirRecordDecl {
         id: hew_hir::ItemId(1),
         node: hew_hir::HirNodeId(1),
+        declaration: hew_types::DefId::for_test("FileHandle"),
         name: "FileHandle".to_string(),
         defining_module: None,
         type_params: Vec::new(),

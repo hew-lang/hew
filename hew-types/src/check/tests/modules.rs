@@ -2884,7 +2884,7 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     let root_out = root_checker.check_program(&root_program);
 
     // THE invariance: the root compile minted the declaration under the
-    // import-equal canonical identity (fails pre-stage-A: bare key only).
+    // import-equal canonical identity rather than a route-local bare key.
     assert!(
         root_checker
             .fn_def_spans
@@ -2892,24 +2892,90 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
         "root axis must mint the import-equal canonical declaration identity; keys: {:?}",
         root_checker.fn_def_spans.keys().collect::<Vec<_>>()
     );
+    let root_module = root_out.identity.root_module().expect("source-backed root");
+    let occurrence = crate::DeclarationOccurrence::new(
+        Some(root_module),
+        &(0..10),
+        crate::DeclarationKind::Function,
+        0,
+    );
     assert_eq!(
         root_out
             .identity
-            .root_fn_identity("shared_helper")
-            .as_deref(),
+            .declaration(occurrence)
+            .map(crate::DefId::full_path),
         Some("oracle_mod.shared_helper"),
-        "the identity table publishes the canonical root fn identity"
+        "the identity table publishes the exact root declaration"
     );
-    // Stage-A boundary render contract: published fn_sigs keeps the legacy
-    // bare spelling for root declarations (HIR/hew-analysis still resolve by
-    // source spelling). This assertion FLIPS to the canonical key when stage
-    // C/D re-key downstream consumers by DefId.
+    // The published checker surface has one canonical source spelling. A bare
+    // root alias would be a second declaration authority and must not survive
+    // the hard cutover.
     assert!(
-        root_out.fn_sigs.contains_key("shared_helper"),
-        "stage-A publication renders the root declaration to its bare leaf"
+        root_out.fn_sigs.contains_key("oracle_mod.shared_helper"),
+        "the canonical source identity is the sole published function key"
     );
     assert!(
-        !root_out.fn_sigs.contains_key("oracle_mod.shared_helper"),
-        "the canonical key must not publish as a SECOND authority beside the render"
+        !root_out.fn_sigs.contains_key("shared_helper"),
+        "no inert bare compatibility alias may survive publication"
+    );
+}
+
+/// Registry-loaded extern C functions have no source extern block, yet a
+/// direct call to one is still an FFI call. The `unsafe` gate resolves them
+/// through a checker-minted extern declaration rather than a side set.
+#[test]
+fn registry_imported_extern_call_requires_unsafe() {
+    fn registry_with_extern() -> ModuleRegistry {
+        let mut registry = ModuleRegistry::new(Vec::new());
+        registry.insert_module_info_for_test(
+            "ext.pkg",
+            crate::stdlib_loader::ModuleInfo {
+                source_path: None,
+                source_items: Vec::new(),
+                functions: vec![crate::stdlib_loader::CFunction {
+                    name: "pkg_raw".to_string(),
+                    params: vec![Ty::I64],
+                    return_type: Ty::I64,
+                }],
+                clean_names: Vec::new(),
+                handle_types: Vec::new(),
+                handle_methods: Vec::new(),
+                wrapper_fns: Vec::new(),
+                drop_types: Vec::new(),
+                resource_wrapper_types: Vec::new(),
+                drop_funcs: Vec::new(),
+                unsupported_type_signatures: Vec::new(),
+            },
+        );
+        registry
+    }
+    fn check(source: &str) -> TypeCheckOutput {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        Checker::new(registry_with_extern()).check_program(&parsed.program)
+    }
+    let gate_message = "calling extern function `pkg_raw` requires `unsafe { ... }`";
+
+    let gated = check("import ext.pkg;\nfn main() {\n    let v = pkg_raw(1);\n}\n");
+    assert!(
+        gated
+            .errors
+            .iter()
+            .any(|error| error.message == gate_message),
+        "a bare registry extern call must demand `unsafe`; got: {:?}",
+        gated.errors
+    );
+
+    // Positive control: the same call inside `unsafe` is accepted, so the
+    // gate above is the only thing standing between the call and the ABI.
+    let wrapped = check("import ext.pkg;\nfn main() {\n    let v = unsafe { pkg_raw(1) };\n}\n");
+    assert!(
+        wrapped.errors.is_empty(),
+        "an `unsafe`-wrapped registry extern call must type-check; got: {:?}",
+        wrapped.errors
     );
 }

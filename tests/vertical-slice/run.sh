@@ -5984,6 +5984,14 @@ run_accept_expect_stdout "carrier_transfer_sibling_path_release"
 # authority its own callee still owes a release for.
 run_accept_expect_stdout "closure_arg_borrows_carrier_param"
 
+# An owned leaf moved out of an aggregate the program still holds is released
+# exactly once, and the aggregate keeps every sibling it did not hand over: a
+# nested record or tuple enum payload, a tuple element read out of a record
+# field, and a payload destructured out of a by-value parameter.
+run_accept_expect_stdout "match_nested_aggregate_payload_owner"
+run_accept_expect_stdout "projected_tuple_element_owner"
+run_accept_expect_stdout "match_param_field_payload_carrier"
+
 # The index-assignment move is decided by the argument's own use: an earlier
 # consume of the same binding elsewhere in the loop body neither hides nor
 # duplicates it.

@@ -29,9 +29,13 @@
 //! the declaration must not fall out of the unsafe/extern indexes while the
 //! rest of the program is checked.
 //!
-//! Registry metadata and codegen-intercepted layout witnesses are lookup/ABI
-//! adapters, not source declarations. They therefore do not acquire fake
-//! `DefId`s or participate in this unsafe-declaration index.
+//! Two extern surfaces have no comparable ABI contract: registry-backed
+//! stdlib imports, whose signature metadata is a presentation surface rather
+//! than a source contract, and the codegen-intercepted layout witnesses
+//! (`hew_channel_*_layout`), whose declared signatures are arity placeholders
+//! for the stdlib impl bodies. Both are still calls across the FFI boundary,
+//! so both are recorded here with a checker-minted declaration and a `None`
+//! contract; the `unsafe` gate reads one index either way.
 
 use std::collections::HashMap;
 
@@ -200,13 +204,15 @@ impl ExternTable {
         );
     }
 
-    /// Record a registry-loaded C function as an extern declaration.
+    /// Record an extern declaration that has no comparable ABI contract.
     ///
-    /// Registry metadata is a lookup mirror of a shipped module's extern
-    /// surface, not a source declaration: the function keeps its `unsafe`
-    /// gate and provenance but does not join the source-provenance probe
-    /// (`by_symbol_and_module`) that opaque-handle resolution walks.
-    pub(crate) fn register_registry_declaration(
+    /// Registry metadata mirrors a shipped module's extern surface, and the
+    /// codegen-intercepted channel layout witnesses declare arity placeholders
+    /// whose real out-parameter ABI is emitted by codegen. Neither is a source
+    /// declaration: the function keeps its `unsafe` gate and provenance but
+    /// does not join the source-provenance probe (`by_symbol_and_module`) that
+    /// opaque-handle resolution walks.
+    pub(crate) fn register_contractless_declaration(
         &mut self,
         declaration: DefId,
         symbol: String,

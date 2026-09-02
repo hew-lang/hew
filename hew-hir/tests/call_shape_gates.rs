@@ -606,6 +606,9 @@ fn call_shape_in_machine_transition_guard_rejected() {
         type_params: Vec::new(),
         type_param_bounds: Vec::new(),
         states: vec![HirMachineState {
+            declaration: hew_types::DefId::for_test("Gate::state Locked"),
+            entry_declaration: None,
+            exit_declaration: None,
             name: "Locked".to_string(),
             fields: Vec::new(),
             has_entry: false,
@@ -617,11 +620,13 @@ fn call_shape_in_machine_transition_guard_rejected() {
             span: dummy_span(),
         }],
         events: vec![HirMachineEvent {
+            declaration: hew_types::DefId::for_test("Gate::event Try"),
             name: "Try".to_string(),
             fields: Vec::new(),
             span: dummy_span(),
         }],
         transitions: vec![HirMachineTransition {
+            declaration: hew_types::DefId::for_test("Gate::<transition Try Locked>"),
             event_name: "Try".to_string(),
             source_state: "Locked".to_string(),
             target_state: "Locked".to_string(),

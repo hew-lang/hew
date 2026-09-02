@@ -10179,13 +10179,14 @@ impl Checker {
     /// Establish the extern declaration identity of a registry-loaded C
     /// function and register its `unsafe` gate.
     ///
-    /// Registry metadata publishes these functions under `key` in `fn_sigs`
-    /// and the `unsafe` gate resolves a call by that same key, so the
-    /// declaration path is `key`. Shipped modules routinely re-export one
-    /// runtime symbol, so a bare path that is already established is the same
-    /// declaration reached through a second registry mirror, not a conflict;
-    /// a source declaration already gating `key` keeps its own record.
-    fn declare_registry_extern(
+    /// Registry metadata and codegen-intercepted witnesses publish these
+    /// functions under `key` in `fn_sigs` and the `unsafe` gate resolves a
+    /// call by that same key, so the declaration path is `key`. Shipped
+    /// modules routinely re-export one runtime symbol, so a bare path that is
+    /// already established is the same declaration reached through a second
+    /// mirror, not a conflict; a source declaration already gating `key`
+    /// keeps its own record.
+    fn declare_contractless_extern(
         &mut self,
         module: crate::ModuleId,
         module_path: &str,
@@ -10208,14 +10209,14 @@ impl Checker {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         0..0,
-                        format!("registry extern declaration `{key}` in `{module_path}`: {error}"),
+                        format!("extern declaration `{key}` in `{module_path}`: {error}"),
                     ));
                     return;
                 }
             }
         };
         if !self.extern_table.requires_unsafe(key) {
-            self.extern_table.register_registry_declaration(
+            self.extern_table.register_contractless_declaration(
                 declaration,
                 key.to_string(),
                 Some(module_path.to_string()),
@@ -10508,7 +10509,17 @@ impl Checker {
             ),
         ];
 
-        for (name, param_name, param_ty, ret_ty) in builtins {
+        // The witnesses are calls across the FFI boundary even though codegen,
+        // not an extern block, supplies their ABI. They are declared in the
+        // module currently being registered so the `unsafe` gate reads them
+        // out of the one extern-declaration index.
+        let witness_module = match self.current_module.clone() {
+            Some(path) => self.identity.mint_module(&path, &[]),
+            None => self.identity.mint_synthetic_root(),
+        };
+        let witness_module_path = self.identity.module_path(witness_module).to_string();
+
+        for (ordinal, (name, param_name, param_ty, ret_ty)) in builtins.iter().enumerate() {
             let key = scoped_module_item_name(self.current_module.as_deref(), name)
                 .unwrap_or_else(|| (*name).to_string());
             if self.fn_sigs.contains_key(&key) {
@@ -10521,6 +10532,7 @@ impl Checker {
                 ..FnSig::default()
             };
             self.fn_sigs.insert(key.clone(), sig);
+            self.declare_contractless_extern(witness_module, &witness_module_path, ordinal, &key);
         }
 
         // The typed-serialise send takes the value by reference plus the
@@ -10529,12 +10541,23 @@ impl Checker {
         let send_key =
             scoped_module_item_name(self.current_module.as_deref(), "hew_channel_send_layout")
                 .unwrap_or_else(|| "hew_channel_send_layout".to_string());
-        self.fn_sigs.entry(send_key).or_insert_with(|| FnSig {
-            param_names: vec!["tx".to_string(), "data".to_string()],
-            params: vec![sender_ty, Ty::String],
-            return_type: Ty::Unit,
-            ..FnSig::default()
-        });
+        if !self.fn_sigs.contains_key(&send_key) {
+            self.fn_sigs.insert(
+                send_key.clone(),
+                FnSig {
+                    param_names: vec!["tx".to_string(), "data".to_string()],
+                    params: vec![sender_ty, Ty::String],
+                    return_type: Ty::Unit,
+                    ..FnSig::default()
+                },
+            );
+            self.declare_contractless_extern(
+                witness_module,
+                &witness_module_path,
+                builtins.len(),
+                &send_key,
+            );
+        }
     }
 
     /// Snapshot the compiler-assumed part of the implicit prelude before source
@@ -10914,7 +10937,7 @@ impl Checker {
                             accepts_kwargs,
                             ..FnSig::default()
                         };
-                        self.declare_registry_extern(
+                        self.declare_contractless_extern(
                             registry_module,
                             &canonical_owner,
                             ordinal,
@@ -11001,7 +11024,7 @@ impl Checker {
                                 // The clean name resolved straight to the C
                                 // function: the call is an FFI call and keeps
                                 // its `unsafe` gate under the canonical key.
-                                self.declare_registry_extern(
+                                self.declare_contractless_extern(
                                     registry_module,
                                     &canonical_owner,
                                     function_count + clean_ordinal,
@@ -14013,6 +14036,39 @@ mod channel_recv_builtin_provenance_tests {
                 ..
             }] if name == "Receiver"
         ));
+    }
+
+    /// The layout witnesses cross the FFI boundary: codegen, not an extern
+    /// block, supplies their ABI, but a call to one is still an unsafe call.
+    /// They gate `unsafe` through a minted declaration in the one extern
+    /// table, so a stdlib impl body that drops its `unsafe` block is refused.
+    #[test]
+    fn channel_layout_witnesses_gate_unsafe() {
+        let mut checker = checker_with_channel_surface(true);
+        checker.register_channel_recv_builtins();
+        for witness in [
+            "std.channel.hew_channel_recv_layout",
+            "std.channel.hew_channel_try_recv_layout",
+            "std.channel.hew_channel_send_layout",
+        ] {
+            assert!(
+                checker.extern_table.requires_unsafe(witness),
+                "`{witness}` must gate `unsafe` like any other FFI call"
+            );
+            assert!(
+                checker.identity.declaration_by_path(witness).is_some(),
+                "`{witness}` must gate through a minted declaration, not a name set"
+            );
+        }
+        // Negative control: the ordinary channel constructor signature this
+        // fixture seeds is not an extern declaration here, so the assertions
+        // above are reading the extern table rather than every known key.
+        assert!(
+            !checker
+                .extern_table
+                .requires_unsafe("std.channel.hew_channel_new"),
+            "a plain fn_sigs entry must not acquire an unsafe gate"
+        );
     }
 }
 

@@ -1,6 +1,9 @@
 //! Integration tests for actor links and monitors.
 
-use hew_runtime::actor::hew_actor_get_error;
+use hew_runtime::actor::{
+    hew_actor_get_error, hew_actor_set_crash_teardown_order_hook, HewActor,
+    HEW_ACTOR_CRASH_TEARDOWN_BEFORE_FIRST_WAKE,
+};
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::link::{hew_actor_link, hew_actor_unlink};
 use hew_runtime::mailbox_header::HewSysMsg;
@@ -8,6 +11,7 @@ use hew_runtime::monitor::{hew_actor_demonitor, register_actor_monitor, HewDownM
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor};
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -294,5 +298,258 @@ fn test_link_after_crash_delivers_exit_without_stale_registration() {
     unsafe {
         hew_actor_unlink(survivor.as_ptr(), target.as_ptr());
     }
+    hew_deterministic_reset();
+}
+
+/// THE CRASH CODE IS PUBLISHED BEFORE THE TERMINAL STATE IS VISIBLE.
+///
+/// Every consumer of an exit reason reads the same two fields in the same
+/// order: `actor_state` first, then `error_code`. `link::terminal_exit_reason`
+/// does it for a link registered after the crash, `monitor`'s terminal-reason
+/// lookup does it for a late monitor, and `hew_actor_await` does it for a
+/// caller blocked on the actor. That read is only sound when the crash code is
+/// already published by the time a terminal state can be observed.
+///
+/// The crash teardown's first-wake event fires immediately after the terminal
+/// CAS — the actor is `Crashed` to every other thread from that point on, and
+/// the teardown below it releases blocked senders and waiters. Reading the
+/// error through the public accessor there turns the ordering into a property
+/// no scheduler can decide. With the code published after the CAS the accessor
+/// returned the field's still-live default, so a reader that won the race saw
+/// reason `0` for an actor whose EXIT carried the real crash code.
+#[test]
+fn a_crash_code_is_published_before_the_terminal_state_is_visible() {
+    static FIRST_WAKE_ACTOR: AtomicPtr<HewActor> = AtomicPtr::new(ptr::null_mut());
+    static ERROR_AT_FIRST_WAKE: AtomicI32 = AtomicI32::new(HOOK_NEVER_FIRED);
+
+    /// Outside the `i32` range any crash code takes, so "the hook never ran"
+    /// can never be mistaken for an observation.
+    const HOOK_NEVER_FIRED: i32 = i32::MIN;
+
+    /// The code `scheduler.rs`'s injected-crash branch traps with.
+    const INJECTED_CRASH_REASON: i32 = -1;
+
+    struct FirstWakeHookGuard;
+
+    impl Drop for FirstWakeHookGuard {
+        fn drop(&mut self) {
+            hew_actor_set_crash_teardown_order_hook(None);
+            FIRST_WAKE_ACTOR.store(ptr::null_mut(), Ordering::Release);
+        }
+    }
+
+    fn record_error_at_first_wake(event: i32) {
+        if event != HEW_ACTOR_CRASH_TEARDOWN_BEFORE_FIRST_WAKE {
+            return;
+        }
+        let actor = FIRST_WAKE_ACTOR.load(Ordering::Acquire);
+        if actor.is_null() {
+            return;
+        }
+        // SAFETY: the actor is live for the whole teardown that fires this
+        // event, and the test clears the slot before dropping its handle.
+        let error = unsafe { hew_actor_get_error(actor) };
+        ERROR_AT_FIRST_WAKE.store(error, Ordering::Release);
+    }
+
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    EXIT_DISPATCH_SIGNAL.reset();
+    ERROR_AT_FIRST_WAKE.store(HOOK_NEVER_FIRED, Ordering::Release);
+
+    let survivor = TestActor::spawn_with_sys(test_dispatch, exit_sys_dispatch);
+    let target = TestActor::spawn(test_dispatch);
+
+    // SAFETY: target is a live actor; reading its id field through the raw
+    // pointer is the runtime's documented way to obtain a fault-injection key.
+    let target_id = unsafe { (*target.as_ptr()).id };
+
+    // A live actor reports no error. Without this the "published early"
+    // assertion below would also hold for a field that is simply always set.
+    // SAFETY: target's wrapper is alive; hew_actor_get_error reads from it.
+    let error_while_running = unsafe { hew_actor_get_error(target.as_ptr()) };
+    assert_eq!(
+        error_while_running, 0,
+        "a running actor must report no error, so the crash code below is a real transition"
+    );
+
+    FIRST_WAKE_ACTOR.store(target.as_ptr(), Ordering::Release);
+    hew_actor_set_crash_teardown_order_hook(Some(record_error_at_first_wake));
+    let _hook_guard = FirstWakeHookGuard;
+
+    hew_fault_inject_crash(target_id, 1);
+    target.send_empty(1);
+
+    assert!(
+        target.wait_for_state(HewActorState::Crashed, Duration::from_secs(5)),
+        "target should enter Crashed state"
+    );
+
+    assert_eq!(
+        ERROR_AT_FIRST_WAKE.load(Ordering::Acquire),
+        INJECTED_CRASH_REASON,
+        "the crash code must already be readable at the first point the terminal state is visible",
+    );
+
+    // The same reason the EXIT propagation delivers to a link registered after
+    // the crash, read through the accessor the moment the state is terminal.
+    // SAFETY: target's wrapper is alive; hew_actor_get_error reads from it.
+    let exit_reason = unsafe { hew_actor_get_error(target.as_ptr()) };
+    assert_eq!(exit_reason, INJECTED_CRASH_REASON);
+
+    // SAFETY: link takes live actor pointers.
+    unsafe {
+        hew_actor_link(survivor.as_ptr(), target.as_ptr());
+    }
+    let exit_messages = EXIT_DISPATCH_SIGNAL
+        .wait_for_exit_count(1, Duration::from_secs(5))
+        .expect("late link registration should deliver EXIT immediately");
+    assert_eq!(
+        exit_messages.last().copied(),
+        Some(ExitMessageView {
+            crashed_actor_id: target_id,
+            reason: INJECTED_CRASH_REASON,
+        })
+    );
+
+    // SAFETY: unlink takes live actor pointers.
+    unsafe {
+        hew_actor_unlink(survivor.as_ptr(), target.as_ptr());
+    }
+    hew_deterministic_reset();
+}
+
+/// A TRAP ON AN ALREADY-TERMINAL ACTOR MUST NOT OVERWRITE ITS RECORDED REASON.
+///
+/// `hew_actor_trap_inner` takes an early `return` when the actor it is
+/// trapping is already `Stopped` or `Crashed` — the terminal race was already
+/// decided, and this call is not the trap that won it. That check runs before
+/// the `error_code` store, so the settled reason survives untouched. Storing
+/// the incoming code ahead of the check (the ordering this test would catch)
+/// makes every later trap on a settled actor rewrite its reason with its own
+/// code — a stop-trap on an already-`Crashed` actor zeroes the crash code,
+/// and a send-failure trap on an already-`Stopped` actor stamps a spurious
+/// non-zero reason on a clean exit.
+///
+/// Both directions are covered: an already-`Crashed` actor re-trapped with a
+/// different code, and a cleanly `Stopped` actor re-trapped with a non-zero
+/// code. Each assertion checks both the accessor `hew_actor_get_error` reads
+/// directly and the reason a link registered after the second trap receives,
+/// since a stale-but-consistent read on one path and a fresh read on the
+/// other would hide a partial fix.
+#[test]
+fn a_trap_on_an_already_terminal_actor_leaves_its_recorded_reason_unchanged() {
+    const FIRST_CRASH_REASON: i32 = 7;
+    const SECOND_TRAP_REASON: i32 = 42;
+
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    EXIT_DISPATCH_SIGNAL.reset();
+
+    // Already-Crashed actor: a later trap with a different non-zero code
+    // must not disturb the first trap's reason.
+    {
+        let survivor = TestActor::spawn_with_sys(test_dispatch, exit_sys_dispatch);
+        let target = TestActor::spawn(test_dispatch);
+        // SAFETY: target is a live actor; reading its id field through the
+        // raw pointer is the runtime's documented way to identify it.
+        let target_id = unsafe { (*target.as_ptr()).id };
+
+        target.trap(FIRST_CRASH_REASON);
+        assert!(
+            target.wait_for_state(HewActorState::Crashed, Duration::from_secs(5)),
+            "target should enter Crashed state"
+        );
+        assert_eq!(target.error(), FIRST_CRASH_REASON);
+
+        // A second trap on the now-settled actor must take the early return
+        // in hew_actor_trap_inner and leave the recorded reason alone.
+        target.trap(SECOND_TRAP_REASON);
+        assert_eq!(
+            target.error(),
+            FIRST_CRASH_REASON,
+            "a trap on an already-Crashed actor must not overwrite its recorded reason"
+        );
+
+        // SAFETY: link takes live actor pointers.
+        unsafe {
+            hew_actor_link(survivor.as_ptr(), target.as_ptr());
+        }
+        let exit_messages = EXIT_DISPATCH_SIGNAL
+            .wait_for_exit_count(1, Duration::from_secs(5))
+            .expect("late link registration should deliver EXIT immediately");
+        assert_eq!(
+            exit_messages.last().copied(),
+            Some(ExitMessageView {
+                crashed_actor_id: target_id,
+                reason: FIRST_CRASH_REASON,
+            }),
+            "a link registered after the second trap must still see the first trap's reason"
+        );
+
+        // SAFETY: unlink takes live actor pointers.
+        unsafe {
+            hew_actor_unlink(survivor.as_ptr(), target.as_ptr());
+        }
+    }
+
+    hew_deterministic_reset();
+    EXIT_DISPATCH_SIGNAL.reset();
+
+    // Cleanly Stopped actor: a later send-failure-style trap must not stamp
+    // a spurious non-zero reason on a clean exit.
+    {
+        let survivor = TestActor::spawn_with_sys(test_dispatch, exit_sys_dispatch);
+        let target = TestActor::spawn(test_dispatch);
+        // SAFETY: target is a live actor; reading its id field through the
+        // raw pointer is the runtime's documented way to identify it.
+        let target_id = unsafe { (*target.as_ptr()).id };
+
+        target.trap(0);
+        assert!(
+            target.wait_for_state(HewActorState::Stopped, Duration::from_secs(5)),
+            "target should enter Stopped state"
+        );
+        assert_eq!(target.error(), 0);
+
+        // A trap that arrives after the actor has already stopped cleanly —
+        // e.g. a monitor's failed-DOWN-send trap racing a target that closed
+        // its own mailbox first — must take the early return and leave the
+        // clean exit reason at 0.
+        target.trap(SECOND_TRAP_REASON);
+        assert_eq!(
+            target.error(),
+            0,
+            "a trap on an already-Stopped actor must not stamp a spurious reason on a clean exit"
+        );
+
+        // SAFETY: link takes live actor pointers.
+        unsafe {
+            hew_actor_link(survivor.as_ptr(), target.as_ptr());
+        }
+        let exit_messages = EXIT_DISPATCH_SIGNAL
+            .wait_for_exit_count(1, Duration::from_secs(5))
+            .expect("late link registration should deliver EXIT immediately");
+        assert_eq!(
+            exit_messages.last().copied(),
+            Some(ExitMessageView {
+                crashed_actor_id: target_id,
+                reason: 0,
+            }),
+            "a link registered after the second trap must still see the clean-stop reason"
+        );
+
+        // SAFETY: unlink takes live actor pointers.
+        unsafe {
+            hew_actor_unlink(survivor.as_ptr(), target.as_ptr());
+        }
+    }
+
     hew_deterministic_reset();
 }

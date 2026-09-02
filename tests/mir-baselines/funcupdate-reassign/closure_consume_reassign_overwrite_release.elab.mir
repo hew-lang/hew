@@ -76,6 +76,7 @@ fn control -> i64
 
 fn via_closure -> i64
   statements:
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(13) ty=fn(bool) -> i64
     bind BindingId(7) f site=SiteId(13) ty=fn(bool) -> i64
     use BindingId(7) f site=SiteId(30) ty=fn(bool) -> i64 intent=Read
     use BindingId(3) take_consume_arm site=SiteId(29) ty=bool intent=Read

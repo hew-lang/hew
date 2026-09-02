@@ -1171,22 +1171,13 @@ fn needless_range_loop_flags_index_access() {
 
 #[test]
 fn needless_range_loop_not_flagged_when_vec_element_lacks_semantic_clone() {
-    // The element must be a type with no copy path at all. A `LocalPid` no
-    // longer qualifies: ir-ladder §1.1 makes a pid `BitCopy`, so iterating a
-    // `Vec<LocalPid<_>>` directly is legal and the lint is right to fire.
     let (errors, warnings) = parse_and_check(
         r"
-        #[resource]
-        type Conn {
-            fd: i64;
+        actor Client {
+            receive fn deliver() {}
         }
 
-        impl Conn {
-            fn close(consuming self) {}
-            fn deliver(self) {}
-        }
-
-        fn broadcast(clients: Vec<Conn>) {
+        fn broadcast(clients: Vec<LocalPid<Client>>) {
             for i in 0..clients.len() {
                 clients[i].deliver();
             }
@@ -1195,7 +1186,7 @@ fn needless_range_loop_not_flagged_when_vec_element_lacks_semantic_clone() {
     );
     assert!(
         errors.is_empty(),
-        "the indexed resource broadcast must type-check: {errors:?}"
+        "the indexed LocalPid broadcast must type-check: {errors:?}"
     );
     assert_eq!(
         count_needless_range_loop(&warnings),

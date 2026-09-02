@@ -498,15 +498,22 @@ mod tests {
                 },
             );
             let classed = ValueClass::of_ty(&ty, &context);
-            // RECORDED EXCEPTION — `HewActor`.
-            // §1.1 gives it the same BitCopy row as `LocalPid`, and the class
-            // table above already does. Its `marker()` cannot follow yet:
-            // `HewActor` carries `close_method() = Some("close")` and
-            // `hew-hir/src/builtin_type_classes.rs:331` asserts that a BitCopy
-            // builtin registers no close method. Flipping the marker without
-            // moving the close row fails that assertion in every test that
-            // seeds the builtin class table.
-            if info.kind == BuiltinType::HewActor {
+            // RECORDED EXCEPTIONS - `LocalPid` and `HewActor`.
+            //
+            // §1.1 gives both the BitCopy row and the class table above records
+            // that verdict. Neither `marker()` can follow in this change:
+            // `marker()` is the legacy lowering's input and the legacy route is
+            // the parity oracle. Flipping `LocalPid` routes a
+            // `Vec<LocalPid<_>>` element off its pointer ABI
+            // (`hew-cli::run_e2e run_generic_vec_element_methods_roundtrip_ptr_abi`
+            // panics "Vec layout-aware operation is not implemented") and moves
+            // an elaborated-MIR baseline
+            // (`hew-cli::funcupdate_mir_baselines funcupdate_reassign_elab_mir_matches_committed_baselines`).
+            // Flipping `HewActor` additionally fails
+            // `hew-hir/src/builtin_type_classes.rs:331`, which asserts a BitCopy
+            // builtin registers no close method, in every test that seeds the
+            // builtin class table.
+            if matches!(info.kind, BuiltinType::LocalPid | BuiltinType::HewActor) {
                 assert_eq!(Ok(ValueClass::BitCopy), classed);
                 assert_eq!(BuiltinTypeMarker::Resource, info.kind.marker());
                 continue;

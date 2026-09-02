@@ -369,7 +369,17 @@ impl BuiltinType {
             | Self::LambdaActorHandle
             | Self::LambdaPid
             | Self::CancellationToken
-            | Self::MonitorRef => BuiltinTypeMarker::Resource,
+            | Self::MonitorRef
+            // ir-ladder §1.1 gives a pid the BitCopy row, and the class table
+            // records that verdict. The marker cannot follow yet: it is the
+            // legacy lowering's input, and flipping it moves the Vec
+            // pointer-element ABI and an elaborated-MIR baseline - the parity
+            // oracle - in the same change that adds the authority meant to
+            // replace them. The same holds for `HewActor`, which additionally
+            // carries `close_method() = Some("close")` while
+            // `hew-hir/src/builtin_type_classes.rs:331` asserts a BitCopy
+            // builtin registers none.
+            | Self::LocalPid => BuiltinTypeMarker::Resource,
             Self::SupervisorPool
             | Self::ChildRef
             | Self::NodeId
@@ -378,18 +388,7 @@ impl BuiltinType {
             | Self::MonitorId
             | Self::DownTarget
             | Self::DownReason
-            | Self::DownNotification
-            // ir-ladder §1.1, overriding the `Resource` verdict: a pid is a
-            // by-value reference snapshot whose drop frees nothing, and codegen
-            // already treats it as a non-owning leaf.
-            //
-            // §1.1 gives `HewActor` the same row, but that flip cannot land
-            // here yet: `HewActor` also carries `close_method() = Some("close")`,
-            // and `hew-hir/src/builtin_type_classes.rs:331` asserts a BitCopy
-            // builtin registers no close method. §1.1's class table already
-            // classes `HewActor` BitCopy; the marker follows when the close row
-            // moves with it.
-            | Self::LocalPid => BuiltinTypeMarker::BitCopy,
+            | Self::DownNotification => BuiltinTypeMarker::BitCopy,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             // `CrashInfo` carries an owned `message: string` (M-5), so it is no
             // longer a `BitCopy` aggregate. `None` lets the owned-aggregate
@@ -1020,7 +1019,7 @@ mod tests {
         let expected = [
             (
                 BuiltinType::LocalPid,
-                BuiltinTypeMarker::BitCopy,
+                BuiltinTypeMarker::Resource,
                 None,
                 Some(BuiltinHandleFamily::ActorPid),
                 1,

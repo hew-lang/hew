@@ -156,6 +156,14 @@
 # are excluded. A fixture that newly exercises these consumers must be added
 # here WITH a regenerated baseline (an unmapped baseline file fails the test).
 #
+#   Refreshed for the §1.1 class table: a bare named-fn value is
+#   `PersistentShare`, not `Copy`, so the checker records an ownership fact for
+#   it and HIR materializes one produced value. Only
+#   closure_consume_reassign_overwrite_release.elab.mir shifted, by exactly one
+#   added `bind ... __hew_produced_value ... ty=fn(bool) -> i64` statement in
+#   `via_closure`. No CFG, terminator, drop plan or drop kind changed anywhere,
+#   and the other three baselines are byte-identical.
+#
 # Regeneration is an explicit, reviewed step only: rebuild `hew` at the wanted
 # revision, re-run the dump-mode command per row, and record the new revision
 # above. The harness (hew-cli/tests/funcupdate_mir_baselines.rs) never writes.

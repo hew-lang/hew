@@ -137,6 +137,14 @@ jobs:
           targets: wasm32-unknown-unknown
           cache-shared-key: playground-wasm
 
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        # make playground-check now runs playground-verify, which builds the
+        # native hew binary (hew-native) to compile and run curated examples;
+        # hew-codegen-rs links against LLVM via llvm-sys.
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
       - name: Install wasm-pack v0.13.1 and Binaryen 117
         uses: ./.github/actions/setup-wasm-pack
 

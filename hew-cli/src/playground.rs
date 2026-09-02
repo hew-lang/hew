@@ -61,6 +61,7 @@ struct EntryResult {
     outcome: EntryOutcome,
 }
 
+#[derive(Debug)]
 enum EntryOutcome {
     Skipped,
     Verified(VerifyOutcome),
@@ -304,6 +305,45 @@ fn format_output_inline(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Verifies the in-process codegen pipeline is available by compiling a
+    /// trivial program, mirroring `eval::repl::tests::require_toolchain`.
+    /// `cargo test`'s own test binary lives under `target/debug/deps/`, a
+    /// directory name `find_hew_lib`'s profile detection does not recognize,
+    /// so it cannot locate the prebuilt `libhew.a` there even when `hew tool
+    /// playground-verify` (the real `target/debug/hew` binary, whose `exe_dir`
+    /// name — `debug` — the same detection does recognize) finds it fine.
+    /// Guard the tests that compile+run real programs so they skip cleanly
+    /// in that environment instead of failing on a harness limitation.
+    fn require_toolchain() -> bool {
+        static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *OK.get_or_init(|| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let bin_name = format!("probe{}", crate::platform::exe_suffix());
+            let bin_path = dir.path().join(bin_name);
+            let source = "fn main() { println(\"ok\"); }\n";
+            let parse_result = hew_parser::parse(source);
+            if !parse_result.errors.is_empty() {
+                eprintln!("playground verify_entry tests skipped: probe parse failed");
+                return false;
+            }
+            let ok = crate::compile_native_from_program(
+                parse_result.program,
+                source,
+                "<playground-probe>",
+                &bin_path,
+                &crate::compile::CompileOptions::default(),
+            )
+            .is_ok();
+            if !ok {
+                eprintln!(
+                    "playground verify_entry tests skipped: \
+                     in-process compile failed (codegen/runtime not available)"
+                );
+            }
+            ok
+        })
+    }
+
     // --- format_runtime_failure_message ---
 
     #[test]
@@ -444,6 +484,104 @@ mod tests {
         assert!(
             matches!(outcome, EntryOutcome::Verified(VerifyOutcome::IoError(_))),
             "expected IoError when expected file is absent"
+        );
+    }
+
+    // --- Playground file already defining its own `fn main` (regression) ---
+
+    /// A curated example that declares an attributed type ahead of its own
+    /// `fn main` must verify — this is the shape that failed end-to-end
+    /// (`main` is defined multiple times) before the session-builder fix,
+    /// via the classify-chunking fix for the attribute line.
+    #[test]
+    fn playground_file_with_own_main_verifies() {
+        if !require_toolchain() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("wire_types.hew");
+        std::fs::write(
+            &src,
+            "#[wire]\n\
+             type UserMessage {\n\
+             \x20   name: string @1,\n\
+             }\n\
+             \n\
+             fn main() {\n\
+             \x20   println(\"hi\");\n\
+             }\n",
+        )
+        .unwrap();
+        let expected = dir.path().join("wire_types.expected");
+        std::fs::write(&expected, "hi\n").unwrap();
+
+        let entry = ManifestEntry {
+            id: "test/own_main".to_string(),
+            source_path: "wire_types.hew".to_string(),
+            expected_path: "wire_types.expected".to_string(),
+            capabilities: Capabilities {
+                wasi: "runnable".to_string(),
+            },
+        };
+        let outcome = verify_entry(&entry, dir.path(), Duration::from_secs(30));
+        assert!(
+            matches!(outcome, EntryOutcome::Verified(VerifyOutcome::Pass)),
+            "expected Pass for a file with its own main, got {outcome:?}"
+        );
+    }
+
+    /// A file with no `fn main` at all (a bare statement) must still get the
+    /// synthetic wrapper `main` — the fix must not disable that path.
+    #[test]
+    fn playground_file_without_main_still_gets_wrapper() {
+        if !require_toolchain() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("bare_statement.hew");
+        std::fs::write(&src, "println(\"hi\");\n").unwrap();
+        let expected = dir.path().join("bare_statement.expected");
+        std::fs::write(&expected, "hi\n").unwrap();
+
+        let entry = ManifestEntry {
+            id: "test/no_main".to_string(),
+            source_path: "bare_statement.hew".to_string(),
+            expected_path: "bare_statement.expected".to_string(),
+            capabilities: Capabilities {
+                wasi: "runnable".to_string(),
+            },
+        };
+        let outcome = verify_entry(&entry, dir.path(), Duration::from_secs(30));
+        assert!(
+            matches!(outcome, EntryOutcome::Verified(VerifyOutcome::Pass)),
+            "expected Pass for a file needing the synthetic main, got {outcome:?}"
+        );
+    }
+
+    /// Negative control: a file that genuinely defines `main` twice must
+    /// still fail with the duplicate-definition diagnostic — the fix skips
+    /// the *synthetic* main only when the file's own item already defines
+    /// one, it does not suppress a real duplicate-main error.
+    #[test]
+    fn playground_file_with_genuinely_duplicate_main_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("duplicate_main.hew");
+        std::fs::write(&src, "fn main() {}\nfn main() {}\n").unwrap();
+        let expected = dir.path().join("duplicate_main.expected");
+        std::fs::write(&expected, "\n").unwrap();
+
+        let entry = ManifestEntry {
+            id: "test/duplicate_main".to_string(),
+            source_path: "duplicate_main.hew".to_string(),
+            expected_path: "duplicate_main.expected".to_string(),
+            capabilities: Capabilities {
+                wasi: "runnable".to_string(),
+            },
+        };
+        let outcome = verify_entry(&entry, dir.path(), Duration::from_secs(30));
+        assert!(
+            matches!(outcome, EntryOutcome::Verified(VerifyOutcome::RunError(_))),
+            "expected a duplicate-main RunError, got {outcome:?}"
         );
     }
 

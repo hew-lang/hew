@@ -4782,7 +4782,7 @@ fn suspending_remote_ask_flip_in_execution_context() {
          \x20       let found: Result<RemotePid<Echo>, LookupError> = Node.lookup(\"echo\");\n\
          \x20       match found {\n\
          \x20           Ok(peer) => { let _ = peer.ask(7, 1000); },\n\
-         \x20           Err(_) => {},\n\
+         \x20           .Err(_) => {},\n\
          \x20       }\n\
          \x20   }\n\
          }\n\
@@ -5626,7 +5626,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
          \x20   receive fn go() -> i64 {\n\
          \x20       match await inner.ping() {\n\
          \x20           Ok(v) => v + 1,\n\
-         \x20           Err(_) => -1,\n\
+         \x20           .Err(_) => -1,\n\
          \x20       }\n\
          \x20   }\n\
          }\n",

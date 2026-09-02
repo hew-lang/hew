@@ -72,8 +72,8 @@ fn main() {
     let after = before + 1;
     println(after);
     match reply {
-        Ok(value) => println(value),
-        Err(_) => println(-1),
+        .Ok(value) => println(value),
+        .Err(_) => println(-1),
     }
 }
 ";
@@ -95,8 +95,8 @@ actor Handler {
         let after = before + 1;
         println(after);
         match reply {
-            Ok(value) => value,
-            Err(_) => -1,
+            .Ok(value) => value,
+            .Err(_) => -1,
         }
     }
 }
@@ -127,8 +127,8 @@ actor Worker {
 fn main() {
     let worker = spawn Worker;
     match await worker.compute(7) {
-        Ok(value) => println(value),
-        Err(_) => println(-1),
+        .Ok(value) => println(value),
+        .Err(_) => println(-1),
     }
 }
 ";
@@ -158,8 +158,8 @@ actor Worker {
 fn main() {
     let worker = spawn Worker;
     match await worker.compute(7) {
-        Ok(value) => println(value),
-        Err(_) => println(-1),
+        .Ok(value) => println(value),
+        .Err(_) => println(-1),
     }
 }
 ";
@@ -189,8 +189,8 @@ actor Worker {
 fn main() {
     let worker = spawn Worker;
     match await worker.compute(7) {
-        Ok(value) => println(value),
-        Err(_) => println(-1),
+        .Ok(value) => println(value),
+        .Err(_) => println(-1),
     }
 }
 ";

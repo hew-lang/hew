@@ -744,7 +744,7 @@ fn early_return_source() -> String {
 }
 
 /// Fixture (b) — error propagation lowered onto that same return path. `?`
-/// desugars to `match { Ok(v) => v, Err(e) => { return Err(e) } }`, whose
+/// desugars to `match { .Ok(v) => v, .Err(e) => { return Err(e) } }`, whose
 /// `return` is an EXPRESSION-position `HirExprKind::Return` rather than the
 /// statement-position `HirStmtKind::Return` of fixture (a) — a second lowering
 /// shell that needs the same exit-edge release. `check` always fails, so every

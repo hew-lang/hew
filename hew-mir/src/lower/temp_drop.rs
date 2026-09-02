@@ -10498,7 +10498,7 @@ fn main() {}
 
     #[test]
     fn payload_binder_read_by_an_extern_is_not_a_proven_borrow() {
-        // The `Some(s) => host_sink(s)` shape: the binder is exactly `string`
+        // The `.Some(s) => host_sink(s)` shape: the binder is exactly `string`
         // and its only use in the terminator is the call argument, so the other
         // two conjuncts of `string_binder_read_is_user_fn_borrow` hold. Only the
         // callee-borrow conjunct can reject it — and it must.

@@ -381,7 +381,7 @@ fn if_let_resource_payload_keeps_arm_scope_close_drop() {
 }
 
 /// A payload binder destructured from a BORROWED actor-state load
-/// (`match self.field { Ok(r) => r.fd, ... }`) aliases a composite the actor
+/// (`match self.field { .Ok(r) => r.fd, ... }`) aliases a composite the actor
 /// field owns for the actor's whole lifetime. The carrier temp is a bare
 /// byte-copy view with no in-function drop obligation, so its absence from an
 /// edge's drop set is not withheld admission — the binder must keep its alias

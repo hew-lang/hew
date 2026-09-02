@@ -69,7 +69,7 @@ pub enum LintId {
     /// `else`; the `else` can be dropped and its body de-indented.
     RedundantElseAfterReturn,
     /// A two-arm `match` on an `Option` where one arm binds `Some(x)` and the
-    /// other is an empty `None => {}` — exactly an `if let Some(x) = …`.
+    /// other is an empty `.None => {}` — exactly an `if let Some(x) = …`.
     NeedlessMatchToIfLet,
     /// A `.len()` call compared against the integer literal `0` / `1` where the
     /// receiver type has `is_empty()` — use `is_empty()` / `!is_empty()`.

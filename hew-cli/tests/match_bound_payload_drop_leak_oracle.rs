@@ -35,7 +35,7 @@
 //!
 //! Two shapes (the Stage-0 `g63_iso_A2_clean` / `g63_iso_F` templates):
 //!
-//! * `match opt { Some(s) => … }` — the match-arm binder; and
+//! * `match opt { .Some(s) => … }` — the match-arm binder; and
 //! * `if let Some(s) = opt { … }` — the if-let binder.
 //!
 //! macOS-only for the slope assertion (`leaks(1)` is Darwin's allocator

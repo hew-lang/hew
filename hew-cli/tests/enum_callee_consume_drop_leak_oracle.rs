@@ -18,7 +18,7 @@
 //! - the per-iteration leak SLOPE stays flat (no per-call leak);
 //! - the poisoned allocator does not abort; AND
 //! - the MOVE-OUT negative control: a `match` arm that moves the payload OUT
-//!   (`Ok(x) => x`) must NOT also drop the shell — the returned binder now owns
+//!   (`.Ok(x) => x`) must NOT also drop the shell — the returned binder now owns
 //!   the buffer, so a shell drop would double-free. The prover's escape scan
 //!   excludes the composite on that path; the poisoned allocator proves no
 //!   double-free.

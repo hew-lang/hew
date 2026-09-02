@@ -13762,7 +13762,7 @@ actor Probe {{
                 let inner = |inner_gate: LocalPid<Gate>| {{
                     {inner_use}
                     let value = match await inner_gate.tick() {{
-                        Ok(n) => n,
+                        .Ok(n) => n,
                         Err(_) => 0,
                     }};
                     value
@@ -13830,7 +13830,7 @@ actor Probe {{
         let child = |child_gate: LocalPid<Gate>| {{
             {owner_use}
             match await child_gate.tick() {{
-                Ok(n) => n,
+                .Ok(n) => n,
                 Err(_) => 0,
             }}
         }};

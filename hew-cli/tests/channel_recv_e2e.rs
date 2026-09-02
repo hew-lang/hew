@@ -140,7 +140,7 @@ fn actor_await_recv_flips_to_suspending_channel_recv() {
          \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
          \x20       tx.send(\"x\");\n\
          \x20       tx.close();\n\
-         \x20       match await rx.recv() { Some(v) => {}, None => {}, }\n\
+         \x20       match await rx.recv() { Some(v) => {}, .None => {}, }\n\
          \x20       rx.close();\n\
          \x20   }\n\
          }\n\

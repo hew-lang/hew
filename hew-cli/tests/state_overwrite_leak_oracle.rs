@@ -438,8 +438,8 @@ fn main() -> i64 {
     }
     sleep(1000ms);
     match await k.name_len() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     }
 }
 ";
@@ -477,8 +477,8 @@ fn main() -> i64 {
     }
     sleep(1000ms);
     match await s.len_a() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     }
 }
 ";
@@ -528,8 +528,8 @@ fn main() -> i64 {
     }
     sleep(1000ms);
     match await a.sum_x() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     }
 }
 ";
@@ -564,8 +564,8 @@ fn main() -> i64 {
     }
     sleep(1000ms);
     match await a.len_x() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     }
 }
 ";
@@ -608,8 +608,8 @@ fn main() -> i64 {
     }
     sleep(1000ms);
     match await a.sum_x() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     }
 }
 ";
@@ -647,8 +647,8 @@ fn main() -> i64 {
     let a = spawn Summer(b: Box { v: bv });
     sleep(500ms);
     match await a.total() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     }
 }
 ";

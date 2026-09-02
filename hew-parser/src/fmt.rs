@@ -4677,7 +4677,7 @@ fn main() -> string {
 
     #[test]
     fn empty_block_collapses_to_single_line() {
-        // Regression: multi-line empty blocks (e.g. `Ok(_) => {\n        },`)
+        // Regression: multi-line empty blocks (e.g. `.Ok(_) => {\n        },`)
         // shift absolute byte offsets of every later expression and have
         // surfaced cross-module span-collision crashes in codegen. Empty
         // blocks must be rendered as `{}` on one line, matching the rustfmt

@@ -232,7 +232,7 @@ fn publish_named_registry_without_token_exits_one() {
 // so a typo'd `--registry` name must still surface `make_client`'s precise
 // unknown-registry diagnostic rather than being misreported as "not logged
 // in" — no stored token is ever found for a registry name that doesn't
-// exist, so a naive `Err(_) => not-logged-in` classification would shadow
+// exist, so a naive `.Err(_) => not-logged-in` classification would shadow
 // this diagnostic entirely.
 
 #[test]

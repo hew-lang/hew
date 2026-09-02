@@ -1,6 +1,6 @@
 //! From-call match-scrutinee composite drop elaboration (#2429).
 //!
-//! `match f() { Ok(b) => …, Err(e) => {} }` consumes the called function's
+//! `match f() { .Ok(b) => …, .Err(e) => {} }` consumes the called function's
 //! `Result`/`Option` return through an anonymous MIR temp. Before this fix the
 //! temp had no `BindingId`, so the drop elaborator never minted an owner for
 //! it and the arm-destructured payload was released on NO edge — not the loop

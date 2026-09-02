@@ -78,8 +78,8 @@ fn main() -> i64 {
     let holder = spawn Holder(rows: rows);
     sleep(500ms);
     match await holder.count() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     }
 }
 ";

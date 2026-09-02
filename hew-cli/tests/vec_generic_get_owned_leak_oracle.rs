@@ -81,7 +81,7 @@ const GENERIC_GET_SINGLE_ROUNDTRIP_EXPECTED: &str = "owned-ok";
 /// Looped push-get(move-out)-drop cycle for the per-iteration slope probe. Each
 /// cycle builds a FRESH single-element `Vec<Name>` with a HEAP `label`
 /// (`"owned-ok".to_upper()` — non-vacuous), moves the element out of the
-/// generic getter's `Option<Name>` (`Some(g) => g`), and returns `got.label.len()`
+/// generic getter's `Option<Name>` (`.Some(g) => g`), and returns `got.label.len()`
 /// so the moved element cannot be elided. A getter that transfers the owned
 /// element without running its `label` drop on the moved-out value (or a by-value
 /// generic param that leaves the Vec unreleased) leaks per iteration.

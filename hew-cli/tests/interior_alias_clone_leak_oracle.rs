@@ -1,6 +1,6 @@
 //! Interior-alias clone-out leak oracle (hew-lang/hew gap #54).
 //!
-//! `match rows.get(i) { Some(r) => { let copied = r.name.to_upper(); … } }`
+//! `match rows.get(i) { .Some(r) => { let copied = r.name.to_upper(); … } }`
 //! over an owned-element `Vec<Row>` exercises THREE shares of the same heap
 //! string before the fix:
 //!

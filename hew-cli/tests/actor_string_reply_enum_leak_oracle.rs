@@ -15,11 +15,11 @@
 //! }
 //! …
 //! let r = await d.describe("-suffix", i);   // r: Result<Status, AskError>
-//! match r { Ok(st) => match st { Described(s) => …, Loaded(v) => … }, Err(_) => {} }
+//! match r { .Ok(st) => match st { Described(s) => …, Loaded(v) => … }, .Err(_) => {} }
 //! ```
 //!
 //! The ask reply is byte-copied into the caller as `Result<Status, AskError>`.
-//! The nested `match Ok(st) => match st { … }` destructures the inner `Status`
+//! The nested `match .Ok(st) => match st { … }` destructures the inner `Status`
 //! enum out of the outer `Result`. Both composites are heap-owning enum
 //! candidates; the outer composite's recursive `EnumInPlace` drop is the single
 //! owner of the `Described(string)` payload on the normal path.

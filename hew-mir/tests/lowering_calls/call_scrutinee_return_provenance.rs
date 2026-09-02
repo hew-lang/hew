@@ -641,7 +641,7 @@ fn imported_sink_payload_without_a_measured_variant_summary_is_refused() {
         fn use_it() {
             match result_source.make() {
                 Ok(_sink) => {},
-                Err(_) => {},
+                .Err(_) => {},
             }
         }
     ";

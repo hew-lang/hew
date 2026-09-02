@@ -398,7 +398,7 @@ fn reported(stdout: &str, key: &str) -> i64 {
 /// A non-copying external SINK that retains the exact `string` handle it is
 /// passed must leave the enum payload's scope-exit drop UNRUN.
 ///
-/// Before the fix the `Some(s) => extern_sink(s)` shape cleared all three
+/// Before the fix the `.Some(s) => extern_sink(s)` shape cleared all three
 /// conjuncts of the payload-binder exemption -- `s` is exactly `string`, the
 /// extern is in `module_fn_names`, and its only terminator use is the call
 /// argument -- so the composite kept its `EnumInPlace` drop and released a

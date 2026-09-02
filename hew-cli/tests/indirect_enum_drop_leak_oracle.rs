@@ -663,7 +663,7 @@ fn assert_actor_request_payload_slope_matches_scalar() {
 /// `hew_actor_ask` path and wires no destructor.
 const ASK_REPLY_INDIRECT_ENUM_SOURCE: &str = "\
 indirect enum Tree { Leaf(i64); Node(Tree, Tree); }\n\
-fn val(t: Tree) -> i64 { match t { Leaf(n) => n, Node(l, r) => val(l) + val(r), } }\n\
+fn val(t: Tree) -> i64 { match t { .Leaf(n) => n, .Node(l, r) => val(l) + val(r), } }\n\
 actor SlowReplier {\n\
 \x20   receive fn fetch() -> Tree { Tree.Node(Tree.Leaf(1), Tree.Leaf(2)) }\n\
 }\n\

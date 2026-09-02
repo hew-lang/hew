@@ -1,7 +1,7 @@
 //! `return` as a bare match-arm expression (v0.6 error-prop ergonomics).
 //!
 //! Before this slice, `return` was only valid in statement position; a bare
-//! `Err(e) => return Err(...)` arm errored with "return statement in expression
+//! `.Err(e) => return Err(...)` arm errored with "return statement in expression
 //! context". `return` is now a first-class divergent (`Never`-typed) expression
 //! usable directly as a match-arm body. The diverging arm contributes `Never`,
 //! so the match's result type comes from the value-producing arm.

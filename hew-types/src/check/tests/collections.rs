@@ -2925,8 +2925,8 @@ fn constructor_pattern_against_non_enum_still_errors() {
         r"
         fn main() {
             let r = match 42 {
-                Ok(v) => v,
-                Err(_) => -1,
+                .Ok(v) => v,
+                .Err(_) => -1,
             };
         }
         ",

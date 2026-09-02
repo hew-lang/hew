@@ -1,7 +1,7 @@
 // A match-arm-destructured payload from a called function is released
 // exactly once per iteration across loop back-edges (#2429). The scrutinee
 // is the CALL RESULT itself (no `let`), the shape every read-style API loop
-// takes: `while … { match f() { Ok(b) => …, Err(e) => … } }`.
+// takes: `while … { match f() { .Ok(b) => …, .Err(e) => … } }`.
 //
 // Output teeth: every payload is read back before its release (a
 // use-after-free garbles the totals; a double-free aborts), Ok and Err arms

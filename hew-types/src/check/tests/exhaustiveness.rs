@@ -822,8 +822,8 @@ fn borrowed_param_escape_match_payload_binder_not_overflagged() {
     // Guard against over-flagging: a genuine payload *binder* (`Some(inner)`)
     // must shadow the dangerous param so returning the bound payload is NOT an
     // escape, while a sibling arm that returns the borrow param directly still
-    // is. Exactly one BorrowedParamReturn — the `None => red` arm — must fire;
-    // the `Some(inner) => inner` arm must stay clean.
+    // is. Exactly one BorrowedParamReturn — the `.None => red` arm — must fire;
+    // the `.Some(inner) => inner` arm must stay clean.
     let (errors, _) = parse_and_check(concat!(
         "fn leak(red: Rc<i64>, opt: Option<Rc<i64>>) -> Rc<i64> {\n",
         "    match opt { Some(inner) => inner, None => red }\n",
@@ -843,7 +843,7 @@ fn borrowed_param_escape_match_payload_binder_not_overflagged() {
 
 #[test]
 fn borrowed_param_escape_consistent_or_binder_not_overflagged() {
-    // End-to-end of the or-pattern binder path: `Ok(x) | Err(x) => x` binds a
+    // End-to-end of the or-pattern binder path: `Ok(x) | .Err(x) => x` binds a
     // consistent `x` in both alternatives (recorded as the env delta of
     // `bind_pattern`), which `shadow_pattern_bindings` then shadows. Returning
     // the bound payload `x` (not the borrow param `p`) is safe and must raise

@@ -2960,7 +2960,7 @@ pub(crate) fn build_call_scrutinee_provenance(
 ///
 /// A whole `Result<T, E>` is fresh only when *both* arms are fresh, which is
 /// the right requirement for minting a recursive shell owner. It is too coarse
-/// for `match f() { Ok(value) => ... }` when only `value` crosses an audited
+/// for `match f() { .Ok(value) => ... }` when only `value` crosses an audited
 /// transferred-return seam. This summary retains the existing whole-value
 /// default-deny and proves only `(variant, field)` positions that are fresh on
 /// every constructor path for that position. The match lowering then gives that

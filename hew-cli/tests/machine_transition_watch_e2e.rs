@@ -723,7 +723,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20           select {\n\
          \x20               snap from rx.recv() => {\n\
          \x20                   match snap {\n\
-         \x20                       Some(s) => {\n\
+         \x20                       .Some(s) => {\n\
          \x20                           match s {\n\
          \x20                               Conn.Failed { reason } => println(f\"failed: {reason}\"),\n\
          \x20                               Conn.Open => println(\"open\"),\n\

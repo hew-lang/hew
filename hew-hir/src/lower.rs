@@ -4046,7 +4046,7 @@ pub fn lower_program_with_mono_cap(
         // constructors (`Some/None/Ok/Err`) and match arms through the same
         // `machine_ctor_registry` / `enum_variants_by_name` registries as
         // user enums. Without these entries, `Ok(42)` would lower as an
-        // unresolved identifier and `match r { Ok(n) => ... }` would emit
+        // unresolved identifier and `match r { .Ok(n) => ... }` would emit
         // `match arm variant not registered in machine/enum ctor registry`.
         //
         // Local-shadows-global: skip the bare-form insertion for any builtin

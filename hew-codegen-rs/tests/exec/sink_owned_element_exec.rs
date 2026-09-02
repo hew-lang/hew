@@ -702,7 +702,7 @@ actor Writer {{
 
     receive fn run(unused: i64) {{
         match stream.to_file(path) {{
-            Ok(sink) => {{
+            .Ok(sink) => {{
                 await sink.send("line-a\n");
                 await sink.send("line-b\n");
                 sink.close();

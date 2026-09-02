@@ -544,7 +544,7 @@ pub(crate) fn reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
 /// the poison path as executable. Letting such a path contribute to a join
 /// block's `meet_predecessors` kills — to `Uninit` — every binding that is
 /// Live on all EXECUTABLE paths into the join. For a match whose sibling arm
-/// panics (`let e = match f() { Ok(x) => x, Err(_) => panic(...) }`), that
+/// panics (`let e = match f() { .Ok(x) => x, .Err(_) => panic(...) }`), that
 /// false `Uninit` meet (a) moved the payload binder's admitted composite
 /// release from the function exit to the arm's scope-close `Goto` — BEFORE
 /// the join's field loads read the record, a use-after-free that turned into

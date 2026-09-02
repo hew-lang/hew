@@ -963,7 +963,7 @@ fn record_case(p: Point) -> i64 {
     fn struct_variant_field_uppercase_binder_compiles() {
         // The concrete repro from issue #2116:
         //   enum Packet { Data { value: i64 }; Empty }
-        //   match p { Packet::Data { value: MAX } => MAX, Empty => 0 }
+        //   match p { Packet::Data { value: MAX } => MAX, .Empty => 0 }
         //
         // `MAX` does not resolve as a variant of `i64`, so it must be classified
         // as a binder rather than a "nested constructor".  The old casing heuristic

@@ -299,8 +299,8 @@ fn main() {{
         peer.close();
         listener.close();
         match result {{
-            Ok(_) => panic("reader unexpectedly returned"),
-            Err(_) => println("crash-fallback"),
+            .Ok(_) => panic("reader unexpectedly returned"),
+            .Err(_) => println("crash-fallback"),
         }}
     }}
 }}
@@ -349,7 +349,7 @@ fn main() {{
         let crasher = spawn Crasher(gate: gate);
         match await crasher.go(0) {{
             Ok(_) => panic("crasher unexpectedly returned"),
-            Err(_) => println("crash-fallback"),
+            .Err(_) => println("crash-fallback"),
         }}
     }}
 }}

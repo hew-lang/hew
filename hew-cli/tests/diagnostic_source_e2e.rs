@@ -335,7 +335,7 @@ fn mixed_dep_warning_remains_attributed_to_dep_before_deep_gate_failure() {
         // before a HIR-unsupported or-pattern with a literal payload branch.
         (
             "dep.hew",
-            "pub fn dep_value() -> i64 { let ignored = 0; let x: Option<i64> = Some(0); match x { Some(0) | None => 0, Some(n) => n } }\n",
+            "pub fn dep_value() -> i64 { let ignored = 0; let x: Option<i64> = Some(0); match x { .Some(0) | .None => 0, .Some(n) => n } }\n",
         ),
     ]);
 
@@ -387,7 +387,7 @@ fn root_hir_diagnostic_rendered_with_source_context() {
     // This is a stable HIR-level failure that preserves the 3:15 position.
     let fixture = write_fixture(&[(
         "main.hew",
-        "fn main() -> i64 {\n    let x: Option<i64> = Some(0);\n    match x { Some(0) | None => 0, Some(n) => n }\n}\n",
+        "fn main() -> i64 {\n    let x: Option<i64> = Some(0);\n    match x { .Some(0) | .None => 0, .Some(n) => n }\n}\n",
     )]);
     let main_path = fixture.path().join("main.hew");
 
@@ -426,7 +426,7 @@ fn imported_hir_diagnostic_rendered_with_imported_source_context() {
         ),
         (
             "dep.hew",
-            "pub fn entry() -> i64 {\n    let x: Option<i64> = Some(0);\n    match x { Some(0) | None => 0, Some(n) => n }\n}\n",
+            "pub fn entry() -> i64 {\n    let x: Option<i64> = Some(0);\n    match x { .Some(0) | .None => 0, .Some(n) => n }\n}\n",
         ),
     ]);
     let main_path = fixture.path().join("main.hew");

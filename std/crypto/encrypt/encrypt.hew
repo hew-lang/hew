@@ -5,6 +5,7 @@
 //! # Examples
 //!
 //! ```
+//! import std.crypto.crypto;
 //! import std.crypto.encrypt;
 //!
 //! fn main() {

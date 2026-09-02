@@ -14,7 +14,9 @@
 //! and the `?` operator for clean error propagation:
 //!
 //! ```
-//! fn load_config(path: string) -> Result<string, IoError> {
+//! import std.fs;
+//!
+//! fn load_config(path: string) -> Result<string, fs.IoError> {
 //!     fs.try_read(path)
 //! }
 //!
@@ -23,7 +25,7 @@
 //!         .Ok(data) => println(data),
 //!         .Err(e) => {
 //!             match e {
-//!                 IoError.NotFound(_) => println("missing"),
+//!                 fs.IoError.NotFound(_) => println("missing"),
 //!                 _ => println("i/o error"),
 //!             }
 //!         },
@@ -131,9 +133,14 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
 /// For network errors use `net.net_error_message` in `std.net`.
 ///
 /// ```
-/// match result {
-///     Err(e) => panic("operation failed: " + fs.io_error_message(e)),
-///     Ok(_) => {},
+/// import std.fs;
+///
+/// fn main() {
+///     let result: Result<i64, fs.IoError> = fs.try_delete("/tmp/scratch-file");
+///     match result {
+///         .Err(e) => panic("operation failed: " + fs.io_error_message(e)),
+///         .Ok(_) => {},
+///     }
 /// }
 /// ```
 pub fn io_error_message(e: IoError) -> string {

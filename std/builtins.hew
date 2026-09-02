@@ -156,6 +156,10 @@ pub enum AskError {
 /// Returned as `Err(TimeoutError.Timeout)` when the deadline fires before an
 /// item arrives.  Distinguishes a timeout from a closed channel (`Ok(None)`).
 ///
+/// Not yet implemented: `await ... | after d` requires a suspendable
+/// actor/closure/task context, so this snippet is illustrative only and does
+/// not compile standalone.
+///
 /// ```hew
 /// match await rx.recv() | after 50ms {
 ///     Ok(Some(v)) => v,       // item received before deadline
@@ -209,6 +213,9 @@ pub trait ActorMsg {
 /// generic `P: Pid` sends are fail-closed unless `P.Msg` is concretely proven
 /// Serializable; local-only dispatch through `LocalPid<T>` keeps the value
 /// model below.
+///
+/// Not yet implemented: the checker cannot express the `P.Msg: Serializable`
+/// projection bound yet (A640), so this snippet does not compile today.
 ///
 /// ```
 /// fn ping<P: Pid>(p: P, msg: P.Msg) -> Result<(), SendError> {
@@ -855,7 +862,10 @@ pub fn print(value: dyn Display) {}
 /// # Examples
 ///
 /// ```
-/// assert(x > 0);
+/// fn main() {
+///     let x = 5;
+///     assert(x > 0);
+/// }
 /// ```
 pub fn assert(condition: bool) {}
 
@@ -866,7 +876,13 @@ pub fn assert(condition: bool) {}
 /// # Examples
 ///
 /// ```
-/// assert_eq(add(1, 2), 3);
+/// fn add(a: i64, b: i64) -> i64 {
+///     a + b
+/// }
+///
+/// fn main() {
+///     assert_eq(add(1, 2), 3);
+/// }
 /// ```
 pub fn assert_eq(left: dyn Display, right: dyn Display) {}
 
@@ -877,7 +893,11 @@ pub fn assert_eq(left: dyn Display, right: dyn Display) {}
 /// # Examples
 ///
 /// ```
-/// assert_ne(a, b);
+/// fn main() {
+///     let a = 1;
+///     let b = 2;
+///     assert_ne(a, b);
+/// }
 /// ```
 pub fn assert_ne(left: dyn Display, right: dyn Display) {}
 
@@ -921,6 +941,9 @@ pub fn max(a: i32, b: i32) -> i32 {
 }
 
 /// Convert an integer to a floating-point number.
+///
+/// Not yet implemented: the checker admits the call but cannot lower it to
+/// an executable target yet, so this snippet does not compile today.
 ///
 /// # Examples
 ///
@@ -987,7 +1010,8 @@ pub fn string_equals(a: string, b: string) -> bool {
 
 /// Convert an integer to a string.
 ///
-/// # Examples
+/// Not yet implemented: the checker admits the call but cannot lower it to
+/// an executable target yet, so this snippet does not compile today.
 ///
 /// ```
 /// let s = string_from_int(42);  // "42"
@@ -1008,7 +1032,8 @@ pub fn string_starts_with(s: string, prefix: string) -> bool {
 
 /// Extract a substring by byte indices `[start, end)`.
 ///
-/// # Examples
+/// Not yet implemented: the checker admits the call but cannot lower it to
+/// an executable target yet, so this snippet does not compile today.
 ///
 /// ```
 /// let s = substring("hello", 0, 3);  // "hel"

@@ -3,8 +3,8 @@
 Visual documentation of the Hew compilation pipeline, runtime architecture, and
 protocol formats using Mermaid diagrams. Every diagram reflects the current
 compiler pipeline; the `LADDER` program (final IR ladder, legacy lowerer
-deleted, `v0.7.0`) replaces the `--sir-lower` strict lane below with the sole
-route — see `~/projects/hew-lang/hew-orchestration/plans/MONIKERS.md`.
+deleted, `v0.7.0`) replaces the strict lane below with the sole route — see
+the orchestration registry's `MONIKERS.md`.
 
 > **Rendering:** These diagrams use [Mermaid](https://mermaid.js.org/) syntax. GitHub renders them natively in Markdown. For local viewing, use a Mermaid-compatible Markdown previewer or the [Mermaid Live Editor](https://mermaid.live/).
 
@@ -40,7 +40,9 @@ flowchart TD
 - `hew machine diagram [--format mermaid|graphviz|json] <file.hew>` — render machine declarations
 - `hew machine list <file.hew>` — list machines, states, and events
 
-The C++/MLIR flags (`--emit-mlir`, `--emit-llvm`, `--emit-obj`) never existed in the current pipeline and are not available.
+`hew tool compile` does not accept `--emit-mlir` or `--emit-obj`; it accepts
+`--emit-dir` (directory for emitted `.ll`/`.o`/`.wasm` artefacts) and
+`--emit-llvm` (retain the pre-optimization textual LLVM IR).
 
 ---
 

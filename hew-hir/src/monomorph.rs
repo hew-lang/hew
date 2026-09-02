@@ -30,7 +30,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use hew_types::resolved_ty::{mangle_resolved_ty_segment, TypeParamMangle};
 use hew_types::{DefId, ResolvedTy};
 
 use crate::ids::ItemId;
@@ -341,26 +340,10 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
     }
 }
 
-/// Render a single `ResolvedTy` as a mangled fragment.
-///
-/// Compound structure is encoded with `$`-letter tokens: `$l`/`$g` delimit
-/// named type arguments, `$x`/`$g` delimit structural compounds, `$c`
-/// separates list items, `$r` marks function returns, `$a` marks trait-object
-/// associated bindings, and `$m` replaces name qualifiers. Every token starts
-/// with `$`, which Hew identifiers cannot contain, so the rendering is
-/// structural and injective over the supported `ResolvedTy` identity
-/// dimensions. This compatibility wrapper selects the shared encoder's total
-/// `TypeParam` mode, preserving `typeparam$x{name}$g` for speculative HIR keys.
-///
-/// # Panics
-///
-/// Panics if the shared encoder violates the contract that
-/// [`TypeParamMangle::Concrete`] renders every [`ResolvedTy`].
-#[must_use]
-pub fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
-    mangle_resolved_ty_segment(ty, TypeParamMangle::Concrete)
-        .expect("Concrete TypeParam mangling must render every ResolvedTy")
-}
+/// The mangler moved to `hew_types::mangle` beside the class authority
+/// (ir-ladder §5.1) so `hew-mir` does not depend on `hew-hir` for a name.
+/// The nine call sites in this crate and downstream keep this spelling.
+pub use hew_types::mangle::mangle_resolved_ty;
 
 /// Insertion-ordered registry used during HIR lowering.
 ///

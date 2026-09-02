@@ -81,13 +81,21 @@ impl Harness {
     }
 
     fn run(&self, env: &[(&str, &str)]) -> Output {
+        self.run_with_ratchet(None, env)
+    }
+
+    fn run_with_ratchet(&self, ratchet: Option<&Path>, env: &[(&str, &str)]) -> Output {
         let mut command = Command::new("bash");
         command
             .arg(repo_root().join("scripts/sir-parity.sh"))
             .arg("--hew-bin")
             .arg(&self.shim)
             .arg("--workdir")
-            .arg(self.dir.path().join("work"))
+            .arg(self.dir.path().join("work"));
+        if let Some(ratchet) = ratchet {
+            command.arg("--ratchet").arg(ratchet);
+        }
+        command
             .arg(&self.corpus)
             .current_dir(repo_root())
             .env_remove("HEW_BIN");
@@ -95,6 +103,12 @@ impl Harness {
             command.env(key, value);
         }
         support::run_bounded_command(command, "scripts/sir-parity.sh with the shim compiler")
+    }
+
+    fn write_ratchet(&self, contents: &str) -> PathBuf {
+        let path = self.dir.path().join("ratchet.txt");
+        fs::write(&path, contents).expect("write ratchet");
+        path
     }
 }
 
@@ -189,6 +203,82 @@ fn a_program_the_sir_route_refuses_is_not_admitted_and_an_empty_comparison_fails
         String::from_utf8_lossy(&output.stderr).contains("nothing was compared"),
         "{}",
         describe_output(&output)
+    );
+}
+
+#[test]
+fn ratchet_fails_when_the_recorded_count_is_higher_than_measured() {
+    let harness = Harness::new(&[("prog.hew", PROGRAM)]);
+    let ratchet = harness.write_ratchet("2\n");
+    let output = harness.run_with_ratchet(Some(&ratchet), &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a drop below the recorded compared-count must fail:\n{}",
+        describe_output(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ratchet dropped")
+            && stderr.contains("records 2")
+            && stderr.contains("measured 1"),
+        "the failure must quote both sides:\n{stderr}"
+    );
+}
+
+#[test]
+fn ratchet_holds_when_equal_and_reports_a_rise_without_failing() {
+    let harness = Harness::new(&[("prog.hew", PROGRAM)]);
+    let ratchet = harness.write_ratchet("1\n");
+    let equal = harness.run_with_ratchet(Some(&ratchet), &[]);
+    assert!(
+        equal.status.success(),
+        "an equal ratchet must hold:\n{}",
+        describe_output(&equal)
+    );
+    assert!(
+        String::from_utf8_lossy(&equal.stderr).contains("ratchet holds at 1"),
+        "{}",
+        describe_output(&equal)
+    );
+
+    let ratchet = harness.write_ratchet("0\n");
+    let rise = harness.run_with_ratchet(Some(&ratchet), &[("RATCHET_STRICT_RECOVERIES", "0")]);
+    assert!(
+        rise.status.success(),
+        "a rise is a recovery to record, never a failure by default:\n{}",
+        describe_output(&rise)
+    );
+    let stderr = String::from_utf8_lossy(&rise.stderr);
+    assert!(
+        stderr.contains("ratchet can rise") && stderr.contains("update the file to 1"),
+        "the rise must say what to record:\n{stderr}"
+    );
+
+    let strict = harness.run_with_ratchet(Some(&ratchet), &[("RATCHET_STRICT_RECOVERIES", "1")]);
+    assert_eq!(
+        strict.status.code(),
+        Some(1),
+        "an unrecorded rise must fail under strict-recoveries accounting:\n{}",
+        describe_output(&strict)
+    );
+}
+
+#[test]
+fn a_non_numeric_parity_ratchet_fails_closed() {
+    let harness = Harness::new(&[("prog.hew", PROGRAM)]);
+    let ratchet = harness.write_ratchet("not-a-number\n");
+    let output = harness.run_with_ratchet(Some(&ratchet), &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a non-integer ratchet must fail closed, not be silently ignored:\n{}",
+        describe_output(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must hold one non-negative integer"),
+        "{stderr}"
     );
 }
 

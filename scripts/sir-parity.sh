@@ -17,6 +17,14 @@
 # proves nothing, so the make target always includes a fixture directory
 # with at least one program the strict lane admits today.
 #
+# `--ratchet FILE` compares the compared-program count with the committed
+# one and fails when it dropped. This is a second, independent floor from
+# the empty-comparison guard above: the MIR bridge the strict route compiles
+# through is narrower than SIR admission itself (e.g. tuples and some
+# integer operators are refused only at the bridge), so a bridge-only
+# regression can de-admit most of the corpus while `sir-coverage` sees no
+# change and the fixture directory alone still keeps `compared >= 1`.
+#
 # WHEN OBSOLETE: when the legacy lowerer is deleted (final-ladder P5) there is
 # one route left and nothing to compare; delete this script with it.
 #
@@ -30,6 +38,8 @@
 #                        TMPDIR. Default: <repo>/.tmp/sir-parity. Recreated
 #                        on every run.
 #   --timeout <seconds>  Per compile and per run budget. Default: 120.
+#   --ratchet <file>     Compare the compared-program count with the one
+#                        recorded in this file; fail on a drop.
 #   --help               Print this text.
 
 set -euo pipefail
@@ -52,6 +62,7 @@ usage() {
 HEW_BIN="${HEW_BIN:-}"
 WORKDIR="$REPO_ROOT/.tmp/sir-parity"
 TIMEOUT_SECONDS=120
+RATCHET_FILE=""
 PATHS=()
 
 while [[ $# -gt 0 ]]; do
@@ -78,6 +89,14 @@ while [[ $# -gt 0 ]]; do
             exit 2
         }
         TIMEOUT_SECONDS="$2"
+        shift 2
+        ;;
+    --ratchet)
+        [[ $# -ge 2 ]] || {
+            echo "error: --ratchet needs a path" >&2
+            exit 2
+        }
+        RATCHET_FILE="$2"
         shift 2
         ;;
     --help | -h)
@@ -264,4 +283,29 @@ if [[ "$compared" -eq 0 ]]; then
     echo "sir-parity: nothing was compared; an empty parity run proves nothing" >&2
     exit 1
 fi
+
+if [[ -n "$RATCHET_FILE" ]]; then
+    if [[ ! -f "$RATCHET_FILE" ]]; then
+        echo "error: sir-parity: cannot read ratchet '$RATCHET_FILE'" >&2
+        exit 2
+    fi
+    recorded="$(tr -d '[:space:]' <"$RATCHET_FILE")"
+    if [[ ! "$recorded" =~ ^[0-9]+$ ]]; then
+        echo "error: sir-parity: ratchet '$RATCHET_FILE' must hold one non-negative integer, got '$recorded'" >&2
+        exit 2
+    fi
+    if [[ "$compared" -lt "$recorded" ]]; then
+        echo "sir-parity: ratchet dropped: '$RATCHET_FILE' records $recorded compared, this run measured $compared" >&2
+        exit 1
+    fi
+    if [[ "$compared" -gt "$recorded" ]]; then
+        echo "sir-parity: ratchet can rise: '$RATCHET_FILE' records $recorded compared, this run measured $compared; update the file to $compared" >&2
+        if [[ "${RATCHET_STRICT_RECOVERIES:-0}" == "1" ]]; then
+            exit 1
+        fi
+        exit 0
+    fi
+    echo "sir-parity: ratchet holds at $recorded compared ('$RATCHET_FILE')" >&2
+fi
+
 exit 0

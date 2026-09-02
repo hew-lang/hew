@@ -2100,9 +2100,12 @@ grep -q 'mailbox_capacity=4 overflow=DropNew' "${accept_output}"
 run_accept_expect_status "mailbox_bounded_drop_new" 0
 
 # A lossy actor send is Result-typed, reports the exact drop, and cannot be
-# discarded accidentally as a bare statement. HEW_WORKERS=1 makes the
-# capacity-one overflow deterministic while also proving that the dropped work
-# never reached its handler.
+# discarded accidentally as a bare statement. The sender is an actor handler
+# and HEW_WORKERS=1 keeps the sole worker inside that handler for both sends,
+# so the capacity-one overflow is deterministic and the dropped work provably
+# never reached its handler. Sending from `main` would not be deterministic:
+# `main` runs on the process main thread, and the worker woken by the first
+# send can drain the queue before the second send observes it.
 run_accept_expect_status "mailbox_drop_new_visible" 42 HEW_WORKERS=1
 grep -qFx -- "LOSS_VISIBLE" "${stdout_output}"
 if grep -qF -- "DROPPED_WORK_DELIVERED" "${stdout_output}"; then
@@ -2121,7 +2124,8 @@ run_accept_expect_status "mailbox_normal_send_ergonomic" 42 HEW_WORKERS=1
 grep -qFx -- "NORMAL_SEND_DELIVERED" "${stdout_output}"
 
 # `fail` uses the same checked-send surface, but reports rejection as Full
-# instead of trapping a unit-typed sender with no usable diagnostic.
+# instead of trapping a unit-typed sender with no usable diagnostic. Same
+# actor-handler sender shape as above for the same determinism reason.
 run_accept_expect_status "mailbox_fail_observable" 43 HEW_WORKERS=1
 grep -qFx -- "FAIL_VISIBLE" "${stdout_output}"
 if grep -qF -- "REJECTED_WORK_DELIVERED" "${stdout_output}"; then

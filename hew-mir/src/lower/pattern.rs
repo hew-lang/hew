@@ -4884,12 +4884,14 @@ impl Builder {
                 &self.lifecycle_registry,
             )
             // A carrier whose variant payload is a declared-release `#[resource]`
-            // RECORD is EXCLUDED from every enum drop class in the drop planner
-            // (`direct_payload_has_registered_resource_record`): a record close is
-            // not null-safe over a consumed/zeroed slot, so no `EnumInPlace` shell
-            // drop is ever scheduled for it. The arm-release protocol below aliases
-            // the payload binder onto that (absent) carrier drop and hands arm
-            // results through the whole-carrier funnel, which leaks a
+            // RECORD keeps its `EnumInPlace` drop (`ty_is_heap_owning_enum_composite`
+            // admits it so an unbound arm still closes the payload), but a record
+            // close is not null-safe over a consumed/zeroed slot, so the shell's
+            // generation is ended at the hand-off instead
+            // (`release_transferred_declared_release_carriers`). The arm-release
+            // protocol below aliases the payload binder onto that retired carrier
+            // drop and hands arm results through the whole-carrier funnel, which
+            // leaks a
             // bound-but-unconsumed handle and strands an unbalanced retain on a
             // moved-out sibling `Err(string)`. Fall back to the same discipline the
             // `#[opaque]` handle carrier already uses (its shell is likewise not

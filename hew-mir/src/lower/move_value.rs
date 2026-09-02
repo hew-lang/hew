@@ -7,15 +7,21 @@ use super::{
     Place, ProjectedPayloadOrigin, ResolvedRef, ResolvedTy, SiteId, SnapshotFieldKind, SuspendKind,
 };
 
-/// Whether a scope-exit tuple can safely have one of its projected ownership
-/// slots cleared after the leaf is transferred to a local owner.
+/// Whether a scope-exit tuple or record can safely have one of its projected
+/// ownership slots cleared after the leaf is transferred to a local owner.
 ///
 /// This is deliberately an identity allowlist, not a broad resource rule.
 /// `Sender`, `Receiver`, `Stream`, and `Sink` close implementations accept
 /// their null/empty representation, just like the existing `Vec` and
 /// `CancellationToken` cases. Generators use a distinct suspend/drop protocol
 /// and must keep going through their dedicated transfer path.
-fn scope_exit_tuple_projection_has_null_safe_drop(ty: &ResolvedTy) -> bool {
+///
+/// The composite side of the same fact lives in codegen: the tag-aware
+/// `TupleInPlace` / `RecordInPlace` field walk null-checks a pointer-backed
+/// resource field before calling its close (`emit_field_drop_step`'s
+/// `StateFieldCloneKind::Resource` arm), so clearing the slot is what makes the
+/// composite skip a leaf it no longer owns.
+fn scope_exit_composite_projection_has_null_safe_drop(ty: &ResolvedTy) -> bool {
     ty == &ResolvedTy::CancellationToken
         || matches!(
             ty,
@@ -75,11 +81,15 @@ impl Builder {
     /// Propagate release authority through one aggregate field load.
     ///
     /// Registered call carriers already name their root in
-    /// `owned_carrier_neutralize`. An ordinary scope-exit tuple owner also
-    /// seeds a root-relative transfer for a `Vec`, `CancellationToken`, or
+    /// `owned_carrier_neutralize`. An ordinary scope-exit tuple OR record owner
+    /// also seeds a root-relative transfer for a `Vec`, `CancellationToken`, or
     /// channel endpoint leaf: the load byte-copies the one owned pointer, so a
-    /// later ownership boundary must clear the tuple slot before the loaded
-    /// value can become a sole owner.
+    /// later ownership boundary must clear the composite's slot before the
+    /// loaded value can become a sole owner. Tuple and record roots carry the
+    /// same per-field `TupleInPlace` / `RecordInPlace` drop and the same
+    /// null-skip in codegen's field walk, so restricting the fallback to tuples
+    /// left `Pipe { sink, input }.sink.close()` closing the handle twice
+    /// (#3070) while the tuple spelling of the same program was correct.
     ///
     /// This authority is deliberately limited to leaves whose structural drop
     /// accepts an empty representation after transfer. Other
@@ -113,12 +123,13 @@ impl Builder {
             }
             Some(_) => None,
             None => {
-                // Seeding a carrier from an ordinary scope-exit tuple is
+                // Seeding a carrier from an ordinary scope-exit composite is
                 // narrower: only a null-safe, one-handle transfer may clear a
-                // tuple slot. Inline aggregates still use their own composite
-                // drop protocol and must not acquire this fallback authority.
+                // tuple or record slot. Inline aggregate FIELDS still use their
+                // own composite drop protocol and must not acquire this
+                // fallback authority.
                 let field_ty = self.subst_ty(field_ty);
-                if !scope_exit_tuple_projection_has_null_safe_drop(&field_ty)
+                if !scope_exit_composite_projection_has_null_safe_drop(&field_ty)
                     || field_load != Some(FieldLoadClass::HandleTransfer)
                 {
                     None
@@ -127,11 +138,12 @@ impl Builder {
                         .iter()
                         .find(|entry| {
                             entry.disposition == Disposition::ScopeExit
-                                && matches!(entry.ty, ResolvedTy::Tuple(_))
+                                && (matches!(entry.ty, ResolvedTy::Tuple(_))
+                                    || self.is_owned_aggregate_record_ty(&entry.ty))
                                 && self.binding_locals.get(&entry.binding).copied()
                                     == Some(aggregate)
                         })
-                        .map(|entry| OwnedCarrierNeutralizeTarget::ScopeExitTuple {
+                        .map(|entry| OwnedCarrierNeutralizeTarget::ScopeExitComposite {
                             root: aggregate,
                             owner: (entry.binding, entry.name.clone(), site),
                         })
@@ -143,7 +155,7 @@ impl Builder {
         };
         let (root, mut fields, scope_exit_owner) = match authority {
             OwnedCarrierNeutralizeTarget::Whole(root) => (root, Vec::new(), None),
-            OwnedCarrierNeutralizeTarget::ScopeExitTuple { root, owner } => {
+            OwnedCarrierNeutralizeTarget::ScopeExitComposite { root, owner } => {
                 (root, Vec::new(), Some(owner))
             }
             OwnedCarrierNeutralizeTarget::Projection {
@@ -205,7 +217,7 @@ impl Builder {
         match self.owned_carrier_authority(scrutinee) {
             Some(OwnedCarrierNeutralizeTarget::Whole(root)) => root == scrutinee,
             Some(OwnedCarrierNeutralizeTarget::Projection { .. }) => true,
-            Some(OwnedCarrierNeutralizeTarget::ScopeExitTuple { .. }) | None => false,
+            Some(OwnedCarrierNeutralizeTarget::ScopeExitComposite { .. }) | None => false,
         }
     }
 
@@ -386,7 +398,7 @@ impl Builder {
             return false;
         }
         match self.owned_carrier_authority(source) {
-            None | Some(OwnedCarrierNeutralizeTarget::ScopeExitTuple { .. }) => true,
+            None | Some(OwnedCarrierNeutralizeTarget::ScopeExitComposite { .. }) => true,
             Some(OwnedCarrierNeutralizeTarget::Whole(root)) => root == source,
             Some(OwnedCarrierNeutralizeTarget::Projection { .. }) => false,
         }
@@ -899,7 +911,7 @@ impl Builder {
                 self.prepared_owned_call_sources.insert(value);
                 value
             }
-            OwnedCarrierNeutralizeTarget::ScopeExitTuple { .. } => {
+            OwnedCarrierNeutralizeTarget::ScopeExitComposite { .. } => {
                 unreachable!("scope-exit tuple authority must project before transfer")
             }
         }
@@ -1090,14 +1102,47 @@ impl Builder {
                 // can exit before the callee is entered. The direct-call wrapper
                 // identifies the synthetic cursor after this loop and authors
                 // its transition in the final call block.
+                //
+                // A runtime symbol whose family CONSUMES its receiver
+                // (`hew_sink_close`, `hew_stream_close`, the `Duplex` closes and
+                // half-extracts) takes over that handle's close obligation. A
+                // runtime symbol carries no `ItemId`, so `target_is_affine_consume`
+                // never sees it, and the receiver arrived here on the borrow path.
+                // That is right for a plain binding receiver — its own discharge
+                // protocol ends the binding's generation on the call's normal edge
+                // — but not for a receiver PROJECTED out of a live composite:
+                // `note_carrier_projection` has already recorded the root-relative
+                // neutralize for the loaded field, and nothing discharged it, so
+                // `p.sink.close()` closed the handle once through this call and
+                // again through the composite's scope-exit field walk (#3070).
+                // Running the projection through the transfer funnel nulls the
+                // composite's slot, which is exactly what makes its
+                // `RecordInPlace` / `TupleInPlace` walk skip the leaf it no longer
+                // owns.
+                //
+                // Restricted to a projection receiver on purpose: a binding
+                // receiver can carry a `Whole` carrier authority (an owned
+                // by-value parameter), and neutralizing that slot before the
+                // invoke would retire the parameter's owner while the call's
+                // unwind edge still has to destroy it.
+                if index == 0
+                    && matches!(
+                        arg.kind,
+                        HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
+                    )
+                    && hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee_symbol)
+                        .is_some_and(hew_types::runtime_call::RuntimeCallFamily::consumes_receiver)
+                {
+                    return Some(self.transfer_owned_carrier_value(arg, value));
+                }
                 Some(value)
             })
             .collect()
     }
 }
 
-/// Reject a whole-tuple (or already-transferred field) read after an ordinary
-/// tuple projection has physically cleared its source slot.
+/// Reject a whole-composite (or already-transferred field) read after an
+/// ordinary tuple or record projection has physically cleared its source slot.
 ///
 /// Hew's checker stream currently tracks ownership at binding granularity, so
 /// consume-marking the tuple would also reject valid reads of unmoved siblings.
@@ -1159,9 +1204,9 @@ pub(super) fn ordinary_projection_transfer_diagnostics(
                         used_at,
                     },
                     note: format!(
-                        "tuple field ownership transferred at site {transfer_site:?}; only unmoved sibling \
-                         projections remain readable afterward, so using or returning the whole \
-                         tuple `{name}` would expose the cleared field"
+                        "composite field ownership transferred at site {transfer_site:?}; only unmoved \
+                         sibling projections remain readable afterward, so using or returning the \
+                         whole value `{name}` would expose the cleared field"
                     ),
                 });
             }
@@ -1237,6 +1282,16 @@ fn projection_root_use_is_invalid(instr: &Instr, root: Place, fields: &[u32]) ->
         Instr::TupleFieldLoad {
             tuple, field_index, ..
         } if same_base_local(*tuple, root) => fields.first() == Some(field_index),
+        // The record half of the same rule. A record root reaches this pass
+        // now that a record composite seeds the scope-exit projection carrier
+        // (#3070); without the sibling arm `p.sink.close(); p.input.close()`
+        // read the second field load as a whole-root use and refused a program
+        // whose fields are disjoint.
+        Instr::RecordFieldLoad {
+            record,
+            field_offset,
+            ..
+        } if same_base_local(*record, root) => fields.first() == Some(&field_offset.0),
         // Structural cleanup is precisely why the source slot was cleared; all
         // supported drop paths are null-safe for the transferred handle leaf.
         Instr::Drop { place, .. } if same_base_local(*place, root) => false,
@@ -1253,7 +1308,7 @@ fn projection_root_use_is_invalid(instr: &Instr, root: Place, fields: &[u32]) ->
 }
 
 #[cfg(test)]
-mod scope_exit_tuple_projection_tests {
+mod scope_exit_composite_projection_tests {
     use super::*;
     use hew_types::BuiltinType;
 
@@ -1271,11 +1326,11 @@ mod scope_exit_tuple_projection_tests {
             BuiltinType::Vec,
         ] {
             assert!(
-                scope_exit_tuple_projection_has_null_safe_drop(&builtin_ty(builtin)),
+                scope_exit_composite_projection_has_null_safe_drop(&builtin_ty(builtin)),
                 "{builtin:?} must clear its source tuple slot on transfer"
             );
         }
-        assert!(scope_exit_tuple_projection_has_null_safe_drop(
+        assert!(scope_exit_composite_projection_has_null_safe_drop(
             &ResolvedTy::CancellationToken
         ));
     }
@@ -1290,7 +1345,7 @@ mod scope_exit_tuple_projection_tests {
             BuiltinType::RecvHalf,
         ] {
             assert!(
-                !scope_exit_tuple_projection_has_null_safe_drop(&builtin_ty(builtin)),
+                !scope_exit_composite_projection_has_null_safe_drop(&builtin_ty(builtin)),
                 "{builtin:?} must retain its dedicated ownership protocol"
             );
         }
@@ -1372,8 +1427,68 @@ mod scope_exit_tuple_projection_tests {
         }
     }
 
+    /// The record half of the scope-exit fallback (#3070). A record root whose
+    /// own drop is the per-field `RecordInPlace` walk must seed the same
+    /// root-relative neutralize a tuple root does; before this the record
+    /// spelling of `pipe()` closed its `Sink` twice while the tuple spelling of
+    /// the identical program was correct.
     #[test]
-    fn scope_exit_tuple_fallback_stays_handle_transfer_and_null_safe_only() {
+    fn scope_exit_composite_fallback_admits_a_record_root() {
+        let mut builder = Builder::default();
+        let sink_ty = builtin_ty(BuiltinType::Sink);
+        let record_ty = ResolvedTy::named_user("Pipe", vec![]);
+        builder.record_field_orders.insert(
+            "Pipe".to_string(),
+            vec![
+                ("sink".to_string(), sink_ty.clone()),
+                ("input".to_string(), builtin_ty(BuiltinType::Stream)),
+            ],
+        );
+        assert!(
+            builder.is_owned_aggregate_record_ty(&record_ty),
+            "the fixture record must be an owned aggregate for this test to mean anything"
+        );
+        builder.binding_locals.insert(BindingId(1), Place::Local(0));
+        builder.register_owned_local(
+            BindingId(1),
+            "p".to_string(),
+            record_ty,
+            crate::lower::OwnerMintWarrant::granting_for_tests(),
+        );
+
+        builder
+            .note_carrier_projection(Place::Local(0), 0, Place::Local(1), &sink_ty, SiteId(5))
+            .expect("a null-safe Sink field is a handle transfer");
+        assert_eq!(
+            projection_of(&builder, Place::Local(1)),
+            Some((Place::Local(0), vec![0])),
+            "a record root must seed the projection carrier its RecordInPlace drop needs"
+        );
+    }
+
+    /// The fallback is keyed on the root being a REGISTERED owned aggregate, not
+    /// on the field type alone: an unregistered named root has no per-field
+    /// in-place walk to skip, so clearing its slot would strand the handle.
+    #[test]
+    fn scope_exit_composite_fallback_declines_an_unregistered_named_root() {
+        let mut builder = Builder::default();
+        let sink_ty = builtin_ty(BuiltinType::Sink);
+        builder.binding_locals.insert(BindingId(1), Place::Local(0));
+        builder.register_owned_local(
+            BindingId(1),
+            "p".to_string(),
+            ResolvedTy::named_user("Unregistered", vec![]),
+            crate::lower::OwnerMintWarrant::granting_for_tests(),
+        );
+
+        builder
+            .note_carrier_projection(Place::Local(0), 0, Place::Local(1), &sink_ty, SiteId(6))
+            .expect("classification is total for a Sink field");
+        assert!(projection_of(&builder, Place::Local(1)).is_none());
+    }
+
+    #[test]
+    fn scope_exit_composite_fallback_stays_handle_transfer_and_null_safe_only() {
         let mut builder = Builder::default();
         let tuple = ResolvedTy::Tuple(vec![builtin_ty(BuiltinType::Vec)]);
         builder.binding_locals.insert(BindingId(1), Place::Local(0));

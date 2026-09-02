@@ -22,9 +22,10 @@ use std::collections::{HashMap, HashSet};
 /// `__hew_record_drop_inplace_<R>` → `<R>::close(self)` — which, unlike the
 /// string/bytes/opaque drop steps, is NOT a no-op over a neutralized (zeroed)
 /// payload slot: the variant tag survives the neutralize, so the thunk would
-/// close zeroed storage. The prover tracks these candidates so
-/// [`note_declared_release_neutralize_exclusions`] can exclude them the
-/// moment their payload is handed off.
+/// close zeroed storage. The prover tracks these candidates so the arm-release
+/// protocol declines them; the shell's own generation is ended at the payload
+/// hand-off by `release_transferred_declared_release_carriers`, which is what
+/// keeps the close exactly once (#3070).
 pub(in crate::lower) fn direct_payload_has_registered_resource_record(
     ty: &ResolvedTy,
     enum_layouts: &[crate::model::EnumLayout],

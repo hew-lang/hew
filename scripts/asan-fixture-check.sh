@@ -61,6 +61,12 @@
 #       A match-consumed resource payload with heap-owning sibling variants and
 #       an actor-state resource enum overwritten Loaded→Broken. Both must remain
 #       leak- and double-free-clean through recursive enum/record drop thunks.
+#   composite resource close-exactly-once (#3070)
+#       A `#[resource]` leaf reached through a record field projection
+#       (`p.slot.close()`) and through an enum payload binder (`.Ok(s)`), with
+#       the untouched-binder and declining-arm controls. The consuming close and
+#       the composite's own in-place field walk both freed the one malloc block;
+#       a regression is a double-free, a dropped close an LSan leak.
 #   drop-only Vec<channel.Receiver<T>>
 #       Repeatedly moves the sole Receiver authority into `[rx]`, closes the
 #       paired Sender, and returns through the Vec's clone-null/drop-present
@@ -413,6 +419,13 @@ ENUM_PAYLOAD_LOOP_SRC="${ROOT}/tests/vertical-slice/accept/enum_payload_call_loo
 CALL_SCRUTINEE_FRESH_SRC="${ROOT}/tests/vertical-slice/accept/call_scrutinee_fresh_forwarder_release.hew"
 ENUM_RESOURCE_MATCH_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_heap_sibling_asan.hew"
 ENUM_RESOURCE_STATE_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_state_overwrite_asan.hew"
+# Composite resource close-exactly-once (#3070): a `#[resource]` leaf reached
+# through a record field projection (`p.slot.close()`) and through an enum
+# payload binder (`.Ok(s)`). Both authorities — the consuming close and the
+# composite's own in-place field walk — used to free the one malloc block, so a
+# regression is a double-free ASan reports; dropping either close is an LSan
+# leak. Exits 0, clean.
+COMPOSITE_RESOURCE_CLOSE_SRC="${ROOT}/tests/vertical-slice/accept/composite_resource_close_once_asan.hew"
 # Owned-Vec element-store temp-leak (Linux arm of vec_push_temp_leak_oracle.rs):
 # a fresh unbound aggregate rvalue used as a `Vec::push` / `Vec::set` element
 # source is routed to the MOVE-in siblings (hew_vec_push_owned_move /
@@ -492,6 +505,9 @@ compile_asan_fixture "resource enum match-consume (#2641)" "${ENUM_RESOURCE_MATC
 
 ENUM_RESOURCE_STATE_BIN="${WORK_DIR}/enum_resource_state_overwrite_asan"
 compile_asan_fixture "resource enum actor-state overwrite (#2641)" "${ENUM_RESOURCE_STATE_SRC}" "${ENUM_RESOURCE_STATE_BIN}"
+
+COMPOSITE_RESOURCE_CLOSE_BIN="${WORK_DIR}/composite_resource_close_once_asan"
+compile_asan_fixture "composite resource close-exactly-once (#3070)" "${COMPOSITE_RESOURCE_CLOSE_SRC}" "${COMPOSITE_RESOURCE_CLOSE_BIN}"
 
 VEC_ELEM_STORE_TEMP_BIN="${WORK_DIR}/vec_elem_store_owned_temp_no_leak"
 HASHMAP_ENTRIES_BIN="${WORK_DIR}/hashmap_entries"
@@ -629,6 +645,12 @@ else
 fi
 
 if run_asan_fixture "resource enum actor-state overwrite (#2641)" "${ENUM_RESOURCE_STATE_BIN}" 0; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1))
+fi
+
+if run_asan_fixture "composite resource close-exactly-once (#3070)" "${COMPOSITE_RESOURCE_CLOSE_BIN}" 0; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1))

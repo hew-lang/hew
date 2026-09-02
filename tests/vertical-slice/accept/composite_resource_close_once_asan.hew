@@ -1,0 +1,127 @@
+// ASan fixture gate: a composite closes its resource leaf exactly once (#3070).
+//
+// This fixture is compiled against an ASan/LSan-instrumented libhew.a by
+// `scripts/asan-fixture-check.sh` and run with ASAN_OPTIONS=detect_leaks=1.
+// It must produce ZERO findings, and it is two-sided by construction: each
+// `close` calls `free` on a real `malloc` block, so a second close is a
+// double-free ASan reports, while a skipped close is an LSan leak.
+//
+// Shapes covered, each looped so one bad exit edge is 64 findings:
+//
+//   record field projected into its close — `p.slot.close()` reads the leaf out
+//   of a live record whose scope-exit `RecordInPlace` walk also closes it. Both
+//   authorities freed the one block before the projection nulled the record's
+//   slot on transfer.
+//
+//   enum payload bound by a match arm — `.Ok(s)` moves the payload into a
+//   binder that owns its own close while the scrutinee's `EnumInPlace` walk
+//   still closed the (now zeroed) variant slot. A `#[resource]` record payload
+//   has no null representation to skip, so the second close ran on cleared
+//   storage.
+//
+//   untouched binder — the same arm without reading the payload, proving the
+//   field read is not what discharges the shell.
+extern "C" {
+    fn malloc(size: i64) -> i64;
+    fn free(addr: i64);
+}
+
+#[resource]
+type Slot {
+    addr: i64;
+}
+
+impl Slot {
+    fn close(self) {
+        unsafe {
+            free(self.addr);
+        };
+    }
+}
+
+type Pair {
+    slot: Slot;
+    tag: i64;
+}
+
+fn acquire() -> Slot {
+    Slot {
+        addr: unsafe {
+            malloc(64)
+        },
+    }
+}
+
+fn acquire_result(ok: bool) -> Result<Slot, string> {
+    if ok {
+        Ok(acquire())
+    } else {
+        Err("declined")
+    }
+}
+
+// Record field projected straight into its consuming close.
+fn record_field_close() {
+    let p = Pair { slot: acquire(), tag: 7 };
+    p.slot.close();
+}
+
+// Record left untouched: the composite's own field walk is the sole closer.
+fn record_scope_exit_close() {
+    let p = Pair { slot: acquire(), tag: 9 };
+    let _ = p.tag;
+}
+
+// Enum payload bound by an unguarded arm, with a bit-copy field read.
+fn enum_payload_read() -> i64 {
+    match acquire_result(true) {
+        .Ok(s) => s.addr,
+        .Err(_) => 0,
+    }
+}
+
+// Enum payload bound and never touched.
+fn enum_payload_untouched() {
+    match acquire_result(true) {
+        .Ok(_s) => {},
+        .Err(_) => {},
+    }
+}
+
+// Enum payload closed explicitly by the arm.
+fn enum_payload_explicit_close() {
+    match acquire_result(true) {
+        .Ok(s) => s.close(),
+        .Err(_) => {},
+    }
+}
+
+// The declining arm allocates nothing: the control that keeps the loops honest.
+fn enum_payload_declined() -> i64 {
+    match acquire_result(false) {
+        .Ok(s) => {
+            s.close();
+            1
+        },
+        .Err(_) => 0,
+    }
+}
+
+fn main() -> i64 {
+    var declined: i64 = 0;
+    for _i in 0..64 {
+        record_field_close();
+        record_scope_exit_close();
+        let addr = enum_payload_read();
+        if addr == 0 {
+            return 70;
+        }
+        enum_payload_untouched();
+        enum_payload_explicit_close();
+        declined = declined + enum_payload_declined();
+    }
+    if declined != 0 {
+        return 71;
+    }
+    0
+}

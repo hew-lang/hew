@@ -131,3 +131,4 @@ macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consum
 macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consumed_bound_local_no_per_frame_leak_slope	#3095 emits one Vec index ownership handoff
 macos	failure	hew-cli::vec_iter_method_escape_leak_oracle	iter_source_freed_under_cursor_no_uaf_under_malloc_scribble	#3120 makes Vec iterator cleanup path-sensitive
 macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	arena_insert_remove_param_embed_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees
+linux	failure	hew-cli::coro_thread_fence_e2e	fork_children_create_no_os_threads	P4-CONCURRENCY: fork bodies run on OS threads until CORO lands

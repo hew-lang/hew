@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: stream_string_pipe_send_blocking.main [mono]
   locals:
     _0: i64
     _1: (Sink<string>, Stream<string>)

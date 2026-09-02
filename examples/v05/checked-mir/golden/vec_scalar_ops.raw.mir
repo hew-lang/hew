@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: vec_scalar_ops.main [mono]
   locals:
     _0: Vec<i64>
     _1: Vec<i64>

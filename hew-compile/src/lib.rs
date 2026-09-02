@@ -2498,6 +2498,152 @@ mod tests {
         );
     }
 
+    /// Two peer files of one directory module that claim the same assembled
+    /// name are a duplicate definition. The module graph rejects a duplicate
+    /// PUB name before checking, but a private one reaches the checker — where
+    /// registration visits each file on its own and never sees the collision,
+    /// because only the ASSEMBLED path collides. The identity table is the
+    /// only place that can report it, and it must: otherwise the user gets the
+    /// internal "identity table has no declaration" wording from whichever
+    /// consumer asks for the refused declaration first.
+    #[test]
+    fn directory_module_peers_claiming_one_name_report_a_duplicate_definition() {
+        let dir = tempfile::tempdir().expect("create directory-module fixture");
+        let module_dir = dir.path().join("shapes");
+        fs::create_dir(&module_dir).expect("create module directory");
+        write_source(
+            &module_dir,
+            "shapes.hew",
+            "type Point { x: i64; }\npub fn ax() -> i64 { let p = Point { x: 1 }; p.x }\n",
+        );
+        write_source(
+            &module_dir,
+            "circle.hew",
+            "type Point { y: i64; }\npub fn by() -> i64 { let p = Point { y: 2 }; p.y }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import shapes;\n\nfn main() { println(shapes.ax() + shapes.by()); }\n",
+        );
+
+        let failure = check_file(
+            &input,
+            &FrontendOptions {
+                project_dir: Some(dir.path().to_path_buf()),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect_err("two peers claiming `shapes.Point` must not type-check");
+        let duplicates: Vec<&FrontendDiagnostic> = failure
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                matches!(
+                    &diagnostic.kind,
+                    FrontendDiagnosticKind::Type(error)
+                        if error.kind == hew_types::error::TypeErrorKind::DuplicateDefinition
+                )
+            })
+            .collect();
+        assert_eq!(
+            duplicates.len(),
+            1,
+            "the collision must be reported exactly once: {:#?}",
+            failure.diagnostics
+        );
+        let rendered = format!("{duplicates:#?}");
+        assert!(
+            rendered.contains("`Point` is defined multiple times")
+                && rendered.contains("shapes.hew")
+                && rendered.contains("circle.hew"),
+            "the diagnostic must name both peer files: {rendered}"
+        );
+        assert!(
+            !format!("{:#?}", failure.diagnostics).contains("identity table has no"),
+            "the internal refusal wording must not reach the user: {:#?}",
+            failure.diagnostics
+        );
+    }
+
+    /// The same rule across the other namespace that assembles from several
+    /// files: a file import flattens into the root, so a name the root and the
+    /// imported file both declare collides there too, and the report must not
+    /// double up when the item is inventoried through more than one route.
+    #[test]
+    fn a_root_and_its_file_import_claiming_one_name_report_one_duplicate() {
+        let dir = tempfile::tempdir().expect("create file-import fixture");
+        write_source(
+            dir.path(),
+            "lib.hew",
+            "type Point { x: i64; }\npub fn lib_point() -> i64 { let p = Point { x: 1 }; p.x }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"lib.hew\";\n\ntype Point { y: i64; }\n\n             fn main() { let p = Point { y: 2 }; println(p.y + lib_point()); }\n",
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("a root and its file import cannot both declare `Point`");
+        let duplicates = failure
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                matches!(
+                    &diagnostic.kind,
+                    FrontendDiagnosticKind::Type(error)
+                        if error.kind == hew_types::error::TypeErrorKind::DuplicateDefinition
+                )
+            })
+            .count();
+        assert_eq!(
+            duplicates, 1,
+            "one collision must produce one report: {:#?}",
+            failure.diagnostics
+        );
+    }
+
+    /// Negative control for the rule above: an `extern "C"` symbol declared by
+    /// two peer files of one directory module is a redeclaration, not a
+    /// redefinition — the linker binds every call to one implementation and
+    /// the extern table resolves the second against the established contract.
+    /// It must keep type-checking, and both declarations must resolve.
+    #[test]
+    fn directory_module_peers_may_redeclare_one_extern_symbol() {
+        let dir = tempfile::tempdir().expect("create directory-module fixture");
+        let module_dir = dir.path().join("clock");
+        fs::create_dir(&module_dir).expect("create module directory");
+        write_source(
+            &module_dir,
+            "clock.hew",
+            "extern \"C\" {\n    fn hew_time_now_millis() -> i64;\n}\n             pub fn now() -> i64 { unsafe { hew_time_now_millis() } }\n",
+        );
+        write_source(
+            &module_dir,
+            "stamp.hew",
+            "extern \"C\" {\n    fn hew_time_now_millis() -> i64;\n}\n             pub fn stamp() -> i64 { unsafe { hew_time_now_millis() } }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import clock;\n\nfn main() { println(clock.now() + clock.stamp()); }\n",
+        );
+
+        let result = check_file(
+            &input,
+            &FrontendOptions {
+                project_dir: Some(dir.path().to_path_buf()),
+                ..FrontendOptions::default()
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "one C symbol declared by two peers is a redeclaration: {:#?}",
+            result.err()
+        );
+    }
+
     #[test]
     fn migration_frontend_does_not_relax_the_ordinary_frontend() {
         let dir = tempfile::tempdir().expect("create migration frontend fixture");
@@ -2568,6 +2714,107 @@ mod tests {
         assert_eq!(
             load_package_name(dir.path()).expect("valid manifest should load"),
             None
+        );
+    }
+
+    /// A file-imported item reaches HIR lowering on two surfaces: its file's
+    /// module-graph entry and, after `flatten_file_import_items`, the root
+    /// `Program::items`. The checker must have minted ONE declaration for it,
+    /// and that identity is the one the call site and the lowered HIR item
+    /// carry; a second root-owned mint would split every downstream join.
+    #[test]
+    fn flattened_file_import_declares_one_identity_per_item() {
+        let dir = tempfile::tempdir().expect("create file-import fixture dir");
+        write_source(
+            dir.path(),
+            "helper.hew",
+            "pub fn helper_value() -> i64 { 7 }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"helper.hew\";\n\nfn main() -> i64 { helper_value() }\n",
+        );
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+            .expect("file-import fixture must type-check");
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("type checking was enabled");
+
+        let is_helper = |item: &Item| matches!(item, Item::Function(f) if f.name == "helper_value");
+        let in_graph = state.program.module_graph.as_ref().is_some_and(|graph| {
+            graph
+                .modules
+                .values()
+                .any(|module| module.items.iter().any(|(item, _)| is_helper(item)))
+        });
+        let in_root_items = state.program.items.iter().any(|(item, _)| is_helper(item));
+        assert!(
+            in_graph && in_root_items,
+            "the fixture must present the helper on both checker surfaces \
+             (graph: {in_graph}, flattened root items: {in_root_items})"
+        );
+
+        let minted: Vec<hew_types::DefId> = tco
+            .identity
+            .declarations()
+            .map(|(_, declaration)| declaration.clone())
+            .filter(|declaration| {
+                declaration
+                    .full_path()
+                    .rsplit(['.', ':'])
+                    .next()
+                    .is_some_and(|leaf| leaf == "helper_value")
+            })
+            .collect();
+        assert_eq!(
+            minted.len(),
+            1,
+            "one physical declaration must mint exactly one DefId: {minted:?}"
+        );
+
+        let call_target = tco
+            .direct_call_targets
+            .values()
+            .find_map(|target| match target {
+                hew_types::check::CallTarget::User(declaration)
+                    if declaration.full_path().ends_with("helper_value") =>
+                {
+                    Some(declaration.clone())
+                }
+                _ => None,
+            })
+            .expect("main's call must resolve to the helper's user target");
+        assert_eq!(call_target, minted[0]);
+
+        let hir = hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "file-import fixture must lower without HIR diagnostics: {:#?}",
+            hir.diagnostics
+        );
+        let lowered: Vec<hew_types::DefId> = hir
+            .module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hew_hir::HirItem::Function(function) if function.name == "helper_value" => {
+                    Some(function.declaration.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lowered,
+            vec![minted[0].clone()],
+            "HIR must lower the helper once, under the checker-minted identity"
         );
     }
 
@@ -2968,8 +3215,12 @@ fn main() {
             hir.diagnostics
         );
         let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
+        // The root unit's declarations carry its own module identity — the
+        // entry file's stem — not a bare leaf; only the EMITTED symbol stays
+        // bare. Pinning the identity here is what keeps a same-leaf pair from
+        // sharing a body symbol.
         let expected = [
-            (hew_types::DefId::for_test("root_first"), "root_first"),
+            (hew_types::DefId::for_test("main.root_first"), "root_first"),
             (
                 hew_types::DefId::for_test("file_helpers.file_first"),
                 "file_helpers$file_first",

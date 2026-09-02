@@ -60,7 +60,19 @@ impl Checker {
             ))
             .cloned()
             .or_else(|| {
-                let declaring_trait = self.trait_ref_lookup_key(trait_name);
+                // `trait_method_ids` is keyed by the trait method's minted
+                // path, so the trait reference has to be resolved to the
+                // trait's own identity first: a `trait_defs` key is a
+                // registry spelling and a flat-imported trait is registered
+                // under its bare name while the declaration renders under the
+                // file that declares it.
+                let lookup_key = self.trait_ref_lookup_key(trait_name);
+                let declaring_trait = self
+                    .identity
+                    .declaration_by_path(&lookup_key)
+                    .map_or(lookup_key, |declaration| {
+                        declaration.full_path().to_string()
+                    });
                 self.trait_method_ids
                     .get(&format!("{declaring_trait}::{method_name}"))
                     .cloned()
@@ -1746,9 +1758,7 @@ impl Checker {
             span,
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::Extern {
-                    declaration: crate::identity::mint_def_id(
-                        extern_identity.signature_key.clone(),
-                    ),
+                    declaration: declaration_key.clone(),
                     endpoint: extern_identity.endpoint.clone(),
                     trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
                 },
@@ -2149,10 +2159,21 @@ impl Checker {
     ) {
         let c_symbol = c_symbol.into();
         let source_declaration = source_declaration.into();
-        let target = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).map_or_else(
-            || CallTarget::User(crate::identity::mint_def_id(source_declaration)),
-            CallTarget::Runtime,
-        );
+        let target = if let Some(family) =
+            crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol)
+        {
+            CallTarget::Runtime(family)
+        } else {
+            self.identity
+                .declaration_by_path(&source_declaration)
+                .cloned()
+                .map_or_else(
+                    || CallTarget::Builtin {
+                        endpoint: c_symbol.clone(),
+                    },
+                    CallTarget::User,
+                )
+        };
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteModuleQualifiedToFunction {

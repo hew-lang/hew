@@ -1,8 +1,3 @@
-#![allow(
-    deprecated,
-    reason = "temporary named identity reconstruction migration seam"
-)]
-
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Deref, DerefMut};
 
@@ -83,6 +78,7 @@ pub struct ResourceRecordLifecycle {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LifecycleRegistry {
     opaque_resources: BTreeMap<hew_types::DefId, OpaqueResourceLifecycle>,
+    opaque_resources_by_name: HashMap<String, hew_types::DefId>,
     resource_records: BTreeMap<hew_types::DefId, ResourceRecordLifecycle>,
 }
 
@@ -101,6 +97,10 @@ impl LifecycleRegistry {
             .entry(lifecycle.resource_declaration.clone())
         {
             Entry::Vacant(entry) => {
+                self.opaque_resources_by_name.insert(
+                    lifecycle.resource_declaration.full_path().to_string(),
+                    lifecycle.resource_declaration.clone(),
+                );
                 entry.insert(lifecycle);
                 Ok(())
             }
@@ -125,7 +125,9 @@ impl LifecycleRegistry {
         else {
             return None;
         };
-        self.opaque_resource(&hew_types::DefId::legacy_reconstruct_from_full_path(name))
+        self.opaque_resources_by_name
+            .get(name)
+            .and_then(|declaration| self.opaque_resource(declaration))
     }
 
     #[must_use]
@@ -240,9 +242,10 @@ impl TypeClassTable {
         &self,
         canonical_type_name: &str,
     ) -> Option<&OpaqueResourceLifecycle> {
-        self.opaque_resource_lifecycle(&hew_types::DefId::legacy_reconstruct_from_full_path(
-            canonical_type_name,
-        ))
+        self.lifecycle_registry
+            .opaque_resources_by_name
+            .get(canonical_type_name)
+            .and_then(|declaration| self.opaque_resource_lifecycle(declaration))
     }
 
     #[must_use]

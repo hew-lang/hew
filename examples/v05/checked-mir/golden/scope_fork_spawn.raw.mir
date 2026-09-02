@@ -1,5 +1,5 @@
 fn worker() -> () [conv=default]
-  key: worker [mono]
+  key: scope_fork_spawn.worker [mono]
   bb0:
     return
 
@@ -45,7 +45,7 @@ fn __hew_task_entry_worker() -> () [conv=task_entry]
     return
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: scope_fork_spawn.main [mono]
   locals:
     _0: LocalPid<Driver>
     _1: ()

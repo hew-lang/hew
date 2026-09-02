@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: lambda_actor_lifecycle.main [mono]
   locals:
     _0: LambdaPid<i64, ()>
     _1: i64
@@ -95,7 +95,7 @@ fn main() -> () [conv=default]
     goto bb5
 
 fn __hew_lambda_body_main_0(*mut (), *mut (), i64, *mut (), *mut ()) -> () [conv=lambda_actor_body]
-  key: main [mono] -> lambda_actor_body#0
+  key: lambda_actor_lifecycle.main [mono] -> lambda_actor_body#0
   locals:
     _0: *mut ()
     _1: *mut ()
@@ -112,7 +112,7 @@ fn __hew_lambda_body_main_0(*mut (), *mut (), i64, *mut (), *mut ()) -> () [conv
     return
 
 fn __hew_lambda_body_main_1(*mut (), *mut (), i64, *mut (), *mut ()) -> i64 [conv=lambda_actor_body]
-  key: main [mono] -> lambda_actor_body#1
+  key: lambda_actor_lifecycle.main [mono] -> lambda_actor_body#1
   locals:
     _0: *mut ()
     _1: *mut ()

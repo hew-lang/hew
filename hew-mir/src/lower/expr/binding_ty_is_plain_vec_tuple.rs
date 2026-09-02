@@ -1000,6 +1000,7 @@ fn classification_poison_module() -> hew_hir::HirModule {
             hew_hir::HirItem::Record(hew_hir::HirRecordDecl {
                 id: hew_hir::ItemId(1),
                 node: hew_hir::HirNodeId(3),
+                declaration: hew_types::DefId::for_test("Holder"),
                 name: "Holder".to_string(),
                 defining_module: None,
                 type_params: Vec::new(),

@@ -93,6 +93,38 @@ pub(super) enum TypeResolutionContext {
     ExternSignature,
 }
 
+/// How one module's nominal declarations are spelled in the identity table.
+///
+/// A nominal (type, trait, record, actor, supervisor, machine, const) has one
+/// PRIMARY spelling — the one `ResolvedTy::Named` carries for it, and the one
+/// every declaration-derived downstream key renders from — plus, in the two
+/// flattened cases, a second spelling recorded on the same occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NominalNamespace {
+    /// The root compilation unit: its nominals are BARE, and the root's own
+    /// module path is the second spelling.
+    RootBare,
+    /// An ordinary graph module: its nominals are owner-qualified and no
+    /// other spelling reaches them.
+    Owned,
+    /// A file import (`import "helper.hew";`) flattened into the root: its
+    /// nominals keep their own file's qualification and are ALSO reachable
+    /// bare, because the flattened items land in the root's namespace.
+    FlattenedFile,
+}
+
+impl NominalNamespace {
+    /// The namespace an import contributes into: a file import
+    /// (empty module path) flattens, a module import does not.
+    pub(super) fn for_import(file_import: bool) -> Self {
+        if file_import {
+            Self::FlattenedFile
+        } else {
+            Self::Owned
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "graph resolution keeps raw facts, validation, type, traversal, and memo state explicit"
@@ -416,7 +448,7 @@ impl Checker {
         }
     }
 
-    /// Mint the compile's module identities (rc1-F1 stage A).
+    /// Mint the compile's module identities before declaration inventory.
     ///
     /// One minting authority, run once at `check_program` entry: every graph
     /// module is interned under its canonical dotted identity (deduped by
@@ -425,16 +457,15 @@ impl Checker {
     /// from its canonical source — reusing a graph module's identity when the
     /// root IS an importable source (root-vs-import provenance invariance).
     ///
-    /// Bare-by-design exclusions:
-    /// * REPL fragments — their functions are re-declared across fragments
-    ///   and have no stable source module; the fragment keeps the legacy bare
-    ///   namespace.
-    /// * Source-less roots (synthetic stdlib floor roots from
-    ///   `rewrite_direct_stdlib_module_root`, unit-test programs without
-    ///   source paths) — nothing canonical exists to mint from.
+    /// Source-less roots (synthetic stdlib floor roots from
+    /// `rewrite_direct_stdlib_module_root`, unit-test programs without source
+    /// paths) receive the reserved synthetic occurrence authority rather than
+    /// borrowing a display-name namespace.
     fn mint_module_identities(&mut self, program: &Program) {
         self.identity = crate::identity::IdentityTable::new();
+        self.canonical_module_spellings.clear();
         let Some(module_graph) = &program.module_graph else {
+            self.identity.mint_synthetic_root();
             return;
         };
         // Deterministic mint order: the topo order, root last.
@@ -450,6 +481,15 @@ impl Checker {
                 &dotted,
                 &module.source_paths,
             );
+            // `import std.channel.channel;` names the primary file of the
+            // directory module `std.channel`, and registration keys that
+            // module's items by the spelling the import used. Record the pair
+            // now, while both are in hand, so declaration lookup can resolve
+            // one through the other.
+            if canonical != dotted {
+                self.canonical_module_spellings
+                    .insert(dotted.clone(), canonical.clone());
+            }
             self.identity.mint_module(&canonical, &module.source_paths);
         }
         // Second pass — per-file identities for directory modules' peer
@@ -474,9 +514,458 @@ impl Checker {
                 self.identity.mint_source_file_module(&canonical, source);
             }
         }
-        if !self.repl_fragment {
-            if let Some(root) = module_graph.modules.get(&module_graph.root) {
-                self.identity.mint_root_module(&root.source_paths);
+        if self.repl_fragment {
+            self.identity.mint_synthetic_root();
+        } else if let Some(root) = module_graph.modules.get(&module_graph.root) {
+            if self.identity.mint_root_module(&root.source_paths).is_none() {
+                self.identity.mint_synthetic_root();
+            }
+        }
+    }
+
+    /// Mint source declaration identities before semantic registration.
+    ///
+    /// This is the only source-declaration mint pass. It walks the resolved
+    /// module graph (including per-item defining-file provenance) so a root,
+    /// file import, module import, or alias route reaches the same occurrence.
+    /// Impl methods are completed at their semantic registration chokepoint,
+    /// where the resolved receiver and trait identities are available.
+    fn mint_source_declaration_identities(&mut self, program: &Program) {
+        if let Some(graph) = &program.module_graph {
+            let flat_file_imports = registration::flat_file_import_module_ids(program);
+            for module_id in &graph.topo_order {
+                let Some(module) = graph.modules.get(module_id) else {
+                    continue;
+                };
+                let dotted = module_id.path.join(".");
+                let namespace = if *module_id == graph.root {
+                    NominalNamespace::RootBare
+                } else if flat_file_imports.contains(module_id) {
+                    NominalNamespace::FlattenedFile
+                } else {
+                    NominalNamespace::Owned
+                };
+                let assembler = module
+                    .source_paths
+                    .first()
+                    .and_then(|source| self.identity.module_for_source(source))
+                    .or_else(|| self.identity.module_for_path(&dotted))
+                    .or_else(|| {
+                        (*module_id == graph.root)
+                            .then(|| self.identity.root_module())
+                            .flatten()
+                    });
+                for (item_index, (item, span)) in module.items.iter().enumerate() {
+                    let source = graph
+                        .item_source(module_id, item_index)
+                        .or_else(|| module.source_paths.first());
+                    // The file is the occurrence axis: two peer files whose
+                    // items share a span must stay distinguishable.
+                    let occurrence_module = source
+                        .and_then(|source| self.identity.module_for_source(source))
+                        .or(assembler);
+                    // The render axis is the module being assembled, which is
+                    // the module the checker keys by: `pkg/helpers.hew`'s
+                    // `pub fn make` publishes as `pkg.make`. A peer file that
+                    // is ALSO importable in its own right is walked a second
+                    // time as its own module and records `pkg.helpers.make` as
+                    // a second spelling of the same declaration.
+                    self.mint_item_declaration_identities(
+                        occurrence_module,
+                        assembler,
+                        namespace,
+                        item_index,
+                        item,
+                        span,
+                    );
+                }
+            }
+            // `Program::items` is the checker root surface. Some callers keep
+            // the graph root's `items` empty, so it is not interchangeable
+            // with `modules[root].items`. Repeated graph-root claims are
+            // idempotent. File imports are flattened into `Program::items`
+            // only after type checking, so the checker never sees an imported
+            // item on this surface.
+            let root = self.identity.root_module();
+            for (item_index, (item, span)) in program.items.iter().enumerate() {
+                self.mint_item_declaration_identities(
+                    root,
+                    root,
+                    NominalNamespace::RootBare,
+                    item_index,
+                    item,
+                    span,
+                );
+            }
+        } else {
+            let root = self.identity.root_module();
+            for (item_index, (item, span)) in program.items.iter().enumerate() {
+                self.mint_item_declaration_identities(
+                    root,
+                    root,
+                    NominalNamespace::RootBare,
+                    item_index,
+                    item,
+                    span,
+                );
+            }
+        }
+    }
+
+    pub(super) fn current_declaration_module(&self) -> Option<crate::ModuleId> {
+        self.current_item_source
+            .as_deref()
+            .and_then(|source| self.identity.module_for_source(source))
+            .or_else(|| {
+                self.current_module
+                    .as_deref()
+                    .and_then(|module| self.identity.module_for_path(module))
+            })
+            .or_else(|| {
+                // The module may be keyed by an import spelling that is not
+                // its canonical owner; the identities were minted under the
+                // owner.
+                self.current_module
+                    .as_deref()
+                    .and_then(|module| self.canonical_module_spellings.get(module))
+                    .and_then(|canonical| self.identity.module_for_path(canonical))
+            })
+            .or_else(|| self.identity.root_module())
+    }
+
+    /// Rewrite a declaration path whose module part is an import spelling of
+    /// a differently-owned module into that module's canonical spelling.
+    fn canonical_spelling_of(&self, path: &str) -> Option<String> {
+        let (module, leaf) = path.rsplit_once('.')?;
+        let canonical = self.canonical_module_spellings.get(module)?;
+        Some(format!("{canonical}.{leaf}"))
+    }
+
+    pub(super) fn require_declaration_path(
+        &mut self,
+        path: &str,
+        span: &std::ops::Range<usize>,
+    ) -> Option<crate::DefId> {
+        if let Some(declaration) = self.identity.declaration_by_path(path) {
+            return Some(declaration.clone());
+        }
+        // A module reached under an import spelling that is not its canonical
+        // owner keys its registrations by that spelling, while its
+        // declarations were minted under the owner. Resolve the one through
+        // the other rather than leaving the lookup to fail closed on a name
+        // the checker itself produced.
+        if let Some(declaration) = self
+            .canonical_spelling_of(path)
+            .and_then(|canonical| self.identity.declaration_by_path(&canonical))
+        {
+            return Some(declaration.clone());
+        }
+        self.errors.push(TypeError::new(
+            TypeErrorKind::InvalidOperation,
+            span.clone(),
+            format!("checker identity table has no source declaration `{path}`"),
+        ));
+        None
+    }
+
+    pub(super) fn require_declaration_occurrence(
+        &mut self,
+        span: &std::ops::Range<usize>,
+        kind: crate::DeclarationKind,
+        ordinal: usize,
+    ) -> Option<crate::DefId> {
+        let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+            self.current_declaration_module(),
+            span,
+            self.current_item_ordinal,
+            kind,
+            ordinal,
+        );
+        if let Some(declaration) = self.identity.declaration(occurrence) {
+            return Some(declaration.clone());
+        }
+        self.errors.push(TypeError::new(
+            TypeErrorKind::InvalidOperation,
+            span.clone(),
+            format!(
+                "checker identity table has no {kind:?} declaration at exact source occurrence"
+            ),
+        ));
+        None
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive source-declaration inventory keeps the identity boundary closed"
+    )]
+    /// Inventory one parsed item's declarations under `module`.
+    ///
+    /// `module` is the OCCURRENCE axis: the file the item was parsed from, so
+    /// two files whose items share a span stay distinguishable. `owner` is the
+    /// PATH axis: the module the checker keys the declaration under. They
+    /// differ for a directory module's peer files, whose items are reachable
+    /// as `{assembler}.{name}` even though each file has its own identity;
+    /// `owner` defaults to `module` everywhere else.
+    ///
+    /// The declaration path is the spelling the checker keys that declaration
+    /// by, so later lookups resolve without a second render:
+    /// * free and extern functions are always module-scoped
+    ///   (`{module}.{name}`; the root unit's own path for root functions);
+    /// * nominal declarations (types, traits, records, actors, supervisors,
+    ///   machines, consts) render as [`NominalNamespace`] says, and record
+    ///   the other reachable spelling as a second path on the same
+    ///   occurrence.
+    fn mint_item_declaration_identities(
+        &mut self,
+        module: Option<crate::ModuleId>,
+        owner: Option<crate::ModuleId>,
+        namespace: NominalNamespace,
+        item_ordinal: usize,
+        item: &Item,
+        span: &std::ops::Range<usize>,
+    ) {
+        use crate::{DeclarationKind as Kind, DeclarationOccurrence as Occurrence};
+
+        let module_path = owner.or(module).and_then(|owner| {
+            let path = self.identity.module_path(owner);
+            (path != "#synthetic-root").then(|| path.to_string())
+        });
+        let fn_path = |leaf: &str| {
+            module_path
+                .as_ref()
+                .map_or_else(|| leaf.to_string(), |module| format!("{module}.{leaf}"))
+        };
+        // The primary render is the spelling `ResolvedTy::Named` carries for
+        // the nominal downstream, because that is what every later
+        // declaration-derived key (`HirTypeDecl::qualified_name`, the MIR
+        // layout tables) renders from.
+        let owner_path = |leaf: &str| match namespace {
+            NominalNamespace::RootBare => leaf.to_string(),
+            NominalNamespace::Owned | NominalNamespace::FlattenedFile => fn_path(leaf),
+        };
+        // The OTHER spelling the same declaration is reachable under. A root
+        // nominal is bare but its module still owns it, and the checker's own
+        // registries (`trait_defs`, `type_def_spans`, the visibility index)
+        // key it `{module}.{leaf}`; a flat-imported nominal is qualified by
+        // its file but its items were flattened into the root's namespace, so
+        // it also answers bare. Recording the second spelling on the SAME
+        // occurrence is what the identity table is for: one declaration,
+        // several ways to name it. It never mints a second identity, and a
+        // spelling another declaration already owns is refused rather than
+        // merged.
+        let nominal_alias = |leaf: &str| match namespace {
+            NominalNamespace::RootBare => module_path
+                .as_ref()
+                .map(|module| format!("{module}.{leaf}")),
+            NominalNamespace::FlattenedFile => Some(leaf.to_string()),
+            NominalNamespace::Owned => None,
+        };
+        let mut declare = |kind: Kind, ordinal: usize, path: String| {
+            let occurrence =
+                Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
+            let Err(error) = self.identity.declare(occurrence, path.clone()) else {
+                return;
+            };
+            let crate::identity::DeclarationIdentityError::PathAlreadyDeclared {
+                established_occurrence,
+                ..
+            } = &error;
+            // An `extern "C"` symbol is the one declaration form where two
+            // occurrences under one path are genuinely one declaration: the
+            // linker binds every call to a single implementation, the checker
+            // keys every declaration of the symbol by the same fn-sig path,
+            // and the extern table resolves the redeclaration against the
+            // established ABI contract. Peer files of one directory module
+            // routinely re-declare a runtime symbol, so binding the further
+            // occurrence is what keeps their declarations resolvable.
+            if kind == Kind::ExternFunction {
+                self.identity.bind_redeclaration(occurrence, &path);
+                return;
+            }
+            // Everything else is a redefinition. Registration reports the
+            // ones it can see, which is one file at a time; a collision
+            // ACROSS files that share one namespace — two peer files of a
+            // directory module, or a root and the file imports flattened into
+            // it — is invisible there, because each file registers on its own
+            // and only the shared path collides. Report exactly that case
+            // here, naming both files, so the user never sees the identity
+            // table's internal "no declaration" wording instead of a
+            // duplicate definition.
+            let established_module = established_occurrence.module();
+            if established_module == module
+                || !self.reported_declaration_collisions.insert(path.clone())
+            {
+                return;
+            }
+            let leaf = path.rsplit(['.', ':']).next().unwrap_or(&path).to_string();
+            let established_file = established_module
+                .and_then(|module| self.identity.module_source(module))
+                .map(|source| source.display().to_string());
+            let conflicting_file = module
+                .and_then(|module| self.identity.module_source(module))
+                .map(|source| source.display().to_string());
+            let mut error = TypeError::new(
+                TypeErrorKind::DuplicateDefinition,
+                span.clone(),
+                format!("`{leaf}` is defined multiple times"),
+            )
+            .with_note_source(
+                established_occurrence.span(),
+                "previous definition here",
+                established_file.clone(),
+            );
+            if let (Some(established_file), Some(conflicting_file)) =
+                (&established_file, &conflicting_file)
+            {
+                error = error.with_suggestion(format!(
+                    "`{established_file}` and `{conflicting_file}` contribute to one \
+                     namespace: rename one `{leaf}`"
+                ));
+            }
+            error.source_module = conflicting_file;
+            self.errors.push(error);
+        };
+        match item {
+            Item::Import(_) | Item::Impl(_) => {}
+            Item::Const(decl) => {
+                declare(Kind::Const, 0, owner_path(&decl.name));
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Const, 0, alias);
+                }
+            }
+            Item::Function(decl) => declare(Kind::Function, 0, fn_path(&decl.name)),
+            Item::ExternBlock(block) => {
+                for (index, decl) in block.functions.iter().enumerate() {
+                    declare(Kind::ExternFunction, index, fn_path(&decl.name));
+                }
+            }
+            Item::TypeDecl(decl) => {
+                let owner = owner_path(&decl.name);
+                declare(Kind::Type, 0, owner.clone());
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Type, 0, alias);
+                }
+                for (index, method) in decl
+                    .body
+                    .iter()
+                    .filter_map(|item| match item {
+                        hew_parser::ast::TypeBodyItem::Method(method) => Some(method),
+                        hew_parser::ast::TypeBodyItem::Field { .. }
+                        | hew_parser::ast::TypeBodyItem::Variant(_) => None,
+                    })
+                    .enumerate()
+                {
+                    declare(Kind::TypeMethod, index, format!("{owner}::{}", method.name));
+                }
+            }
+            Item::TypeAlias(decl) => {
+                declare(Kind::TypeAlias, 0, owner_path(&decl.name));
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::TypeAlias, 0, alias);
+                }
+            }
+            Item::Record(decl) => {
+                declare(Kind::Record, 0, owner_path(&decl.name));
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Record, 0, alias);
+                }
+            }
+            Item::Trait(decl) => {
+                let owner = owner_path(&decl.name);
+                declare(Kind::Trait, 0, owner.clone());
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Trait, 0, alias);
+                }
+                for (index, method) in decl
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        hew_parser::ast::TraitItem::Method(method) => Some(method),
+                        hew_parser::ast::TraitItem::AssociatedType { .. } => None,
+                    })
+                    .enumerate()
+                {
+                    declare(
+                        Kind::TraitMethod,
+                        index,
+                        format!("{owner}::{}", method.name),
+                    );
+                }
+            }
+            Item::Actor(decl) => {
+                let owner = owner_path(&decl.name);
+                declare(Kind::Actor, 0, owner.clone());
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Actor, 0, alias);
+                }
+                if decl.init.is_some() {
+                    declare(Kind::ActorInit, 0, format!("{owner}::<init>"));
+                }
+                for (index, receive) in decl.receive_fns.iter().enumerate() {
+                    declare(
+                        Kind::ActorReceive,
+                        index,
+                        format!("{owner}::{}", receive.name),
+                    );
+                }
+                for (index, method) in decl.methods.iter().enumerate() {
+                    declare(
+                        Kind::ActorMethod,
+                        index,
+                        format!("{owner}::{}", method.name),
+                    );
+                }
+            }
+            Item::Supervisor(decl) => {
+                let owner = owner_path(&decl.name);
+                declare(Kind::Supervisor, 0, owner.clone());
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Supervisor, 0, alias);
+                }
+                declare(
+                    Kind::SupervisorBootstrap,
+                    0,
+                    format!("{owner}::<bootstrap>"),
+                );
+            }
+            Item::Machine(decl) => {
+                let owner = owner_path(&decl.name);
+                declare(Kind::Machine, 0, owner.clone());
+                if let Some(alias) = nominal_alias(&decl.name) {
+                    declare(Kind::Machine, 0, alias);
+                }
+                for (index, state) in decl.states.iter().enumerate() {
+                    let state_owner = format!("{owner}::state {}", state.name);
+                    declare(Kind::MachineState, index, state_owner.clone());
+                    if state.entry.is_some() {
+                        declare(
+                            Kind::MachineStateEntry,
+                            index,
+                            format!("{state_owner}::<entry>"),
+                        );
+                    }
+                    if state.exit.is_some() {
+                        declare(
+                            Kind::MachineStateExit,
+                            index,
+                            format!("{state_owner}::<exit>"),
+                        );
+                    }
+                }
+                for (index, event) in decl.events.iter().enumerate() {
+                    declare(
+                        Kind::MachineEvent,
+                        index,
+                        format!("{owner}::event {}", event.name),
+                    );
+                }
+                for (index, _) in decl.transitions.iter().enumerate() {
+                    declare(
+                        Kind::MachineTransition,
+                        index,
+                        format!("{owner}::<transition#{index}>"),
+                    );
+                }
             }
         }
     }
@@ -524,6 +1013,7 @@ impl Checker {
         self.module_item_sources.clear();
         self.source_file_span_indices.clear();
         self.current_item_source = None;
+        self.current_item_ordinal = 0;
         self.file_type_decls.clear();
         if let Some(module_graph) = &program.module_graph {
             let span_indices = module_graph.file_span_indices();
@@ -573,6 +1063,7 @@ impl Checker {
                 }
             }
         }
+        self.mint_source_declaration_identities(program);
         self.register_builtins();
         self.capture_protected_prelude_bindings();
         self.reject_non_root_protected_prelude_declarations(program);
@@ -779,6 +1270,7 @@ impl Checker {
                         }
                     }
                     self.current_item_source = None;
+                    self.current_item_ordinal = 0;
 
                     self.is_stdlib_source = saved_is_stdlib_source;
 
@@ -975,36 +1467,6 @@ impl Checker {
                 (name, resolved)
             })
             .collect();
-
-        // LEGACY ROOT RENDER (rc1-F1 stage A): inside the checker, root free
-        // functions are keyed canonically (`{root}.{name}`). At this
-        // publication boundary they re-render to the legacy bare spelling,
-        // because HIR (`hew-hir/src/lower.rs` fn_sigs clone) and hew-analysis
-        // still resolve root functions by source spelling and stage A must be
-        // byte-identical downstream. Overwriting a same-named bare entry
-        // reproduces the legacy registration semantics (a root declaration
-        // shadows a builtin's bare slot). The canonical identity remains
-        // published through `TypeCheckOutput::identity`.
-        // WHEN OBSOLETE: the rc2 identity continuation's
-        // render-canonicalization stage re-keys downstream consumers by
-        // `DefId`; this render is deleted and canonical keys publish
-        // unchanged. That is the commit that renames every root symbol.
-        if let Some(root) = self.identity.root_module_path() {
-            let prefix = format!("{root}.");
-            let root_keys: Vec<String> = resolved_fn_sigs
-                .keys()
-                .filter(|key| {
-                    key.strip_prefix(&prefix)
-                        .is_some_and(|leaf| !leaf.contains('.') && !leaf.contains("::"))
-                })
-                .cloned()
-                .collect();
-            for key in root_keys {
-                if let Some(sig) = resolved_fn_sigs.remove(&key) {
-                    resolved_fn_sigs.insert(key[prefix.len()..].to_string(), sig);
-                }
-            }
-        }
 
         self.validate_checker_output_contract(
             &mut resolved_expr_types,
@@ -1460,7 +1922,7 @@ impl Checker {
             user_clone_record_seeds: std::mem::take(&mut self.user_clone_record_seeds),
             type_defs: resolved_type_defs,
             internal_builtin_enum_names,
-            identity: std::mem::take(&mut self.identity),
+            identity: std::mem::take(&mut self.identity).freeze(),
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),

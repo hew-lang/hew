@@ -1,5 +1,5 @@
 fn make(bool) -> Packet [conv=default]
-  key: make [mono]
+  key: pattern_enum_payload_if_let_rest.make [mono]
   locals:
     _0: bool
     _1: Packet
@@ -68,7 +68,7 @@ fn make(bool) -> Packet [conv=default]
     goto bb3
 
 fn probe(bool) -> i64 [conv=default]
-  key: probe [mono]
+  key: pattern_enum_payload_if_let_rest.probe [mono]
   locals:
     _0: bool
     _1: Packet
@@ -128,7 +128,7 @@ fn probe(bool) -> i64 [conv=default]
     goto bb4
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: pattern_enum_payload_if_let_rest.main [mono]
   locals:
     _0: i64
     _1: bool

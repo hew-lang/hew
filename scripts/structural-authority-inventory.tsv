@@ -24,9 +24,9 @@
 group	form	path	count	retirement_stage	reason
 call-target-authority	call-target-consumer	hew-hir/src/lower.rs	13	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-hir/src/lower.rs	32	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/calls.rs	25	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/calls.rs	28	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/dispatch.rs	1	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/methods.rs	20	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/methods.rs	21	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/type_members.rs	1	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-variant	hew-types/src/check/dispatch.rs	10	stage-4	exact checker-selected executable identity carrier
 checker-hir-fact-relation	checker-relation-consumer	hew-types/src/check/expressions.rs	1	stage-2	real checker/HIR produced-value carrier inventory
@@ -35,7 +35,7 @@ checker-hir-fact-relation	checker-relation-use	hew-hir/src/lower.rs	7	stage-2	re
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/expressions.rs	11	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/mod.rs	15	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-variant	hew-types/src/check/types.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	371	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	379	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering and the identity-view reads that resolve an impl receiver's spelling and a peer file's span index
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	5	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	4	stage-2	real checker/HIR produced-value carrier inventory
@@ -52,7 +52,7 @@ legacy-heap-reader	heap-reader-call	hew-codegen-rs/src/llvm.rs	2	stage-5	RC1 syn
 legacy-heap-reader	heap-reader-call	hew-mir/src/model.rs	2	stage-5	RC1 syntax-node authority inventory
 legacy-heap-reader	heap-reader-call	hew-mir/src/ownership.rs	6	stage-4	RC1 syntax-node authority inventory
 lifecycle-identity-authority	lifecycle-candidate-field	hew-types/src/check/types.rs	13	stage-2	canonical checker lifecycle identity carrier
-lifecycle-identity-authority	lifecycle-conflict-use	hew-types/src/check/registration.rs	9	stage-2	canonical checker lifecycle identity carrier
+lifecycle-identity-authority	lifecycle-conflict-use	hew-types/src/check/registration.rs	10	stage-2	canonical checker lifecycle identity carrier
 lifecycle-identity-authority	lifecycle-conflict-variant	hew-types/src/check/types.rs	5	stage-2	canonical checker lifecycle identity carrier
 mir-ownership-sink	ownership-classify-call	hew-mir/src/lower/ownership.rs	4	stage-4	reviewed cleanup-shape classification sites, including destination classification when an exact source OwnerId generation transfers into a newly bound local
 mir-ownership-sink	ownership-classify-call	hew-mir/src/ownership.rs	1	stage-4	RC1 syntax-node authority inventory
@@ -142,7 +142,7 @@ string-method-identity	qualified-format-macro	hew-types/src/check/coerce.rs	2	st
 string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	8	stage-1	reviewed qualified string identity construction; adds dotted module-qualified unit-constructor resolution (module.Type.Variant); plus the single join of nominal+method into a fn_sigs key in record_generic_application, which every generic application funnels through so dispatch sites never build method identity themselves
 string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	9	stage-1	A315 S7 retired source-facing scoped diagnostic spellings
 string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	25	stage-1	retired source-facing scoped diagnostic spellings
-string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	1	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	12	stage-1	reviewed qualified string identity construction; the added sites are the declaration inventory's canonical child paths (actor init/handlers, machine states/events/transitions, supervisor bootstrap), each built once where the declaration is minted so no consumer rebuilds a child identity from spellings
 string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	22	stage-1	retired source-facing scoped diagnostic spellings plus file-indexed imported trait binding publication; plus the single shadow-report declaration-key builder shared by the impl, trait and type-body registration paths
 string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	6	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	1	stage-1	reviewed qualified string identity construction

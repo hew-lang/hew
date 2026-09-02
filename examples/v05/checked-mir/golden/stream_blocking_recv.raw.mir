@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: stream_blocking_recv.main [mono]
   locals:
     _0: i64
     _1: (Sink<bytes>, Stream<bytes>)

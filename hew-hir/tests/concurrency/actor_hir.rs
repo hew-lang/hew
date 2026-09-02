@@ -6,7 +6,7 @@ use hew_hir::{
     HirLifecycleHookKind, ResolutionCtx,
 };
 use hew_parser::ast::OverflowPolicy;
-use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -88,9 +88,11 @@ fn main() {}
         "parse errors: {:?}",
         parsed.errors
     );
+    let mut tco = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    tco.actor_handler_state_guards.clear();
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &tco,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );

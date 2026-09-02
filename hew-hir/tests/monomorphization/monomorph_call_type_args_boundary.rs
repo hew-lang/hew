@@ -12,7 +12,7 @@
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
 use hew_parser::ast::{Expr, Item, Stmt};
-use hew_types::{SpanKey, Ty, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker, SpanKey, Ty};
 
 /// A call to a generic function with its `call_type_args` entry poisoned as
 /// `Ty::Error` must produce `MonomorphisationCallTypeArgsViolation` AND must
@@ -51,7 +51,7 @@ fn poisoned_call_type_args_ty_error_emits_violation_and_fails_closed() {
         end: call_span.end,
         module_idx: 0,
     };
-    let mut tc = TypeCheckOutput::default();
+    let mut tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     tc.call_type_args.insert(span_key, vec![Ty::Error]);
 
     let lower_output = lower_program(

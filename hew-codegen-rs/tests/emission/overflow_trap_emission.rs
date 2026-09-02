@@ -19,14 +19,13 @@ use std::path::Path;
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
-use hew_types::TypeCheckOutput;
 
 fn emit_ll(source: &str, module_name: &str) -> String {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &crate::mir_fixture::checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );

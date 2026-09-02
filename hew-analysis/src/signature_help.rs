@@ -177,19 +177,11 @@ fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     // Try just the last component as a plain function name.
     let last = name.rsplit(['.', ':']).find(|s| !s.is_empty())?;
     if last != name {
-        // rc1-F1 stage F: prefer the leaf's canonical root identity
-        // (published through `TypeCheckOutput::identity`) over the bare
-        // rung below. `tc.fn_sigs` still publishes root free functions
-        // bare-only (the checker's legacy render survives F1 — see
-        // `check/mod.rs`'s "LEGACY ROOT RENDER" comment), so this rung is
-        // inert today; it activates without a further code change once
-        // rc2 deletes that render and publishes the canonical key
-        // directly. WHEN OBSOLETE: rc2 render-canonicalization stage, at
-        // which point the bare/`ends_with` rungs below are deleted.
-        if let Some(canonical) = tc.identity.root_fn_identity(last) {
-            if let Some(sig) = tc.fn_sigs.get(&canonical) {
-                return Some(sig.clone());
-            }
+        // Root free functions publish under their canonical `{root}.{name}`
+        // key; the leaf resolves through the checker's declaration table
+        // before the bare rung, which remains the builtin/extern floor.
+        if let Some(sig) = find_root_fn_sig(last, tc) {
+            return Some(sig);
         }
         if let Some(sig) = tc.fn_sigs.get(last) {
             return Some(sig.clone());
@@ -205,14 +197,26 @@ fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
 }
 
 fn find_exact_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
-    // rc1-F1 stage F: same canonical-first rung as `find_fallback_fn_sig`
-    // above, for the exact (unsplit) spelling.
-    if let Some(canonical) = tc.identity.root_fn_identity(name) {
-        if let Some(sig) = tc.fn_sigs.get(&canonical) {
-            return Some(sig.clone());
-        }
+    if let Some(sig) = find_root_fn_sig(name, tc) {
+        return Some(sig);
     }
     tc.fn_sigs.get(name).cloned()
+}
+
+/// Signature of a bare free-function spelling declared by the ROOT unit.
+///
+/// The checker publishes root free functions under `{root}.{name}` and
+/// records that declaration in its identity table. Resolve the spelling
+/// through that table rather than reconstructing the key: a bare spelling
+/// that names no root declaration yields `None` and the caller falls
+/// through to the builtin/extern rung.
+fn find_root_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
+    if name.contains('.') || name.contains("::") {
+        return None;
+    }
+    let root = tc.identity.root_module_path()?;
+    let declaration = tc.identity.declaration_by_path(&format!("{root}.{name}"))?;
+    tc.fn_sigs.get(declaration.full_path()).cloned()
 }
 
 /// Format signature label like `fn name(param1: Type, param2: Type) -> RetType`.

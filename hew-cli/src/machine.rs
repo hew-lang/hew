@@ -10,10 +10,9 @@
 //!   hew machine diagram <file.hew> --no-check           Skip HIR static checks
 //!   hew machine list <file.hew>                         List all machines with states/events
 
+use hew_compile::FrontendOptions;
 use hew_hir::{lower_program, HirItem, HirMachineDecl, ResolutionCtx};
 use hew_parser::ast::{Item, MachineDecl};
-use hew_parser::ParseResult;
-use hew_types::TypeCheckOutput;
 
 use crate::args::{MachineDiagramArgs, MachineFormat};
 
@@ -40,10 +39,8 @@ fn read_source(path: &str) -> String {
     }
 }
 
-/// Parse `source`, extracting machine declarations.  Returns both the flat
-/// machine list and the original `ParseResult` so callers can forward it to
-/// `check_and_lower` without a second parse.
-fn parse_machines(path: &str, source: &str) -> (Vec<MachineDecl>, ParseResult) {
+/// Parse `source`, extracting the machine declarations of this file.
+fn parse_machines(path: &str, source: &str) -> Vec<MachineDecl> {
     let result = hew_parser::parse(source);
 
     if !result.errors.is_empty() {
@@ -53,7 +50,7 @@ fn parse_machines(path: &str, source: &str) -> (Vec<MachineDecl>, ParseResult) {
         std::process::exit(1);
     }
 
-    let machines = result
+    result
         .program
         .items
         .iter()
@@ -64,16 +61,38 @@ fn parse_machines(path: &str, source: &str) -> (Vec<MachineDecl>, ParseResult) {
                 None
             }
         })
-        .collect();
-    (machines, result)
+        .collect()
 }
 
-/// Run HIR lowering + static checks on an already-parsed program.  Returns the
-/// checked HIR machines on success, or exits the process on failure.
-fn check_and_lower(path: &str, parsed: &ParseResult) -> Vec<HirMachineDecl> {
+/// Run the checker and HIR lowering + static checks on the file.  Returns the
+/// checked HIR machines declared by the file itself, or exits the process on
+/// failure.
+///
+/// HIR lowering resolves every declaration through the checker's identity
+/// table, so the file goes through the same import-resolving frontend as
+/// `hew check`; a default `TypeCheckOutput` would fail closed on every item.
+/// Import resolution flattens file-imported items into the checked program,
+/// so the result is narrowed to the machines the raw parse of this file
+/// declared (`ast_machines`).
+fn check_and_lower(path: &str, ast_machines: &[MachineDecl]) -> Vec<HirMachineDecl> {
+    let state = match hew_compile::run_file_frontend_to_typecheck(path, &FrontendOptions::default())
+    {
+        Ok(state) => state,
+        Err(failure) => {
+            crate::compile::render_frontend_diagnostics(&failure.diagnostics);
+            if failure.diagnostics.is_empty() {
+                eprintln!("{path}: error: {}", failure.message);
+            }
+            std::process::exit(1);
+        }
+    };
+    let Some(tco) = state.typecheck_result.tco.as_ref() else {
+        eprintln!("{path}: error: machine checks require a type-checked program");
+        std::process::exit(1);
+    };
     let lowered = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
+        &state.program,
+        tco,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -89,12 +108,9 @@ fn check_and_lower(path: &str, parsed: &ParseResult) -> Vec<HirMachineDecl> {
         .module
         .items
         .into_iter()
-        .filter_map(|item| {
-            if let HirItem::Machine(m) = item {
-                Some(m)
-            } else {
-                None
-            }
+        .filter_map(|item| match item {
+            HirItem::Machine(m) if ast_machines.iter().any(|ast| ast.name == m.name) => Some(m),
+            _ => None,
         })
         .collect()
 }
@@ -106,7 +122,6 @@ enum MachineCheckResult {
 
 fn check_machines_or_ast_fallback(
     path: &str,
-    parsed: &ParseResult,
     ast_machines: &[MachineDecl],
     supports_no_check: bool,
 ) -> MachineCheckResult {
@@ -120,7 +135,7 @@ fn check_machines_or_ast_fallback(
         return MachineCheckResult::AstFallback;
     }
 
-    let hir_machines = check_and_lower(path, parsed);
+    let hir_machines = check_and_lower(path, ast_machines);
     if hir_machines.is_empty() {
         eprintln!("No machines found in {path}");
         std::process::exit(1);
@@ -131,11 +146,11 @@ fn check_machines_or_ast_fallback(
 
 fn cmd_list(path: &str) {
     let source = read_source(path);
-    let (machines, parsed) = parse_machines(path, &source);
+    let machines = parse_machines(path, &source);
 
     // `list` renders from the AST below, but keeps fail-closed HIR validation
     // for non-generic machines.
-    check_machines_or_ast_fallback(path, &parsed, &machines, false);
+    check_machines_or_ast_fallback(path, &machines, false);
 
     for md in &machines {
         println!("machine {} {{", md.name);
@@ -182,10 +197,10 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
         args.format.clone().unwrap_or(MachineFormat::Mermaid)
     };
 
-    let (ast_machines, parsed) = parse_machines(path, &source);
+    let ast_machines = parse_machines(path, &source);
 
     if args.check {
-        match check_machines_or_ast_fallback(path, &parsed, &ast_machines, true) {
+        match check_machines_or_ast_fallback(path, &ast_machines, true) {
             MachineCheckResult::AstFallback => {
                 // Fall through to AST rendering below.
             }

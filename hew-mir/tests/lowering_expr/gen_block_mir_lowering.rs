@@ -376,7 +376,7 @@ fn gen_body_function_registered_in_raw_mir_pipeline() {
     // independent of whether the checker ran.
     let hir = hew_hir::lower_program(
         &parsed.program,
-        &hew_types::TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &hew_hir::ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -1777,4 +1777,15 @@ fn gen_block_capturing_closure_with_env_fails_closed() {
          shallow-aliased); got: {:#?}",
         pipeline.diagnostics
     );
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

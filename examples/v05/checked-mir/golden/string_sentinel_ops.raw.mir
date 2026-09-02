@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: string_sentinel_ops.main [mono]
   locals:
     _0: string
     _1: string

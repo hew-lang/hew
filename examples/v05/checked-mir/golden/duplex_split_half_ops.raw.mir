@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: duplex_split_half_ops.main [mono]
   locals:
     _0: i64
     _1: Duplex

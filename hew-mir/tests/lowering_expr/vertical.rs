@@ -3,7 +3,7 @@ use hew_mir::{
     lower_hir_module, CmpPred, FloatWidth, Instr, MirCheck, MirDiagnosticKind, MirStatement, Place,
     Terminator, TrapKind,
 };
-use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker};
 
 // ---------- @resource / @linear surface ----------
 //
@@ -55,7 +55,7 @@ fn linear_unconsumed_single_exit_fires_must_consume() {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -138,7 +138,7 @@ fn linear_no_consuming_methods_declared_fires_hir_diagnostic() {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -171,7 +171,7 @@ fn linear_with_consuming_method_emits_no_diagnostic() {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -204,7 +204,7 @@ fn resource_missing_close_method_fires_hir_diagnostic() {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -241,7 +241,7 @@ fn resource_with_close_method_emits_no_diagnostic() {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -280,7 +280,7 @@ fn resource_inline_close_method_fires_source_unsupported() {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -334,7 +334,7 @@ fn resource_inline_and_inherent_impl_close_single_diagnostic() {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -390,7 +390,7 @@ fn resource_close_non_unit_return_rejected() {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -438,7 +438,7 @@ fn resource_close_explicit_unit_return_accepted() {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -459,7 +459,7 @@ fn pipeline(source: &str) -> hew_mir::IrPipeline {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -1617,7 +1617,7 @@ fn unknown_user_type_rejected_at_mir_boundary() {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -1656,7 +1656,7 @@ fn registered_fieldless_user_type_has_zero_field_layout() {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -3674,7 +3674,7 @@ fn record_field_closure_accepts_registered_enum_field_type() {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -3704,7 +3704,7 @@ fn record_field_closure_rejects_unready_user_field_type() {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -3727,7 +3727,7 @@ fn nested_tuple_user_type_rejected_at_mir_boundary() {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -3750,7 +3750,7 @@ fn nested_array_user_type_rejected_at_mir_boundary() {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -4037,7 +4037,7 @@ fn lower_unsupported_binop_fails_closed_with_diagnostic() {
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let output = lower_program(
             &parsed.program,
-            &TypeCheckOutput::default(),
+            &checker_output(&parsed.program),
             &ResolutionCtx,
             hew_hir::TargetArch::host(),
         );
@@ -4060,7 +4060,7 @@ fn divide_lowers_cleanly_with_trap_edges() {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -4448,7 +4448,7 @@ fn linear_consumed_in_both_branches_accepted() {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -4561,7 +4561,7 @@ fn linear_consumed_only_in_then_branch_rejects() {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -4724,4 +4724,15 @@ fn return_in_binary_operand_position_infers_value_type() {
         fn main() { let _ = combine(1); }
         "#,
     );
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

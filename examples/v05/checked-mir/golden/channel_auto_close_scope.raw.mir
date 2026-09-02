@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: channel_auto_close_scope.main [mono]
   locals:
     _0: i64
     _1: (Sender<string>, Receiver<string>)

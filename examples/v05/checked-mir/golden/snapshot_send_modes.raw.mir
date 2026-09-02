@@ -17,7 +17,7 @@ fn TestSink__recv__take(i64, string, Boxed, string) -> () [conv=actor_handler]
     return
 
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: snapshot_send_modes.main [mono]
   locals:
     _0: LocalPid<TestSink>
     _1: i64

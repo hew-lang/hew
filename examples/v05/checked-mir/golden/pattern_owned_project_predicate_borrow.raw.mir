@@ -1,5 +1,5 @@
 fn classify_record(Labels) -> i64 [conv=default]
-  key: classify_record [mono]
+  key: pattern_owned_project_predicate_borrow.classify_record [mono]
   locals:
     _0: Labels
     _1: i64
@@ -81,7 +81,7 @@ fn classify_record(Labels) -> i64 [conv=default]
     goto bb1
 
 fn classify_tuple((string, u8, string)) -> i64 [conv=default]
-  key: classify_tuple [mono]
+  key: pattern_owned_project_predicate_borrow.classify_tuple [mono]
   locals:
     _0: (string, u8, string)
     _1: i64
@@ -163,7 +163,7 @@ fn classify_tuple((string, u8, string)) -> i64 [conv=default]
     goto bb1
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: pattern_owned_project_predicate_borrow.main [mono]
   locals:
     _0: string
     _1: string

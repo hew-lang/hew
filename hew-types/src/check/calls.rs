@@ -1215,31 +1215,19 @@ impl Checker {
     /// `fn_def_spans` under `signature_key`, or `None` when no declaration
     /// exists under that key.
     ///
-    /// LEGACY ROOT RENDER (rc1-F1 stage A): the checker keys root free
-    /// functions canonically (`{root}.{name}`), but the published `DefId`
-    /// must keep the legacy bare spelling — HIR/MIR/codegen still derive
-    /// symbols and lookups from it, and stage A must be byte-identical
-    /// downstream. The stored declaring module (`None` = root) selects the
-    /// render: root declarations publish their bare leaf, module
-    /// declarations publish `{module}.{leaf}`.
-    /// WHEN OBSOLETE: the rc2 identity continuation's render-canonicalization
-    /// stage re-keys downstream consumers by canonical `DefId`; this render
-    /// then publishes the canonical key unchanged. rc1 stages D and E
-    /// deliberately do NOT delete it — doing so renames every root symbol.
     fn user_call_target_for_declared_fn(&self, signature_key: &str) -> Option<CallTarget> {
         let (_, declaring_module) = self.fn_def_spans.get(signature_key)?;
         let declaration = declaring_module.as_ref().map_or_else(
-            || {
-                self.root_owned_fn_leaf(signature_key)
-                    .unwrap_or(signature_key)
-                    .to_string()
-            },
+            || signature_key.to_string(),
             |module| {
                 let name = signature_key.rsplit('.').next().unwrap_or(signature_key);
                 format!("{module}.{name}")
             },
         );
-        Some(CallTarget::User(crate::identity::mint_def_id(declaration)))
+        self.identity
+            .declaration_by_path(&declaration)
+            .cloned()
+            .map(CallTarget::User)
     }
 
     #[expect(
@@ -1252,7 +1240,16 @@ impl Checker {
         // declaration identity is semantic authority, while the validated ABI
         // symbol is the executable endpoint. Treating them as ordinary User
         // calls loses that endpoint and leaves MIR without a symbol mapping.
-        if let Some(extern_decl) = self.extern_table.declaration(signature_key) {
+        // The identity table is the one name-resolution authority: a
+        // declaration is reachable under several spellings (a peer file that
+        // is also importable in its own right publishes both `pkg.f` and
+        // `pkg.file.f`), and the extern table is keyed by the identity, not by
+        // a spelling. Resolve the key first, then read the extern row.
+        let resolved = self.identity.declaration_by_path(signature_key).cloned();
+        if let Some(extern_decl) = resolved
+            .as_ref()
+            .and_then(|declaration| self.extern_table.declaration(declaration.full_path()))
+        {
             if extern_decl.symbol.is_empty() {
                 return CallTarget::Unsupported {
                     reason: format!(
@@ -1267,19 +1264,15 @@ impl Checker {
             // stays user-provenance even when its spelling collides with an
             // audited runtime endpoint, in either registration order).
             //
-            // LEGACY ROOT RENDER (rc1-F1 stage B, mirrors stage A's fn_sigs
-            // publication): a root extern declaration is keyed canonically
-            // inside the checker but publishes its bare leaf, because HIR
-            // still resolves root declarations by source spelling.
-            // WHEN OBSOLETE: the rc2 identity continuation's
-            // render-canonicalization stage re-keys downstream consumers by
-            // DefId.
-            let declaration = self
-                .root_owned_fn_leaf(signature_key)
-                .unwrap_or(signature_key)
-                .to_string();
+            let Some(declaration) = resolved.clone() else {
+                return CallTarget::Unsupported {
+                    reason: format!(
+                        "checker identity table has no extern declaration `{signature_key}`"
+                    ),
+                };
+            };
             return CallTarget::Extern {
-                declaration: crate::identity::mint_def_id(declaration),
+                declaration,
                 endpoint: extern_decl.symbol.clone(),
                 trusted_compiled_stdlib: extern_decl
                     .declaring_module
@@ -1354,7 +1347,14 @@ impl Checker {
                 // the missing declaration owner even when the signature was
                 // populated by an earlier graph-registration pass that did
                 // not retain a second `fn_def_spans` compatibility entry.
-                return CallTarget::User(crate::identity::mint_def_id(declaration));
+                if let Some(declaration) = self.identity.declaration_by_path(&declaration) {
+                    return CallTarget::User(declaration.clone());
+                }
+                return CallTarget::Unsupported {
+                    reason: format!(
+                        "checker identity table has no imported declaration `{declaration}`"
+                    ),
+                };
             }
         }
         // rc1-F1 stage A: a bare spelling that reaches this rung re-anchors
@@ -1372,7 +1372,18 @@ impl Checker {
             self.current_module_idx,
             signature_key.to_string(),
         )) {
-            return CallTarget::User(crate::identity::mint_def_id(source_key));
+            return self
+                .identity
+                .declaration_by_path(source_key)
+                .cloned()
+                .map_or_else(
+                    || CallTarget::Unsupported {
+                        reason: format!(
+                            "checker identity table has no imported declaration `{source_key}`"
+                        ),
+                    },
+                    CallTarget::User,
+                );
         }
         // Compiler-registered builtins have no source declaration span. Their
         // executable identity comes from the typed registry populated during
@@ -2809,6 +2820,65 @@ mod channel_layout_target_tests {
         ));
     }
 
+    /// A contract-less mirror row gates `unsafe` but owns no call endpoint.
+    /// The layout witnesses are executed by their runtime family, and a
+    /// registry mirror publishes the key it was registered under rather than
+    /// a linkable symbol, so neither may displace the family classification —
+    /// a witness that resolved as an extern call emitted the mirror's key as
+    /// its callee and reached codegen with the wrong arity.
+    #[test]
+    fn a_contractless_witness_row_does_not_displace_the_runtime_family() {
+        let signature = "std.channel.hew_channel_recv_layout";
+        let mut checker = Checker::default();
+        checker
+            .canonical_std_module_sources
+            .insert("std.channel".to_string());
+        checker.extern_table.register_contractless_declaration(
+            crate::DefId::for_test(signature.to_string()),
+            signature.to_string(),
+            Some("std.channel".to_string()),
+        );
+
+        assert!(
+            checker.extern_table.requires_unsafe(signature),
+            "a contract-less witness row must still gate `unsafe`"
+        );
+        assert_eq!(
+            checker.call_target_for_signature(signature),
+            CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout)
+        );
+
+        // Counterfactual: an endpoint-owning declaration of the same key DOES
+        // publish an extern target, so the assertion above reads the endpoint
+        // disposition rather than a blanket refusal of extern rows.
+        let mut owning = Checker::default();
+        owning
+            .canonical_std_module_sources
+            .insert("std.channel".to_string());
+        let module = owning.identity.mint_module("std.channel", &[]);
+        let declaration = owning
+            .identity
+            .declare(
+                crate::DeclarationOccurrence::new(
+                    Some(module),
+                    &(0..0),
+                    crate::DeclarationKind::ExternFunction,
+                    0,
+                ),
+                signature,
+            )
+            .expect("test extern declaration");
+        owning.extern_table.register_detached_declaration(
+            declaration,
+            "hew_channel_recv_layout".to_string(),
+            Some("std.channel".to_string()),
+        );
+        assert!(matches!(
+            owning.call_target_for_signature(signature),
+            CallTarget::Extern { .. }
+        ));
+    }
+
     #[test]
     fn executable_catalog_identities_publish_builtin_targets() {
         let checker = Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
@@ -2874,6 +2944,19 @@ mod channel_layout_target_tests {
         checker
             .module_import_bindings
             .insert((None, 0, "wire".to_string()), "app.transport".to_string());
+        let module = checker.identity.mint_module("app.transport", &[]);
+        checker
+            .identity
+            .declare(
+                crate::DeclarationOccurrence::new(
+                    Some(module),
+                    &(0..0),
+                    crate::DeclarationKind::Function,
+                    0,
+                ),
+                "app.transport.duplex_pair",
+            )
+            .expect("test source declaration");
 
         assert_eq!(
             checker.call_target_for_signature("wire.duplex_pair"),

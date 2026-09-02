@@ -1,5 +1,5 @@
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: metric_register_record.main [mono]
   locals:
     _0: string
     _1: std.metrics.Counter

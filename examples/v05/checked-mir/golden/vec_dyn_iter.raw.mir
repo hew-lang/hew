@@ -31,7 +31,7 @@ fn Parcel::label_size(Parcel) -> i64 [conv=default]
     return
 
 fn make_person(string) -> dyn Labeled [conv=default]
-  key: make_person [mono]
+  key: vec_dyn_iter.make_person [mono]
   locals:
     _0: string
     _1: i64
@@ -73,7 +73,7 @@ fn make_person(string) -> dyn Labeled [conv=default]
     return
 
 fn make_parcel(string) -> dyn Labeled [conv=default]
-  key: make_parcel [mono]
+  key: vec_dyn_iter.make_parcel [mono]
   locals:
     _0: string
     _1: i64
@@ -115,7 +115,7 @@ fn make_parcel(string) -> dyn Labeled [conv=default]
     return
 
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: vec_dyn_iter.main [mono]
   locals:
     _0: Vec<dyn Labeled>
     _1: Vec<dyn Labeled>

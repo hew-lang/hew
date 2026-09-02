@@ -489,6 +489,7 @@ enum SourceCandidateOutcome {
 }
 
 fn validated_resource_candidate(
+    resource_declaration: crate::DefId,
     typed_result: crate::ffi_contracts::ExternOwnedResourceResult,
     release_contract: &crate::ffi_contracts::ExternOwnershipContract,
     producer_declaration: &SourceExternDeclaration,
@@ -497,7 +498,7 @@ fn validated_resource_candidate(
     producer_symbol: &str,
 ) -> OpaqueResourceLifecycleCandidate {
     OpaqueResourceLifecycleCandidate {
-        resource_declaration: crate::identity::mint_def_id(typed_result.resource_type),
+        resource_declaration,
         resource_type: typed_result.resource_type.to_string(),
         owner_module: typed_result.owner_module.to_string(),
         close_declaration,
@@ -545,6 +546,7 @@ fn derive_source_resource_candidate(
         &str,
         &crate::ffi_contracts::ExternOwnershipContract,
     >,
+    identity: &crate::identity::IdentityTable,
 ) -> SourceCandidateOutcome {
     let Some(typed_result) =
         crate::ffi_contracts::owned_resource_result_for_contract(producer_contract)
@@ -567,6 +569,16 @@ fn derive_source_resource_candidate(
         resource_type: typed_result.resource_type.to_string(),
         release_symbol: typed_result.release_symbol.to_string(),
         kind,
+    };
+    let Some(resource_declaration) = identity
+        .declaration_by_path(typed_result.resource_type)
+        .cloned()
+    else {
+        return failure(
+            OpaqueResourceLifecycleConflictKind::ProducerResultMismatch {
+                actual: "<missing source declaration identity>".to_string(),
+            },
+        );
     };
 
     let Some(producer_signature) = fn_sigs.get(&producer_declaration.signature_key) else {
@@ -653,6 +665,7 @@ fn derive_source_resource_candidate(
     };
 
     SourceCandidateOutcome::Candidate(validated_resource_candidate(
+        resource_declaration,
         typed_result,
         release_contract,
         producer_declaration,
@@ -680,6 +693,7 @@ fn derive_opaque_resource_candidate_graph(
     import_type_name_aliases: &HashMap<ImportBindingKey, String>,
     impl_method_declaration_ids: &HashMap<String, crate::DefId>,
     contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
+    identity: &crate::identity::IdentityTable,
 ) -> OpaqueResourceCandidateGraph {
     let contracts_by_symbol: std::collections::BTreeMap<
         &str,
@@ -706,6 +720,7 @@ fn derive_opaque_resource_candidate_graph(
                 import_type_name_aliases,
                 impl_method_declaration_ids,
                 &contracts_by_symbol,
+                identity,
             ) {
                 SourceCandidateOutcome::Irrelevant => continue,
                 SourceCandidateOutcome::Conflict {
@@ -713,7 +728,9 @@ fn derive_opaque_resource_candidate_graph(
                     release_symbol,
                     kind,
                 } => {
-                    conflicted_types.insert(crate::identity::mint_def_id(resource_type.clone()));
+                    if let Some(declaration) = identity.declaration_by_path(&resource_type) {
+                        conflicted_types.insert(declaration.clone());
+                    }
                     graph.conflicts.push(OpaqueResourceLifecycleConflict {
                         resource_type,
                         producer_symbol: (*producer_symbol).to_string(),
@@ -1546,6 +1563,17 @@ impl Checker {
         if !parsed.errors.is_empty() {
             return;
         }
+        let builtins_module = self.identity.mint_module("std.builtins", &[]);
+        for (item_ordinal, (item, span)) in parsed.program.items.iter().enumerate() {
+            self.mint_item_declaration_identities(
+                Some(builtins_module),
+                Some(builtins_module),
+                crate::check::NominalNamespace::Owned,
+                item_ordinal,
+                item,
+                span,
+            );
+        }
         // Pre-register the public trait/type definitions from builtins.hew
         // into `trait_defs` / `type_defs` WITHOUT claiming `type_def_spans`
         // for them.  The
@@ -1565,51 +1593,7 @@ impl Checker {
         for (item, span) in &parsed.program.items {
             match item {
                 Item::Trait(tr) if tr.visibility.is_pub() => {
-                    let info = Self::trait_info_from_decl(tr);
-                    self.trait_defs
-                        .entry(tr.name.clone())
-                        .or_insert_with(|| info.clone());
-                    let qualified = format!("builtins.{}", tr.name);
-                    self.trait_defs
-                        .entry(qualified)
-                        .or_insert_with(|| info.clone());
-                    let canonical = format!("std.builtins.{}", tr.name);
-                    self.trait_defs.entry(canonical.clone()).or_insert(info);
-                    self.published_bare_trait_owners
-                        .entry((
-                            self.current_module.clone(),
-                            self.current_module_idx,
-                            tr.name.clone(),
-                        ))
-                        .or_default()
-                        .insert(canonical);
-                    // Builtin traits are parsed outside the ordinary program
-                    // collection pass, so mint their exact declaration IDs
-                    // here as well as their TraitInfo. Dynamic dispatch (for
-                    // example `dyn Index::at`) consumes these IDs and must not
-                    // reconstruct them from the bare trait spelling.
-                    let saved_module = self.current_module.replace("std.builtins".to_string());
-                    let trait_scope =
-                        self.enter_primary_sig_scope(&[(tr.type_params.as_ref(), None)]);
-                    for trait_item in &tr.items {
-                        if let TraitItem::Method(method) = trait_item {
-                            self.register_trait_method_sig(&tr.name, method, span);
-                        }
-                    }
-                    self.exit_primary_sig_scope(trait_scope);
-                    self.current_module = saved_module;
-                    // Harvest #[lang_item("...")] from the stdlib-shipped trait
-                    // declaration so HIR f-string lowering can discover the
-                    // canonical Display::fmt name through `LangItemRegistry`
-                    // even when the user's program never declares the trait
-                    // itself. Without this, every `f"…"` lowering in user code
-                    // would fail-closed with "no lang-item registered for key
-                    // `display_fmt`". Seed WITHOUT claiming `lang_item_spans`
-                    // (mirrors the trait_defs pre-registration above): when the
-                    // file under check IS builtins.hew, the normal source pass
-                    // re-registers the same `Display` trait and must not trip a
-                    // duplicate-definition error against this seed.
-                    self.seed_trait_lang_items(tr);
+                    self.pre_register_builtin_trait(tr, span);
                 }
                 Item::TypeDecl(td) if td.visibility.is_pub() => {
                     let saved_module = self.current_module.replace("std.builtins".to_string());
@@ -1685,6 +1669,57 @@ impl Checker {
             include_str!("../../../std/result.hew"),
             &["Result"],
         );
+    }
+
+    /// Pre-register one `pub trait` declared by `std/builtins.hew`.
+    ///
+    /// Seeds `trait_defs` under the bare, `builtins.`- and `std.builtins.`-
+    /// qualified spellings, registers the trait's method signatures under the
+    /// `std.builtins` module, and harvests its `#[lang_item("…")]` keys.
+    /// Nothing here claims `type_def_spans` or `lang_item_spans`: a user file
+    /// that declares its own `Display` (or builtins.hew itself, when it is the
+    /// file under check) must re-register cleanly rather than collide with the
+    /// seed.
+    fn pre_register_builtin_trait(&mut self, tr: &TraitDecl, span: &Span) {
+        let info = Self::trait_info_from_decl(tr);
+        self.trait_defs
+            .entry(tr.name.clone())
+            .or_insert_with(|| info.clone());
+        let qualified = format!("builtins.{}", tr.name);
+        self.trait_defs
+            .entry(qualified)
+            .or_insert_with(|| info.clone());
+        let canonical = format!("std.builtins.{}", tr.name);
+        self.trait_defs.entry(canonical.clone()).or_insert(info);
+        self.published_bare_trait_owners
+            .entry((
+                self.current_module.clone(),
+                self.current_module_idx,
+                tr.name.clone(),
+            ))
+            .or_default()
+            .insert(canonical);
+        // Builtin traits are parsed outside the ordinary program collection
+        // pass, so mint their exact declaration IDs here as well as their
+        // TraitInfo. Dynamic dispatch (for example `dyn Index::at`) consumes
+        // these IDs and must not reconstruct them from the bare trait
+        // spelling.
+        let saved_module = self.current_module.replace("std.builtins".to_string());
+        let trait_scope = self.enter_primary_sig_scope(&[(tr.type_params.as_ref(), None)]);
+        for trait_item in &tr.items {
+            if let TraitItem::Method(method) = trait_item {
+                self.register_trait_method_sig(&tr.name, method, span);
+            }
+        }
+        self.exit_primary_sig_scope(trait_scope);
+        self.current_module = saved_module;
+        // Harvest #[lang_item("...")] from the stdlib-shipped trait
+        // declaration so HIR f-string lowering can discover the canonical
+        // Display::fmt name through `LangItemRegistry` even when the user's
+        // program never declares the trait itself. Without this, every `f"…"`
+        // lowering in user code would fail closed with "no lang-item
+        // registered for key `display_fmt`".
+        self.seed_trait_lang_items(tr, span);
     }
 
     fn register_compiled_stdlib_receiver_impls(
@@ -5580,8 +5615,11 @@ impl Checker {
     /// Genuine collisions between two source traits both tagging the same key
     /// are still caught: that path runs through `register_trait_lang_items`,
     /// which owns `lang_item_spans`.
-    pub(super) fn seed_trait_lang_items(&mut self, td: &TraitDecl) {
-        let trait_id = crate::identity::mint_def_id(self.trait_ref_lookup_key(&td.name));
+    pub(super) fn seed_trait_lang_items(&mut self, td: &TraitDecl, span: &Span) {
+        let trait_path = format!("std.builtins.{}", td.name);
+        let Some(trait_id) = self.require_declaration_path(&trait_path, span) else {
+            return;
+        };
         if let Some(key) = &td.lang_item {
             if self.lang_items.get(key).is_none() {
                 self.lang_items.insert(
@@ -5599,17 +5637,17 @@ impl Checker {
             if let TraitItem::Method(m) = item {
                 if let Some(key) = &m.lang_item {
                     if self.lang_items.get(key).is_none() {
+                        let method_id = self.require_declaration_path(
+                            &format!("{}::{}", trait_id.full_path(), m.name),
+                            &m.span,
+                        );
                         self.lang_items.insert(
                             key.clone(),
                             crate::LangItemBinding {
                                 trait_name: td.name.clone(),
                                 trait_id: trait_id.clone(),
                                 method_name: Some(m.name.clone()),
-                                method_id: Some(crate::identity::mint_def_id(format!(
-                                    "{}::{}",
-                                    trait_id.full_path(),
-                                    m.name
-                                ))),
+                                method_id,
                             },
                         );
                     }
@@ -5633,7 +5671,10 @@ impl Checker {
     /// Duplicate keys raise `TypeError::duplicate_definition` against the
     /// trait's span so the registry remains one-binding-per-key.
     pub(super) fn register_trait_lang_items(&mut self, td: &TraitDecl, span: Span) {
-        let trait_id = crate::identity::mint_def_id(self.trait_ref_lookup_key(&td.name));
+        let trait_path = self.trait_ref_lookup_key(&td.name);
+        let Some(trait_id) = self.require_declaration_path(&trait_path, &span) else {
+            return;
+        };
         if let Some(key) = &td.lang_item {
             if let Some(prev) = self.lang_item_spans.insert(key.clone(), span.clone()) {
                 self.errors
@@ -5661,17 +5702,17 @@ impl Checker {
                         self.errors
                             .push(TypeError::duplicate_definition(method_span, key, prev));
                     } else {
+                        let method_id = self.require_declaration_path(
+                            &format!("{}::{}", trait_id.full_path(), m.name),
+                            &m.span,
+                        );
                         self.lang_items.insert(
                             key.clone(),
                             crate::LangItemBinding {
                                 trait_name: td.name.clone(),
                                 trait_id: trait_id.clone(),
                                 method_name: Some(m.name.clone()),
-                                method_id: Some(crate::identity::mint_def_id(format!(
-                                    "{}::{}",
-                                    trait_id.full_path(),
-                                    m.name
-                                ))),
+                                method_id,
                             },
                         );
                     }
@@ -6126,12 +6167,14 @@ impl Checker {
                             .as_ref()
                             .and_then(|sources| sources.get(item_idx))
                             .cloned();
+                        self.current_item_ordinal = item_idx;
                         self.current_module_idx = span_indices
                             .item_index(mod_id, item_idx)
                             .unwrap_or_default();
                         self.collect_function_item(item, span);
                     }
                     self.current_item_source = None;
+                    self.current_item_ordinal = 0;
 
                     for e in &mut self.errors[err_before..] {
                         if e.source_module.is_none() {
@@ -6176,7 +6219,8 @@ impl Checker {
                     .collect()
             })
             .unwrap_or_default();
-        for (item, span) in &program.items {
+        for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
+            self.current_item_ordinal = item_ordinal;
             self.collect_function_item(item, span);
         }
         self.current_module_direct_imports.clear();
@@ -6469,19 +6513,25 @@ impl Checker {
                                         )
                                     })
                                 };
-                                if let (Ok(receiver_args), Some((declaring_trait, _))) = (
+                                let receiver_nominal = self
+                                    .require_declaration_path(&receiver_name, &m.span)
+                                    .map(crate::NominalId::from_minted_declaration);
+                                if let (
+                                    Ok(receiver_args),
+                                    Some((declaring_trait, _)),
+                                    Some(receiver_nominal),
+                                ) = (
                                     self_type_args
                                         .iter()
                                         .map(ResolvedTy::from_ty)
                                         .collect::<Result<Vec<_>, _>>(),
                                     self.trait_method_call_target_ids(&tb.name, &m.name),
+                                    receiver_nominal,
                                 ) {
                                     let declaration = crate::default_impl_method_declaration(
                                         &declaring_trait,
                                         &crate::NominalInstance {
-                                            nominal: crate::identity::mint_nominal_id(
-                                                receiver_name,
-                                            ),
+                                            nominal: receiver_nominal,
                                             args: receiver_args,
                                         },
                                         &m.name,
@@ -6622,7 +6672,7 @@ impl Checker {
                 self.exit_primary_sig_scope(trait_sig_scope);
             }
             Item::ExternBlock(eb) => {
-                self.register_extern_block(eb);
+                self.register_extern_block(eb, span);
             }
             Item::Import(id) => {
                 // Always track the import span. For non-root modules the span is a byte
@@ -6897,9 +6947,13 @@ impl Checker {
                 &method.span,
             );
         }
-        let trait_id = crate::identity::mint_def_id(declaration_key.clone());
-        let method_id =
-            crate::identity::mint_def_id(format!("{}::{}", trait_id.full_path(), method.name));
+        let Some(trait_id) = self.require_declaration_path(&declaration_key, span) else {
+            return;
+        };
+        let method_path = format!("{}::{}", trait_id.full_path(), method.name);
+        let Some(method_id) = self.require_declaration_path(&method_path, &method.span) else {
+            return;
+        };
         let ids = (trait_id, method_id);
         self.trait_method_ids
             .insert(ids.1.full_path().to_string(), ids.clone());
@@ -7681,7 +7735,10 @@ impl Checker {
         trait_bound: Option<&TraitBound>,
     ) -> FnSig {
         let method_key = format!("{type_name}::{}", method.name);
-        let declaration_id = self.impl_method_declaration_id(type_name, method, trait_bound);
+        let Some(declaration_id) = self.impl_method_declaration_id(type_name, method, trait_bound)
+        else {
+            return FnSig::default();
+        };
         // Preserve the exact trait declaration selected while this impl's
         // source scope is active. A bare module import can make a trait
         // unambiguous without publishing it as an ordinary named import; HIR
@@ -8085,11 +8142,11 @@ impl Checker {
     /// `impl<T> Trait for Box<T>` from `impl Trait for Box<i64>`; concrete call
     /// arguments deliberately do not participate.
     fn impl_method_declaration_id(
-        &self,
+        &mut self,
         type_name: &str,
         method: &FnDecl,
         trait_bound: Option<&TraitBound>,
-    ) -> crate::DefId {
+    ) -> Option<crate::DefId> {
         let receiver = if self.registration_is_flat_file_import || type_name.contains('.') {
             type_name.to_string()
         } else {
@@ -8124,10 +8181,28 @@ impl Checker {
                 }
             },
         );
-        crate::identity::mint_def_id(format!(
+        let path = format!(
             "{receiver}::<impl {trait_identity} for {declared_receiver}>::{}",
             method.name
-        ))
+        );
+        let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+            self.current_declaration_module(),
+            &method.fn_span,
+            self.current_item_ordinal,
+            crate::DeclarationKind::ImplMethod,
+            0,
+        );
+        if let Ok(declaration) = self.identity.declare(occurrence, path.clone()) {
+            return Some(declaration);
+        }
+        // Impl methods are registered per route, and a shipped module reached
+        // through the compiled-in stdlib pass and through the module graph
+        // presents the same method under two occurrences. The canonical path
+        // already names the receiver, the trait and the method, so an
+        // established row for it is that same method: resolve it rather than
+        // mint a second identity. A genuinely duplicated impl method collides
+        // on this path too, and impl registration reports that.
+        self.identity.declaration_by_path(&path).cloned()
     }
 
     /// Substitute trait-side type references into impl-side concrete types.
@@ -9934,24 +10009,29 @@ impl Checker {
     /// peer files of one directory module can align spans exactly).
     fn resolve_extern_contract(
         &mut self,
-        key: &str,
+        block_span: &Span,
+        declaration_ordinal: usize,
         source_symbol: &str,
         sig: &FnSig,
         consuming_params: &[bool],
         f: &hew_parser::ast::ExternFnDecl,
-    ) {
-        let declaration = crate::identity::mint_def_id(key.to_string());
+    ) -> Option<crate::DefId> {
+        let declaration = self.require_declaration_occurrence(
+            block_span,
+            crate::DeclarationKind::ExternFunction,
+            declaration_ordinal,
+        )?;
         if source_symbol.is_empty() {
             // Template declarations (`#[extern_symbol("…{T}…")]`) have no
             // call-independent symbol and therefore no symbol-keyed contract
             // slot; they still register as extern declarations (call-target
             // resolution, `unsafe` gating).
             self.extern_table.register_detached_declaration(
-                declaration,
+                declaration.clone(),
                 String::new(),
                 self.current_module.clone(),
             );
-            return;
+            return Some(declaration);
         }
         // Resolve the candidate signature's nominal identities NOW, in the
         // declaring item's own lexical context (rc1-F1 stage C). The
@@ -9970,7 +10050,7 @@ impl Checker {
             .map(|(id, contract)| (id, contract.clone()))
         else {
             self.extern_table.mint(crate::extern_table::ExternContract {
-                owner: declaration,
+                owner: declaration.clone(),
                 symbol: source_symbol.to_string(),
                 params: resolved_params,
                 return_type: resolved_return,
@@ -9980,7 +10060,7 @@ impl Checker {
                 declaring_module: self.current_module.clone(),
                 declaring_source: self.current_item_source.clone(),
             });
-            return;
+            return Some(declaration);
         };
         let agrees = established.params == resolved_params
             && established.return_type == resolved_return
@@ -9991,7 +10071,7 @@ impl Checker {
             // another name of the ONE established ABI contract, keeping its
             // OWN provenance (declaring module, endpoint).
             self.extern_table.adopt_declaration(
-                declaration,
+                declaration.clone(),
                 source_symbol.to_string(),
                 self.current_module.clone(),
                 established_id,
@@ -10002,7 +10082,7 @@ impl Checker {
             // hard error propagates (the unsafe registry is not conditional
             // on ABI agreement).
             self.extern_table.register_detached_declaration(
-                declaration,
+                declaration.clone(),
                 source_symbol.to_string(),
                 self.current_module.clone(),
             );
@@ -10015,6 +10095,7 @@ impl Checker {
                 f,
             );
         }
+        Some(declaration)
     }
 
     /// Report a declaration whose signature disagrees with the symbol's
@@ -10097,11 +10178,69 @@ impl Checker {
         });
     }
 
+    /// Establish the extern declaration identity of a registry-loaded C
+    /// function and register its `unsafe` gate.
+    ///
+    /// Registry metadata and codegen-intercepted witnesses publish these
+    /// functions under `key` in `fn_sigs` and the `unsafe` gate resolves a
+    /// call by that same key, so the declaration path is `key`. Shipped
+    /// modules routinely re-export one runtime symbol, so a bare path that is
+    /// already established is the same declaration reached through a second
+    /// mirror, not a conflict; a source declaration already gating `key`
+    /// keeps its own record.
+    fn declare_contractless_extern(
+        &mut self,
+        module: crate::ModuleId,
+        module_path: &str,
+        key: &str,
+    ) {
+        let declaration = if let Some(existing) = self.identity.declaration_by_path(key) {
+            existing.clone()
+        } else {
+            // One occurrence per source-less extern declaration in this
+            // module. The registry mirror and the layout witnesses are two
+            // inventories that both declare here; a per-inventory ordinal
+            // made them collide, and `declare` resolves a collision to the
+            // ESTABLISHED declaration, so the second inventory's rows
+            // silently adopted the first's identities and endpoints.
+            let ordinal = self
+                .contractless_extern_occurrences
+                .entry(module)
+                .or_insert(0);
+            let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                Some(module),
+                &(0..0),
+                *ordinal,
+                crate::DeclarationKind::ExternFunction,
+                0,
+            );
+            *ordinal += 1;
+            match self.identity.declare(occurrence, key) {
+                Ok(declaration) => declaration,
+                Err(error) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        0..0,
+                        format!("extern declaration `{key}` in `{module_path}`: {error}"),
+                    ));
+                    return;
+                }
+            }
+        };
+        if !self.extern_table.requires_unsafe(key) {
+            self.extern_table.register_contractless_declaration(
+                declaration,
+                key.to_string(),
+                Some(module_path.to_string()),
+            );
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "extern registration validates ABI authority and records lifecycle provenance"
     )]
-    pub(super) fn register_extern_block(&mut self, eb: &ExternBlock) {
+    pub(super) fn register_extern_block(&mut self, eb: &ExternBlock, block_span: &Span) {
         // `extern "rt"` is the Hew-side declaration surface for JIT-visible
         // runtime functions. Validate each declared symbol against the `stable`
         // section of scripts/jit-symbol-classification.toml. Fail-closed: an
@@ -10156,7 +10295,7 @@ impl Checker {
             }
         }
 
-        for f in &eb.functions {
+        for (declaration_ordinal, f) in eb.functions.iter().enumerate() {
             let mut hole_vars = Vec::new();
             let param_names = f.params.iter().map(|p| p.name.clone()).collect();
             let params = f
@@ -10213,11 +10352,9 @@ impl Checker {
                     .collect();
                 sig.return_type = self.resolve_extern_sig_imported_nominals(&sig.return_type);
             }
-            // rc1-F1 stage B: extern declarations mint their key through the
-            // canonical owner chokepoint, exactly like ordinary free
-            // functions — a root extern fn keys `{root_module}.{name}` inside
-            // the checker (the publication boundary re-renders root entries
-            // to their legacy bare spelling).
+            // Extern declarations use the same canonical owner spelling as
+            // ordinary free functions. Their exact DefId comes from the
+            // enclosing source occurrence inventoried before registration.
             let key = scoped_module_item_name(self.canonical_fn_owner(), &f.name)
                 .unwrap_or_else(|| f.name.clone());
             let consuming_params = f
@@ -10225,12 +10362,21 @@ impl Checker {
                 .iter()
                 .map(|param| param.is_consume)
                 .collect::<Vec<_>>();
-            self.resolve_extern_contract(&key, &source_symbol, &sig, &consuming_params, f);
+            let Some(declaration) = self.resolve_extern_contract(
+                block_span,
+                declaration_ordinal,
+                &source_symbol,
+                &sig,
+                &consuming_params,
+                f,
+            ) else {
+                continue;
+            };
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.fn_sigs.insert(key.clone(), sig);
             self.source_extern_declarations
                 .push(SourceExternDeclaration {
-                    declaration: crate::identity::mint_def_id(key.clone()),
+                    declaration,
                     symbol: source_symbol,
                     symbol_template: source_symbol_template,
                     signature_key: key.clone(),
@@ -10280,6 +10426,7 @@ impl Checker {
             &self.import_type_name_aliases,
             &self.impl_method_declaration_ids,
             crate::ffi_contracts::FFI_OWNERSHIP_CONTRACTS,
+            &self.identity,
         )
     }
 
@@ -10296,6 +10443,7 @@ impl Checker {
             &self.import_type_name_aliases,
             &self.impl_method_declaration_ids,
             contracts,
+            &self.identity,
         )
     }
 
@@ -10373,6 +10521,16 @@ impl Checker {
             ),
         ];
 
+        // The witnesses are calls across the FFI boundary even though codegen,
+        // not an extern block, supplies their ABI. They are declared in the
+        // module currently being registered so the `unsafe` gate reads them
+        // out of the one extern-declaration index.
+        let witness_module = match self.current_module.clone() {
+            Some(path) => self.identity.mint_module(&path, &[]),
+            None => self.identity.mint_synthetic_root(),
+        };
+        let witness_module_path = self.identity.module_path(witness_module).to_string();
+
         for (name, param_name, param_ty, ret_ty) in builtins {
             let key = scoped_module_item_name(self.current_module.as_deref(), name)
                 .unwrap_or_else(|| (*name).to_string());
@@ -10386,8 +10544,7 @@ impl Checker {
                 ..FnSig::default()
             };
             self.fn_sigs.insert(key.clone(), sig);
-            self.extern_table
-                .register_declaration_only(crate::identity::mint_def_id(key));
+            self.declare_contractless_extern(witness_module, &witness_module_path, &key);
         }
 
         // The typed-serialise send takes the value by reference plus the
@@ -10397,15 +10554,16 @@ impl Checker {
             scoped_module_item_name(self.current_module.as_deref(), "hew_channel_send_layout")
                 .unwrap_or_else(|| "hew_channel_send_layout".to_string());
         if !self.fn_sigs.contains_key(&send_key) {
-            let sig = FnSig {
-                param_names: vec!["tx".to_string(), "data".to_string()],
-                params: vec![sender_ty, Ty::String],
-                return_type: Ty::Unit,
-                ..FnSig::default()
-            };
-            self.fn_sigs.insert(send_key.clone(), sig);
-            self.extern_table
-                .register_declaration_only(crate::identity::mint_def_id(send_key));
+            self.fn_sigs.insert(
+                send_key.clone(),
+                FnSig {
+                    param_names: vec!["tx".to_string(), "data".to_string()],
+                    params: vec![sender_ty, Ty::String],
+                    return_type: Ty::Unit,
+                    ..FnSig::default()
+                },
+            );
+            self.declare_contractless_extern(witness_module, &witness_module_path, &send_key);
         }
     }
 
@@ -10677,6 +10835,52 @@ impl Checker {
         if import_span.is_some_and(|span| !self.preflight_import_publication(decl, span)) {
             return;
         }
+        if let Some(items) = decl.resolved_items.as_ref() {
+            let requested_owner = if decl.path.is_empty() {
+                decl.file_path
+                    .as_deref()
+                    .and_then(|path| std::path::Path::new(path).file_stem())
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or("file")
+                    .to_string()
+            } else {
+                decl.path.join(".")
+            };
+            let owner = crate::module_registry::canonical_source_module_identity(
+                &requested_owner,
+                &decl.resolved_source_paths,
+            );
+            let primary = self
+                .identity
+                .mint_module(&owner, &decl.resolved_source_paths);
+            for source in decl.resolved_source_paths.iter().skip(1) {
+                self.identity.mint_source_file_module(&owner, source);
+            }
+            // A file import (`import "helper.hew";`, empty path) flattens its
+            // items into the root's namespace, so its nominals answer bare as
+            // well as under their own file. A module import
+            // (`import pkg.alpha;`) does not: its nominals stay qualified by
+            // the owning module, so two modules exporting the same leaf keep
+            // distinct declarations.
+            let namespace = crate::check::NominalNamespace::for_import(decl.path.is_empty());
+            if !self.identity.module_has_declarations(primary) {
+                for (index, (item, span)) in items.iter().enumerate() {
+                    let module = decl
+                        .resolved_item_source_paths
+                        .get(index)
+                        .and_then(|source| self.identity.module_for_source(source))
+                        .unwrap_or(primary);
+                    self.mint_item_declaration_identities(
+                        Some(module),
+                        Some(primary),
+                        namespace,
+                        index,
+                        item,
+                        span,
+                    );
+                }
+            }
+        }
         let module_path = decl.path.join(".");
 
         // Try to load from the registry first, keeping any error detail owned so the
@@ -10710,6 +10914,9 @@ impl Checker {
                         .next()
                         .unwrap_or(&canonical_owner)
                         .to_string();
+                    let registry_module = self
+                        .identity
+                        .mint_module(&canonical_owner, resolved_source_path.as_slice());
                     if let Some(source_path) = resolved_source_path {
                         self.record_canonical_std_module_source(
                             &canonical_owner,
@@ -10748,10 +10955,11 @@ impl Checker {
                             accepts_kwargs,
                             ..FnSig::default()
                         };
-                        self.extern_table
-                            .register_declaration_only(crate::identity::mint_def_id(
-                                func.name.clone(),
-                            ));
+                        self.declare_contractless_extern(
+                            registry_module,
+                            &canonical_owner,
+                            &func.name,
+                        );
                         self.fn_sigs.insert(func.name, sig);
                     }
 
@@ -10811,7 +11019,6 @@ impl Checker {
                         // E.g. `log.setup()` should have 0 params (the wrapper's sig),
                         // not 1 param (the extern `hew_log_set_level(level)` sig).
                         let key = format!("{canonical_owner}.{method}");
-                        let source_sig_exists = self.fn_sigs.contains_key(&key);
                         let wrapper_sig = self.fn_sigs.get(&key).cloned();
                         let sig = wrapper_sig
                             .clone()
@@ -10830,9 +11037,15 @@ impl Checker {
                             // `std.net.NetError`). Only fill a genuinely absent
                             // canonical slot from the wrapper/extern registry.
                             self.fn_sigs.entry(key.clone()).or_insert(sig);
-                            if !source_sig_exists && wrapper_sig.is_none() {
-                                self.extern_table
-                                    .register_declaration_only(crate::identity::mint_def_id(key));
+                            if wrapper_sig.is_none() {
+                                // The clean name resolved straight to the C
+                                // function: the call is an FFI call and keeps
+                                // its `unsafe` gate under the canonical key.
+                                self.declare_contractless_extern(
+                                    registry_module,
+                                    &canonical_owner,
+                                    &key,
+                                );
                             }
                         }
                     }
@@ -11209,6 +11422,23 @@ impl Checker {
         items: &[Spanned<Item>],
         import_spec: StdlibBarePublication<'_>,
     ) {
+        // Compiler-embedded and registry-loaded Hew source enters outside the
+        // program module graph. Establish its exact declarations in the same
+        // table before any semantic registration; aliases and later graph
+        // visits resolve the existing module/path rows and cannot mint again.
+        let identity_module = self.identity.mint_module(module_full_path, &[]);
+        if !self.identity.module_has_declarations(identity_module) {
+            for (item_ordinal, (item, span)) in items.iter().enumerate() {
+                self.mint_item_declaration_identities(
+                    Some(identity_module),
+                    Some(identity_module),
+                    crate::check::NominalNamespace::Owned,
+                    item_ordinal,
+                    item,
+                    span,
+                );
+            }
+        }
         let saved_registration_origin = self
             .registration_origin_module
             .replace(module_full_path.to_string());
@@ -12307,7 +12537,11 @@ impl Checker {
         }
 
         let importer_file_idx = self.current_module_idx;
+        let importer_item_source = self.current_item_source.clone();
+        let importer_item_ordinal = self.current_item_ordinal;
         for (item_idx, (item, span)) in items.iter().enumerate() {
+            self.current_item_source = item_source_paths.get(item_idx).cloned();
+            self.current_item_ordinal = item_idx;
             let declaring_file_idx = item_source_paths
                 .get(item_idx)
                 .and_then(|source| self.source_file_span_indices.get(source))
@@ -12695,17 +12929,20 @@ impl Checker {
                     // published bare name. Record the checker-owned declaration
                     // IDs under that binding too, so call-target selection never
                     // has to recover an owner from the trait's leaf spelling.
-                    let trait_id = crate::identity::mint_def_id(qualified.clone());
+                    let Some(trait_id) = self.require_declaration_path(&qualified, span) else {
+                        continue;
+                    };
                     let qualified_binding = format!("{module_short}.{}", tr.name);
                     for trait_item in &tr.items {
                         let TraitItem::Method(method) = trait_item else {
                             continue;
                         };
-                        let method_id = crate::identity::mint_def_id(format!(
-                            "{}::{}",
-                            trait_id.full_path(),
-                            method.name
-                        ));
+                        let Some(method_id) = self.require_declaration_path(
+                            &format!("{}::{}", trait_id.full_path(), method.name),
+                            &method.span,
+                        ) else {
+                            continue;
+                        };
                         self.trait_method_ids_by_binding.insert(
                             (
                                 self.current_module.clone(),
@@ -12769,11 +13006,12 @@ impl Checker {
                             let TraitItem::Method(method) = trait_item else {
                                 continue;
                             };
-                            let method_id = crate::identity::mint_def_id(format!(
-                                "{}::{}",
-                                trait_id.full_path(),
-                                method.name
-                            ));
+                            let Some(method_id) = self.require_declaration_path(
+                                &format!("{}::{}", trait_id.full_path(), method.name),
+                                &method.span,
+                            ) else {
+                                continue;
+                            };
                             self.trait_method_ids_by_binding.insert(
                                 (
                                     self.current_module.clone(),
@@ -13011,7 +13249,7 @@ impl Checker {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
                         self.current_module_idx = declaring_file_idx;
-                        self.register_extern_block(eb);
+                        self.register_extern_block(eb, span);
                         self.current_module = saved_importer_module;
                         self.current_module_idx = importer_file_idx;
                     }
@@ -13019,6 +13257,8 @@ impl Checker {
                 _ => {}
             }
         }
+        self.current_item_source = importer_item_source;
+        self.current_item_ordinal = importer_item_ordinal;
         // Declaration and impl registration above use leaf keys as temporary
         // assembly state. Refresh the full-owner rows with the complete defs,
         // then remove both non-canonical spellings before returning to the
@@ -13482,7 +13722,9 @@ impl Checker {
 /// into `program.items`, however, and HIR emits those declarations in the root
 /// namespace. Declaration IDs must follow that emitted ownership, while package
 /// imports remain module-qualified.
-fn flat_file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::ModuleId> {
+pub(super) fn flat_file_import_module_ids(
+    program: &Program,
+) -> HashSet<hew_parser::module::ModuleId> {
     let Some(module_graph) = program.module_graph.as_ref() else {
         return HashSet::new();
     };
@@ -13811,6 +14053,89 @@ mod channel_recv_builtin_provenance_tests {
                 ..
             }] if name == "Receiver"
         ));
+    }
+
+    /// The layout witnesses cross the FFI boundary: codegen, not an extern
+    /// block, supplies their ABI, but a call to one is still an unsafe call.
+    /// They gate `unsafe` through a minted declaration in the one extern
+    /// table, so a stdlib impl body that drops its `unsafe` block is refused.
+    #[test]
+    fn channel_layout_witnesses_gate_unsafe() {
+        let mut checker = checker_with_channel_surface(true);
+        checker.register_channel_recv_builtins();
+        for witness in [
+            "std.channel.hew_channel_recv_layout",
+            "std.channel.hew_channel_try_recv_layout",
+            "std.channel.hew_channel_send_layout",
+        ] {
+            assert!(
+                checker.extern_table.requires_unsafe(witness),
+                "`{witness}` must gate `unsafe` like any other FFI call"
+            );
+            assert!(
+                checker.identity.declaration_by_path(witness).is_some(),
+                "`{witness}` must gate through a minted declaration, not a name set"
+            );
+        }
+        // Negative control: the ordinary channel constructor signature this
+        // fixture seeds is not an extern declaration here, so the assertions
+        // above are reading the extern table rather than every known key.
+        assert!(
+            !checker
+                .extern_table
+                .requires_unsafe("std.channel.hew_channel_new"),
+            "a plain fn_sigs entry must not acquire an unsafe gate"
+        );
+    }
+
+    /// Two source-less extern inventories declare into one module: the layout
+    /// witnesses, and the registry mirror of a shipped module's C surface.
+    /// Each counted its occurrences from its own zero, so the two inventories
+    /// collided occurrence-for-occurrence — and a collision resolves to the
+    /// ESTABLISHED declaration, so the witness rows adopted the mirror rows'
+    /// identities and endpoints (`Sender::send` emitted a call to whichever C
+    /// symbol sat at the witness's ordinal). Every source-less extern
+    /// declaration must keep its own occurrence.
+    #[test]
+    fn a_registry_mirror_row_does_not_adopt_a_layout_witness_declaration() {
+        let mut checker = checker_with_channel_surface(true);
+        checker.register_channel_recv_builtins();
+        let module = checker.identity.mint_module("std.channel", &[]);
+        let module_path = checker.identity.module_path(module).to_string();
+
+        // The registry mirror publishes the shipped module's C surface under
+        // its bare symbols, in the order the metadata lists them.
+        let mirrored = ["hew_channel_new", "hew_channel_pair_sender"];
+        for symbol in mirrored {
+            checker.declare_contractless_extern(module, &module_path, symbol);
+        }
+
+        let witnesses = [
+            "std.channel.hew_channel_recv_layout",
+            "std.channel.hew_channel_try_recv_layout",
+            "std.channel.hew_channel_send_layout",
+        ];
+        let mut established: Vec<String> = Vec::new();
+        for key in witnesses.into_iter().chain(mirrored) {
+            let declaration = checker
+                .identity
+                .declaration_by_path(key)
+                .unwrap_or_else(|| panic!("`{key}` must mint a declaration"));
+            assert_eq!(
+                declaration.full_path(),
+                key,
+                "`{key}` must keep its own identity rather than adopting another inventory's"
+            );
+            established.push(declaration.full_path().to_string());
+        }
+        established.sort_unstable();
+        let distinct = established.len();
+        established.dedup();
+        assert_eq!(
+            established.len(),
+            distinct,
+            "each source-less extern declaration must mint a distinct identity"
+        );
     }
 }
 

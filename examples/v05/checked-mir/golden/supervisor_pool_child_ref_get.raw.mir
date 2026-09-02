@@ -15,7 +15,7 @@ fn Pool__bootstrap() -> LocalPid<Pool> [conv=default]
     return
 
 fn inspect(LocalPid<Pool>) -> i64 [conv=default]
-  key: inspect [mono]
+  key: supervisor_pool_child_ref_get.inspect [mono]
   locals:
     _0: LocalPid<Pool>
     _1: i64

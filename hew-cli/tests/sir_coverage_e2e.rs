@@ -114,23 +114,23 @@ fn admitted_bodies_report_sir_and_every_refusal_names_its_reason() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines = lines_for(&stdout, "mix.hew ");
     assert!(
-        lines.contains(&"mix.hew main sir") && lines.contains(&"mix.hew twice sir"),
+        lines.contains(&"mix.hew mix.main sir") && lines.contains(&"mix.hew mix.twice sir"),
         "admitted scalar bodies must be reported `sir`:\n{stdout}"
     );
     let stranded = lines
         .iter()
-        .find(|line| line.starts_with("mix.hew stranded "))
+        .find(|line| line.starts_with("mix.hew mix.stranded "))
         .unwrap_or_else(|| panic!("the unreachable body must still be inventoried:\n{stdout}"));
     assert!(
-        stranded.starts_with("mix.hew stranded legacy: ") && stranded.contains("mutable"),
+        stranded.starts_with("mix.hew mix.stranded legacy: ") && stranded.contains("mutable"),
         "a body the entry never reaches must be demanded and refused with its reason:\n{stdout}"
     );
     let greet = lines
         .iter()
-        .find(|line| line.starts_with("mix.hew greet "))
+        .find(|line| line.starts_with("mix.hew mix.greet "))
         .unwrap_or_else(|| panic!("the refused header must be inventoried:\n{stdout}"));
     assert!(
-        greet.starts_with("mix.hew greet legacy: ") && greet.contains("string"),
+        greet.starts_with("mix.hew mix.greet legacy: ") && greet.contains("string"),
         "a refused header must name the offending type, not read as unreached:\n{stdout}"
     );
     assert!(
@@ -175,7 +175,7 @@ fn every_actor_handler_body_is_its_own_counted_row() {
     assert!(
         stdout
             .lines()
-            .any(|line| line.starts_with("counter.hew main legacy: ")),
+            .any(|line| line.starts_with("counter.hew counter.main legacy: ")),
         "the entry that spawns the actor is outside the SIR surface:\n{stdout}"
     );
     assert!(
@@ -224,11 +224,11 @@ fn json_output_carries_status_and_reason_per_item() {
             .find(|item| item["name"] == name)
             .unwrap_or_else(|| panic!("item `{name}` missing from {report:#}"))
     };
-    assert_eq!(item("main")["status"], "sir");
-    assert!(item("main").get("reason").is_none());
-    assert_eq!(item("main")["counted"], true);
-    assert_eq!(item("greet")["status"], "legacy");
-    assert!(item("greet")["reason"]
+    assert_eq!(item("mix.main")["status"], "sir");
+    assert!(item("mix.main").get("reason").is_none());
+    assert_eq!(item("mix.main")["counted"], true);
+    assert_eq!(item("mix.greet")["status"], "legacy");
+    assert!(item("mix.greet")["reason"]
         .as_str()
         .is_some_and(|reason| reason.contains("string")));
     assert_eq!(report["admitted"], 2);

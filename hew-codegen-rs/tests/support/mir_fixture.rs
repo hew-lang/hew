@@ -69,3 +69,18 @@ pub(crate) fn complete_stages(mut pipeline: IrPipeline) -> IrPipeline {
     }
     pipeline
 }
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert emitted shape below the checker, but HIR resolves
+/// every item through `TypeCheckOutput::identity` and fails closed when that
+/// view is empty, so the checker still has to run to mint the identities.
+#[allow(
+    dead_code,
+    reason = "used by the harnesses that lower source, not by every test root"
+)]
+pub fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
+}

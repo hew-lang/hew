@@ -18,7 +18,6 @@ use hew_mir::{BasicBlock, Instr, IntSignedness, IrPipeline, PointerWidth, Termin
 
 fn pipeline(source: &str) -> IrPipeline {
     use hew_hir::{lower_program, verify_hir, ResolutionCtx};
-    use hew_types::TypeCheckOutput;
 
     let parsed = hew_parser::parse(source);
     assert!(
@@ -28,7 +27,7 @@ fn pipeline(source: &str) -> IrPipeline {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -405,7 +404,6 @@ fn div_continuation_block_is_branch_else_target() {
 /// guards resolve to the requested width (the cross-compile soundness path).
 fn pipeline_with_width(source: &str, width: PointerWidth) -> IrPipeline {
     use hew_hir::{lower_program, verify_hir, ResolutionCtx};
-    use hew_types::TypeCheckOutput;
 
     let parsed = hew_parser::parse(source);
     assert!(
@@ -415,7 +413,7 @@ fn pipeline_with_width(source: &str, width: PointerWidth) -> IrPipeline {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -550,4 +548,15 @@ fn div_isize_signed_min_const_follows_target_pointer_width() {
         !consts32.contains(&i64::MIN),
         "32-bit isize div must NOT emit i64::MIN (host-width leak); consts: {consts32:?}"
     );
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

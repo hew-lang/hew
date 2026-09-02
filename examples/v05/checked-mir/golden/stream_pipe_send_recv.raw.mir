@@ -216,7 +216,7 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     return
 
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: stream_pipe_send_recv.main [mono]
   locals:
     _0: Echo
     _1: i64

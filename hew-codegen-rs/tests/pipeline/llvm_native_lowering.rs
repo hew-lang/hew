@@ -37,8 +37,19 @@ fn emit_ll_checked(source: &str, module_name: &str) -> String {
     emit_ll_from_tc(source, module_name, &tc_output)
 }
 
+/// Emit without gating on the checker's type errors. The checker still runs:
+/// HIR resolves every item through its identity view and fails closed when
+/// that view is empty, so what this skips is the error assertion, not the
+/// checker.
 fn emit_ll_unchecked(source: &str, module_name: &str) -> String {
-    emit_ll_from_tc(source, module_name, &TypeCheckOutput::default())
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let tc_output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    emit_ll_from_tc(source, module_name, &tc_output)
 }
 
 fn emit_ll_from_tc(source: &str, module_name: &str, tc_output: &TypeCheckOutput) -> String {

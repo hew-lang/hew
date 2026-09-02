@@ -1,5 +1,5 @@
 fn classify(string) -> i64 [conv=default]
-  key: classify [mono]
+  key: regex_match_literal.classify [mono]
   locals:
     _0: string
     _1: i64
@@ -47,7 +47,7 @@ fn classify(string) -> i64 [conv=default]
     branch _9 ? bb3 : bb4
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: regex_match_literal.main [mono]
   locals:
     _0: string
     _1: i64

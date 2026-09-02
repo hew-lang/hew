@@ -2892,6 +2892,61 @@ pub fn lower_program_with_mono_cap(
         .as_ref()
         .map(hew_parser::module::ModuleGraph::file_span_indices)
         .unwrap_or_default();
+    if let Some(root) = ctx.identity.root_module() {
+        ctx.declaration_module_by_file_index.insert(0, root);
+    }
+    if let Some(graph) = &program.module_graph {
+        for module_id in &graph.topo_order {
+            if *module_id == graph.root {
+                continue;
+            }
+            let Some(module) = graph.modules.get(module_id) else {
+                continue;
+            };
+            if module.source_paths.is_empty() {
+                if let (Some(index), Some(identity_module)) = (
+                    span_indices.module_base(module_id),
+                    ctx.identity.module_for_path(&module_id.path.join(".")),
+                ) {
+                    ctx.declaration_module_by_file_index
+                        .insert(index, identity_module);
+                }
+                continue;
+            }
+            for source in &module.source_paths {
+                if let (Some(index), Some(identity_module)) = (
+                    span_indices.path_index(source),
+                    ctx.identity.module_for_source(source),
+                ) {
+                    ctx.declaration_module_by_file_index
+                        .insert(index, identity_module);
+                }
+            }
+            // A span index is allocated per (module, file), so a file that is
+            // BOTH a directory module's peer and importable in its own right
+            // owns two of them — `std/net/http/http_client.hew` is one index
+            // under `std.net.http` and another under
+            // `std.net.http.http_client`. `path_index` keeps only the first,
+            // so map every index the item walk can actually produce, through
+            // the two accessors that own the pairing.
+            for item_idx in 0..module.items.len() {
+                let Some(index) = span_indices.item_index(module_id, item_idx) else {
+                    continue;
+                };
+                let identity_module = program
+                    .module_graph
+                    .as_ref()
+                    .and_then(|graph| graph.item_source(module_id, item_idx))
+                    .or_else(|| module.source_paths.first())
+                    .and_then(|source| ctx.identity.module_for_source(source));
+                if let Some(identity_module) = identity_module {
+                    ctx.declaration_module_by_file_index
+                        .entry(index)
+                        .or_insert(identity_module);
+                }
+            }
+        }
+    }
     ctx.seed_stdlib_fn_registry();
     let (builtin_receiver_impl_program, builtin_receiver_impl_output) =
         match builtin_receiver_impl_program() {
@@ -3075,6 +3130,7 @@ pub fn lower_program_with_mono_cap(
     // Diagnostics from this pass are discarded — the same types are re-lowered
     // in the second pass, which is where canonical diagnostics are emitted.
     for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_item_ordinal = item_idx;
         ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
         ctx.current_module_name = span_indices
             .module_name(ctx.current_module_idx)
@@ -3536,6 +3592,7 @@ pub fn lower_program_with_mono_cap(
     // function that uses it. This mirrors the fn pre-pass above and is
     // the producer half of the record-layout registry.
     for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_item_ordinal = item_idx;
         ctx.current_module_idx = file_import_module_idx
             .get(&item_idx)
             .copied()
@@ -3560,28 +3617,10 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
-                        type_params: type_params.clone(),
-                        fields: fields.clone(),
+                        type_params,
+                        fields,
                     },
                 );
-                // rc1-F1 stage F: publish the root declaration's canonical
-                // `{root}.{name}` identity (via `TypeCheckOutput::identity`,
-                // reused here for a nominal leaf rather than a fn) alongside
-                // the legacy bare key. `canonical_current_module_record_name`
-                // deliberately never rewrites root items today, so this rung
-                // is inert until a consumer resolves canonically; it exists
-                // so no registration-side change is needed there. WHEN
-                // OBSOLETE: rc2 render-canonicalization stage, once the bare
-                // key retires.
-                if let Some(canonical) = type_check_output.identity.root_fn_identity(&decl.name) {
-                    ctx.record_registry
-                        .entry(canonical)
-                        .or_insert_with(|| RecordEntry {
-                            id,
-                            type_params,
-                            fields,
-                        });
-                }
                 ctx.type_classes
                     .insert(decl.name.clone(), (ResourceMarker::None, None));
             }
@@ -3606,22 +3645,10 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
-                        type_params: type_params.clone(),
-                        fields: fields.clone(),
+                        type_params,
+                        fields,
                     },
                 );
-                // rc1-F1 stage F: see the matching comment on the TypeDecl
-                // arm above — same canonical-identity publication, same
-                // inert-until-consumed rationale.
-                if let Some(canonical) = type_check_output.identity.root_fn_identity(&decl.name) {
-                    ctx.record_registry
-                        .entry(canonical)
-                        .or_insert_with(|| RecordEntry {
-                            id,
-                            type_params,
-                            fields,
-                        });
-                }
             }
             // No record shape to register for the variants below. If a new
             // Item variant with field layout is added, the compiler will force
@@ -4137,15 +4164,18 @@ pub fn lower_program_with_mono_cap(
         HashMap::new();
     let mut diagnostic_source_modules: HashMap<ItemId, String> = HashMap::new();
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
+        ctx.current_item_ordinal = item_idx;
         if let Item::TypeDecl(decl) = item {
             ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
             ctx.current_module_name = span_indices
                 .module_name(ctx.current_module_idx)
                 .map(str::to_string);
-            let hir_decl = if let Some(module) = ctx.current_module_name.clone() {
+            let Some(hir_decl) = (if let Some(module) = ctx.current_module_name.clone() {
                 ctx.lower_imported_type_decl(decl, span.clone(), &module)
             } else {
                 ctx.lower_type_decl(decl, span.clone())
+            }) else {
+                continue;
             };
             let marker = hir_decl.marker;
             let close_method = if marker == ResourceMarker::Resource {
@@ -4220,6 +4250,7 @@ pub fn lower_program_with_mono_cap(
     ctx.current_module_idx = 0;
     ctx.current_module_name = None;
     for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_item_ordinal = item_idx;
         ctx.current_module_idx = file_import_module_idx
             .get(&item_idx)
             .copied()
@@ -4246,6 +4277,7 @@ pub fn lower_program_with_mono_cap(
                 let saved_module_name = ctx.current_module_name.replace(source_module.clone());
                 let saved_module_idx = ctx.current_module_idx;
                 for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    ctx.current_item_ordinal = item_idx;
                     ctx.current_module_idx = span_indices
                         .item_index(mod_id, item_idx)
                         .unwrap_or_default();
@@ -4253,7 +4285,9 @@ pub fn lower_program_with_mono_cap(
                         Item::TypeDecl(decl)
                             if decl.visibility.is_pub() && decl.kind == TypeDeclKind::Enum =>
                         {
-                            let hir_decl = ctx.lower_type_decl(decl, span.clone());
+                            let Some(hir_decl) = ctx.lower_type_decl(decl, span.clone()) else {
+                                continue;
+                            };
                             let canonical_name = format!("{source_module}.{}", hir_decl.name);
                             if !hir_decl.variants.is_empty() {
                                 ctx.enum_variants_by_name
@@ -4338,6 +4372,7 @@ pub fn lower_program_with_mono_cap(
                 let saved_module_name = ctx.current_module_name.replace(source_module.clone());
                 let saved_module_idx = ctx.current_module_idx;
                 for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    ctx.current_item_ordinal = item_idx;
                     ctx.current_module_idx = span_indices
                         .item_index(mod_id, item_idx)
                         .unwrap_or_default();
@@ -4348,8 +4383,11 @@ pub fn lower_program_with_mono_cap(
                                 || (decl.kind == TypeDeclKind::Struct
                                     && decl.type_params.is_none()) =>
                         {
-                            let hir_decl =
-                                ctx.lower_imported_type_decl(decl, span.clone(), &source_module);
+                            let Some(hir_decl) =
+                                ctx.lower_imported_type_decl(decl, span.clone(), &source_module)
+                            else {
+                                continue;
+                            };
                             let close_method = if hir_decl.marker == ResourceMarker::Resource {
                                 hir_decl
                                     .consuming_methods
@@ -4496,8 +4534,11 @@ pub fn lower_program_with_mono_cap(
                         // governs NAMING (the checker's authority and the emit
                         // guard are untouched), only ABI discovery is widened.
                         Item::TypeDecl(decl) => {
-                            let hir_decl =
-                                ctx.lower_imported_type_decl(decl, span.clone(), &source_module);
+                            let Some(hir_decl) =
+                                ctx.lower_imported_type_decl(decl, span.clone(), &source_module)
+                            else {
+                                continue;
+                            };
                             let entry_fields: Vec<(String, ResolvedTy)> = hir_decl
                                 .fields
                                 .iter()
@@ -4523,7 +4564,10 @@ pub fn lower_program_with_mono_cap(
                         // A module-private record excluded from emission (the
                         // emission arm admits only pub records) — same rationale.
                         Item::Record(decl) if !decl.visibility.is_pub() => {
-                            let mut hir_record = ctx.lower_record_decl(decl, span.clone());
+                            let Some(mut hir_record) = ctx.lower_record_decl(decl, span.clone())
+                            else {
+                                continue;
+                            };
                             hir_record.defining_module = Some(source_module.clone());
                             let entry_fields: Vec<(String, ResolvedTy)> = hir_record
                                 .fields
@@ -4732,6 +4776,7 @@ pub fn lower_program_with_mono_cap(
     let mut items: Vec<HirItem> = Vec::new();
     let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
+        ctx.current_item_ordinal = item_idx;
         ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
         ctx.current_module_name = span_indices
             .module_name(ctx.current_module_idx)
@@ -4773,7 +4818,9 @@ pub fn lower_program_with_mono_cap(
                     // Either way, do not lower a body — the declaration is a
                     // typed substrate stub that must match an existing catalog entry.
                 } else {
-                    let hir_fn = ctx.lower_fn(func, span.clone());
+                    let Some(hir_fn) = ctx.lower_fn(func, span.clone()) else {
+                        continue;
+                    };
                     // Positive root-origin record: a free function lowered from
                     // the root file (module index 0) has a body span that
                     // indexes the root compilation unit's source, so codegen may
@@ -4836,14 +4883,16 @@ pub fn lower_program_with_mono_cap(
                     ));
                 }
                 let defining_module = ctx.current_module_name.clone();
-                items.push(HirItem::Actor(ctx.lower_actor(
-                    actor,
-                    span.clone(),
-                    defining_module.as_deref(),
-                )));
+                if let Some(actor) =
+                    ctx.lower_actor(actor, span.clone(), defining_module.as_deref())
+                {
+                    items.push(HirItem::Actor(actor));
+                }
             }
             Item::Record(decl) => {
-                items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
+                if let Some(record) = ctx.lower_record_decl(decl, span.clone()) {
+                    items.push(HirItem::Record(record));
+                }
             }
             Item::Supervisor(decl) => {
                 // P0.2: Fail-closed gate: supervisor restart machinery
@@ -4864,9 +4913,9 @@ pub fn lower_program_with_mono_cap(
                         ),
                     ));
                 }
-                items.push(HirItem::Supervisor(
-                    ctx.lower_supervisor(decl, span.clone()),
-                ));
+                if let Some(supervisor) = ctx.lower_supervisor(decl, span.clone()) {
+                    items.push(HirItem::Supervisor(supervisor));
+                }
             }
             Item::Import(_) | Item::TypeAlias(_) => {
                 // Imports are frontend-resolved: module-path imports
@@ -4908,10 +4957,12 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Const(const_decl) => {
-                items.push(HirItem::Const(ctx.lower_const(const_decl, span.clone())));
+                if let Some(constant) = ctx.lower_const(const_decl, span.clone()) {
+                    items.push(HirItem::Const(constant));
+                }
             }
             Item::ExternBlock(block) => {
-                for func in &block.functions {
+                for (func_index, func) in block.functions.iter().enumerate() {
                     let param_tys = func
                         .params
                         .iter()
@@ -4932,15 +4983,17 @@ pub fn lower_program_with_mono_cap(
                     );
                     let provenance = extern_provenance(ctx.current_module_name.as_deref());
                     let runtime_capability = extern_runtime_capability(&provenance, &func.name);
+                    let Some(declaration) = ctx.source_declaration(
+                        span,
+                        hew_types::DeclarationKind::ExternFunction,
+                        func_index,
+                    ) else {
+                        continue;
+                    };
                     items.push(HirItem::ExternFn(crate::node::HirExternFn {
                         id: ctx.ids.item(),
                         node: ctx.ids.node(),
-                        declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
-                            ctx.current_module_name.as_ref().map_or_else(
-                                || func.name.clone(),
-                                |module| format!("{module}.{}", func.name),
-                            ),
-                        ),
+                        declaration,
                         name: func.name.clone(),
                         abi: block.abi.clone(),
                         param_tys,
@@ -5134,6 +5187,7 @@ pub fn lower_program_with_mono_cap(
 
                 let previous_folded_integer_consts = std::mem::take(&mut ctx.folded_integer_consts);
                 for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    ctx.current_item_ordinal = item_idx;
                     // Re-key per item: a directory module's peer files share
                     // this module but each owns its own span index.
                     ctx.current_module_idx = span_indices
@@ -5231,7 +5285,14 @@ pub fn lower_program_with_mono_cap(
                             {
                                 hir_decl
                             } else {
-                                ctx.lower_imported_type_decl(decl, span.clone(), &source_module)
+                                let Some(hir_decl) = ctx.lower_imported_type_decl(
+                                    decl,
+                                    span.clone(),
+                                    &source_module,
+                                ) else {
+                                    continue;
+                                };
+                                hir_decl
                             };
                             items.push(HirItem::TypeDecl(hir_decl));
                         }
@@ -5263,7 +5324,7 @@ pub fn lower_program_with_mono_cap(
                         // lowered item list. Mirrors the root-item arm at the
                         // third pass.
                         Item::ExternBlock(block) => {
-                            for func in &block.functions {
+                            for (func_index, func) in block.functions.iter().enumerate() {
                                 let param_tys = func
                                     .params
                                     .iter()
@@ -5286,13 +5347,17 @@ pub fn lower_program_with_mono_cap(
                                     extern_provenance(ctx.current_module_name.as_deref());
                                 let runtime_capability =
                                     extern_runtime_capability(&provenance, &func.name);
+                                let Some(declaration) = ctx.source_declaration(
+                                    span,
+                                    hew_types::DeclarationKind::ExternFunction,
+                                    func_index,
+                                ) else {
+                                    continue;
+                                };
                                 items.push(HirItem::ExternFn(crate::node::HirExternFn {
                                     id: ctx.ids.item(),
                                     node: ctx.ids.node(),
-                                    declaration:
-                                        hew_types::DefId::legacy_reconstruct_from_full_path(
-                                            format!("{source_module}.{}", func.name),
-                                        ),
+                                    declaration,
                                     name: func.name.clone(),
                                     abi: block.abi.clone(),
                                     param_tys,
@@ -5484,7 +5549,9 @@ pub fn lower_program_with_mono_cap(
                                 ctx.const_registry.insert(const_decl.name.clone(), entry);
                                 let lowered = ctx.lower_const(const_decl, span.clone());
                                 ctx.const_registry.remove(&const_decl.name);
-                                items.push(HirItem::Const(lowered));
+                                if let Some(lowered) = lowered {
+                                    items.push(HirItem::Const(lowered));
+                                }
                             }
                         }
                         // Emit `HirItem::Actor` entries for imported pub actors
@@ -5538,7 +5605,9 @@ pub fn lower_program_with_mono_cap(
                                 &source_module,
                                 &same_module_fn_rewrites,
                             );
-                            items.push(HirItem::Actor(lowered));
+                            if let Some(lowered) = lowered {
+                                items.push(HirItem::Actor(lowered));
+                            }
                         }
                         // RAII-2 (#1295): a PACKAGE-imported trait is just as
                         // much an invisible-body boundary as a root or
@@ -5829,10 +5898,16 @@ pub fn lower_program_with_mono_cap(
     admit_declared_opaque_resource_lifecycles(
         &items,
         &ctx.opaque_resource_candidates,
+        &ctx.identity,
         &mut ctx.type_classes,
         &mut ctx.diagnostics,
     );
-    admit_resource_record_lifecycles(&items, &mut ctx.type_classes, &mut ctx.diagnostics);
+    admit_resource_record_lifecycles(
+        &items,
+        &ctx.identity,
+        &mut ctx.type_classes,
+        &mut ctx.diagnostics,
+    );
 
     // The language's entry rule is applied here, once: the root compilation
     // unit's monomorphic `main` declaration. Publishing the resolved `DefId`
@@ -5879,11 +5954,32 @@ pub fn lower_program_with_mono_cap(
     }
 }
 
+/// Whether an inherent impl block's receiver names `declaration`.
+///
+/// `HirImplBlock::self_type_name` is the checker's resolved receiver spelling,
+/// and one declaration answers to more than one: a peer file of a directory
+/// module is reachable as `pkg.Response` and, when the file is importable in
+/// its own right, as `pkg.file.Response`. Which spelling reaches the impl
+/// depends on the import route the program took, so the comparison resolves
+/// through the identity table rather than matching the declaration's own
+/// render.
+fn impl_receiver_is(
+    identity: &hew_types::IdentityView,
+    impl_block: &crate::node::HirImplBlock,
+    declaration: &hew_types::DefId,
+) -> bool {
+    impl_block.self_type_name == declaration.full_path()
+        || identity
+            .declaration_by_path(&impl_block.self_type_name)
+            .is_some_and(|resolved| resolved == declaration)
+}
+
 /// Admit field-bearing resource lifecycles while exact HIR declaration and
 /// body identities are simultaneously available. No downstream stage may
 /// reconstruct a close declaration from a record-layout or symbol spelling.
 fn admit_resource_record_lifecycles(
     items: &[HirItem],
+    identity: &hew_types::IdentityView,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -5903,7 +5999,7 @@ fn admit_resource_record_lifecycles(
             .filter_map(|item| match item {
                 HirItem::Impl(impl_block)
                     if impl_block.trait_name.is_none()
-                        && impl_block.self_type_name == exact_owner =>
+                        && impl_receiver_is(identity, impl_block, &decl.declaration) =>
                 {
                     Some(impl_block)
                 }
@@ -6211,6 +6307,7 @@ fn admit_opaque_resource_lifecycles(
 fn admit_declared_opaque_resource_lifecycles(
     items: &[HirItem],
     graph: &hew_types::OpaqueResourceCandidateGraph,
+    identity: &hew_types::IdentityView,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -6261,7 +6358,7 @@ fn admit_declared_opaque_resource_lifecycles(
             .filter_map(|item| match item {
                 HirItem::Impl(impl_block)
                     if impl_block.trait_name.is_none()
-                        && impl_block.self_type_name == exact_owner =>
+                        && impl_receiver_is(identity, impl_block, &decl.declaration) =>
                 {
                     Some(impl_block)
                 }
@@ -8013,6 +8110,9 @@ struct LowerCtx {
     /// the checker's module-scoped inserts, preventing byte-offset collisions
     /// across stdlib files (L23 defect root cause).
     current_module_idx: u32,
+    /// Source-order discriminator used only when a source-less AST surface
+    /// gives every top-level item the synthetic `0..0` span.
+    current_item_ordinal: usize,
     /// `ItemId`s of function items PROVABLY lowered from the root compilation
     /// unit's own source (recorded when `current_module_idx == 0` AND
     /// `lowering_injected_items` is false), EXCLUDING generated trait
@@ -8046,6 +8146,13 @@ struct LowerCtx {
     /// and sibling alias lookups agrees with the checker's inserts for depth-≥2
     /// importers; the short last segment would diverge and miss.
     current_module_name: Option<String>,
+    /// Exact checker-minted source module selected by the parser's per-file
+    /// span index. A directory module's peer file therefore retains its own
+    /// `ModuleId` even while `current_module_name` remains the assembled module
+    /// spelling used for lexical resolution.
+    declaration_module_by_file_index: HashMap<u32, hew_types::ModuleId>,
+    /// Immutable checker declaration authority. This view cannot mint.
+    identity: hew_types::IdentityView,
     type_aliases: HashMap<String, TypeAliasLowering>,
     type_alias_substitutions: Vec<HashMap<String, ResolvedTy>>,
     resolving_type_aliases: HashSet<String>,
@@ -8507,36 +8614,10 @@ impl LowerCtx {
             impl_close_methods: HashMap::new(),
             impl_consuming_methods: HashSet::new(),
             diagnostics: Vec::new(),
-            fn_sigs: {
-                // rc1-F1 stage F: publish each root free function's canonical
-                // `{root}.{name}` identity (via `TypeCheckOutput::identity`)
-                // alongside the legacy bare key the checker still republishes
-                // at this boundary — the same additive, `or_insert`-only
-                // pattern used for `record_registry` below. `root_fn_identity`
-                // rejects any spelling containing `.`/`::`, so imported and
-                // already-qualified entries pass through untouched; only bare
-                // root keys gain a canonical twin. This rung is inert until a
-                // consumer looks up the canonical key (none does yet — see
-                // `direct_method_return_ty`/`generic_iterator_next_shape`,
-                // which key by mangled method symbol, not free-fn name); it
-                // activates without further code change once the checker
-                // publishes canonically. WHEN OBSOLETE: rc2
-                // render-canonicalization stage, once the bare key retires.
-                let mut sigs = tc_output.fn_sigs.clone();
-                let canonical_entries: Vec<(String, hew_types::FnSig)> = sigs
-                    .iter()
-                    .filter_map(|(name, sig)| {
-                        tc_output
-                            .identity
-                            .root_fn_identity(name)
-                            .map(|canonical| (canonical, sig.clone()))
-                    })
-                    .collect();
-                for (canonical, sig) in canonical_entries {
-                    sigs.entry(canonical).or_insert(sig);
-                }
-                sigs
-            },
+            // Resolution spellings remain a checker lookup index. Declaration
+            // identity comes only from `tc_output.identity`; HIR must never
+            // manufacture a second canonical-string namespace here.
+            fn_sigs: tc_output.fn_sigs.clone(),
             direct_call_targets: tc_output.direct_call_targets.clone(),
             trait_method_ids: tc_output.trait_method_ids.clone(),
             trait_method_ids_by_binding: tc_output.trait_method_ids_by_binding.clone(),
@@ -8643,17 +8724,60 @@ impl LowerCtx {
             canonical_std_source_type_identities: HashSet::new(),
             checker_type_identities: tc_output.type_defs.keys().cloned().collect(),
             current_module_idx: 0,
+            current_item_ordinal: 0,
             root_item_ids: HashSet::new(),
             caller_visible_param_projections: HashSet::new(),
             caller_visible_param_spans: tc_output.caller_visible_param_projections.clone(),
             lowering_injected_items: false,
             current_module_name: None,
+            declaration_module_by_file_index: HashMap::new(),
             type_aliases: HashMap::new(),
             type_alias_substitutions: Vec::new(),
             resolving_type_aliases: HashSet::new(),
             import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
             module_import_bindings: tc_output.module_import_bindings.clone(),
+            identity: tc_output.identity.clone(),
         }
+    }
+
+    fn source_declaration(
+        &mut self,
+        item_span: &Span,
+        kind: hew_types::DeclarationKind,
+        ordinal: usize,
+    ) -> Option<hew_types::DefId> {
+        let module = self
+            .declaration_module_by_file_index
+            .get(&self.current_module_idx)
+            .copied()
+            .or_else(|| {
+                (self.current_module_idx == 0)
+                    .then(|| self.identity.root_module())
+                    .flatten()
+            });
+        let occurrence = hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+            module,
+            item_span,
+            self.current_item_ordinal,
+            kind,
+            ordinal,
+        );
+        if let Some(declaration) = self.identity.declaration(occurrence) {
+            return Some(declaration.clone());
+        }
+        self.diagnostics.push(
+            HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: format!("{kind:?} declaration"),
+                    reason: "exact source occurrence is absent from the checker identity view"
+                        .to_string(),
+                },
+                item_span.clone(),
+                "checker declaration identity did not survive the HIR boundary",
+            )
+            .with_source_module(self.current_module_name.clone()),
+        );
+        None
     }
 
     fn with_typecheck_facts<T>(
@@ -10347,6 +10471,15 @@ fn classify_unsupported_where_clause(decl: &hew_parser::ast::ImplDecl) -> Option
     None
 }
 
+fn lower_supervisor_strategy(strategy: SupervisorStrategy) -> HirSupervisorStrategy {
+    match strategy {
+        SupervisorStrategy::OneForOne => HirSupervisorStrategy::OneForOne,
+        SupervisorStrategy::OneForAll => HirSupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne => HirSupervisorStrategy::RestForOne,
+        SupervisorStrategy::SimpleOneForOne => HirSupervisorStrategy::SimpleOneForOne,
+    }
+}
+
 impl LowerCtx {
     fn seed_stdlib_fn_registry(&mut self) {
         for (index, builtin) in stdlib_catalog::entries().iter().enumerate() {
@@ -11297,7 +11430,7 @@ impl LowerCtx {
         &mut self,
         decl: &ConstDecl,
         span: std::ops::Range<usize>,
-    ) -> crate::node::HirConst {
+    ) -> Option<crate::node::HirConst> {
         // Reuse the stable ItemId + type pre-allocated during the first pass.
         let (id, ty) = match self.const_registry.get(&decl.name) {
             Some(entry) => (entry.id, entry.ty.clone()),
@@ -11309,14 +11442,15 @@ impl LowerCtx {
             self.folded_integer_consts.insert(decl.name.clone(), *value);
         }
 
-        crate::node::HirConst {
+        Some(crate::node::HirConst {
             id,
             node: self.ids.node(),
+            declaration: self.source_declaration(&span, hew_types::DeclarationKind::Const, 0)?,
             name: decl.name.clone(),
             ty,
             value,
             span,
-        }
+        })
     }
 
     /// Fail-closed constant-fold for module-level `const` initializers.
@@ -12487,7 +12621,7 @@ impl LowerCtx {
         )
     }
 
-    fn lower_fn(&mut self, func: &FnDecl, span: std::ops::Range<usize>) -> HirFn {
+    fn lower_fn(&mut self, func: &FnDecl, span: std::ops::Range<usize>) -> Option<HirFn> {
         self.lower_fn_with_name(func, &func.name, span)
     }
 
@@ -13150,13 +13284,16 @@ impl LowerCtx {
             // Pass impl-level type params so that methods of e.g. `impl<U> Trait for Wrapper<U>`
             // carry `U` as a `HirFn::type_params` entry — required for monomorphization
             // of generic-over-generic impl methods (W3.022 Stage 3).
-            let hir_method = self.lower_fn_with_name_and_impl_params(
+            let Some(hir_method) = self.lower_fn_with_name_and_impl_params(
                 method,
                 &symbol,
                 span.clone(),
                 &type_params,
                 Some(&symbol_self_name),
-            );
+                None,
+            ) else {
+                continue;
+            };
             // Explicit impl-method bodies are written in the file that declares
             // the impl, so record as root-origin when this impl is lowered from
             // the root file (module index 0). Injected builtin receiver impls
@@ -13289,15 +13426,17 @@ impl LowerCtx {
                         // bodies degrades to a bare fail-closed line (never a false
                         // caret against the root source). This is the exact producer
                         // an absence-from-a-foreign-set proxy misclassified.
-                        let mut hir_method = self.lower_fn_with_name_and_impl_params(
+                        let Some(hir_method) = self.lower_fn_with_name_and_impl_params(
                             &fn_decl,
                             &symbol,
                             span.clone(),
                             &type_params,
                             Some(&symbol_self_name),
-                        );
+                            synthetic_default_declaration.clone(),
+                        ) else {
+                            continue;
+                        };
                         if let Some(declaration) = &synthetic_default_declaration {
-                            hir_method.declaration = declaration.clone();
                             if self.validate_impl_body_plan(declaration, &symbol, &span) {
                                 self.impl_method_body_symbols
                                     .entry(declaration.clone())
@@ -13367,8 +13506,8 @@ impl LowerCtx {
         func: &FnDecl,
         name: &str,
         span: std::ops::Range<usize>,
-    ) -> HirFn {
-        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None)
+    ) -> Option<HirFn> {
+        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None, None)
     }
 
     fn lower_imported_fn_with_name(
@@ -13377,7 +13516,7 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
         rewrites: &HashMap<String, String>,
-    ) -> HirFn {
+    ) -> Option<HirFn> {
         let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
         let lowered = self.lower_fn_with_name(func, name, span);
         self.imported_fn_rewrites = previous_rewrites;
@@ -13406,9 +13545,11 @@ impl LowerCtx {
         span: Span,
         module_full_path: &str,
         rewrites: &HashMap<String, String>,
-    ) -> HirActorDecl {
+    ) -> Option<HirActorDecl> {
         let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
-        let mut lowered = self.lower_actor(decl, span, Some(module_full_path));
+        let lowered = self.lower_actor(decl, span, Some(module_full_path));
+        self.imported_fn_rewrites = previous_rewrites;
+        let mut lowered = lowered?;
         // Owner-qualify each receive handler's return type to the declaring
         // module (`testffi.Result`) ONLY when the returned record's bare name
         // genuinely collides across modules — the same collision the MIR
@@ -13425,8 +13566,7 @@ impl LowerCtx {
             handler.return_ty =
                 self.qualify_colliding_module_record_ty(&handler.return_ty, module_full_path);
         }
-        self.imported_fn_rewrites = previous_rewrites;
-        lowered
+        Some(lowered)
     }
 
     /// Extract the declaring-module short segment from an imported actor's
@@ -13542,7 +13682,8 @@ impl LowerCtx {
             .intrinsic_declarations
             .get(&format!("{source_module}.{}", func.name))
             .cloned();
-        let mut lowered = self.lower_imported_fn_with_name(func, qualified, span.clone(), rewrites);
+        let mut lowered =
+            self.lower_imported_fn_with_name(func, qualified, span.clone(), rewrites)?;
         let Some(intrinsic_key) = intrinsic_key else {
             return Some(lowered);
         };
@@ -13585,7 +13726,8 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
         impl_type_params: &[String],
         impl_self_type_name: Option<&str>,
-    ) -> HirFn {
+        known_declaration: Option<hew_types::DefId>,
+    ) -> Option<HirFn> {
         // Use the stable ItemId pre-allocated during the first pass.
         let id = self
             .fn_registry
@@ -13597,18 +13739,17 @@ impl LowerCtx {
         // already checker-published under their emitted symbol; ordinary
         // functions use the exact defining-module context active while their
         // source body is lowered, never a reverse parse of the linker name.
-        let declaration = self
-            .impl_method_declaration_ids
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| {
-                hew_types::DefId::legacy_reconstruct_from_full_path(
-                    self.current_module_name.as_ref().map_or_else(
-                        || func.name.clone(),
-                        |module| format!("{module}.{}", func.name),
-                    ),
-                )
-            });
+        // A materialised trait default has no source `fn` in the impl AST, so
+        // the checker never inventoried one: its identity is minted at the
+        // synthesis boundary and handed in here. Everything else resolves
+        // through the checker's own tables.
+        let declaration = if let Some(declaration) = known_declaration {
+            declaration
+        } else if let Some(declaration) = self.impl_method_declaration_ids.get(name) {
+            declaration.clone()
+        } else {
+            self.source_declaration(&span, hew_types::DeclarationKind::Function, 0)?
+        };
 
         self.push_scope();
         // Track this function's declared type parameters for the duration of
@@ -13649,7 +13790,7 @@ impl LowerCtx {
             let (body, generator_ty) = self.lower_generator_fn_body(func, source_return_ty, &span);
             self.pop_scope();
             self.current_fn_type_params = prior_fn_type_params;
-            return HirFn {
+            return Some(HirFn {
                 id,
                 node: self.ids.node(),
                 declaration,
@@ -13661,7 +13802,7 @@ impl LowerCtx {
                 span,
                 is_generator: true,
                 intrinsic_id: None,
-            };
+            });
         }
         // Same predicate AND same name reduction as
         // `register_impl_method_fn_entry`: the fn-registry entry for `name`
@@ -13688,7 +13829,7 @@ impl LowerCtx {
         self.pop_scope();
         self.current_fn_type_params = prior_fn_type_params;
 
-        HirFn {
+        Some(HirFn {
             id,
             node: self.ids.node(),
             declaration,
@@ -13700,7 +13841,7 @@ impl LowerCtx {
             span,
             is_generator: false,
             intrinsic_id: None,
-        }
+        })
     }
 
     /// Concatenate impl-level and method-level type parameters for a lowered
@@ -14003,7 +14144,11 @@ impl LowerCtx {
         }
     }
 
-    fn lower_type_decl(&mut self, decl: &TypeDecl, span: std::ops::Range<usize>) -> HirTypeDecl {
+    fn lower_type_decl(
+        &mut self,
+        decl: &TypeDecl,
+        span: std::ops::Range<usize>,
+    ) -> Option<HirTypeDecl> {
         // Generic resource/linear types are rejected — the type→class map is
         // keyed by name, not by instantiation. This rule belongs at the
         // checker boundary (LESSONS `checker-output-boundary`); HIR is the
@@ -14115,10 +14260,10 @@ impl LowerCtx {
         } else {
             ResourceMarker::from(decl.resource_marker)
         };
-        HirTypeDecl {
+        Some(HirTypeDecl {
             id,
             node: self.ids.node(),
-            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(decl.name.clone()),
+            declaration: self.source_declaration(&span, hew_types::DeclarationKind::Type, 0)?,
             name: decl.name.clone(),
             // Root/local identity by default; the imported-module carrier
             // (`lower_imported_type_decl`) stamps `Some(module_short)` for
@@ -14132,7 +14277,7 @@ impl LowerCtx {
             fields,
             variants,
             span,
-        }
+        })
     }
 
     /// Lower a `record` declaration into `HirRecordDecl`.
@@ -14146,7 +14291,7 @@ impl LowerCtx {
         &mut self,
         decl: &RecordDecl,
         span: std::ops::Range<usize>,
-    ) -> HirRecordDecl {
+    ) -> Option<HirRecordDecl> {
         let type_params: Vec<String> = decl.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
@@ -14184,9 +14329,10 @@ impl LowerCtx {
             .record_registry
             .get(&decl.name)
             .map_or_else(|| self.ids.item(), |entry| entry.id);
-        HirRecordDecl {
+        Some(HirRecordDecl {
             id,
             node: self.ids.node(),
+            declaration: self.source_declaration(&span, hew_types::DeclarationKind::Record, 0)?,
             name: decl.name.clone(),
             // Root/local identity by default; an imported-record carrier would
             // stamp `Some(module_short)`. Imported records are not yet emitted
@@ -14197,7 +14343,7 @@ impl LowerCtx {
             positional_field_tys,
             fields,
             span,
-        }
+        })
     }
 
     /// Lower a type declared in an imported package module.
@@ -14214,14 +14360,20 @@ impl LowerCtx {
         decl: &TypeDecl,
         span: std::ops::Range<usize>,
         module_name: &str,
-    ) -> HirTypeDecl {
-        let mut lowered = self.lower_type_decl(decl, span);
-        lowered.declaration = hew_types::DefId::legacy_reconstruct_from_full_path(format!(
-            "{module_name}.{}",
-            decl.name
-        ));
+    ) -> Option<HirTypeDecl> {
+        let mut lowered = self.lower_type_decl(decl, span)?;
         lowered.defining_module = Some(module_name.to_string());
-        lowered
+        Some(lowered)
+    }
+
+    fn source_supervisor_declarations(
+        &mut self,
+        span: &Span,
+    ) -> Option<(hew_types::DefId, hew_types::DefId)> {
+        Some((
+            self.source_declaration(span, hew_types::DeclarationKind::Supervisor, 0)?,
+            self.source_declaration(span, hew_types::DeclarationKind::SupervisorBootstrap, 0)?,
+        ))
     }
 
     /// Lower a `supervisor` declaration to `HirSupervisorDecl`.
@@ -14229,13 +14381,9 @@ impl LowerCtx {
     /// Bodies (MIR producer wiring, codegen) are deferred to slices S-C/S-D.
     /// This function mirrors `lower_record_decl` in structure: structural lift
     /// only, no HIR expression lowering.
-    fn lower_supervisor(&mut self, decl: &SupervisorDecl, span: Span) -> HirSupervisorDecl {
-        let strategy = decl.strategy.map(|s| match s {
-            SupervisorStrategy::OneForOne => HirSupervisorStrategy::OneForOne,
-            SupervisorStrategy::OneForAll => HirSupervisorStrategy::OneForAll,
-            SupervisorStrategy::RestForOne => HirSupervisorStrategy::RestForOne,
-            SupervisorStrategy::SimpleOneForOne => HirSupervisorStrategy::SimpleOneForOne,
-        });
+    fn lower_supervisor(&mut self, decl: &SupervisorDecl, span: Span) -> Option<HirSupervisorDecl> {
+        let (declaration, bootstrap_declaration) = self.source_supervisor_declarations(&span)?;
+        let strategy = decl.strategy.map(lower_supervisor_strategy);
 
         // Bind the construction-time config params in a fresh scope so the child
         // init-arg exprs lowered below can reference them (`config.field`). Mirror
@@ -14342,9 +14490,11 @@ impl LowerCtx {
         // Pop the param scope now that every child's init-arg expr is lowered.
         self.pop_scope();
 
-        HirSupervisorDecl {
+        Some(HirSupervisorDecl {
             id: self.ids.item(),
             node: self.ids.node(),
+            declaration,
+            bootstrap_declaration,
             name: decl.name.clone(),
             params,
             strategy,
@@ -14356,7 +14506,7 @@ impl LowerCtx {
             window: decl.intensity.as_ref().map(|i| i.window.clone()),
             children,
             span,
-        }
+        })
     }
 
     fn register_machine_ctor_variant_metadata(
@@ -14498,7 +14648,7 @@ impl LowerCtx {
 
         // Lower states.
         let mut hir_states = Vec::new();
-        for state in &decl.states {
+        for (state_index, state) in decl.states.iter().enumerate() {
             let fields: Vec<HirField> = machine_state_descriptors
                 .iter()
                 .find(|(name, _)| name == &state.name)
@@ -14531,7 +14681,32 @@ impl LowerCtx {
                 self.lower_machine_block_filtered(block, &state_names, event_names.clone())
             });
 
+            let entry_declaration = if state.entry.is_some() {
+                Some(self.source_declaration(
+                    &span,
+                    hew_types::DeclarationKind::MachineStateEntry,
+                    state_index,
+                )?)
+            } else {
+                None
+            };
+            let exit_declaration = if state.exit.is_some() {
+                Some(self.source_declaration(
+                    &span,
+                    hew_types::DeclarationKind::MachineStateExit,
+                    state_index,
+                )?)
+            } else {
+                None
+            };
             hir_states.push(HirMachineState {
+                declaration: self.source_declaration(
+                    &span,
+                    hew_types::DeclarationKind::MachineState,
+                    state_index,
+                )?,
+                entry_declaration,
+                exit_declaration,
                 name: state.name.clone(),
                 fields,
                 has_entry: state.entry.is_some(),
@@ -14548,7 +14723,8 @@ impl LowerCtx {
         let hir_events: Vec<HirMachineEvent> = decl
             .events
             .iter()
-            .map(|ev| {
+            .enumerate()
+            .map(|(event_index, ev)| {
                 let fields = ev
                     .fields
                     .iter()
@@ -14560,13 +14736,18 @@ impl LowerCtx {
                         span: ty.1.clone(),
                     })
                     .collect();
-                HirMachineEvent {
+                Some(HirMachineEvent {
+                    declaration: self.source_declaration(
+                        &span,
+                        hew_types::DeclarationKind::MachineEvent,
+                        event_index,
+                    )?,
                     name: ev.name.clone(),
                     fields,
                     span: span.clone(),
-                }
+                })
             })
-            .collect();
+            .collect::<Option<Vec<_>>>()?;
 
         // Lower transitions — record names, guard presence, body writes,
         // and emitted event names (for static checks). The body is also
@@ -14574,7 +14755,7 @@ impl LowerCtx {
         // narrow diagnostic-filter contract.
         let mut hir_transitions: Vec<HirMachineTransition> =
             Vec::with_capacity(decl.transitions.len());
-        for tr in &decl.transitions {
+        for (transition_index, tr) in decl.transitions.iter().enumerate() {
             let is_self_transition = tr.source_state == tr.target_state && tr.source_state != "_";
             let body_writes = collect_assigned_field_names_expr(&tr.body.0);
             // Set the source-state index so `lower_expr` can resolve `self.field`
@@ -14613,6 +14794,11 @@ impl LowerCtx {
             // conditionals or match arms are correctly detected.
             let body_emits = collect_hir_emitted_events(&body, &event_names);
             hir_transitions.push(HirMachineTransition {
+                declaration: self.source_declaration(
+                    &span,
+                    hew_types::DeclarationKind::MachineTransition,
+                    transition_index,
+                )?,
                 event_name: tr.event_name.clone(),
                 source_state: tr.source_state.clone(),
                 target_state: tr.target_state.clone(),
@@ -14903,12 +15089,7 @@ impl LowerCtx {
             // `lower_type_decl` mints a type declaration's: the dotted owner
             // path when the machine came from a module, the bare spelling for
             // a root-program machine. Consumers project this field.
-            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
-                match &defining_module {
-                    Some(module) => format!("{module}.{}", decl.name),
-                    None => decl.name.clone(),
-                },
-            ),
+            declaration: self.source_declaration(&span, hew_types::DeclarationKind::Machine, 0)?,
             name: decl.name.clone(),
             defining_module,
             type_params: decl.type_params.iter().map(|p| p.name.clone()).collect(),
@@ -15138,7 +15319,23 @@ impl LowerCtx {
         decl: &ActorDecl,
         span: Span,
         decl_module: Option<&str>,
-    ) -> HirActorDecl {
+    ) -> Option<HirActorDecl> {
+        let declaration = self.source_declaration(&span, hew_types::DeclarationKind::Actor, 0)?;
+        let init_declaration = if decl.init.is_some() {
+            Some(self.source_declaration(&span, hew_types::DeclarationKind::ActorInit, 0)?)
+        } else {
+            None
+        };
+        let receive_declarations = (0..decl.receive_fns.len())
+            .map(|index| {
+                self.source_declaration(&span, hew_types::DeclarationKind::ActorReceive, index)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let method_declarations = (0..decl.methods.len())
+            .map(|index| {
+                self.source_declaration(&span, hew_types::DeclarationKind::ActorMethod, index)
+            })
+            .collect::<Option<Vec<_>>>()?;
         let state_fields: Vec<HirField> = decl
             .fields
             .iter()
@@ -15163,16 +15360,24 @@ impl LowerCtx {
         let init = decl.init.as_ref().map(|init| {
             let (params, body) =
                 self.lower_actor_body(&state_fields, &init.params, &init.body, &ResolvedTy::Unit);
-            HirActorInit { params, body }
+            HirActorInit {
+                declaration: init_declaration
+                    .clone()
+                    .expect("actor init identity preflighted above"),
+                params,
+                body,
+            }
         });
 
         let receive_handlers: Vec<HirActorReceiveFn> = decl
             .receive_fns
             .iter()
-            .map(|rf| self.lower_actor_receive_fn(rf, &state_fields))
+            .zip(receive_declarations)
+            .map(|(rf, declaration)| self.lower_actor_receive_fn(rf, &state_fields, declaration))
             .collect();
 
-        let (methods, lifecycle_hooks) = self.partition_actor_methods(&decl.methods, &state_fields);
+        let (methods, lifecycle_hooks) =
+            self.partition_actor_methods(&decl.methods, &state_fields, &method_declarations);
 
         // Checker actor side-tables and every downstream layout registry share
         // the declaration's complete nominal identity. File-import flattening
@@ -15189,9 +15394,10 @@ impl LowerCtx {
             .cloned();
         let cycle_capable = self.cycle_capable_actors.contains(&actor_identity);
 
-        HirActorDecl {
+        Some(HirActorDecl {
             id: self.ids.item(),
             node: self.ids.node(),
+            declaration,
             name: decl.name.clone(),
             // File-import items are flattened for source-order lowering, but
             // flattening does not erase declaration ownership.  The third
@@ -15211,7 +15417,7 @@ impl LowerCtx {
             cycle_capable,
             protocol_descriptor,
             span,
-        }
+        })
     }
 
     fn lower_actor_body(
@@ -15338,6 +15544,7 @@ impl LowerCtx {
         &mut self,
         rf: &ReceiveFnDecl,
         state_fields: &[HirField],
+        declaration: hew_types::DefId,
     ) -> HirActorReceiveFn {
         let return_ty = rf
             .return_type
@@ -15394,6 +15601,7 @@ impl LowerCtx {
             .and_then(|a| a.args.first())
             .and_then(AttributeArg::as_duration_ns);
         HirActorReceiveFn {
+            declaration,
             name: rf.name.clone(),
             is_generator: rf.is_generator,
             params,
@@ -15415,10 +15623,11 @@ impl LowerCtx {
         &mut self,
         methods: &[FnDecl],
         state_fields: &[HirField],
+        declarations: &[hew_types::DefId],
     ) -> (Vec<HirActorMethod>, Vec<HirLifecycleHook>) {
         let mut plain = Vec::new();
         let mut hooks = Vec::new();
-        for method in methods {
+        for (method, declaration) in methods.iter().zip(declarations) {
             let return_ty = method
                 .return_type
                 .as_ref()
@@ -15440,6 +15649,7 @@ impl LowerCtx {
                 });
             match hook_kind {
                 Some(kind) => hooks.push(HirLifecycleHook {
+                    declaration: declaration.clone(),
                     kind,
                     name: method.name.clone(),
                     params,
@@ -15448,6 +15658,7 @@ impl LowerCtx {
                     span: method.fn_span.clone(),
                 }),
                 None => plain.push(HirActorMethod {
+                    declaration: declaration.clone(),
                     name: method.name.clone(),
                     params,
                     return_ty,
@@ -37941,7 +38152,12 @@ impl Widget {
         });
         let mut table = crate::TypeClassTable::default();
         let mut diagnostics = Vec::new();
-        admit_resource_record_lifecycles(&items, &mut table, &mut diagnostics);
+        admit_resource_record_lifecycles(
+            &items,
+            &hew_types::IdentityView::default(),
+            &mut table,
+            &mut diagnostics,
+        );
         assert!(table
             .lifecycle_registry()
             .resource_record(&resource_declaration)
@@ -39170,8 +39386,16 @@ impl Widget {
             parsed.errors
         );
 
-        let lowered =
-            lower_program_host_target(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+        // This test isolates HIR's no-overload diagnostic and intentionally
+        // omits checker semantic facts, but the declaration boundary must
+        // still carry the immutable identity view produced for this exact
+        // source program.
+        let tco = TypeCheckOutput {
+            identity: checked.identity,
+            ..TypeCheckOutput::default()
+        };
+        let lowered = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
         assert!(
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
@@ -39207,8 +39431,8 @@ impl Widget {
             parsed.errors
         );
 
-        let lowered =
-            lower_program_host_target(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        let tco = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+        let lowered = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
         assert!(
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
@@ -39245,8 +39469,8 @@ impl Widget {
             parsed.errors
         );
 
-        let lowered =
-            lower_program_host_target(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        let tco = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+        let lowered = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
         assert!(
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
@@ -41040,6 +41264,7 @@ impl Widget {
         admit_declared_opaque_resource_lifecycles(
             &items,
             &graph,
+            &hew_types::IdentityView::default(),
             &mut type_classes,
             &mut diagnostics,
         );

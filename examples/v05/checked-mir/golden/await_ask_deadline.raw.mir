@@ -66,7 +66,7 @@ fn Caller__recv__go() -> i64 [conv=actor_handler]
     branch _10 ? bb4 : bb5
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: await_ask_deadline.main [mono]
   locals:
     _0: LocalPid<Caller>
     _1: i64

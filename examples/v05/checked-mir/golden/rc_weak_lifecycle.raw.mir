@@ -1,5 +1,5 @@
 fn live() -> i64 [conv=default]
-  key: live [mono]
+  key: rc_weak_lifecycle.live [mono]
   locals:
     _0: i64
     _1: Rc<i64>
@@ -228,7 +228,7 @@ fn live() -> i64 [conv=default]
     goto bb8
 
 fn expired() -> Weak<i64> [conv=default]
-  key: expired [mono]
+  key: rc_weak_lifecycle.expired [mono]
   locals:
     _0: i64
     _1: Rc<i64>
@@ -261,7 +261,7 @@ fn expired() -> Weak<i64> [conv=default]
     return
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: rc_weak_lifecycle.main [mono]
   locals:
     _0: Weak<i64>
     _1: Weak<i64>

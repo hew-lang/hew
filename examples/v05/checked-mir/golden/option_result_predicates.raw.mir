@@ -1,5 +1,5 @@
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: option_result_predicates.main [mono]
   locals:
     _0: Option<i64>
     _1: i64

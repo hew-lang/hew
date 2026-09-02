@@ -11,7 +11,7 @@
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{lower_hir_module, IrPipeline, MirDiagnosticKind, Terminator};
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::{CallTarget, Checker, DefId, TypeCheckOutput};
+use hew_types::{CallTarget, Checker, DefId};
 
 fn pipeline_with_tc(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -304,8 +304,8 @@ fn unresolved_call_emits_unsupported_node_not_call_terminator() {
         }
     ";
 
-    // Parse and HIR-lower without a type checker (TypeCheckOutput::default)
-    // so that `unknown_fn` stays unresolved.
+    // `unknown_fn` names nothing, so the checker publishes no call target for
+    // it and the call reaches HIR lowering unresolved.
     let parsed = hew_parser::parse(src);
     assert!(
         parsed.errors.is_empty(),
@@ -314,7 +314,7 @@ fn unresolved_call_emits_unsupported_node_not_call_terminator() {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -352,4 +352,15 @@ fn unresolved_call_emits_unsupported_node_not_call_terminator() {
          fail-closed path must fire; got blocks: {:#?}",
         main_fn.blocks
     );
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

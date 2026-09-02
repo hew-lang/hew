@@ -1,5 +1,5 @@
 fn make(i64) -> Duo [conv=default]
-  key: make [mono]
+  key: match_skip_drop_control_flow.make [mono]
   locals:
     _0: i64
     _1: string
@@ -27,7 +27,7 @@ fn make(i64) -> Duo [conv=default]
     return
 
 fn loop_backedge(i64) -> i64 [conv=default]
-  key: loop_backedge [mono]
+  key: match_skip_drop_control_flow.loop_backedge [mono]
   locals:
     _0: i64
     _1: i64
@@ -113,7 +113,7 @@ fn loop_backedge(i64) -> i64 [conv=default]
     goto bb1
 
 fn join_paths(i64) -> i64 [conv=default]
-  key: join_paths [mono]
+  key: match_skip_drop_control_flow.join_paths [mono]
   locals:
     _0: i64
     _1: ()
@@ -246,7 +246,7 @@ fn join_paths(i64) -> i64 [conv=default]
     goto bb20
 
 fn all_wildcard(i64) -> i64 [conv=default]
-  key: all_wildcard [mono]
+  key: match_skip_drop_control_flow.all_wildcard [mono]
   locals:
     _0: i64
     _1: Duo
@@ -278,7 +278,7 @@ fn all_wildcard(i64) -> i64 [conv=default]
     goto bb2
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: match_skip_drop_control_flow.main [mono]
   locals:
     _0: i64
     _1: i64

@@ -118,7 +118,7 @@ fn __hew_task_entry_compute__i64() -> i64 [conv=task_entry]
     return
 
 fn main() -> i64 [conv=default]
-  key: main [mono]
+  key: scope_fork_spawn_generic.main [mono]
   locals:
     _0: LocalPid<Driver>
     _1: ()
@@ -516,17 +516,17 @@ fn duration::fmt(duration) -> string [conv=default]
     return
 
 fn worker$$i64() -> () [conv=default]
-  key: worker [generic i64]
+  key: scope_fork_spawn_generic.worker [generic i64]
   bb0:
     return
 
 fn worker$$string() -> () [conv=default]
-  key: worker [generic string]
+  key: scope_fork_spawn_generic.worker [generic string]
   bb0:
     return
 
 fn compute$$i64() -> i64 [conv=default]
-  key: compute [generic i64]
+  key: scope_fork_spawn_generic.compute [generic i64]
   locals:
     _0: i64
   bb0:

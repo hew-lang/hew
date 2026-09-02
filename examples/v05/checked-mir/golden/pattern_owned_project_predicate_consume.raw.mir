@@ -6,7 +6,7 @@ fn Token::close(Token) -> () [conv=default]
     return
 
 fn record_join(Packet) -> i64 [conv=default]
-  key: record_join [mono]
+  key: pattern_owned_project_predicate_consume.record_join [mono]
   locals:
     _0: Packet
     _1: i64
@@ -64,7 +64,7 @@ fn record_join(Packet) -> i64 [conv=default]
     goto bb1
 
 fn tuple_join((i64, Token, string)) -> i64 [conv=default]
-  key: tuple_join [mono]
+  key: pattern_owned_project_predicate_consume.tuple_join [mono]
   locals:
     _0: (i64, Token, string)
     _1: i64
@@ -122,7 +122,7 @@ fn tuple_join((i64, Token, string)) -> i64 [conv=default]
     goto bb1
 
 fn record_whole(Packet) -> i64 [conv=default]
-  key: record_whole [mono]
+  key: pattern_owned_project_predicate_consume.record_whole [mono]
   locals:
     _0: Packet
     _1: i64
@@ -181,7 +181,7 @@ fn record_whole(Packet) -> i64 [conv=default]
     goto bb1
 
 fn direct_return(Packet) -> i64 [conv=default]
-  key: direct_return [mono]
+  key: pattern_owned_project_predicate_consume.direct_return [mono]
   locals:
     _0: Packet
     _1: i64

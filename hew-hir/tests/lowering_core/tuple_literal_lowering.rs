@@ -3,9 +3,7 @@ use hew_parser::{
     ast::{Expr, Item},
     parse,
 };
-use hew_types::{
-    module_registry::ModuleRegistry, Checker, ResolvedTy, SpanKey, Ty, TypeCheckOutput,
-};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, SpanKey, Ty};
 
 #[test]
 fn tuple_literal_basic_construction() {
@@ -301,7 +299,7 @@ fn verifier_catches_arity_mismatch() {
         end: tuple_span.end,
         module_idx: 0,
     };
-    let mut tc = TypeCheckOutput::default();
+    let mut tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     tc.insert_expr_type(
         span_key,
         Ty::Tuple(vec![Ty::I64, Ty::I64, Ty::I64]), // 3-tuple, mismatched

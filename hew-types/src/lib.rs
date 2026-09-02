@@ -69,7 +69,9 @@ pub use extern_symbol::{
     ExternSymbolSpec, ExternSymbolTemplate, PlaceholderName, TemplateError, TemplateExpansionError,
     TemplateSegment,
 };
-pub use identity::{IdentityTable, ModuleId};
+pub use identity::{
+    DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, IdentityView, ModuleId,
+};
 pub use lang_items::{
     LangItem, LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT,
 };

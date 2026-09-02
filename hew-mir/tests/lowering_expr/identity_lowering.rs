@@ -1,12 +1,12 @@
 /// MIR lowering tests for `Expr::Is` → `Instr::IdentityCompare`.
 ///
 /// These tests exercise the HIR→MIR lowering path for the `is` identity
-/// operator.  They run below the checker (D-2) — `TypeCheckOutput::default()`
-/// is used so the allowance-set rules are not applied here; that is the
-/// checker's sole responsibility.  These tests pin only the MIR shape.
+/// operator.  They assert below the checker (D-2): the checker runs only to
+/// mint declaration identity, and nothing here re-asserts its allowance-set
+/// rules, which remain its sole responsibility.  These tests pin only the MIR
+/// shape.
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
 use hew_mir::{lower_hir_module, Instr};
-use hew_types::TypeCheckOutput;
 
 fn pipeline(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -17,7 +17,7 @@ fn pipeline(source: &str) -> hew_mir::IrPipeline {
     );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &checker_output(&parsed.program),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -91,4 +91,15 @@ fn is_operator_does_not_emit_int_cmp() {
         !has_int_cmp,
         "`a is b` must not lower to Instr::IntCmp; `is` has its own instruction variant"
     );
+}
+
+/// Type-check `program` so HIR lowering sees the checker's declaration
+/// identities.
+///
+/// These harnesses assert MIR shape below the checker, but HIR resolves every
+/// item through `TypeCheckOutput::identity` and fails closed when that view is
+/// empty, so the checker still has to run to mint the identities.
+fn checker_output(program: &hew_parser::ast::Program) -> hew_types::TypeCheckOutput {
+    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()))
+        .check_program(program)
 }

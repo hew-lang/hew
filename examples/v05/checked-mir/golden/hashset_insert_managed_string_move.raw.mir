@@ -1,5 +1,5 @@
 fn add_member(HashSet<string>, string) -> () [conv=default]
-  key: add_member [mono]
+  key: hashset_insert_managed_string_move.add_member [mono]
   locals:
     _0: HashSet<string>
     _1: string
@@ -14,7 +14,7 @@ fn add_member(HashSet<string>, string) -> () [conv=default]
     return
 
 fn add_renamed(HashSet<string>, string) -> () [conv=default]
-  key: add_renamed [mono]
+  key: hashset_insert_managed_string_move.add_renamed [mono]
   locals:
     _0: HashSet<string>
     _1: string
@@ -42,7 +42,7 @@ fn add_renamed(HashSet<string>, string) -> () [conv=default]
     return
 
 fn main() -> () [conv=default]
-  key: main [mono]
+  key: hashset_insert_managed_string_move.main [mono]
   locals:
     _0: HashSet<string>
     _1: HashSet<string>

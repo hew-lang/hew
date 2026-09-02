@@ -489,7 +489,7 @@ fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTem
         ),
         manifest::ManifestTemplate::Actor => (
             "main.hew".to_string(),
-            "actor Counter {\n    let count: i32;\n\n    receive fn increment() {\n        \
+            "actor Counter {\n    var count: i32;\n\n    receive fn increment() {\n        \
              count = count + 1;\n        println(count);\n    }\n}\n\n\
              fn main() {\n    let c = spawn Counter(count: 0);\n    c.increment();\n    \
              c.increment();\n    c.increment();\n}\n"
@@ -3696,8 +3696,9 @@ mod tests {
             "should contain actor definition"
         );
         assert!(
-            src.contains("let count: i32"),
-            "actor state field must use `let` keyword"
+            src.contains("var count: i32"),
+            "actor state field must use `var` — `receive fn increment` reassigns it, \
+             and only a `var` field is mutable outside `init`"
         );
         assert!(
             !src.contains("self."),

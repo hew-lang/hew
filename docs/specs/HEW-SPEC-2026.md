@@ -2672,7 +2672,7 @@ machine Name {
     state StateB { field: Type; }         // state with data
 
     // Transitions: on Event: Source => Target { body }
-    on EventX: StateA => StateB { StateB } // explicit body returns target value
+    on EventX: StateA => StateB { .StateB } // explicit body returns target value
     on EventY: StateA => StateB { StateB { field: event.payload } }
 
     // Head binding: name payload fields at the rule site
@@ -3744,9 +3744,9 @@ pairs are not cloneable generator captures. A whole owned value loaded from a
 generator environment is an alias; it must be cloned explicitly before being
 yielded or otherwise moved into another owner.
 
-> See HEW-FUTURE.md §1.6 for the remaining deferred generator forms (`async gen
-> fn`, `Lazy<T>`, `#[prefetch(N)]`). `gen fn`, `gen {}`, and `receive gen fn`
-> use the snapshot semantics above.
+> See HEW-FUTURE.md §1.6 for the remaining deferred generator forms
+> (`Lazy<T>`, `#[prefetch(N)]`). `gen fn`, `gen {}`, `async gen fn`, and
+> `receive gen fn` use the snapshot semantics above.
 
 ---
 
@@ -5356,8 +5356,8 @@ If you want this to be directly executable as an engineering project, the next m
   ladder: AST → Resolved HIR → SIR → Raw MIR → Checked MIR → Elaborated
   MIR → LLVM IR via inkwell. The v0.4 Rust-frontend / C++ backend /
   MessagePack-AST pipeline is no longer the design.
-- **Deferred to next edition.** Generators (`async gen fn` /
-  `receive gen fn` / `Lazy<T>` / `#[prefetch(N)]`), closures with captured
+- **Deferred to next edition.** Generators (`Lazy<T>` / `#[prefetch(N)]`),
+  closures with captured
   environment, user-facing `Arc<T>`, `dyn Trait`, `DoubleEndedIterator`,
   generic `HashMap<K, V>` over owned-aggregate/float keys, cancellation
   tokens, actor await + read-after-send barrier, and the self-hosting

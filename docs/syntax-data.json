@@ -1,5 +1,5 @@
 {
-  "version": "0.10.0-pre",
+  "version": "0.6.0-rc3",
   "description": "Canonical syntax data exported from the Hew compiler. Used by tree-sitter-hew, vscode-hew, hew.sh, and hew.run to generate syntax highlighting grammars.",
   "keywords": {
     "control_flow": [
@@ -27,7 +27,6 @@
       "pub",
       "import",
       "package",
-      "super",
       "extern",
       "where",
       "type",
@@ -54,16 +53,10 @@
       "await_restart",
       "this"
     ],
-    "wire": [
-      "reserved",
-      "optional",
-      "deprecated",
-      "default"
-    ],
+    "wire": ["reserved", "optional", "deprecated", "default"],
     "supervisor_config": [
       "child",
       "restart",
-      "budget",
       "strategy",
       "permanent",
       "transient",
@@ -75,10 +68,7 @@
       "simple_one_for_one",
       "pool"
     ],
-    "logical": [
-      "true",
-      "false"
-    ],
+    "logical": ["true", "false"],
     "machine": [
       "machine",
       "state",
@@ -89,17 +79,15 @@
       "exit",
       "emit"
     ],
-    "other": [
-      "dyn",
-      "unsafe",
-      "is"
-    ],
+    "other": ["dyn", "unsafe", "is"],
     "reserved_unused": [
       "try",
       "catch",
       "race",
       "foreign",
-      "cooperate"
+      "cooperate",
+      "super",
+      "budget"
     ]
   },
   "all_keywords": [
@@ -188,6 +176,8 @@
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
     "self": "Selects the imported module itself inside a dotted import selection (import path.{self as alias}).",
+    "clone": "Prefix clone operator (clone <operand>) when immediately followed by an operand; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
+    "consume": "By-move parameter modifier (fn f(consume x: T)) when leading a parameter declaration; an ordinary identifier otherwise (fn f(consume: T), x.consume()).",
     "events": "Machine input-event vocabulary block header (contextual inside machine body)",
     "emits": "Machine Mealy-output manifest block header (contextual inside machine body)",
     "reenter": "Machine transition self-re-entry modifier (contextual after target state name)",
@@ -215,34 +205,10 @@
     "fail": "Overflow policy: reject the send with Full"
   },
   "operators": {
-    "arithmetic": [
-      "+",
-      "-",
-      "*",
-      "/",
-      "%"
-    ],
-    "comparison": [
-      "==",
-      "!=",
-      "<",
-      "<=",
-      ">",
-      ">="
-    ],
-    "logical": [
-      "&&",
-      "||",
-      "!"
-    ],
-    "bitwise": [
-      "&",
-      "|",
-      "^",
-      "~",
-      "<<",
-      ">>"
-    ],
+    "arithmetic": ["+", "-", "*", "/", "%"],
+    "comparison": ["==", "!=", "<", "<=", ">", ">="],
+    "logical": ["&&", "||", "!"],
+    "bitwise": ["&", "|", "^", "~", "<<", ">>"],
     "assignment": [
       "=",
       "+=",
@@ -256,24 +222,12 @@
       "<<=",
       ">>="
     ],
-    "arrow": [
-      "->",
-      "=>"
-    ],
-    "range": [
-      "..",
-      "..="
-    ],
-    "other": [
-      "?",
-      "@",
-      ".",
-      "::",
-      "#["
-    ],
+    "arrow": ["->", "=>"],
+    "range": ["..", "..="],
+    "other": ["?", "@", ".", "::", "#["],
     "path_separators": {
       "primary": ".",
-      "deprecated": ["::"]
+      "removed": ["::"]
     }
   },
   "types": {
@@ -289,33 +243,18 @@
       "isize",
       "usize"
     ],
-    "float": [
-      "f32",
-      "f64"
-    ],
+    "float": ["f32", "f64"],
     "primitive": [
       "bool",
       "char",
       "string",
       "bytes",
       "void",
-      "never",
       "duration",
       "instant"
     ],
-    "collections": [
-      "HashMap",
-      "HashSet",
-      "Vec"
-    ],
-    "option_result": [
-      "Option",
-      "Result",
-      "Ok",
-      "Err",
-      "Some",
-      "None"
-    ],
+    "collections": ["HashMap", "HashSet", "Vec"],
+    "option_result": ["Option", "Result", "Ok", "Err", "Some", "None"],
     "concurrency": [
       "LocalPid",
       "RemotePid",
@@ -327,24 +266,10 @@
       "Generator",
       "AsyncGenerator"
     ],
-    "marker_traits": [
-      "Send",
-      "Frozen",
-      "Copy",
-      "Arc",
-      "Rc",
-      "Weak"
-    ],
-    "other": [
-      "Range"
-    ]
+    "marker_traits": ["Send", "Frozen", "Copy", "Arc", "Rc", "Weak"],
+    "other": ["Range"]
   },
-  "string_prefixes": [
-    "f",
-    "r",
-    "re",
-    "b"
-  ],
+  "string_prefixes": ["f", "r", "re", "b"],
   "comment_styles": {
     "line": "//",
     "doc": "///",
@@ -353,13 +278,6 @@
     "block_end": "*/"
   },
   "literal_suffixes": {
-    "duration": [
-      "ns",
-      "us",
-      "ms",
-      "s",
-      "m",
-      "h"
-    ]
+    "duration": ["ns", "us", "ms", "s", "m", "h"]
   }
 }

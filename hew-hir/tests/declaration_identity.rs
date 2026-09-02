@@ -176,8 +176,14 @@ fn missing_or_desynchronised_identity_emits_no_source_artifact() {
         )));
 }
 
+/// A directory module assembles its peer files, so a peer's declarations
+/// publish under the ASSEMBLING module - the spelling the checker keys them by
+/// and the one a caller writes (`pkg.peer_value()`). The peer file keeps its
+/// own identity as the occurrence axis, which is what lets two peers with
+/// items at equal spans stay distinguishable, but that identity is not a
+/// namespace of its own.
 #[test]
-fn directory_peer_file_projects_its_exact_checker_module_id() {
+fn directory_peer_declarations_publish_under_the_assembling_module() {
     let parsed = hew_parser::parse("pub fn peer_value() -> i64 { 7 }");
     assert!(parsed.errors.is_empty());
     let root = ModuleId::root();
@@ -232,5 +238,13 @@ fn directory_peer_file_projects_its_exact_checker_module_id() {
             _ => None,
         })
         .expect("peer function lowers");
-    assert_eq!(function.declaration.full_path(), "pkg.peer.peer_value");
+    assert_eq!(function.declaration.full_path(), "pkg.peer_value");
+    assert_eq!(
+        checked
+            .identity
+            .declaration_by_path("pkg.peer_value")
+            .expect("the assembled spelling resolves"),
+        &function.declaration,
+        "HIR carries the identity the checker published, not a re-render"
+    );
 }

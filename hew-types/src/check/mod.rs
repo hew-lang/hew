@@ -501,8 +501,8 @@ impl Checker {
                 // into it. Checking a file that belongs to a named module (a
                 // directory module's peer, say) makes that MODULE the graph
                 // root, and its nominals stay qualified by it.
-                let bare_nominals = (*module_id == graph.root && dotted.is_empty())
-                    || flat_file_imports.contains(module_id);
+                let bare_nominals =
+                    *module_id == graph.root || flat_file_imports.contains(module_id);
                 let assembler = module
                     .source_paths
                     .first()

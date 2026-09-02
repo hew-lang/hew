@@ -2326,6 +2326,87 @@ mod tests {
         path.display().to_string()
     }
 
+    /// A diamond of module imports (`main` -> `left`, `right` -> `base`)
+    /// leaves the module DFS free to visit `left` or `right` first. HIR
+    /// lowering walks `topo_order` to order function bodies and to mint
+    /// `BindingId`s, so that choice must be the same on every compile: the
+    /// raw MIR dump (function order, binding and site ids) must be
+    /// byte-identical across repeated in-process compiles of one program.
+    #[test]
+    fn diamond_module_imports_lower_identically_across_repeated_compiles() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile has a workspace parent")
+            .to_path_buf();
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(
+            dir.path(),
+            "base.hew",
+            "pub fn base_value() -> i64 {\n    let x = 100;\n    let y = x + 1;\n    y\n}\n",
+        );
+        write_source(
+            dir.path(),
+            "left.hew",
+            "import base;\n\npub fn left_value() -> i64 {\n    let a = base.base_value();\n    let b = a + 1;\n    b\n}\n",
+        );
+        write_source(
+            dir.path(),
+            "right.hew",
+            "import base;\n\npub fn right_value() -> i64 {\n    let c = base.base_value();\n    let d = c + 2;\n    d\n}\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import left;\nimport right;\n\nfn main() {\n    let l = left.left_value();\n    let r = right.right_value();\n    let total = l + r;\n    println(f\"{total}\");\n}\n",
+        );
+
+        let session = super::Session::new(
+            super::SessionTarget::native(),
+            super::DiagnosticPolicy::default(),
+        );
+        let dumps: Vec<String> = (0..20)
+            .map(|_| {
+                let state = run_file_frontend_to_typecheck(
+                    &input,
+                    &FrontendOptions {
+                        module_search_paths: Some(vec![repo_root.clone()]),
+                        ..FrontendOptions::default()
+                    },
+                )
+                .expect("diamond fixture must type-check");
+                let tco = state
+                    .typecheck_result
+                    .tco
+                    .as_ref()
+                    .expect("type checking was enabled");
+                let hir = hew_hir::lower_program(
+                    &state.program,
+                    tco,
+                    &hew_hir::ResolutionCtx,
+                    hew_hir::TargetArch::host(),
+                );
+                assert!(
+                    hir.diagnostics.is_empty(),
+                    "diamond fixture must lower without HIR diagnostics: {:#?}",
+                    hir.diagnostics
+                );
+                let output = session.lower_hir_module(&hir.module, tco);
+                hew_mir::dump_mir(&output.pipeline, hew_mir::DumpStage::Raw)
+            })
+            .collect();
+        assert!(
+            dumps[0].contains("fn left$left_value") && dumps[0].contains("fn right$right_value"),
+            "dump must contain both imported functions:\n{}",
+            dumps[0]
+        );
+        for (run, dump) in dumps.iter().enumerate().skip(1) {
+            assert_eq!(
+                dump, &dumps[0],
+                "raw MIR dump of run {run} differs from run 0"
+            );
+        }
+    }
+
     #[test]
     fn user_surface_removes_imported_stdlib_diagnostics() {
         let dir = tempfile::tempdir().expect("create diagnostic boundary fixture");

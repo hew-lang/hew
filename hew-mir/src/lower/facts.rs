@@ -2088,6 +2088,23 @@ fn projection_base_consumes(base: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) ->
     }
 }
 
+/// True when any arm of this match introduces a pattern binding — the binder
+/// the selected arm moves its payload into. A match whose arms only inspect the
+/// scrutinee (tag tests, wildcards) carries nothing out of it.
+///
+/// Guarded arms count: a guard decides which arm is selected, not whether the
+/// selected arm's binder takes ownership, so a match with any binding arm is
+/// treated as carrying ownership out. That is the safe direction for the
+/// carrier summary — the caller hands the callee an owned copy it did not
+/// strictly need, rather than letting the callee move a leaf out of storage
+/// the caller still releases.
+fn match_binds_a_payload(arms: &[hew_hir::HirMatchArm]) -> bool {
+    arms.iter().any(|arm| {
+        !arm.bindings.is_empty()
+            || matches!(arm.predicate, hew_hir::HirMatchArmPredicate::Binding { .. })
+    })
+}
+
 /// True when a projection chain is rooted directly in parameter `b_p`.
 /// Wrappers that compute a new value are deliberately excluded: only a place
 /// projection can be neutralized by the callee-side carrier machinery.
@@ -2541,7 +2558,20 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
                     ProjectMatchOwnershipMode::Borrow
                 )
             } else {
-                scan_expr_for_consume(scrutinee, b_p, pc)
+                // Destructuring a PROJECTION of `b_p` moves the selected
+                // payload into the arm binder, which becomes its owner. That
+                // storage is the parameter's, so ownership leaves the callee
+                // through the parameter even though no arm mentions `b_p`
+                // again. The intent stamp is not evidence here: a match
+                // scrutinee is stamped `Read` whatever the arms then bind, so
+                // keying on it (as the plain projection arms do) classifies
+                // the parameter BORROW and the caller hands the callee its
+                // live record to move a leaf out of (#3156).
+                (pc.owned_projection_sinks
+                    && match_binds_a_payload(arms)
+                    && !crate::return_provenance::ty_is_scalar_non_heap(&scrutinee.ty)
+                    && projection_is_rooted_in(scrutinee, b_p))
+                    || scan_expr_for_consume(scrutinee, b_p, pc)
             };
             scrutinee_consumes
                 || arms.iter().any(|arm| {

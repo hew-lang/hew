@@ -1626,12 +1626,12 @@ fn eval_wasm_hashmap_string_i64_values_are_correct() {
     m.insert("beta", 25);
 
     let alpha = match m.get("alpha") {
-        Some(v) => v,
-        None => panic("alpha: missing value"),
+        .Some(v) => v,
+        .None => panic("alpha: missing value"),
     };
     let beta = match m.get("beta") {
-        Some(v) => v,
-        None => panic("beta: missing value"),
+        .Some(v) => v,
+        .None => panic("beta: missing value"),
     };
     let sum = alpha + beta;
 
@@ -1673,12 +1673,12 @@ type Point {
     m.insert(Point { x: 5, y: 6 }, 99);
 
     let first = match m.get(Point { x: 3, y: 4 }) {
-        Some(v) => v,
-        None => panic("first point: missing value"),
+        .Some(v) => v,
+        .None => panic("first point: missing value"),
     };
     let second = match m.get(Point { x: 5, y: 6 }) {
-        Some(v) => v,
-        None => panic("second point: missing value"),
+        .Some(v) => v,
+        .None => panic("second point: missing value"),
     };
 
     if first != 88 { panic(f"first point: expected 88, got {first}"); }

@@ -1,0 +1,16 @@
+actor Counter {
+    var n: i64;
+
+    receive fn bump() -> i64 {
+        n = n + 1;
+        n
+    }
+}
+
+fn main() -> i64 {
+    let c = spawn Counter(n: 0);
+    match await c.bump() {
+        .Ok(v) => v,
+        .Err(_) => 0,
+    }
+}

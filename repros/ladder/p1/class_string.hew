@@ -1,0 +1,7 @@
+fn main() -> i64 {
+    let a: string = "ap";
+    let b: string = "ple";
+    let s: string = a + b;
+    println(s);
+    0
+}

@@ -1,0 +1,14 @@
+#[resource]
+type Conn {
+    fd: i64;
+}
+
+impl Conn {
+    fn close(consuming self) {}
+}
+
+fn main() -> i64 {
+    let c = Conn { fd: 3 };
+    println(c.fd);
+    0
+}

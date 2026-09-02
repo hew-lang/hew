@@ -1,0 +1,13 @@
+fn main() -> i64 {
+    let n = 42;
+    let ok = true;
+    let x = 1.5;
+    let c = 'a';
+    let d = 5s;
+    println(n);
+    println(if ok { 1 } else { 0 });
+    println(x);
+    println(c);
+    println(d.secs());
+    0
+}

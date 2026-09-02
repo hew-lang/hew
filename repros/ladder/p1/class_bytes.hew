@@ -1,0 +1,7 @@
+fn main() -> i64 {
+    let b: bytes = bytes.new();
+    b.push(72);
+    b.push(105);
+    println(b.len());
+    0
+}

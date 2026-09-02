@@ -13763,7 +13763,7 @@ actor Probe {{
                     {inner_use}
                     let value = match await inner_gate.tick() {{
                         .Ok(n) => n,
-                        Err(_) => 0,
+                        .Err(_) => 0,
                     }};
                     value
                 }};
@@ -13831,7 +13831,7 @@ actor Probe {{
             {owner_use}
             match await child_gate.tick() {{
                 .Ok(n) => n,
-                Err(_) => 0,
+                .Err(_) => 0,
             }}
         }};
         child(gate)

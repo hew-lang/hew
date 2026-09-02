@@ -60,7 +60,7 @@ fn check_fails_on_hir_gate_before_ok() {
     let (_dir, path) = write_fixture(
         "fn main() -> i64 {\n\
          \x20\x20\x20\x20let x: Option<i64> = Some(0);\n\
-         \x20\x20\x20\x20match x { Some(0) | .None => 0, .Some(n) => n }\n\
+         \x20\x20\x20\x20match x { .Some(0) | .None => 0, .Some(n) => n }\n\
          }\n",
     );
 
@@ -296,7 +296,7 @@ fn show_stack_hints_render_before_later_hir_failure() {
          \x20\x20\x20\x20let f = |x: i64| -> i64 { x + 1 };\n\
          \x20\x20\x20\x20let _r = f(1);\n\
          \x20\x20\x20\x20let x: Option<i64> = Some(0);\n\
-         \x20\x20\x20\x20match x { Some(0) | .None => 0, .Some(n) => n }\n\
+         \x20\x20\x20\x20match x { .Some(0) | .None => 0, .Some(n) => n }\n\
          }\n",
     );
 

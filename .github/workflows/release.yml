@@ -24,8 +24,9 @@
 #     identity, e.g. `v0.6.0-rc2@sha256:<64 lowercase hex digits>`. The
 #     maintainer records it only after the pre-tag candidate publish succeeds.
 #
-# Homebrew tap updates use a separate optional credential and are skipped for
-# prereleases:
+# Homebrew tap updates use a separate optional credential and run for every
+# tag, prereleases included — hew.rb tracks the newest release (rc included),
+# hew@stable.rb tracks final releases only:
 #   HOMEBREW_TAP_TOKEN           — GitHub PAT with actions:write scope for hew-lang/homebrew-hew
 #
 # Required secrets for VS Code extension publishing (optional — skipped if absent):
@@ -1502,8 +1503,10 @@ jobs:
   homebrew:
     needs: release
     runs-on: ubuntu-24.04
-    # Formula updates are for final releases; -rc tags must not touch the tap.
-    if: ${{ !cancelled() && needs.release.result == 'success' && !contains(github.event.inputs.tag || github.ref_name, '-rc') }}
+    # Triggers every tag: Formula/hew.rb tracks the newest release including
+    # release candidates, Formula/hew@stable.rb tracks final releases only —
+    # update-formula.yml in homebrew-hew decides which formula(e) to touch.
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     timeout-minutes: 5
 
     steps:

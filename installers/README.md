@@ -8,6 +8,18 @@ Installation options for [Hew](https://hew.sh).
 curl -fsSL https://hew.sh/install | sh
 ```
 
+Until v0.6.0 ships as a final release, this installs the newest published
+release _including release candidates_. Pass `--stable` to install the
+newest final release instead:
+
+```sh
+curl -fsSL https://hew.sh/install | sh -s -- --stable
+```
+
+Other `install.sh` flags: `--version <ver>` (pin an exact version),
+`--prefix <dir>` (installation directory), `--dry-run` (print what would be
+installed without installing it). `sh install.sh --help` lists all of them.
+
 ## Quick Install (FreeBSD)
 
 FreeBSD base includes `fetch(1)` — no extra packages needed:
@@ -46,16 +58,16 @@ installed without installing it). `.\install.ps1 -Help` lists all of them.
 
 ## Package Managers
 
-| Platform                 | Command                                                                          |
-| ------------------------ | -------------------------------------------------------------------------------- |
-| macOS / Linux (Homebrew) | `brew install hew-lang/tap/hew`                                                  |
-| FreeBSD (script)         | `fetch -o - https://hew.sh/install \| sh`                                        |
-| Arch Linux (AUR)         | `yay -S hew-bin`                                                                 |
-| Debian / Ubuntu          | `.deb` packages on the [releases page](https://github.com/hew-lang/hew/releases) |
-| Fedora / RHEL / openSUSE | See `rpm/hew.spec`                                                               |
-| Alpine Linux             | See `alpine/APKBUILD`                                                            |
-| Nix / NixOS              | See `nix/default.nix`                                                            |
-| Docker                   | `docker run --rm -v $(pwd):/work r.hew.sh/hew build /work/main.hew`              |
+| Platform                 | Command                                                                                              |
+| ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| macOS / Linux (Homebrew) | `brew install hew-lang/tap/hew` (newest release, rc included) or `hew@stable` (final releases only) |
+| FreeBSD (script)         | `fetch -o - https://hew.sh/install \| sh`                                                           |
+| Arch Linux (AUR)         | `yay -S hew-bin`                                                                                    |
+| Debian / Ubuntu          | `.deb` packages on the [releases page](https://github.com/hew-lang/hew/releases)                    |
+| Fedora / RHEL / openSUSE | See `rpm/hew.spec`                                                                                  |
+| Alpine Linux             | See `alpine/APKBUILD`                                                                               |
+| Nix / NixOS              | See `nix/default.nix`                                                                               |
+| Docker                   | `docker run --rm -v $(pwd):/work r.hew.sh/hew build /work/main.hew`                                 |
 
 ## Docker Usage
 

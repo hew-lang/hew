@@ -4,7 +4,14 @@
 #        fetch -o - https://hew.sh/install | sh        (FreeBSD — no extra packages needed)
 #        wget -qO- https://hew.sh/install | sh         (wget fallback)
 #        irm https://hew.sh/install.ps1 | iex          (Windows PowerShell)
-#        sh install.sh [--version <ver>] [--prefix <dir>] [--help]
+#        sh install.sh [--version <ver>] [--stable] [--prefix <dir>] [--dry-run] [--help]
+#
+# Version policy: until v0.6.0 ships as a final release, the default install
+# picks the newest published release *including release candidates*, so
+# `curl | sh` tracks the pre-release ladder during the v0.6.0 stabilization
+# window. Pass --stable to install the newest tagged final release instead
+# (the policy the `hew@stable` Homebrew formula also uses). Once a final
+# v0.6.0 ships, the two policies agree until the next pre-release window.
 set -eu
 
 GITHUB_ORG="hew-lang"
@@ -57,8 +64,13 @@ USAGE:
 sh install.sh [OPTIONS]
 
 OPTIONS:
-    --version <ver>    Install a specific version (e.g. 0.1.3). Default: latest
+    --version <ver>    Install a specific version (e.g. 0.1.3). Default: newest
+                        release including release candidates
+    --stable           Install the newest final (non-rc) release instead of
+                        the newest release candidate
     --prefix  <dir>    Installation directory. Default: \$HEW_HOME or \$HOME/.hew
+    --dry-run          Resolve the version and print what would be installed,
+                        without downloading or installing anything
     --help             Print this help message
 EOF
     exit 0
@@ -69,6 +81,8 @@ EOF
 # ---------------------------------------------------------------------------
 REQUESTED_VERSION=""
 INSTALL_PREFIX=""
+STABLE_ONLY=""
+DRY_RUN=""
 
 parse_args() {
     while [ $# -gt 0 ]; do
@@ -78,10 +92,18 @@ parse_args() {
             REQUESTED_VERSION="$2"
             shift 2
             ;;
+        --stable)
+            STABLE_ONLY="1"
+            shift
+            ;;
         --prefix)
             [ -z "${2:-}" ] && err "--prefix requires a value"
             INSTALL_PREFIX="$2"
             shift 2
+            ;;
+        --dry-run)
+            DRY_RUN="1"
+            shift
             ;;
         --help | -h)
             usage
@@ -91,6 +113,9 @@ parse_args() {
             ;;
         esac
     done
+    if [ -n "$REQUESTED_VERSION" ] && [ -n "$STABLE_ONLY" ]; then
+        err "--version and --stable are mutually exclusive"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -98,10 +123,10 @@ parse_args() {
 # ---------------------------------------------------------------------------
 detect_platform() {
     case "$(uname -s)" in
-    Linux*)   OS="linux" ;;
-    Darwin*)  OS="darwin" ;;
+    Linux*) OS="linux" ;;
+    Darwin*) OS="darwin" ;;
     FreeBSD*) OS="freebsd" ;;
-    *)        err "unsupported operating system: $(uname -s)" ;;
+    *) err "unsupported operating system: $(uname -s)" ;;
     esac
 
     case "$(uname -m)" in
@@ -142,19 +167,74 @@ http_download() {
 
 # ---------------------------------------------------------------------------
 # Resolve version
+#
+# Picks the newest tag by semver (major.minor.patch[-rcN]), not by GitHub's
+# release-creation order, since a hotfix tagged later could otherwise shadow
+# a newer version. Both the default (rc-inclusive) and --stable pick from the
+# same /releases listing so there is one authority for "what tags exist";
+# --stable just drops any tag containing '-', mirroring how the release
+# workflow itself decides final vs. pre-release (release.yml, RELEASE_TAG
+# check before attaching Linux packages).
+#
+# SHORTCUT: the semver comparison below only understands this repo's actual
+# tag scheme, `vX.Y.Z` or `vX.Y.Z-rcN` — WHY: that is the only scheme the
+# release workflow emits (release.yml sets `prerelease` from `contains(tag,
+# '-rc')`); WHEN this breaks: a tag with any other prerelease label (e.g.
+# `-beta1`) silently lands in the rc0 slot (`substr("beta1", 3) + 0` is `0`),
+# below every rcN of the same core version and above any older final — that
+# happens to match SemVer precedence for a single prerelease label, but two
+# different labels on the same core version (`-beta1` and `-rc1`) would both
+# collapse to rc0 and tie-break arbitrarily; WHAT the real fix looks like: a
+# full SemVer 2.0.0 §11 precedence comparison if the tag scheme ever grows
+# more prerelease kinds.
 # ---------------------------------------------------------------------------
+pick_newest_tag() {
+    # stdin: one 'vX.Y.Z' or 'vX.Y.Z-rcN' tag per line (with leading 'v').
+    # stdout: the highest tag by the scheme above.
+    awk -F'[.-]' '
+        {
+            major = $1 + 0; minor = $2 + 0; patch = $3 + 0
+            # $4 holds "rcN" for a candidate, empty for a final release.
+            # A final release outranks any rc of the same major.minor.patch.
+            rc = ($4 == "") ? 999999 : (substr($4, 3) + 0)
+            key = sprintf("%06d.%06d.%06d.%06d", major, minor, patch, rc)
+            if (key > best) { best = key; bestline = $0 }
+        }
+        END { print bestline }
+    '
+}
+
 resolve_version() {
     if [ -n "$REQUESTED_VERSION" ]; then
         # Strip leading 'v' if provided
         VERSION="${REQUESTED_VERSION#v}"
-    else
-        _rv_response="$(http_get "${GITHUB_API}/releases/latest")" ||
-            err "failed to fetch latest release from GitHub API"
-        _rv_raw="$(printf '%s' "$_rv_response" | grep '"tag_name"' | sed 's/.*"tag_name":[[:space:]]*"//;s/".*//')"
-        VERSION="${_rv_raw#v}"
-        if [ -z "$VERSION" ]; then
-            err "could not determine latest version"
+        return
+    fi
+
+    # per_page=100 is a SHORTCUT: WHY — the repo has well under 100 release
+    # tags today, so one unpaginated page covers every candidate; WHEN this
+    # breaks — release count crosses 100; WHAT the real fix looks like —
+    # follow the API's Link: rel="next" header across pages.
+    _rv_response="$(http_get "${GITHUB_API}/releases?per_page=100")" ||
+        err "failed to fetch releases from GitHub API"
+    _rv_tags="$(printf '%s' "$_rv_response" | grep '"tag_name"' |
+        sed 's/.*"tag_name":[[:space:]]*"//;s/".*//' | grep '^v[0-9]')"
+    if [ -z "$_rv_tags" ]; then
+        err "could not determine available versions"
+    fi
+
+    if [ -n "$STABLE_ONLY" ]; then
+        # Final releases only, matching the workflow's own final-vs-rc test.
+        _rv_tags="$(printf '%s\n' "$_rv_tags" | grep -v -- '-')"
+        if [ -z "$_rv_tags" ]; then
+            err "could not determine a stable version"
         fi
+    fi
+
+    _rv_best="$(printf '%s\n' "$_rv_tags" | sed 's/^v//' | pick_newest_tag)"
+    VERSION="${_rv_best}"
+    if [ -z "$VERSION" ]; then
+        err "could not determine newest version"
     fi
 }
 
@@ -212,6 +292,17 @@ main() {
 
     resolve_version
 
+    archive_name="hew-v${VERSION}-${OS}-${ARCH}.tar.gz"
+    base_url="https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/v${VERSION}"
+
+    if [ -n "$DRY_RUN" ]; then
+        printf "  tag:      v%s\n" "$VERSION"
+        printf "  platform: %s-%s\n" "$OS" "$ARCH"
+        printf "  archive:  %s/%s\n" "$base_url" "$archive_name"
+        printf "  prefix:   %s\n" "$INSTALL_PREFIX"
+        exit 0
+    fi
+
     print_banner
     printf "  %bInstalling Hew v%s (%s-%s)%b\n\n" "${BOLD}" "$VERSION" "$OS" "$ARCH" "${RESET}"
 
@@ -229,9 +320,7 @@ main() {
     # Set up temp directory
     TMPDIR_INSTALL="$(mktemp -d)"
 
-    archive_name="hew-v${VERSION}-${OS}-${ARCH}.tar.gz"
     checksums_name="hew-v${VERSION}-checksums.txt"
-    base_url="https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/v${VERSION}"
 
     # Download archive
     step_start "Downloading"
@@ -281,7 +370,7 @@ main() {
     # Generate shell completions from the installed binaries
     for shell in bash zsh fish; do
         "${INSTALL_PREFIX}/bin/hew" completions "${shell}" \
-            > "${INSTALL_PREFIX}/completions/hew.${shell}" 2>/dev/null || true
+            >"${INSTALL_PREFIX}/completions/hew.${shell}" 2>/dev/null || true
     done
 
     for f in LICENSE-MIT LICENSE-APACHE NOTICE README.md; do

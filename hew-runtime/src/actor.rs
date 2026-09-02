@@ -6839,23 +6839,38 @@ unsafe fn hew_actor_trap_inner(
     // `error_code` on a not-yet-terminal actor is the ordinary state of a
     // crashing dispatch, not something this store introduces.
     //
+    // The store sits INSIDE the loop, after the already-terminal check and
+    // before the exchange, rather than once ahead of the whole loop. An actor
+    // that is already Stopped or Crashed by the time this trap runs (a
+    // send-failure trap on a monitor whose target's mailbox is already
+    // closed, for example) takes the early `return` above the store: the
+    // recorded reason from whichever trap actually won the terminal race is
+    // left untouched. Storing ahead of that check would overwrite a settled
+    // actor's reason with this trap's code on every call, turning a clean
+    // Stopped exit into a spurious crash reason or zeroing a real crash code.
+    //
     // WHY this is a store and not a claim: publishing ahead of the CAS means a
     // trap that goes on to LOSE the CAS has also stored its code, so two traps
     // racing the same actor with different codes leave whichever store landed
-    // last rather than the winner's. Only one trap per actor is reachable from
-    // an activation; the external callers (`monitor`'s failed-DOWN trap) all
-    // pass `HEW_TRAP_ACTOR_SEND_FAILED`, so the codes agree in practice.
-    // WHEN this stops being good enough: as soon as two distinct non-zero codes
-    // can race here — a second external trap site with its own code. WHAT the
-    // real fix is: publish state and code in one atomic (pack the terminal
-    // state and the code into a single `AtomicI64` claimed by one
-    // compare_exchange), which makes the winner of the claim the only writer.
-    a.error_code.store(error_code, Ordering::Release);
+    // last rather than the winner's. Only one trap per activation is
+    // reachable from dispatch; the external callers (`monitor`'s failed-DOWN
+    // trap) all pass `HEW_TRAP_ACTOR_SEND_FAILED`, so the codes agree in
+    // practice for the racing-writers case. The already-terminal case above
+    // is common (the monitor site hits it whenever the target already
+    // stopped or crashed) and is handled by the early return, not by this
+    // store's ordering.
+    // WHEN this stops being good enough: as soon as two distinct non-zero
+    // codes can race the CAS itself — a second external trap site with its
+    // own code. WHAT the real fix is: publish state and code in one atomic
+    // (pack the terminal state and the code into a single `AtomicI64` claimed
+    // by one compare_exchange), which makes the winner of the claim the only
+    // writer.
     loop {
         let current = a.actor_state.load(Ordering::Acquire);
         if current == HewActorState::Stopped as i32 || current == HewActorState::Crashed as i32 {
             return;
         }
+        a.error_code.store(error_code, Ordering::Release);
         if a.actor_state
             .compare_exchange(current, terminal, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()

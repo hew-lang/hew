@@ -9,7 +9,7 @@
   },
   {
     "id": "send-message",
-    "snippet": "// `await` sends a message and waits for the reply (a Result).\nmatch await counter.increment(5) {\n    Ok(total) => println(total),\n    Err(_) => {}\n}\n"
+    "snippet": "// `await` sends a message and waits for the reply (a Result).\nmatch await counter.increment(5) {\n    .Ok(total) => println(total),\n    .Err(_) => {}\n}\n"
   },
   {
     "id": "receive",
@@ -25,7 +25,7 @@
   },
   {
     "id": "match",
-    "snippet": "match value {\n    Some(x) => println(x),\n    None => println(\"empty\"),\n}\n"
+    "snippet": "match value {\n    .Some(x) => println(x),\n    .None => println(\"empty\"),\n}\n"
   },
   {
     "id": "functions",
@@ -37,11 +37,11 @@
   },
   {
     "id": "while-let",
-    "snippet": "fn countdown(n: i64) -> Option<i64> {\n    if n > 0 { Some(n - 1) } else { None }\n}\n\nfn main() {\n    var opt: Option<i64> = Some(3);\n    while let Some(value) = opt {\n        println(value);\n        opt = countdown(value);\n    }\n}\n"
+    "snippet": "fn countdown(n: i64) -> Option<i64> {\n    if n > 0 { Some(n - 1) } else { None }\n}\n\nfn main() {\n    var opt: Option<i64> = Some(3);\n    while let .Some(value) = opt {\n        println(value);\n        opt = countdown(value);\n    }\n}\n"
   },
   {
     "id": "enum",
-    "snippet": "enum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn main() {\n    let shape = Shape.Circle(5);\n    match shape {\n        Circle(r) => println(r * r * 3),\n        Rectangle(w, h) => println(w * h),\n    }\n}\n"
+    "snippet": "enum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn main() {\n    let shape = Shape.Circle(5);\n    match shape {\n        .Circle(r) => println(r * r * 3),\n        .Rectangle(w, h) => println(w * h),\n    }\n}\n"
   },
   {
     "id": "for-loop",
@@ -49,11 +49,11 @@
   },
   {
     "id": "async-functions",
-    "snippet": "// Hew has no `async fn` — actors are the unit of concurrency.\nactor Fetcher {\n    receive fn get(url: string) -> string {\n        \"response body\"\n    }\n}\n\nfn main() {\n    let fetcher = spawn Fetcher;\n    match await fetcher.get(\"https://example.com\") {\n        Ok(body) => println(body),\n        Err(_) => println(\"request failed\"),\n    }\n}\n"
+    "snippet": "// Hew has no `async fn` — actors are the unit of concurrency.\nactor Fetcher {\n    receive fn get(url: string) -> string {\n        \"response body\"\n    }\n}\n\nfn main() {\n    let fetcher = spawn Fetcher;\n    match await fetcher.get(\"https://example.com\") {\n        .Ok(body) => println(body),\n        .Err(_) => println(\"request failed\"),\n    }\n}\n"
   },
   {
     "id": "await-future",
-    "snippet": "// `await` returns a Result with the actor's reply.\nmatch await fetcher.get(\"https://example.com\") {\n    Ok(body) => println(body),\n    Err(_) => println(\"request failed\"),\n}\n"
+    "snippet": "// `await` returns a Result with the actor's reply.\nmatch await fetcher.get(\"https://example.com\") {\n    .Ok(body) => println(body),\n    .Err(_) => println(\"request failed\"),\n}\n"
   },
   {
     "id": "machine-step",
@@ -69,7 +69,7 @@
   },
   {
     "id": "option-result",
-    "snippet": "let val: Option<i64> = Some(42);\nmatch val {\n    Some(x) => println(x),\n    None => println(\"nothing\"),\n}\n"
+    "snippet": "let val: Option<i64> = Some(42);\nmatch val {\n    .Some(x) => println(x),\n    .None => println(\"nothing\"),\n}\n"
   },
   {
     "id": "import",

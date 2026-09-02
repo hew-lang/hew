@@ -13,7 +13,7 @@
   },
   {
     "id": "control-flow",
-    "starterCode": "// Lesson 4: While Let\n// `while let` keeps looping while the pattern matches.\n\nfn countdown(n: i64) -> Option<i64> {\n    if n > 0 {\n        Some(n - 1)\n    } else {\n        None\n    }\n}\n\nfn main() {\n    var opt: Option<i64> = Some(3);\n    while let Some(value) = opt {\n        println(value);\n        opt = countdown(value);\n    }\n    println(\"done\");\n}\n"
+    "starterCode": "// Lesson 4: While Let\n// `while let` keeps looping while the pattern matches.\n\nfn countdown(n: i64) -> Option<i64> {\n    if n > 0 {\n        Some(n - 1)\n    } else {\n        None\n    }\n}\n\nfn main() {\n    var opt: Option<i64> = Some(3);\n    while let .Some(value) = opt {\n        println(value);\n        opt = countdown(value);\n    }\n    println(\"done\");\n}\n"
   },
   {
     "id": "actors-intro",
@@ -29,11 +29,11 @@
   },
   {
     "id": "enums",
-    "starterCode": "// Lesson 8: Enums & Match\n// TODO: Add a Triangle variant and handle it in the match.\n\nenum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn describe(s: Shape) {\n    match s {\n        Circle(r) => println(f\"circle with radius {r}\"),\n        Rectangle(w, h) => println(f\"rectangle {w}x{h}\"),\n    }\n}\n\nfn main() {\n    describe(.Circle(5));\n    describe(.Rectangle(3, 4));\n}\n"
+    "starterCode": "// Lesson 8: Enums & Match\n// TODO: Add a Triangle variant and handle it in the match.\n\nenum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn describe(s: Shape) {\n    match s {\n        .Circle(r) => println(f\"circle with radius {r}\"),\n        .Rectangle(w, h) => println(f\"rectangle {w}x{h}\"),\n    }\n}\n\nfn main() {\n    describe(.Circle(5));\n    describe(.Rectangle(3, 4));\n}\n"
   },
   {
     "id": "option-type",
-    "starterCode": "// Lesson 9: Option Type\n// TODO: Handle the None case so the program prints \"not found\".\n\nfn find(items: i64, target: i64) -> Option<i64> {\n    if target <= items {\n        Some(target)\n    } else {\n        None\n    }\n}\n\nfn main() {\n    match find(10, 5) {\n        Some(x) => println(f\"found: {x}\"),\n        None => println(\"not found\"),\n    }\n    match find(3, 7) {\n        Some(x) => println(f\"found: {x}\"),\n        None => println(\"not found\"),\n    }\n}\n"
+    "starterCode": "// Lesson 9: Option Type\n// TODO: Handle the None case so the program prints \"not found\".\n\nfn find(items: i64, target: i64) -> Option<i64> {\n    if target <= items {\n        Some(target)\n    } else {\n        None\n    }\n}\n\nfn main() {\n    match find(10, 5) {\n        .Some(x) => println(f\"found: {x}\"),\n        .None => println(\"not found\"),\n    }\n    match find(3, 7) {\n        .Some(x) => println(f\"found: {x}\"),\n        .None => println(\"not found\"),\n    }\n}\n"
   },
   {
     "id": "closures",
@@ -45,7 +45,7 @@
   },
   {
     "id": "async-await",
-    "starterCode": "// Lesson 12: Async / Await\n// Hew has no `async fn` — actors are the unit of concurrency.\n// `await` sends a message to an actor and waits for its reply.\n\nfn fib(n: i64) -> i64 {\n    if n <= 1 { n }\n    else { fib(n - 1) + fib(n - 2) }\n}\n\nactor Calculator {\n    receive fn compute(n: i64) -> i64 {\n        fib(n)\n    }\n}\n\nfn main() {\n    let calc = spawn Calculator;\n    match await calc.compute(10) {\n        Ok(result) => println(f\"fib(10) = {result}\"),\n        Err(_) => println(\"failed\"),\n    }\n}\n"
+    "starterCode": "// Lesson 12: Async / Await\n// Hew has no `async fn` — actors are the unit of concurrency.\n// `await` sends a message to an actor and waits for its reply.\n\nfn fib(n: i64) -> i64 {\n    if n <= 1 { n }\n    else { fib(n - 1) + fib(n - 2) }\n}\n\nactor Calculator {\n    receive fn compute(n: i64) -> i64 {\n        fib(n)\n    }\n}\n\nfn main() {\n    let calc = spawn Calculator;\n    match await calc.compute(10) {\n        .Ok(result) => println(f\"fib(10) = {result}\"),\n        .Err(_) => println(\"failed\"),\n    }\n}\n"
   },
   {
     "id": "state-machines",

@@ -35,7 +35,10 @@
 //! (`hew_channel_*_layout`), whose declared signatures are arity placeholders
 //! for the stdlib impl bodies. Both are still calls across the FFI boundary,
 //! so both are recorded here with a checker-minted declaration and a `None`
-//! contract; the `unsafe` gate reads one index either way.
+//! contract; the `unsafe` gate reads one index either way. Neither owns a
+//! call endpoint: a mirror row publishes the key it was registered under,
+//! not a linkable symbol, so call-target resolution reads endpoint-owning
+//! rows only and leaves the witness calls to their runtime families.
 
 use std::collections::HashMap;
 
@@ -96,6 +99,16 @@ pub struct ExternDeclaration {
     /// This declaration's own declaring module — the authority for
     /// call-site provenance (`trusted_compiled_stdlib`, lifecycle joins).
     pub declaring_module: Option<String>,
+    /// Whether this declaration owns the call endpoint for its key.
+    ///
+    /// A source `extern` declaration does, including a conflicting or
+    /// template one: the linker binds its calls to the symbol it names. A
+    /// contract-less MIRROR row (registry presentation metadata, the
+    /// codegen-intercepted layout witnesses) does not — it exists to gate
+    /// `unsafe` and to carry provenance, while the call's executable
+    /// identity comes from the runtime catalog. Call-target resolution
+    /// reads only endpoint-owning rows; the `unsafe` gate reads both.
+    pub owns_endpoint: bool,
 }
 
 /// Per-compile single-owner extern authority. One instance per
@@ -157,6 +170,7 @@ impl ExternTable {
                 contract: Some(id),
                 symbol: contract.symbol.clone(),
                 declaring_module: contract.declaring_module.clone(),
+                owns_endpoint: true,
             },
         );
         self.contracts.push(contract);
@@ -179,6 +193,7 @@ impl ExternTable {
                 contract: Some(id),
                 symbol,
                 declaring_module,
+                owns_endpoint: true,
             },
         );
     }
@@ -200,6 +215,7 @@ impl ExternTable {
                 contract: None,
                 symbol,
                 declaring_module,
+                owns_endpoint: true,
             },
         );
     }
@@ -211,7 +227,9 @@ impl ExternTable {
     /// whose real out-parameter ABI is emitted by codegen. Neither is a source
     /// declaration: the function keeps its `unsafe` gate and provenance but
     /// does not join the source-provenance probe (`by_symbol_and_module`) that
-    /// opaque-handle resolution walks.
+    /// opaque-handle resolution walks, and it does not own a call endpoint —
+    /// a witness call is executed by its runtime family, not by a link to the
+    /// key the mirror publishes.
     pub(crate) fn register_contractless_declaration(
         &mut self,
         declaration: DefId,
@@ -224,6 +242,7 @@ impl ExternTable {
                 contract: None,
                 symbol,
                 declaring_module,
+                owns_endpoint: false,
             },
         );
     }
@@ -246,9 +265,15 @@ impl ExternTable {
 
     /// The declaration record for a fn-sig declaration key — the call-site
     /// provenance authority.
+    ///
+    /// Only endpoint-owning declarations answer here. A contract-less mirror
+    /// row would otherwise publish its own key as the call's endpoint and
+    /// displace the runtime-family classification the witness calls need.
     #[must_use]
     pub fn declaration(&self, declaration: &str) -> Option<&ExternDeclaration> {
-        self.declarations.get(declaration)
+        self.declarations
+            .get(declaration)
+            .filter(|record| record.owns_endpoint)
     }
 
     /// The contract a declaration key resolves to, when it is a

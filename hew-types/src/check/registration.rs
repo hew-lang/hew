@@ -10192,19 +10192,29 @@ impl Checker {
         &mut self,
         module: crate::ModuleId,
         module_path: &str,
-        ordinal: usize,
         key: &str,
     ) {
         let declaration = if let Some(existing) = self.identity.declaration_by_path(key) {
             existing.clone()
         } else {
+            // One occurrence per source-less extern declaration in this
+            // module. The registry mirror and the layout witnesses are two
+            // inventories that both declare here; a per-inventory ordinal
+            // made them collide, and `declare` resolves a collision to the
+            // ESTABLISHED declaration, so the second inventory's rows
+            // silently adopted the first's identities and endpoints.
+            let ordinal = self
+                .contractless_extern_occurrences
+                .entry(module)
+                .or_insert(0);
             let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
                 Some(module),
                 &(0..0),
-                ordinal,
+                *ordinal,
                 crate::DeclarationKind::ExternFunction,
                 0,
             );
+            *ordinal += 1;
             match self.identity.declare(occurrence, key) {
                 Ok(declaration) => declaration,
                 Err(error) => {
@@ -10521,7 +10531,7 @@ impl Checker {
         };
         let witness_module_path = self.identity.module_path(witness_module).to_string();
 
-        for (ordinal, (name, param_name, param_ty, ret_ty)) in builtins.iter().enumerate() {
+        for (name, param_name, param_ty, ret_ty) in builtins {
             let key = scoped_module_item_name(self.current_module.as_deref(), name)
                 .unwrap_or_else(|| (*name).to_string());
             if self.fn_sigs.contains_key(&key) {
@@ -10534,7 +10544,7 @@ impl Checker {
                 ..FnSig::default()
             };
             self.fn_sigs.insert(key.clone(), sig);
-            self.declare_contractless_extern(witness_module, &witness_module_path, ordinal, &key);
+            self.declare_contractless_extern(witness_module, &witness_module_path, &key);
         }
 
         // The typed-serialise send takes the value by reference plus the
@@ -10553,12 +10563,7 @@ impl Checker {
                     ..FnSig::default()
                 },
             );
-            self.declare_contractless_extern(
-                witness_module,
-                &witness_module_path,
-                builtins.len(),
-                &send_key,
-            );
+            self.declare_contractless_extern(witness_module, &witness_module_path, &send_key);
         }
     }
 
@@ -10931,8 +10936,7 @@ impl Checker {
                     self.record_canonical_lifecycle_import_authority(decl, importer.as_deref());
 
                     // Register extern C function signatures
-                    let function_count = functions.len();
-                    for (ordinal, func) in functions.into_iter().enumerate() {
+                    for func in functions {
                         let accepts_kwargs = module_path == "std.misc.log"
                             && Self::LOG_KWARGS_FUNCTIONS.contains(&func.name.as_str());
                         let sig = FnSig {
@@ -10953,7 +10957,6 @@ impl Checker {
                         self.declare_contractless_extern(
                             registry_module,
                             &canonical_owner,
-                            ordinal,
                             &func.name,
                         );
                         self.fn_sigs.insert(func.name, sig);
@@ -11009,7 +11012,7 @@ impl Checker {
                             (span.clone(), self.current_module.clone()),
                         );
                     }
-                    for (clean_ordinal, (method, c_symbol)) in clean_names.iter().enumerate() {
+                    for (method, c_symbol) in &clean_names {
                         // Prefer the wrapper function's own signature (registered under
                         // the method name) over the extern C function's signature.
                         // E.g. `log.setup()` should have 0 params (the wrapper's sig),
@@ -11040,7 +11043,6 @@ impl Checker {
                                 self.declare_contractless_extern(
                                     registry_module,
                                     &canonical_owner,
-                                    function_count + clean_ordinal,
                                     &key,
                                 );
                             }
@@ -14082,6 +14084,56 @@ mod channel_recv_builtin_provenance_tests {
                 .extern_table
                 .requires_unsafe("std.channel.hew_channel_new"),
             "a plain fn_sigs entry must not acquire an unsafe gate"
+        );
+    }
+
+    /// Two source-less extern inventories declare into one module: the layout
+    /// witnesses, and the registry mirror of a shipped module's C surface.
+    /// Each counted its occurrences from its own zero, so the two inventories
+    /// collided occurrence-for-occurrence — and a collision resolves to the
+    /// ESTABLISHED declaration, so the witness rows adopted the mirror rows'
+    /// identities and endpoints (`Sender::send` emitted a call to whichever C
+    /// symbol sat at the witness's ordinal). Every source-less extern
+    /// declaration must keep its own occurrence.
+    #[test]
+    fn a_registry_mirror_row_does_not_adopt_a_layout_witness_declaration() {
+        let mut checker = checker_with_channel_surface(true);
+        checker.register_channel_recv_builtins();
+        let module = checker.identity.mint_module("std.channel", &[]);
+        let module_path = checker.identity.module_path(module).to_string();
+
+        // The registry mirror publishes the shipped module's C surface under
+        // its bare symbols, in the order the metadata lists them.
+        let mirrored = ["hew_channel_new", "hew_channel_pair_sender"];
+        for symbol in mirrored {
+            checker.declare_contractless_extern(module, &module_path, symbol);
+        }
+
+        let witnesses = [
+            "std.channel.hew_channel_recv_layout",
+            "std.channel.hew_channel_try_recv_layout",
+            "std.channel.hew_channel_send_layout",
+        ];
+        let mut established: Vec<String> = Vec::new();
+        for key in witnesses.into_iter().chain(mirrored) {
+            let declaration = checker
+                .identity
+                .declaration_by_path(key)
+                .unwrap_or_else(|| panic!("`{key}` must mint a declaration"));
+            assert_eq!(
+                declaration.full_path(),
+                key,
+                "`{key}` must keep its own identity rather than adopting another inventory's"
+            );
+            established.push(declaration.full_path().to_string());
+        }
+        established.sort_unstable();
+        let distinct = established.len();
+        established.dedup();
+        assert_eq!(
+            established.len(),
+            distinct,
+            "each source-less extern declaration must mint a distinct identity"
         );
     }
 }

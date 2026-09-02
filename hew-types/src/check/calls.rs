@@ -2812,6 +2812,65 @@ mod channel_layout_target_tests {
         ));
     }
 
+    /// A contract-less mirror row gates `unsafe` but owns no call endpoint.
+    /// The layout witnesses are executed by their runtime family, and a
+    /// registry mirror publishes the key it was registered under rather than
+    /// a linkable symbol, so neither may displace the family classification —
+    /// a witness that resolved as an extern call emitted the mirror's key as
+    /// its callee and reached codegen with the wrong arity.
+    #[test]
+    fn a_contractless_witness_row_does_not_displace_the_runtime_family() {
+        let signature = "std.channel.hew_channel_recv_layout";
+        let mut checker = Checker::default();
+        checker
+            .canonical_std_module_sources
+            .insert("std.channel".to_string());
+        checker.extern_table.register_contractless_declaration(
+            crate::DefId::for_test(signature.to_string()),
+            signature.to_string(),
+            Some("std.channel".to_string()),
+        );
+
+        assert!(
+            checker.extern_table.requires_unsafe(signature),
+            "a contract-less witness row must still gate `unsafe`"
+        );
+        assert_eq!(
+            checker.call_target_for_signature(signature),
+            CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout)
+        );
+
+        // Counterfactual: an endpoint-owning declaration of the same key DOES
+        // publish an extern target, so the assertion above reads the endpoint
+        // disposition rather than a blanket refusal of extern rows.
+        let mut owning = Checker::default();
+        owning
+            .canonical_std_module_sources
+            .insert("std.channel".to_string());
+        let module = owning.identity.mint_module("std.channel", &[]);
+        let declaration = owning
+            .identity
+            .declare(
+                crate::DeclarationOccurrence::new(
+                    Some(module),
+                    &(0..0),
+                    crate::DeclarationKind::ExternFunction,
+                    0,
+                ),
+                signature,
+            )
+            .expect("test extern declaration");
+        owning.extern_table.register_detached_declaration(
+            declaration,
+            "hew_channel_recv_layout".to_string(),
+            Some("std.channel".to_string()),
+        );
+        assert!(matches!(
+            owning.call_target_for_signature(signature),
+            CallTarget::Extern { .. }
+        ));
+    }
+
     #[test]
     fn executable_catalog_identities_publish_builtin_targets() {
         let checker = Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));

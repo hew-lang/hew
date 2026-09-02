@@ -3358,6 +3358,17 @@ pub struct Checker {
     /// declaration-only entries. Moved into
     /// [`TypeCheckOutput::extern_contracts`] at publication.
     pub(super) extern_table: crate::extern_table::ExternTable,
+    /// Next synthetic occurrence ordinal for source-less extern declarations,
+    /// per declaring module.
+    ///
+    /// Registry presentation metadata and the codegen-intercepted layout
+    /// witnesses are two INDEPENDENT inventories that both declare into the
+    /// same module with a synthetic `0..0` span. Each counting from its own
+    /// zero made their occurrences collide, and a collision resolves to the
+    /// established declaration — so the witness rows silently adopted the
+    /// registry rows' endpoints. One allocator per module keeps every
+    /// source-less extern declaration on its own occurrence.
+    pub(super) contractless_extern_occurrences: std::collections::HashMap<crate::ModuleId, usize>,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -3911,6 +3922,7 @@ impl Checker {
             current_module: None,
             identity: crate::identity::IdentityTable::new(),
             extern_table: crate::extern_table::ExternTable::new(),
+            contractless_extern_occurrences: std::collections::HashMap::new(),
             cross_module_colliding_record_names: HashSet::new(),
             generic_layout_instantiations: HashMap::new(),
             reported_generic_layout_collisions: HashSet::new(),

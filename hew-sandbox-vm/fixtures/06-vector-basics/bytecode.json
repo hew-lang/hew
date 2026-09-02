@@ -4,9 +4,7 @@
       "disposition": "allowed",
       "id": "core.stdout",
       "reason": "stdout is captured by the educational sandbox trace",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
+      "required_by": ["sym:core.stdout.println"]
     }
   ],
   "compiler_version": "hew-sandbox-wasm-0.6.0-rc3",
@@ -225,7 +223,7 @@
           "terminator": {
             "args": [],
             "op": "br",
-            "span": "span:118-206",
+            "span": "span:118-208",
             "target": "block:main.match_check_0.2"
           }
         },
@@ -233,7 +231,7 @@
           "id": "block:main.match_exit.1",
           "instructions": [],
           "params": [],
-          "span": "span:118-206",
+          "span": "span:118-208",
           "terminator": {
             "args": [
               {
@@ -242,7 +240,7 @@
               }
             ],
             "op": "return",
-            "span": "span:0-207"
+            "span": "span:0-209"
           }
         },
         {
@@ -257,7 +255,7 @@
               ],
               "dst": "local:main.16",
               "op": "const.i64",
-              "span": "span:148-156"
+              "span": "span:148-157"
             },
             {
               "args": [
@@ -272,11 +270,11 @@
               ],
               "dst": "local:main.17",
               "op": "cmp.eq",
-              "span": "span:148-156"
+              "span": "span:148-157"
             }
           ],
           "params": [],
-          "span": "span:148-156",
+          "span": "span:148-157",
           "terminator": {
             "args": [],
             "condition": {
@@ -285,7 +283,7 @@
             },
             "else_target": "block:main.match_check_1.4",
             "op": "br_if",
-            "span": "span:148-156",
+            "span": "span:148-157",
             "target": "block:main.match_arm_0.3"
           }
         },
@@ -305,7 +303,7 @@
               ],
               "dst": "local:main.18",
               "op": "enum.payload",
-              "span": "span:153-154"
+              "span": "span:154-155"
             },
             {
               "args": [
@@ -316,7 +314,7 @@
               ],
               "dst": "local:main.19",
               "op": "local.get",
-              "span": "span:167-168"
+              "span": "span:168-169"
             },
             {
               "args": [
@@ -331,13 +329,13 @@
               ],
               "dst": null,
               "op": "call.stdlib",
-              "span": "span:159-169"
+              "span": "span:160-170"
             },
             {
               "args": [],
               "dst": "local:main.20",
               "op": "const.unit",
-              "span": "span:159-169"
+              "span": "span:160-170"
             },
             {
               "args": [
@@ -352,15 +350,15 @@
               ],
               "dst": null,
               "op": "local.set",
-              "span": "span:159-169"
+              "span": "span:160-170"
             }
           ],
           "params": [],
-          "span": "span:159-169",
+          "span": "span:160-170",
           "terminator": {
             "args": [],
             "op": "br",
-            "span": "span:159-169",
+            "span": "span:160-170",
             "target": "block:main.match_exit.1"
           }
         },
@@ -376,7 +374,7 @@
               ],
               "dst": "local:main.21",
               "op": "const.i64",
-              "span": "span:179-184"
+              "span": "span:180-186"
             },
             {
               "args": [
@@ -391,11 +389,11 @@
               ],
               "dst": "local:main.22",
               "op": "cmp.eq",
-              "span": "span:179-184"
+              "span": "span:180-186"
             }
           ],
           "params": [],
-          "span": "span:179-184",
+          "span": "span:180-186",
           "terminator": {
             "args": [],
             "condition": {
@@ -404,7 +402,7 @@
             },
             "else_target": "block:main.match_arm_1.5",
             "op": "br_if",
-            "span": "span:179-184",
+            "span": "span:180-186",
             "target": "block:main.match_arm_1.5"
           }
         },
@@ -420,7 +418,7 @@
               ],
               "dst": "local:main.23",
               "op": "const.i64",
-              "span": "span:196-197"
+              "span": "span:198-199"
             },
             {
               "args": [
@@ -431,7 +429,7 @@
               ],
               "dst": "local:main.24",
               "op": "i64.neg",
-              "span": "span:195-197"
+              "span": "span:197-199"
             },
             {
               "args": [
@@ -446,13 +444,13 @@
               ],
               "dst": null,
               "op": "call.stdlib",
-              "span": "span:187-198"
+              "span": "span:189-200"
             },
             {
               "args": [],
               "dst": "local:main.25",
               "op": "const.unit",
-              "span": "span:187-198"
+              "span": "span:189-200"
             },
             {
               "args": [
@@ -467,15 +465,15 @@
               ],
               "dst": null,
               "op": "local.set",
-              "span": "span:187-198"
+              "span": "span:189-200"
             }
           ],
           "params": [],
-          "span": "span:187-198",
+          "span": "span:189-200",
           "terminator": {
             "args": [],
             "op": "br",
-            "span": "span:187-198",
+            "span": "span:189-200",
             "target": "block:main.match_exit.1"
           }
         }
@@ -584,7 +582,7 @@
           "id": "local:main.14",
           "mutable": true,
           "name": null,
-          "span": "span:118-206",
+          "span": "span:118-208",
           "type": "type:unit"
         },
         {
@@ -598,70 +596,70 @@
           "id": "local:main.16",
           "mutable": false,
           "name": null,
-          "span": "span:148-156",
+          "span": "span:148-157",
           "type": "type:i64"
         },
         {
           "id": "local:main.17",
           "mutable": false,
           "name": null,
-          "span": "span:148-156",
+          "span": "span:148-157",
           "type": "type:bool"
         },
         {
           "id": "local:main.18",
           "mutable": false,
           "name": "v",
-          "span": "span:153-154",
+          "span": "span:154-155",
           "type": "type:i64"
         },
         {
           "id": "local:main.19",
           "mutable": false,
           "name": null,
-          "span": "span:167-168",
+          "span": "span:168-169",
           "type": "type:i64"
         },
         {
           "id": "local:main.20",
           "mutable": false,
           "name": null,
-          "span": "span:159-169",
+          "span": "span:160-170",
           "type": "type:unit"
         },
         {
           "id": "local:main.21",
           "mutable": false,
           "name": null,
-          "span": "span:179-184",
+          "span": "span:180-186",
           "type": "type:i64"
         },
         {
           "id": "local:main.22",
           "mutable": false,
           "name": null,
-          "span": "span:179-184",
+          "span": "span:180-186",
           "type": "type:bool"
         },
         {
           "id": "local:main.23",
           "mutable": false,
           "name": null,
-          "span": "span:196-197",
+          "span": "span:198-199",
           "type": "type:i64"
         },
         {
           "id": "local:main.24",
           "mutable": false,
           "name": null,
-          "span": "span:195-197",
+          "span": "span:197-199",
           "type": "type:i64"
         },
         {
           "id": "local:main.25",
           "mutable": false,
           "name": null,
-          "span": "span:187-198",
+          "span": "span:189-200",
           "type": "type:unit"
         }
       ],
@@ -669,7 +667,7 @@
       "name": "main",
       "params": [],
       "result": "type:unit",
-      "span": "span:0-207"
+      "span": "span:0-209"
     }
   ],
   "hew_version": "0.6.0-rc3",
@@ -682,9 +680,7 @@
         "variants": [
           {
             "name": "Some",
-            "payload": [
-              "type:i64"
-            ],
+            "payload": ["type:i64"],
             "tag": 0
           },
           {
@@ -748,9 +744,7 @@
         "id": "type:Vec.type.i64",
         "kind": "vector",
         "name": "Vec",
-        "parameters": [
-          "type:i64"
-        ]
+        "parameters": ["type:i64"]
       },
       {
         "id": "type:VecIter",
@@ -898,9 +892,7 @@
     "entry": "mod:main",
     "modules": [
       {
-        "functions": [
-          "fn:main"
-        ],
+        "functions": ["fn:main"],
         "id": "mod:main",
         "imports": [],
         "path": "main",
@@ -908,13 +900,13 @@
       }
     ]
   },
-  "package_id": "pkg:14409282adaa0b58",
+  "package_id": "pkg:116cbaba8f980712",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
     "sources": [
       {
-        "content_sha256": "c020c706b4bccfd87c05874effa3e9ad337c1bbfbecda19e44ab81d554c74826",
+        "content_sha256": "6afd627e99b7ddefdb31ae5ee83102ed20e4846ee70dd2d14b04327d3e55397a",
         "id": "src:main",
         "path": "main.hew"
       }
@@ -922,11 +914,11 @@
     "spans": [
       {
         "end": {
-          "byte_offset": 207,
+          "byte_offset": 209,
           "column": 2,
           "line": 10
         },
-        "id": "span:0-207",
+        "id": "span:0-209",
         "source_id": "src:main",
         "start": {
           "byte_offset": 0,
@@ -1090,11 +1082,11 @@
       },
       {
         "end": {
-          "byte_offset": 206,
+          "byte_offset": 208,
           "column": 1,
           "line": 10
         },
-        "id": "span:118-206",
+        "id": "span:118-208",
         "source_id": "src:main",
         "start": {
           "byte_offset": 118,
@@ -1146,11 +1138,11 @@
       },
       {
         "end": {
-          "byte_offset": 156,
-          "column": 17,
+          "byte_offset": 157,
+          "column": 18,
           "line": 7
         },
-        "id": "span:148-156",
+        "id": "span:148-157",
         "source_id": "src:main",
         "start": {
           "byte_offset": 148,
@@ -1160,15 +1152,29 @@
       },
       {
         "end": {
+          "byte_offset": 155,
+          "column": 16,
+          "line": 7
+        },
+        "id": "span:154-155",
+        "source_id": "src:main",
+        "start": {
           "byte_offset": 154,
           "column": 15,
           "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 170,
+          "column": 31,
+          "line": 7
         },
-        "id": "span:153-154",
+        "id": "span:160-170",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 153,
-          "column": 14,
+          "byte_offset": 160,
+          "column": 21,
           "line": 7
         }
       },
@@ -1178,81 +1184,67 @@
           "column": 30,
           "line": 7
         },
-        "id": "span:159-169",
+        "id": "span:168-169",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 159,
-          "column": 20,
-          "line": 7
-        }
-      },
-      {
-        "end": {
           "byte_offset": 168,
           "column": 29,
           "line": 7
-        },
-        "id": "span:167-168",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 167,
-          "column": 28,
-          "line": 7
         }
       },
       {
         "end": {
-          "byte_offset": 184,
-          "column": 14,
+          "byte_offset": 186,
+          "column": 15,
           "line": 8
         },
-        "id": "span:179-184",
+        "id": "span:180-186",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 179,
+          "byte_offset": 180,
           "column": 9,
           "line": 8
         }
       },
       {
         "end": {
-          "byte_offset": 198,
+          "byte_offset": 200,
+          "column": 29,
+          "line": 8
+        },
+        "id": "span:189-200",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 189,
+          "column": 18,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 199,
           "column": 28,
           "line": 8
         },
-        "id": "span:187-198",
+        "id": "span:197-199",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 187,
-          "column": 17,
-          "line": 8
-        }
-      },
-      {
-        "end": {
           "byte_offset": 197,
-          "column": 27,
-          "line": 8
-        },
-        "id": "span:195-197",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 195,
-          "column": 25,
-          "line": 8
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 197,
-          "column": 27,
-          "line": 8
-        },
-        "id": "span:196-197",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 196,
           "column": 26,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 199,
+          "column": 28,
+          "line": 8
+        },
+        "id": "span:198-199",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 198,
+          "column": 27,
           "line": 8
         }
       }
@@ -1265,9 +1257,7 @@
       "id": "sym:core.stdout.println",
       "module": "core.stdout",
       "name": "println",
-      "params": [
-        "type:string"
-      ],
+      "params": ["type:string"],
       "result": "type:unit"
     }
   ]

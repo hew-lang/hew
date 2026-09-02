@@ -180,8 +180,12 @@ http_download() {
 # tag scheme, `vX.Y.Z` or `vX.Y.Z-rcN` — WHY: that is the only scheme the
 # release workflow emits (release.yml sets `prerelease` from `contains(tag,
 # '-rc')`); WHEN this breaks: a tag with any other prerelease label (e.g.
-# `-beta1`) would sort as an unrelated string; WHAT the real fix looks like:
-# a full SemVer 2.0.0 §11 precedence comparison if the tag scheme ever grows
+# `-beta1`) silently lands in the rc0 slot (`substr("beta1", 3) + 0` is `0`),
+# below every rcN of the same core version and above any older final — that
+# happens to match SemVer precedence for a single prerelease label, but two
+# different labels on the same core version (`-beta1` and `-rc1`) would both
+# collapse to rc0 and tie-break arbitrarily; WHAT the real fix looks like: a
+# full SemVer 2.0.0 §11 precedence comparison if the tag scheme ever grows
 # more prerelease kinds.
 # ---------------------------------------------------------------------------
 pick_newest_tag() {

@@ -49,6 +49,7 @@
 #   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
 #   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
+#   make playground-verify         — focused curated manifest native eval preflight
 #   make licenses-check            — verify THIRD-PARTY-LICENSES is current (used in CI)
 #   make preflight                 — run every unconditional Linux gate, fail-fast
 #   make ci-preflight              — compatibility alias for make preflight
@@ -74,7 +75,7 @@
 #   make clean        — remove generated build and test artifacts
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks help shell-script-lint actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check baselines baselines-check
+.PHONY: all build bootstrap install-hooks help shell-script-lint actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check playground-verify sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check baselines baselines-check
 .PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
@@ -558,6 +559,13 @@ playground-manifest: wasm-capability
 playground-manifest-check: wasm-capability-check
 	$(PYTHON) scripts/gen-playground-manifest.py --check
 
+# Compile and run every "runnable" curated playground example natively and
+# diff its stdout against the checked-in .expected file. Complements
+# playground-wasi-check (same manifest, WASI target) by exercising the
+# native `hew tool playground-verify` path directly.
+playground-verify: hew-native
+	$(DEBUG_DIR)/hew tool playground-verify
+
 sandbox-fixtures:
 	cargo run -p xtask -- sandbox-fixtures
 
@@ -644,7 +652,7 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-asan-fixture-selftest hew-fmt-property stdlib-lint \
 	sir-coverage sir-parity
 
-ci-shard-3: mqtt-broker-e2e sandbox-parity \
+ci-shard-3: mqtt-broker-e2e sandbox-parity playground-verify \
 	fuzz-oracle fuzz-oracle-selftest test-package-install \
 	checked-mir-verify checked-mir-run \
 	test-core-matrix test-stdlib-ratchet \

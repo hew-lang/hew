@@ -10,10 +10,9 @@
 //!   hew machine diagram <file.hew> --no-check           Skip HIR static checks
 //!   hew machine list <file.hew>                         List all machines with states/events
 
+use hew_compile::{run_file_frontend_to_typecheck, FileFrontendState, FrontendOptions};
 use hew_hir::{lower_program, HirItem, HirMachineDecl, ResolutionCtx};
-use hew_parser::ast::{Item, MachineDecl};
-use hew_parser::ParseResult;
-use hew_types::TypeCheckOutput;
+use hew_parser::ast::{Item, MachineDecl, Program, Spanned};
 
 use crate::args::{MachineDiagramArgs, MachineFormat};
 
@@ -30,50 +29,95 @@ pub fn cmd_machine(args: &crate::args::MachineCommand) {
     }
 }
 
-fn read_source(path: &str) -> String {
-    match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading {path}: {e}");
+/// Run the shared compiler frontend — load, parse, resolve imports, type-check —
+/// and return the resolved program together with the machine declarations it
+/// makes visible.  Exits the process on failure.
+///
+/// This is the same driver `hew check`, `hew build`, and `hew run` enter
+/// through, so a file that compiles diagrams and a file that does not is
+/// rejected with the checker's own diagnostic.  Import resolution is what puts
+/// a machine declared in another module in scope, so a file that only *uses* an
+/// imported machine still has one to render.
+///
+/// `type_check` is false only under `--no-check`: imports are still resolved,
+/// but the checker and the HIR pass built on its facts are skipped.
+fn load_machines(path: &str, type_check: bool) -> (Vec<MachineDecl>, FileFrontendState) {
+    let options = FrontendOptions {
+        no_typecheck: !type_check,
+        ..FrontendOptions::default()
+    };
+
+    let state = match run_file_frontend_to_typecheck(path, &options) {
+        Ok(state) => state,
+        Err(failure) => {
+            crate::compile::render_frontend_diagnostics(&failure.diagnostics);
+            if failure.diagnostics.is_empty() {
+                eprintln!("Error: {}", failure.message);
+            }
             std::process::exit(1);
         }
-    }
+    };
+    crate::compile::render_frontend_diagnostics(&state.diagnostics);
+
+    let machines = collect_machines(&state.program);
+    (machines, state)
 }
 
-/// Parse `source`, extracting machine declarations.  Returns both the flat
-/// machine list and the original `ParseResult` so callers can forward it to
-/// `check_and_lower` without a second parse.
-fn parse_machines(path: &str, source: &str) -> (Vec<MachineDecl>, ParseResult) {
-    let result = hew_parser::parse(source);
-
-    if !result.errors.is_empty() {
-        for err in &result.errors {
-            eprintln!("{path}: parse error: {err:?}");
-        }
-        std::process::exit(1);
-    }
-
-    let machines = result
-        .program
-        .items
-        .iter()
-        .filter_map(|(item, _)| {
-            if let Item::Machine(md) = item {
-                Some(md.clone())
-            } else {
-                None
+/// Collect every machine the resolved program has in scope: the ones declared
+/// in the file, plus the ones its imports bring in.
+///
+/// This walks the same two places HIR lowering registers machine constructors
+/// from — the program's own items (recursing through resolved imports) and the
+/// module graph — so `list` and the `--no-check` renderer see exactly the
+/// machines the checked path does.
+fn collect_machines(program: &Program) -> Vec<MachineDecl> {
+    let mut machines = Vec::new();
+    collect_machines_from_items(&program.items, &mut machines);
+    if let Some(module_graph) = &program.module_graph {
+        for module_id in &module_graph.topo_order {
+            if *module_id == module_graph.root {
+                continue;
             }
-        })
-        .collect();
-    (machines, result)
+            if let Some(module) = module_graph.modules.get(module_id) {
+                collect_machines_from_items(&module.items, &mut machines);
+            }
+        }
+    }
+    machines
 }
 
-/// Run HIR lowering + static checks on an already-parsed program.  Returns the
+fn collect_machines_from_items(items: &[Spanned<Item>], out: &mut Vec<MachineDecl>) {
+    for (item, _) in items {
+        match item {
+            Item::Import(decl) => {
+                if let Some(resolved) = &decl.resolved_items {
+                    collect_machines_from_items(resolved, out);
+                }
+            }
+            // An imported machine is reachable both through the importing item
+            // and through the module graph. Skipping the repeat is
+            // deduplication of one declaration seen twice, not a join: the
+            // checker rejects two machines sharing a name, so a name
+            // identifies one declaration in a program that got this far.
+            Item::Machine(decl) if !out.iter().any(|seen| seen.name == decl.name) => {
+                out.push(decl.clone());
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Run HIR lowering + static checks on the checked program.  Returns the
 /// checked HIR machines on success, or exits the process on failure.
-fn check_and_lower(path: &str, parsed: &ParseResult) -> Vec<HirMachineDecl> {
+fn check_and_lower(path: &str, state: &FileFrontendState) -> Vec<HirMachineDecl> {
+    let Some(tco) = state.typecheck_result.tco.as_ref() else {
+        eprintln!("{path}: error: machine checks require a type-checked program");
+        std::process::exit(1);
+    };
+
     let lowered = lower_program(
-        &parsed.program,
-        &TypeCheckOutput::default(),
+        &state.program,
+        tco,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -106,7 +150,7 @@ enum MachineCheckResult {
 
 fn check_machines_or_ast_fallback(
     path: &str,
-    parsed: &ParseResult,
+    state: &FileFrontendState,
     ast_machines: &[MachineDecl],
     supports_no_check: bool,
 ) -> MachineCheckResult {
@@ -120,7 +164,7 @@ fn check_machines_or_ast_fallback(
         return MachineCheckResult::AstFallback;
     }
 
-    let hir_machines = check_and_lower(path, parsed);
+    let hir_machines = check_and_lower(path, state);
     if hir_machines.is_empty() {
         eprintln!("No machines found in {path}");
         std::process::exit(1);
@@ -130,12 +174,11 @@ fn check_machines_or_ast_fallback(
 }
 
 fn cmd_list(path: &str) {
-    let source = read_source(path);
-    let (machines, parsed) = parse_machines(path, &source);
+    let (machines, state) = load_machines(path, true);
 
     // `list` renders from the AST below, but keeps fail-closed HIR validation
     // for non-generic machines.
-    check_machines_or_ast_fallback(path, &parsed, &machines, false);
+    check_machines_or_ast_fallback(path, &state, &machines, false);
 
     for md in &machines {
         println!("machine {} {{", md.name);
@@ -173,8 +216,6 @@ fn cmd_list(path: &str) {
 }
 
 fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
-    let source = read_source(path);
-
     // Determine output format. `--dot` is a shorthand for `--format graphviz`.
     let format = if args.dot {
         MachineFormat::Graphviz
@@ -182,10 +223,10 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
         args.format.clone().unwrap_or(MachineFormat::Mermaid)
     };
 
-    let (ast_machines, parsed) = parse_machines(path, &source);
+    let (ast_machines, state) = load_machines(path, args.check);
 
     if args.check {
-        match check_machines_or_ast_fallback(path, &parsed, &ast_machines, true) {
+        match check_machines_or_ast_fallback(path, &state, &ast_machines, true) {
             MachineCheckResult::AstFallback => {
                 // Fall through to AST rendering below.
             }

@@ -75,6 +75,7 @@ mod owner_mint;
 mod ownership;
 mod pattern;
 mod rc_intrinsic;
+mod record_layout;
 mod scope;
 mod split_consume;
 mod suspend_places;
@@ -2158,18 +2159,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // tables must use the same full key rather than a collision-triggered leaf
     // spelling. Native symbol emission applies `mangle_dotted_name` later.
     let type_layout_key = |_bare: &str, qualified: String| -> String { qualified };
-    // One declaration answers to more than one resolved spelling: a peer file
-    // of a directory module is reachable as `pkg.Response` and, when the file
-    // is importable in its own right, as `pkg.file.Response`. The layout
-    // tables are keyed by spelling, and which one reaches a use site depends
-    // on the import route the program took, so the declaration's own render
-    // gets the alias its defining module publishes beside it. They coincide
-    // for every ordinary module, and the alias is skipped then.
-    let defining_module_alias = |defining_module: Option<&String>, name: &str, key: &str| {
-        defining_module
-            .map(|module| format!("{module}.{name}"))
-            .filter(|alias| alias != key)
-    };
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -2198,26 +2187,20 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                         .collect()
                 };
                 let layout_key = type_layout_key(&decl.name, decl.qualified_name());
-                if !fields.is_empty() {
-                    record_layouts.push(crate::model::RecordLayout {
-                        name: layout_key.clone(),
-                        field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
-                        field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
-                    });
-                }
-                if let Some(alias) =
-                    defining_module_alias(decl.defining_module.as_ref(), &decl.name, &layout_key)
-                {
-                    if !fields.is_empty() {
-                        record_layouts.push(crate::model::RecordLayout {
-                            name: alias.clone(),
-                            field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
-                            field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
-                        });
-                    }
-                    record_field_orders.insert(alias, fields.clone());
-                }
-                record_field_orders.insert(layout_key, fields);
+                let alias = record_layout::defining_module_alias(
+                    decl.defining_module.as_ref(),
+                    &decl.name,
+                    &layout_key,
+                );
+                let with_layout = !fields.is_empty();
+                record_layout::publish(
+                    layout_key,
+                    alias,
+                    fields,
+                    with_layout,
+                    &mut record_layouts,
+                    &mut record_field_orders,
+                );
             }
             HirItem::TypeDecl(decl) => {
                 // `pub type Foo { ... }` and `pub type Foo<T> { ... }` are
@@ -2254,24 +2237,18 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                 // source-owned constructor never falls through as unknown.
                 // Enums use their distinct tagged-union layout below.
                 if decl.variants.is_empty() {
-                    record_layouts.push(crate::model::RecordLayout {
-                        name: layout_key.clone(),
-                        field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
-                        field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
-                    });
-                    if let Some(alias) = defining_module_alias(
-                        decl.defining_module.as_ref(),
-                        &decl.name,
-                        &layout_key,
-                    ) {
-                        record_layouts.push(crate::model::RecordLayout {
-                            name: alias.clone(),
-                            field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
-                            field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
-                        });
-                        record_field_orders.insert(alias, fields.clone());
-                    }
-                    record_field_orders.insert(layout_key.clone(), fields);
+                    record_layout::publish(
+                        layout_key.clone(),
+                        record_layout::defining_module_alias(
+                            decl.defining_module.as_ref(),
+                            &decl.name,
+                            &layout_key,
+                        ),
+                        fields,
+                        true,
+                        &mut record_layouts,
+                        &mut record_field_orders,
+                    );
                 }
                 // Enum-kind type decls: register a tagged-union layout for
                 // every monomorphic enum, walking ALL variants (unit, tuple,

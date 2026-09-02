@@ -6821,6 +6821,36 @@ unsafe fn hew_actor_trap_inner(
     // immediately after to reject new sends and wake blocked senders — by then
     // the actor is already terminal, so every sender's `Idle -> Runnable` CAS
     // fails regardless.
+    //
+    // Publish the crash code BEFORE claiming the terminal state. Every reader
+    // of an exit reason loads `actor_state` first and only then `error_code`:
+    // `link::terminal_exit_reason` for a link registered after the crash,
+    // `monitor`'s terminal-reason lookup for a late monitor, and
+    // `hew_actor_await` for a blocked caller. Those are two independent
+    // atomics, so the only thing that makes that pair sound is this store
+    // preceding the CAS below — the CAS's release then publishes the code to
+    // every acquire-observer of the terminal state. Storing it after the CAS
+    // left a window in which the actor was already CRASHED while `error_code`
+    // still held its `0` default, so a reader that won the race reported "no
+    // error" for an actor whose EXIT propagation carried the real code.
+    //
+    // A dispatch that trapped through `hew_panic` has already stamped its code
+    // here (`trap_code::stamp_current_actor_error_code`), so a non-zero
+    // `error_code` on a not-yet-terminal actor is the ordinary state of a
+    // crashing dispatch, not something this store introduces.
+    //
+    // WHY this is a store and not a claim: publishing ahead of the CAS means a
+    // trap that goes on to LOSE the CAS has also stored its code, so two traps
+    // racing the same actor with different codes leave whichever store landed
+    // last rather than the winner's. Only one trap per actor is reachable from
+    // an activation; the external callers (`monitor`'s failed-DOWN trap) all
+    // pass `HEW_TRAP_ACTOR_SEND_FAILED`, so the codes agree in practice.
+    // WHEN this stops being good enough: as soon as two distinct non-zero codes
+    // can race here — a second external trap site with its own code. WHAT the
+    // real fix is: publish state and code in one atomic (pack the terminal
+    // state and the code into a single `AtomicI64` claimed by one
+    // compare_exchange), which makes the winner of the claim the only writer.
+    a.error_code.store(error_code, Ordering::Release);
     loop {
         let current = a.actor_state.load(Ordering::Acquire);
         if current == HewActorState::Stopped as i32 || current == HewActorState::Crashed as i32 {
@@ -6882,8 +6912,6 @@ unsafe fn hew_actor_trap_inner(
         TrapMailboxReclaim::OmitForTest => {}
     }
 
-    // Store error code only after winning the CAS race.
-    a.error_code.store(error_code, Ordering::Release);
     if terminal == HewActorState::Crashed as i32 {
         let scope = crate::task_scope::current_task_scope();
         if !scope.is_null() {
@@ -13513,23 +13541,24 @@ mod tests {
         // free + handle_crash_recovery synchronously and the test fails fast
         // rather than hanging.
         //
-        // The terminal-state CAS in `hew_actor_trap` intentionally happens
-        // before mailbox close / teardown / `error_code.store(...)`.  Polling
-        // only `actor_state == Crashed` and then immediately reading
-        // `error_code` leaves a tiny synchronization gap on cold or contended
-        // runners: the state can be visible before the release-store of the
-        // error code.  Wait for both observations together so the assertion
-        // tests the intended invariant instead of racing the implementation's
-        // documented ordering.
+        // `hew_actor_trap` publishes the crash code before the terminal CAS,
+        // so `Crashed` is never visible ahead of the code.  Waiting on the
+        // state alone and then reading the error in a separate step is what
+        // holds the runtime to that: if publication ever moved back after the
+        // CAS, this read would see the `0` default rather than tolerate it.
         assert!(
             wait_for_condition(std::time::Duration::from_secs(2), || {
                 // SAFETY: actor remains owned by this test while we poll its state.
                 let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-                // SAFETY: actor is owned by this test.
-                let err = unsafe { hew_actor_get_error(actor) };
-                state == HewActorState::Crashed as i32 && err != 0
+                state == HewActorState::Crashed as i32
             }),
-            "self-stop-then-crash must publish Crashed and a non-zero error_code; actor must not be stranded in Stopping/Crashing or race before crash publication completes",
+            "self-stop-then-crash must publish Crashed; the actor must not be stranded in Stopping/Crashing",
+        );
+        assert_ne!(
+            // SAFETY: actor is owned by this test.
+            unsafe { hew_actor_get_error(actor) },
+            0,
+            "an actor observed as Crashed must already report its crash code",
         );
 
         // (b) `hew_actor_free` completes within its bounded wait

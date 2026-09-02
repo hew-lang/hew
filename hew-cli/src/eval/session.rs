@@ -142,10 +142,28 @@ impl Session {
 
         match &kind {
             InputKind::Item => {
-                // The new item goes at the top level; we still need a main.
+                // The new item goes at the top level. A REPL fragment (a lone
+                // `fn helper() {}` line) has no `main` yet and needs a synthetic
+                // no-op one to make a runnable program. But callers that hand a
+                // whole file through this same builder (`eval_file_captured`,
+                // used by `hew tool playground-verify` and `hew eval -f`) may
+                // pass an item that already defines `main` — appending a second
+                // one there is a duplicate-definition error, not a no-op.
                 source.push_str(input);
                 source.push('\n');
-                source.push_str("fn main() {}\n");
+                // Check prior session items too, not just this chunk: a file
+                // whose `main` isn't the last top-level item (chunked one
+                // item at a time by `eval_source_file_cli`) would otherwise
+                // replay `main` from `self.items` on a later chunk and still
+                // get a duplicate synthetic one appended here.
+                let already_has_main = item_defines_main(input)
+                    || self
+                        .items
+                        .iter()
+                        .any(|item| item_defines_main(&item.source));
+                if !already_has_main {
+                    source.push_str("fn main() {}\n");
+                }
             }
             InputKind::Statement => {
                 source.push_str("fn main() {\n    ");
@@ -256,6 +274,21 @@ impl SessionItem {
             summary: source_preview(source),
         }
     }
+}
+
+/// Whether `input` already declares a top-level `fn main` (any arity/return
+/// type — only the name matters, since a second `fn main` at any signature is
+/// a duplicate-definition error). Parse errors in `input` are not checked
+/// here: whatever items the parser recovers are inspected regardless, and a
+/// genuinely malformed `input` is re-parsed as part of the synthetic program
+/// this function feeds into, which is where the real diagnostic surfaces.
+fn item_defines_main(input: &str) -> bool {
+    let parse_result = hew_parser::parse(input);
+    parse_result
+        .program
+        .items
+        .iter()
+        .any(|(item, _)| matches!(item, Item::Function(decl) if decl.name == "main"))
 }
 
 fn session_items_from_source(source: &str) -> Vec<SessionItem> {
@@ -461,6 +494,29 @@ mod tests {
         let session = Session::new();
         let prog = session.build_program("fn foo() -> i32 { 42 }");
         assert_eq!(prog.kind, InputKind::Item);
+        assert!(prog.source.contains("fn main() {}\n"));
+    }
+
+    /// A whole file handed through this builder (as `eval_file_captured` does
+    /// for `hew tool playground-verify` and `hew eval -f`) that already
+    /// defines `fn main` must not get a second synthetic one appended — that
+    /// would be a duplicate-definition error at parse time.
+    #[test]
+    fn item_input_with_own_main_is_not_duplicated() {
+        let session = Session::new();
+        let prog = session.build_program("fn main() { println(\"hi\"); }");
+        assert_eq!(prog.kind, InputKind::Item);
+        assert_eq!(prog.source.matches("fn main").count(), 1);
+    }
+
+    /// Negative control for the fix above: an item that does NOT define
+    /// `main` must still get the synthetic no-op `main` it needs to run.
+    #[test]
+    fn item_input_without_main_still_gets_synthetic_main() {
+        let session = Session::new();
+        let prog = session.build_program("fn helper() -> i32 { 42 }");
+        assert_eq!(prog.kind, InputKind::Item);
+        assert_eq!(prog.source.matches("fn main").count(), 1);
         assert!(prog.source.contains("fn main() {}\n"));
     }
 

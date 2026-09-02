@@ -373,7 +373,7 @@ fn program_has_imports(program: &hew_parser::ast::Program) -> bool {
         .any(|(item, _)| matches!(item, hew_parser::ast::Item::Import(_)))
 }
 
-fn program_defines_main(program: &hew_parser::ast::Program) -> bool {
+pub(crate) fn program_defines_main(program: &hew_parser::ast::Program) -> bool {
     program.items.iter().any(|(item, _)| {
         matches!(
             item,
@@ -1803,6 +1803,16 @@ pub fn eval_file_captured(
     let input_name = path.to_string();
 
     let mut session = ReplSession::for_path_with_target(path, timeout, target);
+
+    // Mirror `load_file_output_cli`'s routing: a file that parses and defines
+    // its own `main` is one program and must be compiled as such, not chunked
+    // item-by-item through the REPL's line-oriented eval path (which appends
+    // a synthetic `fn main() {}` per chunk and collides with the real one).
+    let parse_result = hew_parser::parse(&source);
+    if parse_result.errors.is_empty() && program_defines_main(&parse_result.program) {
+        return session.eval_parsed_source_file_cli(parse_result.program, &source, &input_name);
+    }
+
     session.eval_source_file_cli(&source, &input_name, &input_name)
 }
 

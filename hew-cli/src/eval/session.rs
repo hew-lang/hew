@@ -143,13 +143,16 @@ impl Session {
         match &kind {
             InputKind::Item => {
                 // The new item goes at the top level; we still need a main —
-                // unless the input already defines one itself (e.g. evaluating
-                // a whole file, such as `hew playground verify`, whose sole
-                // item is its own `fn main`). Appending a synthetic empty
-                // `fn main() {}` in that case duplicates the definition.
+                // unless the combined source (remembered items plus this
+                // input) already defines one. That covers both a whole file
+                // evaluated in one shot (e.g. `hew playground verify`, whose
+                // sole item is its own `fn main`) and a `main` remembered
+                // from an earlier REPL item: checking `input` alone missed
+                // the latter, so a later item eval always got the synthetic
+                // `fn main() {}` appended and collided with the real one.
                 source.push_str(input);
                 source.push('\n');
-                if !defines_main(input) {
+                if !source_defines_main(&source) {
                     source.push_str("fn main() {}\n");
                 }
             }
@@ -264,21 +267,21 @@ impl SessionItem {
     }
 }
 
-/// True if `input` (a fresh item-kind eval input, not accumulated session
-/// state) itself defines a top-level `fn main`. Parse failures are treated as
-/// "no" — the synthetic `fn main() {}` wrapper is still appended, and the
-/// resulting duplicate-parse-error path is unchanged from before this check
-/// existed.
-fn defines_main(input: &str) -> bool {
-    let parse_result = hew_parser::parse(input);
+/// True if `source` (remembered session items plus the new item, concatenated
+/// in build order but before any synthetic `fn main` is appended) defines a
+/// top-level `fn main` anywhere in it. Parse failures are treated as "no" —
+/// the synthetic `fn main() {}` wrapper is still appended, and the resulting
+/// duplicate-parse-error path is unchanged from before this check existed.
+///
+/// Reuses `program_defines_main` (the same predicate `:load`/whole-file eval
+/// use) rather than a second hand-rolled check, so there is one authority for
+/// "does this program already define main".
+fn source_defines_main(source: &str) -> bool {
+    let parse_result = hew_parser::parse(source);
     if !parse_result.errors.is_empty() {
         return false;
     }
-    parse_result
-        .program
-        .items
-        .iter()
-        .any(|(item, _)| matches!(item, Item::Function(decl) if decl.name == "main"))
+    super::repl::program_defines_main(&parse_result.program)
 }
 
 fn session_items_from_source(source: &str) -> Vec<SessionItem> {
@@ -496,6 +499,24 @@ mod tests {
         let session = Session::new();
         let prog = session.build_program("fn main() {\n    println(\"hi\");\n}");
         assert_eq!(prog.kind, InputKind::Item);
+        assert_eq!(prog.source.matches("fn main").count(), 1);
+    }
+
+    #[test]
+    fn remembered_main_item_is_not_duplicated_by_a_later_item() {
+        // Regression for the REPL replay case: typing `fn main() { ... }`
+        // succeeds and is remembered as a session item (unlike before this
+        // fix, when it always failed the duplicate-main check and was never
+        // recorded). The *next* item eval replays that remembered `main`
+        // ahead of the new item — checking only the new input for `main`
+        // missed the remembered one and always appended a second synthetic
+        // `fn main() {}`, so every item typed after a REPL-defined `main`
+        // failed with "main is defined multiple times".
+        let mut session = Session::new();
+        session.add_item("fn main() { println(\"hi\"); }");
+        let prog = session.build_program("fn foo() -> i32 { 42 }");
+        assert_eq!(prog.kind, InputKind::Item);
+        assert!(prog.source.contains("fn foo() -> i32 { 42 }"));
         assert_eq!(prog.source.matches("fn main").count(), 1);
     }
 

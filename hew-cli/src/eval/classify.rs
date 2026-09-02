@@ -83,11 +83,39 @@ pub fn input_completeness(input: &str) -> InputCompleteness {
         return InputCompleteness::Complete;
     }
 
-    if has_unclosed_delimiters(trimmed) || parses_with_continuation(trimmed) {
+    if has_unclosed_delimiters(trimmed)
+        || parses_with_continuation(trimmed)
+        || is_attribute_only(trimmed)
+    {
         return InputCompleteness::Incomplete;
     }
 
     InputCompleteness::Invalid
+}
+
+/// True when `input` is one or more complete attribute lines (`#[wire]`, …)
+/// with no item declaration after them yet.
+///
+/// An attribute alone (e.g. `#[wire]`) is syntactically balanced — its own
+/// brackets close — so [`has_unclosed_delimiters`] does not see it as an
+/// incomplete buffer, and it does not parse standalone as an item,
+/// statement, or expression either. Without this check the chunked file
+/// evaluator (`eval_source_file_cli`) reports it `Invalid` and evaluates the
+/// bare attribute on its own, which is a parse error the user never wrote —
+/// it must instead keep buffering until the attributed item follows.
+fn is_attribute_only(input: &str) -> bool {
+    let mut saw_line = false;
+    for line in input.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !line.starts_with("#[") || !line.ends_with(']') {
+            return false;
+        }
+        saw_line = true;
+    }
+    saw_line
 }
 
 /// Parse a REPL command string (after the leading `:`).
@@ -316,5 +344,46 @@ mod tests {
         // completed by more input.
         assert_eq!(input_completeness("1 + )"), InputCompleteness::Invalid);
         assert_eq!(input_completeness("let = 1;"), InputCompleteness::Invalid);
+    }
+
+    /// A bare attribute line is a valid prefix of an attributed item and
+    /// must keep buffering, not report `Invalid` (its brackets are already
+    /// balanced, so it would otherwise be evaluated on its own and fail to
+    /// parse — regression test for the `#[wire]`-prefixed playground type).
+    #[test]
+    fn input_completeness_buffers_bare_attribute() {
+        assert_eq!(input_completeness("#[wire]"), InputCompleteness::Incomplete);
+    }
+
+    /// Stacked attributes on separate lines must also keep buffering.
+    #[test]
+    fn input_completeness_buffers_stacked_attributes() {
+        assert_eq!(
+            input_completeness("#[wire]\n#[other]"),
+            InputCompleteness::Incomplete
+        );
+    }
+
+    /// Once the attributed item follows, the buffer is complete — proves
+    /// the attribute check does not force perpetual buffering.
+    #[test]
+    fn input_completeness_completes_attributed_item() {
+        assert_eq!(
+            input_completeness("#[wire]\ntype Msg {\n    name: string @1,\n}"),
+            InputCompleteness::Complete
+        );
+    }
+
+    /// Negative control for `is_attribute_only`: input with balanced
+    /// brackets that is not attribute-shaped (does not start with `#[`)
+    /// must still report `Invalid` when it is otherwise malformed — proves
+    /// the check is specific to genuine attribute lines, not "anything with
+    /// balanced `[...]`".
+    #[test]
+    fn input_completeness_does_not_buffer_non_attribute_bracket_line() {
+        assert_eq!(
+            input_completeness("let = [wire];"),
+            InputCompleteness::Invalid
+        );
     }
 }

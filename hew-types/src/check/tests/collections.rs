@@ -2918,9 +2918,15 @@ fn expected_constructor_rebuild_preserves_renamed_builtin_presentation() {
 
 #[test]
 fn constructor_pattern_against_non_enum_still_errors() {
-    // Negative: an `Ok`/`Err` pattern against a plain integer literal must
-    // still produce a "cannot match non-enum type" diagnostic. The block-unwrap
-    // in the await arm must not loosen the check for non-await match scrutinees.
+    // Negative: an `.Ok`/`.Err` pattern against a plain integer literal must
+    // still be refused. The block-unwrap in the await arm must not loosen the
+    // check for non-await match scrutinees.
+    //
+    // The contextual spelling resolves its enum from the scrutinee type, so a
+    // non-enum scrutinee is refused where that resolution fails and the
+    // diagnostic names the type it found. The bare spelling this test used to
+    // write reached the non-enum arm of the constructor path instead; it is
+    // `E_BARE_VARIANT_PATTERN` since v0.6.0 and no longer reaches either.
     let output = check_source(
         r"
         fn main() {
@@ -2934,10 +2940,9 @@ fn constructor_pattern_against_non_enum_still_errors() {
 
     assert!(
         output.errors.iter().any(|e| {
-            matches!(e.kind, TypeErrorKind::Mismatch { .. })
-                && e.message.contains("cannot match non-enum type")
+            e.kind == TypeErrorKind::ContextVariantNoType && e.message.contains("`i64`")
         }),
-        "Ok/Err pattern against i64 must still emit a non-enum-type mismatch error; got: {:?}",
+        "`.Ok`/`.Err` against i64 must be refused, naming the non-enum scrutinee type; got: {:?}",
         output.errors
     );
 }

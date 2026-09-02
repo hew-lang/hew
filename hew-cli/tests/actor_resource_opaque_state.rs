@@ -35,7 +35,7 @@ impl Dq {{
     fn close(self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.try_append("{marker_literal}", "closed\n") {{
-            Ok(_) => {{}},
+            .Ok(_) => {{}},
             .Err(_) => panic("append close marker"),
         }}
     }}
@@ -112,7 +112,7 @@ impl {type_name} {{
     fn close(self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.try_append("{marker_literal}", "closed\n") {{
-            Ok(_) => {{}},
+            .Ok(_) => {{}},
             .Err(_) => panic("append close marker"),
         }}
     }}
@@ -187,7 +187,7 @@ impl UserReceiver {{
     fn close(self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.try_append("{marker_literal}", "closed\n") {{
-            Ok(_) => {{}},
+            .Ok(_) => {{}},
             .Err(_) => panic("append close marker"),
         }}
     }}
@@ -225,7 +225,7 @@ extern "C" {{
 fn main() {{
     let keeper = spawn {actor}();
     match await keeper.ping() {{
-        Ok(n) => if n != 1 {{ panic("wrong reply") }},
+        .Ok(n) => if n != 1 {{ panic("wrong reply") }},
         .Err(_) => panic("ask failed"),
     }}
 }}

@@ -343,7 +343,7 @@ fn forwarder_borrow_only_match_publishes_borrowed_fact() {
     let src = format!(
         "{FORWARDER}
          fn use_it(r: Result<string, string>) -> i64 {{
-            match passthru(r) {{ Ok(_) => 1, Err(_) => 0 }}
+            match passthru(r) {{ .Ok(_) => 1, .Err(_) => 0 }}
          }}"
     );
     let p = pipeline(&src);
@@ -410,7 +410,7 @@ fn forwarder_over_fresh_ctor_preserves_nonfresh_outer_authority() {
         "{FORWARDER}
          fn fresh_ctor() -> Result<string, string> {{ Ok(\"x\") }}
          fn use_it() -> i64 {{
-            match passthru(fresh_ctor()) {{ Ok(_) => 1, Err(_) => 0 }}
+            match passthru(fresh_ctor()) {{ .Ok(_) => 1, .Err(_) => 0 }}
          }}"
     );
     let p = pipeline(&src);
@@ -434,7 +434,7 @@ fn params_only_inline_literal_arg_publishes_fresh_fact() {
     let src = format!(
         "{PARSER}
          fn use_it() -> i64 {{
-            match wrap(\"hello\") {{ Ok(_) => 1, Err(_) => 0 }}
+            match wrap(\"hello\") {{ .Ok(_) => 1, .Err(_) => 0 }}
          }}"
     );
     let p = pipeline(&src);
@@ -448,7 +448,7 @@ fn params_only_let_bound_local_arg_publishes_fresh_fact() {
         "{PARSER}
          fn use_it() -> i64 {{
             let v = \"1.2.3\";
-            match wrap(v) {{ Ok(_) => 1, Err(_) => 0 }}
+            match wrap(v) {{ .Ok(_) => 1, .Err(_) => 0 }}
          }}"
     );
     let p = pipeline(&src);
@@ -475,7 +475,7 @@ fn params_only_caller_param_publishes_fresh_aggregate_fact() {
     let src = format!(
         "{PARSER}
          fn use_it(s: string) -> i64 {{
-            match wrap(s) {{ Ok(_) => 1, Err(_) => 0 }}
+            match wrap(s) {{ .Ok(_) => 1, .Err(_) => 0 }}
          }}"
     );
     let p = pipeline(&src);
@@ -491,7 +491,7 @@ fn unknown_extern_arg_stays_unknown_beneath_fresh_wrapper() {
             fn ext_make() -> string;
          }}
          fn use_it() -> i64 {{
-            match wrap(ext_make()) {{ Ok(_) => 1, Err(_) => 0 }}
+            match wrap(ext_make()) {{ .Ok(_) => 1, .Err(_) => 0 }}
          }}"
     );
     let p = pipeline(&src);
@@ -508,7 +508,7 @@ fn params_only_aliased_local_arg_publishes_fresh_fact() {
          fn use_it() -> i64 {{
             let v = \"x\";
             let w = v;
-            match wrap(w) {{ Ok(_) => 1, Err(_) => 0 }}
+            match wrap(w) {{ .Ok(_) => 1, .Err(_) => 0 }}
          }}"
     );
     let p = pipeline(&src);
@@ -523,7 +523,7 @@ fn params_only_reread_local_arg_publishes_fresh_fact() {
          fn take(s: string) -> i64 {{ 1 }}
          fn use_it() -> i64 {{
             let v = \"x\";
-            let n = match wrap(v) {{ Ok(_) => 1, Err(_) => 0 }};
+            let n = match wrap(v) {{ .Ok(_) => 1, .Err(_) => 0 }};
             n + take(v)
          }}"
     );
@@ -540,8 +540,8 @@ fn params_only_pattern_binder_arg_publishes_fresh_fact() {
          fn make() -> Result<string, string> {{ Ok(\"x\") }}
          fn use_it() -> i64 {{
             match make() {{
-                Ok(inner) => match wrap(inner) {{ Ok(_) => 1, Err(_) => 0 }},
-                Err(_) => 0,
+                .Ok(inner) => match wrap(inner) {{ .Ok(_) => 1, .Err(_) => 0 }},
+                .Err(_) => 0,
             }}
          }}"
     );
@@ -583,7 +583,7 @@ fn forwarder_reused_in_loop_remains_borrowed() {
          fn use_it(r: Result<string, string>) {{
             var i = 0;
             while i < 2 {{
-                match passthru(r) {{ Ok(_) => {{}}, Err(_) => {{}} }}
+                match passthru(r) {{ .Ok(_) => {{}}, .Err(_) => {{}} }}
                 i = i + 1;
             }}
          }}"
@@ -612,7 +612,7 @@ fn imported_result_direct_call_scrutinee_publishes_fresh_fact() {
         import result_source;
 
         fn use_it() -> i64 {
-            match result_source.make() { Ok(_) => 1, Err(_) => 0 }
+            match result_source.make() { .Ok(_) => 1, .Err(_) => 0 }
         }
     ";
     let module = r"
@@ -640,7 +640,7 @@ fn imported_sink_payload_without_a_measured_variant_summary_is_refused() {
 
         fn use_it() {
             match result_source.make() {
-                Ok(_sink) => {},
+                .Ok(_sink) => {},
                 .Err(_) => {},
             }
         }
@@ -731,7 +731,7 @@ fn imported_result_forwarder_scrutinee_preserves_borrowed_fact() {
         import result_source;
 
         fn use_it(r: Result<string, string>) -> i64 {
-            match result_source.forward(r) { Ok(_) => 1, Err(_) => 0 }
+            match result_source.forward(r) { .Ok(_) => 1, .Err(_) => 0 }
         }
     ";
     let module = r"
@@ -840,12 +840,12 @@ fn borrowed_call_forwarder_payload_move_stays_rejected() {
          fn passthru_vec(r: Result<Vec<i64>, Vec<i64>>) -> Result<Vec<i64>, Vec<i64>> {{ r }}
          fn use_it(r: Result<Vec<i64>, Vec<i64>>) -> i64 {{
             match passthru_vec(r) {{
-                Ok(inner) => {{
+                .Ok(inner) => {{
                     var moved = inner;
                     moved = seed();
                     moved.len()
                 }},
-                Err(_) => 0,
+                .Err(_) => 0,
             }}
          }}"
     );

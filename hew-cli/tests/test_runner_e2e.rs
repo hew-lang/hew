@@ -321,11 +321,11 @@ fn serial_tests_do_not_overlap() {
         "import std.net;\n\n\
          fn hold_port() {{\n\
              match net.try_listen(\"127.0.0.1:{port}\") {{\n\
-                 Ok(listener) => {{\n\
+                 .Ok(listener) => {{\n\
                      sleep(200ms);\n\
                      listener.close();\n\
                  }},\n\
-                 Err(_) => panic(\"serial tests overlapped\"),\n\
+                 .Err(_) => panic(\"serial tests overlapped\"),\n\
              }}\n\
          }}\n\n\
          #[test]\n#[serial]\nfn serial_one() {{ hold_port(); }}\n\n\

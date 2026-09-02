@@ -707,7 +707,7 @@ actor Writer {{
                 await sink.send("line-b\n");
                 sink.close();
             }},
-            Err(e) => println(f"open failed: {{e}}"),
+            .Err(e) => println(f"open failed: {{e}}"),
         }}
     }}
 }}

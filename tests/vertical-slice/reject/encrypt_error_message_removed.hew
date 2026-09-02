@@ -1,0 +1,8 @@
+// `encrypt.error_message` was replaced by `impl Display for CryptoError`;
+// the deleted function name must no longer resolve.
+import std.crypto.encrypt;
+
+fn main() {
+    let e = CryptoError.InvalidKey;
+    println(encrypt.error_message(e));
+}

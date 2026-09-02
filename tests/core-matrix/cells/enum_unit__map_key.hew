@@ -9,6 +9,6 @@ fn main() {
     m.insert(k, 9);
     match m.get(k) {
         Option.Some(v) => println(f"got {v}"),
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

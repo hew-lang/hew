@@ -12,8 +12,8 @@ fn sum_evens(v: Vec<i64>) -> i64 {
     var total: i64 = 0;
     while i < v.len() {
         let n = match v.get(i) {
-            Some(x) => x,
-            None => break,
+            .Some(x) => x,
+            .None => break,
         };
         i = i + 1;
         match n % 2 {

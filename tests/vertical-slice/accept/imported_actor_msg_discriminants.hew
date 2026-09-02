@@ -10,16 +10,16 @@ import "imported_actor_msg_discriminants_lib.hew";
 fn main() {
     let reg = spawn Register(total: 0);
     match await reg.add(5) {
-        Ok(v) => println(f"add={v}"),
-        Err(_) => println("add failed"),
+        .Ok(v) => println(f"add={v}"),
+        .Err(_) => println("add failed"),
     }
     match await reg.scale(4) {
-        Ok(v) => println(f"scale={v}"),
-        Err(_) => println("scale failed"),
+        .Ok(v) => println(f"scale={v}"),
+        .Err(_) => println("scale failed"),
     }
     reg.reset();
     match await reg.read() {
-        Ok(v) => println(f"read={v}"),
-        Err(_) => println("read failed"),
+        .Ok(v) => println(f"read={v}"),
+        .Err(_) => println("read failed"),
     }
 }

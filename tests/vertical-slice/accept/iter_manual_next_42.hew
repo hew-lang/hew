@@ -7,15 +7,15 @@ fn main() -> i64 {
     var sum: i64 = 0;
 
     match iter.next() {
-        Some(first) => { sum = sum + first; },
-        None => { return 1; },
+        .Some(first) => { sum = sum + first; },
+        .None => { return 1; },
     }
     match iter.next() {
-        Some(second) => { sum = sum + second; },
-        None => { return 2; },
+        .Some(second) => { sum = sum + second; },
+        .None => { return 2; },
     }
     match iter.next() {
-        Some(_) => { return 3; },
-        None => { return sum; },
+        .Some(_) => { return 3; },
+        .None => { return sum; },
     }
 }

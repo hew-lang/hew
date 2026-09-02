@@ -39,8 +39,8 @@ fn main() -> i64 {
     sleep(1s);
     let result = await w.report();
     let final_count = match result {
-        Ok(value) => value,
-        Err(_) => -1,
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
     if final_count < 20 {
         0

@@ -1,6 +1,6 @@
 fn main() {
     let x: Result<i64, string> = Result.Ok(6);
     let y = clone x;
-    match y { Result.Ok(y_v) => println(f"ok {y_v}"), Err(y_e) => println(f"err {y_e}"), }
-    match x { Result.Ok(x_v) => println(f"ok {x_v}"), Err(x_e) => println(f"err {x_e}"), }
+    match y { Result.Ok(y_v) => println(f"ok {y_v}"), Result.Err(y_e) => println(f"err {y_e}"), }
+    match x { Result.Ok(x_v) => println(f"ok {x_v}"), Result.Err(x_e) => println(f"err {x_e}"), }
 }

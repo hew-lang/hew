@@ -16,7 +16,7 @@ actor Slow {
 fn main() -> i64 {
     let s = spawn Slow;
     match await s.fetch() | after 50ms {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     }
 }

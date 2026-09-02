@@ -10,7 +10,7 @@ fn validate(s: string) -> Result<i64, string> {
 }
 
 fn parse_one(s: string) -> i64 {
-    let Ok(n) = validate(s) else { 0 };
+    let .Ok(n) = validate(s) else { 0 };
     n
 }
 

@@ -19,7 +19,7 @@ fn main() {
   let d = spawn Delayed;
   sleep(200ms);
   match await d.get() {
-    Ok(v) => println(v),
-    Err(_) => println("ask failed"),
+    .Ok(v) => println(v),
+    .Err(_) => println("ask failed"),
   }
 }

@@ -25,8 +25,8 @@ actor Vault {
 fn main() -> i64 {
     let vault = spawn Vault(sock: Socket { fd: 3 });
     let first = match await vault.steal() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     return first;
 }

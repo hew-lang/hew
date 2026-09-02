@@ -27,7 +27,7 @@ fn main() {
     let peer: RemotePid<Holder>;
     let sent: Result<(), SendError> = peer.send(local);
     match sent {
-        Ok(_) => println("sent"),
-        Err(_) => println("send failed"),
+        .Ok(_) => println("sent"),
+        .Err(_) => println("send failed"),
     }
 }

@@ -16,10 +16,10 @@ fn main() {
     match v.get(0) {
         Option.Some(e) => {
             match e {
-                Zero => println("zero"),
-                NonZero { value } => println(f"n {value}"),
+                .Zero => println("zero"),
+                .NonZero { value } => println(f"n {value}"),
             }
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

@@ -54,7 +54,7 @@ fn main() -> i64 {
     // Ask through the PRE-CRASH held handle. The fungible reference re-resolves
     // to the restarted child; a snapshot would reach the freed actor and trap.
     match await w.get_value() {
-        Ok(v) => v,
-        Err(_) => 0,
+        .Ok(v) => v,
+        .Err(_) => 0,
     }
 }

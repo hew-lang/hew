@@ -23,7 +23,7 @@ fn main() -> i64 {
     forward(32);
     sleep(300ms);
     match await counter.total() {
-        Ok(v) => v,
-        Err(_e) => 0,
+        .Ok(v) => v,
+        .Err(_e) => 0,
     }
 }

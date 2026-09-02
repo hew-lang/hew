@@ -24,7 +24,7 @@ fn main() -> i64 {
     counter.increment(10);
     counter.increment(32);
     match await counter.total() {
-        Ok(v) => v,
-        Err(_e) => 0,
+        .Ok(v) => v,
+        .Err(_e) => 0,
     }
 }

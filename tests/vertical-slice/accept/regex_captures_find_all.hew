@@ -11,26 +11,26 @@ fn main() {
 
     let one = regex.new("([a-z]+)-(?P<num>[0-9]+)");
     match one.capture("abc-123", 1) {
-        Some(word) => println(word),
-        None => println("missing"),
+        .Some(word) => println(word),
+        .None => println("missing"),
     }
     match one.capture_named("abc-123", "num") {
-        Some(num) => println(num),
-        None => println("missing"),
+        .Some(num) => println(num),
+        .None => println("missing"),
     }
     match one.capture("abc-123", 99) {
-        Some(value) => println(value),
-        None => println("missing-index"),
+        .Some(value) => println(value),
+        .None => println("missing-index"),
     }
     match one.capture_named("abc-123", "missing") {
-        Some(value) => println(value),
-        None => println("missing-name"),
+        .Some(value) => println(value),
+        .None => println("missing-name"),
     }
     let first = one.captures("abc-123");
     println(f"first_rows={first.len()} first_width={first.width()}");
     match first.whole(0) {
-        Some(value) => println(value),
-        None => println("missing-whole"),
+        .Some(value) => println(value),
+        .None => println("missing-whole"),
     }
     one.close();
 
@@ -38,12 +38,12 @@ fn main() {
     let rows = many.find_all_submatch("a1 b22");
     println(f"rows={rows.len()} width={rows.width()}");
     match rows.group(1, 2) {
-        Some(value) => println(value),
-        None => println("missing-group"),
+        .Some(value) => println(value),
+        .None => println("missing-group"),
     }
     match rows.group(4, 0) {
-        Some(value) => println(value),
-        None => println("missing-row"),
+        .Some(value) => println(value),
+        .None => println("missing-row"),
     }
     many.close();
 }

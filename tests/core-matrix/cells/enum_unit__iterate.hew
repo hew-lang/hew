@@ -10,6 +10,6 @@ fn main() {
     v.push(a);
     v.push(b);
     for e in v {
-        match e { Red => println("Red"), Green => println("Green"), }
+        match e { .Red => println("Red"), .Green => println("Green"), }
     }
 }

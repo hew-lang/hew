@@ -19,11 +19,11 @@ fn try_divide(a: i64, b: i64) -> Result<i64, string> {
 
 fn main() {
     match try_divide(10, 2) {
-        Ok(v) => println("ok"),
-        Err(e) => println(e),
+        .Ok(v) => println("ok"),
+        .Err(e) => println(e),
     }
     match try_divide(10, 0) {
-        Ok(v) => println("ok"),
-        Err(e) => println(e),
+        .Ok(v) => println("ok"),
+        .Err(e) => println(e),
     }
 }

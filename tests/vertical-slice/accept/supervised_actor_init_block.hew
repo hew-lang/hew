@@ -43,7 +43,7 @@ fn main() -> i64 {
     let sup = spawn App;
     let w = sup.w1;
     match await w.get_value() {
-        Ok(v) => v,
-        Err(_) => 0,
+        .Ok(v) => v,
+        .Err(_) => 0,
     }
 }

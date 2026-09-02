@@ -36,9 +36,9 @@ impl Conn {
 fn returning_guard(r: Result<i64, string>) -> i64 {
     let held = Conn { fd: 1 };
     match r {
-        Ok(_) if { return held.detach(); } => 10,
-        Err(_) => held.detach(),
-        Ok(_) => 20,
+        .Ok(_) if { return held.detach(); } => 10,
+        .Err(_) => held.detach(),
+        .Ok(_) => 20,
     }
 }
 

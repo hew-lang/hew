@@ -15,8 +15,8 @@ fn await_deadline_probe() -> i32 {
 fn await_deadline_coverage() -> i32 {
     let r = spawn Responder;
     let _result = match await r.ask(1) | after 5000ms {
-        Ok(v) => v,
-        Err(_e) => await_deadline_probe(),
+        .Ok(v) => v,
+        .Err(_e) => await_deadline_probe(),
     };
     await_deadline_probe()
 }

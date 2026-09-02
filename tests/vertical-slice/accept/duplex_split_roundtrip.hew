@@ -9,20 +9,20 @@ fn main() -> i64 {
     let tx = a.send_half();
     let rx = b.recv_half();
     match tx.send(7) {
-        Ok(_) => {},
-        Err(_) => return 1,
+        .Ok(_) => {},
+        .Err(_) => return 1,
     }
     let received = match rx.recv() {
-        Ok(v) => v,
-        Err(_) => return 1,
+        .Ok(v) => v,
+        .Err(_) => return 1,
     };
     match tx.close() {
-        Ok(_) => {},
-        Err(_) => return 1,
+        .Ok(_) => {},
+        .Err(_) => return 1,
     }
     match rx.close() {
-        Ok(_) => {},
-        Err(_) => return 1,
+        .Ok(_) => {},
+        .Err(_) => return 1,
     }
     return received;
 }

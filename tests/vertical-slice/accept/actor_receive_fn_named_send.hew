@@ -18,7 +18,7 @@ fn main() -> i64 {
     counter.send(10);
     counter.send(32);
     match await counter.get() {
-        Ok(v) => v,
-        Err(_e) => 0,
+        .Ok(v) => v,
+        .Err(_e) => 0,
     }
 }

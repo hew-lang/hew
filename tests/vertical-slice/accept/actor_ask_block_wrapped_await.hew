@@ -16,8 +16,8 @@ fn main() {
     let r = match await {
         doubler.process(5)
     } {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     println(f"result: {r}");
 }

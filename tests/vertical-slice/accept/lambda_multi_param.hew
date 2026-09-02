@@ -11,16 +11,16 @@ fn main() {
     };
     let sum = add(3, 4);
     match sum {
-        Ok(v) => println(f"add={v}"),
-        Err(_) => println("add failed"),
+        .Ok(v) => println(f"add={v}"),
+        .Err(_) => println("add failed"),
     }
     let tag = actor |prefix: string, n: i64| -> string {
         f"{prefix}:{n * 2}"
     };
     let label = tag("answer", 21);
     match label {
-        Ok(s) => println(s),
-        Err(_) => println("tag failed"),
+        .Ok(s) => println(s),
+        .Err(_) => println("tag failed"),
     }
     let log = actor |level: string, code: i64| {
         println(f"[{level}] code={code}");

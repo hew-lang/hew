@@ -15,11 +15,11 @@ fn handle(n: i64) -> Result<i64, string> {
 
 fn main() {
     match handle(21) {
-        Ok(v) => println("ok"),
-        Err(e) => println(e),
+        .Ok(v) => println("ok"),
+        .Err(e) => println(e),
     }
     match handle(0 - 5) {
-        Ok(v) => println("ok"),
-        Err(e) => println(e),
+        .Ok(v) => println("ok"),
+        .Err(e) => println(e),
     }
 }

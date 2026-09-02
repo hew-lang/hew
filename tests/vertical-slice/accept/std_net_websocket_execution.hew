@@ -4,7 +4,7 @@ import std.net;
 
 fn main() {
     match websocket.listen("127.0.0.1:0") {
-        Ok(server) => {
+        .Ok(server) => {
             let port = server.port();
             if port <= 0 {
                 panic("WebSocket listener has no assigned port");
@@ -12,7 +12,7 @@ fn main() {
             server.close();
             println("websocket:ok");
         },
-        Err(err) => {
+        .Err(err) => {
             let reason = to_string(err);
             let detail = websocket.last_error();
             println(f"websocket:listen-failed {reason} - {detail}");

@@ -19,8 +19,8 @@ fn main() {
     v.push(b);
     for e in v {
         match e {
-            Zero => println("zero"),
-            NonZero { value } => println(f"n {value}"),
+            .Zero => println("zero"),
+            .NonZero { value } => println(f"n {value}"),
         }
     }
 }

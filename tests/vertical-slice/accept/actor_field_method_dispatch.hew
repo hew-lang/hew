@@ -30,8 +30,8 @@ actor B {
     }
     receive fn total() -> i64 {
         match await out.get() {
-            Ok(v) => v,
-            Err(_) => -1,
+            .Ok(v) => v,
+            .Err(_) => -1,
         }
     }
 }
@@ -42,7 +42,7 @@ fn main() {
     b.go(42);
     b.go(8);
     match await b.total() {
-        Ok(v) => println(f"total={v}"),
-        Err(_) => println("err"),
+        .Ok(v) => println(f"total={v}"),
+        .Err(_) => println("err"),
     }
 }

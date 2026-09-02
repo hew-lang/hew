@@ -28,8 +28,8 @@ fn main() {
     let _ = conn.set_write_timeout(100);
     // A small write fits in the send buffer and succeeds immediately.
     let small_ok = match conn.write_string("ping") {
-        Ok(_) => true,
-        Err(_) => false,
+        .Ok(_) => true,
+        .Err(_) => false,
     };
     if !small_ok {
         exit(3);
@@ -40,8 +40,8 @@ fn main() {
     // until the 100ms timeout and then fails with a backpressure errno.
     let big = "0123456789abcdef".repeat(1024 * 1024);
     let code = match conn.write_string(big) {
-        Ok(_) => 5,
-        Err(e) => {
+        .Ok(_) => 5,
+        .Err(e) => {
             match e {
                 WriteError.BackpressureExceeded(_) => 42,
                 _ => 7,

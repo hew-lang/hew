@@ -20,8 +20,8 @@ actor Server {
         var cancellations: i64 = 0;
         loop {
             match await ln.accept() | after 10s {
-                Ok(_conn) => exit(2),
-                Err(e) => match e {
+                .Ok(_conn) => exit(2),
+                .Err(e) => match e {
                     NetError.Cancelled(_c) => {
                         cancellations = cancellations + 1;
                         if cancellations == 2 {

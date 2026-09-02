@@ -10,8 +10,8 @@ actor AcceptDeadline {
     receive fn go() {
         let ln = net.listen(f"127.0.0.1:{port}");
         let _result = match await ln.accept() | after 60ms {
-            Ok(_conn) => 42,
-            Err(_e) => 7,
+            .Ok(_conn) => 42,
+            .Err(_e) => 7,
         };
     }
 }

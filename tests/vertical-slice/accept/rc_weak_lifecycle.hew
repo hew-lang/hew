@@ -10,8 +10,8 @@ fn expired() -> Weak<i64> {
 
 fn upgraded_value(weak: Weak<i64>) -> i64 {
     match weak.upgrade() {
-        Some(rc) => rc.get(),
-        None => 9000,
+        .Some(rc) => rc.get(),
+        .None => 9000,
     }
 }
 
@@ -47,8 +47,8 @@ fn main() {
 
     let dead = expired();
     println(match dead.upgrade() {
-        Some(_) => 9,
-        None => 0,
+        .Some(_) => 9,
+        .None => 0,
     });
 
     let _ = weak_alias;

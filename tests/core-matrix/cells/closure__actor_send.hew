@@ -14,6 +14,6 @@ fn main() {
     let s = spawn Sink(hits: 0);
     match await s.take(x) {
         Result.Ok(n) => println(f"hits {n}"),
-        Err(_) => println("err"),
+        Result.Err(_) => println("err"),
     }
 }

@@ -61,10 +61,10 @@ impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
                 break;
             }
             match inner.next() {
-                Some(_) => {
+                .Some(_) => {
                     self.remaining = self.remaining - 1;
                 },
-                None => {
+                .None => {
                     self.iter = inner;
                     return None;
                 },
@@ -82,8 +82,8 @@ fn fold_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
     var iter = it;
     loop {
         match iter.next() {
-            Some(x) => { acc = acc + x; },
-            None => { break; },
+            .Some(x) => { acc = acc + x; },
+            .None => { break; },
         }
     }
     acc

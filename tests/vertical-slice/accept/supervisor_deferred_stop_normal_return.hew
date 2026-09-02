@@ -38,7 +38,7 @@ fn main() -> i64 {
     let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
     sup.stopper.stop_tree(sup, ready_tx);
     match await ready_rx.recv() {
-        Some(n) => n,
-        None => 1,
+        .Some(n) => n,
+        .None => 1,
     }
 }

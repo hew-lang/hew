@@ -27,8 +27,8 @@ actor Acceptor {
         let port = ln.local_port() as i32;
         connector.go(port);
         let code = match await ln.accept() | after 5s {
-            Ok(_conn) => 42,
-            Err(_e) => 7,
+            .Ok(_conn) => 42,
+            .Err(_e) => 7,
         };
         code
     }
@@ -39,7 +39,7 @@ fn main() {
     let acceptor = spawn Acceptor(connector: connector);
     let code_result = await acceptor.run();
     match code_result {
-        Ok(code) => exit(code),
-        Err(_) => exit(99),
+        .Ok(code) => exit(code),
+        .Err(_) => exit(99),
     }
 }

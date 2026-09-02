@@ -18,6 +18,6 @@ fn main() {
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
         Result.Ok(n) => println(f"held {n}"),
-        Err(_) => println("err"),
+        Result.Err(_) => println("err"),
     }
 }

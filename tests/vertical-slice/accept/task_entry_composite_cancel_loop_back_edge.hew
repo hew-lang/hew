@@ -36,7 +36,7 @@ fn main() {
     let d = spawn Driver;
     let r = await d.run_value();
     match r {
-        Ok(s) => println(f"total={s.total} count={s.count}"),
-        Err(_) => println("failed"),
+        .Ok(s) => println(f"total={s.total} count={s.count}"),
+        .Err(_) => println("failed"),
     }
 }

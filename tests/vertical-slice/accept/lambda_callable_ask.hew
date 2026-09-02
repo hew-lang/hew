@@ -16,7 +16,7 @@ fn main() {
     };
     let r = dbl(5);
     match r {
-        Ok(v) => println(f"ask {v}"),
-        Err(_) => println("err"),
+        .Ok(v) => println(f"ask {v}"),
+        .Err(_) => println("err"),
     }
 }

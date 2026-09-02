@@ -17,8 +17,8 @@ fn keep_big(rows: Vec<i64>, keep: HashMap<string, Vec<i64>>) {
         }
         let probe = keep.get("big");
         match probe {
-            Some(found) => { println(f"n={found.len()}"); }
-            None => {}
+            .Some(found) => { println(f"n={found.len()}"); }
+            .None => {}
         }
     }
 }

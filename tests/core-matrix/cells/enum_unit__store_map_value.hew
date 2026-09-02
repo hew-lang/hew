@@ -9,8 +9,8 @@ fn main() {
     m.insert("k", x);
     match m.get("k") {
         Option.Some(e) => {
-            match e { Red => println("Red"), Green => println("Green"), }
+            match e { .Red => println("Red"), .Green => println("Green"), }
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

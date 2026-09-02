@@ -11,10 +11,10 @@ fn main() -> i64 {
     let h = Nested { x: Some(Some(1)) };
     let back = Nested.decode(h.encode());
     match back.x {
-        Some(inner) => match inner {
-            Some(v) => v,
-            None => 2,
+        .Some(inner) => match inner {
+            .Some(v) => v,
+            .None => 2,
         },
-        None => 3,
+        .None => 3,
     }
 }

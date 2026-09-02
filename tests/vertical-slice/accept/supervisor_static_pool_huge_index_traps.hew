@@ -29,10 +29,10 @@ fn main() -> i64 {
     let idx: i64 = 4294967297; // 2^32 + 1 — used to alias member 1.
     let m = sup.workers[idx];
     match await m.id() {
-        Ok(v) => {
+        .Ok(v) => {
             v
         },
-        Err(_) => {
+        .Err(_) => {
             0
         },
     }

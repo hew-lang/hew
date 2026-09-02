@@ -22,13 +22,13 @@ impl ActorMsg for Logger {
 fn main() {
     let found: Result<RemotePid<Logger>, LookupError> = Node.lookup("logger");
     match found {
-        Ok(peer) => {
+        .Ok(peer) => {
             let sent: Result<(), SendError> = peer.send(7);
             match sent {
-                Ok(_) => println("sent"),
-                Err(_) => println("send failed"),
+                .Ok(_) => println("sent"),
+                .Err(_) => println("send failed"),
             }
         },
-        Err(_) => println("lookup failed"),
+        .Err(_) => println("lookup failed"),
     }
 }

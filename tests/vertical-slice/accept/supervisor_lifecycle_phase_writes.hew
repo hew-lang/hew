@@ -39,14 +39,14 @@ supervisor App {
 fn main() -> i64 {
     let sup = spawn App;
     let first = match await sup.worker.get() {
-        Ok(value) => value,
-        Err(_) => return 1,
+        .Ok(value) => value,
+        .Err(_) => return 1,
     };
     sup.worker.crash();
     let restarted = await_restart sup.worker;
     let second = match await restarted.get() {
-        Ok(value) => value,
-        Err(_) => return 2,
+        .Ok(value) => value,
+        .Err(_) => return 2,
     };
     first + second
 }

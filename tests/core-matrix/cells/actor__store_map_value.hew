@@ -13,8 +13,8 @@ fn main() {
     m.insert("k", x);
     match m.get("k") {
         Option.Some(e) => {
-            match await e.take(1) { Result.Ok(e_v) => println(f"echo {e_v}"), Err(_) => println("err"), }
+            match await e.take(1) { Result.Ok(e_v) => println(f"echo {e_v}"), Result.Err(_) => println("err"), }
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

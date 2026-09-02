@@ -27,7 +27,7 @@ actor Vault {
 fn main() -> i64 {
     let vault = spawn Vault(sock: Socket { fd: 3 });
     return match await vault.maybe_swap(true) {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
 }

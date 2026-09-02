@@ -1,5 +1,5 @@
 fn main() {
     var x: Option<i64> = Option.Some(5);
     x = Option.Some(6);
-    match x { Option.Some(x_v) => println(f"some {x_v}"), None => println("none"), }
+    match x { Option.Some(x_v) => println(f"some {x_v}"), Option.None => println("none"), }
 }

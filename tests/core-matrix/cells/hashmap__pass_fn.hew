@@ -1,6 +1,6 @@
 fn use_it(v: HashMap<string, i64>) {
     let v_l = v.len();
-    let v_a = match v.get("a") { Option.Some(v_g) => v_g, None => -1, };
+    let v_a = match v.get("a") { Option.Some(v_g) => v_g, Option.None => -1, };
     println(f"len={v_l} a={v_a}");
 }
 

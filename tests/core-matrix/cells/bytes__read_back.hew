@@ -10,6 +10,6 @@ fn main() {
             let e_0 = e[0];
             println(f"len={e_l} b0={e_0}");
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

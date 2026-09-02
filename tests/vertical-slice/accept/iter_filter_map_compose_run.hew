@@ -43,8 +43,8 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     fn next(var self) -> Option<B> {
         var inner = self.iter;
         let result = match inner.next() {
-            Some(x) => Some((self.f)(x)),
-            None => None,
+            .Some(x) => Some((self.f)(x)),
+            .None => None,
         };
         self.iter = inner;
         result
@@ -64,14 +64,14 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
         var found: Option<A> = None;
         loop {
             match inner.next() {
-                Some(x) => {
+                .Some(x) => {
                     if (self.pred)(x) {
                         found = Some(x);
                         break;
                     }
                     // x rejected; dropped here
                 },
-                None => {
+                .None => {
                     break;
                 },
             }
@@ -106,10 +106,10 @@ where
     var iter = it;
     loop {
         match iter.next() {
-            Some(x) => {
+            .Some(x) => {
                 acc = f(acc, x);
             },
-            None => {
+            .None => {
                 break;
             },
         }

@@ -3,10 +3,10 @@ fn main() {
     m.insert("a", 1);
     match m.get("a") {
         Option.Some(v) => m.insert("a", v + 5),
-        None => {},
+        Option.None => {},
     }
     match m.get("a") {
         Option.Some(v) => println(f"a={v}"),
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

@@ -18,8 +18,8 @@ actor Worker {
         let got = recv_once() | after 50ms;
         let _ = tx;
         match got {
-            Some(v) => v,
-            None => -1,
+            .Some(v) => v,
+            .None => -1,
         }
     }
 }
@@ -27,7 +27,7 @@ actor Worker {
 fn main() -> i64 {
     let w = spawn Worker;
     match await w.run() {
-        Ok(v) => v,
-        Err(_e) => 0,
+        .Ok(v) => v,
+        .Err(_e) => 0,
     }
 }

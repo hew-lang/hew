@@ -18,57 +18,57 @@ fn main() -> i64 {
     var total = 0;
 
     match sup.workers.get(0) {
-        Some(worker) => {
+        .Some(worker) => {
             match await worker.id() {
-                Ok(value) => {
+                .Ok(value) => {
                     if value != 7 {
                         return 1;
                     }
                     total = total + value;
                 },
-                Err(_) => {
+                .Err(_) => {
                     return 2;
                 },
             }
         },
-        None => {
+        .None => {
             return 3;
         },
     }
 
     match sup.workers.get(1) {
-        Some(worker) => {
+        .Some(worker) => {
             match await worker.id() {
-                Ok(value) => {
+                .Ok(value) => {
                     if value != 7 {
                         return 4;
                     }
                     total = total + value;
                 },
-                Err(_) => {
+                .Err(_) => {
                     return 5;
                 },
             }
         },
-        None => {
+        .None => {
             return 6;
         },
     }
 
     match sup.workers.get(-1) {
-        Some(_) => {
+        .Some(_) => {
             return 7;
         },
-        None => {
+        .None => {
             total = total + 30;
         },
     }
 
     match sup.workers.get(2) {
-        Some(_) => {
+        .Some(_) => {
             return 8;
         },
-        None => {
+        .None => {
             total = total + 40;
         },
     }

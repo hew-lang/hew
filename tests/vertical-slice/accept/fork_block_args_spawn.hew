@@ -45,7 +45,7 @@ fn main() -> i64 {
     match await d.go() {
         // The handler replies 7 after both scopes join; exit 0 on the
         // expected reply, non-zero otherwise.
-        Ok(v) => v - 7,
-        Err(_e) => 1,
+        .Ok(v) => v - 7,
+        .Err(_e) => 1,
     }
 }

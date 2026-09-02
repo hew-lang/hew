@@ -32,7 +32,7 @@ fn main() -> i64 {
     let sup = spawn App(config: cfg);
     let c = sup.cache;
     match await c.get_cap() {
-        Ok(v) => v,
-        Err(_) => 0,
+        .Ok(v) => v,
+        .Err(_) => 0,
     }
 }

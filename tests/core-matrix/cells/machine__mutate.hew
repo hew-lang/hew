@@ -13,7 +13,7 @@ fn main() {
     c.step(.Inc);
     c.step(.Inc);
     match c {
-        Zero => println("zero"),
-        NonZero { value } => println(f"n {value}"),
+        .Zero => println("zero"),
+        .NonZero { value } => println(f"n {value}"),
     }
 }

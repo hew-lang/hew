@@ -18,8 +18,8 @@ impl Conn {
 fn use_after_match_join(r: Result<i64, string>) -> i64 {
     let held = Conn { fd: 1 };
     match r {
-        Ok(_) => { held.close(); },
-        Err(_) => { held.close(); },
+        .Ok(_) => { held.close(); },
+        .Err(_) => { held.close(); },
     }
     held.detach()
 }

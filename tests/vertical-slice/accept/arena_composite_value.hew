@@ -11,7 +11,7 @@ fn main() {
     let store: Arena<Point> = arena.new();
     let key = store.insert(Point { x: 3, y: 7 });
     match store.get(key) {
-        Some(p) => println(f"{p.x},{p.y}"),
-        None => println("missing"),
+        .Some(p) => println(f"{p.x},{p.y}"),
+        .None => println("missing"),
     }
 }

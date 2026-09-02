@@ -4,8 +4,8 @@ fn main() {
     m.insert("k", x);
     match m.get("k") {
         Option.Some(e) => {
-            match e { Option.Some(e_v) => println(f"some {e_v}"), None => println("none"), }
+            match e { Option.Some(e_v) => println(f"some {e_v}"), Option.None => println("none"), }
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

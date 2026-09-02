@@ -18,8 +18,8 @@ impl Closable for TestHandle {
 fn main() {
     let handle = TestHandle { id: 7 };
     match handle.close() {
-        Err(CloseError.AlreadyClosed) => println("closable:AlreadyClosed"),
-        Err(CloseError.Io(_)) => println("closable:Io"),
-        Ok(_) => println("closable:Ok"),
+        .Err(CloseError.AlreadyClosed) => println("closable:AlreadyClosed"),
+        .Err(CloseError.Io(_)) => println("closable:Io"),
+        .Ok(_) => println("closable:Ok"),
     }
 }

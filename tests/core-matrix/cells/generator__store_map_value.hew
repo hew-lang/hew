@@ -13,6 +13,6 @@ fn main() {
             }
             println(f"sum {e_sum}");
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

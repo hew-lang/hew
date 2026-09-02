@@ -4,7 +4,7 @@ fn main() {
     values.push(20);
     println(values.len());
     match values.get(1) {
-        Some(v) => println(v),
-        None => println(-1),
+        .Some(v) => println(v),
+        .None => println(-1),
     }
 }

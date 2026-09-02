@@ -17,12 +17,12 @@ fn main() {
     let adder = spawn Adder(calls: 0);
     let sum = await adder.compute(3, 4);
     match sum {
-        Ok(v) => println(f"sum={v}"),
-        Err(_) => println("compute failed"),
+        .Ok(v) => println(f"sum={v}"),
+        .Err(_) => println("compute failed"),
     }
     let tag = await adder.describe("call", 41);
     match tag {
-        Ok(t) => println(t),
-        Err(_) => println("describe failed"),
+        .Ok(t) => println(t),
+        .Err(_) => println("describe failed"),
     }
 }

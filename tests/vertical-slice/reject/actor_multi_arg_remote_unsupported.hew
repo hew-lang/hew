@@ -25,7 +25,7 @@ fn main() {
     let peer: RemotePid<Echo>;
     let reply: Result<i64, AskError> = peer.ask(7, 100);
     match reply {
-        Ok(v) => println(f"answer={v}"),
-        Err(_) => println("ask failed"),
+        .Ok(v) => println(f"answer={v}"),
+        .Err(_) => println("ask failed"),
     }
 }

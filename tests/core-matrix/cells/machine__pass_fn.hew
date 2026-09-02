@@ -10,8 +10,8 @@ machine Counter {
 
 fn use_it(v: Counter) {
     match v {
-        Zero => println("zero"),
-        NonZero { value } => println(f"n {value}"),
+        .Zero => println("zero"),
+        .NonZero { value } => println(f"n {value}"),
     }
 }
 

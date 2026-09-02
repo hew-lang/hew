@@ -30,7 +30,7 @@ fn main() {
     s.note(left, right);
     let r = await s.fence();
     match r {
-        Ok(v) => println(f"fence total={v}"),
-        Err(_) => println("fence failed"),
+        .Ok(v) => println(f"fence total={v}"),
+        .Err(_) => println("fence failed"),
     }
 }

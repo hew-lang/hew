@@ -44,8 +44,8 @@ fn main() -> i64 {
     // Confirm member 0 is Live with its init value before the crash.
     let m0 = sup.workers[0];
     match await m0.get_value() {
-        Err(_) => { return 0; },
-        Ok(v) => {
+        .Err(_) => { return 0; },
+        .Ok(v) => {
             if v != 7 {
                 return 0;
             }
@@ -69,7 +69,7 @@ fn main() -> i64 {
     // the restarted actor. A Transient slot would trap (exit 133).
     let m0b = sup.workers[0];
     match await m0b.get_value() {
-        Ok(v) => v,
-        Err(_) => 0,
+        .Ok(v) => v,
+        .Err(_) => 0,
     }
 }

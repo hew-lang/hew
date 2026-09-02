@@ -50,10 +50,10 @@ fn string_loop() -> i64 {
     var i = 0;
     while i < 6 {
         match produce(i) {
-            Ok(s) => {
+            .Ok(s) => {
                 oks = oks + s.len();
             },
-            Err(e) => {
+            .Err(e) => {
                 errs = errs + e.len();
             },
         }
@@ -67,10 +67,10 @@ fn bytes_loop() -> i64 {
     var i = 0;
     while i < 5 {
         match produce_bytes(i) {
-            Ok(b) => {
+            .Ok(b) => {
                 total = total + b.len();
             },
-            Err(e) => {
+            .Err(e) => {
                 total = total - e.len();
             },
         }

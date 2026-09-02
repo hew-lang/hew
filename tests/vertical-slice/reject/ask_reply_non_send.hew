@@ -24,8 +24,8 @@ actor Consumer {
     let p: LocalPid<Producer>;
     receive fn run(unused: i64) {
         match await p.make() {
-            Ok(x) => {},
-            Err(e) => {},
+            .Ok(x) => {},
+            .Err(e) => {},
         }
     }
 }

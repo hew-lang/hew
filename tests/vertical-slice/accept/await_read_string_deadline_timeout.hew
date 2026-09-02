@@ -17,8 +17,8 @@ actor Reader {
         sleep(100ms);
         let conn = net.connect(f"127.0.0.1:{port}");
         let code = match await conn.read_string() | after 60ms {
-            Ok(_body) => 42,
-            Err(e) => {
+            .Ok(_body) => 42,
+            .Err(e) => {
                 match e {
                     NetError.TimedOut(_code) => 7,
                     _ => 8,

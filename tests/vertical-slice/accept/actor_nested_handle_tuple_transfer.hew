@@ -19,8 +19,8 @@ actor Worker {
     receive fn deliver(pair: (channel.Receiver<string>, string)) {
         let (rx, tag) = pair;
         let msg = match rx.recv() {
-            Some(s) => s,
-            None => "empty",
+            .Some(s) => s,
+            .None => "empty",
         };
         println(f"worker got {tag}: {msg}");
         rx.close();

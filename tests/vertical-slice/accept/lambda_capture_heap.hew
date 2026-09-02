@@ -12,13 +12,13 @@ fn main() {
     let greet = actor |name: string| -> string { f"{greeting}, {name}" };
     let a = greet("ada");
     match a {
-        Ok(s) => println(s),
-        Err(_) => println("ask failed"),
+        .Ok(s) => println(s),
+        .Err(_) => println("ask failed"),
     }
     let b = greet("alan");
     match b {
-        Ok(s) => println(s),
-        Err(_) => println("ask failed"),
+        .Ok(s) => println(s),
+        .Err(_) => println("ask failed"),
     }
     println(f"caller still owns: {greeting}");
 }

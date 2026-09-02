@@ -1,5 +1,5 @@
 fn use_it(v: Result<i64, string>) {
-    match v { Result.Ok(v_v) => println(f"ok {v_v}"), Err(v_e) => println(f"err {v_e}"), }
+    match v { Result.Ok(v_v) => println(f"ok {v_v}"), Result.Err(v_e) => println(f"err {v_e}"), }
 }
 
 fn main() {

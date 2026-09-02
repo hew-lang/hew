@@ -16,8 +16,8 @@ actor Slow {
         let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
         // `tx` stays in scope (never sent / closed) so the recv parks forever.
         let parked = match await rx.recv() {
-            Some(v) => v,
-            None => -1,
+            .Some(v) => v,
+            .None => -1,
         };
         let _ = tx;
         parked
@@ -28,8 +28,8 @@ actor Caller {
     receive fn go() -> i64 {
         let s = spawn Slow;
         match await s.block() | after 60ms {
-            Ok(v) => v,
-            Err(_e) => 7,
+            .Ok(v) => v,
+            .Err(_e) => 7,
         }
     }
 }
@@ -37,7 +37,7 @@ actor Caller {
 fn main() -> i64 {
     let c = spawn Caller;
     match await c.go() {
-        Ok(v) => v,
-        Err(_e) => 99,
+        .Ok(v) => v,
+        .Err(_e) => 99,
     }
 }

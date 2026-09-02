@@ -13,13 +13,13 @@ actor Worker {
         let got: Result<Option<string>, TimeoutError> = await rx.recv() | after 5000ms;
         let _ = tx;
         match got {
-            Ok(inner) => {
+            .Ok(inner) => {
                 match inner {
-                    Some(_s) => 3,
-                    None => -1,
+                    .Some(_s) => 3,
+                    .None => -1,
                 }
             },
-            Err(_) => -2,
+            .Err(_) => -2,
         }
     }
 }
@@ -27,7 +27,7 @@ actor Worker {
 fn main() -> i64 {
     let w = spawn Worker;
     match await w.run() {
-        Ok(v) => v,
-        Err(_e) => 99,
+        .Ok(v) => v,
+        .Err(_e) => 99,
     }
 }

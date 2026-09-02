@@ -15,12 +15,12 @@ fn main() -> i64 {
     let frame = helper(input);
     let _ = sink;
     match frame {
-        Ok(inner) => {
+        .Ok(inner) => {
             match inner {
-                Some(_s) => 1,
-                None => -1,
+                .Some(_s) => 1,
+                .None => -1,
             }
         },
-        Err(_) => -2,
+        .Err(_) => -2,
     }
 }

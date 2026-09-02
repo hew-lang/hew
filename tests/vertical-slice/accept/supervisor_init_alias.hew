@@ -21,7 +21,7 @@ fn main() {
     let sup = spawn App(config: cfg);
     let t = sup.t;
     match await t.name_len() {
-        Ok(n) => println(n),
-        Err(_) => println(-1),
+        .Ok(n) => println(n),
+        .Err(_) => println(-1),
     }
 }

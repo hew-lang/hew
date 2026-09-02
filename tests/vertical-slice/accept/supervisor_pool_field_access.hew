@@ -20,41 +20,41 @@ fn main() -> i64 {
 
     let indexed = workers[1];
     match await indexed.id() {
-        Ok(value) => {
+        .Ok(value) => {
             if value != 7 {
                 return 1;
             }
             total = total + value;
         },
-        Err(_) => {
+        .Err(_) => {
             return 2;
         },
     }
 
     match workers.get(2) {
-        Some(worker) => {
+        .Some(worker) => {
             match await worker.id() {
-                Ok(value) => {
+                .Ok(value) => {
                     if value != 7 {
                         return 3;
                     }
                     total = total + value;
                 },
-                Err(_) => {
+                .Err(_) => {
                     return 4;
                 },
             }
         },
-        None => {
+        .None => {
             return 5;
         },
     }
 
     match workers.get(3) {
-        Some(_) => {
+        .Some(_) => {
             return 6;
         },
-        None => {
+        .None => {
             total = total + 20;
         },
     }

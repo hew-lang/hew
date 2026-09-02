@@ -17,7 +17,7 @@ fn make() -> Counter {
 fn main() {
     let x = make();
     match x {
-        Zero => println("zero"),
-        NonZero { value } => println(f"n {value}"),
+        .Zero => println("zero"),
+        .NonZero { value } => println(f"n {value}"),
     }
 }

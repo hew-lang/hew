@@ -60,14 +60,14 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
         var found: Option<A> = None;
         loop {
             match inner.next() {
-                Some(x) => {
+                .Some(x) => {
                     if (self.pred)(x) {
                         found = Some(x);
                         break;
                     }
                     // x rejected: string dropped here (RAII, exactly once)
                 },
-                None => {
+                .None => {
                     break;
                 },
             }
@@ -94,10 +94,10 @@ where
     var iter = it;
     loop {
         match iter.next() {
-            Some(_) => {
+            .Some(_) => {
                 n = n + 1;
             },
-            None => {
+            .None => {
                 break;
             },
         }

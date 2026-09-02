@@ -22,7 +22,7 @@ fn main() {
     tx.send(v);
     tx.close();
     match rx.try_recv() {
-        Some(item) => println(item.len()),
+        .Some(item) => println(item.len()),
         None => println("drained"),
     }
     println("done");

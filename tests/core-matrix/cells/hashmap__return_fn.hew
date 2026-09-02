@@ -8,6 +8,6 @@ fn make() -> HashMap<string, i64> {
 fn main() {
     let x = make();
     let x_l = x.len();
-    let x_a = match x.get("a") { Option.Some(x_g) => x_g, None => -1, };
+    let x_a = match x.get("a") { Option.Some(x_g) => x_g, Option.None => -1, };
     println(f"len={x_l} a={x_a}");
 }

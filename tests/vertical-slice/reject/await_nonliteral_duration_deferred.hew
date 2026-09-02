@@ -19,8 +19,8 @@ actor Caller {
         let f = spawn Fast;
         let d = 50ms;
         match await f.answer() | after d {
-            Ok(v) => v,
-            Err(_e) => 7,
+            .Ok(v) => v,
+            .Err(_e) => 7,
         }
     }
 }
@@ -28,7 +28,7 @@ actor Caller {
 fn main() -> i64 {
     let c = spawn Caller;
     match await c.go() {
-        Ok(v) => v,
-        Err(_e) => 99,
+        .Ok(v) => v,
+        .Err(_e) => 99,
     }
 }

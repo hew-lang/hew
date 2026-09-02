@@ -14,8 +14,8 @@ fn sum_all(v: Vec<i64>) -> i64 {
     var total: i64 = 0;
     loop {
         let n = match v.get(i) {
-            Some(x) => x,
-            None => break,
+            .Some(x) => x,
+            .None => break,
         };
         total = total + n;
         i = i + 1;

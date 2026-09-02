@@ -11,7 +11,7 @@ fn main() -> i64 {
     let p = Point { x: 40, y: 2 };
     let y = p.to_yaml();
     match Point.from_yaml(y) {
-        Ok(back) => back.x + back.y,
-        Err(_) => 1,
+        .Ok(back) => back.x + back.y,
+        .Err(_) => 1,
     }
 }

@@ -21,20 +21,20 @@ fn main() -> i64 {
     // Collision: equal by every field => overwrite the existing slot's value.
     m.insert(Person { name: "bob", age: 25 }, 99);
     let a30 = match m.get(Person { name: "alice", age: 30 }) {
-        Some(v) => v,
-        None => -1,
+        .Some(v) => v,
+        .None => -1,
     };
     let a31 = match m.get(Person { name: "alice", age: 31 }) {
-        Some(v) => v,
-        None => -1,
+        .Some(v) => v,
+        .None => -1,
     };
     let b = match m.get(Person { name: "bob", age: 25 }) {
-        Some(v) => v,
-        None => -1,
+        .Some(v) => v,
+        .None => -1,
     };
     let missing = match m.get(Person { name: "carol", age: 0 }) {
-        Some(v) => v,
-        None => -1,
+        .Some(v) => v,
+        .None => -1,
     };
     if a30 != 1 {
         return 10;
@@ -59,7 +59,7 @@ fn main() -> i64 {
         return 21;
     }
     match m.get(Person { name: "alice", age: 30 }) {
-        Some(_) => 22,
-        None => 0,
+        .Some(_) => 22,
+        .None => 0,
     }
 }

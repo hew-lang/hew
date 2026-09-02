@@ -21,11 +21,11 @@ fn main() {
     let ws_listen: Result<websocket.Server, net.NetError> = websocket.listen("127.0.0.1:0");
     var ws_port: i64 = 0;
     match ws_listen {
-        Ok(ws_server) => {
+        .Ok(ws_server) => {
             ws_port = ws_server.port();
             ws_server.close();
         },
-        Err(_err) => {},
+        .Err(_err) => {},
     }
     let timeout_ms: i64 = 1500;
     let conn: net.Connection = net.connect_timeout("127.0.0.1:8080", 1, 500000);

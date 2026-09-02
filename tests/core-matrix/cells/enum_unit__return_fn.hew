@@ -10,5 +10,5 @@ fn make() -> Colour {
 
 fn main() {
     let x = make();
-    match x { Red => println("Red"), Green => println("Green"), }
+    match x { .Red => println("Red"), .Green => println("Green"), }
 }

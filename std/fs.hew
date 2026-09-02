@@ -126,21 +126,24 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
     }
 }
 
-/// Print an `IoError`'s variant name and raw OS errno.
-///
-/// For network errors see `impl Display for net.NetError` in `std.net`.
-///
-/// ```
-/// import std.fs;
-///
-/// fn main() {
-///     let result: Result<i64, fs.IoError> = fs.try_delete("/tmp/scratch-file");
-///     match result {
-///         .Err(e) => panic(f"operation failed: {e}"),
-///         .Ok(_) => {},
-///     }
-/// }
-/// ```
+// Print an `IoError`'s variant name and raw OS errno.
+//
+// For network errors see `impl Display for net.NetError` in `std.net`.
+//
+// ```
+// import std.fs;
+//
+// fn main() {
+//     let result: Result<i64, fs.IoError> = fs.try_delete("/tmp/scratch-file");
+//     match result {
+//         .Err(e) => panic(f"operation failed: {e}"),
+//         .Ok(_) => {},
+//     }
+// }
+// ```
+//
+// Plain `//`, not `///`: `hew fmt` deletes a doc comment immediately
+// preceding an `impl` block. Restore `///` once hew-lang/hew#3238 lands.
 impl Display for IoError {
     fn fmt(e: IoError) -> string {
         match e {

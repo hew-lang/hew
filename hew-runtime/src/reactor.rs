@@ -294,7 +294,9 @@ fn fire_detach_post_evict_hook() {
 /// discriminator on its own: it comes from a single monotonic allocator that
 /// starts at 1 and refuses past `MAX_SPAWN_SERIAL` rather than wrapping
 /// (`actor::take_actor_serial`), so no two incarnations in a process ever share
-/// one and `0` can name none. Carrying the `actor_id` half as well would add
+/// one and `0` can name none. Stub actors allocate from a disjoint high base
+/// (`test_actor::next_stub_spawn_serial`) to hold that property under test.
+/// Carrying the `actor_id` half as well would add
 /// nothing but a second word, and a two-word guard cannot be published or
 /// probed atomically — a torn read would let a teardown conclude "not my
 /// incarnation" and free the box under an in-flight delivery.

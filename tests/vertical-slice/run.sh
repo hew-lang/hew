@@ -6163,6 +6163,89 @@ run_accept_expect_stdout "carrier_transfer_sibling_path_release"
 # authority its own callee still owes a release for.
 run_accept_expect_stdout "closure_arg_borrows_carrier_param"
 
+# Known v0.6.0 limits (D342/#3226): an owned leaf moved out of an aggregate
+# the program still holds is released twice by the current lowerer — once by
+# its new owner, once by the parent's composite drop — because the lowerer
+# ends the whole owner generation instead of clearing the exact leaf's slot.
+# `hew check` admits every shape below. These are registered as documented
+# fail-closed limits, not fixed here; each ratchet fails loudly the moment the
+# real behaviour changes, which is the signal to replace it with a plain
+# run_accept_expect_stdout and delete the ratchet.
+#
+# The exact exit codes pinned below (134 SIGABRT from glibc's `free(): invalid
+# pointer`, 139 SIGSEGV) are this corruption's signature under glibc, not a
+# platform-independent contract: the existing #3124 row in
+# scripts/nextest-expected-failures.tsv already excludes FreeBSD for the same
+# shape, and this file's own `run_compiled_binary` carries a separate non-Linux
+# branch. Pin these three only where they were characterized; the fixtures
+# still compile and run everywhere, but only Linux's allocator behaviour is
+# proven here.
+if [[ "$(uname -s)" == "Linux" ]]; then
+
+    # Nested aggregate payload (record or tuple) destructured out of an inline
+    # enum field: stdout is correct (the destructure itself is fine), but the
+    # parent's teardown then double-frees the payload it already handed to the
+    # binder (#3168 under #3226).
+    run_accept_expect_status "match_nested_aggregate_payload_owner" 134
+    if diff -u "${ROOT}/tests/vertical-slice/accept/match_nested_aggregate_payload_owner.expected" \
+        "${stdout_output}" >/dev/null; then
+        echo "KNOWN match_nested_aggregate_payload_owner (#3226: nested aggregate payload double-frees at teardown)"
+    else
+        echo "match_nested_aggregate_payload_owner: #3226 changed from the exact stdout-then-abort failure" >&2
+        diff -u "${ROOT}/tests/vertical-slice/accept/match_nested_aggregate_payload_owner.expected" "${stdout_output}" >&2 || true
+        exit 1
+    fi
+
+    # Tuple element read out of a record field (`r.pair.0`): stdout is correct,
+    # the record's remaining field is released once, but the composite drop then
+    # reads freed memory at teardown and segfaults (#3124 under #3226).
+    run_accept_expect_status "projected_tuple_element_owner" 139
+    if diff -u "${ROOT}/tests/vertical-slice/accept/projected_tuple_element_owner.expected" \
+        "${stdout_output}" >/dev/null; then
+        echo "KNOWN projected_tuple_element_owner (#3226: tuple-element projection segfaults at teardown)"
+    else
+        echo "projected_tuple_element_owner: #3226 changed from the exact stdout-then-segfault failure" >&2
+        diff -u "${ROOT}/tests/vertical-slice/accept/projected_tuple_element_owner.expected" "${stdout_output}" >&2 || true
+        exit 1
+    fi
+
+    # A payload destructured out of an inline enum field of a BY-VALUE parameter
+    # (`fn take(p: Pair) { match p.value { .Some(v) => v, ... } }`): the caller
+    # hands the callee its live record instead of a copy, so the binder and the
+    # caller's drop race on the same allocation. `taken.len()` reads memory the
+    # parent has already begun to release, so its VALUE is undefined (observed:
+    # garbage i64, not a crash) — only the six deterministic lines and the
+    # terminal abort are pinned here (#3156 under #3226).
+    run_accept_expect_status "match_param_field_payload_carrier" 134
+    match_param_field_payload_carrier_lines=()
+    while IFS= read -r match_param_field_payload_carrier_line; do
+        match_param_field_payload_carrier_lines+=("${match_param_field_payload_carrier_line}")
+    done <"${stdout_output}"
+    if [[ "${#match_param_field_payload_carrier_lines[@]}" -ne 7 ]]; then
+        echo "match_param_field_payload_carrier: #3226 expected 7 stdout lines, got ${#match_param_field_payload_carrier_lines[@]}" >&2
+        cat "${stdout_output}" >&2
+        exit 1
+    fi
+    if [[ "${match_param_field_payload_carrier_lines[0]}" != "15" ||
+        "${match_param_field_payload_carrier_lines[1]}" != "3" ||
+        "${match_param_field_payload_carrier_lines[3]}" != "15" ||
+        "${match_param_field_payload_carrier_lines[4]}" != "0" ||
+        "${match_param_field_payload_carrier_lines[5]}" != "0" ||
+        "${match_param_field_payload_carrier_lines[6]}" != "9" ]]; then
+        echo "match_param_field_payload_carrier: #3226 changed from the known partial-output failure" >&2
+        cat "${stdout_output}" >&2
+        exit 1
+    fi
+    if [[ "${match_param_field_payload_carrier_lines[2]}" == "3" ]]; then
+        echo "match_param_field_payload_carrier: #3226 may be fixed (line 3 now reads 3); verify and remove this ratchet" >&2
+        exit 1
+    fi
+    echo "KNOWN match_param_field_payload_carrier (#3226: use-after-free read then double-free abort on a by-value parameter's inline enum field)"
+
+else
+    echo "SKIP match_nested_aggregate_payload_owner, projected_tuple_element_owner, match_param_field_payload_carrier (#3226: glibc-specific abort/segv signature not characterized on $(uname -s))"
+fi
+
 # The index-assignment move is decided by the argument's own use: an earlier
 # consume of the same binding elsewhere in the loop body neither hides nor
 # duplicates it.

@@ -1,0 +1,11 @@
+// Accept fixture: negative control for E_GEN_RETURN_SPELLING. A `gen fn`
+// return type naming the yield type `Y` directly (not the `Generator<Y, R>`
+// handle) is the accepted spelling (HEW-SPEC-2026 §4.12) and must type-check
+// cleanly.
+gen fn counter() -> i64 {
+    yield 1;
+}
+
+fn main() {
+    let _g = counter();
+}

@@ -3150,6 +3150,17 @@ fn parse_let_expr(source: &str) -> Expr {
     expr.clone()
 }
 
+/// Parses a statement-position `scope { .. };` inside `fn main` and returns the
+/// scope block's own body. `scope` is not a `Primary`, so a scope body is only
+/// reachable through a statement.
+fn parse_scope_stmt_body(source: &str) -> Block {
+    let body = parse_main_body(source);
+    let Stmt::Expression((Expr::Scope { body: inner }, _)) = &body.stmts[0].0 else {
+        panic!("expected scope statement: {:?}", body.stmts[0]);
+    };
+    inner.clone()
+}
+
 fn parse_main_body(source: &str) -> Block {
     let full = format!("fn main() {{ {source} }}");
     let result = parse(&full);
@@ -3401,8 +3412,13 @@ fn parse_block_still_works() {
 }
 
 #[test]
-fn scope_keyword_emits_scope_ast_variant() {
-    let expr = parse_let_expr("scope { 1 }");
+fn scope_statement_emits_scope_ast_variant() {
+    // `scope { .. }` is a statement, so the AST variant is reached through a
+    // statement-expression, never a `let` initialiser (HEW-SPEC-2026 §4.2).
+    let body = parse_main_body("scope { 1 };");
+    let Stmt::Expression((expr, _)) = &body.stmts[0].0 else {
+        panic!("expected statement-expression: {:?}", body.stmts[0]);
+    };
     assert!(
         matches!(expr, Expr::Scope { .. }),
         "expected Scope, got {expr:?}"
@@ -3410,17 +3426,25 @@ fn scope_keyword_emits_scope_ast_variant() {
 }
 
 #[test]
+fn scope_in_let_initialiser_is_refused() {
+    // Negative control for the test above: `scope` out of `Primary` means the
+    // value position is closed, not that the statement spelling moved.
+    let result = parse("fn main() { let r = scope { 1 }; }");
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SCOPE_IS_STATEMENT")),
+        "expected E_SCOPE_IS_STATEMENT, got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
 fn parser_scope_block_distinct_from_fork_child() {
-    let body = parse_main_body("let block = scope { 1 };\nscope { fork child = run(); };\n");
-    let Stmt::Let {
-        value: Some((Expr::Scope { .. }, _)),
-        ..
-    } = &body.stmts[0].0
-    else {
-        panic!(
-            "expected let binding to use scope block: {:?}",
-            body.stmts[0]
-        );
+    let body = parse_main_body("scope { 1 };\nscope { fork child = run(); };\n");
+    let Stmt::Expression((Expr::Scope { .. }, _)) = &body.stmts[0].0 else {
+        panic!("expected scope statement: {:?}", body.stmts[0]);
     };
     let Stmt::Expression((Expr::Scope { body: inner }, _)) = &body.stmts[1].0 else {
         panic!("expected outer scope block: {:?}", body.stmts[1]);
@@ -3461,10 +3485,7 @@ fn parse_fork_child_bare() {
 
 #[test]
 fn parse_nested_scope_block_and_child() {
-    let expr = parse_let_expr("scope { fork run(); fork child = work(); child }");
-    let Expr::Scope { body } = expr else {
-        panic!("expected scope block");
-    };
+    let body = parse_scope_stmt_body("scope { fork run(); fork child = work(); child };");
     assert_eq!(body.stmts.len(), 2, "expected two child statements");
     assert!(matches!(
         &body.stmts[0].0,
@@ -3488,10 +3509,7 @@ fn parse_nested_scope_block_and_child() {
 
 #[test]
 fn parse_scope_fork_block_after_deadline() {
-    let expr = parse_let_expr("scope { fork { long_op(); } after(5s) { } }");
-    let Expr::Scope { body } = expr else {
-        panic!("expected scope block");
-    };
+    let body = parse_scope_stmt_body("scope { fork { long_op(); } after(5s) { } };");
     assert_eq!(body.stmts.len(), 2, "expected fork block and deadline");
     let Stmt::Expression((Expr::ForkBlock { body: fork_body }, _)) = &body.stmts[0].0 else {
         panic!("expected fork block: {:?}", body.stmts[0]);

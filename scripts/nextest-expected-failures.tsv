@@ -134,3 +134,9 @@ macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consum
 macos	failure	hew-cli::vec_iter_method_escape_leak_oracle	iter_source_freed_under_cursor_no_uaf_under_malloc_scribble	#3120 makes Vec iterator cleanup path-sensitive
 macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	arena_insert_remove_param_embed_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees
 linux	failure	hew-cli::coro_thread_fence_e2e	fork_children_create_no_os_threads	P4-CONCURRENCY: fork bodies run on OS threads until CORO lands
+linux,macos,windows	failure	hew-cli::run_e2e	run_bound_tuple_field_close_drops_each_handle_once	#3070 closes a composite's resource leaf exactly once
+linux,macos,windows	failure	hew-cli::run_e2e	run_record_resource_fields_both_closed_close_once_each	#3070 closes a composite's resource leaf exactly once
+linux,macos,windows	failure	hew-cli::run_e2e	run_record_resource_field_partial_close_leaks_the_sibling	#3070 closes a composite's resource leaf exactly once
+linux,macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_field_read_closes_once	#3070 closes a composite's resource leaf exactly once
+linux,macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_untouched_binder_closes_once	#3070 closes a composite's resource leaf exactly once
+linux,macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_wildcard_arm_closes_once	#3070 closes a composite's resource leaf exactly once

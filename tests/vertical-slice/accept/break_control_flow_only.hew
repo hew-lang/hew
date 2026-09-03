@@ -1,0 +1,51 @@
+// Accept twin for reject/break_value_operand.hew.
+//
+// Refusing `break expr;` must not narrow where `break` may be written. All
+// three spellings that carry no operand stay legal: a bare `break` ending a
+// `loop`, a labelled `break @outer` leaving a nested `for`, and a `break` as a
+// match-arm body, where its `!` type unifies with the other arm
+// (HEW-SPEC-2026 §12.4).
+
+fn first_multiple(step: i64, limit: i64) -> i64 {
+    var found: i64 = -1;
+    var i: i64 = 1;
+    loop {
+        if i * step > limit {
+            break;
+        }
+        found = i * step;
+        i = i + 1;
+    }
+    return found;
+}
+
+fn grid_hit(rows: i64, cols: i64) -> i64 {
+    var hit: i64 = -1;
+    @outer: for r in 0..rows {
+        for c in 0..cols {
+            if r * cols + c == 5 {
+                hit = r * 10 + c;
+                break @outer;
+            }
+        }
+    }
+    return hit;
+}
+
+fn arm_break() -> i64 {
+    var seen: i64 = 0;
+    loop {
+        seen = seen + 1;
+        match seen {
+            3 => break,
+            _ => (),
+        }
+    }
+    return seen;
+}
+
+fn main() {
+    println(f"multiple={first_multiple(3, 10)}");
+    println(f"hit={grid_hit(3, 4)}");
+    println(f"arm={arm_break()}");
+}

@@ -759,9 +759,6 @@ pub enum TypeErrorKind {
     /// A resolved path member exists, but not in the syntactic namespace the
     /// expression requires.
     PathKindMismatch,
-    /// Two owner-qualified generic types collapse to the same bare
-    /// monomorphisation key but require incompatible concrete layouts.
-    GenericLayoutCollision,
     /// Value cannot be sent to another actor
     InvalidSend,
     /// Operation not supported for this type
@@ -1488,7 +1485,6 @@ impl TypeErrorKind {
             Self::PathMemberNotFound => "E_PATH_MEMBER_NOT_FOUND",
             Self::AssocItemAmbiguous => "E_ASSOC_ITEM_AMBIGUOUS",
             Self::PathKindMismatch => "E_PATH_KIND_MISMATCH",
-            Self::GenericLayoutCollision => "GenericLayoutCollision",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
             Self::ConstInitializer => "E_CONST_INITIALIZER",

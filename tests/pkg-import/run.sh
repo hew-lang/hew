@@ -94,6 +94,14 @@ fixtures=(
     # only imported-origin + generic-mono hits the qualified key. Output "7"
     # proves the mono instance classified BitCopy and the field read lowered.
     imported_generic_valueclass
+    # The TWO-module shape of the same question (#2653): `hew::keyleft` and
+    # `hew::keyright` each declare a generic value record named `Key<T>` with a
+    # DIFFERENT payload (`i64` vs `string`), both instantiated at `i32`. Layout
+    # identity is declaration identity, so each gets its own module-qualified
+    # layout and codegen symbol and each field read returns its own module's
+    # payload. The symbol-level block below pins both qualified symbols and the
+    # absence of a shared bare `Key$$i32`.
+    two_module_same_generic_valueclass_accept
     # A module-PRIVATE generic record (`Slot<T>`) used only as the element of a
     # pub `Store<T>`'s `Vec<Slot<T>>`, monomorphised across the module boundary to
     # a `string` payload (#2755). The private generic record never becomes an
@@ -1053,43 +1061,71 @@ if ! grep -q 'affineclone.ResourceToken.*#\[resource\]' <<<"${qualified_affine_c
 fi
 echo "PASS ${qualified_affine_clone_reject}"
 
-# KNOWN-GAP REJECT PIN (#2653) — the boundary of the #2744 fix, NOT a
-# desired-behaviour test.
-#
-# The #2744 fix (imported single-module generic value record → resolves its
-# BitCopy value class; see `imported_generic_valueclass` above) closes the
-# common case. Its boundary is the two-module collision: TWO imported modules
-# each defining a generic value record named `Key<T>` with DIFFERENT payload
-# types (`keyleft.Key<T>.v: i64` vs `keyright.Key<T>.v: string`) both
-# monomorphise to the bare mangled symbol `Key$$i32`, so the two distinct
-# layouts collide on identity. That is the qualified-mono-identity gap tracked
-# by #2653 (layout mangling keys on the bare origin name, not the
-# module-qualified definition identity), a cross-layer reshape out of scope for
-# #2744.
-#
-# This pin asserts the collision fails CLOSED with a checker-level diagnostic
-# that names both modules, the concrete type, and the available resolution.
-# When #2653 lands, this program becomes VALID (each `Key<T>` resolves to its
-# own module's instantiation) and this pin flips to a compile+run oracle —
-# update it then, do not delete it.
-two_module_generic_reject="two_module_same_generic_valueclass_reject"
-two_module_generic_reject_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${two_module_generic_reject}.hew" 2>&1)" && {
-    echo "FAIL ${two_module_generic_reject}: hew check unexpectedly succeeded — the #2653 two-module same-name generic collision must fail closed until #2653 lands" >&2
-    echo "${two_module_generic_reject_out}" >&2
+# Symbol-level oracle for the two-module same-name generic layout (#2653). The
+# `fixtures` loop above already proves `two_module_same_generic_valueclass_accept`
+# runs and prints each module's own payload; this block proves the runtime
+# answer comes from two SEPARATE layouts rather than one shared symbol that
+# happens to read compatibly. Each declaration must carry its owner module into
+# the mangled layout key, so the emitted IR names `hew$keyleft$Key$$i32` and
+# `hew$keyright$Key$$i32` and never the bare `Key$$i32` a name-keyed mangle
+# would produce.
+two_module_generic_accept="two_module_same_generic_valueclass_accept"
+two_module_generic_ir_dir="${ROOT}/.tmp/pkg-import-two-module-generic"
+rm -rf "${two_module_generic_ir_dir}"
+mkdir -p "${two_module_generic_ir_dir}"
+if ! "${HEW}" build --pkg-path "${PKGS}" --emit-llvm \
+    -o "${two_module_generic_ir_dir}/${two_module_generic_accept}" \
+    "${DIR}/${two_module_generic_accept}.hew" >/dev/null 2>&1; then
+    echo "FAIL ${two_module_generic_accept}: --emit-llvm build failed" >&2
+    rm -rf "${two_module_generic_ir_dir}"
+    exit 1
+fi
+two_module_generic_ir="${two_module_generic_ir_dir}/${two_module_generic_accept}.ll"
+for owner in keyleft keyright; do
+    if ! grep -Fq "hew\$${owner}\$Key\$\$i32" "${two_module_generic_ir}"; then
+        echo "FAIL ${two_module_generic_accept}: emitted IR lost the module-qualified layout symbol for hew::${owner}" >&2
+        rm -rf "${two_module_generic_ir_dir}"
+        exit 1
+    fi
+done
+if grep -Eq "(^|[^\$a-zA-Z0-9_])Key\\\$\\\$i32" "${two_module_generic_ir}"; then
+    echo "FAIL ${two_module_generic_accept}: emitted IR carries an unqualified Key\$\$i32 layout symbol — the two declarations collapsed onto one identity" >&2
+    rm -rf "${two_module_generic_ir_dir}"
+    exit 1
+fi
+rm -rf "${two_module_generic_ir_dir}"
+echo "PASS ${two_module_generic_accept} (qualified layout symbols)"
+
+# Negative control for the same identity: the two `Key<T>` declarations stay
+# DISTINCT types, so assigning one module's constructor result to the other
+# module's annotation is a type error. Without this, "both symbols present"
+# could coexist with the checker silently conflating the two nominals.
+two_module_generic_mix="${ROOT}/.tmp/pkg-import-two-module-generic-mix.hew"
+cat >"${two_module_generic_mix}" <<'MIXEOF'
+import hew.keyleft;
+
+import hew.keyright;
+
+fn main() {
+    let a: keyleft.Key<i32> = keyright.mk("hello");
+    println(a.v);
+}
+MIXEOF
+two_module_generic_mix_out="$("${HEW}" check --pkg-path "${PKGS}" "${two_module_generic_mix}" 2>&1)" && {
+    echo "FAIL two_module_same_generic_mixed_owner: hew check accepted a keyright.Key<i32> value under a keyleft.Key<i32> annotation" >&2
+    echo "${two_module_generic_mix_out}" >&2
+    rm -f "${two_module_generic_mix}"
     exit 1
 }
-two_module_generic_diagnostic="generic type layout collision for \`Key<i32>\`: modules \`hew.keyleft\` and \`hew.keyright\` export incompatible layouts for \`Key\`; rename one type, or use a qualified/aliased import to select one definition"
-if ! grep -Fq "${two_module_generic_diagnostic}" <<<"${two_module_generic_reject_out}"; then
-    echo "FAIL ${two_module_generic_reject}: expected the clear checker-level same-name generic collision diagnostic (#2653 known gap)" >&2
-    echo "${two_module_generic_reject_out}" >&2
+if ! grep -q "keyleft.Key" <<<"${two_module_generic_mix_out}" ||
+    ! grep -q "keyright.Key" <<<"${two_module_generic_mix_out}"; then
+    echo "FAIL two_module_same_generic_mixed_owner: the mismatch diagnostic lost one of the two module-qualified identities" >&2
+    echo "${two_module_generic_mix_out}" >&2
+    rm -f "${two_module_generic_mix}"
     exit 1
 fi
-if grep -q "E_CODEGEN_FRONT_FAIL_CLOSED" <<<"${two_module_generic_reject_out}"; then
-    echo "FAIL ${two_module_generic_reject}: collision leaked past the checker into codegen-front" >&2
-    echo "${two_module_generic_reject_out}" >&2
-    exit 1
-fi
-echo "PASS ${two_module_generic_reject}"
+rm -f "${two_module_generic_mix}"
+echo "PASS two_module_same_generic_mixed_owner"
 
 # Negative control for the package-imported machine surface (#3153): making the
 # machine reachable through the package route must not make its transition

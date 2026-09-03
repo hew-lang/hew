@@ -1071,6 +1071,24 @@ mod tests {
         );
     }
 
+    /// Layout identity is declaration identity. Two modules may each declare a
+    /// generic record with the same leaf, and their instantiations at the same
+    /// type argument must stay separate layouts — a mangle that kept only the
+    /// leaf would hand both declarations one symbol and one field shape.
+    #[test]
+    fn same_leaf_generic_records_from_different_modules_mangle_apart() {
+        let args = vec![ResolvedTy::I32];
+        let left = mangle_layout_key("hew.keyleft.Key", &args);
+        let right = mangle_layout_key("hew.keyright.Key", &args);
+
+        assert_ne!(left, right);
+        // Neither key may degrade to the leaf-only spelling a same-named
+        // declaration in a third module would also produce.
+        let bare = mangle_layout_key("Key", &args);
+        assert_ne!(left, bare);
+        assert_ne!(right, bare);
+    }
+
     #[test]
     fn synthetic_cursor_layout_keys_do_not_collide_with_user_same_leaf_records() {
         let vec_args = vec![ResolvedTy::String];

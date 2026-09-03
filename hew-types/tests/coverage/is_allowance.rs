@@ -15,6 +15,9 @@
 //!   `IdentityCompare` legality check is an unreachable backstop, not a user
 //!   diagnostic (#3108, #3134).
 //! * Cross-type mismatches collapse into `TypeErrorKind::Mismatch`.
+//! * An operand whose type is still an inference variable (a closure
+//!   parameter, settled only at the call site) is decided after unification
+//!   rather than abandoned, so the allowance set has no inference-shaped hole.
 //! * Move/consumed-self follows the existing use-after-move rule (plan §D-D4).
 //!
 //! Result type is always `bool`.
@@ -632,5 +635,82 @@ fn is_type_pattern_requires_identifier_lhs_emits_invalid_operation() {
                     .contains("type patterns currently require an identifier operand")),
         "expected InvalidOperation rejecting non-identifier LHS, got: {:#?}",
         output.errors,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// INFERRED OPERANDS: the decision survives a closure whose parameter types
+// only settle at the call site
+// ---------------------------------------------------------------------------
+
+#[test]
+fn is_on_an_enum_through_an_inferred_closure_is_rejected() {
+    // A closure's parameter types are inference variables while its body is
+    // checked, so the `is` cannot be decided in place. Abandoning it there
+    // let the program type-check and die in the codegen front on the
+    // span-less `IdentityCompare lhs must be a pointer or integer value`
+    // (#3134); the obligation is re-run after unification instead.
+    assert_has_e_is_value_type(
+        r"
+            enum Colour {
+                Red;
+                Green;
+            }
+
+            fn main() {
+                let same = |a, b| a is b;
+                let _eq: bool = same(Colour.Red, Colour.Green);
+            }
+        ",
+    );
+}
+
+#[test]
+fn is_on_a_record_through_an_inferred_closure_is_rejected() {
+    assert_has_e_is_value_type(
+        r"
+            type Point {
+                x: i64;
+            }
+
+            fn main() {
+                let same = |a, b| a is b;
+                let _eq: bool = same(Point { x: 1 }, Point { x: 2 });
+            }
+        ",
+    );
+}
+
+#[test]
+fn is_on_bytes_through_an_inferred_closure_is_accepted() {
+    // Negative control: an inferred operand is not itself the fault. Without
+    // this, rejecting every unresolved operand would also pass the two tests
+    // above.
+    assert_clean(
+        r"
+            fn main() {
+                let same = |a, b| a is b;
+                let x = bytes.new();
+                let y = bytes.new();
+                let _eq: bool = same(x, y);
+            }
+        ",
+    );
+}
+
+#[test]
+fn mismatched_handle_types_through_an_inferred_closure_are_reported() {
+    // The mismatch half of the deferred decision: both operands are
+    // identity-capable, so the rejection is the cross-type `Mismatch` rather
+    // than `E_IS_VALUE_TYPE`, and it must survive the deferral too.
+    assert_has_mismatch(
+        r"
+            fn main() {
+                let same = |a, b| a is b;
+                let v: Vec<i64> = Vec.new();
+                let b = bytes.new();
+                let _eq: bool = same(v, b);
+            }
+        ",
     );
 }

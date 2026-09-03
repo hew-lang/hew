@@ -1,0 +1,58 @@
+// ASan/LSan oracle for the projected-owned-field handoff (#3226).
+//
+// Each shape moves one owned leaf out of an aggregate the program still holds:
+// a nested record payload and a nested tuple payload bound out of an inline
+// enum field (#3168), and a tuple element read out of a record field (#3124).
+// Without the handoff the binder and the parent's composite drop release the
+// same allocation, which ASan reports as an invalid free; retiring the
+// parent's REMAINING fields instead would leak them, which LSan reports. The
+// vacant arm proves a destructure that hands out nothing leaves the parent
+// owning everything it started with. Exits 0, clean.
+import std.string;
+
+type Inner { v: Vec<i64>; }
+
+type OuterRecord {
+    other: Vec<i64>;
+    value: Option<Inner>;
+}
+
+type OuterTuple {
+    other: Vec<i64>;
+    value: Option<(Vec<i64>, i64)>;
+}
+
+type Carrier { pair: (Vec<string>, i64), tag: string }
+
+fn mk_carrier() -> Carrier {
+    let v: Vec<string> = Vec.new();
+    v.push(string.repeat("k", 48));
+    Carrier { pair: (v, 7), tag: string.repeat("y", 48) }
+}
+
+fn main() {
+    let p = OuterRecord { other: [7, 8], value: Some(Inner { v: [1, 2] }) };
+    match p.value {
+        .Some(inner) => println(inner.v[0] + inner.v[1]),
+        .None => println("none"),
+    }
+
+    let t = OuterTuple { other: [9], value: Some(([3, 4], 5)) };
+    match t.value {
+        .Some(pair) => println(pair.0[0] + pair.0[1] + pair.1),
+        .None => println("none"),
+    }
+
+    // Tuple element moved out of a record field: `items` owns the Vec and
+    // `tag` is still released once when the carrier goes out of scope.
+    let carrier = mk_carrier();
+    let items = carrier.pair.0;
+    println(items.len());
+
+    // The vacant arm hands out nothing, so the record keeps both fields.
+    let empty = OuterRecord { other: [6], value: None };
+    match empty.value {
+        .Some(inner) => println(inner.v[0]),
+        .None => println("none"),
+    }
+}

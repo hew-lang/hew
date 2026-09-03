@@ -1,0 +1,42 @@
+// Destructuring an inline enum FIELD of a by-value parameter moves that
+// payload into the arm binder. The binder's storage belongs to the caller, so
+// the callee must be handed an owned copy of the parameter and discharge what
+// it did not move; otherwise the binder and the caller's record drop release
+// the same allocation (#3156).
+type Pair {
+    other: Vec<i64>;
+    value: Option<Vec<i64>>;
+}
+
+// Carries the payload OUT of the parameter.
+fn take(p: Pair) -> Vec<i64> {
+    match p.value {
+        .Some(v) => v,
+        .None => [],
+    }
+}
+
+// Reads through the payload without carrying anything out. Nothing escapes, so
+// the caller's value is untouched either way.
+fn peek(p: Pair) -> i64 {
+    match p.value {
+        .Some(v) => v.len(),
+        .None => 0,
+    }
+}
+
+fn main() {
+    let p = Pair { other: [7, 8], value: Some([1, 2, 3]) };
+    println(p.other[0] + p.other[1]);
+    println(peek(p));
+    let taken = take(p);
+    println(taken.len());
+    // The caller's record survived the call with both fields intact.
+    println(p.other[0] + p.other[1]);
+
+    // The vacant arm hands out no payload on either side of the boundary.
+    let vacant = Pair { other: [4, 5], value: None };
+    println(peek(vacant));
+    println(take(vacant).len());
+    println(vacant.other[0] + vacant.other[1]);
+}

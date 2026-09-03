@@ -85,3 +85,15 @@ string_slice_oob_actor_isolated.hew runtime-abort      # intentional actor crash
 vec_pop_empty_actor_isolated.hew runtime-abort         # intentional actor crash: empty Vec.pop() inside a receive handler; probe survives, process exits 1
 vec_remove_layout_oob_actor_isolated.hew runtime-abort # intentional actor crash: out-of-bounds Vec.remove() on a layout-carrying element type inside a receive handler; probe survives, process exits 1
 vec_remove_oob_actor_isolated.hew runtime-abort        # intentional actor crash: out-of-bounds Vec.remove() inside a receive handler; probe survives, process exits 1
+
+# #3226: an owned field projected or matched out of a record, tuple, or enum
+# the program still holds is released twice by the current lowerer -- once by
+# its new owner, once by the parent's composite drop. hew check admits every
+# shape; the crash is a documented v0.6.0 fail-closed limit, not the
+# fixture's correctness proof, so a clean recovery here is real progress
+# (see tests/vertical-slice/run.sh's matching known-failure ratchet, which
+# pins the exact exit status).
+match_nested_aggregate_payload_owner.hew runtime-crash   # #3226: nested aggregate payload double-frees at teardown (SIGABRT)
+projected_tuple_element_owner.hew runtime-crash          # #3226: tuple-element projection segfaults at teardown (SIGSEGV)
+match_param_field_payload_carrier.hew runtime-crash      # #3226: use-after-free read then double-free abort on a by-value parameter's inline enum field (SIGABRT)
+projected_owned_field_transfer_asan.hew runtime-crash    # #3226: same handoff shapes as the three fixtures above, compiled without ASan instrumentation here

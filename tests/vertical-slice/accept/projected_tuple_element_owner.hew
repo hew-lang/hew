@@ -1,0 +1,41 @@
+// Moving an owned leaf out of a TUPLE element of a live record transfers that
+// leaf's cleanup to the binder, exactly as a record-field projection does. The
+// record keeps its other owned fields and releases each of them once (#3124).
+import std.string;
+
+type T { pair: (Vec<string>, i64), tag: string }
+
+type Slot { balancer: Vec<i64>, label: string }
+
+fn mk() -> T {
+    let v: Vec<string> = Vec.new();
+    v.push(string.repeat("k", 32));
+    T { pair: (v, 7), tag: string.repeat("y", 32) }
+}
+
+fn mk_slot() -> Slot {
+    Slot { balancer: [3, 4], label: string.repeat("s", 32) }
+}
+
+fn main() {
+    // The moved element and the sibling `tag` are each released once.
+    let r = mk();
+    println(r.tag.len());
+    let items = r.pair.0;
+    println(items.len());
+
+    // Direct-field overwrite sibling: the assignment takes the field's handle
+    // and the record's remaining field is still discharged.
+    let first = mk_slot();
+    var current: Vec<i64> = [];
+    current = first.balancer;
+    println(current[0] + current[1]);
+    println(first.label.len());
+
+    // Negative control: a READ that leaves the source live must not neutralize
+    // the slot. `held` still owns the whole tuple afterwards, so both the
+    // element and the tag are released once when it goes out of scope.
+    let held = mk();
+    println(held.pair.0.len() + held.pair.1);
+    println(held.tag.len());
+}

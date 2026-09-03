@@ -1,12 +1,19 @@
-// §1.1: an `#[opaque]` declaration with no ownership marker has no visible
-// members for the Aggregate rule and no marker to decide it, so it is refused
-// and publishes no row. Whether its name collides with a compiler-known builtin
-// decides nothing: `Location` is in the builtin table and `Handle` is not, and
-// the two declarations are otherwise identical, so they must get one verdict.
+// §1.1: a fieldless `#[opaque]` declaration with no ownership marker is an
+// FFI pass-through id whose lifecycle is owned elsewhere - std's convention
+// is a `#[resource]` wrapper around it that owns the close. The id itself
+// carries no obligation, so it classes `BitCopy`. Whether its name collides
+// with a compiler-known builtin decides nothing: `Location` is in the
+// builtin table and `Handle` is not, and the two declarations are otherwise
+// identical, so they must get one verdict.
 //
-// `NodeId` is the counterfactual: a user declaration that shadows a builtin
-// name and does carry members keeps its own class, which here is the `string`
-// field's `CowValue`/`FieldWise` rather than the builtin row's `BitCopy`.
+// `NodeId` is the counterfactual for the marker rule: a user declaration
+// that shadows a builtin name and does carry members keeps its own class,
+// which here is the `string` field's `CowValue`/`FieldWise` rather than the
+// builtin row's `BitCopy`.
+//
+// `ClosableResource` is the negative control for the opaque-without-marker
+// row: the same fieldless `#[opaque]` shape, but with `#[resource]`, classes
+// `AffineResource` over that marker instead of `BitCopy`.
 #[opaque]
 type Location {
 }
@@ -19,10 +26,20 @@ type NodeId {
     label: string;
 }
 
-fn observe(here: Location, handle: Handle, id: NodeId) -> i64 {
+#[opaque]
+#[resource]
+type ClosableResource {
+}
+
+impl ClosableResource {
+    fn close(consuming self) {}
+}
+
+fn observe(here: Location, handle: Handle, id: NodeId, closable: ClosableResource) -> i64 {
     let _ = here;
     let _ = handle;
     let _ = id;
+    closable.close();
     0
 }
 

@@ -448,12 +448,14 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         }
         // A declaration with no fields and no variants is still a declaration:
         // the fieldless `#[opaque]` handle is the shape `std/path.hew` and
-        // `std/semaphore.hew` ship, and §1.1 decides it by its marker, refusing
-        // it as `OpaqueWithoutMarker` when it has none. Answering `None` here
-        // sent the class rule to the builtin-name fallback instead, so an
-        // `#[opaque] type Location {}` published `BitCopy` while an identical
-        // `Handle` was refused. The builtin row is for a name the checker has
-        // no declaration of at all.
+        // `std/semaphore.hew` ship, and §1.1 decides it by its marker - an
+        // FFI pass-through id with no marker classes `BitCopy`, one with
+        // `#[resource]`/`#[linear]` classes over that marker instead.
+        // Answering `None` here sent the class rule to the builtin-name
+        // fallback instead, so an `#[opaque] type Location {}` published
+        // `BitCopy` while an identical `Handle` published nothing. The
+        // builtin row is for a name the checker has no declaration of at
+        // all.
         Some(DeclaredType {
             marker,
             is_opaque,
@@ -810,7 +812,7 @@ impl Checker {
                     facts.insert(key, row);
                 }
                 Err(crate::value_class::ClassError::RecursiveInstantiation { name }) => {
-                    refusals.entry(name.clone()).or_insert_with(|| {
+                    refusals.entry(format!("recursion:{name}")).or_insert_with(|| {
                         TypeError::new(
                             TypeErrorKind::ClassRecursion,
                             span.clone(),
@@ -820,10 +822,32 @@ impl Checker {
                         )
                     });
                 }
-                // Every other refusal is an absence a consumer fails closed on:
-                // a template parameter the instance service substitutes first,
-                // a name this boundary cannot render, or a compiler-internal
-                // carrier that is never the type of a value.
+                // §1.1's `UnknownDeclaration` on a name `type_defs` actually
+                // holds a definition for is a class-rule/registration
+                // disagreement over a real declaration, not a legitimate
+                // absence - `declared_type` found no answer for a name the
+                // checker itself registered. D369 makes that never silent;
+                // it fires loudly in debug/test/CI and is compiled out of
+                // release, mirroring the W4.047 totality net above.
+                Err(crate::value_class::ClassError::UnknownDeclaration { name })
+                    if self.type_defs.contains_key(&name)
+                        || name
+                            .split_once('.')
+                            .is_some_and(|(_, leaf)| self.type_defs.contains_key(leaf)) =>
+                {
+                    debug_assert!(
+                        false,
+                        "D369 totality gap: `{name}` is a declaration `type_defs` holds, \
+                         but the §1.1 class rule refused it as `UnknownDeclaration` - a \
+                         class-rule refusal on a user-written declaration must never be \
+                         silent"
+                    );
+                }
+                // Every other refusal is a legitimate absence a consumer
+                // fails closed on: a template parameter the instance service
+                // substitutes first, a name genuinely outside `type_defs`
+                // (a checker-internal state), or a compiler-internal carrier
+                // that is never the type of a value.
                 Err(_) => {}
             }
             let mut components = Vec::new();

@@ -201,9 +201,6 @@ pub enum ClassError {
     /// §1.1: `Iterator`, `ActorState` and `MachineState` are compiler-internal
     /// names, never the type of a value.
     NotAValueType { builtin: BuiltinType },
-    /// An `#[opaque]` handle declaration with no ownership marker: the
-    /// Aggregate rule cannot see through it and there is no default.
-    OpaqueWithoutMarker { name: String },
     /// The declaration's own members reach it at a *different* instantiation
     /// (`type L<T> { n: L<Vec<T>> }`), directly or through another declaration.
     /// The argument grows on every turn of the cycle, so every instantiation on
@@ -229,10 +226,6 @@ impl std::fmt::Display for ClassError {
                 f,
                 "`{}` is a compiler-internal name, never the type of a value",
                 builtin.canonical_name()
-            ),
-            Self::OpaqueWithoutMarker { name } => write!(
-                f,
-                "opaque handle `{name}` carries no ownership marker and has no visible fields"
             ),
             Self::RecursiveInstantiation { name } => write!(
                 f,
@@ -747,18 +740,24 @@ fn classify(
             // `builtin` is the identity fact. A `Named` that carries none and
             // that the context holds no declaration for is refused in every
             // context, the empty one included: reading the name against the
-            // builtin table here would be a second identity authority, and it
-            // is how an `#[opaque] type Location {}` came to publish `BitCopy`
-            // while an identical `Handle` was refused.
+            // builtin table here would be a second identity authority.
             let Some(declared) = decls.declaration(name) else {
                 return Err(ClassError::UnknownDeclaration { name: name.clone() });
             };
             match declared.marker {
                 DeclarationMarker::Resource => affine_none,
                 DeclarationMarker::Linear => linear_none,
-                DeclarationMarker::None if *is_opaque || declared.is_opaque => {
-                    return Err(ClassError::OpaqueWithoutMarker { name: name.clone() })
-                }
+                // A fieldless `#[opaque]` declaration with no ownership
+                // marker is an FFI pass-through id whose lifecycle is owned
+                // elsewhere: std's convention is a `#[resource]` wrapper
+                // around it that owns the close (`Deque` around
+                // `DequeHandle`, `Response` around `ResponseHandle`, …). The
+                // id itself carries no obligation - it round-trips through
+                // `extern "C"` as a bare pointer-width value - so it classes
+                // `BitCopy` exactly like any other opaque handle with no
+                // marker, whether or not its name happens to collide with a
+                // compiler builtin (`Location`, `Handle`).
+                DeclarationMarker::None if *is_opaque || declared.is_opaque => bits,
                 DeclarationMarker::None => classify_declaration(name, args, decls, walk)?,
             }
         }

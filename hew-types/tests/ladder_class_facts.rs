@@ -429,20 +429,48 @@ fn rows_named(output: &TypeCheckOutput, name: &str) -> Vec<TypeFacts> {
         .collect()
 }
 
-/// §1.1: an `#[opaque]` declaration with no ownership marker is refused, and a
-/// name collision with the builtin table is not a class. Two identical fieldless
-/// `#[opaque]` declarations, one of whose names is in `builtin_types!`, get one
-/// verdict.
+/// §1.1: a fieldless `#[opaque]` declaration with no ownership marker is an
+/// FFI pass-through id whose lifecycle is owned elsewhere - std's convention
+/// is a `#[resource]` wrapper around it that owns the close (`Deque` around
+/// `DequeHandle`, `Response` around `ResponseHandle`, ...). The id itself
+/// carries no obligation, so it classes `BitCopy`/`Bits`, whatever its name:
+/// `Location` collides with a compiler builtin and `Handle` does not, and the
+/// two declarations are otherwise identical, so they get one verdict.
 #[test]
-fn a_fieldless_opaque_declaration_is_refused_whether_or_not_its_name_is_a_builtin() {
+fn a_fieldless_opaque_declaration_without_a_marker_is_bitcopy_whatever_its_name() {
     let output = facts_of("class_opaque_handle_shadowing_a_builtin.hew");
+    for name in ["Location", "Handle"] {
+        let rows = rows_named(&output, name);
+        let facts = *rows
+            .first()
+            .unwrap_or_else(|| panic!("`{name}` has a published row"));
+        assert_eq!(
+            (ValueClass::BitCopy, CloneKind::Bits),
+            (facts.class, facts.clone),
+            "class table row for `{name}`"
+        );
+    }
+}
+
+/// The negative control in the same program: the same fieldless `#[opaque]`
+/// shape WITH a `#[resource]` marker classes over that marker instead -
+/// `AffineResource` with no clone, never `BitCopy`. The marker, not the
+/// shape, decides.
+#[test]
+fn a_fieldless_opaque_declaration_with_a_resource_marker_is_an_affine_resource() {
+    let output = facts_of("class_opaque_handle_shadowing_a_builtin.hew");
+    let rows = rows_named(&output, "ClosableResource");
+    let facts = *rows
+        .first()
+        .expect("`ClosableResource` has a published row");
     assert_eq!(
-        (Vec::new(), Vec::new()),
-        (
-            rows_named(&output, "Location"),
-            rows_named(&output, "Handle")
-        ),
-        "an opaque handle with no marker publishes no row, whatever its name"
+        (ValueClass::AffineResource, CloneKind::None),
+        (facts.class, facts.clone)
+    );
+    assert_ne!(
+        ValueClass::BitCopy,
+        facts.class,
+        "the `#[resource]` marker must not be shadowed by the fieldless-opaque default"
     );
 }
 

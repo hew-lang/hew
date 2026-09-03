@@ -6321,6 +6321,31 @@ impl Checker {
                 for method in &ad.methods {
                     let method_name = format!("{identity}::{}", method.name);
                     self.register_fn_sig_with_name(&method_name, method);
+                    // An actor-body plain `fn` is a callable declaration, so it
+                    // needs the same declaration row every other source-declared
+                    // callable has: `call_target_for_signature` reads
+                    // `fn_def_spans` to publish `CallTarget::User`, and without a
+                    // row the checker admits `Counter.helper()` and then hands
+                    // HIR an `Unsupported` target (#3285). The key is the same
+                    // `{owner}::{name}` string the identity table mints
+                    // (`Kind::ActorMethod`), so `user_call_target_for_declared_fn`
+                    // resolves it by path under both the bare and the module
+                    // spelling. Widening this table is side-effect free for the
+                    // visibility rung, which only fires for keys containing `.`
+                    // and no `::`.
+                    //
+                    // A `#[on(...)]` lifecycle hook shares the `methods` list
+                    // and the `ActorMethod` identity kind but is not a
+                    // callable: the runtime enters it through its own
+                    // trampoline and MIR emits it under a hook symbol. It gets
+                    // no declaration row, so a call naming one still fails the
+                    // way it does today.
+                    if !method.attributes.iter().any(|a| a.name.as_str() == "on") {
+                        self.fn_def_spans.insert(
+                            method_name,
+                            (method.fn_span.clone(), self.current_module.clone()),
+                        );
+                    }
                 }
                 self.exit_primary_sig_scope(actor_sig_scope);
             }

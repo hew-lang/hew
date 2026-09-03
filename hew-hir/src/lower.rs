@@ -15343,6 +15343,25 @@ impl LowerCtx {
                 self.source_declaration(&span, hew_types::DeclarationKind::ActorMethod, index)
             })
             .collect::<Option<Vec<_>>>()?;
+        // An actor-body plain `fn` is callable from the actor's own handlers,
+        // hooks, `init`, and sibling methods (#3285). The checker files its
+        // signature under `{actor identity}::{name}` and publishes that string
+        // as the call's `c_symbol`, so the direct-call lowering below looks the
+        // callee up under the mangled form of that key. Register the entry
+        // before any of this actor's bodies are lowered — those bodies are the
+        // only call sites the checker admits, so this is the whole visibility
+        // window. `#[on(...)]` hooks are excluded: the runtime enters them.
+        let registry_owner = decl_module.map_or_else(
+            || decl.name.clone(),
+            |module| format!("{module}.{}", decl.name),
+        );
+        for method in &decl.methods {
+            if method.attributes.iter().any(|a| a.name == "on") {
+                continue;
+            }
+            let key = crate::mangle_dotted_name(&format!("{registry_owner}::{}", method.name));
+            self.register_fn_entry(&key, method);
+        }
         let state_fields: Vec<HirField> = decl
             .fields
             .iter()
@@ -35173,6 +35192,14 @@ fn build_callable_set(
             }
             HirItem::Impl(block) => {
                 declarations.extend(block.method_ids.iter().flatten().cloned());
+            }
+            HirItem::Actor(actor) => {
+                // An actor-body plain `fn` realizes an emitted body too: MIR's
+                // actor lowering emits `{Actor}__fn__{name}` for it and maps
+                // the declaration to that symbol in `direct_call_symbols`.
+                // Receive handlers and lifecycle hooks stay out — the runtime
+                // trampolines enter those, and no Hew call site may name them.
+                declarations.extend(actor.methods.iter().map(|m| m.declaration.clone()));
             }
             _ => {}
         }

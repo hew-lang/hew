@@ -533,6 +533,20 @@ impl IdentityTable {
             .map(|&index| &self.declarations[index].declaration)
     }
 
+    /// The declaration kind established for a canonical path.
+    ///
+    /// Call resolution needs the kind, not only the identity: `Counter::helper`
+    /// and `Counter::bump` are both `{actor}::{leaf}` spellings, and only the
+    /// `ActorMethod` one is a callable a sibling handler may name directly.
+    /// Reading the kind off the one identity authority keeps that decision from
+    /// becoming a second name-shaped registry.
+    #[must_use]
+    pub(crate) fn declaration_kind_by_path(&self, canonical_path: &str) -> Option<DeclarationKind> {
+        self.declarations_by_path
+            .get(canonical_path)
+            .map(|&index| self.declarations[index].occurrence.kind())
+    }
+
     /// Whether this source module already contributed declaration rows.
     ///
     /// Registry mirrors can re-parse source that the module graph already

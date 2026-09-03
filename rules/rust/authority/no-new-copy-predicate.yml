@@ -21,23 +21,29 @@ ignores:
   - "**/*_test.rs"
   - "**/*_tests.rs"
   - "**/tests.rs"
-  # The four predicates that existed when the class table landed. Each is a
-  # reader of the legacy lowering path, which is the parity harness's second
-  # leg, and each is on the §9 deletion ledger with phase P5:
-  #   hew-mir/src/model.rs        ty_owns_heap, container_ingress_is_copy_in
-  #   hew-mir/src/ownership.rs    OwnershipFacts::owns_heap
-  #   hew-codegen-rs/src/llvm.rs  resolved_ty_element_owns_heap_for_owned_vec
-  # The list is closed and shrinks with the legacy route; it is not an opt-out
-  # a new predicate may be added to.
-  - "hew-mir/src/model.rs"
-  - "hew-mir/src/ownership.rs"
-  - "hew-codegen-rs/src/llvm.rs"
+# Match the function shape rather than a list of spellings: a `pub(crate)`,
+# generic, const or async predicate is the same second authority as a bare one,
+# and enumerating `fn` prefixes left each of those unscanned.
 rule:
-  any:
-    - pattern: fn $NAME($$$ARGS) -> bool { $$$BODY }
-    - pattern: pub fn $NAME($$$ARGS) -> bool { $$$BODY }
-    - pattern: const fn $NAME($$$ARGS) -> bool { $$$BODY }
-    - pattern: pub const fn $NAME($$$ARGS) -> bool { $$$BODY }
-constraints:
-  NAME:
-    regex: "(^|_)(is_copy|owns_heap)"
+  all:
+    - kind: function_item
+    - has:
+        field: name
+        regex: "(^|_)(is_copy|owns_heap)"
+    - has:
+        field: return_type
+        regex: "^bool$"
+    # The predicates that existed when the class table landed. Each is a reader
+    # of the legacy lowering path, which is the parity harness's second leg, and
+    # each is on the §9 deletion ledger with phase P5:
+    #   hew-mir/src/model.rs        ty_owns_heap, ty_owns_heap_mir,
+    #                               container_ingress_is_copy_in
+    #   hew-mir/src/ownership.rs    OwnershipFacts::owns_heap
+    #   hew-codegen-rs/src/llvm.rs  resolved_ty_element_owns_heap_for_owned_vec
+    # The exemption names the symbols rather than their files, so a new
+    # predicate added beside one of them is still refused. The list is closed
+    # and shrinks with the legacy route.
+    - not:
+        has:
+          field: name
+          regex: "^(ty_owns_heap|ty_owns_heap_mir|container_ingress_is_copy_in|owns_heap|resolved_ty_element_owns_heap_for_owned_vec)$"

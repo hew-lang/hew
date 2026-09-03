@@ -490,9 +490,10 @@ pub struct BuildArgs {
     /// Input .hew file, or a package directory. Omit it to build the package
     /// enclosing the current directory.
     pub input: Option<PathBuf>,
-    /// Output binary path. Default: `<package-root>/<package-name>` for a
-    /// package, `./<stem>` for an explicit file (no extension on Unix targets,
-    /// `.exe` on Windows targets). Ignored with `--emit-obj`.
+    /// Output path, for the linked binary or (with `--emit-obj`) the object
+    /// file. Default: `<package-root>/target/<debug|release>/<package-name>`
+    /// for a package, `./<stem>` for an explicit file (no extension on Unix
+    /// targets, `.exe` on Windows targets; `.o`/`.obj` with `--emit-obj`).
     #[arg(long, short = 'o', value_name = "PATH")]
     pub output: Option<PathBuf>,
     /// Target triple. Omit for host native; e.g. `arm64-apple-darwin`,
@@ -500,9 +501,9 @@ pub struct BuildArgs {
     /// `wasm32-unknown-unknown`.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
-    /// Emit a relocatable object file instead of a linked binary, written to
-    /// `<cwd>/<stem><.o|.obj>`. Required for foreign-OS targets that cannot be
-    /// linked on this host.
+    /// Emit a relocatable object file instead of a linked binary, named the
+    /// same way the linked binary would be (or `-o` verbatim). Required for
+    /// foreign-OS targets that cannot be linked on this host.
     #[arg(long = "emit-obj")]
     pub emit_obj: bool,
     /// Retain the pre-optimization textual LLVM IR beside the output.

@@ -7619,29 +7619,6 @@ impl Checker {
         // declaration must not become a live intrinsic dispatch target.
     }
 
-    fn register_registry_source_intrinsic_declarations(
-        &mut self,
-        module_owner: &str,
-        items: &[Spanned<Item>],
-    ) {
-        for (item, _) in items {
-            let Item::Function(function) = item else {
-                continue;
-            };
-            let Some(intrinsic_key) = &function.intrinsic else {
-                continue;
-            };
-            let saved_importer_module = self.current_module.replace(module_owner.to_string());
-            self.register_intrinsic_declaration(
-                format!("{module_owner}.{}", function.name),
-                intrinsic_key,
-                &function.name,
-                function,
-            );
-            self.current_module = saved_importer_module;
-        }
-    }
-
     fn validate_receiver_identity_method(
         &mut self,
         type_name: &str,
@@ -11089,15 +11066,19 @@ impl Checker {
                         }
                     }
 
-                    // A selected named/glob import needs the Hew declaration,
-                    // not just the registry ABI summary: it is the authority
-                    // for the bare binding's original source identity. Plain
-                    // module imports retain the established registry path so
-                    // their module-level capability classification cannot be
-                    // perturbed by unrelated internal source declarations.
+                    // An import needs the Hew declaration, not just the
+                    // registry ABI summary: the declaration is the authority
+                    // for a bare binding's original source identity and it is
+                    // the only place a module's `impl Trait for T` blocks
+                    // exist.  Which declarations a module owns is a property
+                    // of the module, not of how the importer spelled the
+                    // import, so a bare `import std.net;` registers the same
+                    // source items a selected `import std.net.{NetError};`
+                    // does.  Bare-name publication stays gated on the spec in
+                    // `publish_imported_hew_bindings`, so a plain module import
+                    // still publishes only the `net.` namespace.
                     let resolved_items = decl.resolved_items.as_ref().or_else(|| {
-                        (decl.spec.is_some() && !registry_source_items.is_empty())
-                            .then_some(&registry_source_items)
+                        (!registry_source_items.is_empty()).then_some(&registry_source_items)
                     });
                     if let Some(resolved_items) = resolved_items.filter(|items| !items.is_empty()) {
                         let module_full_path = canonical_owner.clone();
@@ -11108,19 +11089,6 @@ impl Checker {
                             &module_full_path,
                             resolved_items,
                             StdlibBarePublication::Import(&decl.spec),
-                        );
-                    } else if decl.spec.is_none() && !registry_source_items.is_empty() {
-                        // A plain module import intentionally does not publish
-                        // the module's full source declaration surface, but
-                        // compiler intrinsic metadata is attached to those
-                        // exact parsed declarations and cannot be reconstructed
-                        // from the ABI wrapper summary. Publish only that
-                        // metadata under the already-proven canonical source
-                        // owner; ordinary functions/types remain on the
-                        // established registry path.
-                        self.register_registry_source_intrinsic_declarations(
-                            &canonical_owner,
-                            &registry_source_items,
                         );
                     }
 
@@ -11474,6 +11442,13 @@ impl Checker {
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
+            // The program-wide type-parameter harvest in `collect_types` walks
+            // `program.module_graph`, which is empty on the registry-only
+            // checker path (LSP, browser compiler, inline checks). Without the
+            // harvest a declaration's own parameters are unknown while its
+            // members resolve, so `pub type ScopeError<E> { primary: E; }`
+            // reports `unknown type E` against the module's own source.
+            self.collect_item_type_param_names(item);
             match item {
                 Item::TypeDecl(td) => {
                     self.local_type_defs.insert(td.name.clone());

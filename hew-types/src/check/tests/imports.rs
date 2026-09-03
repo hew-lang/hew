@@ -2592,10 +2592,19 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
         "the stdlib function registry must not retain a leaf-qualified declaration identity"
     );
 
+    // The element type carries the declaring module's own identity, matching
+    // the leaf-qualified-identity rule the assertion above pins for functions.
     assert_eq!(
         stream_from_file.return_type,
-        Ty::result(Ty::stream(Ty::String), Ty::String),
-        "std::stream import should keep from_file() typed as Result<Stream<string>, string>"
+        Ty::result(
+            Ty::Named {
+                name: "std.stream.Stream".to_string(),
+                args: vec![Ty::String],
+                builtin: Some(BuiltinType::Stream),
+            },
+            Ty::String
+        ),
+        "std::stream import should keep from_file() typed as Result<std.stream.Stream<string>, string>"
     );
 }
 

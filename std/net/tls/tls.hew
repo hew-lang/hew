@@ -8,7 +8,6 @@
 //!
 //! ```
 //! import std.net;
-//! import std.net.{NetError};
 //! import std.net.tls;
 //!
 //! fn main() {

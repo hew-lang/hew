@@ -10,7 +10,7 @@ mod common;
 use std::fs;
 use std::path::PathBuf;
 
-use common::{repo_root, typecheck};
+use common::{checker_with_roots, parse_program, repo_root, typecheck};
 use hew_types::value_class::ClassContext;
 use hew_types::{
     BuiltinType, CloneKind, ResolvedTy, SendFact, TypeCheckOutput, TypeFacts, TypeInstanceKey,
@@ -525,5 +525,157 @@ fn main() -> i64 {
         (ValueClass::BitCopy, CloneKind::Bits),
         (facts.class, facts.clone),
         "a heap-boxed payload must never be published bit-copyable"
+    );
+}
+
+/// #3239: an imported declaration's recursive member occurrence is spelled
+/// bare inside its own source (`Tree`), while an importer reaches the
+/// declaration through its qualified key (`probe_mod.deep.rec.Tree`). The
+/// class rule's recursion cut (`walk.on_path`) keys by whatever spelling
+/// reached it, so the two spellings for the SAME declaration used to miss
+/// each other and the walk never terminated. `hew-types/tests/fixtures/
+/// probe_mod/deep/rec.hew` is the module fixture; every case here type-checks
+/// an importer of it and asserts a published row rather than a hang or an
+/// unclassified type.
+fn typecheck_importing_probe_mod_deep_rec(body: &str) -> TypeCheckOutput {
+    let fixtures_root = repo_root().join("hew-types/tests/fixtures");
+    let source = format!(
+        r"
+import probe_mod.deep.rec;
+
+{body}
+"
+    );
+    let program = parse_program(&source);
+    let mut checker = checker_with_roots(vec![fixtures_root]);
+    let output = checker.check_program(&program);
+    assert!(
+        output.errors.is_empty(),
+        "importer of `probe_mod.deep.rec` must type-check: {:#?}",
+        output.errors
+    );
+    output
+}
+
+/// The regression itself: an imported recursive indirect enum publishes a
+/// row for its qualified key, with the same owning-edge verdict the local
+/// twin gets.
+#[test]
+fn an_imported_recursive_indirect_enum_publishes_its_class_row() {
+    let output = typecheck_importing_probe_mod_deep_rec(
+        r"
+fn main() -> i64 {
+    let t: rec.Tree = rec.Tree.Leaf(1);
+    let _ = t;
+    0
+}
+",
+    );
+    let facts = row_matching(
+        &output,
+        "the imported enum `rec.Tree`",
+        |ty| matches!(ty, ResolvedTy::Named { name, builtin: None, .. } if name.ends_with("Tree")),
+    );
+    assert_eq!(
+        (ValueClass::CowValue, CloneKind::FieldWise),
+        (facts.class, facts.clone),
+        "an imported recursive enum must class over its own owning edge, not refuse silently"
+    );
+}
+
+/// The same regression through a `Vec`-recursive imported record.
+#[test]
+fn an_imported_recursive_record_publishes_its_class_row() {
+    let output = typecheck_importing_probe_mod_deep_rec(
+        r"
+fn main() -> i64 {
+    let r: rec.Reply = rec.make_reply();
+    let _ = r;
+    0
+}
+",
+    );
+    let facts = row_matching(
+        &output,
+        "the imported record `rec.Reply`",
+        |ty| matches!(ty, ResolvedTy::Named { name, builtin: None, .. } if name.ends_with("Reply")),
+    );
+    assert_ne!(
+        (ValueClass::BitCopy, CloneKind::Bits),
+        (facts.class, facts.clone),
+        "a Vec-recursive record must not publish the bottom-element cut's verdict"
+    );
+}
+
+/// Mutual recursion through two imported declarations: both `A` and `B`
+/// publish, so canonicalizing one declaration's members does not strand the
+/// other spelling.
+#[test]
+fn mutually_recursive_imported_declarations_both_publish() {
+    let output = typecheck_importing_probe_mod_deep_rec(
+        r"
+fn main() -> i64 {
+    let a: rec.A = rec.A.Leaf(1);
+    let b: rec.B = rec.make_b();
+    let _ = b;
+    let _ = a;
+    0
+}
+",
+    );
+    for name in ["A", "B"] {
+        let facts = row_matching(
+            &output,
+            &format!("imported `rec.{name}`"),
+            |ty| matches!(ty, ResolvedTy::Named { name: actual, builtin: None, .. } if actual.ends_with(name)),
+        );
+        assert_ne!(
+            (ValueClass::BitCopy, CloneKind::Bits),
+            (facts.class, facts.clone),
+            "`{name}` recurses through its mutual partner and must not class bottom-element"
+        );
+    }
+}
+
+/// The local (non-imported) twin of the same recursion shape keeps
+/// publishing - the fix canonicalizes an imported declaration's own member
+/// spelling and must not disturb the already-working local case.
+#[test]
+fn a_local_recursive_declaration_still_publishes_alongside_the_import_fix() {
+    let output = facts_of("class_indirect_enum_owning_edge.hew");
+    let facts = row_matching(
+        &output,
+        "the local recursive enum `Tree`",
+        |ty| matches!(ty, ResolvedTy::Named { name, .. } if name.ends_with("Tree")),
+    );
+    assert_eq!(
+        (ValueClass::CowValue, CloneKind::FieldWise),
+        (facts.class, facts.clone)
+    );
+}
+
+/// The non-recursive counterfactual through the same import path: `Holder`
+/// carries no self-reference, so canonicalization is a no-op for it and it
+/// classes as an ordinary aggregate.
+#[test]
+fn an_imported_non_recursive_declaration_is_unaffected() {
+    let output = typecheck_importing_probe_mod_deep_rec(
+        r"
+fn main() -> i64 {
+    let h: rec.Holder = rec.make_holder();
+    let _ = h;
+    0
+}
+",
+    );
+    let facts = row_matching(
+        &output,
+        "the imported record `rec.Holder`",
+        |ty| matches!(ty, ResolvedTy::Named { name, builtin: None, .. } if name.ends_with("Holder")),
+    );
+    assert_eq!(
+        (ValueClass::BitCopy, CloneKind::Bits),
+        (facts.class, facts.clone),
+        "a non-recursive record over a scalar field is bit-copyable"
     );
 }

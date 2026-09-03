@@ -420,12 +420,30 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             }
         }
 
+        // §1.1's recursion cut (`classify_declaration`'s `walk.on_path`) keys a
+        // declaration by the exact name this lookup was asked for. A member
+        // that refers back to its own declaration is spelled bare inside the
+        // declaration's own source (name resolution never qualifies a
+        // self-reference), while an importer reaches the declaration through
+        // its qualified key — so the recursive occurrence and the declaration
+        // it recurses into carry two different keys and the cut never fires.
+        // `name` here is that qualified key whenever the lookup found one, so
+        // canonicalizing every bare member reference that also has a
+        // `{prefix}.{bare}` twin in `type_defs` gives the whole declaration
+        // one spelling, matching `ir-ladder.md` §1.1: one canonical key per
+        // declaration, the qualified one, with the bare twin staying a lookup
+        // alias never used as a fact key.
+        let module_prefix = name.rsplit_once('.').map(|(prefix, _)| prefix);
         let mut members = Vec::with_capacity(member_tys.len());
         for ty in member_tys {
             // A member the boundary cannot render leaves the whole declaration
             // unclassifiable: an aggregate over the members that happened to
             // convert would be a guess.
             let resolved = ResolvedTy::from_ty(&ty.materialize_literal_defaults()).ok()?;
+            let resolved = match module_prefix {
+                Some(prefix) => canonicalize_member_ty(resolved, prefix, self.type_defs),
+                None => resolved,
+            };
             members.push(resolved);
         }
         // A declaration with no fields and no variants is still a declaration:
@@ -442,6 +460,122 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             type_params: definition.type_params.clone(),
             members,
         })
+    }
+}
+
+/// Rewrite a member type's bare `Named` occurrences to the declaring module's
+/// canonical (qualified) spelling, so a declaration's own recursive
+/// occurrence carries the same key its declaration is looked up under.
+///
+/// Only rewrites a bare name that has a `{prefix}.{bare}` twin registered in
+/// `type_defs` — an unqualified reference to a type outside this module (a
+/// builtin, or a name `type_defs` never published under the prefix) is left
+/// exactly as resolved.
+fn canonicalize_member_ty(
+    ty: ResolvedTy,
+    prefix: &str,
+    type_defs: &HashMap<String, crate::check::types::TypeDef>,
+) -> ResolvedTy {
+    let rewrite_name = |name: String| -> String {
+        if name.starts_with(prefix) && name[prefix.len()..].starts_with('.') {
+            return name;
+        }
+        let qualified = format!("{prefix}.{name}");
+        if type_defs.contains_key(&qualified) {
+            qualified
+        } else {
+            name
+        }
+    };
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            is_opaque,
+        } => {
+            let args = args
+                .into_iter()
+                .map(|a| canonicalize_member_ty(a, prefix, type_defs))
+                .collect();
+            // A builtin already carries its identity in `builtin`; the name
+            // string is display-only there and rewriting it would be a
+            // second, redundant identity authority.
+            let name = if builtin.is_none() {
+                rewrite_name(name)
+            } else {
+                name
+            };
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                is_opaque,
+            }
+        }
+        ResolvedTy::Tuple(elements) => ResolvedTy::Tuple(
+            elements
+                .into_iter()
+                .map(|e| canonicalize_member_ty(e, prefix, type_defs))
+                .collect(),
+        ),
+        ResolvedTy::Array(element, len) => ResolvedTy::Array(
+            Box::new(canonicalize_member_ty(*element, prefix, type_defs)),
+            len,
+        ),
+        ResolvedTy::Slice(element) => ResolvedTy::Slice(Box::new(canonicalize_member_ty(
+            *element, prefix, type_defs,
+        ))),
+        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
+            params: params
+                .into_iter()
+                .map(|p| canonicalize_member_ty(p, prefix, type_defs))
+                .collect(),
+            ret: Box::new(canonicalize_member_ty(*ret, prefix, type_defs)),
+        },
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => ResolvedTy::Closure {
+            params: params
+                .into_iter()
+                .map(|p| canonicalize_member_ty(p, prefix, type_defs))
+                .collect(),
+            ret: Box::new(canonicalize_member_ty(*ret, prefix, type_defs)),
+            captures: captures
+                .into_iter()
+                .map(|c| canonicalize_member_ty(c, prefix, type_defs))
+                .collect(),
+        },
+        ResolvedTy::Pointer {
+            is_mutable,
+            pointee,
+        } => ResolvedTy::Pointer {
+            is_mutable,
+            pointee: Box::new(canonicalize_member_ty(*pointee, prefix, type_defs)),
+        },
+        ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
+            pointee: Box::new(canonicalize_member_ty(*pointee, prefix, type_defs)),
+        },
+        ResolvedTy::TraitObject { traits } => ResolvedTy::TraitObject {
+            traits: traits
+                .into_iter()
+                .map(|bound| crate::resolved_ty::ResolvedTraitBound {
+                    trait_name: bound.trait_name,
+                    args: bound
+                        .args
+                        .into_iter()
+                        .map(|a| canonicalize_member_ty(a, prefix, type_defs))
+                        .collect(),
+                    assoc_bindings: bound.assoc_bindings,
+                })
+                .collect(),
+        },
+        ResolvedTy::Task(inner) => {
+            ResolvedTy::Task(Box::new(canonicalize_member_ty(*inner, prefix, type_defs)))
+        }
+        other => other,
     }
 }
 

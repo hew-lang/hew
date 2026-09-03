@@ -24,6 +24,10 @@ pub fn isolated_checker() -> Checker {
     Checker::new(ModuleRegistry::new(vec![]))
 }
 
+pub fn checker_with_roots(roots: Vec<PathBuf>) -> Checker {
+    Checker::new(ModuleRegistry::new(roots))
+}
+
 pub fn parse_program(source: &str) -> hew_parser::ast::Program {
     let parse_result = hew_parser::parse(source);
     assert!(

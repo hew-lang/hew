@@ -1,0 +1,46 @@
+// Fixture for the imported-recursive-declaration class-fact regression
+// (`ladder_class_facts.rs`): `Tree`'s recursive occurrence is spelled bare
+// (`Tree`) inside this module's own source, exactly as an importer's
+// `probe_mod.deep.rec.Tree` reaches it. `Reply` recurses the same way through
+// a `Vec`. `A` and `B` recurse mutually. `Holder` is the non-recursive
+// counterfactual.
+
+pub indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+pub type Reply {
+    items: Vec<Reply>;
+}
+
+pub indirect enum A {
+    Leaf(i64);
+    Wrap(B);
+}
+
+pub indirect enum B {
+    Leaf(i64);
+    Wrap(A);
+}
+
+pub type Holder {
+    value: i64;
+}
+
+// Constructors, not qualified struct-literal expressions, so the importer
+// side of these tests exercises only type-annotation resolution (the surface
+// this fixture is for) and not the qualified struct-literal expression path,
+// which has its own unrelated resolution gap (#3239 is a class-fact bug, not
+// this one).
+pub fn make_reply() -> Reply {
+    Reply { items: [] }
+}
+
+pub fn make_holder() -> Holder {
+    Holder { value: 1 }
+}
+
+pub fn make_b() -> B {
+    B.Leaf(1)
+}

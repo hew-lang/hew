@@ -35,7 +35,7 @@ rule:
         regex: "(^|_)(is_copy|owns_heap)"
     - has:
         field: return_type
-        regex: "^bool$"
+        regex: "bool"
     - not:
         has:
           field: name

@@ -1502,6 +1502,18 @@ fn record_value(
 /// the result of a `begin_borrow` no phase emits yet. A type the class rule
 /// cannot decide is refused here for the same reason the lowering refuses it:
 /// there is no default kind.
+///
+/// MARKED SHORTCUT - the kind is read from the type alone.
+/// WHY: §1.2 makes the kind a function of the class for every value this
+/// phase can define. `Guaranteed` is the one kind that is not a class, and it
+/// belongs to a `begin_borrow` result and to a parameter whose header slot is
+/// `Borrow`; neither exists yet, so refusing it is exact rather than
+/// conservative.
+/// WHEN: `begin_borrow` lands, or `SemParamPassing` grows the `Borrow` slot
+/// §1.2 rule 3 reads (L2/L3).
+/// WHAT: the check branches on the defining operation - a `begin_borrow`
+/// result and a borrow-slot parameter are `Guaranteed` whatever their type's
+/// class says, every other definition stays a pure function of the class.
 fn verify_own_kind(
     function: &SemFunction,
     value: ValueId,

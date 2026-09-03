@@ -11,9 +11,11 @@ note: >-
   `(i64, i64)` came to be Copy under one authority and CowValue under another
   (docs/internal/ir-ladder.md §1.1). If a genuinely new authority is needed, it
   belongs in hew-types beside the class table.
-# §1.1 scopes this rule at "outside hew-types", so the rule carries no
-# allow-list of crates: every path the scan reaches is covered and hew-types,
-# which holds the class table itself, is the one exemption.
+# §1.1 scopes this rule at "outside hew-types", so it carries no allow-list of
+# crates: every path the scan reaches is covered. `hew-types` holds the class
+# table itself, and the three files carrying the legacy predicates are scanned
+# by `no-new-copy-predicate-legacy` instead, which is the only rule that exempts
+# anything and exempts it by symbol.
 ignores:
   - "hew-types/**"
   - "**/tests/**"
@@ -21,6 +23,9 @@ ignores:
   - "**/*_test.rs"
   - "**/*_tests.rs"
   - "**/tests.rs"
+  - "hew-mir/src/model.rs"
+  - "hew-mir/src/ownership.rs"
+  - "hew-codegen-rs/src/llvm.rs"
 # Match the function shape rather than a list of spellings: a `pub(crate)`,
 # generic, const or async predicate is the same second authority as a bare one,
 # and enumerating `fn` prefixes left each of those unscanned.
@@ -33,17 +38,3 @@ rule:
     - has:
         field: return_type
         regex: "^bool$"
-    # The predicates that existed when the class table landed. Each is a reader
-    # of the legacy lowering path, which is the parity harness's second leg, and
-    # each is on the §9 deletion ledger with phase P5:
-    #   hew-mir/src/model.rs        ty_owns_heap, ty_owns_heap_mir,
-    #                               container_ingress_is_copy_in
-    #   hew-mir/src/ownership.rs    OwnershipFacts::owns_heap
-    #   hew-codegen-rs/src/llvm.rs  resolved_ty_element_owns_heap_for_owned_vec
-    # The exemption names the symbols rather than their files, so a new
-    # predicate added beside one of them is still refused. The list is closed
-    # and shrinks with the legacy route.
-    - not:
-        has:
-          field: name
-          regex: "^(ty_owns_heap|ty_owns_heap_mir|container_ingress_is_copy_in|owns_heap|resolved_ty_element_owns_heap_for_owned_vec)$"

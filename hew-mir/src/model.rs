@@ -5301,22 +5301,21 @@ pub enum Instr {
     /// `dest = (lhs is rhs)` — pointer/handle identity comparison.
     ///
     /// Produced exclusively from `HirExprKind::IdentityCompare`, which the
-    /// HIR lowering emits for `Expr::Is` once the checker (D-2) has
+    /// HIR lowering emits for `Expr::Is` once the checker (D-2, D340) has
     /// validated that both operands are identity-bearing types: actor refs
-    /// and `Vec`, `HashMap`, `HashSet`, `bytes`. Records, enums (`indirect`
-    /// included) and machines are values and never reach here (#3108,
-    /// #3134). The result is a boolean (`1` = same identity, `0` = distinct
-    /// identities), stored in `dest`.
+    /// (`LocalPid<T>`) and user actor declarations. Records, enums (`indirect`
+    /// included), machines, and the heap-backed value types (`Vec`,
+    /// `HashMap`, `HashSet`, `bytes`) never reach here (#3108, #3134). The
+    /// result is a boolean (`1` = same identity, `0` = distinct identities),
+    /// stored in `dest`.
     ///
-    /// Codegen (D-3): each operand contributes an `i64` identity word, and
-    /// the two are compared with `icmp eq` and `zext`ed to the dest's stored
-    /// width. Pointer-shaped slots (`ptr` alloca — actor handles, the
-    /// collections, `Duplex`) `ptrtoint` the loaded handle; a `bytes` slot is
-    /// a `BytesTriple` struct, so the word is field 0, the refcounted buffer.
-    ///
-    /// Both operands are BORROWED: reading an identity word releases nothing,
-    /// so a fresh temporary in operand position keeps its drop obligation
-    /// (`temp_drop::bytes_temp_instr_use_is_borrow_only`).
+    /// Codegen (D-3): for pointer-shaped LLVM values (`ptr` alloca, i.e.
+    /// `ResolvedTy::Named { name: "Duplex", .. }` and future heap-backed
+    /// types), `ptrtoint` both operands to `i64`, compare with `icmp eq`,
+    /// then `zext` the `i1` result to the dest's stored width. For
+    /// integer-shaped handles (e.g. a stable `i64` identifier), the
+    /// `ptrtoint` step is skipped and `icmp eq` is applied directly to the
+    /// loaded integer values.
     ///
     /// LESSONS: `checker-authority` (P0) — codegen reads the operand's
     /// `ResolvedTy` to select between the pointer-path and the integer-path.

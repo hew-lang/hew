@@ -1620,19 +1620,25 @@ impl Checker {
         // site unified the parameter types). Unification has settled by now, so
         // the same decision runs against concrete types and the checker stays
         // the total authority for the `is` allowance set (#3134). An operand
-        // that is *still* unresolved is a program the inference-hole reporting
-        // above already refuses, so it needs no second diagnostic here.
+        // that is *still* unresolved after unification is a program this
+        // re-check must refuse itself: a separate general scan over unresolved
+        // expression types may or may not run over this exact span, and `is`
+        // owns its own fail-closed answer rather than borrowing one from
+        // elsewhere (one authority per fact) — the alternative is the operand
+        // reaching the codegen front's span-less `IdentityCompare` backstop.
         let deferred_is_checks: Vec<_> = std::mem::take(&mut self.deferred_is_checks)
             .into_values()
             .collect();
         for check in deferred_is_checks {
             let lhs = self.subst.resolve(&check.lhs_ty);
             let rhs = self.subst.resolve(&check.rhs_ty);
-            if lhs.has_inference_var()
-                || rhs.has_inference_var()
-                || matches!(lhs, Ty::Error)
-                || matches!(rhs, Ty::Error)
-            {
+            if matches!(lhs, Ty::Error) || matches!(rhs, Ty::Error) {
+                continue;
+            }
+            if lhs.has_inference_var() || rhs.has_inference_var() {
+                let mut err = TypeError::inference_failed(check.span.clone(), "`is` operand type");
+                err.source_module.clone_from(&check.source_module);
+                self.errors.push(err);
                 continue;
             }
             let diagnostics = self.is_value_form_diagnostics(

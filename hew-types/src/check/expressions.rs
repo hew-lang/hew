@@ -31,8 +31,7 @@ fn is_value_type_diagnostic(span: &Span, ty: &Ty) -> (TypeErrorKind, Span, Strin
         format!(
             "`is` compares identity, and `{}` is a value type \
              (E_IS_VALUE_TYPE) — use `==` to compare it by value; `is` \
-             applies to handles: actor references, \
-             `Vec`/`HashMap`/`HashSet`, and `bytes`",
+             applies to handles: actor references",
             ty.user_facing()
         ),
     )
@@ -9882,21 +9881,23 @@ impl Checker {
         self.report_error(kind, &span, message);
     }
 
-    /// Classify a resolved type as identity-bearing per plan §D-D2.
+    /// Classify a resolved type as identity-bearing per plan §D-D2 (D340: the
+    /// `is` admission set is handle identity only, HEW-SPEC-2026 §3.4.3's pid
+    /// handle category).
     ///
     /// Returns `true` when `is` is valid on values of this type:
     ///
     /// * Actors and actor handles: `TypeDefKind::Actor` named types and
     ///   `LocalPid<T>`.
-    /// * Heap-backed collections: `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`.
-    /// * `bytes`.
     ///
-    /// Returns `false` for value types: scalars, `String`, `type Foo { ... }`
-    /// record declarations (`TypeDefKind::Struct`), `record` types, `enum`
-    /// declarations (`TypeDefKind::Enum`), machines (`TypeDefKind::Machine`),
-    /// tuples, arrays, slices, ranges, durations, functions, closures, and
-    /// trait objects. Caller is responsible for handling `Ty::Var` / `Ty::Error`
-    /// before invoking this predicate.
+    /// Returns `false` for value types: scalars, `String`, `bytes`,
+    /// `type Foo { ... }` record declarations (`TypeDefKind::Struct`),
+    /// `record` types, `enum` declarations (`TypeDefKind::Enum`), machines
+    /// (`TypeDefKind::Machine`), heap-backed collections (`Vec<T>`,
+    /// `HashMap<K,V>`, `HashSet<T>`), tuples, arrays, slices, ranges,
+    /// durations, functions, closures, and trait objects. Caller is
+    /// responsible for handling `Ty::Var` / `Ty::Error` before invoking this
+    /// predicate.
     ///
     /// This is the single authority for the `is` allowance set: HIR lowering,
     /// MIR, and the codegen front all read the answer from here and never
@@ -9906,19 +9907,11 @@ impl Checker {
     /// rather than a user-visible diagnostic.
     fn is_identity_capable(&self, ty: &Ty) -> bool {
         match ty {
-            // Heap-backed builtin handles.
-            Ty::Bytes => true,
-
-            // Named types: actor handles, collection builtins, and any user
-            // `TypeDef` whose kind carries heap/reference identity.
-            Ty::Named { name, builtin, .. } => {
+            // Named types: actor handles and any user `TypeDef` whose kind
+            // carries heap/reference identity.
+            Ty::Named { name, .. } => {
                 // Actor handles (`LocalPid<T>`).
                 if ty.as_actor_handle().is_some() {
-                    return true;
-                }
-                // Heap-backed builtin collections — kept name-keyed since they
-                // have no `TypeDef` entry.
-                if builtin.is_some_and(BuiltinType::is_collection) {
                     return true;
                 }
                 // Actor declarations are the only identity-bearing user
@@ -9947,8 +9940,10 @@ impl Checker {
             }
 
             // Everything else is a value type for `is` purposes: scalars,
-            // `String`, tuples, arrays, slices, function/closure types,
-            // pointers, trait objects, durations, unit, never, tasks,
+            // `String`, `bytes`, `Vec`/`HashMap`/`HashSet` (copy-on-write
+            // values with structural `==`, HEW-SPEC-2026 §3.4.3's value
+            // category, D340), tuples, arrays, slices, function/closure
+            // types, pointers, trait objects, durations, unit, never, tasks,
             // type vars (handled by caller), and the error sentinel.
             _ => false,
         }

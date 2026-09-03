@@ -85,8 +85,8 @@
 # guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
 # the NYI label was stale (fence renumbered as guide grew).
 
-guide-0154   4278824673   # SURFACE-PENDING: `close(consume self)` — the parser still spells the consuming receiver `consuming self` (#3257)
-guide-0155   144626557   # SURFACE-PENDING: `commit`/`rollback(consume self)` — same receiver spelling (#3257)
+guide-0154   4278824673   # SURFACE-PENDING: `close(consume self)` — the parser still spells the consuming receiver `consuming self` (#3257) (renumbered 0153->0154, a fence shifted ahead of it now passes)
+guide-0155   144626557   # SURFACE-PENDING: `commit`/`rollback(consume self)` — same receiver spelling (#3257) (renumbered 0154->0155)
 
 
 # ─── Spec failures (86) ──────────────────────────────────────────────────────────

@@ -1,14 +1,16 @@
-//! End-to-end coverage for `is` on a value type (#3108, #3134).
+//! End-to-end coverage for `is` on a value type (#3108, #3134, D340).
 //!
-//! `is` is reference identity on heap handles. A `type Point { ... }`
-//! declaration is a copy-on-write value under the v0.5 value model
-//! (`docs/v05/ownership.md`); an `enum` is a tagged value and a machine is a
-//! tagged state. None of them has an identity to compare. The checker owns
-//! that answer: `hew check` must report `E_IS_VALUE_TYPE` at the `is`
-//! expression.
+//! `is` is handle identity, admitted only for actor references
+//! (`is_identity_capable`, HEW-SPEC-2026 §3.4.3's pid handle row). A
+//! `type Point { ... }` declaration is a copy-on-write value under the v0.5
+//! value model (`docs/v05/ownership.md`); an `enum` is a tagged value, a
+//! machine is a tagged state, and `Vec`/`HashMap`/`HashSet`/`bytes` are
+//! copy-on-write values with structural `==` (§3.4.3's value row, D340).
+//! None of them has an identity to compare. The checker owns that answer:
+//! `hew check` must report `E_IS_VALUE_TYPE` at the `is` expression.
 //!
-//! Before the fix the checker admitted the program and it died later in the
-//! codegen front with a span-less
+//! Before the #3108/#3134 fixes the checker admitted these programs and they
+//! died later in the codegen front with a span-less
 //! `E_CODEGEN_FRONT_FAIL_CLOSED: … IdentityCompare lhs must be a pointer or
 //! integer value` — a compiler-invariant message, not a user diagnostic. This
 //! file pins both halves: the user-facing rejection appears, and the
@@ -19,7 +21,7 @@ mod support;
 
 use std::process::{Command, Output};
 
-use support::{hew_binary, repo_root, require_codegen, run_bounded_hew_run, strip_ansi, tempdir};
+use support::{hew_binary, repo_root, strip_ansi, tempdir};
 
 /// Two records compared with `is` — the repro from #3108.
 const RECORD_IS: &str = "type Point {\n\
@@ -47,12 +49,52 @@ const RECORD_EQ: &str = "type Point {\n\
      println(same);\n\
      }\n";
 
-/// Negative control: `is` on a heap handle stays accepted end to end, so the
-/// rejection above is about the value class and not about `is` itself.
+/// Negative control: `is` on an actor handle stays accepted end to end, so
+/// the rejection above is about the value class and not about `is` itself.
+const ACTOR_IS: &str = "actor Worker {\n\
+     let _id: i64;\n\
+     receive fn ping() {}\n\
+     }\n\
+     \n\
+     fn main() {\n\
+     let a = spawn Worker(_id: 1);\n\
+     let b = spawn Worker(_id: 2);\n\
+     let same: bool = a is b;\n\
+     println(same);\n\
+     }\n";
+
+/// `Vec` is a copy-on-write value (D340), rejected like an enum or record.
 const VEC_IS: &str = "fn main() {\n\
      let v1: Vec<i64> = Vec.new();\n\
      let v2: Vec<i64> = Vec.new();\n\
      let same: bool = v1 is v2;\n\
+     println(same);\n\
+     }\n";
+
+/// `HashMap` is a copy-on-write value (D340), rejected like `Vec`.
+const HASHMAP_IS: &str = "fn main() {\n\
+     let m1: HashMap<string, i64> = HashMap.new();\n\
+     let m2: HashMap<string, i64> = HashMap.new();\n\
+     let same: bool = m1 is m2;\n\
+     println(same);\n\
+     }\n";
+
+/// `HashSet` is a copy-on-write value (D340), rejected like `Vec`.
+const HASHSET_IS: &str = "fn main() {\n\
+     let s1: HashSet<i64> = HashSet.new();\n\
+     let s2: HashSet<i64> = HashSet.new();\n\
+     let same: bool = s1 is s2;\n\
+     println(same);\n\
+     }\n";
+
+/// `bytes` is a copy-on-write value (D340), rejected like `Vec`. A
+/// predecessor of this fixture's PR admitted `bytes` to `is` and added
+/// codegen support for its identity word (`BytesTriple` field-0
+/// `ptrtoint`); that support became unreachable and was deleted with it.
+const BYTES_IS: &str = "fn main() {\n\
+     let a = bytes.new();\n\
+     let b = bytes.new();\n\
+     let same: bool = a is b;\n\
      println(same);\n\
      }\n";
 
@@ -121,36 +163,6 @@ const MACHINE_IS: &str = "machine Tank {\n\
      println(same);\n\
      }\n";
 
-/// Negative control for the `bytes` half of #3134: `bytes` is a heap handle
-/// and must run, not merely check.
-///
-/// A `bytes` value is a `BytesTriple { ptr, offset, len }` and `bytes.new()`
-/// stores the all-zero triple — it allocates nothing until the first write
-/// (`lower_bytes_constructor_call`). So both handles here name the same
-/// absent buffer and the answer is `true`. Distinct buffers are the case
-/// below.
-const BYTES_IS: &str = "fn main() {\n\
-     let a = bytes.new();\n\
-     let b = bytes.new();\n\
-     let same: bool = a is b;\n\
-     println(same);\n\
-     }\n";
-
-/// The discriminating pair: once each handle has pushed a byte it owns its
-/// own buffer, so the two are distinct and each is identical to itself. This
-/// is what proves the comparison reads the buffer pointer instead of
-/// answering `true` for every `bytes`.
-const BYTES_DISTINCT_BUFFERS_IS: &str = "fn main() {\n\
-     var a = bytes.new();\n\
-     a.push(1);\n\
-     var b = bytes.new();\n\
-     b.push(1);\n\
-     let distinct: bool = a is b;\n\
-     let self_same: bool = a is a;\n\
-     println(distinct);\n\
-     println(self_same);\n\
-     }\n";
-
 /// An `is` inside a closure with inferred parameters. The closure body is
 /// checked before the call site unifies `a` and `b` with `Colour`, so the
 /// operand types are still inference variables at the `is` and the checker
@@ -178,19 +190,20 @@ const INFERRED_LAMBDA_RECORD_IS: &str = "type Point {\n\
      println(same(Point { x: 1 }, Point { x: 2 }));\n\
      }\n";
 
-/// Negative control for the two above: the same inferred closure over `bytes`
-/// handles stays accepted and runs, so the deferred decision rejects the value
-/// class rather than every inferred operand.
-const INFERRED_LAMBDA_BYTES_IS: &str = "fn main() {\n\
+/// Negative control for the two above: the same inferred closure over actor
+/// handles stays accepted, so the deferred decision rejects the value class
+/// rather than every inferred operand.
+const INFERRED_LAMBDA_ACTOR_IS: &str = "actor Worker {\n\
+     let _id: i64;\n\
+     receive fn ping() {}\n\
+     }\n\
+     \n\
+     fn main() {\n\
      let same = |a, b| a is b;\n\
-     var x = bytes.new();\n\
-     x.push(1);\n\
-     var y = bytes.new();\n\
-     y.push(2);\n\
-     println(same(x, y));\n\
+     println(same(spawn Worker(_id: 1), spawn Worker(_id: 2)));\n\
      }\n";
 
-/// Every `is` program this file compiles, rejected and accepted alike. The
+/// Every `is` program this file checks, rejected and accepted alike. The
 /// codegen-front backstop must be unreachable from all of them.
 const ALL_IS_SOURCES: &[(&str, &str)] = &[
     ("record", RECORD_IS),
@@ -198,17 +211,19 @@ const ALL_IS_SOURCES: &[(&str, &str)] = &[
     ("payload enum", PAYLOAD_ENUM_IS),
     ("indirect enum", INDIRECT_ENUM_IS),
     ("machine", MACHINE_IS),
+    ("actor", ACTOR_IS),
     ("Vec", VEC_IS),
-    ("empty bytes", BYTES_IS),
-    ("bytes with distinct buffers", BYTES_DISTINCT_BUFFERS_IS),
+    ("HashMap", HASHMAP_IS),
+    ("HashSet", HASHSET_IS),
+    ("bytes", BYTES_IS),
     ("enum through an inferred closure", INFERRED_LAMBDA_ENUM_IS),
     (
         "record through an inferred closure",
         INFERRED_LAMBDA_RECORD_IS,
     ),
     (
-        "bytes through an inferred closure",
-        INFERRED_LAMBDA_BYTES_IS,
+        "actor through an inferred closure",
+        INFERRED_LAMBDA_ACTOR_IS,
     ),
 ];
 
@@ -276,15 +291,36 @@ fn structural_equality_on_the_same_record_is_accepted() {
 }
 
 #[test]
-fn is_on_a_heap_handle_is_still_accepted() {
-    // Negative control for the rejection: `is` on a `Vec` handle is identity
-    // comparison with a real answer and must keep checking clean.
-    let output = run_check(VEC_IS);
+fn is_on_an_actor_handle_is_still_accepted() {
+    // Negative control for the rejections in this file: `is` on an actor
+    // handle is identity comparison with a real answer and must keep
+    // checking clean.
+    let output = run_check(ACTOR_IS);
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
         output.status.success(),
-        "`is` on two `Vec` handles must check clean; got:\n{stderr}"
+        "`is` on two actor handles must check clean; got:\n{stderr}"
     );
+}
+
+#[test]
+fn is_on_a_vec_is_rejected_by_the_checker() {
+    assert_rejected_with_e_is_value_type(VEC_IS, "Vec<i64>");
+}
+
+#[test]
+fn is_on_a_hashmap_is_rejected_by_the_checker() {
+    assert_rejected_with_e_is_value_type(HASHMAP_IS, "HashMap<string, i64>");
+}
+
+#[test]
+fn is_on_a_hashset_is_rejected_by_the_checker() {
+    assert_rejected_with_e_is_value_type(HASHSET_IS, "HashSet<i64>");
+}
+
+#[test]
+fn is_on_bytes_is_rejected_by_the_checker() {
+    assert_rejected_with_e_is_value_type(BYTES_IS, "bytes");
 }
 
 #[test]
@@ -326,11 +362,16 @@ fn is_on_a_record_through_an_inferred_closure_is_rejected_by_the_checker() {
 }
 
 #[test]
-fn is_on_bytes_through_an_inferred_closure_still_runs() {
+fn is_on_an_actor_handle_through_an_inferred_closure_is_accepted() {
     // Negative control for the two rejections above: an inferred operand is
-    // not itself the fault, so the same closure over two distinct `bytes`
-    // buffers compiles and answers `false`.
-    assert_run_prints(INFERRED_LAMBDA_BYTES_IS, &["false"]);
+    // not itself the fault, so the same closure over two actor handles
+    // checks clean.
+    let output = run_check(INFERRED_LAMBDA_ACTOR_IS);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "`is` on two actor handles through an inferred closure must check clean; got:\n{stderr}"
+    );
 }
 
 #[test]
@@ -350,42 +391,42 @@ fn no_is_program_reaches_the_codegen_front_backstop() {
     }
 }
 
+/// The four value-type reject fixtures under `tests/vertical-slice/reject/`
+/// (D340), checked directly rather than through an inline source string —
+/// the corpus these belong to is read by other tooling that scans that
+/// directory, so the file form is pinned alongside the inline-source form
+/// above.
 #[test]
-fn is_on_two_empty_bytes_runs_and_reports_the_same_absent_buffer() {
-    // The `bytes` half of #3134: `bytes` is a heap handle, so `is` must
-    // compile and execute, not just type-check. `bytes.new()` allocates
-    // nothing, so both handles name the same absent buffer.
-    assert_run_prints(BYTES_IS, &["true"]);
-}
-
-#[test]
-fn is_on_bytes_answers_from_the_buffer_pointer() {
-    // The counterfactual for the test above: once each handle owns a buffer
-    // the comparison separates them. Without this, a comparison that always
-    // answered `true` would pass.
-    assert_run_prints(BYTES_DISTINCT_BUFFERS_IS, &["false", "true"]);
-}
-
-/// Compile and run `source`, asserting it exits clean and prints exactly
-/// `expected`, one entry per line.
-fn assert_run_prints(source: &str, expected: &[&str]) {
-    require_codegen();
-    let dir = tempdir();
-    let path = dir.path().join("main.hew");
-    std::fs::write(&path, source).unwrap();
-
-    let output = run_bounded_hew_run(&path, repo_root());
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(
-        output.status.success(),
-        "`is` on `bytes` handles must run; got:\n{stderr}"
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<&str> = stdout.lines().map(str::trim).collect();
-    assert_eq!(
-        lines, expected,
-        "unexpected `is` result; stdout:\n{stdout}\nstderr:\n{stderr}"
-    );
+fn vertical_slice_reject_fixtures_are_rejected_with_e_is_value_type() {
+    let fixtures: &[(&str, &str)] = &[
+        ("is_on_vec.hew", "Vec<i64>"),
+        ("is_on_hashmap.hew", "HashMap<string, i64>"),
+        ("is_on_hashset.hew", "HashSet<i64>"),
+        ("is_on_bytes.hew", "bytes"),
+    ];
+    for (fixture, type_name) in fixtures {
+        let path = repo_root()
+            .join("tests/vertical-slice/reject")
+            .join(fixture);
+        let output = Command::new(hew_binary())
+            .arg("check")
+            .arg(&path)
+            .current_dir(repo_root())
+            .output()
+            .expect("failed to spawn hew check");
+        let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+        assert!(
+            !output.status.success(),
+            "expected {fixture} to be rejected; got:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("E_IS_VALUE_TYPE")
+                && stderr.contains(type_name)
+                && stderr.contains("`==`"),
+            "expected {fixture} to report E_IS_VALUE_TYPE naming `{type_name}` and `==`; \
+             got:\n{stderr}"
+        );
+    }
 }
 
 /// Shared shape for the #3134 rejections: the checker refuses the program,

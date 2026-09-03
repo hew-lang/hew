@@ -1,0 +1,7 @@
+// `is` on `HashSet` is rejected for the same reason as `Vec` (D340).
+fn main() {
+    let s1: HashSet<i64> = HashSet.new();
+    let s2: HashSet<i64> = HashSet.new();
+    let same: bool = s1 is s2;
+    println(same);
+}

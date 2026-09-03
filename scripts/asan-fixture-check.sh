@@ -480,10 +480,6 @@ VEC_RECEIVER_DROP_ONLY_SRC="${ROOT}/tests/vertical-slice/accept/vec_receiver_dro
 # Sender is cloneable, so this companion fixture exercises the descriptor's
 # clone thunk plus both Vec destructors and the paired receiver close.
 VEC_SENDER_CLONE_DROP_SRC="${ROOT}/tests/vertical-slice/accept/vec_sender_clone_drop_asan.hew"
-# `is` borrows both operands, so an unbound `bytes` temporary in operand
-# position keeps its single drop obligation while a bound operand survives the
-# compare. LSan catches the missed release, ASan the over-release (#3134).
-BYTES_IS_TEMP_OPERAND_SRC="${ROOT}/tests/vertical-slice/accept/bytes_is_temp_operand_asan.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -557,9 +553,6 @@ compile_asan_fixture "drop-only Receiver Vec lifecycle" "${VEC_RECEIVER_DROP_ONL
 
 VEC_SENDER_CLONE_DROP_BIN="${WORK_DIR}/vec_sender_clone_drop_asan"
 compile_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_SRC}" "${VEC_SENDER_CLONE_DROP_BIN}"
-
-BYTES_IS_TEMP_OPERAND_BIN="${WORK_DIR}/bytes_is_temp_operand_asan"
-compile_asan_fixture "bytes is-operator temporary operands (#3134)" "${BYTES_IS_TEMP_OPERAND_SRC}" "${BYTES_IS_TEMP_OPERAND_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -749,12 +742,6 @@ else
 fi
 
 if run_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_BIN}" 0; then
-    pass=$((pass + 1))
-else
-    fail=$((fail + 1))
-fi
-
-if run_asan_fixture "bytes is-operator temporary operands (#3134)" "${BYTES_IS_TEMP_OPERAND_BIN}" 0; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1))

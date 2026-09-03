@@ -1,0 +1,9 @@
+// `is` on `Vec` is rejected: D340 narrows the admission set to actor
+// handles only, and `Vec` is a copy-on-write value with structural `==`
+// (HEW-SPEC-2026 §3.4.3's value row).
+fn main() {
+    let v1: Vec<i64> = Vec.new();
+    let v2: Vec<i64> = Vec.new();
+    let same: bool = v1 is v2;
+    println(same);
+}

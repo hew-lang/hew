@@ -1,19 +1,24 @@
-//! Identity-comparison (`is`) allowance set and value-type rejection (slice D-2).
+//! Identity-comparison (`is`) allowance set and value-type rejection (slice D-2, D340).
 //!
-//! Covers the checker rule (HEW-SPEC-2026 §operator precedence, entry 10):
-//! `is` is reference identity on heap *handles*, never on values.
+//! Covers the checker rule (HEW-SPEC-2026 §3.4.3, §operator precedence entry
+//! 10): `is` is handle identity only. D340 ratified §3.4.3's category table;
+//! `is_identity_capable` currently implements its pid handle row (actors and
+//! `LocalPid<T>`) — the counted/opaque/resource handle rows (`Rc`, `Weak`,
+//! `#[opaque]`/`#[resource]` wrappers) are still refused pending the codegen
+//! support their identity words need, tracked outside this PR.
 //!
-//! * Allowed: actors/actor refs, `Vec`/`HashMap`/`HashSet`, `bytes`.
+//! * Allowed: actors/actor refs (`LocalPid<T>`).
 //! * Rejected with `E_IS_VALUE_TYPE`: scalars (`i64`, `bool`, `char`, floats),
-//!   `string`, tuples, user `type Foo { ... }` record declarations, `enum`
-//!   declarations (`indirect` included), and machines.
-//!   Records are copy-on-write values under the v0.5 value model
-//!   (`docs/v05/ownership.md` — structural `==`, no pointer identity); enums
-//!   and machines are tagged values, and `indirect` is a layout annotation
-//!   (HEW-SPEC-2026 §3.7.4) whose heap box `is` must not expose (#3134). The
-//!   checker is the last word on all of them; the codegen-front
-//!   `IdentityCompare` legality check is an unreachable backstop, not a user
-//!   diagnostic (#3108, #3134).
+//!   `string`, `bytes`, tuples, `Vec`/`HashMap`/`HashSet`, user
+//!   `type Foo { ... }` record declarations, `enum` declarations (`indirect`
+//!   included), machines, `dyn Trait` objects, and closures.
+//!   Records, `bytes`, and the collections are copy-on-write values under the
+//!   v0.5 value model (`docs/v05/ownership.md` — structural `==`, no pointer
+//!   identity, HEW-SPEC-2026 §3.4.3's value row); enums and machines are
+//!   tagged values, and `indirect` is a layout annotation (HEW-SPEC-2026
+//!   §3.7.4) whose heap box `is` must not expose (#3134). The checker is the
+//!   last word on all of them; the codegen-front `IdentityCompare` legality
+//!   check is an unreachable backstop, not a user diagnostic (#3108, #3134).
 //! * Cross-type mismatches collapse into `TypeErrorKind::Mismatch`.
 //! * An operand whose type is still an inference variable (a closure
 //!   parameter, settled only at the call site) is decided after unification
@@ -65,7 +70,7 @@ fn assert_has_mismatch(src: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// ALLOWED: actor refs, collections, bytes, user `type Foo {...}` decls
+// ALLOWED: actor refs (the pid handle row of HEW-SPEC-2026 §3.4.3)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -86,9 +91,20 @@ fn actor_ref_is_actor_ref_accepted() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// REJECTED: `Vec`/`HashMap`/`HashSet`/`bytes` are values, not handles (D340)
+//
+// D340 narrows the admission set to the pid handle row only: collections and
+// `bytes` are copy-on-write values with structural `==` (HEW-SPEC-2026
+// §3.4.3's value row), so `a is b` on them is `E_IS_VALUE_TYPE` exactly like
+// an enum or record — the codegen support this PR's predecessor added for
+// `bytes` identity (`BytesTriple` field-0 `ptrtoint`) is unreachable now and
+// was deleted with it.
+// ---------------------------------------------------------------------------
+
 #[test]
-fn vec_is_vec_accepted() {
-    assert_clean(
+fn vec_is_vec_rejected() {
+    assert_has_e_is_value_type(
         r"
             fn main() {
                 let v1: Vec<i64> = Vec.new();
@@ -100,8 +116,8 @@ fn vec_is_vec_accepted() {
 }
 
 #[test]
-fn hashmap_is_hashmap_accepted() {
-    assert_clean(
+fn hashmap_is_hashmap_rejected() {
+    assert_has_e_is_value_type(
         r"
             fn main() {
                 let m1: HashMap<string, i64> = HashMap.new();
@@ -113,8 +129,8 @@ fn hashmap_is_hashmap_accepted() {
 }
 
 #[test]
-fn hashset_is_hashset_accepted() {
-    assert_clean(
+fn hashset_is_hashset_rejected() {
+    assert_has_e_is_value_type(
         r"
             fn main() {
                 let s1: HashSet<i64> = HashSet.new();
@@ -126,13 +142,100 @@ fn hashset_is_hashset_accepted() {
 }
 
 #[test]
-fn bytes_is_bytes_accepted() {
-    assert_clean(
+fn bytes_is_bytes_rejected() {
+    assert_has_e_is_value_type(
         r"
             fn main() {
                 let a = bytes.new();
                 let b = bytes.new();
                 let _eq: bool = a is b;
+            }
+        ",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Negative controls: narrowing the admission set to reject the four value
+// types above must not disturb any other operand's existing answer.
+// ---------------------------------------------------------------------------
+
+/// `LocalPid` stays admitted — the case `actor_ref_is_actor_ref_accepted`
+/// above already pins; this negative control names it explicitly alongside
+/// its three siblings below so the four are read together.
+#[test]
+fn negative_control_local_pid_still_accepted() {
+    assert_clean(
+        r"
+            actor Worker {
+                let _id: i64;
+                receive fn ping() {}
+            }
+
+            fn main() {
+                let a = spawn Worker(_id: 1);
+                let b = spawn Worker(_id: 2);
+                let _eq: bool = a is b;
+            }
+        ",
+    );
+}
+
+/// `Rc` is HEW-SPEC-2026 §3.4.3's counted-handle row, not yet wired into
+/// `is_identity_capable` (its identity word needs codegen support this PR
+/// does not add) — still refused as a value type, unchanged by this PR's
+/// narrowing edit.
+#[test]
+fn negative_control_rc_still_rejected() {
+    assert_has_e_is_value_type(
+        r"
+            fn main() {
+                let a = Rc.new(1);
+                let b = Rc.new(2);
+                let _eq: bool = a is b;
+            }
+        ",
+    );
+}
+
+/// `dyn Trait` is HEW-SPEC-2026 §3.4.3's value row — refused before this PR
+/// and unchanged by it.
+#[test]
+fn negative_control_dyn_trait_still_rejected() {
+    assert_has_e_is_value_type(
+        r#"
+            trait Greeter {
+                fn greet(self) -> string;
+            }
+
+            type EnglishGreeter {
+                name: string;
+            }
+
+            impl Greeter for EnglishGreeter {
+                fn greet(self) -> string {
+                    self.name
+                }
+            }
+
+            fn main() {
+                let a: dyn Greeter = EnglishGreeter { name: "a" };
+                let b: dyn Greeter = EnglishGreeter { name: "b" };
+                let _eq: bool = a is b;
+            }
+        "#,
+    );
+}
+
+/// Closures are HEW-SPEC-2026 §3.4.3's callable row — refused before this PR
+/// and unchanged by it.
+#[test]
+fn negative_control_closures_still_rejected() {
+    assert_has_e_is_value_type(
+        r"
+            fn main() {
+                let f = || true;
+                let g = || true;
+                let _eq: bool = f is g;
             }
         ",
     );
@@ -409,10 +512,15 @@ fn is_result_typed_as_bool() {
     // else the `if` would fail to check.
     assert_clean(
         r"
+            actor Worker {
+                let _id: i64;
+                receive fn ping() {}
+            }
+
             fn main() {
-                let v1: Vec<i64> = Vec.new();
-                let v2: Vec<i64> = Vec.new();
-                if v1 is v2 {
+                let a = spawn Worker(_id: 1);
+                let b = spawn Worker(_id: 2);
+                if a is b {
                     let _x: i64 = 1;
                 }
             }
@@ -477,12 +585,18 @@ fn tuple_is_tuple_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// Cross-class / cross-instantiation mismatch
+// Cross-instantiation mismatch
+//
+// D340 narrowed the admission set to the pid handle row alone, so a
+// cross-*class* mismatch (two different identity-bearing categories, e.g. an
+// actor against a `Vec`) has no reachable example left — `Vec` is a value
+// type now and reports `E_IS_VALUE_TYPE` on its own operand rather than
+// joining a `Mismatch`. Two different actor types are still both
+// identity-capable and distinct, so that cross-instantiation shape survives.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn actor_ref_is_vec_rejected_as_mismatch() {
-    // Both sides are identity-bearing, but the types differ.
+fn actor_refs_of_different_actor_types_rejected_as_mismatch() {
     assert_has_mismatch(
         r"
             actor Worker {
@@ -490,23 +604,14 @@ fn actor_ref_is_vec_rejected_as_mismatch() {
                 receive fn ping() {}
             }
 
+            actor Other {
+                let _id: i64;
+                receive fn ping() {}
+            }
+
             fn main() {
                 let a = spawn Worker(_id: 1);
-                let v: Vec<i64> = Vec.new();
-                let _eq: bool = a is v;
-            }
-        ",
-    );
-}
-
-#[test]
-fn vec_int_is_vec_string_rejected_as_mismatch() {
-    // Same identity class, distinct generic instantiations.
-    assert_has_mismatch(
-        r"
-            fn main() {
-                let a: Vec<i64> = Vec.new();
-                let b: Vec<string> = Vec.new();
+                let b = spawn Other(_id: 1);
                 let _eq: bool = a is b;
             }
         ",
@@ -519,6 +624,10 @@ fn vec_int_is_vec_string_rejected_as_mismatch() {
 
 #[test]
 fn is_after_actor_send_reads_sender_snapshot_source() {
+    // `bytes` is a value type (D340), so `==` is the comparison this proves:
+    // the actor send snapshots `h` rather than moving it, so the sender's
+    // binding is still live afterwards. `is` would reject `bytes` on its own
+    // terms regardless of the move question this test is actually about.
     let src = r"
         actor SnapshotSink {
             let _id: i64;
@@ -530,7 +639,7 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
             let h = bytes.new();
             let q = bytes.new();
             s.consume(h);
-            let _eq: bool = h is q;
+            let _eq: bool = h == q;
         }
     ";
     let output = typecheck_isolated(src);
@@ -539,46 +648,34 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
 
 // ---------------------------------------------------------------------------
 // `is TypeName` (type-pattern form)
+//
+// D340 narrows admission to actor handles, and `resolve_is_type_pattern`
+// always resolves a `TypeName` RHS to the bare `TypeDef` name with no
+// generic arguments — every admitted actor value is a `LocalPid<T>` handle,
+// so an LHS can never structurally equal that bare pattern
+// (`LocalPid<Worker>` vs. `Worker`). The static-tautology branch
+// (`HirLiteral::Bool(true)`, the `RedundantIs` warning, and the
+// "type patterns currently require an identifier operand" guard, which only
+// fires alongside the tautology) has no reachable positive control left; see
+// the module doc comment. Only the still-reachable rejection and mismatch
+// paths are tested here.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn is_type_pattern_static_tautology_emits_redundant_is_warning() {
-    // Static-tautology: `buf is bytes` where `buf: bytes`. The checker
-    // records the type-pattern in `is_type_patterns`, HIR lowers it to
-    // `HirLiteral::Bool(true)`, and any `else` branch gated on the negation
-    // is dead. A `RedundantIs` warning surfaces this so the user is told
-    // before they wonder why their else-branch never runs.
-    //
-    // The receiver is a `bytes` handle because the type-pattern branch runs
-    // the same identity-allowance predicate as the value branch: an enum or
-    // machine receiver is rejected outright (#3134).
-    let output = common::typecheck_isolated(
-        r"
-            fn main() {
-                let buf = bytes.new();
-                let _eq: bool = buf is bytes;
-            }
-        ",
-    );
-    let redundant = common::warnings_of_kind(&output, &TypeErrorKind::RedundantIs);
-    assert!(
-        !redundant.is_empty(),
-        "expected at least one RedundantIs warning, got: {:#?}",
-        output.warnings,
-    );
-}
-
-#[test]
 fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
-    // Positive-control: when the LHS type does NOT equal the RHS type
-    // pattern the comparison is genuinely non-trivial — the checker should
-    // flag the Mismatch (and not the static-tautology warning).
+    // `this is Worker` inside a `Worker` receive fn: `this: LocalPid<Worker>`
+    // never equals the bare `Worker` type pattern, so the checker reports the
+    // Mismatch this test's name promises, not the static-tautology warning.
     let output = common::typecheck_isolated(
         r"
-            fn main() {
-                let v: Vec<i64> = Vec.new();
-                let _eq: bool = v is bytes;
+            actor Worker {
+                let _id: i64;
+                receive fn ping() -> bool {
+                    this is Worker
+                }
             }
+
+            fn main() {}
         ",
     );
     let redundant = common::warnings_of_kind(&output, &TypeErrorKind::RedundantIs);
@@ -586,6 +683,14 @@ fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
         redundant.is_empty(),
         "expected no RedundantIs warning when types differ, got: {:#?}",
         output.warnings,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "expected a Mismatch between `LocalPid<Worker>` and `Worker`, got: {:#?}",
+        output.errors,
     );
 }
 
@@ -603,38 +708,6 @@ fn is_type_pattern_value_type_lhs_emits_e_is_value_type() {
                 let _eq: bool = a is i64;
             }
         ",
-    );
-}
-
-#[test]
-fn is_type_pattern_requires_identifier_lhs_emits_invalid_operation() {
-    // Guard test for the "type patterns currently require an identifier
-    // operand" `InvalidOperation` rejection: a non-Identifier LHS that
-    // nonetheless produces an identity-bearing type (here a function-call
-    // result) must trip the guard rather than slip through to the
-    // type-pattern recording path. Using a function-call result keeps
-    // the LHS identity-capable so the value-type rejection (E_IS_VALUE_TYPE)
-    // doesn't fire first.
-    let output = common::typecheck_isolated(
-        r"
-            fn make() -> bytes {
-                bytes.new()
-            }
-
-            fn main() {
-                let _eq: bool = make() is bytes;
-            }
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| matches!(e.kind, TypeErrorKind::InvalidOperation)
-                && e.message
-                    .contains("type patterns currently require an identifier operand")),
-        "expected InvalidOperation rejecting non-identifier LHS, got: {:#?}",
-        output.errors,
     );
 }
 
@@ -682,16 +755,21 @@ fn is_on_a_record_through_an_inferred_closure_is_rejected() {
 }
 
 #[test]
-fn is_on_bytes_through_an_inferred_closure_is_accepted() {
+fn is_on_an_actor_ref_through_an_inferred_closure_is_accepted() {
     // Negative control: an inferred operand is not itself the fault. Without
     // this, rejecting every unresolved operand would also pass the two tests
     // above.
     assert_clean(
         r"
+            actor Worker {
+                let _id: i64;
+                receive fn ping() {}
+            }
+
             fn main() {
                 let same = |a, b| a is b;
-                let x = bytes.new();
-                let y = bytes.new();
+                let x = spawn Worker(_id: 1);
+                let y = spawn Worker(_id: 2);
                 let _eq: bool = same(x, y);
             }
         ",
@@ -705,12 +783,48 @@ fn mismatched_handle_types_through_an_inferred_closure_are_reported() {
     // than `E_IS_VALUE_TYPE`, and it must survive the deferral too.
     assert_has_mismatch(
         r"
+            actor Worker {
+                let _id: i64;
+                receive fn ping() {}
+            }
+
+            actor Other {
+                let _id: i64;
+                receive fn ping() {}
+            }
+
             fn main() {
                 let same = |a, b| a is b;
-                let v: Vec<i64> = Vec.new();
-                let b = bytes.new();
-                let _eq: bool = same(v, b);
+                let w = spawn Worker(_id: 1);
+                let o = spawn Other(_id: 1);
+                let _eq: bool = same(w, o);
             }
         ",
+    );
+}
+
+/// An inferred `is` operand that never resolves at all — the closure is
+/// passed to a generic sink and never called, so `a`/`b` stay `Ty::Var`
+/// through the end of inference. The deferred re-check must refuse this
+/// itself (fail closed) rather than silently drop the obligation and let it
+/// reach the codegen front's span-less `IdentityCompare` backstop (#3134).
+#[test]
+fn is_on_an_unresolved_inferred_operand_fails_closed() {
+    let output = common::typecheck_isolated(
+        r"
+            fn sink<F>(_f: F) {}
+
+            fn main() {
+                sink(|a, b| a is b);
+            }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| e
+            .message
+            .contains("cannot infer type for `is` operand type")),
+        "expected the `is` re-check to report its own inference-failed diagnostic \
+         for a still-unresolved operand, got: {:#?}",
+        output.errors
     );
 }

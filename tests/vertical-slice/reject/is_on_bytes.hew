@@ -1,0 +1,11 @@
+// `is` on `bytes` is rejected: D340 narrows the admission set to actor
+// handles only, and `bytes` is a copy-on-write value with structural `==`
+// (HEW-SPEC-2026 §3.4.3's value row). A predecessor of this fixture's PR
+// admitted `bytes` and added codegen support for its identity word; that
+// support became unreachable and was deleted with it.
+fn main() {
+    let a = bytes.new();
+    let b = bytes.new();
+    let same: bool = a is b;
+    println(same);
+}

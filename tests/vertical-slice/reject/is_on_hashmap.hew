@@ -1,0 +1,7 @@
+// `is` on `HashMap` is rejected for the same reason as `Vec` (D340).
+fn main() {
+    let m1: HashMap<string, i64> = HashMap.new();
+    let m2: HashMap<string, i64> = HashMap.new();
+    let same: bool = m1 is m2;
+    println(same);
+}

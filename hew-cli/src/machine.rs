@@ -155,12 +155,13 @@ fn machine_views<'a>(
     hir_machines
         .iter()
         .map(|hir| {
-            let ast = hir.defining_module.is_none().then(|| {
+            let ast = if hir.defining_module.is_none() {
                 ast_machines
                     .iter()
                     .find(|candidate| candidate.name == hir.name)
-            });
-            let ast = ast.flatten();
+            } else {
+                None
+            };
             MachineView {
                 hir,
                 groups: ast.map_or(&[][..], |m| m.composite_groups.as_slice()),

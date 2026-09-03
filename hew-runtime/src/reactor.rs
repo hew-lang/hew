@@ -306,8 +306,24 @@ impl IncarnationGuard {
     }
 
     /// Publish `actor` as the in-flight target.
+    ///
+    /// [`ActorIncarnation::NONE`] publishes nothing, leaving the guard idle.
+    /// The guard's whole job is to stop a LOCAL actor box being reclaimed under
+    /// an in-flight phase, and a registration whose actor ref carries no local
+    /// pointer (a REMOTE ref handed to `hew_tcp_attach`) has no such box here;
+    /// `reactor_detach_actor` runs only for a local actor being freed, so it
+    /// can never be waiting on one.
+    ///
+    /// SHORTCUT: such a registration is also un-scrubbable and its active-mode
+    /// delivery would `hew_actor_try_send` through a null actor pointer. WHY it
+    /// stands: no in-tree caller builds one (every `hew_tcp_attach` /
+    /// `hew_conn_await_read` / `hew_conn_await_accept` call site passes
+    /// `hew_actor_ref_local`), and refusing at the boundary is a wider surface
+    /// change than the identity fix this guard belongs to. WHEN OBSOLETE: when
+    /// the reactor's registration entry points refuse a ref with no local
+    /// incarnation. WHAT THE REAL FIX IS: that refusal, plus deleting the
+    /// remote arm of `actor_snapshot_alive` it makes unreachable.
     fn publish(&self, actor: ActorIncarnation) {
-        debug_assert!(!actor.is_none(), "a guard must name a real incarnation");
         self.0.store(actor.spawn_serial(), Ordering::SeqCst);
     }
 

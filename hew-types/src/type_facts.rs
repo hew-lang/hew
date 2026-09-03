@@ -693,4 +693,107 @@ mod tests {
             .expect("a trait object has a class");
         assert_eq!(SendFact::Known(false), facts.send);
     }
+
+    /// Declarations that reach themselves, for the recursion cases below.
+    ///
+    /// `Tree` is the shape of the shipped `indirect enum` fixture; `Pair<T>`
+    /// mentions one fixed instantiation of itself, so a name-keyed cut sees
+    /// the same declaration for two different substitutions.
+    fn recursive_declarations() -> BTreeMap<String, DeclaredType> {
+        let mut decls = declarations();
+        decls.insert(
+            "Tree".to_string(),
+            DeclaredType {
+                marker: DeclarationMarker::None,
+                type_params: vec![],
+                members: vec![
+                    ResolvedTy::I64,
+                    named("Tree", None, vec![]),
+                    named("Tree", None, vec![]),
+                ],
+            },
+        );
+        decls.insert(
+            "Pair".to_string(),
+            DeclaredType {
+                marker: DeclarationMarker::None,
+                type_params: vec!["T".to_string()],
+                members: vec![
+                    ResolvedTy::TypeParam {
+                        name: "T".to_string(),
+                    },
+                    named("Pair", None, vec![conn()]),
+                ],
+            },
+        );
+        decls
+    }
+
+    /// A declaration that reaches itself is boxed on the heap, and the box is
+    /// not one of its members: classing it from the members alone would call a
+    /// heap allocation `BitCopy`, which §1.2 gives no owner and §1.3 lets
+    /// `copy_value` duplicate. §1.1 has no default class, so it refuses.
+    #[test]
+    fn a_self_recursive_declaration_is_refused_rather_than_classed_bit_copy() {
+        let decls = recursive_declarations();
+        let context = ClassContext::new(&decls);
+        assert_eq!(
+            Err(ClassError::RecursiveDeclaration {
+                name: "Tree".to_string()
+            }),
+            crate::value_class::classify_ty(&named("Tree", None, vec![]), &context)
+        );
+    }
+
+    /// The counterfactual for the row above: a declaration whose members do
+    /// not reach it still classes, so the refusal is about the cycle and not
+    /// about user declarations in general.
+    #[test]
+    fn a_non_recursive_declaration_over_the_same_members_still_classes() {
+        let decls = recursive_declarations();
+        let context = ClassContext::new(&decls);
+        assert_eq!(
+            Ok((ValueClass::AffineResource, CloneKind::None)),
+            crate::value_class::classify_ty(&conn(), &context)
+        );
+        assert_eq!(
+            Ok((ValueClass::BitCopy, CloneKind::Bits)),
+            crate::value_class::classify_ty(&named("Point", None, vec![]), &context)
+        );
+    }
+
+    /// The cut is keyed by declaration name, so it fires for an instantiation
+    /// the walk has not actually entered. Refusing keeps that conservative:
+    /// both instantiations refuse rather than one of them inheriting the
+    /// other's class.
+    #[test]
+    fn a_name_keyed_cut_refuses_every_instantiation_it_reaches() {
+        let decls = recursive_declarations();
+        let context = ClassContext::new(&decls);
+        for arg in [ResolvedTy::I64, conn()] {
+            assert_eq!(
+                Err(ClassError::RecursiveDeclaration {
+                    name: "Pair".to_string()
+                }),
+                crate::value_class::classify_ty(&named("Pair", None, vec![arg.clone()]), &context),
+                "`Pair<{arg:?}>` must refuse rather than take a cut class"
+            );
+        }
+    }
+
+    /// A refused type gets no fact row at all, which is what the table's
+    /// missing-key contract means: a consumer reads no guess.
+    #[test]
+    fn a_refused_recursive_type_publishes_no_fact_row() {
+        let decls = recursive_declarations();
+        let context = ClassContext::new(&decls);
+        assert!(TypeFacts::of_type(
+            &named("Tree", None, vec![]),
+            &context,
+            SendFact::Known(true),
+            false,
+            false
+        )
+        .is_err());
+    }
 }

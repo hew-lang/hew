@@ -197,6 +197,10 @@ pub enum ClassError {
     /// An `#[opaque]` handle declaration with no ownership marker: the
     /// Aggregate rule cannot see through it and there is no default.
     OpaqueWithoutMarker { name: String },
+    /// The declaration reaches itself through its own members. §1.1's
+    /// indirect-enum row boxes that payload on the heap, and the box is not
+    /// visible from [`DeclaredType`], so the aggregate walk has no term for it.
+    RecursiveDeclaration { name: String },
 }
 
 impl std::fmt::Display for ClassError {
@@ -216,6 +220,10 @@ impl std::fmt::Display for ClassError {
             Self::OpaqueWithoutMarker { name } => write!(
                 f,
                 "opaque handle `{name}` carries no ownership marker and has no visible fields"
+            ),
+            Self::RecursiveDeclaration { name } => write!(
+                f,
+                "`{name}` reaches itself through its own members and its heap box is not a visible field"
             ),
         }
     }
@@ -557,16 +565,25 @@ fn classify_declaration(
         .ok_or_else(|| ClassError::UnknownDeclaration {
             name: name.to_string(),
         })?;
-    // MARKED SHORTCUT — a recursive occurrence contributes the join's bottom.
+    // MARKED SHORTCUT — a recursive occurrence refuses rather than classing.
     // WHY: an `indirect` enum (`type List { Cons(i64, List) }`) is a legal
-    // declaration whose member walk does not terminate; the join is monotone,
-    // so the bottom element is its fixpoint and no legal type is refused.
+    // declaration whose member walk does not terminate, and the recursion is
+    // only legal because the payload sits behind a heap box. `DeclaredType`
+    // carries the members, not the box, so the aggregate join has no term for
+    // the allocation: cutting the cycle at the join's bottom would publish
+    // `(BitCopy, Bits)` for a boxed payload, which §1.2 maps to no ownership
+    // obligation and §1.3 lets a `copy_value` duplicate — two owners of one
+    // allocation. There is no default class here, so this refuses.
     // WHEN: §1.1's indirect-enum row lands with its own boxed-payload clone
     // kind (P2).
-    // WHAT: the walk carries a per-declaration class variable and iterates the
-    // join to a fixpoint instead of cutting the cycle at the bottom.
+    // WHAT: `DeclaredType` carries `is_indirect` (`HirTypeDecl.is_indirect`),
+    // the box contributes the heap floor the way `collection_facts` does, and
+    // the walk iterates the join to a fixpoint over the payload instead of
+    // refusing.
     if in_progress.iter().any(|entry| entry == name) {
-        return Ok((ValueClass::BitCopy, CloneKind::Bits));
+        return Err(ClassError::RecursiveDeclaration {
+            name: name.to_string(),
+        });
     }
     in_progress.push(name.to_string());
     let members: Vec<ResolvedTy> = declared

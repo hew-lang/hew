@@ -1276,6 +1276,8 @@ pub struct ImplDecl {
     #[serde(default)]
     pub type_aliases: Vec<ImplTypeAlias>,
     pub methods: Vec<FnDecl>,
+    #[serde(default)]
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

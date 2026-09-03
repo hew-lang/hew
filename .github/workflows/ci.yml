@@ -411,8 +411,17 @@ jobs:
         run: npm install -g wrangler
 
       - name: Run ${{ matrix.journey }}
+        # HEW_STD: the compiled-hew-linux artifact ships only the binary and
+        # libhew.a, no std/ sibling (hew-types/src/module_registry.rs's
+        # dev-build fallback needs std/builtins.hew two directories above
+        # the executable, which the unpacked artifact tree doesn't have).
+        # Every existing consumer of this artifact runs with cwd = the
+        # checkout root, where cwd/std resolves before that fallback is
+        # ever needed; the journey scripts `cd` into a scratch tempdir, so
+        # this job is the first to need the explicit override.
         env:
           HEW_BIN: ${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew
+          HEW_STD: ${{ github.workspace }}/std
         run: bash scripts/run-journeys.sh ${{ matrix.journey }}
 
   # windows-2022 has no compiled-hew artifact (compiled-hew-linux is
@@ -442,7 +451,12 @@ jobs:
           cache-shared-key: journeys-windows-day-one
 
       - name: Build hew
-        run: cargo build -p hew-cli --release
+        # hew-lib alongside hew-cli, not hew-cli alone: `hew build`/`hew run`
+        # link user programs against libhew (hew.lib on Windows), so day
+        # one's later steps need it beside the binary the same way
+        # build-and-test-windows's own PDB step does (cargo build -p
+        # hew-lib --release, immediately before `hew.exe build -g`).
+        run: cargo build -p hew-lib -p hew-cli --release
 
       - name: Run day-one.sh
         shell: bash

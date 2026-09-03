@@ -39,10 +39,11 @@
 // supported path: children boot cleanly, the supervisor registers, and the
 // profiler serves a real tree.
 //
-// NOTE: #[on(start)] lifecycle hooks are also skipped for supervised
-//       children today (the supervisor bootstrap does not run them), so we
-//       deliberately avoid them here — all child setup is via field
-//       defaults and constructor arguments only.
+// NOTE: #[on(start)] does run for a supervised child — on its first start
+//       and again after every restart. This example still sets everything up
+//       through field defaults and constructor arguments, because that is
+//       what the init() workaround above needs; the hook is available if you
+//       want one.
 
 // ── Actor types ─────────────────────────────────────────────────────────
 

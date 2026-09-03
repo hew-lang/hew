@@ -9820,8 +9820,8 @@ impl Checker {
             format!(
                 "`is` compares identity, and `{}` is a value type \
                  (E_IS_VALUE_TYPE) — use `==` to compare it by value; `is` \
-                 applies to handles such as actor references and \
-                 `Vec`/`HashMap`/`HashSet`",
+                 applies to handles: actor references, \
+                 `Vec`/`HashMap`/`HashSet`, and `bytes`",
                 ty.user_facing()
             ),
         );

@@ -56,6 +56,7 @@ pub fn drop_kind_for_test(
 }
 pub use dump::{dump_mir, DumpStage};
 pub use hew_hir::sanitize_for_symbol;
+pub use hew_types::error::DiagChannel;
 pub use hew_types::short_name;
 pub use model::{
     classify_extern_string_ownership, container_ingress_is_copy_in, indirect_closure_callee,

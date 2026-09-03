@@ -28,6 +28,7 @@ use serde::Serialize;
 
 use crate::args::DiagnosticFormat;
 use crate::diagnostic::offset_to_line_col;
+use hew_types::error::DiagChannel;
 
 // ---------------------------------------------------------------------------
 // Output-format + JSON accumulator thread-locals
@@ -180,6 +181,10 @@ pub(crate) struct JsonDiagnostic {
     pub code: String,
     /// `"error"` or `"warning"`.
     pub severity: String,
+    /// Which of the three diagnostic channels this finding reports on:
+    /// `"user"`, `"limitation"`, or `"internal"`. See
+    /// [`hew_types::error::DiagChannel`].
+    pub channel: String,
     /// Compiler stage that emitted the diagnostic (`hew-parser`, `hew-types`,
     /// `hew-hir`, `hew-mir`).
     pub source: String,
@@ -236,16 +241,24 @@ fn fixes_from_code_actions(
 
 /// Build a [`JsonDiagnostic`] from a free-form message that carries no source
 /// span (e.g. import-resolution failures, manifest errors). The code is the
-/// generic `E_MESSAGE` family and the span is zero.
+/// generic `E_MESSAGE` family and the span is zero. Always User channel: a
+/// free-form frontend message never carries a compiler-invariant or
+/// unsupported-lowering classification.
 pub(crate) fn message_diagnostic(message: &str) -> JsonDiagnostic {
-    coded_message_diagnostic("E_MESSAGE", message)
+    coded_message_diagnostic("E_MESSAGE", message, DiagChannel::User)
 }
 
-/// Build a source-less diagnostic with a stable frontend-authored code.
-pub(crate) fn coded_message_diagnostic(code: &str, message: &str) -> JsonDiagnostic {
+/// Build a source-less diagnostic with a stable frontend-authored code and
+/// caller-supplied channel.
+pub(crate) fn coded_message_diagnostic(
+    code: &str,
+    message: &str,
+    channel: DiagChannel,
+) -> JsonDiagnostic {
     JsonDiagnostic {
         code: code.to_string(),
         severity: SEVERITY_ERROR.to_string(),
+        channel: channel.as_json_str().to_string(),
         source: "hew".to_string(),
         file: String::new(),
         span: JsonSpan::zero(),
@@ -276,6 +289,7 @@ pub(crate) fn from_parse_error(
     JsonDiagnostic {
         code: error.kind.as_kind_str().to_string(),
         severity: severity.to_string(),
+        channel: DiagChannel::User.as_json_str().to_string(),
         source: "hew-parser".to_string(),
         file: filename.to_string(),
         span: JsonSpan::from_range(source, &error.span),
@@ -315,6 +329,7 @@ pub(crate) fn from_type_error(
     JsonDiagnostic {
         code: code.to_string(),
         severity: severity.to_string(),
+        channel: DiagChannel::User.as_json_str().to_string(),
         source: "hew-types".to_string(),
         file: filename.to_string(),
         span: JsonSpan::from_range(source, &error.span),
@@ -345,8 +360,9 @@ pub(crate) fn from_hir_diagnostic(
             .collect()
     });
     JsonDiagnostic {
-        code: crate::diagnostic::hir_diagnostic_kind_string(&diagnostic.kind),
+        code: diagnostic.kind.kind_string(),
         severity: SEVERITY_ERROR.to_string(),
+        channel: diagnostic.kind.channel().as_json_str().to_string(),
         source: "hew-hir".to_string(),
         file: filename.unwrap_or("<unknown>").to_string(),
         span,
@@ -357,7 +373,13 @@ pub(crate) fn from_hir_diagnostic(
 }
 
 /// Build a [`JsonDiagnostic`] from a MIR diagnostic, located at its primary
-/// site when source context is available.
+/// site when source context is available. `channel` is the caller's
+/// `kind.channel()` — computed once at the render site, not re-derived here.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each arg is a direct field of the constructed JsonDiagnostic; grouping would \
+              obscure the one-to-one mapping"
+)]
 pub(crate) fn from_mir_diagnostic(
     source: Option<&str>,
     filename: Option<&str>,
@@ -366,6 +388,7 @@ pub(crate) fn from_mir_diagnostic(
     message: &str,
     notes: &[(Range<usize>, String)],
     context_notes: &[String],
+    channel: DiagChannel,
 ) -> JsonDiagnostic {
     let primary_span = match (source, span) {
         (Some(src), Some(span)) => JsonSpan::from_range(src, span),
@@ -389,6 +412,7 @@ pub(crate) fn from_mir_diagnostic(
     JsonDiagnostic {
         code: code.to_string(),
         severity: SEVERITY_ERROR.to_string(),
+        channel: channel.as_json_str().to_string(),
         source: "hew-mir".to_string(),
         file: filename.unwrap_or("<unknown>").to_string(),
         span: primary_span,
@@ -403,7 +427,10 @@ pub(crate) fn from_mir_diagnostic(
 /// Unlike [`from_mir_diagnostic`] — which is always the hard `error` family —
 /// a lint carries its configured severity: `warning` by default, `error` when
 /// promoted by `--deny`. The `code` is the lint's stable name (`dead_store`),
-/// matching the `-A/-W/-D` selector and the HIR-stage lint codes.
+/// matching the `-A/-W/-D` selector and the HIR-stage lint codes. `channel`
+/// is always User at every call site: a lint never reports a compiler
+/// defect or an unsupported lowering, only a configurable finding about the
+/// user's program.
 pub(crate) fn from_mir_lint(
     source: &str,
     filename: &str,
@@ -411,6 +438,7 @@ pub(crate) fn from_mir_lint(
     code: &str,
     message: &str,
     is_error: bool,
+    channel: DiagChannel,
 ) -> JsonDiagnostic {
     JsonDiagnostic {
         code: code.to_string(),
@@ -420,6 +448,7 @@ pub(crate) fn from_mir_lint(
             SEVERITY_WARNING
         }
         .to_string(),
+        channel: channel.as_json_str().to_string(),
         source: "hew-mir".to_string(),
         file: filename.to_string(),
         span: JsonSpan::from_range(source, span),
@@ -447,6 +476,7 @@ mod tests {
         let diag = from_type_error(source, "main.hew", &error);
         assert_eq!(diag.code, "Mismatch");
         assert_eq!(diag.severity, "error");
+        assert_eq!(diag.channel, "user");
         assert_eq!(diag.file, "main.hew");
         assert_eq!(diag.span.start_line, 2);
         assert!(diag.message.contains("type mismatch"));
@@ -485,6 +515,7 @@ mod tests {
         );
         let diag = from_hir_diagnostic(Some("abcd"), Some("main.hew"), &diagnostic);
         assert_eq!(diag.code, "NotYetImplemented");
+        assert_eq!(diag.channel, "limitation");
         assert!(
             !diag.message.contains("owning_pass"),
             "message must not leak the Rust field name: {}",
@@ -513,9 +544,11 @@ mod tests {
              is not implemented yet",
             &[],
             &["MIR kind: NotYetImplemented".to_string()],
+            DiagChannel::Limitation,
         );
         assert_eq!(diag.code, "NotYetImplemented");
         assert_eq!(diag.severity, SEVERITY_ERROR);
+        assert_eq!(diag.channel, "limitation");
         assert_eq!(diag.span, JsonSpan::zero());
         assert!(!diag.message.contains("SiteId"));
         assert_eq!(diag.notes.len(), 1);
@@ -531,10 +564,15 @@ mod tests {
             "obligation balance in `decode`: owned value `out` is never released",
             &[],
             &["MIR kind: ObligationUnderReleased".to_string()],
+            DiagChannel::Internal,
         );
         assert_eq!(
             diag.severity, SEVERITY_ERROR,
             "an ownership under-release must block LLVM emission"
+        );
+        assert_eq!(
+            diag.channel, "internal",
+            "an obligation imbalance is a compiler defect, not a program fault"
         );
     }
 }

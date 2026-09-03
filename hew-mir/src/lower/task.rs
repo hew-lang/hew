@@ -515,12 +515,8 @@ impl Builder {
                 _ => "<callee>",
             };
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!(
-                        "cannot spawn `{callee_name}` from `{}`",
-                        self.current_function_symbol
-                    ),
-                    site,
+                kind: MirDiagnosticKind::MainContextRequired {
+                    spawned: callee_name.to_string(),
                 },
                 note: format!(
                     "`scope {{ fork ... }}` requires an enclosing ctx-bearing execution context, \
@@ -1215,12 +1211,8 @@ impl Builder {
         };
         if !self.current_function_call_conv.carries_execution_context() {
             self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!(
-                        "cannot spawn fork block from `{}`",
-                        self.current_function_symbol
-                    ),
-                    site,
+                kind: MirDiagnosticKind::MainContextRequired {
+                    spawned: "fork block".to_string(),
                 },
                 note: "fork blocks require an enclosing execution context".to_string(),
             });

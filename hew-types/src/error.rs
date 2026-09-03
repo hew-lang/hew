@@ -56,6 +56,66 @@ pub enum Severity {
     Warning,
 }
 
+/// Which of the three diagnostic channels a compile-time diagnostic belongs
+/// to. Every diagnostic the compiler prints — parse, type, HIR, MIR, lint,
+/// codegen-front — carries exactly one channel, and the channel decides the
+/// process exit code, the rendered text prefix, and the `--format json`
+/// `channel` field.
+///
+/// Variant order is `User < Limitation < Internal` (see the derived `Ord`):
+/// the worst channel among a batch of diagnostics is `Iterator::max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DiagChannel {
+    /// The program is wrong. Exit 1, no special text prefix (today's
+    /// rendering).
+    User,
+    /// Legal Hew that this lowering cannot do yet. Exit 3, prefix
+    /// `compiler limitation:`; the diagnostic's own code names the phase
+    /// (`E_LIMIT_*`).
+    Limitation,
+    /// Two compiler facts disagree — a defect in the compiler, not the
+    /// user's program. Exit 4, prefix `internal compiler error:`; the
+    /// message carries a bug-report line.
+    Internal,
+}
+
+impl DiagChannel {
+    /// The process exit code a compile failure on this channel reports,
+    /// before the program has started running. Usage/configuration errors
+    /// stay exit 2 and never construct a `DiagChannel` (there is nothing to
+    /// classify: they never reach a diagnostic renderer at all).
+    #[must_use]
+    pub const fn exit_code(self) -> i32 {
+        match self {
+            Self::User => 1,
+            Self::Limitation => 3,
+            Self::Internal => 4,
+        }
+    }
+
+    /// The text prefix rendered ahead of the diagnostic's own `E_*` code.
+    /// Empty for `User` (today's rendering carries no channel prefix).
+    #[must_use]
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::User => "",
+            Self::Limitation => "compiler limitation: ",
+            Self::Internal => "internal compiler error: ",
+        }
+    }
+
+    /// The stable lowercase name used as the `--format json` `channel`
+    /// field (`"user"`, `"limitation"`, `"internal"`).
+    #[must_use]
+    pub const fn as_json_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Limitation => "limitation",
+            Self::Internal => "internal",
+        }
+    }
+}
+
 /// A secondary diagnostic location with its own source-file attribution.
 pub type TypeErrorNote = (Span, String, Option<String>);
 

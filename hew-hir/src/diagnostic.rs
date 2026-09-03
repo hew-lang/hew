@@ -1,4 +1,5 @@
 use hew_parser::ast::Span;
+use hew_types::error::DiagChannel;
 use hew_types::ResolvedTy;
 
 use crate::ids::{BindingId, HirNodeId, ResolvedRef, SiteId};
@@ -823,4 +824,47 @@ pub enum HirDiagnosticKind {
         /// Human-readable rendering of the receiver's type.
         receiver_ty: String,
     },
+}
+
+impl HirDiagnosticKind {
+    /// Which of the three diagnostic channels this kind reports on.
+    ///
+    /// Internal: the checker/HIR boundary contract was violated — two
+    /// compiler facts disagree, never a fault in the user's program.
+    /// Limitation: legal Hew this lowering does not support yet, including
+    /// every registry cap (a cap is a limit of this compiler, not a
+    /// contradiction). Every other variant is a genuine user-authored
+    /// contract violation (`#[resource]`/`#[linear]`/`await` misuse, an
+    /// arity mismatch, an unresolved symbol, ...) and stays User.
+    ///
+    /// This is the HIR-side counterpart of
+    /// [`crate::MirDiagnosticKind::internal_compiler_error_function`]/
+    /// `channel()` — the one authority for this classification; `hew-cli`
+    /// and `hew-lsp` both call it rather than re-deriving the split.
+    #[must_use]
+    pub const fn channel(&self) -> DiagChannel {
+        match self {
+            Self::CheckerBoundaryViolation { .. }
+            | Self::MonomorphisationCallTypeArgsViolation { .. }
+            | Self::RecordLayoutTypeArgsViolation { .. } => DiagChannel::Internal,
+            Self::NotYetImplemented { .. }
+            | Self::MonomorphisationCapExceeded { .. }
+            | Self::RecordLayoutCapExceeded { .. }
+            | Self::MachineMonomorphisationCapExceeded { .. } => DiagChannel::Limitation,
+            _ => DiagChannel::User,
+        }
+    }
+
+    /// Stable, user-facing string identifier for this diagnostic kind.
+    ///
+    /// Returns the variant name (e.g. `NotYetImplemented`, `UnresolvedSymbol`)
+    /// without any of the Rust `{:?}` struct payload. Used as the `code`
+    /// field in JSON diagnostics and by the LSP's diagnostic rendering — the
+    /// one authority both `hew-cli` and `hew-lsp` call.
+    #[must_use]
+    pub fn kind_string(&self) -> String {
+        let debug = format!("{self:?}");
+        let end = debug.find([' ', '{', '(']).unwrap_or(debug.len());
+        debug[..end].to_string()
+    }
 }

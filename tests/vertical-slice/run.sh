@@ -6142,6 +6142,13 @@ run_accept_expect_stdout "actor_arg_field_projection_sibling_use"
 run_accept_expect_stdout "actor_arg_value_field_projection"
 run_accept_expect_stdout "actor_state_field_reinit"
 
+# #3266: a write through a record-typed state field lands in the actor's own
+# storage rather than in the frame copy lowering makes to project into it, for
+# the bare, `self.`-receiver, and compound-assignment spellings alike, with a
+# heap leaf proving the store-back releases the field's previous owner exactly
+# once and whole-field replacement still behaving as before.
+run_accept_expect_stdout "actor_state_record_projection_write"
+
 # Ownership seams: a `var` record reassigned from a match inside a loop, a
 # payload binder reused after a callee-owned call (a call never consumes a
 # non-resource argument), a `#[returns_receiver]` consuming receiver whose

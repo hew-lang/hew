@@ -10,6 +10,8 @@ mod actor_handler_lowering;
 mod actor_send_ask;
 #[path = "actor/actor_state_lock_lowering.rs"]
 mod actor_state_lock_lowering;
+#[path = "actor/actor_state_record_projection_store.rs"]
+mod actor_state_record_projection_store;
 #[path = "actor/cancellation_scope.rs"]
 mod cancellation_scope;
 #[path = "actor/cancellation_token_lower.rs"]

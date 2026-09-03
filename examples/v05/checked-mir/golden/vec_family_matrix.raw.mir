@@ -666,6 +666,7 @@ fn pointer_families() -> () [conv=default]
     stmt: use BindingId(15) values site=SiteId(211) ty=Vec<fn(i64) -> i64> intent=Read
     _7 = call hew_vec_pop_ptr(_1) [authority=Compiler(ClosurePairVec(Pop))] -> bb4
   bb4:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(210) ty=fn(i64) -> i64
     stmt: eval site=SiteId(210) ty=fn(i64) -> i64
     stmt: use BindingId(15) values site=SiteId(213) ty=Vec<fn(i64) -> i64> intent=Read
     _9 = make_closure __hew_named_fn_invoke_identity env=_8 mode=null env_own=[]
@@ -676,6 +677,7 @@ fn pointer_families() -> () [conv=default]
     _10 = const.i64 0
     _11 = call hew_vec_remove_at_ptr(_1, _10) [authority=Compiler(ClosurePairVec(RemoveAt))] -> bb6
   bb6:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(215) ty=fn(i64) -> i64
     stmt: eval site=SiteId(215) ty=fn(i64) -> i64
     return
 

@@ -924,10 +924,12 @@ fn pointer_families -> ()
     use BindingId(15) values site=SiteId(207) ty=Vec<fn(i64) -> i64> intent=Read
     eval site=SiteId(206) ty=()
     use BindingId(15) values site=SiteId(211) ty=Vec<fn(i64) -> i64> intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(210) ty=fn(i64) -> i64
     eval site=SiteId(210) ty=fn(i64) -> i64
     use BindingId(15) values site=SiteId(213) ty=Vec<fn(i64) -> i64> intent=Read
     eval site=SiteId(212) ty=()
     use BindingId(15) values site=SiteId(216) ty=Vec<fn(i64) -> i64> intent=Read
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(215) ty=fn(i64) -> i64
     eval site=SiteId(215) ty=fn(i64) -> i64
     drop BindingId(15) values ty=Vec<fn(i64) -> i64>
     drop BindingId(4294967231) __hew_produced_value ty=Vec<fn(i64) -> i64>

@@ -22,24 +22,29 @@ fn main() -> () [conv=default]
     _0 = const.i64 1
     _1 = call std$channel$new(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sender<string>, Receiver<string>)
     stmt: bind BindingId(1) __tuple_0 site=SiteId(0) ty=(Sender<string>, Receiver<string>)
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sender<string>, Receiver<string>) intent=Consume
     stmt: use BindingId(1) __tuple_0 site=SiteId(3) ty=(Sender<string>, Receiver<string>) intent=Read
     stmt: bind BindingId(2) tx site=SiteId(4) ty=Sender<string>
     stmt: use BindingId(1) __tuple_0 site=SiteId(5) ty=(Sender<string>, Receiver<string>) intent=Read
     stmt: bind BindingId(3) rx site=SiteId(6) ty=Receiver<string>
     stmt: use BindingId(2) tx site=SiteId(8) ty=Sender<string> intent=Read
-    ownership Mint { owner: OwnerId { binding: BindingId(1), generation: 0 }, place: Local(2), ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]) }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(1), generation: 0 }, recipe: OwnerDropRecipe { ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]), drop_fn: None, kind: TupleInPlace, declaration_order: 0 } }
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]) }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]), drop_fn: None, kind: TupleInPlace, declaration_order: 0 } }
     _2 = move _1
+    neutralize_payload _1 -> _2 [WholeCarrierConsume]
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(Local(2)), to_owner: Some(OwnerId { binding: BindingId(1), generation: 0 }), to_ty: Some(Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }])) }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(1), generation: 0 }, recipe: OwnerDropRecipe { ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]), drop_fn: None, kind: TupleInPlace, declaration_order: 1 } }
     _3 = _2.0
     aggregate_projection_neutralize _2 fields=[0] -> _3
     ownership Mint { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(4), ty: Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false } }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(2), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, drop_fn: Some(Runtime(SenderClose)), kind: Resource, declaration_order: 1 } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(2), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, drop_fn: Some(Runtime(SenderClose)), kind: Resource, declaration_order: 2 } }
     _4 = move _3
     _5 = _2.1
     aggregate_projection_neutralize _2 fields=[1] -> _5
     ownership Mint { owner: OwnerId { binding: BindingId(3), generation: 0 }, place: Local(6), ty: Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false } }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(3), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }, drop_fn: Some(Runtime(ReceiverClose)), kind: Resource, declaration_order: 2 } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(3), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }, drop_fn: Some(Runtime(ReceiverClose)), kind: Resource, declaration_order: 3 } }
     _6 = move _5
     _7 = string_lit "ready"
     call hew_channel_send_layout(_4, _7) [authority=Runtime(ChannelSendLayout)] -> bb2
@@ -61,7 +66,7 @@ fn main() -> () [conv=default]
     stmt: use BindingId(4) msg site=SiteId(16) ty=string intent=Read
     _15 = move mvar9.0.0
     ownership Mint { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(15), ty: String }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(4), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 3 } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 4 } }
     call println_str(_15) -> bb9
   bb6:
     _16 = string_lit "empty"

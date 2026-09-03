@@ -1,6 +1,8 @@
 fn main -> ()
   statements:
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sender<string>, Receiver<string>)
     bind BindingId(1) __tuple_0 site=SiteId(0) ty=(Sender<string>, Receiver<string>)
+    use BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sender<string>, Receiver<string>) intent=Consume
     use BindingId(1) __tuple_0 site=SiteId(3) ty=(Sender<string>, Receiver<string>) intent=Read
     bind BindingId(2) tx site=SiteId(4) ty=Sender<string>
     use BindingId(1) __tuple_0 site=SiteId(5) ty=(Sender<string>, Receiver<string>) intent=Read
@@ -16,6 +18,7 @@ fn main -> ()
     drop BindingId(3) rx ty=Receiver<string>
     drop BindingId(2) tx ty=Sender<string>
     drop BindingId(1) __tuple_0 ty=(Sender<string>, Receiver<string>)
+    drop BindingId(4294967231) __hew_produced_value ty=(Sender<string>, Receiver<string>)
   decisions:
     site=s0 ty=(Sender<string>, Receiver<string>) value_class=CowValue intent=Consume strategy=Move why="first vertical-slice classifier"
     site=s1 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"

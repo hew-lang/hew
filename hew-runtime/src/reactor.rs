@@ -728,39 +728,51 @@ impl ShutdownWait {
     }
 }
 
-/// Liveness for a snapshotted actor ref WITHOUT a raw deref of a possibly-freed
-/// local actor pointer.
+/// The delivery gate: is the incarnation that REGISTERED this fd still live and
+/// non-terminal?
 ///
 /// The reactor releases the registry lock between snapshotting `actor_ref` and
 /// publishing the `DELIVERING_ACTOR` guard. A concurrent `reactor_detach_actor`
-/// that runs entirely inside that window observes the guard as 0, does not
+/// that runs entirely inside that window observes the guard as clear, does not
 /// spin-wait, and lets `hew_actor_free_inner` reclaim the actor box. A raw
 /// `hew_actor_ref_is_alive` probe dereferences `(*actor).actor_state` for a LOCAL
 /// ref (transport.rs), so calling it here would be a use-after-free.
 ///
-/// This routes the LOCAL case through `with_live_actor`, which holds the
-/// `LIVE_ACTORS` registry lock across the closure. Every free path
-/// (`hew_actor_free_inner`, `drain_quiesced_actor`, `cleanup_all_actors`) removes
-/// the actor from `LIVE_ACTORS` BEFORE reclaiming the box, so while the closure
-/// runs the box cannot be freed; if the actor was already torn down the closure
-/// never runs and the actor is reported dead. The `actor_state` load inside the
-/// closure preserves the original semantics (a Stopping/Crashed/Stopped actor is
-/// reported dead, not just an untracked one).
+/// The LOCAL case therefore resolves the registration's recorded
+/// [`ActorIncarnation`] through `with_live_incarnation`, which pins the named
+/// incarnation under the `LIVE_ACTORS` lock before the state load. Every free
+/// path (`hew_actor_free_inner`, `drain_quiesced_actor`, `cleanup_all_actors`)
+/// removes the actor from `LIVE_ACTORS` BEFORE reclaiming the box and then
+/// drains the pin count, so the load can never reach a freed allocation; the
+/// `actor_state` check keeps the original semantics (a Stopping/Crashed/Stopped
+/// actor is reported dead, not just an untracked one).
+///
+/// Resolving the INCARNATION rather than the address is what makes the gate
+/// honest. A pointer probe proves only that some tracked actor occupies the
+/// recorded address, and the allocator hands a freed actor box straight back to
+/// the next spawn: after a reincarnation the address is genuinely live, so an
+/// address-keyed gate passed, the fd was read, and the bytes were deposited into
+/// the dead registrant's read slot before the wake was refused downstream. The
+/// incarnation fails the gate BEFORE the read.
 ///
 /// A REMOTE ref (`actor_local` null) carries no actor pointer to deref; its
 /// liveness is `hew_actor_ref_is_alive`'s connection-validity check on the
 /// by-value snapshot, which never touches actor memory.
-fn actor_snapshot_alive(actor_local: *mut HewActor, actor_ref: &HewActorRef) -> bool {
+fn actor_snapshot_alive(
+    actor: ActorIncarnation,
+    actor_local: *mut HewActor,
+    actor_ref: &HewActorRef,
+) -> bool {
     if actor_local.is_null() {
         // REMOTE (or null-local) ref: `hew_actor_ref_is_alive` reads only the
         // by-value snapshot's connection handle; no actor pointer is dereferenced.
         // SAFETY: `actor_ref` is a valid stack snapshot owned by the caller.
         return unsafe { hew_actor_ref_is_alive(std::ptr::addr_of!(*actor_ref)) != 0 };
     }
-    // LOCAL ref: check liveness + terminal state under the `LIVE_ACTORS` lock so
-    // a freed actor is never dereferenced. `None` => not tracked => freed/dead.
-    crate::lifetime::live_actors::with_live_actor(actor_local, |a| {
-        let state = a.actor_state.load(Ordering::Acquire);
+    // LOCAL ref: resolve the registrant's incarnation. `None` => the registrant
+    // is untracked, or a DIFFERENT incarnation now answers to its id => dead.
+    crate::lifetime::live_actors::with_live_incarnation(actor, |pin| {
+        let state = pin.actor().actor_state.load(Ordering::Acquire);
         state != crate::internal::types::HewActorState::Stopped as i32
             && state != crate::internal::types::HewActorState::Crashed as i32
     })
@@ -862,14 +874,15 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     let still_registered = REACTOR_STATE.access(|state| state.registry.contains_key(&fd));
     // Liveness as a second guard (the actor may be Stopping but not yet freed).
     // For a LOCAL actor this MUST NOT raw-deref the snapshot pointer: a
-    // concurrent `reactor_detach_actor` that observed the guard as 0 in the
+    // concurrent `reactor_detach_actor` that observed the guard as clear in the
     // snapshot→publish window can free the actor before this point, so a raw
     // `(*actor).actor_state` load would be a use-after-free. `actor_snapshot_alive`
-    // routes the LOCAL case through `with_live_actor` (the `LIVE_ACTORS`-guarded
-    // discipline `enqueue_resume` uses): the membership check + the state load run
-    // under the registry lock that every free path takes before reclaiming the
-    // box, so a freed actor is reported dead without ever being dereferenced.
-    let alive = actor_snapshot_alive(snap.actor_local, &snap.actor_ref);
+    // routes the LOCAL case through `with_live_incarnation` (the `LIVE_ACTORS`-
+    // guarded discipline `enqueue_resume_by_incarnation` uses): the resolve + pin
+    // + state load run against the incarnation the registration recorded, so a
+    // freed actor is reported dead without ever being dereferenced AND a
+    // reincarnation at the recorded address is refused before the read below.
+    let alive = actor_snapshot_alive(snap.actor, snap.actor_local, &snap.actor_ref);
     if !still_registered || !alive {
         DELIVERING_ACTOR.store(0, Ordering::SeqCst);
         unregister_fd(poller, fd);
@@ -3171,10 +3184,13 @@ mod tests {
             actor_local, actor,
             "local ref must resolve to the actor ptr"
         );
+        // The identity a registration records at `Registration::new`.
+        // SAFETY: `actor` is live here.
+        let registrant = unsafe { ActorIncarnation::of(actor) };
 
         // While tracked + non-terminal it is reported alive.
         assert!(
-            actor_snapshot_alive(actor_local, &actor_ref),
+            actor_snapshot_alive(registrant, actor_local, &actor_ref),
             "a live tracked local actor must be reported alive"
         );
 
@@ -3186,7 +3202,7 @@ mod tests {
         // `handle_ready_fd` would after the lock release. The liveness check MUST
         // report dead WITHOUT dereferencing it.
         assert!(
-            !actor_snapshot_alive(actor_local, &actor_ref),
+            !actor_snapshot_alive(registrant, actor_local, &actor_ref),
             "a freed (untracked) local actor must be reported dead — the pre-fix raw \
              hew_actor_ref_is_alive deref of the freed box was a use-after-free"
         );
@@ -4382,6 +4398,28 @@ mod tests {
         }
     }
 
+    /// Whether `fd` is STILL readable — the fd-side oracle for a refused
+    /// delivery.
+    ///
+    /// The read slot staying `Pending` proves nothing was deposited; it does
+    /// not by itself prove the reactor never read. This does: the bytes (or the
+    /// pending connection) the test queued are still in the kernel, so the
+    /// readiness was not consumed on behalf of the dead registrant and the next
+    /// registrant sees it. A zero timeout because the answer is a snapshot, not
+    /// something to wait for.
+    #[cfg(unix)]
+    fn fd_is_readable_for_test(fd: c_int) -> bool {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `pfd` is a live single-element `pollfd` array owned here.
+        let rc = unsafe { libc::poll(&raw mut pfd, 1, 0) };
+        assert!(rc >= 0, "poll failed: {}", std::io::Error::last_os_error());
+        rc > 0 && pfd.revents & libc::POLLIN != 0
+    }
+
     /// Drive a real resume-mode readiness through `handle_ready_fd`, optionally
     /// reincarnating the registrant at the same address first.
     #[cfg(unix)]
@@ -4426,19 +4464,28 @@ mod tests {
 
             handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
 
-            // Readiness reached the slot in BOTH arms: the only difference
-            // between them is whether incarnation resolution let the wake
-            // through. Without this the refusal arm would also pass on a read
-            // that found nothing to deposit.
-            assert_eq!(
-                crate::read_slot::hew_read_slot_status(slot),
-                crate::read_slot::ReadStatus::Data as i32,
-                "the readiness the test wrote must have been deposited"
-            );
-
             if reincarnate {
+                // #3152: the delivery gate resolves the REGISTRANT's
+                // incarnation, so the reincarnation at its address fails the
+                // gate BEFORE the read. Nothing is deposited, and the bytes
+                // stay in the socket — the readiness was not consumed on
+                // behalf of an actor that is gone.
+                assert_eq!(
+                    crate::read_slot::hew_read_slot_status(slot),
+                    crate::read_slot::ReadStatus::Pending as i32,
+                    "a refused registrant must not have its readiness deposited"
+                );
+                assert!(
+                    fd_is_readable_for_test(fd),
+                    "a refused registrant must leave the fd unread"
+                );
                 assert_not_woken(&sched, &victim, "reactor-resume");
             } else {
+                assert_eq!(
+                    crate::read_slot::hew_read_slot_status(slot),
+                    crate::read_slot::ReadStatus::Data as i32,
+                    "the readiness the test wrote must have been deposited"
+                );
                 assert_woken(&sched, &victim, "reactor-resume");
             }
 
@@ -4511,15 +4558,26 @@ mod tests {
 
             handle_ready_fd_for_test(poller, fd, HEW_IO_READ);
 
-            assert_eq!(
-                crate::read_slot::hew_read_slot_status(slot),
-                crate::read_slot::ReadStatus::Data as i32,
-                "the accepted connection handle must have been deposited"
-            );
-
             if reincarnate {
+                // #3152, accept arm: the gate refuses before `accept()` runs,
+                // so the pending connection is still queued on the listener
+                // rather than accepted on behalf of a dead registrant.
+                assert_eq!(
+                    crate::read_slot::hew_read_slot_status(slot),
+                    crate::read_slot::ReadStatus::Pending as i32,
+                    "a refused registrant must not have a connection accepted for it"
+                );
+                assert!(
+                    fd_is_readable_for_test(fd),
+                    "a refused registrant must leave the pending connection queued"
+                );
                 assert_not_woken(&sched, &victim, "reactor-accept");
             } else {
+                assert_eq!(
+                    crate::read_slot::hew_read_slot_status(slot),
+                    crate::read_slot::ReadStatus::Data as i32,
+                    "the accepted connection handle must have been deposited"
+                );
                 assert_woken(&sched, &victim, "reactor-accept");
             }
 

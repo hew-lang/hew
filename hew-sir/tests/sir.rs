@@ -6,7 +6,8 @@ use hew_sir::{
     FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, OwnKind, Provenance,
     RewriteError, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
     SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
-    SirInstanceKey, UseSite, ValueDef, ValueId,
+    SirInstanceKey, SuspendInput, SuspendInputMode, SuspendKind, TrapKind, UseSite, ValueDef,
+    ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
 use std::collections::BTreeMap;
@@ -1370,5 +1371,350 @@ fn verifier_refuses_a_generic_instance_as_the_module_entry() {
         )),
         "changing only the entry callable's instance kind must fail the entry rule closed: {:#?}",
         verify_module(&generic)
+    );
+}
+
+/// A `Suspend` whose shape no §1.5 row admits - `Await` takes exactly one
+/// resume edge, and a `Move` of a `BitCopy` scalar has nothing to move - still
+/// reaches MIR unchallenged if the relation table simply says nothing about the
+/// terminator. The operation table already refuses an operation it does not
+/// verify; a terminator it does not verify is the same case.
+#[test]
+fn verifier_rejects_a_suspend_no_relation_row_admits() {
+    let function = SemFunction {
+        id: ItemId(0),
+        callable: CallableId(0),
+        declaration: DefId::for_test("parks"),
+        name: "parks".to_string(),
+        span: 0..0,
+        source_origin: FunctionSourceOrigin::Unknown,
+        params: vec![BlockArg {
+            value: ValueId(0),
+            ty: ResolvedTy::I64,
+            own: OwnKind::None,
+            provenance: None,
+        }],
+        return_ty: ResolvedTy::I64,
+        entry: BlockId(0),
+        blocks: vec![
+            SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Suspend {
+                    kind: SuspendKind::Await,
+                    inputs: vec![SuspendInput {
+                        operand: read(ValueId(0)),
+                        mode: SuspendInputMode::Move,
+                    }],
+                    resumes: Vec::new(),
+                    cancel: Edge {
+                        target: BlockId(1),
+                        args: Vec::new(),
+                    },
+                },
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return {
+                    value: Some(read(ValueId(0))),
+                },
+            },
+        ],
+        places: Vec::new(),
+    };
+    let diagnostics = verify_module(&module(vec![function]));
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidTerminator { reason }
+                if reason.contains("outside the verified SIR relation table")
+        )),
+        "a suspend no §1.5 row admits must be refused, got {diagnostics:?}"
+    );
+}
+
+/// The same refusal for `Trap`: §1.6 gives a trap endpoint a kind table this
+/// phase does not check, so the terminator is refused rather than admitted.
+#[test]
+fn verifier_rejects_a_trap_endpoint_it_states_no_rule_for() {
+    let function = SemFunction {
+        id: ItemId(0),
+        callable: CallableId(0),
+        declaration: DefId::for_test("traps"),
+        name: "traps".to_string(),
+        span: 0..0,
+        source_origin: FunctionSourceOrigin::Unknown,
+        params: Vec::new(),
+        return_ty: ResolvedTy::I64,
+        entry: BlockId(0),
+        blocks: vec![SemBlock {
+            id: BlockId(0),
+            args: Vec::new(),
+            ops: Vec::new(),
+            terminator: SemTerminator::Trap {
+                kind: TrapKind::DivideByZero,
+            },
+        }],
+        places: Vec::new(),
+    };
+    let diagnostics = verify_module(&module(vec![function]));
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidTerminator { .. }
+        )),
+        "a trap endpoint must be refused, got {diagnostics:?}"
+    );
+}
+
+/// The counterfactual for both rows above: the terminators this table does
+/// state a relation for are still admitted, so the refusal is about the
+/// unverified kinds and not about terminators in general.
+#[test]
+fn verifier_still_admits_the_terminators_it_states_rules_for() {
+    let function = SemFunction {
+        id: ItemId(0),
+        callable: CallableId(0),
+        declaration: DefId::for_test("branches"),
+        name: "branches".to_string(),
+        span: 0..0,
+        source_origin: FunctionSourceOrigin::Unknown,
+        params: vec![BlockArg {
+            value: ValueId(0),
+            ty: ResolvedTy::Bool,
+            own: OwnKind::None,
+            provenance: None,
+        }],
+        return_ty: ResolvedTy::Bool,
+        entry: BlockId(0),
+        blocks: vec![
+            SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Branch {
+                    condition: read(ValueId(0)),
+                    then_target: Edge {
+                        target: BlockId(1),
+                        args: Vec::new(),
+                    },
+                    else_target: Edge {
+                        target: BlockId(1),
+                        args: Vec::new(),
+                    },
+                },
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return {
+                    value: Some(read(ValueId(0))),
+                },
+            },
+        ],
+        places: Vec::new(),
+    };
+    assert!(verify_module(&module(vec![function])).is_empty());
+}
+
+/// The §1.2 kind is a pure function of the type's class, so a definition that
+/// says otherwise is a fact nothing downstream can trust: an `i64` declared
+/// `Owned` owes a consuming use it can never have, and `Guaranteed` is the
+/// kind of a `begin_borrow` result no phase emits. `own` was a free field the
+/// lowering wrote and nothing read, so both were representable.
+#[test]
+fn verifier_refuses_an_own_kind_the_class_table_contradicts() {
+    let diagnostics = verify_module(&module(vec![own_kind_function(
+        OwnKind::Owned,
+        OwnKind::Guaranteed,
+    )]));
+    let refused: Vec<&ValueId> = diagnostics
+        .iter()
+        .filter_map(|diagnostic| match &diagnostic.kind {
+            SirDiagnosticKind::OwnershipKind { value, .. } => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        refused.contains(&&ValueId(1)) && refused.contains(&&ValueId(2)),
+        "both the `Owned` i64 result and the `Guaranteed` block argument must be refused, got {diagnostics:?}"
+    );
+}
+
+/// A type the class rule cannot decide has no kind to check against, and §1.1
+/// has no default: the verifier refuses it rather than admitting whatever the
+/// definition happens to claim.
+#[test]
+fn verifier_refuses_a_value_whose_type_the_class_rule_cannot_decide() {
+    let mut function = own_kind_function(OwnKind::None, OwnKind::None);
+    function.params[0].ty = ResolvedTy::Named {
+        name: "Conn".to_string(),
+        args: vec![],
+        builtin: None,
+        is_opaque: false,
+    };
+    let diagnostics = verify_module(&module(vec![function]));
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::OwnershipKind { value, reason }
+                if *value == ValueId(0) && reason.contains("cannot decide the ownership kind")
+        )),
+        "a user declaration the class rule cannot reach must be refused, got {diagnostics:?}"
+    );
+}
+
+/// The counterfactual for both rows above: the same shape with the kinds the
+/// class table actually gives passes clean, so the refusal is about the
+/// contradiction and not about carrying an ownership kind at all.
+#[test]
+fn verifier_admits_the_own_kinds_the_class_table_gives() {
+    assert!(
+        verify_module(&module(vec![own_kind_function(
+            OwnKind::None,
+            OwnKind::None
+        )]))
+        .is_empty(),
+        "kind-correct definitions must verify: {:?}",
+        verify_module(&module(vec![own_kind_function(
+            OwnKind::None,
+            OwnKind::None
+        )]))
+    );
+}
+
+/// One `i64` result flowing on a `Goto` edge into one `i64` block argument.
+/// Both carry a caller-chosen ownership kind so a test can state the kind the
+/// class table gives (`OwnKind::None` for a `BitCopy` scalar) or one it does
+/// not.
+fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
+    SemFunction {
+        id: ItemId(0),
+        callable: CallableId(0),
+        declaration: DefId::for_test("kinds"),
+        name: "kinds".to_string(),
+        span: 0..0,
+        source_origin: FunctionSourceOrigin::Unknown,
+        params: vec![BlockArg {
+            value: ValueId(0),
+            ty: ResolvedTy::I64,
+            own: OwnKind::None,
+            provenance: None,
+        }],
+        return_ty: ResolvedTy::I64,
+        entry: BlockId(0),
+        blocks: vec![
+            SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![SemOp {
+                    id: OpId(0),
+                    results: vec![ValueDef {
+                        id: ValueId(1),
+                        ty: ResolvedTy::I64,
+                        own: result_own,
+                        provenance: None,
+                    }],
+                    kind: SemOpKind::ConstI64(7),
+                    provenance: Provenance::Synthesized,
+                }],
+                terminator: SemTerminator::Goto(Edge {
+                    target: BlockId(1),
+                    args: vec![read(ValueId(1))],
+                }),
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: vec![BlockArg {
+                    value: ValueId(2),
+                    ty: ResolvedTy::I64,
+                    own: arg_own,
+                    provenance: None,
+                }],
+                ops: Vec::new(),
+                terminator: SemTerminator::Return {
+                    value: Some(read(ValueId(2))),
+                },
+            },
+        ],
+        places: Vec::new(),
+    }
+}
+
+/// `ValueDef.own` and `BlockArg.own` are the §1.2 obligation the model now
+/// carries. A field the lowering writes and nothing ever reads is a fact no
+/// reviewer and no later lane can see, so the dump renders the two kinds that
+/// carry an obligation.
+#[test]
+fn the_dump_renders_the_ownership_kind_a_value_carries() {
+    let function = SemFunction {
+        id: ItemId(0),
+        callable: CallableId(0),
+        declaration: DefId::for_test("owns"),
+        name: "owns".to_string(),
+        span: 0..0,
+        source_origin: FunctionSourceOrigin::Unknown,
+        params: vec![BlockArg {
+            value: ValueId(0),
+            ty: ResolvedTy::String,
+            own: OwnKind::Owned,
+            provenance: None,
+        }],
+        return_ty: ResolvedTy::I64,
+        entry: BlockId(0),
+        blocks: vec![
+            SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![SemOp {
+                    id: OpId(0),
+                    results: vec![ValueDef {
+                        id: ValueId(1),
+                        ty: ResolvedTy::I64,
+                        own: OwnKind::None,
+                        provenance: None,
+                    }],
+                    kind: SemOpKind::ConstI64(7),
+                    provenance: Provenance::Synthesized,
+                }],
+                terminator: SemTerminator::Goto(Edge {
+                    target: BlockId(1),
+                    args: vec![read(ValueId(1))],
+                }),
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: vec![BlockArg {
+                    value: ValueId(2),
+                    ty: ResolvedTy::I64,
+                    own: OwnKind::Guaranteed,
+                    provenance: None,
+                }],
+                ops: Vec::new(),
+                terminator: SemTerminator::Return {
+                    value: Some(read(ValueId(2))),
+                },
+            },
+        ],
+        places: Vec::new(),
+    };
+    let dump = dump_sir(&module(vec![function]));
+    assert!(
+        dump.contains("fn owns(%0: string owned)"),
+        "an owned parameter must say so: {dump}"
+    );
+    assert!(
+        dump.contains("bb1(%2: i64 guaranteed):"),
+        "a guaranteed block argument must say so: {dump}"
+    );
+    // The counterfactual: the kind with no obligation prints nothing, so the
+    // suffix is a fact about the value and not decoration on every line.
+    assert!(
+        dump.contains("    %1 = const 7\n"),
+        "a no-obligation result must render unchanged: {dump}"
     );
 }

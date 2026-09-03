@@ -796,6 +796,9 @@ impl<'a> InstanceService<'a> {
             // WHAT: the projection of `type_facts` over the types these bodies
             // mention is carried here, and rules 5 and 6 read it.
             type_facts: BTreeMap::new(),
+            // The two literal pools are empty for the same reason and go the
+            // same way: §1.3.1's `const.str` and `const.bytes` producers are
+            // the phase that interns into them, and this domain emits neither.
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),
         }
@@ -917,35 +920,6 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
 
 fn is_initial_scalar_return(ty: &ResolvedTy) -> bool {
     matches!(ty, hew_types::ResolvedTy::Unit) || is_initial_scalar(ty)
-}
-
-/// Translate HIR's authoritative source-semantic intent into the SIR operand
-/// vocabulary exactly once.
-///
-/// This deliberately does *not* normalize an ownership intent to `Read` just
-/// because the first scalar SIR slice cannot realize it yet. Callers use the
-/// returned mode to reject unsupported ownership semantics at the HIR → SIR
-/// boundary, preserving a precise implementation gap for later domains.
-/// The §1.2 ownership kind of a value of `ty`.
-///
-/// MARKED SHORTCUT — the class is read against an empty declaration context.
-/// WHY: `lower_module` takes a `HirModule` and no `TypeCheckOutput`, so §1.1's
-/// declaration facts are not in reach here. Every user `Named` type therefore
-/// classes `UnknownDeclaration` and this refuses, which is the fail-closed
-/// answer for a domain that admits only scalars and tuples of scalars.
-/// WHEN: HIR-to-SIR lowering threads the checker output through, and with it
-/// `TypeCheckOutput::type_facts`.
-/// WHAT: the context is built from that table and this reads a decided fact
-/// rather than recomputing one.
-fn own_kind_of(ty: &ResolvedTy) -> Result<OwnKind, String> {
-    hew_types::ValueClass::of_ty(ty, &hew_types::ClassContext::empty())
-        .map(OwnKind::of_class)
-        .map_err(|error| {
-            format!(
-                "SIR cannot decide the ownership kind of `{}`: {error}",
-                ty.user_facing()
-            )
-        })
 }
 
 fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
@@ -1136,7 +1110,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let value = ValueId(values);
                 values += 1;
                 bindings.insert(param.id, value);
-                let own = own_kind_of(&ty)?;
+                // MARKED SHORTCUT — a parameter's kind comes from its type
+                // class alone, never from its ABI slot.
+                // WHY: §1.2 rule 3 makes a parameter whose header slot is
+                // `Borrow` a `Guaranteed` value for the whole body, but
+                // `SemParamPassing` has one variant (`ReadOnly`): the borrow
+                // slot is not representable yet, so there is no slot to read
+                // and no value in the module carries `Guaranteed`.
+                // WHEN: the callable header gains the borrow slot, with the
+                // ownership-bearing parameter types that need it (L3).
+                // WHAT: the kind is `Guaranteed` when the slot says `Borrow`
+                // and `OwnKind::of_class` otherwise, and rule 3's
+                // `E_OWN_CONSUME_BORROWED` wall becomes reachable.
+                let own = OwnKind::of_ty(&ty)?;
                 Ok(BlockArg {
                     value,
                     ty,
@@ -1255,6 +1241,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         .ok_or_else(|| {
                             "uninitialised bindings are not in the initial SIR subset".to_string()
                         })?;
+                    // MARKED SHORTCUT — a binding carries no §1.6 provenance.
+                    // WHY: a `let` aliases the SSA value its initializer
+                    // produced rather than defining one of its own, and that
+                    // value is an operation result whose `provenance` is
+                    // `None` because §1.6 reads `None` as "a lowering temp".
+                    // Attaching the binding here would overwrite whatever the
+                    // aliased definition already says, and for `let y = x` on
+                    // a parameter that definition is the parameter's own
+                    // provenance.
+                    // WHEN: §1.3's `alloc_place` / `store.init` land and a
+                    // binding gets a place of its own to name (L2).
+                    // WHAT: the binding's name, span and mutability ride on
+                    // that place, so rule 6a reads the mutability and §1.6
+                    // renders `E_OWN_*` rather than `E_SIR_ICE` for a wall
+                    // rooted in a user binding.
                     self.bindings.insert(binding.id, value);
                 }
                 HirStmtKind::Expr(expr) => {
@@ -1620,7 +1621,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let join_ty = self.ty(&whole.ty);
         let join_block = self.new_block(vec![BlockArg {
             value: join_value,
-            own: own_kind_of(&join_ty)?,
+            own: OwnKind::of_ty(&join_ty)?,
             ty: join_ty,
             provenance: None,
         }]);
@@ -1699,7 +1700,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let join_ty = self.ty(&whole.ty);
         let join = self.new_block(vec![BlockArg {
             value: result,
-            own: own_kind_of(&join_ty)?,
+            own: OwnKind::of_ty(&join_ty)?,
             ty: join_ty,
             provenance: None,
         }]);
@@ -1750,7 +1751,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             id: OpId(self.ops),
             results: vec![ValueDef {
                 id: value,
-                own: own_kind_of(&result_ty)?,
+                own: OwnKind::of_ty(&result_ty)?,
                 ty: result_ty,
                 provenance: None,
             }],
@@ -1814,8 +1815,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_initial_value_type, own_kind_of, require_initial_scalar_read,
-        require_initial_value_transfer, PendingBlock,
+        is_initial_value_type, require_initial_scalar_read, require_initial_value_transfer,
+        PendingBlock,
     };
     use crate::ownership::OwnKind;
     use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemTerminator};
@@ -1877,13 +1878,13 @@ mod tests {
     /// than defaulted.
     #[test]
     fn lowering_reads_the_ownership_kind_from_the_class_table() {
-        assert_eq!(Ok(OwnKind::None), own_kind_of(&ResolvedTy::I64));
+        assert_eq!(Ok(OwnKind::None), OwnKind::of_ty(&ResolvedTy::I64));
         assert_eq!(
             Ok(OwnKind::None),
-            own_kind_of(&ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]))
+            OwnKind::of_ty(&ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]))
         );
-        assert_eq!(Ok(OwnKind::Owned), own_kind_of(&ResolvedTy::String));
-        let refused = own_kind_of(&ResolvedTy::Named {
+        assert_eq!(Ok(OwnKind::Owned), OwnKind::of_ty(&ResolvedTy::String));
+        let refused = OwnKind::of_ty(&ResolvedTy::Named {
             name: "Conn".to_string(),
             args: vec![],
             builtin: None,

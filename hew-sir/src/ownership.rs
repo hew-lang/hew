@@ -33,6 +33,39 @@ impl OwnKind {
             | ValueClass::Linear => Self::Owned,
         }
     }
+
+    /// The §1.2 kind of a value of `ty`, read through the one class authority.
+    ///
+    /// The lowering that writes `own` onto a definition and the verifier that
+    /// checks it both call this, so a value's kind cannot be decided by one
+    /// rule and audited by another.
+    ///
+    /// MARKED SHORTCUT — the class is read against an empty declaration
+    /// context.
+    /// WHY: `lower_module` takes a `HirModule` and no `TypeCheckOutput`, so
+    /// §1.1's declaration facts are not in reach on this route. Every user
+    /// `Named` type therefore classes `UnknownDeclaration` and this refuses,
+    /// which is the fail-closed answer for a domain that admits only scalars
+    /// and tuples of scalars.
+    /// WHEN: HIR-to-SIR lowering threads the checker output through, and with
+    /// it `TypeCheckOutput::type_facts` (L3).
+    /// WHAT: the context is built from that table and this reads a decided
+    /// fact rather than recomputing one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the class rule's refusal, rendered against the user-facing type
+    /// name, when §1.1 cannot decide the type's class.
+    pub fn of_ty(ty: &ResolvedTy) -> Result<Self, String> {
+        hew_types::ValueClass::of_ty(ty, &hew_types::ClassContext::empty())
+            .map(Self::of_class)
+            .map_err(|error| {
+                format!(
+                    "SIR cannot decide the ownership kind of `{}`: {error}",
+                    ty.user_facing()
+                )
+            })
+    }
 }
 
 /// Module-local identity of a memory place (§1.3 `alloc_place`).

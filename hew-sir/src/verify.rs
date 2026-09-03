@@ -101,6 +101,21 @@ pub enum SirDiagnosticKind {
         op: OpId,
         reason: String,
     },
+    /// A value definition whose §1.2 ownership kind is not the one the class
+    /// table gives its type, or whose type §1.1 cannot class at all. The kind
+    /// is a pure function of the type, so a definition that says otherwise is
+    /// a fact no later phase can trust.
+    OwnershipKind {
+        value: ValueId,
+        reason: String,
+    },
+    /// A terminator kind this relation table states no rule for. The
+    /// counterpart of [`SirDiagnosticKind::InvalidOperation`]'s
+    /// outside-the-table arm: a terminator nothing checks is refused, not
+    /// admitted.
+    InvalidTerminator {
+        reason: String,
+    },
     BranchConditionType {
         value: ValueId,
         actual: String,
@@ -370,12 +385,20 @@ fn verify_function_with_context(
     let mut operations = HashSet::new();
     for param in &function.params {
         record_value(function, param.value, &mut values, &mut diagnostics);
+        verify_own_kind(
+            function,
+            param.value,
+            &param.ty,
+            param.own,
+            &mut diagnostics,
+        );
         types.insert(param.value, param.ty.clone());
         definitions.insert(param.value, (function.entry, None));
     }
     for block in &function.blocks {
         for arg in &block.args {
             record_value(function, arg.value, &mut values, &mut diagnostics);
+            verify_own_kind(function, arg.value, &arg.ty, arg.own, &mut diagnostics);
             types.insert(arg.value, arg.ty.clone());
             definitions.insert(arg.value, (block.id, None));
         }
@@ -385,6 +408,13 @@ fn verify_function_with_context(
             }
             for result in &op.results {
                 record_value(function, result.id, &mut values, &mut diagnostics);
+                verify_own_kind(
+                    function,
+                    result.id,
+                    &result.ty,
+                    result.own,
+                    &mut diagnostics,
+                );
                 types.insert(result.id, result.ty.clone());
                 definitions.insert(result.id, (block.id, Some(op_index)));
             }
@@ -1339,10 +1369,6 @@ fn invalid_operation(
     ));
 }
 
-#[expect(
-    clippy::match_same_arms,
-    reason = "a checked terminator with no rule and one with no relation stated are distinct cases"
-)]
 fn verify_terminator_shape(
     function: &SemFunction,
     terminator: &SemTerminator,
@@ -1392,11 +1418,21 @@ fn verify_terminator_shape(
             }
         }
         SemTerminator::Return { .. } | SemTerminator::Goto(_) | SemTerminator::Unreachable => {}
-        // `Trap` carries no operand and `Suspend`'s shape rules - the
-        // cancel-edge and resume-edge orderings of §1.5 - belong to the phase
-        // that emits one. Neither has a producer on this route, so this table
-        // states no relation for them rather than inventing one.
-        SemTerminator::Trap { .. } | SemTerminator::Suspend { .. } => {}
+        // `Trap`'s kind table and `Suspend`'s shape rules - §1.5's kind/arity/
+        // mode agreement and the cancel-edge and resume-edge orderings -
+        // belong to the phase that emits one, and neither has a producer on
+        // this route. An unverified terminator is refused for the same reason
+        // an unverified operation is: admitting it would let a shape nothing
+        // checks reach MIR. This is the operation arm's refusal, not a new
+        // ownership rule.
+        SemTerminator::Trap { .. } | SemTerminator::Suspend { .. } => {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidTerminator {
+                    reason: "terminator is outside the verified SIR relation table".to_string(),
+                },
+            ));
+        }
     }
 }
 
@@ -1454,6 +1490,44 @@ fn record_value(
 ) {
     if !values.insert(value) {
         diagnostics.push(diag(function, SirDiagnosticKind::DuplicateValue(value)));
+    }
+}
+
+/// §1.2: a value's ownership kind is a pure function of its type's class.
+///
+/// The lowering derives `own` from [`OwnKind::of_ty`]; this reads the same
+/// authority back. Without it `own` is a free field the lowering writes and
+/// nothing audits, so an `i64` could present as `Owned` and a value could
+/// present as `Guaranteed` — a kind no class produces, because it belongs to
+/// the result of a `begin_borrow` no phase emits yet. A type the class rule
+/// cannot decide is refused here for the same reason the lowering refuses it:
+/// there is no default kind.
+fn verify_own_kind(
+    function: &SemFunction,
+    value: ValueId,
+    ty: &ResolvedTy,
+    own: crate::OwnKind,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    match crate::OwnKind::of_ty(ty) {
+        Ok(expected) if expected == own => {}
+        Ok(expected) => diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::OwnershipKind {
+                value,
+                reason: format!(
+                    "value is declared {own:?} but the class of `{}` gives it {expected:?}",
+                    ty.user_facing()
+                ),
+            },
+        )),
+        Err(error) => diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::OwnershipKind {
+                value,
+                reason: error,
+            },
+        )),
     }
 }
 

@@ -1,0 +1,13 @@
+// The attribute set is closed (HEW-SPEC-2026 §12.6): an attribute whose name
+// is not in the table is `E_UNKNOWN_ATTRIBUTE` on a free function, the same
+// as any other position. This is the exact repro from the issue this
+// fixture guards against a regression of: a misspelled `#[test]` (or any
+// other invented attribute name) must fail closed, not disappear silently.
+#[bogus]
+fn helper() -> i64 {
+    1
+}
+
+fn main() {
+    println(f"{helper()}");
+}

@@ -93,22 +93,70 @@ pub fn input_completeness(input: &str) -> InputCompleteness {
     InputCompleteness::Invalid
 }
 
-/// True if `input` is a syntactically complete attribute list (`#[wire]`,
-/// stacked `#[a]\n#[b]`, …) with no item yet attached to it.
+/// True if `input` is nothing but one or more syntactically complete
+/// `#[name]` / `#[name(args)]` attribute groups (`#[wire]`, stacked
+/// `#[a]\n#[b]`, …) with no item yet attached to them.
 ///
 /// An attribute alone has balanced delimiters (so `has_unclosed_delimiters`
 /// says "complete") and does not parse in any standalone context (so
 /// `parses_in_any_context` says "no"), which without this check falls
 /// through to `Invalid` — surfacing a parse error on the attribute line
 /// instead of buffering for the item it decorates.
+///
+/// This is a token-level check, deliberately independent of
+/// HEW-SPEC-2026 §12.6's closed attribute table: whether `name` turns out to
+/// be a recognised attribute (and legal in whatever position the item the
+/// user is about to type would put it in) is the parser's job once the item
+/// arrives. The REPL only needs to know "is this shape still waiting for an
+/// item", and a misspelled or invented attribute name is exactly the input a
+/// user is mid-way through typing — not evidence the buffer is unrecoverable.
 fn ends_with_bare_attribute(input: &str) -> bool {
-    if parses_as_item(input) {
-        // Already a complete item (with or without its own attributes) —
-        // nothing left to wait for.
-        return false;
+    let tokens = hew_lexer::lex(input);
+    let mut pos = 0usize;
+    let mut saw_group = false;
+    while pos < tokens.len() {
+        if !matches!(tokens[pos].0, hew_lexer::Token::HashBracket) {
+            return false;
+        }
+        pos += 1;
+        // Attribute name: any identifier-like token (including contextual
+        // keywords used as attribute names, e.g. `#[on(..)]`).
+        let Some((name_tok, _)) = tokens.get(pos) else {
+            return false;
+        };
+        if !matches!(
+            name_tok,
+            hew_lexer::Token::Identifier(_) | hew_lexer::Token::On
+        ) {
+            return false;
+        }
+        pos += 1;
+        if matches!(
+            tokens.get(pos).map(|(t, _)| t),
+            Some(hew_lexer::Token::LeftParen)
+        ) {
+            pos += 1;
+            let mut depth = 1usize;
+            while depth > 0 {
+                match tokens.get(pos).map(|(t, _)| t) {
+                    Some(hew_lexer::Token::LeftParen) => depth += 1,
+                    Some(hew_lexer::Token::RightParen) => depth -= 1,
+                    Some(_) => {}
+                    None => return false,
+                }
+                pos += 1;
+            }
+        }
+        if !matches!(
+            tokens.get(pos).map(|(t, _)| t),
+            Some(hew_lexer::Token::RightBracket)
+        ) {
+            return false;
+        }
+        pos += 1;
+        saw_group = true;
     }
-    let probe = format!("{input}\nfn __hew_repl_attr_probe__() {{}}\n");
-    parses_as_item(&probe)
+    saw_group
 }
 
 /// Parse a REPL command string (after the leading `:`).
@@ -229,8 +277,11 @@ mod tests {
         );
         assert_eq!(classify("pub fn bar() {}"), InputKind::Item);
         assert_eq!(classify("/// Adds numbers.\nfn add() {}"), InputKind::Item);
+        // `#[export(..)]` (not `#[memo]`, which HEW-SPEC-2026 §12.6's closed
+        // attribute table does not recognise) exercises classification of an
+        // attribute-decorated item.
         assert_eq!(
-            classify("#[memo]\nfn cached() -> i64 { 42 }"),
+            classify("#[export(\"cached\")]\nfn cached() -> i64 { 42 }"),
             InputKind::Item
         );
     }

@@ -36,9 +36,13 @@ fn main() {}
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    // `#[resource]` is only legal at type/enum declaration position
+    // (HEW-SPEC-2026 §12.6); a type alias never carries a `ResourceMarker`,
+    // so this is `E_UNKNOWN_ATTRIBUTE`, superseding the retired
+    // `E_RESOURCE_MARKER_TARGET`.
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        stderr.contains("E_RESOURCE_MARKER_TARGET")
+        stderr.contains("E_UNKNOWN_ATTRIBUTE")
             && stderr.contains("#[resource]")
             && stderr.contains("resource_alias_marker.hew:1:1")
             && stderr.contains("^^^^^^^^^^^"),

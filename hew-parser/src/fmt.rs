@@ -575,9 +575,9 @@ impl<'a> Formatter<'a> {
                 TypeBodyItem::Field {
                     name,
                     ty,
+                    attributes,
                     doc_comment,
                     span,
-                    ..
                 } => {
                     // flush inline comments that appear before this field
                     self.flush_comments_before(span.start);
@@ -586,6 +586,7 @@ impl<'a> Formatter<'a> {
                     // between the field name and any trailing comment
                     self.prev_source_pos = span.start;
                     self.write_outer_doc(doc_comment.as_ref());
+                    self.format_attributes(attributes);
                     self.write_indent();
                     self.write(name);
                     self.write(": ");

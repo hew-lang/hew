@@ -1,0 +1,14 @@
+// A plain `fn` inside an actor body only carries `#[on(kind)]` (HEW-SPEC-2026
+// §12.6). An unrecognised attribute there must fail closed rather than
+// disappear silently — the same closed-table refusal the free-fn, field, and
+// impl-method reject fixtures pin.
+actor Worker {
+    let count: i64;
+
+    #[bogus]
+    fn helper() {
+    }
+}
+
+fn main() {
+}

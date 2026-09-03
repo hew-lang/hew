@@ -77,8 +77,8 @@ const categoryKeywords = {
     'bool', 'bytes', 'string',
   ],
   // Only standalone wire attributes — 'default' and 'reserved' appear in seq() expressions.
-  // 'repeated' is a real bare WireAttr alternative (grammar.ebnf:92, grammar.js
-  // wire_attribute production) but lives in syntax-data.json's
+  // 'repeated' is a real bare wire-attribute alternative (hew-parser's wire
+  // attribute parse, grammar.js wire_attribute production) but lives in syntax-data.json's
   // contextual_identifiers, not keywords.wire — kw.wire alone can never produce
   // it, so it must be appended explicitly or this category silently drops it
   // (and deletes it from grammar.js) on every sync run.

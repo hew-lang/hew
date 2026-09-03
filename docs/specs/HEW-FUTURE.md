@@ -93,6 +93,10 @@ Both forms are rejected at **check** time today (the type checker
 restricts the arm set; codegen is not involved), so re-introducing them
 is purely additive.
 
+First-completion-wins is the task-await arm, not a construct of its own.
+`race` is not a reserved word and no `race { }` form is planned
+(HEW-SPEC-2026 §12).
+
 ### 1.5 Supervision extras beyond ask / restart / escalation
 
 **[Hot-swap REJECTED / remainder target: v0.8]**
@@ -112,15 +116,16 @@ v0.8 with the rest of the supervision ergonomics work.
 
 ### 1.6 Generators (`Lazy<T>`, `#[prefetch(N)]`)
 
-**[`gen fn` and `receive gen fn` live / remaining forms deferred]**
+**[`gen fn` and `receive gen fn` live in v0.5 / remaining forms deferred]**
 
 `gen fn` functions compile and run, including parameterized forms with scalar
 parameters (e.g. `n: i64`) and fn-typed parameters. The LLVM coroutine
-machinery, `yield`, `.next()`, and `for x in generator()` are all live.
-A generator whose body suspends carries no signature marker; `for await`
-consumes one. `receive gen fn` on actors returning `Stream<Y>` backed by
-mailbox protocol (cross-actor streaming with natural backpressure) is live
-as well — the `receive_gen_fn_*` vertical-slice fixtures pass.
+machinery, `yield`, `.next()`, and `for x in generator()` are all live. A
+`gen fn` body may `await`; there is no `async gen fn` form, because the word
+marked nothing (HEW-SPEC-2026 §4.12). `receive gen fn` on actors returning
+`Stream<Y>` backed by mailbox protocol (cross-actor streaming with natural
+backpressure) is live as well — the `receive_gen_fn_*` vertical-slice
+fixtures pass.
 
 Remaining deferred:
 

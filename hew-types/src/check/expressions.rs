@@ -7,8 +7,8 @@ use super::types::GenericLambdaSig;
 )]
 use super::*;
 use crate::check::types::{
-    GenericCallEdge, GenericCallee, GenericFnInstantiationSite, GenericStructuralEqRequirement,
-    PendingInstantiation,
+    DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
+    GenericStructuralEqRequirement, PendingInstantiation,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::eq_eligibility::{
@@ -19,6 +19,24 @@ use std::collections::VecDeque;
 
 type DangerousRcBinding = String;
 type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
+
+/// Build the `E_IS_VALUE_TYPE` diagnostic for a value-type operand of `is`.
+///
+/// One authority for the wording, shared by the in-place rejection and the
+/// deferred re-check of an operand whose type only settled at a call site.
+fn is_value_type_diagnostic(span: &Span, ty: &Ty) -> (TypeErrorKind, Span, String) {
+    (
+        TypeErrorKind::InvalidOperation,
+        span.clone(),
+        format!(
+            "`is` compares identity, and `{}` is a value type \
+             (E_IS_VALUE_TYPE) — use `==` to compare it by value; `is` \
+             applies to handles: actor references, \
+             `Vec`/`HashMap`/`HashSet`, and `bytes`",
+            ty.user_facing()
+        ),
+    )
+}
 
 impl Checker {
     fn lambda_generic_schema_ty(ty: &Ty, generic_param_names: &HashMap<u32, String>) -> Ty {
@@ -9676,17 +9694,63 @@ impl Checker {
         let rhs_resolved = self.subst.resolve(&rhs_ty);
 
         // Don't double-report when either side is already poisoned by an
-        // upstream diagnostic (`Ty::Error`) or still under inference
-        // (`Ty::Var`). The operator still produces `bool` so enclosing
-        // expressions see a stable type.
-        if matches!(lhs_resolved, Ty::Error | Ty::Var(_))
-            || matches!(rhs_resolved, Ty::Error | Ty::Var(_))
-        {
+        // upstream diagnostic (`Ty::Error`). The operator still produces
+        // `bool` so enclosing expressions see a stable type.
+        if matches!(lhs_resolved, Ty::Error) || matches!(rhs_resolved, Ty::Error) {
             return Ty::Bool;
         }
 
-        let lhs_ok = self.is_identity_capable(&lhs_resolved);
-        let rhs_ok = self.is_identity_capable(&rhs_resolved);
+        // An operand still under inference cannot be decided here, and it must
+        // not be abandoned either: a closure's parameter types are fresh
+        // variables while its body is checked and only settle when a call site
+        // unifies them, so `let same = |a, b| a is b;` used to escape
+        // `is_identity_capable` entirely and die in the codegen front on the
+        // span-less `IdentityCompare lhs must be a pointer or integer value`.
+        // Record the obligation and re-run the same decision once inference
+        // has settled (`report_unresolved_inference_holes`) — #3134.
+        if matches!(lhs_resolved, Ty::Var(_)) || matches!(rhs_resolved, Ty::Var(_)) {
+            let key = SpanKey::in_module(span, self.current_module_idx);
+            let check = DeferredIsCheck {
+                span: span.clone(),
+                lhs_span: lhs.1.clone(),
+                lhs_ty,
+                rhs_span: rhs.1.clone(),
+                rhs_ty,
+                source_module: self.current_diagnostic_source_module(),
+            };
+            self.deferred_is_checks.insert(key, check);
+            return Ty::Bool;
+        }
+
+        for (kind, span, message) in
+            self.is_value_form_diagnostics(&lhs.1, &lhs_resolved, &rhs.1, &rhs_resolved, span)
+        {
+            self.report_error(kind, &span, message);
+        }
+
+        Ty::Bool
+    }
+
+    /// The `is` value-form allowance decision over two fully resolved
+    /// operands, as the diagnostics it produces (empty when the comparison is
+    /// admitted).
+    ///
+    /// Shared by [`Self::synthesize_is`] and the deferred re-check in
+    /// [`Self::report_unresolved_inference_holes`] so an `is` whose operand
+    /// types only settle at a call site reaches the identical answer. The two
+    /// callers differ only in how a diagnostic is routed to its source module,
+    /// which is why this returns them instead of reporting.
+    pub(super) fn is_value_form_diagnostics(
+        &self,
+        lhs_span: &Span,
+        lhs_resolved: &Ty,
+        rhs_span: &Span,
+        rhs_resolved: &Ty,
+        span: &Span,
+    ) -> Vec<(TypeErrorKind, Span, String)> {
+        let lhs_ok = self.is_identity_capable(lhs_resolved);
+        let rhs_ok = self.is_identity_capable(rhs_resolved);
+        let mut diagnostics = Vec::new();
 
         // One rejection per `is` expression when both operands resolve to the
         // same value type: two carets carrying a byte-identical message about
@@ -9694,10 +9758,10 @@ impl Checker {
         // types still get one diagnostic each, since each names its own type.
         let same_value_type = !lhs_ok && !rhs_ok && lhs_resolved == rhs_resolved;
         if !lhs_ok {
-            self.report_is_value_type(&lhs.1, &lhs_resolved);
+            diagnostics.push(is_value_type_diagnostic(lhs_span, lhs_resolved));
         }
         if !rhs_ok && !same_value_type {
-            self.report_is_value_type(&rhs.1, &rhs_resolved);
+            diagnostics.push(is_value_type_diagnostic(rhs_span, rhs_resolved));
         }
 
         // Cross-class / cross-instantiation mismatch (e.g. `Vec<int> is Vec<String>`
@@ -9705,21 +9769,21 @@ impl Checker {
         // independently identity-capable; otherwise the value-type rejection
         // above carries the diagnostic.
         if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
-            self.report_error(
+            diagnostics.push((
                 TypeErrorKind::Mismatch {
                     expected: lhs_resolved.user_facing().to_string(),
                     actual: rhs_resolved.user_facing().to_string(),
                 },
-                span,
+                span.clone(),
                 format!(
                     "`is` operands must have the same type; found `{}` and `{}`",
                     lhs_resolved.user_facing(),
                     rhs_resolved.user_facing()
                 ),
-            );
+            ));
         }
 
-        Ty::Bool
+        diagnostics
     }
 
     fn resolve_is_type_pattern(&self, rhs: &Expr) -> Option<Ty> {
@@ -9814,17 +9878,8 @@ impl Checker {
 
     /// Report `E_IS_VALUE_TYPE` for a value-type operand of `is`.
     fn report_is_value_type(&mut self, span: &Span, ty: &Ty) {
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "`is` compares identity, and `{}` is a value type \
-                 (E_IS_VALUE_TYPE) — use `==` to compare it by value; `is` \
-                 applies to handles: actor references, \
-                 `Vec`/`HashMap`/`HashSet`, and `bytes`",
-                ty.user_facing()
-            ),
-        );
+        let (kind, span, message) = is_value_type_diagnostic(span, ty);
+        self.report_error(kind, &span, message);
     }
 
     /// Classify a resolved type as identity-bearing per plan §D-D2.

@@ -151,6 +151,45 @@ const BYTES_DISTINCT_BUFFERS_IS: &str = "fn main() {\n\
      println(self_same);\n\
      }\n";
 
+/// An `is` inside a closure with inferred parameters. The closure body is
+/// checked before the call site unifies `a` and `b` with `Colour`, so the
+/// operand types are still inference variables at the `is` and the checker
+/// has to re-run its decision once inference settles. Annotating the
+/// parameters was the difference between a user diagnostic and the span-less
+/// codegen-front message.
+const INFERRED_LAMBDA_ENUM_IS: &str = "enum Colour {\n\
+     Red;\n\
+     Green;\n\
+     }\n\
+     \n\
+     fn main() {\n\
+     let same = |a, b| a is b;\n\
+     println(same(Colour.Red, Colour.Green));\n\
+     }\n";
+
+/// The same inference shape over the #3108 record, so the record answer is
+/// not reachable through a closure either.
+const INFERRED_LAMBDA_RECORD_IS: &str = "type Point {\n\
+     x: i64;\n\
+     }\n\
+     \n\
+     fn main() {\n\
+     let same = |a, b| a is b;\n\
+     println(same(Point { x: 1 }, Point { x: 2 }));\n\
+     }\n";
+
+/// Negative control for the two above: the same inferred closure over `bytes`
+/// handles stays accepted and runs, so the deferred decision rejects the value
+/// class rather than every inferred operand.
+const INFERRED_LAMBDA_BYTES_IS: &str = "fn main() {\n\
+     let same = |a, b| a is b;\n\
+     var x = bytes.new();\n\
+     x.push(1);\n\
+     var y = bytes.new();\n\
+     y.push(2);\n\
+     println(same(x, y));\n\
+     }\n";
+
 /// Every `is` program this file compiles, rejected and accepted alike. The
 /// codegen-front backstop must be unreachable from all of them.
 const ALL_IS_SOURCES: &[(&str, &str)] = &[
@@ -162,6 +201,15 @@ const ALL_IS_SOURCES: &[(&str, &str)] = &[
     ("Vec", VEC_IS),
     ("empty bytes", BYTES_IS),
     ("bytes with distinct buffers", BYTES_DISTINCT_BUFFERS_IS),
+    ("enum through an inferred closure", INFERRED_LAMBDA_ENUM_IS),
+    (
+        "record through an inferred closure",
+        INFERRED_LAMBDA_RECORD_IS,
+    ),
+    (
+        "bytes through an inferred closure",
+        INFERRED_LAMBDA_BYTES_IS,
+    ),
 ];
 
 fn run_check(source: &str) -> Output {
@@ -260,6 +308,29 @@ fn is_on_an_indirect_enum_is_rejected_by_the_checker() {
 #[test]
 fn is_on_a_machine_value_is_rejected_by_the_checker() {
     assert_rejected_with_e_is_value_type(MACHINE_IS, "Tank");
+}
+
+#[test]
+fn is_on_an_enum_through_an_inferred_closure_is_rejected_by_the_checker() {
+    // The operand types are inference variables while the closure body is
+    // checked, so the decision has to be re-run after unification. Without
+    // that, this program type-checked and the user saw only the codegen
+    // front's span-less `IdentityCompare lhs must be a pointer or integer
+    // value`.
+    assert_rejected_with_e_is_value_type(INFERRED_LAMBDA_ENUM_IS, "Colour");
+}
+
+#[test]
+fn is_on_a_record_through_an_inferred_closure_is_rejected_by_the_checker() {
+    assert_rejected_with_e_is_value_type(INFERRED_LAMBDA_RECORD_IS, "Point");
+}
+
+#[test]
+fn is_on_bytes_through_an_inferred_closure_still_runs() {
+    // Negative control for the two rejections above: an inferred operand is
+    // not itself the fault, so the same closure over two distinct `bytes`
+    // buffers compiles and answers `false`.
+    assert_run_prints(INFERRED_LAMBDA_BYTES_IS, &["false"]);
 }
 
 #[test]

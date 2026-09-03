@@ -1614,6 +1614,40 @@ impl Checker {
             })
             .collect();
         self.errors.extend(deferred_cast_errors);
+
+        // Re-run every `is` whose operands were still inference variables when
+        // the expression was checked (a closure body checked before its call
+        // site unified the parameter types). Unification has settled by now, so
+        // the same decision runs against concrete types and the checker stays
+        // the total authority for the `is` allowance set (#3134). An operand
+        // that is *still* unresolved is a program the inference-hole reporting
+        // above already refuses, so it needs no second diagnostic here.
+        let deferred_is_checks: Vec<_> = std::mem::take(&mut self.deferred_is_checks)
+            .into_values()
+            .collect();
+        for check in deferred_is_checks {
+            let lhs = self.subst.resolve(&check.lhs_ty);
+            let rhs = self.subst.resolve(&check.rhs_ty);
+            if lhs.has_inference_var()
+                || rhs.has_inference_var()
+                || matches!(lhs, Ty::Error)
+                || matches!(rhs, Ty::Error)
+            {
+                continue;
+            }
+            let diagnostics = self.is_value_form_diagnostics(
+                &check.lhs_span,
+                &lhs,
+                &check.rhs_span,
+                &rhs,
+                &check.span,
+            );
+            for (kind, span, message) in diagnostics {
+                let mut err = TypeError::new(kind, span, message);
+                err.source_module.clone_from(&check.source_module);
+                self.errors.push(err);
+            }
+        }
     }
 
     pub(super) fn report_unresolved_monomorphic_sites(&mut self) {

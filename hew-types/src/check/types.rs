@@ -2562,6 +2562,27 @@ pub(super) struct DeferredCastCheck {
     pub(super) source_module: Option<String>,
 }
 
+/// An `is` value comparison whose operand types were still inference
+/// variables when the expression was checked.
+///
+/// A closure's parameter types are fresh variables while its body is checked
+/// and only settle when a call site unifies them, so `|a, b| a is b` cannot be
+/// decided in place. The obligation is re-run once inference has settled
+/// (`Checker::report_unresolved_inference_holes`), which is what keeps
+/// `is_identity_capable` the total authority for the allowance set instead of
+/// letting an inferred operand fall through to the codegen front's span-less
+/// backstop (#3134).
+#[derive(Debug, Clone)]
+pub(super) struct DeferredIsCheck {
+    pub(super) span: Span,
+    pub(super) lhs_span: Span,
+    pub(super) lhs_ty: Ty,
+    pub(super) rhs_span: Span,
+    pub(super) rhs_ty: Ty,
+    /// Diagnostic routing token captured while the source item was active.
+    pub(super) source_module: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct DeferredMonomorphicSite {
     pub(super) span: Span,
@@ -2906,6 +2927,10 @@ pub struct Checker {
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
     pub(super) deferred_cast_checks: Vec<DeferredCastCheck>,
+    /// `is` obligations recorded while an operand type was still an
+    /// inference variable, keyed by the `is` expression so a body checked more
+    /// than once records one obligation.
+    pub(super) deferred_is_checks: HashMap<SpanKey, DeferredIsCheck>,
     pub(super) deferred_monomorphic_sites: Vec<DeferredMonomorphicSite>,
     /// Tracks the span and originating module where each function was first defined
     /// (for duplicate detection and dead-code source attribution).
@@ -3872,6 +3897,7 @@ impl Checker {
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),
             deferred_cast_checks: Vec::new(),
+            deferred_is_checks: HashMap::new(),
             deferred_monomorphic_sites: Vec::new(),
             fn_def_spans: HashMap::new(),
             fn_visibility: HashMap::new(),

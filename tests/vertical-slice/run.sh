@@ -2809,6 +2809,48 @@ if [[ "$(cat "${stdout_output}")" != $'worker got payload: \ndone' ]]; then
 fi
 echo "KNOWN actor_nested_handle_tuple_transfer (#3127: actor message loses the nested string payload)"
 
+# Accept + run: the value a `match` over a channel `recv()` produces must
+# survive the match. A channel receive is lowered as an intercepted
+# layout-witness call that writes the `Option<T>` carrier straight into a temp
+# with no owner, so the arm binder becomes the sole owner of the payload; its
+# body-end release canonicalizes onto the match result place, nulling the
+# string the match just produced. #3127 is a documented v0.6.0 fail-closed
+# limit (D342): the fix belongs in hew-mir/src/lower/pattern.rs and
+# hew-codegen-rs/src/llvm.rs, out of proportion for this ratchet. The second
+# half binds the carrier to a local first — the shape that already works — as
+# the negative control.
+run_accept_expect_status "channel_recv_match_result_survives" 0
+if diff -u "${ROOT}/tests/vertical-slice/accept/channel_recv_match_result_survives.expected" \
+    "${stdout_output}" >/dev/null; then
+    echo "channel_recv_match_result_survives: #3127 is fixed; remove this known-failure ratchet" >&2
+    exit 1
+fi
+if [[ "$(cat "${stdout_output}")" != $'direct: []\nvia local: [via local]\ntry: []' ]]; then
+    echo "channel_recv_match_result_survives: #3127 changed from the exact empty-payload failure" >&2
+    cat "${stdout_output}" >&2
+    exit 1
+fi
+echo "KNOWN channel_recv_match_result_survives (#3127: match over recv() loses its own result)"
+
+# Accept + run: the ASan gate's recv-frame balance fixture (#3127) also has an
+# ordinary stdout oracle. The loop/early-return/forward/record shapes already
+# release correctly on the current lowerer; only the direct
+# `match rx.recv() { .Some(s) => s, ... }` result at the end hits the same
+# match-over-recv bug as channel_recv_match_result_survives, so `channel: 0`
+# replaces the expected running total.
+run_accept_expect_status "recv_frame_release_balance" 0
+if diff -u "${ROOT}/tests/vertical-slice/accept/recv_frame_release_balance.expected" \
+    "${stdout_output}" >/dev/null; then
+    echo "recv_frame_release_balance: #3127 is fixed; remove this known-failure ratchet" >&2
+    exit 1
+fi
+if [[ "$(cat "${stdout_output}")" != $'drain: 8390\nearly: 105\nforward: 8390\nrecords: 11780\nchannel: 0' ]]; then
+    echo "recv_frame_release_balance: #3127 changed from the exact empty-payload failure" >&2
+    cat "${stdout_output}" >&2
+    exit 1
+fi
+echo "KNOWN recv_frame_release_balance (#3127: direct match rx.recv() result loses its payload)"
+
 # Accept + run: user records named `Sender` and `Receiver` are not builtin
 # channel handles. They must keep ordinary actor-send treatment and emit CBOR
 # codecs instead of being skipped by bare short name.

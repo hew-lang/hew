@@ -138,8 +138,8 @@ fn check_not_yet_implemented_json_has_no_debug_payload() {
 
     assert_eq!(
         output.status.code(),
-        Some(1),
-        "NYI program must exit 1\n{}",
+        Some(3),
+        "NYI program is a Limitation-channel diagnostic and must exit 3\n{}",
         describe_output(&output),
     );
     let diagnostics = parse_json_array(&output);
@@ -260,8 +260,8 @@ fn compile_mir_gate_failure_json_has_no_debug_payload() {
 
     assert_eq!(
         output.status.code(),
-        Some(1),
-        "compile MIR gate failure must exit 1\n{}",
+        Some(3),
+        "compile MIR gate failure is a Limitation-channel diagnostic and must exit 3\n{}",
         describe_output(&output),
     );
     let diagnostics = parse_json_array(&output);
@@ -284,7 +284,12 @@ fn compile_mir_gate_failure_text_has_no_debug_payload() {
     let output = run(&["compile", path.to_str().unwrap()]);
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "NYI is a Limitation-channel diagnostic and must exit 3\n{}",
+        describe_output(&output),
+    );
     assert!(
         !stderr.contains("MirDiagnostic")
             && !stderr.contains("NotYetImplemented {")

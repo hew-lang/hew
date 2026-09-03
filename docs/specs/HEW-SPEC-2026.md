@@ -3084,13 +3084,13 @@ machine Name {
 
     // Transitions: on Event: Source => Target { body }
     on EventZ: StateB => StateA { .StateA } // explicit body returns target value
-    on EventY: StateA => StateB { StateB { field: event.payload } }
+    on EventY: StateA => StateB { .StateB { field: event.payload } }
 
     // Head binding: name payload fields at the rule site
     on EventY(payload): StateB => StateA { Name.StateA }
 
     // Self-transition with reenter (runs exit/entry even when state is unchanged)
-    on EventX: StateB => StateB reenter { StateB { field: self.field } }
+    on EventX: StateB => StateB reenter { .StateB { field: self.field } }
 
     // Wildcard — applies in all unhandled source states for this event
     on EventX: _ => _ { state }           // _ => _ means "stay in current state"

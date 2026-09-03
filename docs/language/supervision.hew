@@ -42,3 +42,24 @@
 //! `await_restart supervisor.child` is the blocking restart barrier for a
 //! contextless caller such as `main`; it returns a fresh typed child handle.
 //! Inside an actor, use the normal suspension-aware `await` forms.
+//!
+//! ## Pools
+//!
+//! A `pool` child under `simple_one_for_one` declares several fungible
+//! children from one template, and its arity is a clause rather than an init
+//! field: `pool workers: Worker(value: 7) count: 2;`. The parenthesised list
+//! stays the actor's own field namespace, so an actor that declares a field
+//! named `count` pools like any other. `count:` is required on a `pool` child
+//! and rejected on a `child` declaration.
+//!
+//! The shipped parser still reads `count` out of the parenthesised list, so
+//! `pool workers: Worker(count: 2, value: 7);` is what compiles today; the
+//! clause form is hew-lang/hew#3253.
+//!
+//! ## Dead children
+//!
+//! A supervised role whose occupant is gone resolves closed. `sup.child` keeps
+//! re-resolving the current incarnation, and once the restart budget is spent
+//! a send through the `ChildRef` is `Err(SendError.Dead)` rather than a
+//! successful-looking return. Liveness is reported, never guessed
+//! (hew-lang/hew#3254).

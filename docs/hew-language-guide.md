@@ -1651,7 +1651,7 @@ actor Worker {
         ticks = ticks + 1;
     }
 
-    receive fn stop() {
+    receive fn halt() {
         running = false;
     }
 
@@ -1663,7 +1663,7 @@ actor Worker {
 fn main() {
     let worker = spawn Worker(running: true, ticks: 0);
     sleep(150ms);
-    worker.stop();
+    worker.halt();
     sleep(150ms);
     let r = await worker.total();
     match r {
@@ -1673,11 +1673,20 @@ fn main() {
 }
 ```
 
-Here `receive fn stop()` is a user-defined actor message. It is unrelated to the
-`#[on(stop)]` lifecycle hook, which is a plain `fn` invoked when the actor is
-tearing down. The `sleep_loop_blocks_mailbox` lint warns on the mailbox
-starvation shape where a receive handler loops around `sleep`/`sleep_until`
-without an in-loop exit path.
+Here `receive fn halt()` is a user-defined actor message, and it is the flag
+flip, not the actor's death. It is unrelated to the `#[on(stop)]` lifecycle
+hook, which is a plain `fn` invoked when the actor is tearing down. The
+`sleep_loop_blocks_mailbox` lint warns on the mailbox starvation shape where a
+receive handler loops around `sleep`/`sleep_until` without an in-loop exit path.
+
+`stop` is a reserved handler name, so the handler above is `halt`, not `stop`.
+Stopping is a method with one signature: inside the actor, `self.stop()`
+finishes the current handler, runs `#[on(stop)]`, and stops; from outside,
+`pid.stop()` requests the same and returns `()`, doing nothing if the actor has
+already stopped or crashed. A `receive fn stop()` is `E_RESERVED_HANDLER_NAME`,
+whose fix-it is to rename the handler or to call `self.stop()`. The shipped
+compiler still exposes the older free-function `stop(actor)` builtin
+(hew-lang/hew#3193).
 
 ### Accepting connections and reading in a receive handler: use `await`
 
@@ -3636,9 +3645,9 @@ and [`examples/distributed/kv_server.hew`](../examples/distributed/kv_server.hew
 #### Key-backed node identity and peer authentication (native only)
 
 Every distributed node identity is derived from its stable authenticated public
-credential. `Node.load_keys(path)` loads or creates that credential, and
-`Node.identity_key()` returns the public half as lowercase hexadecimal for
-out-of-band exchange.
+credential. `NodeConfig.key` names the file that holds it, `Node.start` loads or
+creates it, and `Node.identity_key()` returns the public half as lowercase
+hexadecimal for out-of-band exchange.
 
 The runtime computes:
 
@@ -3656,39 +3665,55 @@ credential-kind byte is `1` for a TCP Noise static key and `2` for a canonical
 TLS leaf SPKI. Keeping the key preserves the `NodeId`; rotating the key rotates
 the identity.
 
-`Node.allow_peer(route_slot, credential)` binds a peer credential to a
-receiver-local non-zero `u16` route slot. Slot `0` is reserved for local
+`NodeConfig.peers` lists the peer credentials this node will accept, and a
+peer's receiver-local non-zero `u16` route slot is its one-based position in
+that list, so the first entry is slot `1`. Slot `0` is reserved for local
 dispatch. A route slot is only a compact alias inside the configuring process:
 it never becomes the peer's identity and may differ on every node.
 
-Call all identity and pinning operations before `Node.start`:
+Starting a node is one call, and it returns `Result<(), NodeError>`, so a
+refused start stops the program instead of printing and carrying on:
 
 <!-- doctest: skip -->
 
 ```hew
-Node.set_transport("quic-mesh");
-Node.load_keys("node.key");
+var config = NodeConfig.at("0.0.0.0:9000");
+config.transport = "quic-mesh";
+config.key = "node.key";
+config.peers = ["3059301306072a8648ce3d020106082a8648ce3d030107"];
 println(f"pin this credential on peers: {Node.identity_key()}");
 
-// This process chooses local route slot 2 for the peer.
-Node.allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
-Node.start("0.0.0.0:9000");
+match Node.start(config) {
+    .Ok(_) => println("node up"),
+    .Err(e) => println(f"node refused: {e}"),
+}
 ```
+
+`Node.set_transport`, `Node.load_keys`, and `Node.allow_peer` are gone: each
+carried one fact that is now a `NodeConfig` field. The shipped compiler still
+has the older call sequence and an untyped `Node.start(addr)`
+(hew-lang/hew#3256).
 
 On TCP, the pinned credential is the peer's 32-byte Noise public key. On
 quic-mesh, it is the peer certificate's canonical SPKI. An unbound or mismatched
 credential is rejected before the peer becomes routable.
 
-A client selects its local pin when connecting:
+A client selects its local pin when connecting. The slot it names is the
+server's position in the client's own `NodeConfig.peers`, so a client that
+lists the server first dials slot `1`:
 
 <!-- doctest: skip -->
 
 ```hew
-Node.connect("2@127.0.0.1:9000");
+match Node.connect("1@127.0.0.1:9000") {
+    .Ok(_) => {},
+    .Err(e) => println(f"dial refused: {e}"),
+}
 ```
 
-The `2@` prefix is the client's route slot for that server. The authenticated
-key, not the numeric prefix, determines the server's `NodeId`.
+The `1@` prefix is the client's route slot for that server, and it is local to
+the client: the same server may sit at a different slot on every node. The
+authenticated key, not the numeric prefix, determines the server's `NodeId`.
 
 Each successful start also advances a durable non-zero session incarnation in
 the key's journal. A same-key restart therefore has the same `NodeId` and a
@@ -3706,6 +3731,14 @@ if the replacement process reuses the same actor slot.
 Registry names are discovery aliases. Repointing a name affects future
 `Node.lookup` calls but does not rewrite or revoke a previously issued
 `RemotePid`.
+
+The registry knows what it holds. `Node.register(name, pid)` returns
+`Result<(), RegisterError>` and records the actor's declaration identity beside
+its location; `Node.lookup<A>(name)` compares that record against `A` and
+answers `Err(LookupError.TypeMismatch)` when they disagree, so the type
+argument on a lookup is checked rather than trusted. `Node.register` is the one
+registration verb: it registers locally whether or not a node has started, and
+publishes cluster-wide once one has.
 
 Remote monitors deliver one typed notification through `#[on(down)]`:
 

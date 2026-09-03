@@ -34,10 +34,16 @@
 //!
 //! Two placement rules govern where this form is legal today.
 //!
-//! First, `scope { fork ... }` needs a ctx-bearing execution context, so it
-//! belongs in a `receive fn` body or an actor-internal helper. A `fork` written
-//! directly in `fn main` is refused: `fn main` has no execution-context
-//! parameter, so there is no scope owner to attach children to.
+//! First, `scope { fork ... }` suspends, and every suspension point needs an
+//! execution context to park. Every Hew function may suspend and none is
+//! marked as suspending, so the rule is about the context a call runs on, not
+//! about the function it sits in: an actor handler and a task body carry a
+//! coroutine context, and a free function inherits its caller's. `fn main`
+//! gains a context whose park and unpark are the main thread's parker; until
+//! it does, a `fork` written directly in `fn main`, or in a free function
+//! `main` calls, is refused with `E_LIMIT_MAIN_CONTEXT` rather than parked on
+//! a contextless wait. Host the loop in an actor and park `main` on its ask,
+//! or use `join {}` for a fan-out from `main`.
 //!
 //! Second, a statement in a `scope` body that is a bare call is read as a task
 //! spawn, not as an ordinary call. `println(f"{a},{b}")` inside the scope is

@@ -28,10 +28,12 @@
 //!
 //! `spawn Counter(...)` returns a typed `LocalPid<Counter>`. Calling a
 //! no-result receive function on an unbounded or `overflow block` actor has
-//! type `()`. A `drop_new`, `drop_old`, `fail`, or `coalesce` declaration makes
-//! those sends `Result<(), SendError>`, so loss or rejection is visible at the
-//! call site. A result-bearing receive function creates a request; `await`
-//! yields the `Result`, never the bare reply.
+//! type `()` today. A `drop_new`, `drop_old`, `fail`, or `coalesce` declaration
+//! makes those sends `Result<(), SendError>`, so loss or rejection is visible
+//! at the call site. That split closes: every send widens to
+//! `Result<(), SendError>` so a dead target is reported too (hew-lang/hew#3254,
+//! and "Stopping" below). A result-bearing receive function creates a request;
+//! `await` yields the `Result`, never the bare reply.
 //!
 //! ```hew
 //! actor Sampler {
@@ -53,6 +55,28 @@
 //! Policy-sensitive results cannot be discarded as a bare statement. Handle
 //! them with `match` or `?`; `let _ = sampler.sample(value);` is the explicit
 //! acknowledgement when an application intentionally accepts the loss.
+//!
+//! ## Stopping
+//!
+//! Stopping is a method with one signature. Inside an actor body `self` is the
+//! actor handle, and `self.stop()` finishes the current handler, runs the
+//! `#[on(stop)]` hook, and stops. From outside, `pid.stop()` requests the same
+//! and returns `()`; it is idempotent, so a stop addressed to an actor that
+//! has already stopped or crashed does nothing. `stop` is a reserved handler
+//! name: a user `receive fn stop()` is `E_RESERVED_HANDLER_NAME`, and the
+//! fix-it is to rename the handler or to call `self.stop()`.
+//!
+//! Messages queued behind a stop are dropped, and the drop is disclosed: the
+//! `DOWN` record carries `dropped: n` and the runtime counts the same drops in
+//! `mailbox.dropped_on_stop_total{actor}`. A sender that needs per-message
+//! certainty asks rather than tells. A send that arrives after the stop has
+//! latched, or that addresses a supervised role with no live occupant, is
+//! `Err(SendError.Dead)`: resolution never hands back a dead address, and a
+//! send to one neither traps nor returns `Ok(())`.
+//!
+//! The shipped compiler exposes a free-function `stop(actor)` builtin and a
+//! unit-typed send to a terminal actor that is silently a no-op; the method
+//! surface is hew-lang/hew#3193 and the dead-target shape is hew-lang/hew#3254.
 //!
 //! ## Actor-to-actor dispatch
 //!

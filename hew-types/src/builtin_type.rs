@@ -371,14 +371,14 @@ impl BuiltinType {
             | Self::CancellationToken
             | Self::MonitorRef
             // ir-ladder §1.1 gives a pid the BitCopy row, and the class table
-            // records that verdict. The marker cannot follow yet: it is the
-            // legacy lowering's input, and flipping it moves the Vec
-            // pointer-element ABI and an elaborated-MIR baseline - the parity
-            // oracle - in the same change that adds the authority meant to
-            // replace them. The same holds for `HewActor`, which additionally
-            // carries `close_method() = Some("close")` while
-            // `hew-hir/src/builtin_type_classes.rs:331` asserts a BitCopy
-            // builtin registers none.
+            // records that verdict. These three markers cannot follow yet:
+            // `marker()` is the legacy lowering's input and the legacy route is
+            // the parity oracle, so flipping `LocalPid` routes a
+            // `Vec<LocalPid<_>>` element off its pointer ABI and moves an
+            // elaborated-MIR baseline, and `HewActor`/`BoxedActor` carry
+            // `close_method() = Some("close")` while
+            // `hew-hir/src/builtin_type_classes.rs` asserts a BitCopy builtin
+            // registers none. They flip at P5 with the legacy carrier (§9).
             | Self::LocalPid => BuiltinTypeMarker::Resource,
             Self::SupervisorPool
             | Self::ChildRef
@@ -388,7 +388,26 @@ impl BuiltinType {
             | Self::MonitorId
             | Self::DownTarget
             | Self::DownReason
-            | Self::DownNotification => BuiltinTypeMarker::BitCopy,
+            | Self::DownNotification
+            // §1.1's scalar and std-enum rows: each is a scalar or an enum
+            // whose variants are unit or carry `BitCopy` payloads, so the
+            // marker and the class table agree by construction rather than by
+            // a recorded exception.
+            | Self::Instant
+            | Self::Unit
+            | Self::Duration
+            | Self::Range
+            | Self::Trap
+            | Self::TimeoutError
+            | Self::CrashAction
+            | Self::CrashKind
+            | Self::SendError
+            | Self::AskError
+            | Self::LookupError
+            | Self::RecvError
+            | Self::LinkError
+            | Self::MonitorError
+            | Self::CloseError => BuiltinTypeMarker::BitCopy,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             // `CrashInfo` carries an owned `message: string` (M-5), so it is no
             // longer a `BitCopy` aggregate. `None` lets the owned-aggregate

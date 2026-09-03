@@ -530,17 +530,23 @@ mod tests {
         let decls = declarations();
         let context = ClassContext::new(&decls);
         for info in builtin_types() {
+            // Probe every generic builtin at `string`, not at a scalar. A row
+            // whose class is fixed answers `BitCopy` either way, while a row
+            // whose class is the aggregate or collection rule over its
+            // arguments answers `CowValue` here and `BitCopy` at `i64`. Probing
+            // at a scalar makes the two indistinguishable, which is what let
+            // the `None` arm below state nothing.
             let ty = named(
                 info.canonical_name,
                 Some(info.kind),
                 match info.arity {
                     0 => vec![],
-                    1 => vec![ResolvedTy::I64],
-                    _ => vec![ResolvedTy::I64, ResolvedTy::String],
+                    1 => vec![ResolvedTy::String],
+                    _ => vec![ResolvedTy::String, ResolvedTy::String],
                 },
             );
             let classed = ValueClass::of_ty(&ty, &context);
-            // RECORDED EXCEPTIONS - `LocalPid` and `HewActor`.
+            // RECORDED EXCEPTIONS - `LocalPid`, `HewActor` and `BoxedActor`.
             //
             // §1.1 gives both the BitCopy row and the class table above records
             // that verdict. Neither `marker()` can follow in this change:
@@ -551,13 +557,32 @@ mod tests {
             // panics "Vec layout-aware operation is not implemented") and moves
             // an elaborated-MIR baseline
             // (`hew-cli::funcupdate_mir_baselines funcupdate_reassign_elab_mir_matches_committed_baselines`).
-            // Flipping `HewActor` additionally fails
-            // `hew-hir/src/builtin_type_classes.rs:331`, which asserts a BitCopy
-            // builtin registers no close method, in every test that seeds the
-            // builtin class table.
-            if matches!(info.kind, BuiltinType::LocalPid | BuiltinType::HewActor) {
-                assert_eq!(Ok(ValueClass::BitCopy), classed);
+            // `HewActor` and `BoxedActor` additionally carry
+            // `close_method() = Some("close")`, which
+            // `hew-hir/src/builtin_type_classes.rs` refuses on a BitCopy
+            // builtin. All three flip at P5 with the legacy carrier (§9).
+            //
+            // The list is closed and explicit: every other builtin's marker and
+            // class agree, the `None` arm below included, so this is a named
+            // exception rather than a hole the table can grow into.
+            if matches!(
+                info.kind,
+                BuiltinType::LocalPid | BuiltinType::HewActor | BuiltinType::BoxedActor
+            ) {
                 assert_eq!(BuiltinTypeMarker::Resource, info.kind.marker());
+                continue;
+            }
+            // The other two rows this loop cannot speak for: `CrashInfo` and
+            // `CrashNotification` are the two builtins whose class is the
+            // Aggregate rule over a std declaration rather than a row of their
+            // own, so their verdict is the declaration's and their marker
+            // states nothing about it. They are classed here against this
+            // module's stand-in declarations, not against `std/failure.hew`.
+            if matches!(
+                info.kind,
+                BuiltinType::CrashInfo | BuiltinType::CrashNotification
+            ) {
+                assert_eq!(BuiltinTypeMarker::None, info.kind.marker());
                 continue;
             }
             match info.kind.marker() {
@@ -581,7 +606,17 @@ mod tests {
                     "`{}` carries marker Linear",
                     info.canonical_name
                 ),
-                BuiltinTypeMarker::None => {}
+                // `None` states no obligation of its own, so the class rule
+                // decides. It must not decide `BitCopy`: a builtin whose class
+                // is `BitCopy` carries marker `BitCopy`, and a `None` row that
+                // classed `BitCopy` would be a marker correction this table
+                // silently skipped.
+                BuiltinTypeMarker::None => assert_ne!(
+                    Ok(ValueClass::BitCopy),
+                    classed,
+                    "`{}` carries marker None but classes BitCopy: correct its marker",
+                    info.canonical_name
+                ),
             }
         }
     }

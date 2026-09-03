@@ -553,13 +553,18 @@ mod tests {
         );
     }
 
+    /// `CrashAction` must be in `type_classes` so `push_unknown_type_diagnostics`
+    /// skips it, and it must be seeded with the marker `BuiltinType::marker()`
+    /// gives it. §1.1 makes it `BitCopy` - its variants are unit or carry
+    /// `BitCopy` payloads - and this test pinned the `None` it carried before
+    /// the marker corrections landed.
     #[test]
-    fn crash_action_is_seeded_as_none_marker() {
+    fn crash_action_is_seeded_with_its_own_marker_and_no_close_method() {
         let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("CrashAction"),
-            Some(&(ResourceMarker::None, None)),
+            Some(&(ResourceMarker::BitCopy, None)),
             "CrashAction must be in type_classes so push_unknown_type_diagnostics skips it"
         );
     }

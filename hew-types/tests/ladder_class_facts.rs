@@ -479,3 +479,51 @@ fn the_channel_handles_are_affine_resources_with_no_clone() {
         );
     }
 }
+
+/// §1.1's indirect-enum row on a generic declaration: `Nest<T>` mentions itself
+/// at its own instantiation, so the recursive occurrence is an owning edge and
+/// `Nest<i64>` keeps its payload class behind the heap box - `CowValue` with a
+/// `FieldWise` clone, never `BitCopy`, which §1.2 would give no owner.
+///
+/// The program is inline rather than a `repros/ladder/p1/` fixture because the
+/// corpus sweep's `hew check` runs codegen-front validation, which refuses a
+/// generic `indirect enum` today: the instantiation classifies
+/// `DropClass::IndirectEnum` in `hew-mir/src/ownership.rs` and still reaches
+/// codegen as `DropKind::Resource` with no drop function (#3298). The class
+/// verdict this test asserts is the checker's and is unaffected by that defect;
+/// the sweep has no exclusion for a checker-level accept fixture, and inventing
+/// one would be a second expected-failures list.
+#[test]
+fn a_generic_indirect_enum_publishes_over_the_owning_edge() {
+    let output = typecheck(
+        r"
+indirect enum Nest<T> {
+    Leaf(T);
+    More(Nest<T>);
+}
+
+fn main() -> i64 {
+    let n: Nest<i64> = Nest.Leaf(1);
+    let _ = n;
+    0
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "the generic indirect enum must type-check: {:#?}",
+        output.errors
+    );
+    let facts = row_matching(&output, "`Nest<i64>`", |ty| {
+        named_at(ty, "Nest", |args| args == [ResolvedTy::I64])
+    });
+    assert_eq!(
+        (ValueClass::CowValue, CloneKind::FieldWise),
+        (facts.class, facts.clone)
+    );
+    assert_ne!(
+        (ValueClass::BitCopy, CloneKind::Bits),
+        (facts.class, facts.clone),
+        "a heap-boxed payload must never be published bit-copyable"
+    );
+}

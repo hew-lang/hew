@@ -9,7 +9,7 @@
 //! class and no "assume `BitCopy`". A type this module cannot class is an
 //! [`Err`] the caller fails closed on.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::builtin_type::BuiltinType;
 use crate::resolved_ty::ResolvedTy;
@@ -197,10 +197,15 @@ pub enum ClassError {
     /// An `#[opaque]` handle declaration with no ownership marker: the
     /// Aggregate rule cannot see through it and there is no default.
     OpaqueWithoutMarker { name: String },
-    /// The declaration reaches itself through its own members at a *different*
-    /// instantiation (`type L<T> { n: L<Vec<T>> }`). Every instantiation on the
-    /// cycle is a distinct type, so the walk has no finite fixpoint to join and
-    /// there is no default class: this refuses.
+    /// The declaration's own members reach it at a *different* instantiation
+    /// (`type L<T> { n: L<Vec<T>> }`), directly or through another declaration.
+    /// The argument grows on every turn of the cycle, so every instantiation on
+    /// it is a distinct type, the walk has no finite fixpoint to join and there
+    /// is no default class: this refuses, at every instantiation of `L`.
+    ///
+    /// This is a property of the declaration, not of one walk: a declaration
+    /// whose members never reach it — `type Wrapper<T> { value: T }` — refuses
+    /// nothing, however deeply a caller nests it in its own argument.
     RecursiveInstantiation { name: String },
 }
 
@@ -224,7 +229,7 @@ impl std::fmt::Display for ClassError {
             ),
             Self::RecursiveInstantiation { name } => write!(
                 f,
-                "`{name}` reaches itself at a different instantiation, so its member walk has no finite fixpoint"
+                "`{name}`'s own members reach it at a different instantiation, so its member walk has no finite fixpoint"
             ),
         }
     }
@@ -257,8 +262,171 @@ pub fn classify_ty(
     ty: &ResolvedTy,
     decls: &ClassContext<'_>,
 ) -> Result<(ValueClass, CloneKind), ClassError> {
-    let mut in_progress = Vec::new();
-    classify(ty, decls, &mut in_progress)
+    let mut walk = Walk::default();
+    classify(ty, decls, &mut walk)
+}
+
+/// The state one [`classify_ty`] carries across its member walk.
+///
+/// `on_path` is the §1.1 owning-edge cut, keyed by the instantiation the walk
+/// entered. `polymorphic` memoizes [`is_polymorphically_recursive`], which is a
+/// property of a declaration and not of any one walk, so it is answered once
+/// per declaration rather than once per member occurrence.
+#[derive(Default)]
+struct Walk {
+    on_path: Vec<(String, Vec<ResolvedTy>)>,
+    polymorphic: BTreeMap<String, bool>,
+}
+
+impl Walk {
+    fn is_polymorphic(&mut self, name: &str, decls: &ClassContext<'_>) -> bool {
+        if let Some(answer) = self.polymorphic.get(name) {
+            return *answer;
+        }
+        let answer = is_polymorphically_recursive(name, decls);
+        self.polymorphic.insert(name.to_string(), answer);
+        answer
+    }
+}
+
+/// Is `arg` one of `params`, the mentioning declaration's own type parameters?
+///
+/// A parameter reaches here spelled either as an abstract `TypeParam` or, when
+/// the declaration was resolved without a type-parameter scope, as a
+/// zero-argument user `Named`. [`substitute`] reads both spellings and so does
+/// this.
+fn is_own_parameter(arg: &ResolvedTy, params: &[String]) -> bool {
+    let name = match arg {
+        ResolvedTy::TypeParam { name } => name,
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: None,
+            ..
+        } if args.is_empty() => name,
+        _ => return false,
+    };
+    params.iter().any(|param| param == name)
+}
+
+/// Collect every declaration `ty` mentions, with the arguments it mentions it
+/// at, descending exactly where [`classify`] descends.
+///
+/// MARKED SHORTCUT — a declaration mention's own arguments are descended into
+/// even though [`classify_declaration`] only reaches an argument through a
+/// member that uses the parameter.
+/// WHY: a declaration that passes a growing argument through an intermediary
+/// (`L<T> { x: M<L<Vec<T>>> }`, `M<U> { u: U }`) has no edge at all without it,
+/// and the member walk then diverges instead of refusing. Over-approximating
+/// refuses a declaration whose growing argument lands on a phantom parameter no
+/// member reads; under-approximating overflows the stack.
+/// WHEN: `DeclaredType` records which parameters its members actually read.
+/// WHAT: descend into a mention's arguments only at the positions the mentioned
+/// declaration's members use.
+fn collect_mentions(
+    ty: &ResolvedTy,
+    decls: &ClassContext<'_>,
+    out: &mut Vec<(String, Vec<ResolvedTy>)>,
+) {
+    match ty {
+        ResolvedTy::Tuple(elements) => {
+            for element in elements {
+                collect_mentions(element, decls, out);
+            }
+        }
+        ResolvedTy::Array(element, _) => collect_mentions(element, decls, out),
+        ResolvedTy::Closure { captures, .. } => {
+            for capture in captures {
+                collect_mentions(capture, decls, out);
+            }
+        }
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            let builtin = builtin.or_else(|| {
+                if decls.declaration(name).is_some() {
+                    None
+                } else {
+                    crate::builtin_type::lookup_builtin_type(name)
+                }
+            });
+            match builtin {
+                // The two builtins whose class is the Aggregate rule over a
+                // declaration, so they are declaration mentions like any other.
+                Some(BuiltinType::CrashInfo | BuiltinType::CrashNotification) | None => {
+                    if decls.declaration(name).is_some() {
+                        out.push((name.clone(), args.clone()));
+                    }
+                    for arg in args {
+                        collect_mentions(arg, decls, out);
+                    }
+                }
+                // The builtins whose class is the join over their arguments.
+                Some(
+                    BuiltinType::Option
+                    | BuiltinType::Result
+                    | BuiltinType::Vec
+                    | BuiltinType::HashMap
+                    | BuiltinType::HashSet
+                    | BuiltinType::VecIter
+                    | BuiltinType::HashMapIter,
+                ) => {
+                    for arg in args {
+                        collect_mentions(arg, decls, out);
+                    }
+                }
+                // Every other builtin has a flat row: `classify` never looks at
+                // its arguments, so neither does the reachability walk.
+                Some(_) => {}
+            }
+        }
+        // `Slice`, `Pointer`, `Borrow`, `Function`, `TraitObject` and `Task`
+        // all have flat rows in §1.1: their payloads are never classified, so a
+        // mention inside one is not an edge the member walk can take.
+        _ => {}
+    }
+}
+
+/// Does `name`'s declaration reach itself through its own members at an
+/// instantiation other than its own parameters?
+///
+/// This is §1.1's polymorphic-recursion question, and it is asked of the
+/// declaration's **pre-substitution** members: `L<T>` whose body mentions
+/// `L<T>` reaches finitely many instantiations from any starting argument and
+/// takes the owning edge, while `L<T>` whose body mentions `L<Vec<T>>` — alone
+/// or through an intermediary declaration — grows its argument on every turn of
+/// the cycle and has no finite fixpoint to join. A declaration that never
+/// reaches itself refuses nothing, whatever arguments a caller supplies: a
+/// nested `Wrapper<Wrapper<i64>>` is an ordinary aggregate.
+fn is_polymorphically_recursive(name: &str, decls: &ClassContext<'_>) -> bool {
+    let mut seen: BTreeSet<(String, bool)> = BTreeSet::new();
+    let mut stack = vec![(name.to_string(), false)];
+    while let Some((current, grew)) = stack.pop() {
+        if !seen.insert((current.clone(), grew)) {
+            continue;
+        }
+        let Some(declared) = decls.declaration(&current) else {
+            continue;
+        };
+        let mut mentions = Vec::new();
+        for member in &declared.members {
+            collect_mentions(member, decls, &mut mentions);
+        }
+        for (mentioned, args) in mentions {
+            let grows = !args
+                .iter()
+                .all(|arg| is_own_parameter(arg, &declared.type_params));
+            let grew = grew || grows;
+            if grew && mentioned == name {
+                return true;
+            }
+            stack.push((mentioned, grew));
+        }
+    }
+    false
 }
 
 /// Class and clone of a heap collection over its element facts (§1.1
@@ -302,11 +470,9 @@ fn aggregate_facts(members: &[(ValueClass, CloneKind)]) -> (ValueClass, CloneKin
 fn classify_all(
     tys: &[ResolvedTy],
     decls: &ClassContext<'_>,
-    in_progress: &mut Vec<(String, Vec<ResolvedTy>)>,
+    walk: &mut Walk,
 ) -> Result<Vec<(ValueClass, CloneKind)>, ClassError> {
-    tys.iter()
-        .map(|ty| classify(ty, decls, in_progress))
-        .collect()
+    tys.iter().map(|ty| classify(ty, decls, walk)).collect()
 }
 
 /// Substitute a declaration's own type parameters out of a member type.
@@ -370,7 +536,7 @@ fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]) -> Resolv
 fn classify(
     ty: &ResolvedTy,
     decls: &ClassContext<'_>,
-    in_progress: &mut Vec<(String, Vec<ResolvedTy>)>,
+    walk: &mut Walk,
 ) -> Result<(ValueClass, CloneKind), ClassError> {
     let bits = (ValueClass::BitCopy, CloneKind::Bits);
     let view = (ValueClass::View, CloneKind::Bits);
@@ -407,7 +573,7 @@ fn classify(
         // `clone` stays `Retain` in every case, because retaining a closure is
         // an env refcount bump that duplicates no capture.
         ResolvedTy::Closure { captures, .. } => {
-            let capture_facts = classify_all(captures, decls, in_progress)?;
+            let capture_facts = classify_all(captures, decls, walk)?;
             let class = if capture_facts
                 .iter()
                 .any(|(class, _)| *class == ValueClass::Linear)
@@ -423,10 +589,8 @@ fn classify(
             };
             (class, CloneKind::Retain)
         }
-        ResolvedTy::Tuple(elements) => {
-            aggregate_facts(&classify_all(elements, decls, in_progress)?)
-        }
-        ResolvedTy::Array(element, _) => aggregate_facts(&[classify(element, decls, in_progress)?]),
+        ResolvedTy::Tuple(elements) => aggregate_facts(&classify_all(elements, decls, walk)?),
+        ResolvedTy::Array(element, _) => aggregate_facts(&[classify(element, decls, walk)?]),
         ResolvedTy::Task(_) => linear_none,
         ResolvedTy::TypeParam { name } => return Err(ClassError::TypeParam { name: name.clone() }),
         ResolvedTy::Named {
@@ -468,7 +632,7 @@ fn classify(
             | BuiltinType::HewActor => bits,
             // Enums whose class is the join over their payload arguments.
             BuiltinType::Option | BuiltinType::Result => {
-                aggregate_facts(&classify_all(args, decls, in_progress)?)
+                aggregate_facts(&classify_all(args, decls, walk)?)
             }
             // Heap collections: aggregate over the element (key, value) classes
             // with a `CowValue` floor for the buffer.
@@ -479,11 +643,11 @@ fn classify(
             // cursor fields, so it takes the collection's own facts.
             | BuiltinType::VecIter
             | BuiltinType::HashMapIter => {
-                collection_facts(&classify_all(args, decls, in_progress)?)
+                collection_facts(&classify_all(args, decls, walk)?)
             }
             // Aggregate rule over the std declaration's fields.
             BuiltinType::CrashInfo | BuiltinType::CrashNotification => {
-                classify_declaration(name, args, decls, in_progress)?
+                classify_declaration(name, args, decls, walk)?
             }
             BuiltinType::Rc | BuiltinType::Weak | BuiltinType::LambdaPid => affine_retain,
             BuiltinType::Generator
@@ -537,7 +701,7 @@ fn classify(
                             is_opaque: *is_opaque,
                         },
                         decls,
-                        in_progress,
+                        walk,
                     );
                 }
                 return Err(ClassError::UnknownDeclaration { name: name.clone() });
@@ -548,7 +712,7 @@ fn classify(
                 DeclarationMarker::None if *is_opaque => {
                     return Err(ClassError::OpaqueWithoutMarker { name: name.clone() })
                 }
-                DeclarationMarker::None => classify_declaration(name, args, decls, in_progress)?,
+                DeclarationMarker::None => classify_declaration(name, args, decls, walk)?,
             }
         }
     })
@@ -559,7 +723,7 @@ fn classify_declaration(
     name: &str,
     args: &[ResolvedTy],
     decls: &ClassContext<'_>,
-    in_progress: &mut Vec<(String, Vec<ResolvedTy>)>,
+    walk: &mut Walk,
 ) -> Result<(ValueClass, CloneKind), ClassError> {
     let declared = decls
         .declaration(name)
@@ -577,10 +741,15 @@ fn classify_declaration(
     // obligation, §1.3 lets `copy_value` duplicate and §2.1 bit-copies across
     // an actor heap.
     //
-    // The cut key is the instantiation, not the name: a cycle that reaches the
-    // declaration at a *different* instantiation has no finite fixpoint, and
-    // that case refuses rather than under-approximating a `Pair<Conn>` reached
-    // from `Pair<i64>` as the box's own `CowValue`.
+    // Whether the cycle has a finite fixpoint at all is a property of the
+    // declaration's own pre-substitution members, not of the walk stack: a body
+    // that mentions itself at its own instantiation reaches finitely many
+    // instantiations from any argument, and a body that mentions itself at a
+    // different one grows its argument on every turn. The second case refuses,
+    // at every instantiation, rather than under-approximating the growing type
+    // as the box's own `CowValue`. A declaration whose members never reach it
+    // refuses nothing, so a nested `Wrapper<Wrapper<i64>>` is an ordinary
+    // aggregate.
     //
     // MARKED SHORTCUT — the owning edge is the collection heap floor rather
     // than the box's own retain path.
@@ -592,22 +761,22 @@ fn classify_declaration(
     // and the box's own class row lands (P2, §5.3).
     // WHAT: the recursive occurrence reads the box's row instead of the
     // collection floor.
-    let instance = (name.to_string(), args.to_vec());
-    if in_progress.contains(&instance) {
-        return Ok((ValueClass::CowValue, CloneKind::FieldWise));
-    }
-    if in_progress.iter().any(|(entry, _)| entry == name) {
+    if walk.is_polymorphic(name, decls) {
         return Err(ClassError::RecursiveInstantiation {
             name: name.to_string(),
         });
     }
-    in_progress.push(instance);
+    let instance = (name.to_string(), args.to_vec());
+    if walk.on_path.contains(&instance) {
+        return Ok((ValueClass::CowValue, CloneKind::FieldWise));
+    }
+    walk.on_path.push(instance);
     let members: Vec<ResolvedTy> = declared
         .members
         .iter()
         .map(|member| substitute(member, &declared.type_params, args))
         .collect();
-    let facts = classify_all(&members, decls, in_progress);
-    in_progress.pop();
+    let facts = classify_all(&members, decls, walk);
+    walk.on_path.pop();
     Ok(aggregate_facts(&facts?))
 }

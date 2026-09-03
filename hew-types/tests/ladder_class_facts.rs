@@ -320,3 +320,116 @@ fn a_non_recursive_enum_in_the_same_program_stays_bit_copyable() {
         (facts.class, facts.clone)
     );
 }
+
+/// Type-check a program that lives outside `repros/ladder/p1/`, so a live
+/// fixture can be asserted where it is rather than copied.
+fn facts_of_path(relative: &str) -> TypeCheckOutput {
+    let path = repo_root().join(relative);
+    let source = fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!("fixture `{}` must be readable: {error}", path.display());
+    });
+    let output = typecheck(&source);
+    assert!(
+        output.errors.is_empty(),
+        "fixture `{relative}` must type-check: {:#?}",
+        output.errors
+    );
+    output
+}
+
+/// Does `ty` name the declaration `name` at the arguments `args` describes?
+fn named_at(ty: &ResolvedTy, name: &str, args: impl Fn(&[ResolvedTy]) -> bool) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named { name: actual, args: actual_args, .. }
+            if actual.ends_with(name) && args(actual_args)
+    )
+}
+
+/// §1.1: a declaration nested inside its own type argument is not recursion.
+/// `Wrapper<T> { value: T }` never mentions `Wrapper` in its members, so no
+/// argument a caller supplies can make it refuse - `Wrapper<Wrapper<i64>>` is
+/// the aggregate over one `Wrapper<i64>` field, which is the aggregate over
+/// one `i64`.
+#[test]
+fn a_declaration_nested_in_its_own_argument_is_not_recursion() {
+    let output = facts_of("class_nested_instantiation.hew");
+    let facts = row_matching(&output, "`Wrapper<Wrapper<i64>>`", |ty| {
+        named_at(ty, "Wrapper", |args| {
+            args.len() == 1 && named_at(&args[0], "Wrapper", |inner| inner == [ResolvedTy::I64])
+        })
+    });
+    assert_eq!(
+        (ValueClass::BitCopy, CloneKind::Bits),
+        (facts.class, facts.clone)
+    );
+}
+
+/// The same rule one member deeper: `Wrapper<Outer<i64>>` reaches `Wrapper<i64>`
+/// through `Outer`'s member, and neither declaration mentions itself, so the
+/// walk is finite and the row is published.
+#[test]
+fn a_declaration_reached_transitively_at_a_second_instantiation_is_not_recursion() {
+    let output = facts_of("class_nested_instantiation.hew");
+    let facts = row_matching(&output, "`Wrapper<Outer<i64>>`", |ty| {
+        named_at(ty, "Wrapper", |args| {
+            args.len() == 1 && named_at(&args[0], "Outer", |inner| inner == [ResolvedTy::I64])
+        })
+    });
+    assert_eq!(
+        (ValueClass::BitCopy, CloneKind::Bits),
+        (facts.class, facts.clone)
+    );
+}
+
+/// The counterfactual in the same program: `List<T>` does mention itself, at
+/// its own instantiation, so the occurrence is an owning edge and the row is
+/// `CowValue`/`FieldWise` - published, not refused, and never `BitCopy`.
+#[test]
+fn a_generic_indirect_enum_publishes_over_the_owning_edge() {
+    let output = facts_of("class_nested_instantiation.hew");
+    let facts = row_matching(&output, "`List<i64>`", |ty| {
+        named_at(ty, "List", |args| args == [ResolvedTy::I64])
+    });
+    assert_eq!(
+        (ValueClass::CowValue, CloneKind::FieldWise),
+        (facts.class, facts.clone)
+    );
+}
+
+/// The live vertical-slice fixture that the name-keyed cut refused: the nested
+/// `Maybe<Maybe<i64>>` the program builds has a published row.
+#[test]
+fn the_nested_generic_enum_fixture_publishes_its_nested_row() {
+    let output = facts_of_path("tests/vertical-slice/accept/generic_enum_nested_option.hew");
+    let facts = row_matching(&output, "`Maybe<Maybe<i64>>`", |ty| {
+        named_at(ty, "Maybe", |args| {
+            args.len() == 1 && named_at(&args[0], "Maybe", |inner| inner == [ResolvedTy::I64])
+        })
+    });
+    assert_eq!(
+        (ValueClass::BitCopy, CloneKind::Bits),
+        (facts.class, facts.clone)
+    );
+}
+
+/// The second live fixture: `Pair<Pair<i64, i64>, string>` nests a generic
+/// record inside itself as an argument, and its row carries the `string`
+/// leaf's obligation rather than being refused.
+#[test]
+fn the_nested_generic_record_fixture_publishes_its_nested_row() {
+    let output = facts_of_path("tests/hew/generic_record_clone_test.hew");
+    let facts = row_matching(&output, "`Pair<Pair<i64, i64>, string>`", |ty| {
+        named_at(ty, "Pair", |args| {
+            args.len() == 2
+                && named_at(&args[0], "Pair", |inner| {
+                    inner == [ResolvedTy::I64, ResolvedTy::I64]
+                })
+                && args[1] == ResolvedTy::String
+        })
+    });
+    assert_eq!(
+        (ValueClass::CowValue, CloneKind::FieldWise),
+        (facts.class, facts.clone)
+    );
+}

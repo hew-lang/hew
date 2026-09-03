@@ -1,0 +1,39 @@
+// §1.1: nesting a declaration inside itself as an *argument* is not recursion.
+// `Wrapper<Wrapper<i64>>`, `Outer<i64>` reaching `Wrapper<i64>` through a
+// member, and `Maybe<Maybe<i64>>` all walk a finite member tree, so each one
+// classes and publishes a row. Polymorphic recursion is a property of a
+// declaration's own members - whether the body of `L<T>` mentions `L<...>` at
+// an instantiation other than `L<T>` - not of the argument a caller supplies.
+// `List<T>` is the counterfactual that does mention itself, at its own
+// instantiation, and takes the owning edge.
+type Wrapper<T> {
+    value: T;
+}
+
+type Outer<T> {
+    wrapped: Wrapper<T>;
+}
+
+enum Maybe<T> {
+    Some(T);
+    None;
+}
+
+indirect enum List<T> {
+    Nil;
+    Cons(T, List<T>);
+}
+
+fn main() -> i64 {
+    let nested: Wrapper<Wrapper<i64>> = Wrapper { value: Wrapper { value: 1 } };
+    let transitive: Wrapper<Outer<i64>> = Wrapper {
+        value: Outer { wrapped: Wrapper { value: 2 } },
+    };
+    let maybe: Maybe<Maybe<i64>> = Maybe.Some(Maybe.Some(3));
+    let list: List<i64> = List.Cons(4, List.Nil);
+    let _ = nested;
+    let _ = transitive;
+    let _ = maybe;
+    let _ = list;
+    0
+}

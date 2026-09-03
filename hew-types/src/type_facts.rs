@@ -771,6 +771,30 @@ mod tests {
                 ],
             },
         );
+        decls.insert(
+            "Wrapper".to_string(),
+            DeclaredType {
+                marker: DeclarationMarker::None,
+                type_params: vec!["T".to_string()],
+                members: vec![ResolvedTy::TypeParam {
+                    name: "T".to_string(),
+                }],
+            },
+        );
+        decls.insert(
+            "Outer".to_string(),
+            DeclaredType {
+                marker: DeclarationMarker::None,
+                type_params: vec!["T".to_string()],
+                members: vec![named(
+                    "Wrapper",
+                    None,
+                    vec![ResolvedTy::TypeParam {
+                        name: "T".to_string(),
+                    }],
+                )],
+            },
+        );
         decls
     }
 
@@ -832,32 +856,101 @@ mod tests {
         );
     }
 
-    /// The cut is keyed by the instantiation, so the instantiation the walk
-    /// actually entered takes the owning edge and keeps its payload class.
+    /// Polymorphic recursion is a property of `Pair`'s own members - its body
+    /// mentions `Pair<Conn>` while its parameter is `T` - so the refusal is the
+    /// declaration's, at every instantiation. Answering per walk instead let
+    /// `Pair<Conn>` class over the owning edge while `Pair<i64>`, which holds
+    /// exactly that `Pair<Conn>`, refused.
     #[test]
-    fn the_entered_instantiation_takes_the_owning_edge() {
+    fn every_instantiation_of_a_polymorphically_recursive_declaration_refuses() {
         let decls = recursive_declarations();
         let context = ClassContext::new(&decls);
+        for argument in [conn(), ResolvedTy::I64] {
+            assert_eq!(
+                Err(ClassError::RecursiveInstantiation {
+                    name: "Pair".to_string()
+                }),
+                crate::value_class::classify_ty(&named("Pair", None, vec![argument]), &context)
+            );
+        }
+    }
+
+    /// The counterfactual for the refusal above: a declaration whose members
+    /// never mention it refuses nothing, however deeply a caller nests it in
+    /// its own argument. `Wrapper<Wrapper<i64>>` is the aggregate over one
+    /// `Wrapper<i64>` field, which is the aggregate over one `i64`.
+    #[test]
+    fn a_declaration_nested_in_its_own_argument_is_not_recursion() {
+        let decls = recursive_declarations();
+        let context = ClassContext::new(&decls);
+        let inner = named("Wrapper", None, vec![ResolvedTy::I64]);
         assert_eq!(
-            Ok((ValueClass::AffineResource, CloneKind::None)),
-            crate::value_class::classify_ty(&named("Pair", None, vec![conn()]), &context)
+            Ok((ValueClass::BitCopy, CloneKind::Bits)),
+            crate::value_class::classify_ty(&named("Wrapper", None, vec![inner]), &context)
         );
     }
 
-    /// A cycle that reaches the declaration at an instantiation the walk did
-    /// not enter has no finite fixpoint to join. Reading the entered
-    /// instantiation's edge there would class `Pair<i64>` as the box's
-    /// `CowValue` while the `Pair<Conn>` it holds owes a destructor, so this
-    /// refuses instead.
+    /// The same rule one declaration deeper: `Wrapper<Outer<i64>>` reaches
+    /// `Wrapper<i64>` through `Outer`'s member. Neither declaration mentions
+    /// itself, so the walk is finite and no name on it refuses.
     #[test]
-    fn a_cycle_through_a_second_instantiation_refuses() {
+    fn a_declaration_reached_transitively_at_a_second_instantiation_is_not_recursion() {
         let decls = recursive_declarations();
+        let context = ClassContext::new(&decls);
+        let outer = named("Outer", None, vec![ResolvedTy::I64]);
+        assert_eq!(
+            Ok((ValueClass::BitCopy, CloneKind::Bits)),
+            crate::value_class::classify_ty(&named("Wrapper", None, vec![outer]), &context)
+        );
+    }
+
+    /// Mutual polymorphic recursion: neither `Grow` nor `Relay` mentions itself
+    /// directly, but `Grow<T>` reaches itself as `Grow<Vec<T>>` through
+    /// `Relay`, so the argument grows on every turn and both refuse. Without
+    /// the reachability walk this pair has no finite member tree and no
+    /// refusal, which is a stack overflow rather than a wrong answer.
+    #[test]
+    fn mutual_recursion_that_grows_its_argument_refuses() {
+        let mut decls = recursive_declarations();
+        decls.insert(
+            "Grow".to_string(),
+            DeclaredType {
+                marker: DeclarationMarker::None,
+                type_params: vec!["T".to_string()],
+                members: vec![named(
+                    "Relay",
+                    None,
+                    vec![ResolvedTy::Named {
+                        name: "Vec".to_string(),
+                        args: vec![ResolvedTy::TypeParam {
+                            name: "T".to_string(),
+                        }],
+                        builtin: Some(BuiltinType::Vec),
+                        is_opaque: false,
+                    }],
+                )],
+            },
+        );
+        decls.insert(
+            "Relay".to_string(),
+            DeclaredType {
+                marker: DeclarationMarker::None,
+                type_params: vec!["U".to_string()],
+                members: vec![named(
+                    "Grow",
+                    None,
+                    vec![ResolvedTy::TypeParam {
+                        name: "U".to_string(),
+                    }],
+                )],
+            },
+        );
         let context = ClassContext::new(&decls);
         assert_eq!(
             Err(ClassError::RecursiveInstantiation {
-                name: "Pair".to_string()
+                name: "Grow".to_string()
             }),
-            crate::value_class::classify_ty(&named("Pair", None, vec![ResolvedTy::I64]), &context)
+            crate::value_class::classify_ty(&named("Grow", None, vec![ResolvedTy::I64]), &context)
         );
     }
 

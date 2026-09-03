@@ -87,11 +87,40 @@ Rules:
 - Actors do not share mutable state. They communicate by sending **messages**.
 - All actors are isolated by definition in Hew's actor model. No separate `isolated` modifier is needed — isolation is a fundamental property of all actors.
 
+**Stopping an actor (normative).**
+
+Stopping is a method, and it has one signature. Inside an actor body `self`
+is the actor handle, and `self.stop()` finishes the current handler, runs the
+`#[on(stop)]` hook, and stops the actor. From outside, `pid.stop()` on a
+`LocalPid<A>` requests the same stop and returns `()`. It is idempotent: a
+`stop()` addressed to an actor that has already stopped or crashed is a
+no-op, not an error, so a caller that must know whether it was the one to end
+the actor takes a monitor instead. There is no free-function `stop`, and
+`this` is not a receiver token in Hew.
+
+Messages queued behind a stop are dropped, and the drop is disclosed rather
+than silent. The stopped actor's `DOWN` record carries the count as
+`dropped: n`, and the runtime counts the same drops in
+`mailbox.dropped_on_stop_total{actor}`, so a delivery whose send already
+returned `Ok(())` still has a typed event and a series behind it. A sender
+that needs per-message certainty asks rather than tells. A send that arrives
+after the stop has latched reports `SendError.Dead` (§5.6).
+
+`stop` is a reserved handler name. A user-declared `receive fn stop()` is
+`E_RESERVED_HANDLER_NAME`, whose fix-it is to rename the handler or to call
+`self.stop()`.
+
+> **Implementation status.** The shipped compiler registers a free-function
+> `stop(actor)` builtin and rejects both `self.stop()` and `pid.stop()`. The
+> method surface, the reserved-name refusal, and the enumeration of every
+> registered builtin against its lowering target are tracked in
+> hew-lang/hew#3193.
+
 ### 2.1.1 Actor Message Protocol
 
 Actors expose message handlers using `receive fn`. Named actor `receive fn` methods are callable directly — no `.send()` or `.ask()` required.
 
-Named actor `receive fn` methods are called directly — there is no `.send()` or `.ask()` call site. The distinguishing axes are the callee's signature and its actor's declared mailbox policy. A `receive fn` with a return type `R` produces a request-reply call (type `Result<R, AskError>`). A `receive fn` without a return type is fire-and-forget: its call has type `()` for an unbounded mailbox or bounded `block` mailbox, and `Result<(), SendError>` for a `drop_new`, `drop_old`, `fail`, or `coalesce` mailbox. Because `LocalPid<T>` preserves the actor's nominal identity, this policy-sensitive result is visible in the handle's inferred method surface without adding a caller-side send keyword.
+Named actor `receive fn` methods are called directly — there is no `.send()` or `.ask()` call site. The distinguishing axes are the callee's signature and its actor's declared mailbox policy. A `receive fn` with a return type `R` produces a request-reply call (type `Result<R, AskError>`). A `receive fn` without a return type is fire-and-forget: at v0.6.0 its call has type `()` for an unbounded mailbox or bounded `block` mailbox, and `Result<(), SendError>` for a `drop_new`, `drop_old`, `fail`, or `coalesce` mailbox — a split the frozen rule of §5.6 closes by widening every send to `Result<(), SendError>`. Because `LocalPid<T>` preserves the actor's nominal identity, this policy-sensitive result is visible in the handle's inferred method surface without adding a caller-side send keyword.
 
 The token `ask` does not appear at actor call sites. Request-reply against a named actor is written `await <ref>.<method>(<args>)` and has result type `Result<R, AskError>`. Fire-and-forget is written `<ref>.<method>(<args>)` (no `await`) and has the policy-derived type above. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
 
@@ -118,7 +147,7 @@ actor Counter {
 
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
-- **`receive fn` without return type** → fire-and-forget. The caller does not use `await`. Unbounded and bounded-`block` calls return `()`; policy-sensitive calls return `Result<(), SendError>` (see *Fire-and-forget delivery*, below).
+- **`receive fn` without return type** → fire-and-forget. The caller does not use `await`. At v0.6.0 unbounded and bounded-`block` calls return `()` and policy-sensitive calls return `Result<(), SendError>`; §5.6's frozen rule widens all four to `Result<(), SendError>` (see *Fire-and-forget delivery*, below).
 - **`receive fn` with return type** → request-response. The call produces `R` and waits for the reply. Inside `select`/`join`, the actor call is treated as an implicit concurrent reply source; writing `await` there is accepted but redundant.
 
 **Calling named actors:**
@@ -179,18 +208,30 @@ and handle type whether the declared policy can lose work:
 - A `fail` mailbox returns `Result<(), SendError>`. Full-mailbox rejection is
   `Err(SendError.Full)` and transfers no message ownership.
 
+That split is the v0.6.0 typing. The frozen dead-target rule of §5.6 widens
+every send to `Result<(), SendError>`, so the `()` rows above become
+`Result<(), SendError>` whose only `Err` inhabitant is `SendError.Dead`; the
+policy rows keep the variants listed here and gain `Dead`. Nothing about the
+`must_use` split below changes with that widening: a discarded
+unbounded-mailbox send stays a warning and a discarded policy-sensitive send
+stays an error (hew-lang/hew#3254).
+
 A bare statement that discards a policy-sensitive result is a compile error.
 The caller MUST handle it with `match` or `?`, or explicitly acknowledge the
 decision with `let _ = target.method(...);`. This explicit discard exists for
 metrics/sampling workloads, but loss can no longer be introduced by changing an
 actor declaration while leaving an ordinary bare send apparently successful.
 
-A unit-typed send to an actor that is already terminal — stopped or crashed —
-is a **no-op**: nothing is enqueued, the payload is released at the send site,
-and the caller continues. Sending is not a liveness test for this lossless
-surface. A policy-sensitive send instead reports `Err(SendError.Closed)`,
-because its result already exists to state whether this particular delivery
-completed. Other unit-surface runtime failures trap the sender.
+A send to an actor that is already terminal — stopped or crashed — is not a
+no-op and does not trap. It reports `Err(SendError.Dead)`; §5.6 gives the rule
+in full, including the `must_use` split that keeps statement-position sends
+compiling. Nothing is enqueued and the payload is released at the send site,
+but the caller is told. Other unit-surface runtime failures trap the sender.
+
+> **Implementation status.** Today a unit-typed send to a terminal actor is a
+> silent no-op and a policy-sensitive send reports `Err(SendError.Closed)`. The
+> `Dead` shape and the widened send type land with the v0.7.0 mechanism
+> (hew-lang/hew#3254).
 
 Named-actor request-response uses `await` on the receive method (see §2.1.4); an
 `ask` of a terminal actor is NOT a no-op — it yields `Err`, because the caller
@@ -3349,6 +3390,25 @@ Task<T>
 > yet accepted. Each of these refuses with a named diagnostic rather than
 > miscompiling.
 
+> **Execution context (normative).** Every Hew function may suspend. There is
+> no suspending-function colour: a function is never marked as one, and a
+> `scope { fork .. }` block is legal wherever a statement is legal, `fn main`
+> included. What carries the difference is the execution context the call
+> runs on. `fn main` runs on the process main thread with an
+> `ExecutionContext` whose park and unpark are that thread's parker; an actor
+> handler keeps its coroutine context; a free function inherits its caller's
+> context, so the same helper suspends one way when an actor calls it and
+> another way when `main` does. One mechanism serves every awaitable, so a
+> new awaitable is a new readiness source rather than a new lowering.
+>
+> At v0.6.0 `main` has no execution context yet. A suspension point (§4.3)
+> reached from `main`, or from a free function `main` calls, is refused with
+> `E_LIMIT_MAIN_CONTEXT` (Limitation, exit 3) rather than parked on a
+> contextless wait. The refusal names the two shapes that work today: host the
+> request loop in an actor and park `main` on its ask, or use `join {}` for a
+> fan-out from `main`. The context lands at v0.7.0 (hew-lang/hew#3195,
+> hew-lang/hew#3196).
+
 A `scope` block creates a structured concurrency boundary. All child tasks
 forked within the block must complete before the block returns.
 
@@ -3504,6 +3564,22 @@ A child task MUST yield at:
 - IO operations — cancellation is observed at the syscall boundary.
 
 Yield points are also where cooperative cancellation is delivered (§4.5).
+
+**Suspension points (normative):**
+
+The suspension points of the language are a closed set: `await expr`,
+`await expr | after d`, `select`, a `scope { fork .. }` block, an
+`after(d) { }` scope deadline, a channel `recv`, a stream `recv`, a listener
+`accept`, and `sleep`. Each one suspends the execution context of the
+function it appears in (§4.2), and each one is legal in any function. In an
+actor handler, a task body, or a closure, the coroutine frame yields to the
+scheduler and the readiness source resumes it. In `fn main` the process main
+thread parks, and the reactor, the timer wheel, or a mailbox unparks it; no
+Hew scheduler worker waits on an OS condition variable on either path.
+
+At v0.6.0 only the coroutine half of that rule is implemented. Every
+suspension point in the set above is accepted in a suspendable context and
+refused with `E_LIMIT_MAIN_CONTEXT` when it is reached from `main` (§4.2).
 
 ### 4.4 Awaiting Tasks
 
@@ -4136,18 +4212,37 @@ supervisor MyPool {
 
 - `child <name>: <ActorType>(<field>: <expr>, ...)` — a static supervised child.
   Init args are named (positional args are rejected with a migration diagnostic).
-- `pool <name>: <ActorType>(...)` — a dynamic pool child (only under
-  `simple_one_for_one`); the args are the per-spawn template.
-- Optional per-child suffix clauses, accepted in any order:
-  - `restart: permanent | transient | temporary` (default `permanent`). This is
-    the only restart spelling — bare `T permanent` and `with restart:` are not
-    accepted.
-  - `shutdown: <duration> | brutal_kill | infinity` — the graceful-stop
-    deadline (default `5s`). `infinity` is accepted but not yet enforced (no
-    per-child deadline wheel).
-  - `wired_to: { <param>: <sibling>, ... }` — passes a sibling child's handle to
-    this child's init param.
+- `pool <name>: <ActorType>(<field>: <expr>, ...) count: <N>;` — a pool of `N`
+  fungible children (only under `simple_one_for_one`). The parenthesised args
+  are the per-spawn template, exactly as for `child`; `count:` is the arity.
+- Per-child suffix clauses, accepted in any order:
+  - `restart: permanent | transient | temporary` (optional, default
+    `permanent`). This is the only restart spelling — bare `T permanent` and
+    `with restart:` are not accepted.
+  - `shutdown: <duration> | brutal_kill | infinity` (optional) — the
+    graceful-stop deadline (default `5s`). `infinity` is accepted but not yet
+    enforced (no per-child deadline wheel).
+  - `count: <N>` — pool arity. Required on a `pool` child, rejected on a
+    `child` declaration; it has no default, because a pool with a guessed size
+    is a guess about capacity.
+  - `wired_to: { <param>: <sibling>, ... }` (optional) — passes a sibling
+    child's handle to this child's init param.
 - Child actor types must be declared before the supervisor.
+
+**Pool arity is a clause, not an init field (normative).** `count:` sits
+beside `restart:` and `shutdown:` in the child's clause namespace, and the
+parenthesised argument list stays the actor's own field namespace. An actor
+that happens to declare a field named `count` is therefore poolable like any
+other, and its `count` field is set the same way every other field is. The
+two namespaces never collide, so no diagnostic about pool arity can land on a
+user's field.
+
+> **Implementation status.** The shipped parser reads `count` out of the
+> parenthesised list as an init field, so `pool ws: A(count: N, ..)` is what
+> compiles today and the clause form is refused with
+> `unknown supervisor field`. The migration is a fix-it —
+> `pool ws: A(count: N, ..)` becomes `pool ws: A(..) count: N;` — tracked in
+> hew-lang/hew#3253.
 
 ### 5.2 Restart Semantics (normative)
 
@@ -4235,6 +4330,37 @@ fn main() {
   match one of the `child` declarations in the supervisor definition.
 - `supervisor_stop(sup)` — gracefully stops the supervisor and all its children
 
+**A dead target has one shape (normative).**
+
+Resolution never hands back a dead address. A supervised role whose occupant is
+gone resolves closed, not open: a `ChildRef` send reports `Dead`,
+`whereis(name)` is `None`, and `Node.lookup(name)` is
+`Err(LookupError.NotFound)`. A `ChildRef` re-resolves the current incarnation
+on every ask or tell precisely so that this is decidable at the call and not
+guessed from a stale address.
+
+A handle that is already held reports the same fact at the send. Every send
+expression has type `Result<(), SendError>`. For an unbounded mailbox the only
+inhabitant of `Err` is `SendError.Dead`; for a bounded or policy-sensitive
+mailbox `Dead` joins the policy variants of §9.3. A send to a dead target never
+traps, and it never returns `Ok(())`.
+
+Discarding that result is the `must_use` split of §2.1.1, unchanged: a
+discarded unbounded-mailbox send is a warning, and a discarded
+policy-sensitive send is an error. Statement-position sends therefore keep
+compiling, and the warning is what tells an author that liveness has become
+visible where it was silent before.
+
+`AskError` carries `Dead` and `StaleRef` for the same reason, so a remote ask's
+failure kinds are one enum rather than a split between the ask path and the
+send path.
+
+> **Implementation status.** Today an unbounded send is unit-typed, `SendError`
+> spells the closed case `Closed`, and a send to a supervised child whose
+> restart budget is exhausted returns normally from `main` and from an actor
+> holding a `ChildRef`. The `Dead` shape lands with the v0.7.0 mechanism and is
+> tracked in hew-lang/hew#3254.
+
 ### 5.7 Crash Isolation
 
 On native unwind-capable targets, language-level actor panics unwind through the
@@ -4261,6 +4387,34 @@ spawning thread with no recovery frame beneath it; a panic there is
 process-fatal without cleanup, and the OS reclaims what is left.
 
 The `panic()` builtin triggers the recoverable language-panic path for testing.
+
+#### 5.7.1 Links and Monitors
+
+`link(pid) -> Result<(), LinkError>` and
+`monitor(pid) -> Result<MonitorRef, LinkError>` subscribe the caller to another
+actor's exit. Both report failure in the type system, and both share one error
+type. `LinkError` has three inhabitants — `Dead`, `Partition`, and `NoContext`
+— and they cover local and remote pids alike: a cross-node link carries a
+`PartitionPolicy`, so the remote form needs the typed failure as much as the
+local one does. `monitor` on an already-dead pid is not a failure; it delivers
+`DOWN` at once, which leaves `NoContext` as its only `Err`.
+
+Both are actor-context operations, because only an actor can receive the `DOWN`
+record or the linked exit the call subscribes to. A `link` or `monitor` written
+directly in `main` is `E_ACTOR_CONTEXT_REQUIRED`, refused at compile time. The
+same call reached through a free function that `main` happens to call is the
+same fact decided at run time: `Err(LinkError.NoContext)`. It is decided at run
+time deliberately — the execution context is dynamic (§4.2), and a static
+"actor-only function" marker would colour every function that might one day
+link. Neither form succeeds silently, which is the property that matters: a
+subscription with no reader is always reported.
+
+> **Implementation status.** Today `LinkError` carries ten variants and names
+> the missing context `NoCurrentActor`, `monitor` returns
+> `Result<MonitorRef, MonitorError>`, and a `link` reached through a free
+> function called from `main` succeeds and prints. The `Dead` arm is never
+> produced until dead-target resolution lands (§5.6). Tracked in
+> hew-lang/hew#3255.
 
 ### 5.8 Process Exit Status (normative)
 
@@ -5109,6 +5263,11 @@ Actors start `Idle` after spawn. There is no separate `Blocked` state — actors
 for messages are `Idle` (or `Suspended` during a cooperative suspension) and become
 `Runnable` when a message arrives.
 
+The `Running ──► Stopping` edge has exactly two sources: the supervisor, and
+the actor's own `self.stop()`. `pid.stop()` from outside requests the same
+edge; because `Stopped` and `Crashed` are terminal, a request that arrives
+once the actor is already there changes nothing and returns `()` (§2.1).
+
 **Key distinctions from task states (§4.1):**
 
 | Aspect          | Actor State Machine                                                        | Task State Machine (§4.1)                     |
@@ -5244,7 +5403,7 @@ Transitions:
 
 For a bounded actor mailbox with capacity `N`:
 
-States: `HasSpace`, `Full`, `Closed`
+States: `HasSpace`, `Full`, `Closed`, `Dead`
 
 Events:
 
@@ -5264,6 +5423,13 @@ Behaviour:
   - `coalesce(field_name)`: replace existing work or apply a non-blocking
     fallback, reporting every discard/replacement as `SendError.MessageLost`
     (see §6.3 for full semantics).
+- `Dead` is terminal and is reached whenever the destination actor has stopped
+  or crashed, or the supervised role addressed has no live occupant. Every send
+  to a `Dead` target returns `Err(SendError.Dead)`, whatever the mailbox
+  capacity or overflow policy: the policy table above decides only what a live
+  mailbox does with a message it cannot hold, and is never consulted for a
+  target that cannot receive at all (§5.6). An unbounded mailbox has no `Full`
+  state, so `Dead` is the only `Err` a send to it can produce.
 
 **Coalesce syntax example:**
 
@@ -5298,6 +5464,37 @@ runtime mode when a Hew program runs as a cluster node. The normative
 specification is [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md); this section
 summarises what is shipped and stable.
 
+**Node setup (normative).** Starting a node is one call, and it reports failure
+in the type system:
+
+- `Node.start(config: NodeConfig) -> Result<(), NodeError>` is the only start.
+  `NodeConfig { bind: string, transport: string, key: string, trust: string,
+  peers: Vec<string>, seeds: Vec<string> }` is a prelude record, and
+  `NodeConfig.at(addr)` fills the defaults around a bind address. No field is
+  inert: `Node.start` pins every `peers` entry — the slot a peer occupies is
+  its one-based position in that vector, so slot `0` stays reserved for local
+  dispatch — dials every `seeds` entry once while skipping its
+  own bind address, and admits `trust = "pinned"` only, answering
+  `Err(NodeError.Config)` for anything else.
+- `Node.set_transport`, `Node.load_keys`, and `Node.allow_peer` do not exist.
+  Each carried one fact that is a field of `NodeConfig`, and a setup sequence
+  whose steps can be reordered or skipped is a second configuration authority.
+- `Node.connect(addr) -> Result<(), NodeError>` stays for explicit dials.
+  `Node.shutdown()` stays `()`.
+
+**The registry knows the actor's type (normative).**
+`Node.register(name, pid: LocalPid<A>) -> Result<(), RegisterError>` records
+`A`'s declaration identity beside the location, and `Node.lookup<A>(name)`
+compares the two, answering `Err(LookupError.TypeMismatch)` when they
+disagree. Without that record a lookup's type argument is the reader's wish and
+the handle it produces is an unchecked cast.
+
+`Node.register` is the one registration verb: it registers locally whether or
+not a node has started, and publishes cluster-wide once one has.
+`Node.unregister(name)` withdraws the name. `whereis<A>(name) ->
+Result<LocalPid<A>, LookupError>` is the local view of the same registry, and
+carries the same identity comparison.
+
 **Shipped cross-node surface:**
 
 - Remote `send` and `ask` (`<- actor.method()` / `<id> from actor.method()`)
@@ -5316,6 +5513,17 @@ Authentication tokens and supervisor-capability enforcement are not yet
 runtime-enforced; see `HEW-DIST-SPEC.md` §rc1-notes for the current
 status. The SWIM quarantine/readmission surface is stable and in the
 proving gate.
+
+> **Implementation status.** The shipped surface is still the call sequence:
+> `Node.set_transport`, `Node.load_keys`, `Node.allow_peer`, then
+> `Node.start(addr)`, whose refusal prints to stderr and lets the program run
+> on; `Node.register` returns `i32`; `Node.lookup<T>` is registered with `T`
+> free and the registry entry is name to location, so no identity is compared;
+> and `Node.unregister` is hand-declared `extern "C"` where it is used.
+> `NodeConfig`, `NodeError`, `RegisterError`, and `LookupError.TypeMismatch`
+> are tracked in hew-lang/hew#3256. At v0.6.0 the declaration identity is
+> recorded and compared on the registering node; the gossiped identity rides
+> the wire-version bump, and the cluster-wide comparison is v0.8.0.
 
 ---
 
@@ -5518,6 +5726,14 @@ Duration values are required for timeout expressions (`| after`) and `select` ti
 ```hew
 let result = await task | after 5s;        // Timeout after 5 seconds
 ```
+
+`await task | after 5s` is a suspension point (§4.3), so the rule that governs
+it is the execution-context rule of §4.2 and not a rule about `after` itself:
+it is legal in any function, and it parks whichever context the call runs on.
+At v0.6.0 that context exists only inside an actor handler, a task body, or a
+closure; written in `main`, or in a free function `main` calls, the deadline
+form is `E_LIMIT_MAIN_CONTEXT` until `main` gains its execution context at
+v0.7.0.
 
 ```ebnf
 DurationLit = IntLit ("ns" | "us" | "ms" | "s" | "m" | "h") ;

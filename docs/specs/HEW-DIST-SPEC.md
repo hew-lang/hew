@@ -55,8 +55,11 @@ A route slot is a non-zero `u16` alias local to one receiving node. Slot `0` is
 reserved for local dispatch and MUST NOT be assigned to a peer.
 
 Route slots are not distributed identity and do not appear in `Location`.
-Different nodes MAY assign different route slots to the same peer. APIs that
-accept a route-slot argument, including `Node::allow_peer`, interpret it only in
+Different nodes MAY assign different route slots to the same peer. A route slot
+is assigned by position: the slot a peer occupies is its one-based position in
+the `NodeConfig.peers` vector the local node started with, so the first entry is
+slot `1` and slot `0` stays reserved (§3). APIs that accept a route-slot
+argument, including the `slot@addr` form of `Node.connect`, interpret it only in
 the caller's local routing namespace.
 
 The peer-binding table is one-to-one:
@@ -103,12 +106,39 @@ that already carries a validated location.
 
 ## 3. Stable credentials and peer configuration
 
-`Node::load_keys(path)` loads or creates the stable credential for the selected
-native transport. `Node::identity_key()` returns the corresponding public
-credential as lowercase hexadecimal for out-of-band exchange.
+Node setup is one call. `Node.start(config: NodeConfig) -> Result<(), NodeError>`
+is the only start, and a refusal is an `Err` the caller must handle, never a
+message on stderr under a program that keeps running.
 
-`Node::allow_peer(route_slot, credential_hex)` pins a peer credential to a
-receiver-local route slot. It MUST be called before `Node::start`.
+`NodeConfig` is a prelude record:
+
+```text
+NodeConfig {
+    bind: string,          // listen address
+    transport: string,     // "tcp" | "quic-mesh"
+    key: string,           // path to the stable credential
+    trust: string,         // "pinned"
+    peers: Vec<string>,    // pinned peer credentials, slot = position
+    seeds: Vec<string>     // addresses dialled once at start
+}
+```
+
+`NodeConfig.at(addr)` fills the defaults around a bind address.
+`NodeConfig.load() -> Result<NodeConfig, NodeError>` reads `[cluster]` plus
+`HEW_NODE_*` overrides and is deferred to v0.8.0.
+
+No field is inert. `Node.start` loads or creates the stable credential named by
+`key` for the transport named by `transport`, pins every `peers` entry to the
+route slot that is its one-based position in that vector, dials every `seeds`
+entry once while skipping its own `bind` address, and admits `trust = "pinned"`
+only, returning `Err(NodeError.Config)` for any other value. Re-dial with
+backoff is v0.8.0.
+
+`Node::identity_key()` returns the local public credential as lowercase
+hexadecimal for out-of-band exchange. There is no separate `Node::load_keys`,
+`Node::set_transport`, or `Node::allow_peer`: each carried one fact that is now
+a `NodeConfig` field, and a setup sequence whose steps can be reordered or
+skipped is a second configuration authority.
 
 For TCP, the credential is the peer's 32-byte Noise static public key. For
 quic-mesh, it is the peer certificate's canonical SPKI.
@@ -198,9 +228,23 @@ that authority.
 
 ## 7. Registry and names
 
-`Node::register(name, actor)` publishes the actor's exact `Location`.
-`Node::lookup<T>(name)` returns a typed `RemotePid<T>` discovered through the
-authenticated registry.
+`Node.register(name, pid: LocalPid<A>) -> Result<(), RegisterError>` publishes
+the actor's exact `Location` and records `A`'s declaration identity beside it.
+`Node.lookup<A>(name)` returns a typed `RemotePid<A>` discovered through the
+authenticated registry, and MUST compare the recorded identity against `A`
+before returning one: a disagreement is `Err(LookupError.TypeMismatch)`, never
+a handle. Without that comparison the type argument is the reader's wish and
+the returned handle is an unchecked cast.
+
+`Node.register` is the one registration verb. It registers locally whether or
+not a node has started, and publishes cluster-wide once one has.
+`Node.unregister(name)` withdraws the name. `whereis<A>(name) ->
+Result<LocalPid<A>, LookupError>` is the local view of the same registry and
+performs the same comparison.
+
+At v0.6.0 the declaration identity is recorded and compared on the registering
+node. The gossiped identity rides the wire-version bump, and the cluster-wide
+comparison is v0.8.0.
 
 Names are discovery aliases, not identity:
 
@@ -311,26 +355,41 @@ these surfaces. There is no wasm networking shim and no success-shaped fallback.
 ## 13. Configuration example
 
 Each operator exchanges the output of `Node::identity_key()` out of band and
-assigns the peer any free local route slot:
+lists the peer's credential in `NodeConfig.peers`. A peer's route slot is its
+one-based position in that vector, so the single peer below occupies slot `1`
+and slot `0` stays reserved for local dispatch:
 
 <!-- doctest: skip -->
 ```hew
-Node.set_transport("tcp");
-Node.load_keys("server.key");
+var config = NodeConfig.at("0.0.0.0:9000");
+config.transport = "tcp";
+config.key = "server.key";
+config.peers = ["8f4c...64-hex-digits-total"];
 println(f"pin this credential on peers: {Node.identity_key()}");
 
-// Slot 0 is reserved. Slot 1 is this process's local alias for this peer.
-Node.allow_peer(1, "8f4c...64-hex-digits-total");
-Node.start("0.0.0.0:9000");
+match Node.start(config) {
+    .Ok(_) => println("node up"),
+    .Err(e) => println(f"node refused: {e}"),
+}
 ```
 
 A client that pinned the server at local route slot `1` connects with:
 
 <!-- doctest: skip -->
 ```hew
-Node.connect("1@127.0.0.1:9000");
+match Node.connect("1@127.0.0.1:9000") {
+    .Ok(_) => {},
+    .Err(e) => println(f"dial refused: {e}"),
+}
 let found: Result<RemotePid<Counter>, LookupError> = Node.lookup("counter");
 ```
 
 The route-slot prefix selects the local credential pin. The authenticated key
-derives the peer's `NodeId`; the numeric prefix is never the peer identity.
+derives the peer's `NodeId`; the numeric prefix is never the peer identity. A
+`found` of `Err(LookupError.TypeMismatch)` means the name resolved to an actor
+whose declaration is not `Counter` (§7).
+
+> **Implementation status.** The shipped surface is still the call sequence
+> `Node.set_transport`, `Node.load_keys`, `Node.allow_peer`, `Node.start(addr)`,
+> with an untyped `Node.register` and a `Node.lookup<T>` that compares nothing.
+> Tracked in hew-lang/hew#3256.

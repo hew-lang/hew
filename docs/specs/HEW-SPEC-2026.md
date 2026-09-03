@@ -146,6 +146,21 @@ worker.send(42);                // fire-and-forget
 counter.increment(10);
 ```
 
+**Message payloads (normative):**
+
+A `receive fn` parameter is a **value** (snapshotted on send, §3.4.4), a **pid
+handle** (`LocalPid`, `RemotePid`, `ChildRef` — copied, both sides address the
+one actor), or an **opaque or resource handle** on a local send. A handle
+payload is a move: the send consumes it and the sender's binding is dead
+afterwards (`E_USE_AFTER_SEND`, §3.9.6). Such a handle may also be an actor's
+init field, moved in at `spawn` and closed by the actor's drop glue at stop, so
+one actor can own one connection and serve many requests over it. Across nodes
+the rule is the wire rule: a remote payload must be CBOR-serializable, and a
+handle is not (`E_OPAQUE_MESSAGE_PAYLOAD`). Counted handles (`Rc`, `Weak`,
+`LambdaPid`) are never payloads, local or remote, because an actor's heap is its
+own; closures, generators, and tasks are never payloads either
+(`E_CALLABLE_MESSAGE_PAYLOAD`).
+
 **Fire-and-forget delivery (normative):**
 
 A fire-and-forget send enqueues a logical snapshot of the message. On enqueue
@@ -450,6 +465,31 @@ to use `type`.
 - Mutable bindings: `var`.
 - Type fields have no mutability qualifier. Field mutation is governed by the binding: a `var`-bound value allows `p.x = …`; a `let`-bound value rejects it.
 
+**The binding wall (normative).** A `let` binding cannot be reassigned, and no
+place rooted at it can be assigned. `p.x = …`, `v[0] = …`, `m["k"] = …`, and
+`t.0 = …` on a `let` binding are all `MutabilityError` (User channel) carrying
+the `let`→`var` fix-it. The wall is about the binding, not about the syntax
+used to reach through it.
+
+**The mutating receiver.** A method that mutates its receiver declares
+`var self` (§3.6). Calling one needs a `var` binding: `let p = Counter { n: 0 };
+p.bump()` is refused with "requires a mutable binding receiver". The mutating
+builtin collection methods are declared the same way —
+`Vec.push`/`pop`/`set`/`insert`/`remove`/`clear`/`sort`/`reverse`/`truncate`/`swap`,
+`HashMap.insert`/`remove`/`clear`, `HashSet.insert`/`remove`, and `bytes.push`
+all take `var self` — so `let v: Vec<i64> = Vec.new(); v.push(1)` is refused
+and `var v` accepts it. There is no separate "interior mutability" rule for
+collections.
+
+Handles are the exception by category, not by syntax (§3.4.3). A method on a
+handle is declared `self` and acts through the handle, so `let pid`, `let rc`,
+and `let d = deque.new()` remain legal receivers of `send`, `set`, and
+`push_back` — the binding is not what changes.
+
+The "declared mutable but never reassigned" warning reads "declared `var` but
+never mutated; use `let`" and counts a `var self` call as a mutation, so
+`var v: Vec<i64> = Vec.new(); v.push(1)` warns nothing.
+
 ### 3.3 Sendability / isolation rule
 
 A value may cross an actor boundary only if it satisfies **Send**.
@@ -593,7 +633,10 @@ y = 10;          // ok
 // x = 10;       // compile error: cannot reassign immutable binding
 ```
 
-This is similar to JavaScript's `const`/`let` or Swift's `let`/`var`. It controls whether the _binding_ can be reassigned, not whether the underlying data is mutable.
+The closest analogue is Swift's `let`/`var` paired with `mutating func`: the
+binding mode controls both reassignment of the _binding_ and whether a mutating
+method (`var self`, §3.6) may be called on it. It is not JavaScript's
+`const`/`let`, which says nothing about the value's own methods.
 
 For type fields:
 
@@ -636,6 +679,45 @@ actor Counter {
 A `let` (or bare) actor field is immutable after construction: it may be assigned only inside the `init { }` block, where its initial value is established. Any assignment to a `let` field from a `receive fn`, a plain actor method, or a lifecycle hook is rejected at check time with a diagnostic that names the field and suggests declaring it with `var`. A `var` field is mutable and may be assigned anywhere in the actor body.
 
 This distinction exists because actor fields are stateful (they change over the actor's lifetime) and use initialization syntax similar to variable declarations, while type fields are data layout declarations.
+
+**Value, handle, and callable categories (normative).**
+
+Every type belongs to exactly one of the categories below. The category — not
+the binding mode and not the spelling of the type — decides what a second
+binding means, what a send does, whether `is` admits the type, and how the
+value closes.
+
+| Category | Members | `let b = a` | send | `is` | close |
+| --- | --- | --- | --- | --- | --- |
+| value | scalars, `string`, `bytes`, records, enums, tuples, arrays, `Vec`, `HashMap`, `HashSet`, `dyn Trait` objects | a second value: copy-on-write, `==` structural | a snapshot; a `dyn Trait` value is sendable only when its concrete type is `#[wire]` (`E_LIMIT_DYN_SEND`, Limitation, until the object-type work lands) | `E_IS_VALUE_TYPE` (User) | none |
+| `#[linear]` value | user types marked `#[linear]` | a move: `a` is consumed | a move, the same wall | `E_IS_VALUE_TYPE` | must be consumed by a `consume self` method before scope exit; no drop glue |
+| pid handle | `LocalPid`, `RemotePid`, `ChildRef` | a second name for one actor | the pid is copied; both sides address the same actor | identity | none; an actor stops |
+| counted handle | `Rc`, `Weak`, `LambdaPid` | a second name; the count rises (a `LambdaPid` copy is a refcounted retain) | refused: an actor's heap is its own (`E_OPAQUE_MESSAGE_PAYLOAD`, User) | identity | the count falls; drop glue releases the last (for `LambdaPid`, the last release drops the captured environment) |
+| opaque handle | plain `#[opaque]` types (channel `Sender`/`Receiver`) | a second name for one resource; methods act on the resource | local: a move, and the sender's binding is dead (`E_USE_AFTER_SEND`, User, §3.9.6); remote: `E_OPAQUE_MESSAGE_PAYLOAD` (User) | identity | `close(consume self)` where the type declares it |
+| resource handle | `#[resource]` wrappers (`http.Server`, `http.Request`, `Deque`, `Arena`, `process.Child`, `Semaphore`, `regex.Pattern`, `MonitorRef`, `json.Value`) and `Stream`/`Sink` (move-only, §6.5) | a move: `a` is dead, and a later use is the consume wall | local: a move; remote: `E_OPAQUE_MESSAGE_PAYLOAD` | identity | drop glue closes at scope exit, or `close(consume self)` early |
+| callable | closures, generators, tasks | a value (a `move` closure consumes its captures) | refused, `E_CALLABLE_MESSAGE_PAYLOAD` (User) | `E_IS_VALUE_TYPE` | none; a task must be awaited |
+
+`LambdaPid` is a counted handle, not a pid handle: its release is the captured
+environment's release, so a copy retains and the last release drops the
+environment.
+
+`#[resource]` and `#[linear]` are two disciplines, affine and linear, and both
+stay (§3.7.8): a resource may be dropped and its drop glue closes it; a linear
+value may not be dropped. `resource` is an ordinary identifier and never was a
+token.
+
+`is` admits handles only. It answers "are these two names the same actor,
+count, or resource?" — see §12.2. There is no `expr is TypeName` form.
+
+> **Limitation at edition 2026 (`E_LIMIT_COLLECTION_COPY`, Limitation
+> channel).** The rule above says a second binding of a value-category type is a
+> copy-on-write copy and both names stay live. Today the whole-binding copy of a
+> value-category type consumes the source, so `let b = a;` followed by a use of
+> `a` is refused where the rule says retain. The refusal is reported against the
+> consuming bind. It is a limit of the current lowering, not the rule, and it
+> lifts when the ownership ladder derives copies from the ownership event
+> stream. The same refusal on a resource handle is **not** a limitation: a
+> `#[resource]` copy is a move and the later use is the wall.
 
 #### 3.4.4 The Boundary Rule: Snapshot on Send
 
@@ -772,25 +854,28 @@ This is enforced at compile time: any captured value in a `spawn` expression mus
 actor Example {
     var data: Vec<i64> = Vec.new();
 
-    receive fn demo() {
-        // Multiple mutable references - ALLOWED (single-threaded)
-        let ref1 = data;
-        let ref2 = data;
-        ref1.push(1);
-        ref2.push(2);     // ok - no data race possible
+    receive fn demo(incoming: Vec<i64>) {
+        // Mutating the actor's own state - ALLOWED, no locks, no ceremony
+        data.push(1);
+        data.push(2);
 
-        // Aliasing mutable data - ALLOWED
-        var x = data;
-        var y = x;
-        x.push(3);
-        y.push(4);        // ok - same actor, sequential execution
+        // A `var` local mutates in place; a `let` local does not (§3.2)
+        var scratch: Vec<i64> = Vec.new();
+        scratch.push(3);
 
-        // Returning references to local data - ALLOWED
-        let local = Vec.new();
-        process(local);   // works because single-threaded
+        // Passing a value to a function borrows it - the binding stays valid
+        process(incoming);
+        process(incoming);   // ok - calls borrow, they do not consume
     }
 }
 ```
+
+A second binding of a value-category type is a **copy**, not an alias:
+`var copy = incoming;` gives two independent values, and pushing to one does not
+change the other (§3.4.3). There is no way to obtain two mutable names for one
+value, so the question of aliased mutation does not arise; what the absence of a
+borrow checker buys is that calls borrow, so a value stays usable after being
+passed, and mutation inside an actor needs no annotation beyond `var`.
 
 #### 3.4.7 What is NOT Allowed
 
@@ -814,10 +899,10 @@ containing one — is a fail-closed compile error, never a silent copy.
 
 #### 3.4.8 Summary
 
-| Context       | Aliasing     | Mutation     | Boundary rule    |
-| ------------- | ------------ | ------------ | ---------------- |
-| Within actor  | Unrestricted | Unrestricted | None             |
-| Across actors | Not allowed  | N/A          | Snapshot on send |
+| Context       | Aliasing                        | Mutation                          | Boundary rule    |
+| ------------- | ------------------------------- | --------------------------------- | ---------------- |
+| Within actor  | Values copy; handles alias      | Through a `var` binding or `var self` | None         |
+| Across actors | Not allowed                     | N/A                               | Snapshot on send |
 
 **Hew's guarantee:** No data races between actors, enforced at compile time through `Send` and snapshot-on-send semantics. No borrow checker complexity for local code.
 
@@ -1063,16 +1148,16 @@ Traits define shared behaviour that types can implement. Hew has built-in marker
 
 ```hew
 trait Renderable {
-    fn fmt(val: Self) -> string;
+    fn fmt(self) -> string;
 }
 
 trait Sequence {
     type Item;
-    fn next(iter: Self) -> Option<Self.Item>;
+    fn next(var self) -> Option<Self.Item>;
 }
 
 trait Duplicable {
-    fn clone(val: Self) -> Self;
+    fn clone(self) -> Self;
 }
 ```
 
@@ -1080,14 +1165,14 @@ trait Duplicable {
 
 ```hew
 trait PointRenderer {
-    fn fmt(val: Self) -> string;
+    fn fmt(self) -> string;
 }
 
 type Point { x: f64; y: f64 }
 
 impl PointRenderer for Point {
-    fn fmt(p: Point) -> string {
-        f"({p.x}, {p.y})"
+    fn fmt(self) -> string {
+        f"({self.x}, {self.y})"
     }
 }
 ```
@@ -1110,47 +1195,97 @@ impl PointRenderer for Point {
   - Only value types (integers, floats, bool, char)
   - Small fixed-size aggregates
 
-- `PartialOrd` - Type supports `<`, `<=`, `>`, `>=` comparisons. In edition 2026, satisfied only by primitive numeric types (`i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `isize`, `usize`, `char`); user-defined types do not derive it automatically.
+**Comparison and hashing traits (normative):**
 
-**Named receivers (Go-style):**
+`Eq`, `Ord`, `PartialOrd`, and `Hash` are **derived by default**, and a user
+`impl` is allowed and is what `==`, the ordering operators, and hashing dispatch
+to for that type.
 
-Hew uses **named receivers** instead of a `self` keyword. In trait declarations and `impl` blocks, the first parameter whose type matches the implementing type (or `Self` in traits) is the **receiver**. The receiver is what makes a function callable with dot-syntax:
+- Records and enums are `Eq` and `Hash` structurally: field by field, variant by
+  variant, with no declaration.
+- `Ord` and `PartialOrd` are derived lexicographically by field order when every
+  field is itself ordered. Primitive numeric types (`i8`–`i64`, `u8`–`u64`,
+  `f32`, `f64`, `isize`, `usize`, `char`) are ordered.
+- Writing `impl Eq for T { … }` (likewise `Ord`, `PartialOrd`, `Hash`) is legal
+  and **overrides** the derived implementation for `T`. A type with a real
+  invariant — a case-insensitive key, a tolerance-based float comparison — states
+  its own rule rather than being walled off from the operators. There is no
+  `E_DERIVED_TRAIT_IMPL`: an `impl` body for these traits is never refused for
+  being an "implementation of a derived trait".
+- Derived comparison is structural, so it never observes handle identity; `is`
+  is the operator that does (§12.2).
+
+> **Limitation at edition 2026 (`E_LIMIT_DERIVED_ORD`, Limitation channel).**
+> The derived `Ord`/`PartialOrd` for records and enums is not yet available to a
+> generic bound, so `T: Ord` does not resolve for a user type and the refusal
+> reads "type `T` does not implement trait `Ord`". Use an explicit comparator
+> (`sort_by`) or a user `impl Ord` until the derive reaches generic bounds.
+
+**The three receivers (normative):**
+
+A method's receiver is written `self`, and the receiver token set is fixed at
+one member each:
+
+| Receiver | Meaning | Caller's binding |
+| --- | --- | --- |
+| `self` | borrows the receiver | stays valid and unchanged |
+| `var self` | mutates the receiver in place | must be declared `var` |
+| `consume self` | consumes the receiver | is dead after the call |
 
 ```hew
 type Point { x: f64; y: f64 }
 
 trait Formattable {
-    fn fmt(val: Self) -> string;       // val is the receiver (type Self)
+    fn fmt(self) -> string;
 }
 
 impl Formattable for Point {
-    fn fmt(p: Point) -> string {       // p is the receiver (type Point)
-        f"({p.x}, {p.y})"
+    fn fmt(self) -> string {
+        f"({self.x}, {self.y})"
     }
 }
 ```
 
-The compiler identifies the receiver by matching the parameter type against the impl target. The parameter name is chosen by the programmer — use short, descriptive names (`p` for Point, `v` for Vec, `iter` for Iterator, etc.).
+`self` is the receiver's name inside the body; its type is the implementing type
+(or `Self` in a trait declaration). There is no `&self` or `&mut self` — Hew has
+no references in its surface syntax (§3.4.1) — and there is no implicit receiver
+anywhere else in the language.
+
+The **named-first-parameter** receiver form is not part of the language. A
+method whose first parameter is spelled with a name and the target type
+(`fn fmt(p: Point)`, `fn push(v: Vec<T>, value: T)`, the trait declaration
+`fn fmt(val: Self)`) is rejected, with a fix-it that rewrites the parameter to
+`self` — or to `var self` when the body assigns through it. This applies in
+`impl` blocks and in trait declarations alike, including for the builtin
+collection methods.
 
 **Calling methods:**
 
 ```hew
 let p = Point { x: 1.0, y: 2.0 };
-p.fmt();    // desugars to Point.fmt(p) — p is consumed (by-value)
-// p is no longer valid here
+p.fmt();    // `self` borrows: p is still valid
+p.fmt();    // and may be called again
 ```
 
-**In `impl` blocks for types/enums (by-value):**
+A `var self` method needs a `var` binding. `let c = Counter { n: 0 }; c.bump()`
+is refused with "requires a mutable binding receiver" and the `let`→`var`
+fix-it (§3.2). A `consume self` method takes the value: any later use of the
+binding is a use-after-consume diagnostic.
 
-The receiver is passed by value — the receiver is consumed (ownership transfer):
+> **Limitation at edition 2026 (`E_LIMIT_INHERENT_VAR_SELF`, Limitation
+> channel).** On a **user type**, `var self` is available on trait methods but
+> refused on an inherent `impl` method, because an inherent method receives the
+> receiver by value and the mutation would not be observable to the caller. The
+> fix-it is to declare the method on a trait whose receiver is `var self` and
+> implement that trait for the type, so a user type gets its trait-mediated
+> in-place method now and its inherent one when the ownership ladder lands the
+> borrow-mutate receiver. The builtin collections (§3.10.3) are unaffected: their
+> inherent `var self` methods are compiler-provided and mutate in place today.
 
-- `fn fmt(p: Point)` takes `p` by value in an `impl` for `Point`
-- The caller gives up ownership of the value
-- After calling a consuming method, the original binding is no longer usable
+**In actor bodies (bare fields, `self` is the handle):**
 
-**In actor `receive fn` and `fn` methods (bare field access):**
-
-Actors do not use receivers at all. Actor handler methods access fields by their bare names — no prefix, no receiver parameter. The actor's persistent state is implicitly available:
+An actor's own state is reached by **bare field name** — no prefix, no receiver
+parameter — and the actor persists across handler invocations:
 
 ```hew
 actor Counter {
@@ -1161,17 +1296,23 @@ actor Counter {
 }
 ```
 
-There is no `&self` or `&mut self` syntax — Hew does not have references in its surface syntax (see §3.4.1). The by-value vs implicit-state distinction is determined by the context (`type`/`enum` `impl` vs actor body), not by annotation.
+Inside an actor body, `self` is the **actor handle**: a read-only value of type
+`LocalPid<Self>` naming the enclosing actor. This is the one meaning `self`
+carries in an actor body — it is not a prefix for fields, and `self.count` is
+not how actor state is read.
 
-**The `this` keyword (actor self-reference):**
+- Available in `receive fn` and `fn` methods and in lifecycle hooks
+- Sendable: it may be passed as a message argument or stored in a field
+- Read-only: assignment to `self` is rejected at check time
+- `self.stop()` stops the enclosing actor (§9.1)
 
-Inside an actor body, the `this` keyword provides a read-only handle to the actor itself:
+`this` is not a keyword and carries no actor meaning; the handle is `self`
+everywhere.
 
-- Available only inside actor bodies (`receive fn` and `fn` methods)
-- Type `LocalPid<Self>` — a sendable handle to the enclosing actor
-- Can be passed as a message argument or stored in a field
-- Read-only — assignment to `this` is rejected at compile time
-- Not valid in `type`/`enum` `impl` blocks or free functions
+A plain `fn` in an actor body is an associated function of the actor type. It
+has no receiver and no view of the fields, so a helper over actor state is a
+`receive fn`, a lifecycle hook, or a free function that takes the state as a
+parameter.
 
 **Variable shadowing:**
 
@@ -1275,7 +1416,7 @@ type Connection { fd: i64; }
 
 impl Connection {
     fn open(host: string) -> Connection { Connection { fd: 0 } }
-    fn close(c: Connection) {}
+    fn close(consume self) {}
 }
 
 fn main() {
@@ -1389,7 +1530,7 @@ type FileHandle {
 }
 
 impl FileHandle {
-    fn close(fh: FileHandle) {
+    fn close(consume self) {
         // release the file descriptor
     }
 }
@@ -1571,7 +1712,7 @@ descriptor, socket, allocator handle, GPU context, libc pointer) and
 type File { fd: i64 }
 
 impl File {
-    fn close(self) {}   // plain self, unit return, sibling impl
+    fn close(consume self) {}   // consuming receiver, unit return, sibling impl
 }
 ```
 
@@ -1589,9 +1730,9 @@ Semantics:
 3. **Early close is a normal method call.** `f.close()?` consumes `f` and
    surfaces the error via `?` like any other method. Any subsequent use
    of `f` is a use-after-consume diagnostic from Checked MIR.
-4. **Affine in the move-checker.** Sends, moves, and method calls with a
-   consuming receiver all consume the value; the move-checker tracks the
-   single live binding.
+4. **Affine in the move-checker.** Sends, moves, and method calls declared
+   `consume self` all consume the value; the move-checker tracks the single
+   live binding.
 
 Typical example — file I/O with implicit cleanup (illustrative; no `File` type
 exists in stdlib — for file reading use `fs::try_read`):
@@ -1627,8 +1768,8 @@ go out of scope without consuming it is a compile error.
 ```hew
 #[linear]
 type Transaction {
-    fn commit(consuming self) -> Result<(), DbError>
-    fn rollback(consuming self) -> Result<(), DbError>
+    fn commit(consume self) -> Result<(), DbError>
+    fn rollback(consume self) -> Result<(), DbError>
 }
 ```
 
@@ -1638,7 +1779,7 @@ Semantics:
    Scope exit with an unconsumed `@linear` value is a
    `MustConsumeAtScopeExit` diagnostic.
 2. **Consumption discharges the obligation.** Calling any declared
-   consuming method (one whose receiver is `consuming self`) is enough to
+   consuming method (one whose receiver is `consume self`) is enough to
    satisfy the must-consume check.
 3. **No canonical method name.** The type declares which methods are
    valid consumers. `Transaction` requires `commit` or `rollback`; a
@@ -1776,7 +1917,7 @@ type, and fail closed before any subsequent stage can silently miss a drop:
    type Conn { fd: i64 }
 
    impl Conn {
-       fn close(c: Conn) { /* release fd */ }
+       fn close(consume self) { /* release fd */ }
    }
    ```
 
@@ -1907,19 +2048,19 @@ Traits can declare associated types that implementors must specify:
 ```hew
 trait Iterator {
     type Item;
-    fn next(iter: Self) -> Option<Self.Item>;
+    fn next(var self) -> Option<Self.Item>;
 }
 
 impl Iterator for RangeIter {
     type Item = i32;
 
-    fn next(iter: RangeIter) -> Option<i32> {
-        if iter.current < iter.end {
-            let value = iter.current;
-            iter.current = iter.current + 1;
-            Some(value)
+    fn next(var self) -> Option<i32> {
+        if self.current < self.end {
+            let value = self.current;
+            self.current = self.current + 1;
+            .Some(value)
         } else {
-            None
+            .None
         }
     }
 }
@@ -2294,11 +2435,49 @@ impl File {
         }
     }
 
-    fn close(f: File) {
-        unsafe { close(f.fd); }
+    fn close(consume self) {
+        unsafe { close(self.fd); }
     }
 }
 ```
+
+#### 3.9.6 `#[opaque]` handle types
+
+`#[opaque]` marks a type that is a **handle to something the FFI owns**. Its
+body is empty — an opaque handle has no fields and no struct-literal
+constructor, so values come only from a foreign function
+(`E_OPAQUE_TYPE_SHAPE` rejects a non-empty body). Opaque handles are the
+opaque-handle category of §3.4.3: a second binding is a second name for one
+resource, `is` compares identity, and methods act through the handle regardless
+of whether the binding is `let` or `var`.
+
+**An opaque handle may live inside an actor (normative).** An `#[opaque]`
+value, or the `#[resource]` wrapper around one, may be
+
+- an actor's init field, moved in at `spawn`, owned by that actor's heap and
+  closed by the actor's drop glue when the actor stops; and
+- a `receive fn` parameter on a **local** send, where the send consumes the
+  handle.
+
+This is what lets one actor hold one connection and serve many requests over it
+instead of re-opening the resource per message.
+
+A use of the sender's binding after such a send is `E_USE_AFTER_SEND` (User).
+This is a rule, not a limitation: a handle that is still live at the send cannot
+be snapshotted, because there is nothing to snapshot but the resource itself.
+It is the fourth wall of the ownership model, and it applies to handles only.
+
+A handle is never `#[wire]`, so sending one to a `RemotePid` stays
+`E_OPAQUE_MESSAGE_PAYLOAD` (User): a remote payload must be CBOR-serializable
+and a handle has no serializable layout.
+
+> **Limitation at edition 2026 (`E_LIMIT_OPAQUE_ACTOR`, Limitation channel).**
+> The local case above is refused today: an `#[opaque]` type in a `receive fn`
+> parameter or an actor init field is rejected with the message that a message
+> payload must be CBOR-serializable, applied to a local send that never
+> serializes. The refusal rides the Limitation channel under its own code so
+> that one code has one channel, and it lifts when local sends carry the
+> transfer-last-use move.
 
 ---
 
@@ -2336,20 +2515,24 @@ normative — `std.net.dns`, `std.net.tls`, `std.net.quic`,
 
 #### 3.10.2 Core Traits
 
-The language supports user-defined traits, associated types, and named
-receivers. The current stdlib does **not** ship a full generic
+The language supports user-defined traits, associated types, and the three
+receivers of §3.6. The current stdlib does **not** ship a full generic
 iterator-trait hierarchy; modules such as `std::iter` expose concrete helper
 functions instead.
+
+`Eq`, `Ord`, `PartialOrd`, and `Hash` are derived by default and may be
+overridden by a user `impl`, which `==`, the ordering operators, and hashing
+then dispatch to (§3.6).
 
 The following traits are representative of the current trait style:
 
 ```hew
 trait Printable {
-    fn fmt(val: Self) -> string;
+    fn fmt(self) -> string;
 }
 
 trait Releasable {
-    fn drop(val: Self);
+    fn drop(consume self);
 }
 ```
 
@@ -2396,14 +2579,14 @@ type Vec<T> {}
 
 impl<T> Vec<T> {
     fn new() -> Vec<T>;
-    fn push(v: Vec<T>, item: T);
-    fn pop(v: Vec<T>) -> T;                     // traps on empty vec
-    fn len(v: Vec<T>) -> i64;
-    fn get(v: Vec<T>, index: i64) -> Option<T>;
-    fn set(v: Vec<T>, index: i64, item: T);      // traps out of bounds
-    fn contains(v: Vec<T>, item: T) -> bool;
-    fn clear(v: Vec<T>);
-    fn append(v: Vec<T>, other: Vec<T>);
+    fn push(var self, item: T);
+    fn pop(var self) -> T;                     // traps on empty vec
+    fn len(self) -> i64;
+    fn get(self, index: i64) -> Option<T>;
+    fn set(var self, index: i64, item: T);      // traps out of bounds
+    fn contains(self, item: T) -> bool;
+    fn clear(var self);
+    fn append(var self, other: Vec<T>);
 }
 ```
 
@@ -2607,7 +2790,10 @@ implementation.
 
 Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and
-returned from functions.
+returned from functions. They are handles in the sense of §3.4.3, so a second
+binding is a second name for one resource, `is` compares them for identity, a
+method acts through the handle whether the binding is `let` or `var`, and the
+rules of §3.9.6 apply for holding one inside an actor.
 
 `net.Listener.accept()` and `net.Connection.read()`'s plain (non-`await`)
 forms block the calling thread; inside an actor receive handler this stalls
@@ -3086,7 +3272,7 @@ safepoint before its body reaches a consuming or close call.
 1. **`@resource` capture.** A `@resource` value moved into a child task
    has its drop discipline run on whichever exit path the child takes:
    normal completion, recoverable `Err(E)`, trap, or cancellation. The
-   declared `close(consuming self) -> Result<(), E>` is invoked through
+   declared `close(consume self) -> Result<(), E>` is invoked through
    the child's stack-unwind path (§4.5), and its returned error is
    discarded per the §3.4 `@resource` semantics. This is the *same*
    discipline a `@resource` would receive in a non-task context; the
@@ -5092,7 +5278,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 7. Bitwise XOR: `^`
 8. Bitwise OR: `|`
 9. Relational: `<`, `<=`, `>`, `>=`
-10. Equality: `==`, `!=`, `is` (`is` = reference identity on heap handles; `expr is TypeName` = static-only type check; rejected with `E_IS_VALUE_TYPE` on scalars, `string`, tuples, and `type Name { ... }` record declarations — records are copy-on-write values with no pointer identity, so `==` is the comparison for them; regex matching is via `Pattern.is_match`)
+10. Equality: `==`, `!=`, `is` (`is` is **handle identity only** — it admits the pid, counted, opaque, and resource handle categories of §3.4.3 and answers whether two names denote the same actor, count, or resource. Every value-category and callable-category operand is rejected with `E_IS_VALUE_TYPE`, including scalars, `string`, `bytes`, tuples, records, enums, `Vec`, `HashMap`, and `HashSet`: these are copy-on-write values with no identity to compare, so `==` is their comparison. There is no `expr is TypeName` form; regex matching is via `Pattern.is_match`)
 11. Logical AND: `&&`
 12. Logical OR: `||`
 13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered)

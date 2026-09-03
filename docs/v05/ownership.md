@@ -9,9 +9,10 @@ gets an immutable copy-on-write view. Reuse after a call (`f(p); g(p)`) and
 value-receiver method chains are legal. There is no use-of-moved-value error for
 function calls, no ordinary reference syntax, and no lifetimes — ownership and
 sharing are inferred. The entire binding surface is two keywords, `let`
-(immutable) and `var` (mutable); there are no ownership annotations to write.
-Lifetimes, mutable references, and a capability lattice are permanent refusals,
-not deferred features.
+(immutable) and `var` (mutable), and a method that mutates its receiver says so
+with `var self`; there are no ownership annotations to write. Lifetimes, mutable
+references, and a capability lattice are permanent refusals, not deferred
+features.
 
 ```hew
 let p = build_point();
@@ -75,9 +76,9 @@ copy-on-write's lazy, on-demand fork. `clone x` (prefix form, the natural and
 primary spelling) and `x.clone()` (method form) are equivalent:
 
 ```hew
-let a: Vec<i64> = Vec.new();
+var a: Vec<i64> = Vec.new();
 a.push(1); a.push(2);
-let b = clone a;      // == a.clone() — independent copy, forked eagerly now
+var b = clone a;      // == a.clone() — independent copy, forked eagerly now
 b.push(99);
 println(a.len());     // 2
 println(b.len());     // 3
@@ -142,67 +143,123 @@ today, converging to retain-share-plus-copy-on-write as the model completes. Eac
 tier is indistinguishable from the others at the source level — the sender always
 keeps a valid, independent value.
 
-Move-on-send returns only for a provably-unique or `resource`-kind value as a
-runtime optimization (the pointer-transfer fast path above), never as a surface
-rule you must reason about. Sending a **non-sendable** value — a resource-shaped
-type, before the `resource` kind ships (see below) — is a fail-closed compile
-error, not a silent copy. See HEW-SPEC-2026.md §3.4.4 and §3.7.2 for the full
-model.
+Move-on-send returns only for a provably-unique value as a runtime optimization
+(the pointer-transfer fast path above), never as a surface rule you must reason
+about. Sending a **handle** is the one place a move is the rule rather than an
+optimization, and that is the next section. See HEW-SPEC-2026.md §3.4.4 and
+§3.7.2 for the full model.
 
-## `resource` — reserved for a future affine kind
+## Values, handles, and callables
 
-`resource` is a **reserved word**. It names an affine (move-only) kind that will
-ship after the first release: a `resource type` — a file, a socket, a unique
-handle — is never clonable, never implicitly shared, has a deterministic
-exactly-once destructor, and moves on send (the sender is invalidated, because a
-unique resource genuinely cannot exist in two places). That is the _one_ place a
-surface move will ever return.
+Everything above describes **values**. Not every type is one, and the difference
+is what a second name means. Three categories cover the language:
 
-At rc1 the feature is not yet user-visible; only the **seam** is reserved:
+- A **value** is copied. `let b = a` gives you two independent values (lazily,
+  by copy-on-write), `==` compares them structurally, and a send delivers a
+  snapshot. Scalars, `string`, `bytes`, records, enums, tuples, arrays, `Vec`,
+  `HashMap`, `HashSet`, and `dyn Trait` objects are values.
+- A **handle** is a name for something that lives elsewhere — an actor, a
+  refcount, a resource. A second binding is a second name for the same thing,
+  and methods act through the handle no matter whether the binding is `let` or
+  `var`, which is why `let pid`, `let rc`, and `let d = deque.new()` are all
+  legal receivers of `send`, `set`, and `push_back`.
+- A **callable** is a closure, a generator, or a task. It behaves as a value
+  locally and is never a message payload.
 
-- the word `resource` is reserved in the grammar;
-- no generic or stdlib code may assume universal clonability — `clone` stays a
-  capability-gated operation, so a future non-clonable kind slots in without a
-  breaking retrofit;
-- sending a resource-shaped value is a fail-closed compile error today (there is
-  no unsound window before the kind ships).
+Handles come in four flavours, and the flavour is the whole difference:
 
-Use the [owning-actor pattern](../hew-language-guide.md#own-a-resource-with-an-actor):
-open the resource inside one actor, keep it in that actor's state, and send the
-actor ordinary operation messages instead of sending the resource.
+| Handle   | Members                                  | What a copy does                     | What closes it                                   |
+| -------- | ---------------------------------------- | ------------------------------------ | ------------------------------------------------ |
+| pid      | `LocalPid`, `RemotePid`, `ChildRef`      | another name for one actor           | nothing; the actor stops                         |
+| counted  | `Rc`, `Weak`, `LambdaPid`                | a refcounted retain; the count rises | the last release, through drop glue              |
+| opaque   | `#[opaque]` types, such as a channel end | another name for one resource        | `close(consume self)` where the type declares it |
+| resource | `#[resource]` wrappers, `Stream`, `Sink` | a move; the source binding is dead   | drop glue at scope exit, or an early `close`     |
 
-Reserving the seam now — rather than the whole feature — closes the retrofit
-danger (generics silently assuming every type is copyable) while keeping the
-affine kind itself severable as the first post-rc1 ownership feature.
+`LambdaPid` is a **counted** handle, not a plain pid: releasing the last copy
+releases the closure environment the lambda actor captured.
 
-## The complete rejection surface: three walls
+`resource` is an ordinary identifier — `let resource = 3` is a legal binding.
+The affine kind shipped as the `#[resource]` attribute, and the linear
+discipline beside it as `#[linear]`: a `#[resource]` value may be dropped and
+its drop glue closes it, a `#[linear]` value may not be dropped and must be
+consumed by one of its own `consume self` methods.
 
-The entire ownership model rejects your program in exactly **three** places. Each
+## `is` — identity, for handles only
+
+`is` asks whether two names denote the same actor, the same count, or the same
+resource. It admits handles and nothing else. On a value — a scalar, a
+`string`, a record, a `Vec` — it is a compile error (`E_IS_VALUE_TYPE`), because
+a value has no identity to compare: `let b = a` gives you a copy whose address
+is a cost detail, so an identity answer would report the copy-on-write tier
+rather than anything about your program. Compare values with `==`.
+
+```hew
+let p = spawn Worker();
+let q = p;
+println(f"{p is q}");   // true — one actor, two names
+```
+
+There is no `expr is TypeName` form.
+
+## An opaque handle may live inside an actor
+
+The way to own a resource is to give it to one actor: open the connection
+inside the actor, keep it in that actor's state, and send the actor ordinary
+operation messages. An `#[opaque]` handle, or the `#[resource]` wrapper around
+one, may be an actor's init field — moved in at `spawn`, owned by that actor's
+heap, closed by its drop glue when the actor stops — and may be a `receive fn`
+parameter on a local send, where the send consumes it. That is how one actor
+holds one connection and serves many requests over it.
+
+> **Not yet: `E_LIMIT_OPAQUE_ACTOR`.** Today an `#[opaque]` type in a
+> `receive fn` parameter or an actor init field is refused, with the wire rule's
+> "message payloads must be CBOR-serializable" applied to a local send that
+> never serializes. The refusal carries this Limitation code so it is
+> distinguishable from the rule, and it lifts when local sends carry the
+> transfer-last-use move. Until then, open the handle inside the handler.
+
+## The complete rejection surface: four walls
+
+The entire ownership model rejects your program in exactly **four** places. Each
 wall names the binding, its state, and the span that put it there, and each ships
 a one-line escape:
 
-| Wall                     | When it fires                         | Escape                                                                                                                      |
-| ------------------------ | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| mutation of a `let`      | you mutate a value bound with `let`   | declare it `var`                                                                                                            |
-| clone of a non-cloneable | you `clone` a value with no copy path | restructure now; the `resource` lifecycle later                                                                             |
-| send of a non-sendable   | you send a resource-shaped value      | use the [owning-actor pattern](../hew-language-guide.md#own-a-resource-with-an-actor); lifts when `resource` transfer ships |
+| Wall                       | When it fires                                                                                     | Escape                                                                                |
+| -------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| mutation of a `let`        | you mutate a value bound with `let`, or call a `var self` method on it                            | declare it `var`                                                                      |
+| clone of a non-cloneable   | you `clone` a value with no copy path                                                             | restructure, or hold the resource in an actor                                         |
+| send of a non-sendable     | you send an `Rc`, a `Weak`, a `LambdaPid`, or a closure, or you send any handle to a remote actor | use the [owning-actor pattern](../hew-language-guide.md#own-a-resource-with-an-actor) |
+| use after send of a handle | you send an opaque or resource handle locally and then use the binding                            | send it last, or reopen the handle in the receiving actor                             |
 
-There is no fourth wall. Use-after-send of a value is **not** an error (send takes
-a snapshot); use-after-call is **not** an error (calls borrow). The model has no
+The fourth wall is for **handles only**. Use-after-send of a _value_ is still
+not an error (send takes a snapshot) and use-after-call is still not an error
+(calls borrow) — but a handle cannot be snapshotted, because there is nothing to
+snapshot but the resource itself, so a local send of one is a move and the
+sender's binding is dead afterwards (`E_USE_AFTER_SEND`). The model still has no
 lifetime errors, no borrow-checker vocabulary, and no capability terms to learn.
 
-## Equality: structural only (Q322)
+## Equality: structural by default, yours if you say so (Q322)
 
-`==` in Hew compares **values**, not object identity:
+`==` in Hew compares **values**, not addresses:
 
 ```hew
 let a = "hello";
 let b = "hello";
-a == b  // true — structural equality, always
+a == b  // true — structural equality, derived for free
 ```
 
-There is no pointer-equality operator. Two distinct heap allocations holding the same bytes
-compare equal. This invariant holds even after COW splits a shared buffer.
+`Eq`, `Ord`, `PartialOrd`, and `Hash` are derived for records and enums with no
+declaration: field by field, variant by variant, and ordering lexicographically
+by field order. Two distinct heap allocations holding the same bytes compare
+equal, and that holds even after copy-on-write splits a shared buffer.
+
+You can override the derived rule. `impl Eq for T { .. }` is legal, and `==`,
+the ordering operators, and hashing all dispatch to your body for `T` — which is
+what a case-insensitive key or a tolerance-based float comparison needs. The
+derived implementation is a default, not a wall.
+
+Identity is a separate question with a separate operator: `is`, on handles only
+(above). There is no address comparison for values.
 
 ## Reference cycles (Q321)
 

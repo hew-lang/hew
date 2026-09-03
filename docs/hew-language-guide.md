@@ -48,16 +48,16 @@ for the documented resolver precedence.
 - Interpolate `Display` values with `f"x={x}"`; use `f"x={x:?}"` for structural debugging.
 - Convert numbers with `as`: `x as i64`, `pi as i32`. It is the only conversion mechanism.
 - Never mix integer widths in one expression; cast the narrower operand up first: `x as i64 + 1`.
-- **`var` for mutable bindings, `let` for immutable.** Hew does not have `let mut` — use `var` whenever you need to reassign a name or mutate a scalar field. `let` bindings are immutable (but `let` collections have interior mutability).
+- **`var` for mutable bindings, `let` for immutable.** Hew does not have `let mut` — use `var` whenever you need to reassign a name, assign through a place (`p.x`, `v[0]`, `m["k"]`, `t.0`), or call a method that mutates its receiver. Collections are values, so `var v: Vec<i64> = Vec.new(); v.push(1)` is the mutating form and `let v` refuses it. Handles are the exception by category, not by syntax: `let d = deque.new(); d.push_back(1)` is fine because `d` names a resource rather than holding a value.
 - Dispatch with `match`, not if/else chains — `match` on a closed enum enforces exhaustiveness.
 - Iterate counts with `for i in 0..n` (exclusive) or `0..=n` (inclusive); the binding must be a named identifier.
 - Read collection elements with `v[i]` (returns `T`, traps on out-of-bounds) or `.get(i)` (returns `Option<T>`, never traps) — both universal across element types.
 - `Vec<string>` supports `v[i]` (returns a fresh owned `string`; the Vec stays usable), `.get(i)`, range-slices, and for-in. Both accessors work for `Vec<enum>` too.
-- Build maps/sets with `Type.new()` + `.insert()`; bind with `let` (interior mutability, not reassignment).
+- Build maps/sets with `Type.new()` + `.insert()`; bind with `var`, since `.insert()` mutates the receiver.
 - Look up `HashMap`/`Option`/`Result` with `match`, not subscript or `.unwrap()`.
 - **Enum variants use `;` separators; record fields also use `;` in type definitions but `,` in construction literals.** These are different — `type T { a: i64; b: i64; }` defines, `T { a: 1, b: 2 }` constructs.
 - Declare records with `type Name { field: T; }` (semicolons); enum variants are `;`-separated.
-- Access actor state by bare field name inside handlers — no `self.` or `this.`.
+- Access actor state by bare field name inside handlers — no prefix. Inside an actor body `self` is the actor's own handle (`LocalPid<Self>`), not a field prefix.
 - Fire-and-forget actor sends have no return type and no `await`: `ref.method(arg);`.
 - Ask (request-reply) is `await ref.method(arg)` and returns `Result<R, AskError>` — match `Ok`/`Err`.
 - Sending a value into an actor delivers a logical snapshot; the sender's binding stays valid afterward — no `clone` needed to keep using it. Types that cannot be sent are rejected at compile time.
@@ -237,7 +237,7 @@ fn main() {
 
 > **Coming from Rust?** Hew does not have `let mut`. Use `var` for any binding you will reassign; use `let` for everything else. Writing `let mut x = 0` is a compile error — the parser rejects `mut` as unexpected.
 
-Use `var` when the name will be reassigned or when a scalar field on a `var`-bound record will be mutated. `let` collections (`Vec`, `HashMap`, `HashSet`) have interior mutability — `.push()`/`.insert()` work on a `let` binding because you are not reassigning the binding itself. Use `var` only when you need to rebind the name to a new value.
+Use `var` when the name will be reassigned, when a field or element under it will be assigned, or when you will call a method that mutates the receiver. Collections are values, so `.push()`/`.insert()` are `var self` methods: `var v: Vec<i64> = Vec.new(); v.push(1)` is the working form and a `let` binding refuses the call. Handles are different — `let d = deque.new(); d.push_back(1)` is fine, because `d` names a resource instead of holding a value.
 
 Compound-assign operators (`+=`, `-=`, `*=`, `/=`) are available for `var` bindings.
 
@@ -638,14 +638,14 @@ fn main() {
 
 ```hew
 fn main() {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 10);
     m.insert("bob", 20);
     println(m.len());   // 2
 }
 ```
 
-Use `let` (not `var`) — these have interior mutability so the binding is never reassigned. The annotation is required for inference. `.insert` returns unit and overwrites on duplicate key.
+Use `var` — `.insert` mutates the receiver, and a mutating method needs a `var` binding. The annotation is required for inference. `.insert` returns unit and overwrites on duplicate key.
 
 ### Look up a key (returns Option)
 
@@ -1273,7 +1273,7 @@ actor Counter {
 }
 ```
 
-Reference and assign state fields by bare name — no `self`/`this` prefix. State persists across invocations. Keep handler param names distinct from field names (shadowing is an error).
+Reference and assign state fields by bare name — there is no field prefix. State persists across invocations. Keep handler param names distinct from field names (shadowing is an error). Inside an actor body, `self` is the actor's own handle of type `LocalPid<Self>`: send it to another actor, store it in a field, or call `self.stop()` to stop the actor. It is read-only and it is never a way to reach a field.
 
 ### spawn returns LocalPid<ActorType>
 
@@ -1905,9 +1905,9 @@ Pass machines by value into and out of free functions and mutate a local `var`. 
 ### Generic function with a trait bound
 
 ```hew
-trait Named { fn name(val: Self) -> string; }
+trait Named { fn name(self) -> string; }
 type User { name: string; }
-impl Named for User { fn name(u: User) -> string { u.name } }
+impl Named for User { fn name(self) -> string { self.name } }
 fn announce<T: Named>(item: T) { println(item.name()); }
 fn main() { announce(User { name: "Bob" }); }   // Bob
 ```
@@ -1917,11 +1917,11 @@ Declare the impl as `impl Trait for Type`, bound the parameter `<T: Trait>`, and
 ### Multi-bound and where-clause functions
 
 ```hew
-trait HasName { fn name(val: Self) -> string; }
-trait HasScore { fn score(val: Self) -> i64; }
+trait HasName { fn name(self) -> string; }
+trait HasScore { fn score(self) -> i64; }
 type Player { name: string; score: i64; }
-impl HasName for Player { fn name(p: Player) -> string { p.name } }
-impl HasScore for Player { fn score(p: Player) -> i64 { p.score } }
+impl HasName for Player { fn name(self) -> string { self.name } }
+impl HasScore for Player { fn score(self) -> i64 { self.score } }
 fn report<T: HasName + HasScore>(item: T) {
     print(item.name()); print(": "); println(item.score());
 }
@@ -2066,12 +2066,12 @@ Methods on a generic record need the impl itself to carry the type parameter —
 type Stack<T> { items: Vec<T> }
 
 impl<T> Stack<T> {
-    fn push_item(s: Stack<T>, v: T) -> Stack<T> {
-        s.items.push(v);
-        s
+    fn push_item(self, v: T) -> Stack<T> {
+        self.items.push(v);
+        self
     }
-    fn len(s: Stack<T>) -> i64 {
-        s.items.len()
+    fn len(self) -> i64 {
+        self.items.len()
     }
 }
 
@@ -2146,8 +2146,8 @@ interpolation:
 type Celsius { degrees: f64; }
 
 impl Display for Celsius {
-    fn fmt(c: Celsius) -> string {
-        f"{c.degrees}°C"
+    fn fmt(self) -> string {
+        f"{self.degrees}°C"
     }
 }
 
@@ -2431,21 +2431,33 @@ Build strings with `+`. `char_at` returns `Option<char>` — `Some` of the byte 
 
 ```hew
 trait Greet {
-    fn greet(val: Self) -> string;
+    fn greet(self) -> string;
 }
 type Person { name: string }
 impl Greet for Person {
-    fn greet(p: Person) -> string {
-        f"Hello, {p.name}!"
+    fn greet(self) -> string {
+        f"Hello, {self.name}!"
     }
 }
 fn main() {
     let p = Person { name: "Ada" };
     println(p.greet());   // Hello, Ada!
+    println(p.greet());   // still valid — `self` borrows
 }
 ```
 
-Use Go-style named receivers: the first parameter whose type matches the impl target is the receiver (no `self` keyword required — the parameter can be named anything, including `self`). The receiver is consumed by value.
+There are three receivers and one spelling each. `self` borrows: the caller's
+binding stays valid, so `p.greet()` twice is ordinary code. `var self` mutates
+the receiver in place and requires a `var` binding — `let p = ...; p.bump()` is
+refused with "requires a mutable binding receiver". `consume self` takes the
+value, and any later use of the binding is a use-after-consume error. Naming the
+first parameter after the target type (`fn greet(p: Person)`) is not a receiver
+form; the fix-it rewrites it to `self`.
+
+`var self` is available on trait methods. On an inherent `impl` method it is
+refused today (`E_LIMIT_INHERENT_VAR_SELF`), because an inherent method receives
+the value and the mutation would not reach the caller — declare the method on a
+trait with a `var self` receiver and implement that trait for your type.
 
 A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. They do not yet resolve when the implementing type is ALSO imported from a directory module (e.g. `import gm.{ Dog };` where `Dog` and its `impl Greet for Dog` both live in `gm`) — calling an inherited default on that receiver fails with `no method 'greet' on 'gm.Dog'` rather than falling back to the trait's default body; that gap is tracked separately.
 
@@ -2454,8 +2466,8 @@ A trait method can carry a default body (`fn shout(self) -> string { self.greet(
 ```hew
 type Point { x: f64; y: f64 }
 impl Display for Point {
-    fn fmt(p: Point) -> string {
-        f"({p.x}, {p.y})"
+    fn fmt(self) -> string {
+        f"({self.x}, {self.y})"
     }
 }
 fn main() {
@@ -2471,8 +2483,8 @@ Implement `Display` via the `fmt` method and interpolate with f-strings. To prin
 ```hew
 type Tag { id: i64 }
 impl Display for Tag {
-    fn fmt(t: Tag) -> string {
-        f"#{t.id}"
+    fn fmt(self) -> string {
+        f"#{self.id}"
     }
 }
 fn main() {
@@ -2489,13 +2501,13 @@ An explicitly-implemented trait method is callable directly with dot-syntax.
 ```hew
 trait Counter {
     type Item;
-    fn next_val(c: Self) -> Self.Item;
+    fn next_val(self) -> Self.Item;
 }
 type Ticker { current: i64 }
 impl Counter for Ticker {
     type Item = i64;
-    fn next_val(t: Ticker) -> i64 {
-        t.current + 1
+    fn next_val(self) -> i64 {
+        self.current + 1
     }
 }
 fn main() {
@@ -2510,12 +2522,12 @@ Declare `type Item;` in the trait, bind it with `type Item = <concrete>;` in the
 
 ```hew
 trait Summable {
-    fn total(v: Self) -> i64;
+    fn total(self) -> i64;
 }
 impl Summable for Vec<i64> {
-    fn total(v: Vec<i64>) -> i64 {
+    fn total(self) -> i64 {
         var acc = 0;
-        for x in v { acc += x; }
+        for x in self { acc += x; }
         acc
     }
 }
@@ -3192,8 +3204,8 @@ type Conn {
     fd: i64
 }
 impl Conn {
-    fn close(c: Conn) {
-        println(f"closing fd {c.fd}");
+    fn close(consume self) {
+        println(f"closing fd {self.fd}");
     }
 }
 
@@ -3208,8 +3220,8 @@ fn main() {
 #[linear]
 type Tx { id: i64 }
 impl Tx {
-    fn commit(consuming self) { println(f"commit {self.id}"); }
-    fn rollback(consuming self) { println(f"rollback {self.id}"); }
+    fn commit(consume self) { println(f"commit {self.id}"); }
+    fn rollback(consume self) { println(f"rollback {self.id}"); }
 }
 
 fn main() {
@@ -3225,7 +3237,7 @@ early; a `#[linear]` type has **no** implicit drop at all — leaving one
 unconsumed at scope exit is a compile error. Neither supports a
 user-defined `impl Drop`.
 
-The `close` method (for `#[resource]`) and any `consuming self` method (for
+The `close` method (for `#[resource]`) and any `consume self` method (for
 `#[linear]`) must be declared in a sibling `impl` block, never inline in the
 type body — an inline declaration is rejected at parse time. A factory
 function that constructs and returns a `#[resource]` or `#[linear]` value
@@ -3252,6 +3264,22 @@ including `Deque`, `json.Value`, `csv.Reader`, and `net.Connection`.
 `std/deque.hew`'s `#[opaque]\npub type Deque { }` plus its sibling `trait
 DequeMethods` / `impl DequeMethods for Deque` is the canonical shape to
 copy for a new opaque type.
+
+An opaque handle is a **handle**, not a value: a second binding is a second
+name for the same resource, methods act through it whether the binding is `let`
+or `var`, and `is` compares two names for identity. It may live inside an
+actor — an opaque handle (or the `#[resource]` wrapper around one) may be an
+actor's init field, moved in at `spawn` and closed by the actor's drop glue at
+stop, and may be a `receive fn` parameter on a local send, where the send
+consumes it and a later use of the sender's binding is `E_USE_AFTER_SEND`.
+That is how one actor owns one connection and serves many requests over it.
+Sending a handle to a remote actor stays refused: a remote payload must be
+CBOR-serializable (`E_OPAQUE_MESSAGE_PAYLOAD`).
+
+Today the local case is refused too, under `E_LIMIT_OPAQUE_ACTOR`: an opaque
+type in a `receive fn` parameter or an actor init field gets the wire rule's
+message applied to a send that never serializes. Until that lifts, open the
+handle inside the handler.
 
 ### Typed streams — `await sink.send(x)` / `await stream.recv()`
 

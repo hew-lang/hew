@@ -50,7 +50,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_int, c_void};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 
@@ -149,13 +149,12 @@ struct Registration {
     conn: c_int,
     /// By-value actor-ref snapshot; dereferenced only on the reactor thread.
     actor_ref: HewActorRef,
-    /// Stable actor identity (`*mut HewActor` as `usize`) for
-    /// `reactor_detach_actor` matching on actor teardown.
-    actor_key: usize,
-    /// The owning actor's incarnation, captured while it was live at
-    /// registration. Every wake this registration fires names this
-    /// incarnation, so a replacement actor that inherits the allocation (or the
-    /// `actor_key`) is never resumed in its place.
+    /// The registration's SOLE identity: the owning actor's incarnation,
+    /// captured while it was live at registration. The delivery gate, every
+    /// wake this registration fires, the Dekker guards, and
+    /// `reactor_detach_actor`'s scrub all name this incarnation, so a
+    /// replacement actor that inherits the allocation is never delivered to,
+    /// resumed, or mistaken for the registrant on teardown.
     actor: ActorIncarnation,
     /// The readiness action (auto-send vs resume — the D-3 seam).
     mode: RegMode,
@@ -182,20 +181,15 @@ struct Registration {
 unsafe impl Send for Registration {}
 
 impl Registration {
-    /// Build a registration, capturing the owning actor's incarnation while the
-    /// actor is still live.
+    /// Build a registration owned by `actor`.
     ///
-    /// # Safety
-    ///
-    /// `actor_ref`'s local pointer, when non-null, must reference a live actor.
-    unsafe fn new(conn: c_int, actor_ref: HewActorRef, actor_key: usize, mode: RegMode) -> Self {
-        // SAFETY: forwarded from the caller's liveness guarantee.
-        let actor =
-            unsafe { ActorIncarnation::of(actor_ref_local_ptr(&actor_ref).cast::<HewActor>()) };
+    /// The caller captures the incarnation where it holds the registrant live
+    /// (`ActorIncarnation::of` on the actor it is registering for), the same
+    /// place it already resolved the actor ref.
+    fn new(conn: c_int, actor_ref: HewActorRef, actor: ActorIncarnation, mode: RegMode) -> Self {
         Self {
             conn,
             actor_ref,
-            actor_key,
             actor,
             mode,
             closed: false,
@@ -245,7 +239,7 @@ struct ReactorState {
     /// await entry check rejects only these actors if they loop and try to park
     /// again; actors that had not reached their await when shutdown began retain
     /// the existing fast-shutdown abandonment behaviour.
-    shutdown_cancelled_actors: HashSet<usize>,
+    shutdown_cancelled_actors: HashSet<ActorIncarnation>,
 }
 
 impl ReactorState {
@@ -292,20 +286,68 @@ fn fire_detach_post_evict_hook() {
     }
 }
 
-/// The actor key (`*mut HewActor` as `usize`) the reactor is currently
-/// delivering a message to, or `0` when idle. This is the Dekker-protocol
-/// in-flight guard (mirroring `timer_periodic`): the reactor publishes the
-/// target before each `hew_actor_try_send` and clears it after, so the
-/// synchronous `reactor_detach_actor` (called from `hew_actor_free`) can
-/// spin-wait until any in-flight delivery to the actor being freed has
-/// finished before allowing the free to proceed. Without this, a readiness
-/// event that passed the liveness check could send to a mailbox the freeing
-/// thread tears down concurrently.
-static DELIVERING_ACTOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// A lock-free Dekker guard naming the actor INCARNATION a reactor phase is
+/// currently working on, or nothing when idle.
+///
+/// The guard is one atomic word holding the incarnation's
+/// [`ActorIncarnation::spawn_serial`], never its address. The serial is a total
+/// discriminator on its own: it comes from a single monotonic allocator that
+/// starts at 1 and refuses past `MAX_SPAWN_SERIAL` rather than wrapping
+/// (`actor::take_actor_serial`), so no two incarnations in a process ever share
+/// one and `0` can name none. Carrying the `actor_id` half as well would add
+/// nothing but a second word, and a two-word guard cannot be published or
+/// probed atomically — a torn read would let a teardown conclude "not my
+/// incarnation" and free the box under an in-flight delivery.
+struct IncarnationGuard(AtomicU64);
 
-/// The actor key (`*mut HewActor` as `usize`) whose `Pending::Add` the reactor
-/// is currently *promoting* into the registry, or `0` when idle. This is the
-/// promotion-phase counterpart to [`DELIVERING_ACTOR`].
+impl IncarnationGuard {
+    const fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    /// Publish `actor` as the in-flight target.
+    fn publish(&self, actor: ActorIncarnation) {
+        debug_assert!(!actor.is_none(), "a guard must name a real incarnation");
+        self.0.store(actor.spawn_serial(), Ordering::SeqCst);
+    }
+
+    /// Clear the guard (the phase finished).
+    fn clear(&self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
+
+    /// Whether the guard names `actor`. Never true for [`ActorIncarnation::NONE`]:
+    /// an absent target must not match an idle guard, or a teardown carrying one
+    /// would spin forever.
+    fn is(&self, actor: ActorIncarnation) -> bool {
+        !actor.is_none() && self.0.load(Ordering::SeqCst) == actor.spawn_serial()
+    }
+
+    /// Whether any phase is in flight.
+    fn is_set(&self) -> bool {
+        self.0.load(Ordering::SeqCst) != 0
+    }
+
+    /// Whether the guard names one of `actors`.
+    fn is_any_of(&self, actors: &HashSet<ActorIncarnation>) -> bool {
+        let serial = self.0.load(Ordering::SeqCst);
+        serial != 0 && actors.iter().any(|actor| actor.spawn_serial() == serial)
+    }
+}
+
+/// The actor incarnation the reactor is currently delivering a message to.
+/// This is the Dekker-protocol in-flight guard (mirroring `timer_periodic`):
+/// the reactor publishes the target before each `hew_actor_try_send` and clears
+/// it after, so the synchronous `reactor_detach_actor` (called from
+/// `hew_actor_free`) can spin-wait until any in-flight delivery to the actor
+/// being freed has finished before allowing the free to proceed. Without this,
+/// a readiness event that passed the liveness check could send to a mailbox the
+/// freeing thread tears down concurrently.
+static DELIVERING_ACTOR: IncarnationGuard = IncarnationGuard::new();
+
+/// The actor incarnation whose `Pending::Add` the reactor is currently
+/// *promoting* into the registry. This is the promotion-phase counterpart to
+/// [`DELIVERING_ACTOR`].
 ///
 /// A free can race the window where an `attach` is still queued as a
 /// `Pending::Add`. `reactor_detach_actor` phase 1 scrubs the actor's entries
@@ -317,9 +359,9 @@ static DELIVERING_ACTOR: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 /// reactor publishes this guard *in the same locked section that removes the
 /// add from `pending`*, and clears it only after the registry insert (or the
 /// fail-closed abort) completes. `reactor_detach_actor` phase 2 spin-waits
-/// while `PROMOTING_ACTOR == actor_key`, then re-scrubs the registry — so an
-/// add that lands during the wait is still evicted before the actor is freed.
-static PROMOTING_ACTOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// while the guard names the actor, then re-scrubs the registry — so an add
+/// that lands during the wait is still evicted before the actor is freed.
+static PROMOTING_ACTOR: IncarnationGuard = IncarnationGuard::new();
 
 /// Whether listener admission is CLOSED (shutdown's drain has started).
 ///
@@ -380,8 +422,8 @@ pub(crate) fn drain_is_idle() -> bool {
     }
 
     if REACTOR_STATE.access(|state| owns_resumable_work(state))
-        || PROMOTING_ACTOR.load(Ordering::SeqCst) != 0
-        || DELIVERING_ACTOR.load(Ordering::SeqCst) != 0
+        || PROMOTING_ACTOR.is_set()
+        || DELIVERING_ACTOR.is_set()
     {
         return false;
     }
@@ -389,8 +431,8 @@ pub(crate) fn drain_is_idle() -> bool {
     !REACTOR_STATE.access(|state| owns_resumable_work(state))
 }
 
-/// Snapshot the actor keys currently parked on a listener `await accept()`
-/// (registry entries and queued adds in `RegMode::Accept`).
+/// Snapshot the actor incarnations currently parked on a listener
+/// `await accept()` (registry entries and queued adds in `RegMode::Accept`).
 ///
 /// The shutdown drain's suspended-actor scan consults this set so an actor
 /// whose only park is an admission wait does not hold the drain open (the
@@ -400,7 +442,7 @@ pub(crate) fn drain_is_idle() -> bool {
 /// registration resolving between snapshot and scan makes the woken actor
 /// visible to the drain's scheduler probes instead (drain requires two
 /// consecutive idle polls).
-pub(crate) fn actors_parked_on_accept() -> std::collections::HashSet<usize> {
+pub(crate) fn actors_parked_on_accept() -> HashSet<ActorIncarnation> {
     REACTOR_STATE.access(|state| {
         state
             .registry
@@ -410,7 +452,7 @@ pub(crate) fn actors_parked_on_accept() -> std::collections::HashSet<usize> {
                 _ => None,
             }))
             .filter(|reg| matches!(reg.mode, RegMode::Accept { .. }))
-            .map(|reg| reg.actor_key)
+            .map(|reg| reg.actor)
             .collect()
     })
 }
@@ -532,7 +574,7 @@ fn drain_pending(poller: *mut HewIoPoller) {
             }
             let req = state.pending.remove(0);
             if let Pending::Add { reg, .. } = &req {
-                PROMOTING_ACTOR.store(reg.actor_key, Ordering::SeqCst);
+                PROMOTING_ACTOR.publish(reg.actor);
             }
             Some(req)
         });
@@ -546,7 +588,7 @@ fn drain_pending(poller: *mut HewIoPoller) {
 }
 
 /// Promote a queued registration into the registry. The [`PROMOTING_ACTOR`]
-/// guard was published by [`drain_pending`] for this `reg.actor_key` and is
+/// guard was published by [`drain_pending`] for this `reg.actor` and is
 /// cleared here once the registration has either landed in the registry or been
 /// abandoned (poller-register failure). A concurrent `reactor_detach_actor`
 /// spin-waits on that guard, so the registration is always evicted before the
@@ -563,7 +605,7 @@ fn apply_add(poller: *mut HewIoPoller, fd: c_int, reg: Registration) {
         // deliver on_close so the actor is not left waiting; do not insert.
         deliver_orphan_close(&reg);
         // Promotion abandoned; release the guard so a waiting detach proceeds.
-        PROMOTING_ACTOR.store(0, Ordering::SeqCst);
+        PROMOTING_ACTOR.clear();
         return;
     }
     REACTOR_STATE.access(|state| {
@@ -573,7 +615,7 @@ fn apply_add(poller: *mut HewIoPoller, fd: c_int, reg: Registration) {
     crate::observe::record_reactor_registration();
     // Registration is now in the registry where `reactor_detach_actor` phase 1
     // can find it; release the promotion guard.
-    PROMOTING_ACTOR.store(0, Ordering::SeqCst);
+    PROMOTING_ACTOR.clear();
 }
 
 fn apply_remove_by_conn(poller: *mut HewIoPoller, conn: c_int) {
@@ -703,8 +745,8 @@ impl ShutdownWait {
         }
     }
 
-    fn actor_key(&self) -> usize {
-        self.registration.actor_key
+    fn incarnation(&self) -> ActorIncarnation {
+        self.registration.actor
     }
 
     fn read_slot(&self) -> *mut crate::read_slot::HewReadSlot {
@@ -850,20 +892,19 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
         ReadyMode::AutoSend { .. } => None,
     };
 
-    let actor_key = snap.actor_local as usize;
-
     // Publish the in-flight target BEFORE re-validating + sending (Dekker
     // protocol with `reactor_detach_actor`). Ordering with the registry-lock
     // revalidation below guarantees that a concurrent `hew_actor_free` either
     // (a) removes the registration before we re-read it under the lock — so we
-    // see it gone and abort — or (b) observes `DELIVERING_ACTOR == actor_key`
-    // and spin-waits until we clear it. Either way no send/wake reaches a freed
-    // actor. The resume-mode wake (`enqueue_resume_by_incarnation`) is ALSO
-    // independently fail-safe: it resolves the recorded incarnation against the
-    // live-actor registry and refuses a wake whose registrant is gone or whose
-    // address belongs to a later incarnation, so the guard + the waker are
-    // belt-and-braces for the abandon edge.
-    DELIVERING_ACTOR.store(actor_key, Ordering::SeqCst);
+    // see it gone and abort — or (b) observes `DELIVERING_ACTOR` naming its
+    // incarnation and spin-waits until we clear it. Either way no send/wake
+    // reaches a freed actor. The resume-mode wake
+    // (`enqueue_resume_by_incarnation`) is ALSO independently fail-safe: it
+    // resolves the recorded incarnation against the live-actor registry and
+    // refuses a wake whose registrant is gone or whose address belongs to a
+    // later incarnation, so the guard + the waker are belt-and-braces for the
+    // abandon edge.
+    DELIVERING_ACTOR.publish(snap.actor);
 
     // Re-validate under the lock AFTER publishing the guard: if the actor was
     // detached (freed) between the snapshot and now, the registration is gone
@@ -884,7 +925,7 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     // reincarnation at the recorded address is refused before the read below.
     let alive = actor_snapshot_alive(snap.actor, snap.actor_local, &snap.actor_ref);
     if !still_registered || !alive {
-        DELIVERING_ACTOR.store(0, Ordering::SeqCst);
+        DELIVERING_ACTOR.clear();
         unregister_fd(poller, fd);
         return;
     }
@@ -897,7 +938,7 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     // `await accept()` (re-registered by the handler).
     if let ReadyMode::Accept { read_slot } = &snap.mode {
         handle_ready_accept(poller, fd, &snap, hard_close, *read_slot);
-        DELIVERING_ACTOR.store(0, Ordering::SeqCst);
+        DELIVERING_ACTOR.clear();
         return;
     }
 
@@ -932,7 +973,7 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
 
     // Delivery (if any) is complete; release the in-flight guard so a waiting
     // `reactor_detach_actor` may proceed with the free.
-    DELIVERING_ACTOR.store(0, Ordering::SeqCst);
+    DELIVERING_ACTOR.clear();
 }
 
 /// Active-mode readiness handling: auto-send `on_data(bytes)` for each chunk and
@@ -1379,7 +1420,7 @@ fn take_shutdown_waits() -> Vec<ShutdownWait> {
                 .expect("shutdown sweep fd came from the registry");
             state.conn_to_fd.retain(|_, mapped| mapped != fd);
             let wait = ShutdownWait::new(reg);
-            state.shutdown_cancelled_actors.insert(wait.actor_key());
+            state.shutdown_cancelled_actors.insert(wait.incarnation());
             waits.push(wait);
         }
         if !registry_fds.is_empty() {
@@ -1392,7 +1433,7 @@ fn take_shutdown_waits() -> Vec<ShutdownWait> {
             match req {
                 Pending::Add { reg, .. } if is_parked_wait(&reg) => {
                     let wait = ShutdownWait::new(reg);
-                    state.shutdown_cancelled_actors.insert(wait.actor_key());
+                    state.shutdown_cancelled_actors.insert(wait.incarnation());
                     waits.push(wait);
                 }
                 other => retained.push(other),
@@ -1408,7 +1449,7 @@ fn take_shutdown_waits() -> Vec<ShutdownWait> {
     })
 }
 
-fn shutdown_waits_quiescent(cancelled_actors: &HashSet<usize>) -> bool {
+fn shutdown_waits_quiescent(cancelled_actors: &HashSet<ActorIncarnation>) -> bool {
     let no_parked_state = REACTOR_STATE.access(|state| {
         !state.registry.values().any(is_parked_wait)
             && !state.pending.iter().any(|req| match req {
@@ -1416,10 +1457,7 @@ fn shutdown_waits_quiescent(cancelled_actors: &HashSet<usize>) -> bool {
                 _ => false,
             })
     });
-    let delivering = DELIVERING_ACTOR.load(Ordering::SeqCst);
-    no_parked_state
-        && PROMOTING_ACTOR.load(Ordering::SeqCst) == 0
-        && !cancelled_actors.contains(&delivering)
+    no_parked_state && !PROMOTING_ACTOR.is_set() && !DELIVERING_ACTOR.is_any_of(cancelled_actors)
 }
 
 /// Resolve all reactor waits that were already parked when shutdown entered its
@@ -1436,15 +1474,13 @@ pub(crate) fn reactor_cancel_parked_waits_for_shutdown() -> usize {
     loop {
         let waits = take_shutdown_waits();
         swept += waits.len();
-        cancelled_actors.extend(waits.iter().map(ShutdownWait::actor_key));
+        cancelled_actors.extend(waits.iter().map(ShutdownWait::incarnation));
         for wait in &waits {
             wait.cancel();
         }
         drop(waits);
 
-        while PROMOTING_ACTOR.load(Ordering::SeqCst) != 0
-            || cancelled_actors.contains(&DELIVERING_ACTOR.load(Ordering::SeqCst))
-        {
+        while PROMOTING_ACTOR.is_set() || DELIVERING_ACTOR.is_any_of(&cancelled_actors) {
             std::hint::spin_loop();
         }
         if shutdown_waits_quiescent(&cancelled_actors) {
@@ -1453,9 +1489,8 @@ pub(crate) fn reactor_cancel_parked_waits_for_shutdown() -> usize {
     }
 }
 
-fn shutdown_rejects_actor_wait(state: &ReactorState, actor_key: usize) -> bool {
-    crate::shutdown::hew_is_shutting_down() != 0
-        && state.shutdown_cancelled_actors.contains(&actor_key)
+fn shutdown_rejects_actor_wait(state: &ReactorState, actor: ActorIncarnation) -> bool {
+    crate::shutdown::hew_is_shutting_down() != 0 && state.shutdown_cancelled_actors.contains(&actor)
 }
 
 unsafe fn reject_read_wait_during_shutdown(read_slot: *mut crate::read_slot::HewReadSlot) -> c_int {
@@ -1541,7 +1576,9 @@ pub(crate) unsafe fn reactor_attach(
     // SAFETY: caller guarantees actor_ref is valid for this call; we copy it.
     let snapshot = unsafe { std::ptr::read(actor_ref) };
     let actor_local = actor_ref_local_ptr(&snapshot).cast::<HewActor>();
-    let actor_key = actor_local as usize;
+    // The registrant identity every later phase names. SAFETY: the caller
+    // guarantees the actor ref is valid (and its actor live) for this call.
+    let actor = unsafe { ActorIncarnation::of(actor_local) };
 
     // Fail closed on a leak-prone mailbox. Active-mode `on_data` is delivered
     // as a raw (`envelope == null`) node whose embedded `BytesTriple` refcount
@@ -1570,18 +1607,15 @@ pub(crate) unsafe fn reactor_attach(
         }
     }
 
-    // SAFETY: `snapshot` names the actor registering this fd, live here.
-    let reg = unsafe {
-        Registration::new(
-            conn,
-            snapshot,
-            actor_key,
-            RegMode::AutoSend {
-                on_data_type,
-                on_close_type,
-            },
-        )
-    };
+    let reg = Registration::new(
+        conn,
+        snapshot,
+        actor,
+        RegMode::AutoSend {
+            on_data_type,
+            on_close_type,
+        },
+    );
     REACTOR_STATE.access(|state| {
         state.pending.push(Pending::Add { fd, reg });
     });
@@ -1643,13 +1677,15 @@ pub(crate) unsafe fn reactor_await_read(
     // SAFETY: caller guarantees actor_ref is valid for this call; we copy it.
     let snapshot = unsafe { std::ptr::read(actor_ref) };
     let actor_local = actor_ref_local_ptr(&snapshot).cast::<HewActor>();
-    let actor_key = actor_local as usize;
+    // The registrant identity every later phase names. SAFETY: the caller
+    // guarantees the actor ref is valid (and its actor live) for this call.
+    let actor = unsafe { ActorIncarnation::of(actor_local) };
 
     // Publish atomically with the shutdown pairing. If this actor was swept from
     // an already-parked wait, reject its attempt to re-park; otherwise retain the
     // reactor ref and queue the registration under the same lock the sweep uses.
     let queued = REACTOR_STATE.access(|state| {
-        if shutdown_rejects_actor_wait(state, actor_key) {
+        if shutdown_rejects_actor_wait(state, actor) {
             return false;
         }
         // SAFETY: caller holds a ref, so the slot is live for this retain. The
@@ -1657,10 +1693,7 @@ pub(crate) unsafe fn reactor_await_read(
         unsafe { crate::read_slot::read_slot_retain(read_slot) };
         state.pending.push(Pending::Add {
             fd,
-            // SAFETY: `snapshot` names the awaiting actor, live here.
-            reg: unsafe {
-                Registration::new(conn, snapshot, actor_key, RegMode::Resume { read_slot })
-            },
+            reg: Registration::new(conn, snapshot, actor, RegMode::Resume { read_slot }),
         });
         true
     });
@@ -1725,10 +1758,12 @@ pub(crate) unsafe fn reactor_await_accept(
     // SAFETY: caller guarantees actor_ref is valid for this call; we copy it.
     let snapshot = unsafe { std::ptr::read(actor_ref) };
     let actor_local = actor_ref_local_ptr(&snapshot).cast::<HewActor>();
-    let actor_key = actor_local as usize;
+    // The registrant identity every later phase names. SAFETY: the caller
+    // guarantees the actor ref is valid (and its actor live) for this call.
+    let actor = unsafe { ActorIncarnation::of(actor_local) };
 
     let queued = REACTOR_STATE.access(|state| {
-        if shutdown_rejects_actor_wait(state, actor_key) {
+        if shutdown_rejects_actor_wait(state, actor) {
             return false;
         }
         // SAFETY: caller holds a ref, so the slot is live for this retain.
@@ -1737,10 +1772,7 @@ pub(crate) unsafe fn reactor_await_accept(
             fd,
             // The accept registration's `conn` field carries the LISTENER
             // handle the fd belongs to.
-            // SAFETY: `snapshot` names the awaiting actor, live here.
-            reg: unsafe {
-                Registration::new(listener, snapshot, actor_key, RegMode::Accept { read_slot })
-            },
+            reg: Registration::new(listener, snapshot, actor, RegMode::Accept { read_slot }),
         });
         true
     });
@@ -1774,34 +1806,40 @@ pub(crate) fn reactor_detach_conn(conn: c_int) {
 ///    registry lookup already fails. A scrubbed `Pending::Add` was never given
 ///    to the poller, so it needs no `EPOLL_CTL_DEL`.
 /// 2. **Scrub-then-wait loop** to quiescence. Each iteration waits out any
-///    in-flight delivery/promotion guard for THIS actor (`DELIVERING_ACTOR` /
-///    `PROMOTING_ACTOR == actor_key`), then **re-scrubs** the registry + pending
-///    (a promotion that had already left `pending` may have inserted a
-///    registration after the previous scrub), and re-checks quiescence. It
-///    repeats until a re-scrub finds the key absent from BOTH `registry` and
-///    `pending` with neither guard set. The scrub is ordered BEFORE the wait so
+///    in-flight delivery/promotion guard for THIS incarnation
+///    (`DELIVERING_ACTOR` / `PROMOTING_ACTOR`), then **re-scrubs** both the
+///    registry and `pending` (a promotion that had already left `pending` may
+///    have inserted a registration after the previous scrub), and re-checks
+///    quiescence. It
+///    repeats until a re-scrub finds the incarnation absent from BOTH `registry`
+///    and `pending` with neither guard set. The scrub is ordered BEFORE the wait so
 ///    that any delivery the reactor begins afterwards re-validates under the lock
 ///    in `handle_ready_fd`, sees the registration gone, and aborts — and the
 ///    wait drains only a delivery the reactor had already published the guard for
 ///    before the scrub. Once this returns, no `hew_actor_try_send` to the actor
 ///    is or can become in flight, so the caller may free the actor box.
-pub(crate) fn reactor_detach_actor(actor_key: usize) {
+pub(crate) fn reactor_detach_actor(target: ActorIncarnation) {
+    // An actor being torn down always has an identity; a caller that lost it
+    // would scrub nothing and wait for nothing, which is exactly the silent
+    // no-op this handshake exists to prevent.
+    assert!(
+        !target.is_none(),
+        "reactor teardown must name the incarnation being freed"
+    );
+
     // Fast path: nothing registered or pending, and no in-flight delivery or
     // promotion for this actor — avoid taking the lock / spinning.
     let has_state = REACTOR_STATE.access(|state| {
         !state.registry.is_empty() || !state.conn_to_fd.is_empty() || !state.pending.is_empty()
     });
-    if !has_state
-        && DELIVERING_ACTOR.load(Ordering::SeqCst) != actor_key
-        && PROMOTING_ACTOR.load(Ordering::SeqCst) != actor_key
-    {
+    if !has_state && !DELIVERING_ACTOR.is(target) && !PROMOTING_ACTOR.is(target) {
         return;
     }
 
     // Phase 1: synchronously evict this actor's registrations (registry) AND its
     // still-queued attach requests (pending), then queue the poller-side removal
     // for the fds that were already registered.
-    let evicted = evict_actor_state(actor_key);
+    let evicted = evict_actor_state(target);
     #[cfg(test)]
     fire_detach_post_evict_hook();
     queue_unregister_fds(&evicted.registered_fds);
@@ -1842,16 +1880,14 @@ pub(crate) fn reactor_detach_actor(actor_key: usize) {
     // decreases to zero, so the loop converges.
     loop {
         // (A) Wait out any in-flight delivery to, or promotion of, this actor.
-        while DELIVERING_ACTOR.load(Ordering::SeqCst) == actor_key
-            || PROMOTING_ACTOR.load(Ordering::SeqCst) == actor_key
-        {
+        while DELIVERING_ACTOR.is(target) || PROMOTING_ACTOR.is(target) {
             std::hint::spin_loop();
         }
 
         // (B) Re-scrub: a promotion may have inserted a registration after the
         // previous scrub (it had already left `pending`, so that scrub could not
         // catch it). Evict any such entry and queue its poller-side removal.
-        let late_evicted = evict_actor_state(actor_key);
+        let late_evicted = evict_actor_state(target);
         queue_unregister_fds(&late_evicted.registered_fds);
         drop(late_evicted.registrations);
 
@@ -1861,17 +1897,14 @@ pub(crate) fn reactor_detach_actor(actor_key: usize) {
         // the scrub and this check, loop again — the next scrub-then-wait drains
         // it. This re-establishes the Dekker ordering the single-wait code broke.
         let quiescent = REACTOR_STATE.access(|state| {
-            let in_registry = state
-                .registry
-                .values()
-                .any(|reg| reg.actor_key == actor_key);
+            let in_registry = state.registry.values().any(|reg| reg.actor == target);
             let in_pending = state.pending.iter().any(|req| match req {
-                Pending::Add { reg, .. } => reg.actor_key == actor_key,
+                Pending::Add { reg, .. } => reg.actor == target,
                 _ => false,
             });
             !in_registry && !in_pending
-        }) && DELIVERING_ACTOR.load(Ordering::SeqCst) != actor_key
-            && PROMOTING_ACTOR.load(Ordering::SeqCst) != actor_key;
+        }) && !DELIVERING_ACTOR.is(target)
+            && !PROMOTING_ACTOR.is(target);
 
         if quiescent {
             return;
@@ -1930,18 +1963,18 @@ struct EvictedActorState {
     registrations: Vec<Registration>,
 }
 
-/// Remove every registry + pending entry owned by `actor_key` under the
+/// Remove every registry + pending entry owned by `target` under the
 /// [`ReactorState`] lock. The returned registrations deliberately stay alive
 /// until the caller queues every poller unregister; only then may their drops
 /// close active-mode sockets and expose those fd numbers for reuse. Scrubbed
 /// `Pending::Add` entries were never handed to the poller, so only registry fds
 /// are returned in `registered_fds`.
-fn evict_actor_state(actor_key: usize) -> EvictedActorState {
+fn evict_actor_state(target: ActorIncarnation) -> EvictedActorState {
     REACTOR_STATE.access(|state| {
         let owned: Vec<c_int> = state
             .registry
             .iter()
-            .filter(|(_, reg)| reg.actor_key == actor_key)
+            .filter(|(_, reg)| reg.actor == target)
             .map(|(fd, _)| *fd)
             .collect();
         let mut registrations = Vec::with_capacity(owned.len());
@@ -1962,7 +1995,7 @@ fn evict_actor_state(actor_key: usize) -> EvictedActorState {
         state.pending.reserve(pending.len());
         for request in pending {
             match request {
-                Pending::Add { reg, .. } if reg.actor_key == actor_key => {
+                Pending::Add { reg, .. } if reg.actor == target => {
                     registrations.push(reg);
                 }
                 other => state.pending.push(other),
@@ -2006,7 +2039,7 @@ pub(crate) fn reactor_shutdown() {
     REACTOR_STOP.store(false, Ordering::SeqCst);
     // The reactor thread has been joined, so no promotion can be in flight;
     // clear the guard in case it was left set by an aborted drain.
-    PROMOTING_ACTOR.store(0, Ordering::SeqCst);
+    PROMOTING_ACTOR.clear();
     REACTOR_STATE.access(|state| {
         state.registry.clear();
         state.conn_to_fd.clear();
@@ -2040,24 +2073,21 @@ pub(crate) fn inject_registration_for_test(
     fd: c_int,
     conn: c_int,
     actor_ref: HewActorRef,
-    actor_key: usize,
+    actor: ActorIncarnation,
 ) {
     REACTOR_STATE.access(|state| {
         state.conn_to_fd.insert(conn, fd);
         state.registry.insert(
             fd,
-            // SAFETY: the caller passes a live (or remote) actor ref.
-            unsafe {
-                Registration::new(
-                    conn,
-                    actor_ref,
-                    actor_key,
-                    RegMode::AutoSend {
-                        on_data_type: 1,
-                        on_close_type: 2,
-                    },
-                )
-            },
+            Registration::new(
+                conn,
+                actor_ref,
+                actor,
+                RegMode::AutoSend {
+                    on_data_type: 1,
+                    on_close_type: 2,
+                },
+            ),
         );
     });
 }
@@ -2072,7 +2102,7 @@ pub(crate) fn inject_resume_registration_for_test(
     fd: c_int,
     conn: c_int,
     actor_ref: HewActorRef,
-    actor_key: usize,
+    actor: ActorIncarnation,
     read_slot: *mut crate::read_slot::HewReadSlot,
 ) {
     REACTOR_STATE.access(|state| {
@@ -2080,7 +2110,7 @@ pub(crate) fn inject_resume_registration_for_test(
         state.registry.insert(
             fd,
             // SAFETY: the caller passes a live (or remote) actor ref.
-            unsafe { Registration::new(conn, actor_ref, actor_key, RegMode::Resume { read_slot }) },
+            Registration::new(conn, actor_ref, actor, RegMode::Resume { read_slot }),
         );
     });
 }
@@ -2095,7 +2125,7 @@ pub(crate) fn inject_accept_registration_for_test(
     fd: c_int,
     conn: c_int,
     actor_ref: HewActorRef,
-    actor_key: usize,
+    actor: ActorIncarnation,
     read_slot: *mut crate::read_slot::HewReadSlot,
 ) {
     REACTOR_STATE.access(|state| {
@@ -2103,7 +2133,7 @@ pub(crate) fn inject_accept_registration_for_test(
         state.registry.insert(
             fd,
             // SAFETY: the caller passes a live (or remote) actor ref.
-            unsafe { Registration::new(conn, actor_ref, actor_key, RegMode::Accept { read_slot }) },
+            Registration::new(conn, actor_ref, actor, RegMode::Accept { read_slot }),
         );
     });
 }
@@ -2181,28 +2211,34 @@ pub(crate) fn deliver_close_once_for_test(
     deliver_close_once(poller, fd, actor_local, on_close_type, already_closed);
 }
 
-/// Publish the in-flight-delivery guard for a given actor key (test-only),
+/// Publish the in-flight-delivery guard for a given incarnation (test-only),
 /// simulating the window during which the reactor thread is mid-`hew_actor_try_send`
 /// inside `handle_ready_fd`. Lets the Dekker Phase-2 spin-wait in
 /// `reactor_detach_actor` be exercised deterministically without pausing a real
-/// send. Pass `0` to clear (delivery finished).
+/// send. Pass `None` to clear (delivery finished).
 #[cfg(test)]
-pub(crate) fn set_delivering_actor_for_test(actor_key: usize) {
-    DELIVERING_ACTOR.store(actor_key, Ordering::SeqCst);
+pub(crate) fn set_delivering_actor_for_test(actor: Option<ActorIncarnation>) {
+    match actor {
+        Some(actor) => DELIVERING_ACTOR.publish(actor),
+        None => DELIVERING_ACTOR.clear(),
+    }
 }
 
-/// Publish the promotion guard for a given actor key (test-only), simulating
+/// Publish the promotion guard for a given incarnation (test-only), simulating
 /// the window during which the reactor thread is mid-`apply_add` for a queued
 /// attach. Lets the Phase-2 spin-wait + registry re-scrub in
-/// `reactor_detach_actor` be exercised deterministically. Pass `0` to clear.
+/// `reactor_detach_actor` be exercised deterministically. Pass `None` to clear.
 #[cfg(test)]
-pub(crate) fn set_promoting_actor_for_test(actor_key: usize) {
-    PROMOTING_ACTOR.store(actor_key, Ordering::SeqCst);
+pub(crate) fn set_promoting_actor_for_test(actor: Option<ActorIncarnation>) {
+    match actor {
+        Some(actor) => PROMOTING_ACTOR.publish(actor),
+        None => PROMOTING_ACTOR.clear(),
+    }
 }
 
 /// Enqueue a `Pending::Add` for a given fd/conn/actor (test-only), exercising
 /// the real attach → pending → promote path without a live socket. The actor
-/// ref is a by-value snapshot; `actor_key` is the stable identity used by
+/// ref is a by-value snapshot; `actor` is the identity used by
 /// `reactor_detach_actor`'s pending scrub.
 #[cfg(test)]
 #[cfg_attr(
@@ -2216,23 +2252,20 @@ pub(crate) fn enqueue_pending_add_for_test(
     fd: c_int,
     conn: c_int,
     actor_ref: HewActorRef,
-    actor_key: usize,
+    actor: ActorIncarnation,
 ) {
     REACTOR_STATE.access(|state| {
         state.pending.push(Pending::Add {
             fd,
-            // SAFETY: the caller passes a live (or remote) actor ref.
-            reg: unsafe {
-                Registration::new(
-                    conn,
-                    actor_ref,
-                    actor_key,
-                    RegMode::AutoSend {
-                        on_data_type: 1,
-                        on_close_type: 2,
-                    },
-                )
-            },
+            reg: Registration::new(
+                conn,
+                actor_ref,
+                actor,
+                RegMode::AutoSend {
+                    on_data_type: 1,
+                    on_close_type: 2,
+                },
+            ),
         });
     });
 }
@@ -2299,6 +2332,20 @@ mod tests {
     use std::ffi::CStr;
     use std::time::{Duration, Instant};
 
+    /// A fabricated registrant identity for the bookkeeping tests — the ones
+    /// that exercise the scrub, the Dekker guards, and the drain sampling with
+    /// no real actor behind the registration (`dead_actor_ref` supplies a ref
+    /// the liveness gate reports dead).
+    ///
+    /// Both halves take the same tag so distinct tags stay distinct
+    /// incarnations, and the tags are large enough not to collide with the
+    /// small serials a real spawn or a `TrackedTestActor` allocates in the same
+    /// process. Tests that DO own a real actor use its own
+    /// `TrackedTestActor::incarnation` instead.
+    const fn test_incarnation(tag: u64) -> ActorIncarnation {
+        ActorIncarnation::from_parts(tag, tag)
+    }
+
     fn reset_reactor() {
         reactor_shutdown();
         REACTOR_STATE.access(|state| {
@@ -2308,8 +2355,8 @@ mod tests {
         });
         // Clear the Dekker in-flight + promotion guards so a prior test cannot
         // leave either set.
-        set_delivering_actor_for_test(0);
-        set_promoting_actor_for_test(0);
+        set_delivering_actor_for_test(None);
+        set_promoting_actor_for_test(None);
         set_detach_post_evict_hook(None);
         // Re-open listener admission in case a prior test closed it.
         reset_listener_admission();
@@ -2445,7 +2492,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_reactor();
 
-        reactor_detach_actor(0xdead_beef);
+        reactor_detach_actor(test_incarnation(0xdead_beef));
         assert_eq!(
             pending_count_for_test(),
             0,
@@ -2455,7 +2502,7 @@ mod tests {
 
     #[test]
     fn shutdown_drain_idle_tracks_registry_pending_and_handoff_windows() {
-        const KEY: usize = 0xD2A1_0001;
+        const KEY: ActorIncarnation = test_incarnation(0xD2A1_0001);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -2482,18 +2529,18 @@ mod tests {
         );
         reset_reactor();
 
-        set_promoting_actor_for_test(KEY);
+        set_promoting_actor_for_test(Some(KEY));
         assert!(
             !drain_is_idle(),
             "an in-flight promotion must keep shutdown draining"
         );
-        set_promoting_actor_for_test(0);
-        set_delivering_actor_for_test(KEY);
+        set_promoting_actor_for_test(None);
+        set_delivering_actor_for_test(Some(KEY));
         assert!(
             !drain_is_idle(),
             "an in-flight readiness delivery must keep shutdown draining"
         );
-        set_delivering_actor_for_test(0);
+        set_delivering_actor_for_test(None);
         assert!(drain_is_idle());
 
         // Admission exemption: a parked listener `await accept()` is waiting
@@ -2593,7 +2640,7 @@ mod tests {
         // fixture below macOS's default 256-fd soft limit while retaining
         // enough registrations to exercise bulk teardown.
         const CONNECTIONS: usize = 32;
-        const ACTOR_KEY: usize = 0xAC71_0EED;
+        const ACTOR_KEY: ActorIncarnation = test_incarnation(0xAC71_0EED);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -2653,8 +2700,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn detach_actor_queues_unregister_before_recycled_fd_add() {
-        const OLD_ACTOR: usize = 0x0FD0_01D0;
-        const NEW_ACTOR: usize = 0x0FD0_02D0;
+        const OLD_ACTOR: ActorIncarnation = test_incarnation(0x0FD0_01D0);
+        const NEW_ACTOR: ActorIncarnation = test_incarnation(0x0FD0_02D0);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -2766,7 +2813,7 @@ mod tests {
         assert_eq!(rc, 0);
 
         // Register a dead actor against this fd, then drive a readiness event.
-        inject_registration_for_test(rfd, 100, dead_actor_ref(), 0xabc);
+        inject_registration_for_test(rfd, 100, dead_actor_ref(), test_incarnation(0xabc));
         assert_eq!(registration_count_for_test(), 1);
 
         // The actor is dead → the event must be dropped and the fd removed.
@@ -2814,8 +2861,8 @@ mod tests {
         }
 
         // Two fds owned by the same actor key, one by a different actor.
-        inject_registration_for_test(rfd1, 201, dead_actor_ref(), 0xAA);
-        inject_registration_for_test(rfd2, 202, dead_actor_ref(), 0xAA);
+        inject_registration_for_test(rfd1, 201, dead_actor_ref(), test_incarnation(0xAA));
+        inject_registration_for_test(rfd2, 202, dead_actor_ref(), test_incarnation(0xAA));
         let (rfd3, wfd3) = make_pipe();
         // SAFETY: poller valid; rfd3 live.
         unsafe {
@@ -2824,13 +2871,13 @@ mod tests {
                 0
             );
         }
-        inject_registration_for_test(rfd3, 203, dead_actor_ref(), 0xBB);
+        inject_registration_for_test(rfd3, 203, dead_actor_ref(), test_incarnation(0xBB));
         assert_eq!(registration_count_for_test(), 3);
 
         // The synchronous actor-teardown detach removes actor 0xAA's
         // registrations immediately (under the lock) and queues the poller
         // EPOLL_CTL_DEL for the reactor thread.
-        reactor_detach_actor(0xAA);
+        reactor_detach_actor(test_incarnation(0xAA));
         assert_eq!(
             registration_count_for_test(),
             1,
@@ -2872,7 +2919,7 @@ mod tests {
                   test body sets up and tears down; the lifecycle is described inline"
     )]
     fn resume_registration_scrubbed_by_detach_releases_slot_ref() {
-        const KEY: usize = 0x00DE_AD01;
+        const KEY: ActorIncarnation = test_incarnation(0x00DE_AD01);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -2926,7 +2973,7 @@ mod tests {
     )]
     fn resume_readiness_for_dead_actor_drops_event_no_deposit() {
         use std::io::Write;
-        const KEY: usize = 0x00DA_7A01;
+        const KEY: ActorIncarnation = test_incarnation(0x00DA_7A01);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -2995,7 +3042,7 @@ mod tests {
     )]
     fn resume_cancelled_slot_drops_deposit_no_wake() {
         use std::io::Write;
-        const KEY: usize = 0x00CA_4CE1;
+        const KEY: ActorIncarnation = test_incarnation(0x00CA_4CE1);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -3248,7 +3295,8 @@ mod tests {
         // A real LOCAL actor + a resume-mode registration referencing it. The
         // slot carries the reactor ref the Registration's Drop will release.
         let actor = spawn_full_reject_actor();
-        let actor_key = actor as usize;
+        // SAFETY: `actor` is live here.
+        let actor_key = unsafe { ActorIncarnation::of(actor) };
         let actor_ref = unsafe { crate::transport::hew_actor_ref_local(actor) };
         let slot = crate::read_slot::hew_read_slot_new();
         // SAFETY: creator ref held → slot live for this retain.
@@ -3328,7 +3376,6 @@ mod tests {
     )]
     fn inflight_slot_ref_survives_scrub_during_deposit() {
         use std::io::Write;
-        const KEY: usize = 0x00F1_1761;
 
         // `spawn_full_reject_actor` tracks a real actor in the runtime-owned
         // live-actor registry; install a runtime so the spawn/track resolves.
@@ -3364,7 +3411,9 @@ mod tests {
             unsafe { crate::read_slot::read_slot_refs_for_test(slot) },
             2
         );
-        inject_resume_registration_for_test(fd, conn, actor_ref, KEY, slot);
+        // SAFETY: `actor` is a live, test-owned local actor.
+        let registrant = unsafe { ActorIncarnation::of(actor) };
+        inject_resume_registration_for_test(fd, conn, actor_ref, registrant, slot);
 
         // Make the fd readable so the deposit path runs.
         client.write_all(b"deposit-race").expect("client write");
@@ -3457,7 +3506,6 @@ mod tests {
     )]
     fn shutdown_sweep_cancel_wins_inflight_deposit_exactly_once() {
         use std::io::Write;
-        const KEY: usize = 0x00C4_11ED;
 
         let _rt = crate::runtime_test_guard();
         let _guard = REACTOR_TEST_MUTEX
@@ -3479,6 +3527,8 @@ mod tests {
 
         let actor = spawn_full_reject_actor();
         let actor_ref = unsafe { crate::transport::hew_actor_ref_local(actor) };
+        // SAFETY: `actor` is a live, test-owned local actor.
+        let registrant = unsafe { ActorIncarnation::of(actor) };
         let slot = crate::read_slot::hew_read_slot_new();
         // SAFETY: fresh slot with a live creator ref; bind a per-instance
         // final-free probe so the "reclaimed exactly once" oracle counts only
@@ -3502,7 +3552,7 @@ mod tests {
             );
         };
         unsafe { crate::read_slot::read_slot_retain(slot) }; // registration ref
-        inject_resume_registration_for_test(fd, conn, actor_ref, KEY, slot);
+        inject_resume_registration_for_test(fd, conn, actor_ref, registrant, slot);
 
         client.write_all(b"shutdown-race").expect("client write");
         client.flush().ok();
@@ -3587,7 +3637,7 @@ mod tests {
                   reference and the test releases every creator reference"
     )]
     fn shutdown_sweep_scrubs_pending_wait_before_promotion() {
-        const KEY: usize = 0x00C4_11EE;
+        const KEY: ActorIncarnation = test_incarnation(0x00C4_11EE);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -3607,15 +3657,12 @@ mod tests {
         REACTOR_STATE.access(|state| {
             state.pending.push(Pending::Add {
                 fd: 73,
-                // SAFETY: a remote ref carries no local actor pointer.
-                reg: unsafe {
-                    Registration::new(
-                        74,
-                        dead_actor_ref(),
-                        KEY,
-                        RegMode::Resume { read_slot: slot },
-                    )
-                },
+                reg: Registration::new(
+                    74,
+                    dead_actor_ref(),
+                    KEY,
+                    RegMode::Resume { read_slot: slot },
+                ),
             });
         });
 
@@ -3653,7 +3700,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn detach_actor_scrubs_pending_add_before_promotion() {
-        const KEY: usize = 0x00A7_7AC4;
+        const KEY: ActorIncarnation = test_incarnation(0x00A7_7AC4);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -3702,8 +3749,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn detach_actor_pending_scrub_spares_other_actors() {
-        const FREED: usize = 0x00DE_AD01;
-        const LIVE: usize = 0x0011_FE01;
+        const FREED: ActorIncarnation = test_incarnation(0x00DE_AD01);
+        const LIVE: ActorIncarnation = test_incarnation(0x0011_FE01);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -3741,7 +3788,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn detach_actor_waits_out_promotion_then_rescrubs_registry() {
-        const KEY: usize = 0x0C0F_FEE5;
+        const KEY: ActorIncarnation = test_incarnation(0x0C0F_FEE5);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -3753,7 +3800,7 @@ mod tests {
         // Model the reactor mid-promotion: guard published, add already removed
         // from `pending` (so phase-1's scrub misses it). The registration is not
         // yet in the registry.
-        set_promoting_actor_for_test(KEY);
+        set_promoting_actor_for_test(Some(KEY));
         assert_eq!(pending_count_for_test(), 0, "add already left pending");
         assert_eq!(registration_count_for_test(), 0, "not yet inserted");
 
@@ -3779,7 +3826,7 @@ mod tests {
         // The reactor "finishes" the promotion: insert the registration, then
         // clear the guard — exactly the order `apply_add` uses.
         inject_registration_for_test(rfd, 501, dead_actor_ref(), KEY);
-        set_promoting_actor_for_test(0);
+        set_promoting_actor_for_test(None);
 
         // Detach must now return AND have re-scrubbed the just-promoted entry.
         let release_deadline = Instant::now() + Duration::from_secs(1);
@@ -3827,7 +3874,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn detach_actor_waits_out_delivery_begun_after_promotion_spinwait() {
-        const KEY: usize = 0x00DE_117B;
+        const KEY: ActorIncarnation = test_incarnation(0x00DE_117B);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -3839,7 +3886,7 @@ mod tests {
         // Pin the detach in its phase-2 spin-wait via the promotion guard: model
         // the reactor mid-promotion, add already popped from `pending` (so
         // phase-1's pending scrub finds nothing) and not yet in the registry.
-        set_promoting_actor_for_test(KEY);
+        set_promoting_actor_for_test(Some(KEY));
         assert_eq!(pending_count_for_test(), 0, "add already left pending");
         assert_eq!(registration_count_for_test(), 0, "not yet inserted");
 
@@ -3869,23 +3916,20 @@ mod tests {
         with_reactor_state_locked_for_test(|state| {
             // Spin-wait observes PROMOTING == 0 (and DELIVERING == 0) and exits;
             // the detach then reaches the re-scrub and blocks on this held lock.
-            set_promoting_actor_for_test(0);
+            set_promoting_actor_for_test(None);
             // The reactor begins delivery for the freshly-promoted fd.
-            set_delivering_actor_for_test(KEY);
+            set_delivering_actor_for_test(Some(KEY));
             state.registry.insert(
                 rfd,
-                // SAFETY: a remote ref carries no local actor pointer.
-                unsafe {
-                    Registration::new(
-                        601,
-                        dead_actor_ref(),
-                        KEY,
-                        RegMode::AutoSend {
-                            on_data_type: 1,
-                            on_close_type: 2,
-                        },
-                    )
-                },
+                Registration::new(
+                    601,
+                    dead_actor_ref(),
+                    KEY,
+                    RegMode::AutoSend {
+                        on_data_type: 1,
+                        on_close_type: 2,
+                    },
+                ),
             );
             // While we still hold the lock, the re-scrub cannot run and the
             // detach cannot return.
@@ -3912,7 +3956,7 @@ mod tests {
 
         // The modelled delivery completes: clear the guard. Detach must now drain
         // (scrub finds nothing, no guard set) and return.
-        set_delivering_actor_for_test(0);
+        set_delivering_actor_for_test(None);
         let release_deadline = Instant::now() + Duration::from_secs(1);
         while !detach_returned.load(Ordering::SeqCst) {
             assert!(
@@ -3956,7 +4000,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn detach_actor_blocks_while_delivery_in_flight() {
-        const KEY: usize = 0xD1F_F00D;
+        const KEY: ActorIncarnation = test_incarnation(0xD1F_F00D);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -3970,7 +4014,7 @@ mod tests {
         inject_registration_for_test(rfd, 401, dead_actor_ref(), KEY);
 
         // Publish the in-flight guard: the reactor is "mid-delivery" to KEY.
-        set_delivering_actor_for_test(KEY);
+        set_delivering_actor_for_test(Some(KEY));
 
         // Spawn the synchronous detach; it must spin-wait in Phase 2.
         let detach_returned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3994,7 +4038,7 @@ mod tests {
 
         // Clear the guard: the in-flight delivery has finished. Detach must now
         // make progress and return promptly.
-        set_delivering_actor_for_test(0);
+        set_delivering_actor_for_test(None);
         let release_deadline = Instant::now() + Duration::from_secs(1);
         while !detach_returned.load(Ordering::SeqCst) {
             assert!(
@@ -4026,7 +4070,7 @@ mod tests {
     /// over many iterations so any residual interleaving surfaces.
     #[test]
     fn detach_then_free_never_races_in_flight_delivery() {
-        const KEY: usize = 0xBADC_0FFEE;
+        const KEY: ActorIncarnation = test_incarnation(0xBADC_0FFEE);
 
         let _guard = REACTOR_TEST_MUTEX
             .lock()
@@ -4055,7 +4099,7 @@ mod tests {
             // window → clear guard. Reading the sentinel models the in-flight
             // `hew_actor_try_send` writing into the mailbox.
             let reactor = std::thread::spawn(move || {
-                set_delivering_actor_for_test(KEY);
+                set_delivering_actor_for_test(Some(KEY));
                 in_window_r.store(true, Ordering::SeqCst);
                 let read_until = Instant::now() + Duration::from_millis(5);
                 let p = sentinel_addr as *const u64;
@@ -4071,7 +4115,7 @@ mod tests {
                     std::hint::spin_loop();
                 }
                 // Delivery complete: release the in-flight guard.
-                set_delivering_actor_for_test(0);
+                set_delivering_actor_for_test(None);
             });
 
             let in_window_t = std::sync::Arc::clone(&in_window);
@@ -4426,7 +4470,6 @@ mod tests {
     fn run_reactor_resume_incarnation(reincarnate: bool) {
         use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
         use std::io::Write;
-        const KEY: usize = 0x0300_6900;
 
         let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
         let _guard = REACTOR_TEST_MUTEX
@@ -4452,7 +4495,7 @@ mod tests {
             let slot = crate::read_slot::hew_read_slot_new();
             // The registration-owned slot ref (`reactor_await_read`'s retain).
             crate::read_slot::read_slot_retain(slot);
-            inject_resume_registration_for_test(fd, conn, actor_ref, KEY, slot);
+            inject_resume_registration_for_test(fd, conn, actor_ref, victim.incarnation(), slot);
 
             client.write_all(b"readiness").expect("client write");
             client.flush().ok();
@@ -4519,7 +4562,6 @@ mod tests {
     #[cfg(unix)]
     fn run_reactor_accept_incarnation(reincarnate: bool) {
         use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
-        const KEY: usize = 0x0300_6902;
 
         let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
         let _guard = REACTOR_TEST_MUTEX
@@ -4544,7 +4586,13 @@ mod tests {
             let slot = crate::read_slot::hew_read_slot_new();
             // The registration-owned slot ref (`reactor_await_accept`'s retain).
             crate::read_slot::read_slot_retain(slot);
-            inject_accept_registration_for_test(fd, listener, actor_ref, KEY, slot);
+            inject_accept_registration_for_test(
+                fd,
+                listener,
+                actor_ref,
+                victim.incarnation(),
+                slot,
+            );
 
             // The pending connection is queued in the kernel before the accept
             // runs, for the same reason the read arm waits on real readiness: a
@@ -4621,7 +4669,6 @@ mod tests {
 
     fn run_reactor_orphan_close_arm(reincarnate: bool, arm: OrphanArm) {
         use crate::test_actor::{assert_not_woken, assert_woken, TrackedTestActor};
-        const KEY: usize = 0x0300_6901;
 
         let sched = crate::scheduler::NoWorkerSchedulerForTest::install();
         let _guard = REACTOR_TEST_MUTEX
@@ -4641,7 +4688,7 @@ mod tests {
                 OrphanArm::Resume => RegMode::Resume { read_slot: slot },
                 OrphanArm::Accept => RegMode::Accept { read_slot: slot },
             };
-            let reg = Registration::new(/* conn */ -1, actor_ref, KEY, mode);
+            let reg = Registration::new(/* conn */ -1, actor_ref, victim.incarnation(), mode);
 
             if reincarnate {
                 victim.reincarnate_parked();
@@ -4683,5 +4730,94 @@ mod tests {
     #[test]
     fn reactor_accept_orphan_close_wake_resumes_the_registering_incarnation() {
         run_reactor_orphan_close_arm(false, OrphanArm::Accept);
+    }
+
+    /// The teardown half of the same family: `reactor_detach_actor` scrubs by
+    /// INCARNATION, so one incarnation's teardown leaves alone a registration
+    /// another incarnation made at the same address.
+    ///
+    /// Both registrations here carry the SAME `*mut HewActor` — the
+    /// reincarnation inherits the allocation — so an address-keyed scrub cannot
+    /// tell them apart. Under it, freeing either actor evicts BOTH, silently
+    /// cancelling the live actor's parked read and dropping the connection it
+    /// was waiting on. The two directions are each other's control: detaching
+    /// the reincarnation must spare the dead registrant's entry, and detaching
+    /// the dead registrant must then still find and remove it.
+    #[test]
+    fn detach_scrubs_only_the_named_incarnation_at_a_reused_address() {
+        use crate::test_actor::TrackedTestActor;
+        const DEAD_FD: c_int = 0x0031_5201;
+        const REBORN_FD: c_int = 0x0031_5202;
+
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: the actor, its refs, and both slots are test-owned and
+        // released before this returns; no reactor thread is running.
+        unsafe {
+            let actor = TrackedTestActor::install_parked();
+            let address = actor.ptr();
+
+            let dead = actor.incarnation();
+            let dead_slot = crate::read_slot::hew_read_slot_new();
+            // The registration-owned ref, released by `Drop for Registration`.
+            crate::read_slot::read_slot_retain(dead_slot);
+            inject_resume_registration_for_test(
+                DEAD_FD,
+                DEAD_FD,
+                crate::transport::hew_actor_ref_local(address),
+                dead,
+                dead_slot,
+            );
+
+            // The allocation goes back to the next spawn.
+            let reborn = actor.reincarnate_parked();
+            assert_eq!(
+                actor.ptr(),
+                address,
+                "the reincarnation must occupy the dead registrant's address"
+            );
+            let reborn_slot = crate::read_slot::hew_read_slot_new();
+            crate::read_slot::read_slot_retain(reborn_slot);
+            inject_resume_registration_for_test(
+                REBORN_FD,
+                REBORN_FD,
+                crate::transport::hew_actor_ref_local(address),
+                reborn,
+                reborn_slot,
+            );
+            assert_eq!(registration_count_for_test(), 2);
+
+            // Tearing down the reincarnation names only its own registration.
+            reactor_detach_actor(reborn);
+            let survivor = with_reactor_state_locked_for_test(|state| {
+                state
+                    .registry
+                    .iter()
+                    .map(|(fd, reg)| (*fd, reg.actor))
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(
+                survivor,
+                vec![(DEAD_FD, dead)],
+                "detaching the reincarnation must leave the dead registrant's entry alone"
+            );
+
+            // Control: the dead registrant's own teardown still removes it, so
+            // the survival above is identity matching and not a failed scrub.
+            reactor_detach_actor(dead);
+            assert_eq!(
+                registration_count_for_test(),
+                0,
+                "the registrant's own teardown must remove its registration"
+            );
+
+            crate::read_slot::hew_read_slot_free(dead_slot);
+            crate::read_slot::hew_read_slot_free(reborn_slot);
+        }
+        reset_reactor();
     }
 }

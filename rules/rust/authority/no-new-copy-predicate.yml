@@ -11,17 +11,11 @@ note: >-
   `(i64, i64)` came to be Copy under one authority and CowValue under another
   (docs/internal/ir-ladder.md §1.1). If a genuinely new authority is needed, it
   belongs in hew-types beside the class table.
-files:
-  - "hew-hir/src/**"
-  - "hew-mir/src/**"
-  - "hew-codegen-rs/src/**"
-  - "hew-sir/src/**"
-  - "hew-compile/src/**"
-  - "hew-cli/src/**"
-  - "hew-analysis/src/**"
-  - "hew-lsp/src/**"
-  - "hew-wasm/src/**"
+# §1.1 scopes this rule at "outside hew-types", so the rule carries no
+# allow-list of crates: every path the scan reaches is covered and hew-types,
+# which holds the class table itself, is the one exemption.
 ignores:
+  - "hew-types/**"
   - "**/tests/**"
   - "**/test/**"
   - "**/*_test.rs"

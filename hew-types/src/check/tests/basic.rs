@@ -656,7 +656,10 @@ fn record_equality_comparison_typechecks_when_structurally_eligible() {
     );
 }
 
-/// `!=` is admitted for eligible records; ordering remains rejected.
+/// `!=` is admitted for eligible records; ordering with no user `impl Ord`
+/// is a Limitation-channel `E_LIMIT_DERIVED_ORD` (D26 as amended by D340),
+/// not a plain `InvalidOperation` — no structural-ordering codegen thunk
+/// exists for aggregates, so this is a compiler gap, not a program error.
 #[test]
 fn record_inequality_typechecks_and_ordering_is_rejected() {
     let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    let ne = a != b;\n    let lt = a < b;\n    let _ = ne;\n    let _ = lt;\n}";
@@ -670,13 +673,13 @@ fn record_inequality_typechecks_and_ordering_is_rejected() {
         output.errors
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message
-                    .contains("`<` is not supported for record type `Pt`")),
-        "expected refusal for record `<`: {:#?}",
+        output.errors.iter().any(|e| e.kind
+            == (TypeErrorKind::DerivedOrdUnavailable {
+                type_name: "Pt".to_string()
+            })
+            && e.message.contains("E_LIMIT_DERIVED_ORD")
+            && e.kind.channel() == crate::error::DiagChannel::Limitation),
+        "expected E_LIMIT_DERIVED_ORD refusal for record `<`: {:#?}",
         output.errors
     );
 }
@@ -695,17 +698,21 @@ fn enum_equality_not_gated_by_record_comparison_refusal() {
     );
 }
 
+/// Enum ordering with no user `impl Ord` is the same Limitation-channel
+/// `E_LIMIT_DERIVED_ORD` refusal as the record case above, not a plain
+/// `InvalidOperation`.
 #[test]
 fn enum_ordering_reports_checker_diagnostic() {
     let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let _ = a < b;\n}";
     let output = check_source(source);
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`<` is not supported for enum `Colour`")),
-        "expected checker refusal for enum ordering: {:#?}",
+        output.errors.iter().any(|e| e.kind
+            == (TypeErrorKind::DerivedOrdUnavailable {
+                type_name: "Colour".to_string()
+            })
+            && e.message.contains("E_LIMIT_DERIVED_ORD")
+            && e.kind.channel() == crate::error::DiagChannel::Limitation),
+        "expected E_LIMIT_DERIVED_ORD refusal for enum ordering: {:#?}",
         output.errors
     );
 }

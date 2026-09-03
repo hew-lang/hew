@@ -73,9 +73,10 @@ pub use self::types::{
     OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
     PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
     ProducedValueDependency, ProducedValueFact, RcIntrinsicOp, SpanKey, StackHint,
-    TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
-    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind,
+    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
+    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
+    WireLayoutTable, WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -1877,6 +1878,7 @@ impl Checker {
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
+            user_comparison_dispatch: std::mem::take(&mut self.user_comparison_dispatch),
             produced_value_ownership,
             produced_value_dependencies,
             caller_visible_param_projections: std::mem::take(

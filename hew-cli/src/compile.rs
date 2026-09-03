@@ -98,6 +98,11 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
 }
 
 fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_types::TypeError) {
+    // `channel.prefix()` is `""` for every pre-existing User-channel kind
+    // (today's rendering, byte-identical); only a Limitation-channel kind
+    // (currently `DerivedOrdUnavailable`) gains the `compiler limitation:`
+    // lead-in, matching `render_hir_diagnostic`'s equivalent prefix.
+    let message = format!("{}{}", error.kind.channel().prefix(), error.message);
     let (Some(source), Some(filename)) =
         (diagnostic.source.as_deref(), diagnostic.filename.as_deref())
     else {
@@ -105,7 +110,7 @@ fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_
             hew_types::error::Severity::Warning => "warning",
             hew_types::error::Severity::Error => "error",
         };
-        crate::diagnostic::emit_plain_diagnostic_line(&format!("{level}: {}", error.message));
+        crate::diagnostic::emit_plain_diagnostic_line(&format!("{level}: {message}"));
         return;
     };
     let notes = error
@@ -133,7 +138,7 @@ fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_
             source,
             filename,
             &error.span,
-            &error.message,
+            &message,
             &notes,
             &error.suggestions,
         ),
@@ -141,7 +146,7 @@ fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_
             source,
             filename,
             &error.span,
-            &error.message,
+            &message,
             &notes,
             &error.suggestions,
         ),
@@ -149,11 +154,13 @@ fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_
 }
 
 /// Render every frontend diagnostic and return the worst channel among them
-/// (`None` when `diagnostics` is empty). Parse and type errors are always
-/// User; a free-form `Message` diagnostic is always User (see
-/// [`crate::diagnostic_json::message_diagnostic`]); an HIR diagnostic's
-/// channel is `kind.channel()`. Computed once here — callers propagate the
-/// returned channel rather than re-deriving it from the diagnostics list.
+/// (`None` when `diagnostics` is empty). Parse errors are always User; a
+/// free-form `Message` diagnostic is always User (see
+/// [`crate::diagnostic_json::message_diagnostic`]); a type error's channel is
+/// `kind.channel()` (User for every pre-existing kind, Limitation for the
+/// checker's own `DerivedOrdUnavailable`); an HIR diagnostic's channel is
+/// `kind.channel()`. Computed once here — callers propagate the returned
+/// channel rather than re-deriving it from the diagnostics list.
 pub(crate) fn render_frontend_diagnostics(
     diagnostics: &[FrontendDiagnostic],
 ) -> Option<hew_types::error::DiagChannel> {
@@ -162,9 +169,10 @@ pub(crate) fn render_frontend_diagnostics(
         .iter()
         .map(|diagnostic| match &diagnostic.kind {
             FrontendDiagnosticKind::Hir(error) => error.kind.channel(),
-            FrontendDiagnosticKind::Message(_)
-            | FrontendDiagnosticKind::Parse(_)
-            | FrontendDiagnosticKind::Type(_) => DiagChannel::User,
+            FrontendDiagnosticKind::Type(error) => error.kind.channel(),
+            FrontendDiagnosticKind::Message(_) | FrontendDiagnosticKind::Parse(_) => {
+                DiagChannel::User
+            }
         })
         .max();
     if crate::diagnostic_json::json_output_active() {

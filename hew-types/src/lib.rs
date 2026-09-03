@@ -60,9 +60,10 @@ pub use check::{
     OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
     PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
     ProducedValueDependency, ProducedValueFact, RcIntrinsicOp, ResolvedCall, RuntimeAbi, SpanKey,
-    TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput, VariantDef, VariantMatch,
-    VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput, UserComparisonDispatch,
+    VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering,
+    WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable,
+    WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

@@ -210,6 +210,10 @@ pub struct TypeCheckOutput {
     /// Interpolation operands whose rendering selected an explicit `Display`
     /// implementation. The value preserves alias identity for HIR dispatch.
     pub interpolation_display_types: HashMap<SpanKey, Ty>,
+    /// `==`/`!=`/`<`/`<=`/`>`/`>=` binary expressions whose operand type has
+    /// a user-provided `impl` overriding the derived comparison (D340). See
+    /// [`UserComparisonDispatch`].
+    pub user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
     /// Total checker-authored ownership facts for accepted expression results.
     ///
     /// HIR projects this span-keyed table onto stable `SiteId`s. MIR consumes
@@ -1295,6 +1299,7 @@ impl Default for TypeCheckOutput {
         Self {
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
+            user_comparison_dispatch: HashMap::new(),
             produced_value_ownership: HashMap::new(),
             produced_value_dependencies: HashMap::new(),
             caller_visible_param_projections: HashSet::new(),
@@ -1926,6 +1931,23 @@ pub enum MethodCallRewrite {
         /// Exact receiver-in/result-out identity from the declaring trait.
         returns_receiver_identity: bool,
     },
+}
+
+/// A `==`/`!=`/`<`/`<=`/`>`/`>=` binary expression whose operand type has a
+/// user-provided `impl` of the corresponding derived marker trait
+/// (`Eq`, or `Ord`/`PartialOrd`) that must be dispatched to instead of the
+/// compiler's structural default (D26 as amended by D340: "a user impl
+/// overrides the derived implementation"). HIR lowering consults
+/// [`crate::TypeCheckOutput::user_comparison_dispatch`] at `Expr::Binary`
+/// and emits a call to the resolved impl method — `<type>::eq` for `Eq`,
+/// negated for `!=`; `<type>::lt` for `Ord`/`PartialOrd`, permuted/negated
+/// per operator — rather than the structural comparison codegen path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserComparisonDispatch {
+    /// Dispatch `==`/`!=` to `<type_name>::eq`.
+    Eq { type_name: String },
+    /// Dispatch `<`/`<=`/`>`/`>=` to `<type_name>::lt`.
+    Ord { type_name: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2613,6 +2635,9 @@ pub struct Checker {
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
     pub(super) interpolation_display_types: HashMap<SpanKey, Ty>,
+    /// Checker-side accumulator for
+    /// [`TypeCheckOutput::user_comparison_dispatch`].
+    pub(super) user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::produced_value_ownership`].
     pub(super) produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
@@ -3786,6 +3811,7 @@ impl Checker {
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
+            user_comparison_dispatch: HashMap::new(),
             produced_value_ownership: HashMap::new(),
             resolved_direct_call_ownership: HashMap::new(),
             resolved_method_call_ownership: HashMap::new(),

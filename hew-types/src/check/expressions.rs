@@ -371,7 +371,7 @@ impl Checker {
             Expr::QualifiedAssoc(path) => self.synthesize_qualified_assoc(path, span),
 
             // Binary ops
-            Expr::Binary { left, op, right } => self.check_binary_op(left, *op, right),
+            Expr::Binary { left, op, right } => self.check_binary_op(left, *op, right, span),
 
             // Unary ops
             Expr::Unary { op, operand } => self.synthesize_unary_op(*op, operand, span),
@@ -3357,7 +3357,7 @@ impl Checker {
                 },
                 ty,
             ) if ty.is_integer() => {
-                let actual = self.check_binary_op(left, *op, right);
+                let actual = self.check_binary_op(left, *op, right, span);
                 let actual_resolved = self.subst.resolve(&actual);
                 if actual_resolved.is_integer_literal() {
                     self.check_against(&left.0, &left.1, expected);
@@ -4520,6 +4520,7 @@ impl Checker {
         left: &Spanned<Expr>,
         op: BinaryOp,
         right: &Spanned<Expr>,
+        expr_span: &Span,
     ) -> Ty {
         let left_is_coercible = self.is_coercible_numeric(&left.0);
         let right_is_coercible = self.is_coercible_numeric(&right.0);
@@ -4829,6 +4830,7 @@ impl Checker {
                             &right_resolved,
                             &left.1,
                             &right.1,
+                            expr_span,
                         );
                     }
                 }
@@ -5077,6 +5079,7 @@ impl Checker {
         right_resolved: &Ty,
         left_span: &Span,
         right_span: &Span,
+        expr_span: &Span,
     ) {
         enum UnsupportedComparison {
             Record {
@@ -5092,6 +5095,70 @@ impl Checker {
                 reason: Option<EqEligibilityFailure>,
             },
             EnumOrdering(String),
+        }
+        // D340: a user `impl Eq for T { .. }` overrides the derived
+        // structural default and is never walled off by the structural
+        // eligibility gate below — the whole point of a user impl is to
+        // state a rule the structural walk cannot express (a case-
+        // insensitive key, a tolerance-based float compare). Record the
+        // dispatch fact for HIR lowering (`Expr::Binary` consults
+        // `user_comparison_dispatch` before falling back to the structural
+        // comparison thunk) and return before the eligibility scan runs.
+        // Both operands already have the same resolved type here (the
+        // caller's `expect_type` check above only reaches this function on
+        // agreement), so checking `left_resolved` alone is sufficient.
+        if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+            if let Ty::Named {
+                name,
+                builtin: None,
+                ..
+            } = left_resolved
+            {
+                if self.has_user_trait_impl(name, "Eq") {
+                    self.record_user_comparison_dispatch(
+                        expr_span,
+                        UserComparisonDispatch::Eq {
+                            type_name: name.clone(),
+                        },
+                    );
+                    return;
+                }
+            }
+        }
+        // Ordering operators on an aggregate: no structural lexicographic
+        // comparison thunk exists in codegen (only eq/hash thunks do — see
+        // `hew-codegen-rs/src/thunks.rs`), so the derived-Ord half of D26
+        // ("ordered lexicographically by field order when every field is
+        // itself ordered") cannot be made true here without a new codegen
+        // lowering, which is out of this change's reach. A user
+        // `impl Ord`/`impl PartialOrd` is still honoured (D340, same
+        // dispatch mechanism as Eq, no codegen thunk involved — HIR emits a
+        // call to the resolved `lt` method); absent that, every aggregate
+        // ordering comparison reports the Limitation-channel
+        // `E_LIMIT_DERIVED_ORD` instead of a plain `InvalidOperation`,
+        // whether or not its fields are themselves ordered.
+        if matches!(
+            op,
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
+        ) {
+            if let Ty::Named {
+                name,
+                builtin: None,
+                ..
+            } = left_resolved
+            {
+                if self.has_user_trait_impl(name, "Ord")
+                    || self.has_user_trait_impl(name, "PartialOrd")
+                {
+                    self.record_user_comparison_dispatch(
+                        expr_span,
+                        UserComparisonDispatch::Ord {
+                            type_name: name.clone(),
+                        },
+                    );
+                    return;
+                }
+            }
         }
 
         let current_type_params = self.current_type_param_names();
@@ -5188,6 +5255,34 @@ impl Checker {
             start: left_span.start,
             end: right_span.end,
         };
+        if matches!(
+            op,
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
+        ) {
+            // No user impl (the bypass above already returned for that case)
+            // and no structural ordering codegen exists for aggregates
+            // (see the comment on the bypass above) — Limitation, not User:
+            // this is legal Hew the compiler cannot lower yet, not a program
+            // error.
+            let type_name = match &unsupported {
+                UnsupportedComparison::Record { type_name, .. }
+                | UnsupportedComparison::PayloadEnum { type_name, .. }
+                | UnsupportedComparison::Tuple { type_name, .. } => type_name.clone(),
+                UnsupportedComparison::EnumOrdering(name) => name.clone(),
+            };
+            self.report_error(
+                TypeErrorKind::DerivedOrdUnavailable {
+                    type_name: type_name.clone(),
+                },
+                &span,
+                format!(
+                    "E_LIMIT_DERIVED_ORD: `{op}` has no derived ordering for `{type_name}` yet \
+                     — provide `impl Ord for {type_name}` (or `impl PartialOrd`) with a `lt` \
+                     method"
+                ),
+            );
+            return;
+        }
         let (message, suggestion) = match unsupported {
             UnsupportedComparison::Record { type_name, reason } => {
                 if let Some(reason) = reason {
@@ -5248,6 +5343,32 @@ impl Checker {
             message,
             vec![suggestion],
         );
+    }
+
+    /// Whether `type_name` has a registered `impl <trait_name> for
+    /// <type_name>` block (D340: a user impl of a derived marker trait
+    /// overrides the compiler's structural default for that type).
+    ///
+    /// Reads the same `trait_impls_set` table `record_trait_impl` populates
+    /// for every `impl <Trait> for <Type>` block — including an impl of a
+    /// bare marker-trait name with no `trait_defs` entry, which is exactly
+    /// the shape `Eq`/`Ord`/`PartialOrd`/`Hash` take (see [`MarkerTrait`]):
+    /// `check_impl_method_set_against_trait` finds no trait declaration for
+    /// them and returns early without validating a method set, but
+    /// `record_trait_impl`/`record_trait_impl_methods` still run
+    /// unconditionally for any `impl` with a trait bound, so the fact is
+    /// there to read.
+    fn has_user_trait_impl(&self, type_name: &str, trait_name: &str) -> bool {
+        self.trait_impls_set
+            .contains(&(type_name.to_string(), trait_name.to_string()))
+    }
+
+    /// Record that the binary expression at `span` must dispatch to a user
+    /// trait impl rather than the compiler's structural comparison. See
+    /// [`UserComparisonDispatch`].
+    fn record_user_comparison_dispatch(&mut self, span: &Span, dispatch: UserComparisonDispatch) {
+        self.user_comparison_dispatch
+            .insert(SpanKey::in_module(span, self.current_module_idx), dispatch);
     }
 
     /// True when `ty` still names one of `params`.

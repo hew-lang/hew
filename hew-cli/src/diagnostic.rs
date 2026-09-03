@@ -1433,12 +1433,21 @@ pub(crate) fn render_type_diagnostics_with_sources(
                 }
             })
             .collect::<Vec<_>>();
+        // See `crate::compile::render_frontend_type_diagnostic` for the
+        // matching prefix on the primary `hew check`/`compile` path — kept
+        // in lockstep so the two TypeError renderers never disagree about
+        // one diagnostic's channel prefix.
+        let message = format!(
+            "{}{}",
+            diagnostic.kind.channel().prefix(),
+            diagnostic.message
+        );
         match diagnostic.severity {
             hew_types::error::Severity::Warning => render_warning(
                 source,
                 filename,
                 &diagnostic.span,
-                &diagnostic.message,
+                &message,
                 &notes,
                 &diagnostic.suggestions,
             ),
@@ -1446,7 +1455,7 @@ pub(crate) fn render_type_diagnostics_with_sources(
                 source,
                 filename,
                 &diagnostic.span,
-                &diagnostic.message,
+                &message,
                 &notes,
                 &diagnostic.suggestions,
             ),

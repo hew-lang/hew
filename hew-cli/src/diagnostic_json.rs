@@ -329,7 +329,7 @@ pub(crate) fn from_type_error(
     JsonDiagnostic {
         code: code.to_string(),
         severity: severity.to_string(),
-        channel: DiagChannel::User.as_json_str().to_string(),
+        channel: error.kind.channel().as_json_str().to_string(),
         source: "hew-types".to_string(),
         file: filename.to_string(),
         span: JsonSpan::from_range(source, &error.span),

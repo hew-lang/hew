@@ -1373,7 +1373,7 @@ Hew distinguishes three cases of variable shadowing:
   }
   ```
 
-- **Outer-scope shadowing of an actor field** — a **hard error**. Actor fields must have unambiguous bare names; a parameter or local variable that shadows a field is rejected:
+- **Outer-scope shadowing of an actor field** — a **hard error**. Actor fields must have unambiguous bare names; a parameter, local variable, or loop variable that shadows a field is rejected:
 
   ```hew
   actor Example {
@@ -1398,7 +1398,7 @@ Hew distinguishes three cases of variable shadowing:
   }
   ```
 
-**Shadowing exemptions:** Bindings whose name starts with `_` and for-loop induction variables are silently exempt from all shadowing diagnostics.
+**Shadowing exemptions:** Bindings whose name starts with `_` are silently exempt from all shadowing diagnostics, and so are for-loop induction variables — except over an actor field. A field is in scope under its bare name for the whole actor body, and `self.count` is that same binding spelled through the receiver, so a loop variable that takes the field's name is rejected exactly as a parameter or a local is. Every other name a loop variable may shadow stays exempt.
 
 **Trait bounds on generics:**
 

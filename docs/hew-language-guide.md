@@ -235,7 +235,7 @@ fn main() {
 }
 ```
 
-> **Coming from Rust?** Hew does not have `let mut`. Use `var` for any binding you will reassign; use `let` for everything else. Writing `let mut x = 0` is a compile error — the parser rejects `mut` as unexpected.
+> **Coming from Rust?** Hew does not have `let mut`. Use `var` for any binding you will reassign; use `let` for everything else. Writing `let mut x = 0` is one compile error carrying the fix-it that rewrites it to `var x = 0`. `mut` stays reserved because `*mut T` uses it in foreign declarations, but it is never a binding modifier.
 
 Use `var` when the name will be reassigned, when a field or element under it will be assigned, or when you will call a method that mutates the receiver. Collections are values, so `.push()`/`.insert()` are `var self` methods: `var v: Vec<i64> = Vec.new(); v.push(1)` is the working form and a `let` binding refuses the call. Handles are different — `let d = deque.new(); d.push_back(1)` is fine, because `d` names a resource instead of holding a value.
 

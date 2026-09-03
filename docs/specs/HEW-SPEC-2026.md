@@ -501,6 +501,35 @@ to use `type`.
 - **Actor references**: `LocalPid<A>` is sendable.
 - **I/O stream types**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only, `Send`, first-class sequential I/O handles (§6.5).
 
+#### Variant spelling (normative)
+
+One spelling serves both positions and every enum. A variant is written
+`.Variant` when the expected type selects the enum, and `Type.Variant`
+otherwise. This holds in pattern position and in expression position alike,
+for user-declared enums and for the prelude variants `Some`, `None`, `Ok`,
+and `Err` — there is no prelude exception, because a prelude exception is a
+second rule to teach where one does the work.
+
+A **bare** `Variant` — the name with neither a leading dot nor a qualifying
+type — is refused:
+
+| Position | Diagnostic | Channel |
+| --- | --- | --- |
+| pattern (`match` arm, `if let`, `while let`, `let` destructuring) | `E_BARE_VARIANT_PATTERN` | User |
+| expression | `E_BARE_VARIANT_EXPR` | User |
+
+Both carry a fix-it that inserts the dot, and `hew fmt --migrate` applies it
+across a source tree.
+
+> **Edition 2026 enforcement.** The pattern half is enforced at v0.6.0. The
+> expression half is enforced for user-declared enums; the prelude
+> constructors `Some`, `None`, `Ok`, and `Err` still admit their bare
+> expression spelling. That gap is a defect against this rule, not a
+> permitted form (hew-lang/hew#3240).
+
+State names inside a `machine` declaration are not variants at the surface,
+and this rule does not reach them (§3.11.3).
+
 ### 3.2 Mutability
 
 - Bindings are immutable by default: `let`.
@@ -3036,7 +3065,8 @@ machine Name {
 }
 ```
 
-**Grammar (EBNF, from `docs/specs/grammar.ebnf`):**
+**Surface spelling** (an illustration of what `hew-parser` accepts, not a
+normative grammar — see §12):
 
 ```ebnf
 MachineDecl    = "machine" Ident TypeParams? "{"
@@ -3159,6 +3189,15 @@ constructs the target state's zero-field (unit) variant automatically:
 ```hew
 on Toggle: Off => On;   // equivalent to: on Toggle: Off => On { On }
 ```
+
+**State names are not variants (normative).** The name after `=>` in a
+transition head is a state name in the machine's own namespace, resolved
+against the machine's `state` declarations. It is not an enum variant in
+expression position, so the variant-spelling rule of §3.1 does not reach it
+and `on Toggle: Off => On;` is well formed as written. A `;` body is legal in
+every transition form, guarded ones included. A machine's states desugar to
+an enum below the surface, and that desugar — not the source spelling — owns
+their identity.
 
 ### 3.11.4 Guard Conditions (`when`)
 
@@ -3367,12 +3406,15 @@ scope {
 
 1. **Scope containment**: Child tasks cannot outlive their enclosing `scope` block.
 2. **Automatic join**: The block waits for every child task before returning.
-3. **Block value**: A `scope` block is **Unit-typed**. It is a statement, not a value-producer.
+3. **Statement, not expression**: `scope { ... }` is a statement. It is not a
+   `Primary` and may not appear where a value is expected: `let r = scope { .. }`
+   is `E_SCOPE_IS_STATEMENT` (User), not a silent binding of `()`.
    `scope` is the scope bracket; the `fork name = expr` children carry the values.
    `scope` and `fork` are not synonyms — keeping them separate prevents confusing the
    bracket role with the child-start role. Use `await` inside the scope body
    to resolve child values, bind them to `let` or `var` bindings, and return them from the
-   enclosing function directly.
+   enclosing function directly. The value-producing fan-out is `join { ... }`
+   (§4.11.2), which is an expression.
 4. **Nested scopes**: `scope` blocks may be nested; each manages its own children.
 5. **First-failure-cancels-siblings**: If any child returns `Err(E)` or traps, the runtime
    cancels the remaining siblings at the next safepoint. The error surfaces via the `await`
@@ -3602,8 +3644,10 @@ The following points are safepoints where cancellation is checked automatically:
 
 When cancellation fires at a safepoint, the runtime initiates **stack unwinding** with a `Cancelled` payload. All `defer` blocks and `Drop` implementations run during unwinding, ensuring deterministic resource cleanup.
 
-> See HEW-FUTURE.md §1.2 for `#[noncancellable]` — targeted beyond
-> edition 2026 alongside the broader cancellation-token vocabulary.
+> Cancellation is scope-structural and has no opt-out attribute.
+> `#[noncancellable]` is removed (§12.6), and the cancellation-token
+> vocabulary it belonged to is refused rather than deferred
+> (HEW-FUTURE §1.2).
 
 **Cancellation propagation:**
 
@@ -4071,6 +4115,26 @@ cancellation-token vocabulary (HEW-FUTURE.md §1.2) gives a scope block
 a callable cancel handle that `select` can hold as a source.
 
 ### 4.12 Generators
+
+A generator is declared `gen fn`, or written inline as a `gen { ... }` block.
+A `receive gen fn` inside an actor declares a stream producer whose consumer
+pulls across the actor boundary (§4.8).
+
+**The return type of a `gen fn` names the yield type (normative).** In
+`gen fn f() -> Y`, `Y` is the type of each `yield` operand, not the type the
+call produces. Spelling the handle instead — `gen fn f() -> Generator<Y, R>` —
+is `E_GEN_RETURN_SPELLING` (User), with a fix-it that replaces the annotation
+with `Y`. The handle type is what the caller receives; a declaration that
+names it says the body yields handles. A generator yielding `i64` is declared
+`gen fn counter() -> i64`, and its `yield` operands are `i64`.
+
+There is no `async gen fn`. A plain `gen fn` body may `await`, is consumed by
+`for`, and is consumed by `for await` when its producer is an actor, so the
+word marked nothing; `async` is not a keyword (§12) and `async gen fn` is
+`E_NO_ASYNC_GEN` (User) with a fix-it that deletes it. What `await` selects
+is the pull that crosses an actor boundary: `for` over a `Stream` is
+`E_FOR_STREAM_NEEDS_AWAIT` (User, fix-it adds the word) and `for await` over
+a generator or a collection is `E_AWAIT_NOT_STREAM` (User, fix-it drops it).
 
 Generator construction snapshots every captured value into a heap-owned
 environment before the body ramp reaches its first `yield`. Bit-copy values and
@@ -5167,8 +5231,8 @@ void Counter_dispatch(HewExecutionContext* ctx, void* state, i32 msg_type,
 
 #### 9.1.2 Lifecycle Hooks
 
-Actors expose user-defined startup, cleanup, crash-observation, and future
-upgrade logic through **lifecycle hook annotations** on plain `fn`
+Actors expose user-defined startup, cleanup, and crash-observation logic
+through **lifecycle hook annotations** on plain `fn`
 declarations inside the actor body. The hook surface uses a single annotation
 `on` with the hook kind as a positional argument, so additional hooks can be
 added in later editions without growing the annotation vocabulary.
@@ -5180,46 +5244,46 @@ added in later editions without growing the annotation vocabulary.
 | `#[on(start)]`   | `fn name()`                               | Once, after the actor's fields are initialized and before any message is dispatched.            |
 | `#[on(stop)]`    | `fn name()`                               | Once per actor instance, on normal exit, cancellation by an enclosing `fork{}`, or supervisor `Shutdown`. |
 | `#[on(crash)]`   | `fn name(info: CrashInfo) -> CrashAction` | After a child trap is classified and before restart-policy handling.                            |
-| `#[on(upgrade)]` | reserved                                  | Reserved for future hot-upgrade machinery; not a usable hook in this edition.                   |
 
-Unknown hook kinds (e.g. `#[on(restart)]`) are rejected with a diagnostic listing the valid set.
+`#[on(exit)]` and `#[on(down)]` are the two further accepted kinds; they
+deliver link and monitor notifications and their payload types are not
+specified in this section.
+
+Unknown hook kinds (e.g. `#[on(restart)]`, `#[on(upgrade)]`) are rejected with a diagnostic listing the valid set. `upgrade` is not among them: hot code upgrade is refused permanently, so the hook list holds no place for it.
 
 `#[on(crash)]` is a defined hook. The handler ABI is `(CrashInfo) -> CrashAction`;
 the returned `CrashAction` is currently side-effects-only — supervisors honour each
 child's `restart_policy` instead. `CrashAction` as a supervisor control surface is
-reserved (HEW-FUTURE). `#[on(upgrade)]` is reserved for future hot-upgrade machinery
-and is rejected during lowering.
+reserved (HEW-FUTURE).
 
 **Signature rules (normative):**
 
-1. A hook is a plain `fn` declaration inside an actor body carrying exactly one `#[on(...)]` annotation whose kind is `start`, `stop`, `crash`, or the reserved `upgrade`.
+1. A hook is a plain `fn` declaration inside an actor body carrying exactly one `#[on(...)]` annotation whose kind is `start`, `stop`, `crash`, `exit`, or `down`.
 2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
 3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The return value is currently side-effects-only; `CrashAction` as a supervisor control surface is reserved (HEW-FUTURE).
-4. `#[on(upgrade)]` is rejected during lowering; hot-upgrade machinery is reserved (HEW-FUTURE).
-5. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
-6. A hook is **not** generic and has no `where` clause.
-7. Hook functions are not invocable from message handlers; the runtime is the sole caller.
-8. Multiple `#[on(stop)]` hooks are permitted and execute in **lexical order**.
+4. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
+5. A hook is **not** generic and has no `where` clause.
+6. Hook functions are not invocable from message handlers; the runtime is the sole caller.
+7. Multiple `#[on(stop)]` hooks are permitted and execute in **lexical order**.
    `#[on(start)]` and `#[on(crash)]` each appear **at most once** per actor.
 
 **Cancellation and resource ordering (normative):**
 
-9. Cancellation by an enclosing `fork{}` scope triggers `#[on(stop)]` for each cancelled actor before its task ends. This is the common path under structured concurrency, not an exceptional one.
-10. The runtime sequence at terminal transition is:
+8. Cancellation by an enclosing `fork{}` scope triggers `#[on(stop)]` for each cancelled actor before its task ends. This is the common path under structured concurrency, not an exceptional one.
+9. The runtime sequence at terminal transition is:
    - (a) actor body exits or is cancelled;
    - (b) the `#[on(stop)]` hook runs with field access live, if present;
    - (c) `#[linear]` consumed-checks fire (unconsumed linear values surface as diagnostics);
    - (d) `#[resource]` field `close()` methods run in reverse declaration order.
    Hooks therefore run BEFORE `#[resource]` `close()`, so user logic in a hook can still use resources for goodbye flushes.
-11. A panic in `#[on(start)]` aborts actor startup. The supervisor is notified; `#[on(stop)]` does NOT run, because the actor never reached the *started* state.
-12. The default `#[on(stop)]` timeout budget is 5 seconds; future editions MAY introduce `#[on(stop, timeout = <duration>)]` to override per actor.
+10. A panic in `#[on(start)]` aborts actor startup. The supervisor is notified; `#[on(stop)]` does NOT run, because the actor never reached the *started* state.
+11. The default `#[on(stop)]` timeout budget is 5 seconds; future editions MAY introduce `#[on(stop, timeout = <duration>)]` to override per actor.
 
 **Compilation:** `#[on(start)]` bodies are appended to the synthesized `_init`
 function after any `init { ... }` block. `#[on(stop)]` lowers to the actor's
 C-ABI `_terminate` function pointer. `#[on(crash)]` lowers to the crash hook
 slot used by supervisor crash routing; its `CrashAction` result is currently
-side-effects-only. `#[on(upgrade)]` is parsed as a reserved kind and fails
-closed before codegen.
+side-effects-only.
 
 Cleanup logic is expressed as `#[on(stop)]` declarations; no free-standing
 `terminate { }` block exists.
@@ -5319,22 +5383,98 @@ proving gate.
 
 ---
 
-## 12. Syntax and EBNF (edition 2026)
+## 12. Syntax (edition 2026)
 
-The complete formal grammar is maintained in two files:
+**The grammar authority is the parser.** `hew-parser` defines the accepted
+surface of edition 2026; `tree-sitter-hew/grammar.js` is its mirror, carried
+in the `tree-sitter-hew` repository and pinned by version for the downstream
+highlighters. There is no separate normative grammar file: a standalone
+grammar is a second authority that drifts, and the one this specification
+used to carry asserted productions the compiler refuses and omitted
+productions that ship. When this specification and the parser disagree, the
+parser is the source of truth and the specification text is the defect.
 
-- **`docs/specs/grammar.ebnf`** — Authoritative ISO 14977 EBNF grammar (the canonical reference)
-- **`docs/specs/Hew.g4`** — ANTLR4 grammar derived from the EBNF, validated against example programs
-
-Both files cover the Edition 2026 grammar surface: modules, traits,
-closures, pattern matching, control flow, `while let`, labelled loops,
-structured concurrency, actor messaging operators, concurrency expressions,
-generators, FFI, where clauses, f-string expressions, regex literals, match
-operators, duration literals, `machine` declarations, and map literals.
-
-When the grammar files and this specification disagree, the parser implementation (`hew-parser/src/parser.rs`) is the authoritative source of truth.
+Grammar fragments appear throughout this document in `ebnf` blocks. They are
+illustrations of the surface spelling for the construct under discussion,
+written to be read beside the prose; they are not a grammar in their own
+right and are not normative where they and the parser differ.
 
 **Implementation note:** pipe closures lower through `Expr::Lambda`; captured closure environment records are the current substrate direction. Generic `<T>(...) => ...` is not a valid source syntax; type-parameterized lambdas are not supported in this edition (see §3.8.6).
+
+### Keywords
+
+The keyword set is closed. A word in the reserved list below may not be used
+as an identifier; every other word may. `docs/syntax-data.json` is exported
+from the lexer and is the machine-readable form of this table — the
+downstream highlighters generate from it, not from this section.
+
+| Group | Keywords |
+| --- | --- |
+| Control flow | `if`, `else`, `match`, `loop`, `for`, `while`, `break`, `continue`, `return`, `in`, `yield`, `defer` |
+| Declarations | `let`, `var`, `const`, `fn`, `gen`, `pub`, `import`, `package`, `extern`, `where`, `type`, `indirect`, `enum`, `trait`, `impl`, `as` |
+| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `join`, `after`, `from`, `await`, `await_restart` |
+| Wire | `reserved`, `optional`, `deprecated` |
+| Supervision | `child`, `restart`, `strategy`, `permanent`, `transient`, `temporary`, `brutal_kill`, `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one` |
+| Machines | `machine`, `state`, `event`, `on`, `when`, `entry`, `exit` |
+| Literals | `true`, `false` |
+| Other | `dyn`, `unsafe`, `is` |
+| Reserved | `mut` (foreign pointer types, §3.9.3), `budget` |
+
+**Contextual keywords** are words the lexer produces as identifiers and the
+parser recognises only in the position that gives them meaning. Using one as
+an ordinary name is legal everywhere else:
+
+| Word | Position that gives it meaning |
+| --- | --- |
+| `default` | a machine's fallthrough transition arm |
+| `emit` | a machine transition body's emit statement |
+| `pool` | a supervisor body's pool clause |
+| `events`, `emits`, `reenter`, `initial` | machine declaration headers and transition modifiers |
+| `mailbox`, `overflow`, `intensity`, `within`, `shutdown`, `infinity` | actor and supervisor configuration clauses |
+| `self`, `consume` | receiver and transfer positions (§3.6, §3.9) |
+| `clone` | the prefix-clone expression (§3.4.4) |
+| `resource`, `linear`, `opaque`, `wire`, `json`, `yaml` | attribute names (§12.6) |
+| `wired_to` | a supervisor child spec's sibling-handle clause (§5.1) |
+| `export` | the `#[export]` attribute name (§3.9.4, §12.6) |
+
+**Words that are not keywords.** `try`, `catch`, `race`, `cooperate`,
+`foreign`, `super`, and `async` are ordinary identifiers. Each was reserved
+against a surface that either shipped under another spelling or was refused:
+
+- `async` marked nothing. Functions are colourless — every function may
+  suspend (§4.2, §4.3) and `await` marks a mailbox suspension point and
+  nothing else. `async fn` is `E_NO_ASYNC_FN` (User) with a fix-it that
+  deletes the word, and `async gen fn` is `E_NO_ASYNC_GEN` (User) with the
+  same fix-it (§4.12).
+- `try` and `catch` have no construct: fallible operations return `Result`
+  and propagate with `?` (§2.2.1). `catch` never reached the parser at all.
+- `race` is refused permanently. First-completion-wins is `select` over
+  task-await arms, which returns with its substrate (HEW-FUTURE §1.4).
+- `cooperate` names a compiler-inserted safepoint (§4.7, §9.0), not a
+  source-level expression.
+- `foreign` is spelled `extern` (§3.9.1).
+- `super` has no path form; an import names a module by its path from a
+  module root (§3.5.2), never relative to the importing module.
+
+`try`, `catch`, and `foreign` keep an identifier-position hint, so a program
+written against the earlier reservation gets a diagnostic naming the
+replacement rather than a bare parse error.
+
+**`mut` stays reserved** because `*mut T` uses it in foreign declarations
+(§3.9.3). `mut` is not a binding modifier: `let mut x = 0` is a single error
+carrying the `var` fix-it, not a parse cascade. Mutable bindings are `var`
+(§3.2).
+
+> **Edition 2026 enforcement.** The lexer has not yet closed to this table.
+> `try`, `catch`, `race`, `cooperate`, `foreign`, `super`, `async`,
+> `default`, `emit`, and `pool` are still lexed as reserved words, so
+> `docs/syntax-data.json` carries them and `let default = 1` is refused with
+> "`default` is a reserved word and cannot be used as a binding name". That
+> is a defect against this table, not a second reading of it
+> (hew-lang/hew#3262). `this` is absent from the table because the receiver
+> rule deletes it from the language; §3.6 still carries its actor
+> self-reference text and the lexer still reserves it, and the receiver
+> change removes both (hew-lang/hew#3075).
 
 ### 12.1 Built-in Numeric Types
 
@@ -5559,7 +5699,12 @@ loop {
 // use result here
 ```
 
-`break` and `continue` are pure control-flow statements. A `break` may carry an expression (`break expr;`) — the parser accepts this syntax, but the expression is evaluated for side effects only and its value is **discarded**. Loop-as-expression (`let x = loop { break 42; }`) is not supported.
+`break` and `continue` are pure control-flow statements. A `break` carries no
+operand: `break expr;` is `E_BREAK_VALUE` (User), with the hint "assign to a
+`var` before `break`". A loop never produces a value, so an operand on
+`break` has nowhere to go — accepting it and discarding the value taught a
+loop-as-expression model the language does not have. Loop-as-expression
+(`let x = loop { break 42; }`) is not supported and has no reserved spelling.
 
 This is orthogonal to where `break`, `continue`, and `return` may be *written*.
 All three are `!`-typed (`Ty::Never`) and may appear wherever an expression is
@@ -5583,12 +5728,12 @@ LoopStmt       = "loop" Block ;
 WhileStmt      = "while" Expr Block ;
 WhileLetStmt   = "while" "let" Pattern "=" Expr Block ;
 ForStmt        = "for" "await"? Pattern "in" Expr Block ;
-BreakStmt      = "break" ("@" Ident)? Expr? ";" ;
+BreakStmt      = "break" ("@" Ident)? ";" ;
 ContinueStmt   = "continue" ("@" Ident)? ";" ;
 ```
 
-The lexer tokenizes `@outer`-style labels as a dedicated label token; the EBNF
-above shows their surface spelling.
+The lexer tokenizes `@outer`-style labels as a dedicated label token; the
+fragment above shows their surface spelling.
 
 ### 12.5 `if let` and `while let`
 
@@ -5600,14 +5745,14 @@ constructs. They work on any type that supports pattern matching, including
 extracted value:
 
 ```hew
-let opt: Option<string> = Some("hello");
+let opt: Option<string> = .Some("hello");
 
-if let Some(s) = opt {
+if let .Some(s) = opt {
     println(s);      // prints "hello"
 }
 
 // With else:
-if let Some(s) = opt {
+if let .Some(s) = opt {
     println(s);
 } else {
     println("nothing");
@@ -5619,7 +5764,7 @@ if let Some(s) = opt {
 ```hew
 var m: HashMap<string, i64> = {"a": 1, "b": 2};
 
-while let Some(v) = m.get("a") {
+while let .Some(v) = m.get("a") {
     println(f"{v}");
     break;
 }
@@ -5627,12 +5772,63 @@ while let Some(v) = m.get("a") {
 
 Both forms are semantically equivalent to the corresponding `match` form; they are compiled through dedicated IR paths rather than being desugared at the AST level. `if let P = expr { body }` corresponds to `match expr { P => { body }, _ => {} }`, but the lowering is a first-class HIR node, not a transformation.
 
-> **Supported patterns:** Only payload-bearing constructor patterns (e.g. `Some(x)`, `Ok(v)`, `Err(e)`) and literal patterns work in `if let`/`while let`. Unit-variant, record, tuple, and or-patterns fail closed at HIR time.
+> **Supported patterns:** Only payload-bearing constructor patterns (e.g. `.Some(x)`, `.Ok(v)`, `.Err(e)`) and literal patterns work in `if let`/`while let`. Unit-variant, record, tuple, and or-patterns fail closed at HIR time. The variant spelling is the one rule of §3.1: a bare `Some(x)` pattern is `E_BARE_VARIANT_PATTERN`.
 
 ```ebnf
 IfLetExpr   = "if" "let" Pattern "=" Expr Block ("else" Block)? ;
 WhileLetStmt = "while" "let" Pattern "=" Expr Block ;
 ```
+
+### 12.6 Attributes
+
+**The attribute set is closed (normative).** The tables below list every
+attribute of edition 2026 and the positions each one is legal in. An
+attribute whose name is not in a table, or that appears in a position the
+table does not list, is `E_UNKNOWN_ATTRIBUTE` (User) — on type declarations,
+functions, parameters, fields, actor members, and `impl` blocks alike. There
+is no position where an unrecognised attribute is ignored.
+
+A silently ignored attribute is a fail-open in the shape the language least
+tolerates: a misspelled `#[test]` produces a function nothing calls, the test
+runner reports a green run over the tests that remain, and the program exits
+0. The attribute a reader cannot see is the one that matters, so the compiler
+refuses the name it does not know rather than dropping it.
+
+**Attributes available to any program:**
+
+| Attribute | Legal positions | Meaning |
+| --- | --- | --- |
+| `#[resource]` | type declaration | Affine handle: drop glue closes it at scope exit (§3.7.8). |
+| `#[linear]` | type declaration | Linear value: must be consumed by a `consume self` method before scope exit (§3.7.8). Not combinable with `#[resource]`. |
+| `#[opaque]` | type declaration | Opaque handle whose internal representation is not accessible (§3.10.7). |
+| `#[wire]`, `#[wire(...)]` | type declaration, enum, field | Wire contract and per-field tag/naming metadata (§7.1, §7.3). |
+| `#[json(...)]`, `#[yaml(...)]` | type declaration | Per-encoding field-naming case for a `#[wire]` type (§7.3.2, §7.3.2a). |
+| `#[deprecated]` | type declaration | Accepted; no phase consumes it today. Wire field deprecation is the `deprecated` field modifier of §7.2, not this attribute. |
+| `#[test]` | free function | Test entry point (the language guide's Testing chapter). Exempt from the dead-code lint. |
+| `#[ignore]` | `#[test]` function | Discovered but not run. |
+| `#[should_panic]` | `#[test]` function | The test passes only if the body traps. |
+| `#[serial]` | `#[test]` function | Runs alone, never concurrently with another test. |
+| `#[on(kind)]` | actor member `fn` | Lifecycle hook; `kind` is one of `start`, `stop`, `crash`, `exit`, `down` (§9.1.2). |
+| `#[every(<duration>)]` | actor `receive fn` | Periodic receive handler (§2.1.2). |
+| `#[max_heap(N)]` | actor declaration | Per-actor arena ceiling; a breach is an unrecoverable actor failure (§2.1). |
+| `#[extern_symbol(name)]` | `fn` inside an `extern "C"` block or an `impl` block | Binds the declaration to a named C-ABI symbol (§3.9.1). Not legal on an actor member. |
+| `#[export("...")]` | free `fn` | Makes the function callable from C (§3.9.4). |
+
+**Substrate attributes** carry compiler-internal identity and are legal only
+inside `std/`. A program that names one outside the standard library gets
+`E_UNKNOWN_ATTRIBUTE` in the same way an invented name does:
+`#[lang_item(...)]`, `#[intrinsic(...)]`, `#[diagnostic_item(...)]`,
+`#[overload(...)]`, `#[runtime_capability(...)]`, `#[returns_receiver]`,
+`#[abi(...)]`.
+
+**Attributes removed in this edition:**
+
+- `#[noncancellable]` no longer parses. Cancellation in edition 2026 is
+  scope-structural (§4.5), and the cancellation-token vocabulary it reserved
+  a place for is refused rather than deferred (HEW-FUTURE §1.2), so the
+  attribute has no surface to be held for.
+- `#[on(upgrade)]` is no longer a hook kind. Hot code upgrade is refused
+  permanently, so the hook list stops holding a place for it (§9.1.2).
 
 ---
 

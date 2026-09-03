@@ -536,7 +536,7 @@
     "turbofish": {
       "patterns": [
         {
-          "comment": "Turbofish type arguments in expression position: Ident::<T>(...), Vec::<i64>::new() (grammar.ebnf:249). Scoped before #operators so the angle brackets are not mistaken for comparison operators.",
+          "comment": "Turbofish type arguments in expression position: Ident::<T>(...), Vec::<i64>::new() (hew-parser postfix expressions). Scoped before #operators so the angle brackets are not mistaken for comparison operators.",
           "begin": "(::)(<)",
           "beginCaptures": {
             "1": {
@@ -567,7 +567,7 @@
     "closures": {
       "patterns": [
         {
-          "comment": "Closure parameters: |x|, |x, y|, |x: T|, move |x|, actor |x| (grammar.ebnf:289-295). Anchored to closure-introducing contexts (after = ( , [ => move actor) so bitwise-or `a | b | c`, or-patterns `A | B`, and logical-or `a || b` keep their operator scopes. Empty `||` closures intentionally stay logical-or to avoid mis-scoping `a || b`.",
+          "comment": "Closure parameters: |x|, |x, y|, |x: T|, move |x|, actor |x| (hew-parser closure parameters). Anchored to closure-introducing contexts (after = ( , [ => move actor) so bitwise-or `a | b | c`, or-patterns `A | B`, and logical-or `a || b` keep their operator scopes. Empty `||` closures intentionally stay logical-or to avoid mis-scoping `a || b`.",
           "begin": "(?<=[=(,\\[]\\s*|=>\\s*|\\bmove\\s+|\\bactor\\s+)(\\|)(?!\\|)(?=[^|]*\\|)",
           "beginCaptures": {
             "1": {
@@ -603,7 +603,7 @@
     "glob-import": {
       "patterns": [
         {
-          "comment": "Glob import wildcard: import a::b::* (grammar.ebnf:66). Matched before #operators so the trailing * is a wildcard, not arithmetic multiply. The `::*` sequence only occurs in glob imports — Hew dereference is prefix *expr, never path::*.",
+          "comment": "Glob import wildcard: import a::b::* (hew-parser import paths). Matched before #operators so the trailing * is a wildcard, not arithmetic multiply. The `::*` sequence only occurs in glob imports — Hew dereference is prefix *expr, never path::*.",
           "match": "(::)(\\*)",
           "captures": {
             "1": {

@@ -6830,6 +6830,7 @@ impl Checker {
                 field,
                 &DottedTypeMemberUse::Reference { span },
             ) {
+                self.mark_resolved_nominal_owner_used(&head.canonical_type);
                 return result;
             }
         }

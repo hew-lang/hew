@@ -6341,7 +6341,7 @@ machine Traffic {
     //  v05_generators                     | accepted                       | generator functions; LSP test passes
     //  v05_impl_where_clause              | accepted                       | impl<T> … where T: Display; LSP test passes
     //  v05_index_trait                    | accepted                       | Indexable trait; type errors intentional (fixture exercises error-recovery); LSP test passes
-    //  v05_is_operator                    | accepted                       | `is` operator + targeted surface tests (resolver, semantic-token, completion) pass
+    //  v05_is_operator                    | accepted                       | `is` operator + targeted surface tests (resolver, semantic-token, completion) pass; the `value is Payload` comparison is rejected with E_IS_VALUE_TYPE by design (an enum is a value, #3134) so the surfaces are asserted on a refused program
     //  v05_link_monitor                   | accepted                       | actor link/monitor; LSP test passes
     //  v05_machine_generics               | accepted                       | generic machine `machine Boxed<T>`; one-state semantic error is intentional fixture design; LSP test passes
     //  v05_machine_methods                | accepted                       | machine methods; non-exhaustive event coverage intentional; LSP test passes

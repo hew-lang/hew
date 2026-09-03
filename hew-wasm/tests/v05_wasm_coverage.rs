@@ -79,6 +79,14 @@ const ANALYSIS_ERROR_FIXTURES: &[&str] = &[
     // implement Indexable — type error by design, exercising error-recovery in
     // the index-expression checker.
     "v05_index_trait",
+    // accepted (intentional type error): `value is Payload` compares an enum
+    // value against its own type.  An enum is a value with no identity to
+    // compare, `indirect` included, so the checker rejects it with
+    // `E_IS_VALUE_TYPE` (#3134).  The fixture exercises how the RHS type
+    // pattern resolves for the analyzers, which is why it stays a rejected
+    // program; the LSP half is
+    // `v05_is_operator_rhs_type_pattern_lsp_surfaces_are_correct`.
+    "v05_is_operator",
     // accepted (intentional type error): `machine Boxed<T>` declares only one
     // state (`Idle`); the type checker requires at least two states per machine.
     // The fixture exercises generic machine syntax, not exhaustive state coverage.
@@ -166,8 +174,8 @@ fn v05_wasm_coverage_fixture_count() {
     );
     assert_eq!(
         ANALYSIS_ERROR_FIXTURES.len(),
-        9,
-        "ANALYSIS_ERROR_FIXTURES must list exactly 9 known-error fixtures"
+        10,
+        "ANALYSIS_ERROR_FIXTURES must list exactly 10 known-error fixtures"
     );
 }
 

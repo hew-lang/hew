@@ -1,0 +1,31 @@
+// §1.1: an `#[opaque]` declaration with no ownership marker has no visible
+// members for the Aggregate rule and no marker to decide it, so it is refused
+// and publishes no row. Whether its name collides with a compiler-known builtin
+// decides nothing: `Location` is in the builtin table and `Handle` is not, and
+// the two declarations are otherwise identical, so they must get one verdict.
+//
+// `NodeId` is the counterfactual: a user declaration that shadows a builtin
+// name and does carry members keeps its own class, which here is the `string`
+// field's `CowValue`/`FieldWise` rather than the builtin row's `BitCopy`.
+#[opaque]
+type Location {
+}
+
+#[opaque]
+type Handle {
+}
+
+type NodeId {
+    label: string;
+}
+
+fn observe(here: Location, handle: Handle, id: NodeId) -> i64 {
+    let _ = here;
+    let _ = handle;
+    let _ = id;
+    0
+}
+
+fn main() -> i64 {
+    0
+}

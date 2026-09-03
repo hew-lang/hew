@@ -433,3 +433,64 @@ fn the_nested_generic_record_fixture_publishes_its_nested_row() {
         (facts.class, facts.clone)
     );
 }
+
+/// Every published row whose key names a declaration ending in `name`.
+fn rows_named(output: &TypeCheckOutput, name: &str) -> Vec<TypeFacts> {
+    output
+        .type_facts
+        .iter()
+        .filter(|(key, _)| named_at(&key.0, name, |_| true))
+        .map(|(_, facts)| *facts)
+        .collect()
+}
+
+/// §1.1: an `#[opaque]` declaration with no ownership marker is refused, and a
+/// name collision with the builtin table is not a class. Two identical fieldless
+/// `#[opaque]` declarations, one of whose names is in `builtin_types!`, get one
+/// verdict.
+#[test]
+fn a_fieldless_opaque_declaration_is_refused_whether_or_not_its_name_is_a_builtin() {
+    let output = facts_of("class_opaque_handle_shadowing_a_builtin.hew");
+    assert_eq!(
+        (Vec::new(), Vec::new()),
+        (
+            rows_named(&output, "Location"),
+            rows_named(&output, "Handle")
+        ),
+        "an opaque handle with no marker publishes no row, whatever its name"
+    );
+}
+
+/// The counterfactual in the same program: a user declaration that shadows a
+/// builtin name and carries members keeps its own class rather than the builtin
+/// row's. `NodeId` is `BitCopy` in the builtin table and `CowValue` here.
+#[test]
+fn a_user_declaration_shadowing_a_builtin_name_keeps_its_own_class() {
+    let output = facts_of("class_opaque_handle_shadowing_a_builtin.hew");
+    let rows = rows_named(&output, "NodeId");
+    let facts = *rows.first().expect("`NodeId` has a published row");
+    assert_eq!(
+        (ValueClass::CowValue, CloneKind::FieldWise),
+        (facts.class, facts.clone)
+    );
+}
+
+/// §1.1: the two fieldless `#[opaque]` stdlib channel handles carry a close
+/// method, so both are `AffineResource` with no clone. Their verdict comes from
+/// the builtin row, which the declaration lookup must leave reachable for a
+/// name it holds no user declaration of.
+#[test]
+fn the_channel_handles_are_affine_resources_with_no_clone() {
+    let output = facts_of("class_channel_handles.hew");
+    for half in ["Sender", "Receiver"] {
+        let rows = rows_named(&output, half);
+        let facts = *rows
+            .first()
+            .unwrap_or_else(|| panic!("`channel.{half}` has a published row"));
+        assert_eq!(
+            (ValueClass::AffineResource, CloneKind::None),
+            (facts.class, facts.clone),
+            "class table row for `channel.{half}`"
+        );
+    }
+}

@@ -87,6 +87,13 @@ pub enum DeclarationMarker {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DeclaredType {
     pub marker: DeclarationMarker,
+    /// The declaration carries `#[opaque]`, so its members are not the whole
+    /// value and the Aggregate rule cannot see through it.
+    ///
+    /// This is the declaration's own fact. `ResolvedTy::Named.is_opaque` is the
+    /// same fact spelled on a type, and only some producers stamp it, so §1.1
+    /// reads whichever of the two says yes.
+    pub is_opaque: bool,
     pub type_params: Vec<String>,
     pub members: Vec<ResolvedTy>,
 }
@@ -709,7 +716,7 @@ fn classify(
             match declared.marker {
                 DeclarationMarker::Resource => affine_none,
                 DeclarationMarker::Linear => linear_none,
-                DeclarationMarker::None if *is_opaque => {
+                DeclarationMarker::None if *is_opaque || declared.is_opaque => {
                     return Err(ClassError::OpaqueWithoutMarker { name: name.clone() })
                 }
                 DeclarationMarker::None => classify_declaration(name, args, decls, walk)?,

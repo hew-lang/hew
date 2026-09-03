@@ -188,6 +188,7 @@ mod tests {
         decls.insert(
             "Conn".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::Resource,
                 type_params: vec![],
                 members: vec![ResolvedTy::I64],
@@ -196,6 +197,7 @@ mod tests {
         decls.insert(
             "Ticket".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::Linear,
                 type_params: vec![],
                 members: vec![ResolvedTy::I64],
@@ -204,6 +206,7 @@ mod tests {
         decls.insert(
             "Point".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
                 members: vec![ResolvedTy::I64, ResolvedTy::I64],
@@ -212,6 +215,7 @@ mod tests {
         decls.insert(
             "Label".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
                 members: vec![ResolvedTy::String, ResolvedTy::I64],
@@ -221,6 +225,7 @@ mod tests {
         decls.insert(
             "CrashInfo".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
                 members: vec![ResolvedTy::I64, ResolvedTy::String],
@@ -230,6 +235,7 @@ mod tests {
         decls.insert(
             "CrashNotification".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
                 members: vec![
@@ -741,6 +747,7 @@ mod tests {
         decls.insert(
             "Tree".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
                 members: vec![
@@ -753,6 +760,7 @@ mod tests {
         decls.insert(
             "ResTree".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
                 members: vec![conn(), named("ResTree", None, vec![])],
@@ -761,6 +769,7 @@ mod tests {
         decls.insert(
             "Pair".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec!["T".to_string()],
                 members: vec![
@@ -774,6 +783,7 @@ mod tests {
         decls.insert(
             "Wrapper".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec!["T".to_string()],
                 members: vec![ResolvedTy::TypeParam {
@@ -784,6 +794,7 @@ mod tests {
         decls.insert(
             "Outer".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec!["T".to_string()],
                 members: vec![named(
@@ -915,6 +926,7 @@ mod tests {
         decls.insert(
             "Grow".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec!["T".to_string()],
                 members: vec![named(
@@ -934,6 +946,7 @@ mod tests {
         decls.insert(
             "Relay".to_string(),
             DeclaredType {
+                is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec!["U".to_string()],
                 members: vec![named(

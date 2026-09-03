@@ -339,12 +339,25 @@ fn patch_builtin_result_output_type(_ty: Ty, ok_ty: &Ty, err_ty: &Ty) -> Ty {
 pub(crate) struct CheckerClassDeclarations<'a> {
     registry: &'a TraitRegistry,
     type_defs: &'a HashMap<String, crate::check::types::TypeDef>,
+    /// `#[opaque]` declarations written in this program.
+    user_opaque_type_names: &'a HashSet<String>,
+    /// Resolves an imported `#[opaque]` handle spelling, which the set above
+    /// does not carry.
+    module_registry: &'a crate::module_registry::ModuleRegistry,
 }
 
 impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
     fn declared_type(&self, name: &str) -> Option<crate::value_class::DeclaredType> {
         use crate::value_class::{DeclarationMarker, DeclaredType};
 
+        // The `#[opaque]` attribute is a declaration fact, carried for a
+        // program's own declarations by the checker's set and for an imported
+        // handle by the module registry.
+        let is_opaque = self.user_opaque_type_names.contains(name)
+            || name
+                .split_once('.')
+                .is_some_and(|(_, leaf)| self.user_opaque_type_names.contains(leaf))
+            || self.module_registry.is_handle_type(name);
         let marker = if self.registry.is_resource(name) {
             DeclarationMarker::Resource
         } else if self.registry.is_linear(name) {
@@ -362,6 +375,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             // A marker with no field table still decides the class outright.
             return (marker != DeclarationMarker::None).then(|| DeclaredType {
                 marker,
+                is_opaque,
                 type_params: Vec::new(),
                 members: Vec::new(),
             });
@@ -369,6 +383,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         if marker != DeclarationMarker::None {
             return Some(DeclaredType {
                 marker,
+                is_opaque,
                 type_params: definition.type_params.clone(),
                 members: Vec::new(),
             });
@@ -413,18 +428,17 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             let resolved = ResolvedTy::from_ty(&ty.materialize_literal_defaults()).ok()?;
             members.push(resolved);
         }
-        if definition.fields.is_empty() && definition.variants.is_empty() {
-            // A declaration with no marker, no fields and no variants carries
-            // no evidence at all. `type_defs` holds contentless synthetic rows
-            // for compiler-known names - a `HashMap` entry with no fields would
-            // otherwise join to `BitCopy` under the Aggregate rule - so this
-            // answers `None` and lets the class rule fall to the builtin row,
-            // or refuse. An enum whose variants are all unit still has
-            // variants, so it keeps its own `BitCopy` verdict.
-            return None;
-        }
+        // A declaration with no fields and no variants is still a declaration:
+        // the fieldless `#[opaque]` handle is the shape `std/path.hew` and
+        // `std/semaphore.hew` ship, and §1.1 decides it by its marker, refusing
+        // it as `OpaqueWithoutMarker` when it has none. Answering `None` here
+        // sent the class rule to the builtin-name fallback instead, so an
+        // `#[opaque] type Location {}` published `BitCopy` while an identical
+        // `Handle` was refused. The builtin row is for a name the checker has
+        // no declaration of at all.
         Some(DeclaredType {
             marker,
+            is_opaque,
             type_params: definition.type_params.clone(),
             members,
         })
@@ -653,6 +667,8 @@ impl Checker {
         CheckerClassDeclarations {
             registry: &self.registry,
             type_defs: &self.type_defs,
+            user_opaque_type_names: &self.user_opaque_type_names,
+            module_registry: &self.module_registry,
         }
     }
 

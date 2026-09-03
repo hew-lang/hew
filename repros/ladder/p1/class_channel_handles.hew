@@ -1,0 +1,12 @@
+// §1.1: `channel.Sender` and `channel.Receiver` are fieldless `#[opaque]`
+// stdlib declarations that carry a close method, so both are `AffineResource`
+// with no clone. The verdict comes from the builtin row, and the declaration
+// lookup answering for a contentless declaration must not take it away.
+import std.channel.channel;
+
+fn main() -> i64 {
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
+    let _ = tx;
+    let _ = rx;
+    0
+}

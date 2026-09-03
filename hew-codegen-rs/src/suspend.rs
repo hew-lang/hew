@@ -7847,7 +7847,7 @@ pub(crate) fn emit_supervisor_bootstrap_body<'ctx>(
     // occupy static slots.
     let mut actor_child_index = 0usize;
     for child in &layout.children {
-        // Pool children (`pool name: Type(count: N)`) reserve a slot in the
+        // Pool children (`pool name: Type count: N`) reserve a slot in the
         // runtime's disjoint `pool_slots[]` space, then spawn N fungible members
         // as static children (registered into `children[]` via add_child_spec)
         // and bind each member's static index into the pool via
@@ -8769,8 +8769,8 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     Ok(())
 }
 
-/// Emit the bootstrap registration for a static pool (`pool name: Type(count:
-/// N)`): reserve the pool slot, spawn N fungible members as static children, and
+/// Emit the bootstrap registration for a static pool (`pool name: Type count:
+/// N`): reserve the pool slot, spawn N fungible members as static children, and
 /// bind each member's static index into the pool via `pool_member_add_static`.
 ///
 /// Members are homogeneous (A204): one shared init template / init thunk, the

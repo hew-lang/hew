@@ -1,0 +1,25 @@
+// `count:` is a pool clause. A `child` declaration is one actor, so it has no
+// arity to declare and the clause is refused rather than ignored (#3253).
+
+actor Worker {
+    var value: i64;
+
+    receive fn id() -> i64 {
+        value
+    }
+}
+
+supervisor Farm {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child worker: Worker(value: 7) count: 2;
+}
+
+fn main() -> i64 {
+    let sup = spawn Farm;
+    match await sup.worker.id() {
+        Ok(value) => value,
+        Err(_) => 1,
+    }
+}

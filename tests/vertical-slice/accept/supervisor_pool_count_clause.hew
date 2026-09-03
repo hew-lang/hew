@@ -1,0 +1,57 @@
+// Pool arity is a per-child clause, not an init field (#3253).
+//
+// `pool tickers: Ticker(count: 9) count: 2;` sets the actor's OWN field named
+// `count` to 9 through the parenthesised list and declares an arity of 2
+// through the clause. The two namespaces are separate, so an actor with a
+// field named `count` pools like any other — under the retired spelling this
+// program could not be written at all.
+//
+// Exit 20 = len(2) + two members × count(9). A dropped clause would change the
+// length, and a clause read as the field would make each member report 2.
+
+actor Ticker {
+    var count: i64;
+
+    receive fn ticks() -> i64 {
+        count
+    }
+}
+
+supervisor Farm {
+    strategy: simple_one_for_one;
+    intensity: 3 within 60s;
+
+    pool tickers: Ticker(count: 9) count: 2;
+}
+
+fn main() -> i64 {
+    let sup = spawn Farm;
+    let tickers = sup.tickers;
+    var total = tickers.len();
+
+    match await tickers[0].ticks() {
+        Ok(value) => {
+            if value != 9 {
+                return 1;
+            }
+            total = total + value;
+        },
+        Err(_) => {
+            return 2;
+        },
+    }
+
+    match await tickers[1].ticks() {
+        Ok(value) => {
+            if value != 9 {
+                return 3;
+            }
+            total = total + value;
+        },
+        Err(_) => {
+            return 4;
+        },
+    }
+
+    total
+}

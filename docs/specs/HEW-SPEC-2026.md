@@ -4301,13 +4301,6 @@ other, and its `count` field is set the same way every other field is. The
 two namespaces never collide, so no diagnostic about pool arity can land on a
 user's field.
 
-> **Implementation status.** The shipped parser reads `count` out of the
-> parenthesised list as an init field, so `pool ws: A(count: N, ..)` is what
-> compiles today and the clause form is refused with
-> `unknown supervisor field`. The migration is a fix-it —
-> `pool ws: A(count: N, ..)` becomes `pool ws: A(..) count: N;` — tracked in
-> hew-lang/hew#3253.
-
 ### 5.2 Restart Semantics (normative)
 
 Let child exit reason be one of:

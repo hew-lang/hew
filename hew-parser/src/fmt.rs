@@ -1831,6 +1831,13 @@ impl<'a> Formatter<'a> {
             });
             self.write(")");
         }
+        // Pool arity is a clause, so it prints outside the parentheses. It
+        // comes first among the clauses because arity binds to the template the
+        // parentheses just described.
+        if let Some(count) = &spec.count {
+            self.write(" count: ");
+            self.format_expr(&count.0);
+        }
         if let Some(restart) = &spec.restart {
             self.write(" restart: ");
             match restart {

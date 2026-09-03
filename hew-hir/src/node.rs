@@ -973,7 +973,7 @@ pub struct HirSupervisorChild {
     /// all N fungible members.
     pub init_args: Vec<(String, HirExpr)>,
     /// Reserved pool-size expression, lowered from the `count:` named arg on a
-    /// `pool name: Type(count: N, ...)` declaration. `None` for a static child
+    /// `pool name: Type(...) count: N` declaration. `None` for a static child
     /// or a pool child that omitted `count:` (which the checker rejects). The
     /// expression yields the number of fungible members the bootstrap spawns
     /// into the pool slot. `count` is a reserved arg name on pool declarations,

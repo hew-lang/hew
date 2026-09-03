@@ -140,6 +140,118 @@ fn parse_supervisor_construction_time_config_params() {
     assert_eq!(sd.children[0].args[0].0, "capacity");
 }
 
+/// Pool arity is the per-child `count:` clause, parsed beside `restart:` and
+/// `shutdown:` and kept out of the parenthesised init-arg list.
+#[test]
+fn parse_pool_count_clause_lands_beside_the_init_args() {
+    let source = "supervisor Farm {\n\
+                      \x20   strategy: simple_one_for_one;\n\
+                      \x20   intensity: 3 within 60s;\n\
+                      \x20   pool workers: Worker(value: 7) count: 2 restart: transient;\n\
+                      }\n";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Supervisor(sd) = &result.program.items[0].0 else {
+        panic!("expected supervisor, got {:?}", result.program.items[0].0);
+    };
+    let child = &sd.children[0];
+    assert!(child.is_pool);
+    assert!(child.count.is_some(), "the arity clause parsed");
+    assert_eq!(
+        child.args.len(),
+        1,
+        "the parenthesised list holds only the actor's own fields"
+    );
+    assert_eq!(child.args[0].0, "value");
+    assert_eq!(child.restart, Some(RestartPolicy::Transient));
+}
+
+/// The clause namespace and the field namespace are separate, so an actor with
+/// a field named `count` pools with its field set like any other. This is the
+/// collision the clause form removes.
+#[test]
+fn parse_pool_child_sets_an_actor_field_named_count() {
+    let source = "supervisor Farm {\n\
+                      \x20   strategy: simple_one_for_one;\n\
+                      \x20   pool tickers: Ticker(count: 9) count: 2;\n\
+                      }\n";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Supervisor(sd) = &result.program.items[0].0 else {
+        panic!("expected supervisor");
+    };
+    let child = &sd.children[0];
+    assert_eq!(child.args.len(), 1, "the `count` field stays an init arg");
+    assert_eq!(child.args[0].0, "count");
+    assert!(child.count.is_some(), "arity comes from the clause");
+}
+
+/// `count:` in a pool child's parentheses with no arity clause is the retired
+/// spelling. It is refused with the new one rather than passed on as an init
+/// field that the checker would then blame on the actor.
+#[test]
+fn parse_pool_count_as_init_arg_is_refused_with_the_clause_spelling() {
+    let source = "supervisor Farm {\n\
+                      \x20   strategy: simple_one_for_one;\n\
+                      \x20   pool workers: Worker(count: 2, value: 7);\n\
+                      }\n";
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("pool arity is a child clause")
+                && e.hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("Worker(..) count: N"))),
+        "expected the migration fix-it, got: {:?}",
+        result.errors
+    );
+}
+
+/// A `child` declaration is one actor, so it has no arity to declare. The
+/// clause is refused there rather than accepted and ignored.
+#[test]
+fn parse_count_clause_on_a_static_child_is_refused() {
+    let source = "supervisor Farm {\n\
+                      \x20   strategy: one_for_one;\n\
+                      \x20   child worker: Worker(value: 7) count: 2;\n\
+                      }\n";
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("`count:` is a pool clause")),
+        "expected the non-pool refusal, got: {:?}",
+        result.errors
+    );
+    let Item::Supervisor(sd) = &result.program.items[0].0 else {
+        panic!("expected supervisor");
+    };
+    assert!(
+        sd.children[0].count.is_none(),
+        "a refused clause carries no arity downstream"
+    );
+}
+
+/// A static child's `count:` init arg is an ordinary field, untouched by the
+/// pool migration.
+#[test]
+fn parse_static_child_count_init_arg_stays_a_field() {
+    let source = "supervisor Farm {\n\
+                      \x20   strategy: one_for_one;\n\
+                      \x20   child ticker: Ticker(count: 9);\n\
+                      }\n";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Supervisor(sd) = &result.program.items[0].0 else {
+        panic!("expected supervisor");
+    };
+    assert_eq!(sd.children[0].args[0].0, "count");
+    assert!(sd.children[0].count.is_none());
+}
+
 /// A supervisor without a `(...)` clause has no params (back-compat).
 #[test]
 fn parse_supervisor_without_params_has_empty_param_list() {

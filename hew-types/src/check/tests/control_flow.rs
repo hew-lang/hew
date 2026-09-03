@@ -255,7 +255,7 @@ mod supervisor_child_slot_tests {
 
             supervisor Pool {
                 strategy: simple_one_for_one,
-                pool worker: Worker(count: 2)
+                pool worker: Worker count: 2
             }
 
             fn main() {
@@ -293,7 +293,7 @@ mod supervisor_child_slot_tests {
 
             supervisor Pool {
                 strategy: simple_one_for_one,
-                pool workers: Worker(count: 2)
+                pool workers: Worker count: 2
             }
 
             fn inspect(sup: LocalPid<Pool>) {

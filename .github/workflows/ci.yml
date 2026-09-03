@@ -446,9 +446,18 @@ jobs:
 
       - name: Run day-one.sh
         shell: bash
+        # HEW_BIN stays relative (run-journeys.sh resolves it against the
+        # repo root in POSIX form); an absolute github.workspace value is
+        # Windows-style (D:\a\hew\hew) and git-bash's `cd`/mktemp calls
+        # inside the journey script cannot use it. `shell: bash` here is
+        # git-bash with --noprofile --norc, so TMPDIR is unset and
+        # RUNNER_TEMP is a Windows path -- convert it to POSIX form first.
         env:
-          HEW_BIN: ${{ github.workspace }}/target/release/hew.exe
-        run: bash scripts/run-journeys.sh day-one
+          HEW_BIN: target/release/hew.exe
+        run: |
+          TMPDIR="$(cygpath -u "$RUNNER_TEMP")"
+          export TMPDIR
+          bash scripts/run-journeys.sh day-one
 
   # ─────────────────────────────────────────────────────────────────────────
   # Build & test — Rust workspace

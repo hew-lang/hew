@@ -57,6 +57,17 @@ esac
 OUT="$(mktemp "${TMPDIR}/run-journeys-out-XXXXXX")"
 trap 'rm -f "$OUT"' EXIT
 
+# week-one-local binds JOURNEY_PORT_BASE (default 8080, per its own header
+# comment); a caller who leaves it unset can collide with an unrelated
+# service already on 8080 on a shared/dev machine, producing a false pass
+# (the stray service answers /health with 200) or a false fail. Pick a
+# free port the same way scripts/registry-harness.sh does, unless the
+# caller set one explicitly.
+if [ "$JOURNEY" = "week-one-local" ] && [ -z "${JOURNEY_PORT_BASE:-}" ] && command -v python3 >/dev/null 2>&1; then
+    FREE_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()' 2>/dev/null)
+    [ -n "$FREE_PORT" ] && export JOURNEY_PORT_BASE="$FREE_PORT"
+fi
+
 if [ "$JOURNEY" = "day-two" ]; then
     if bash "$REPO_ROOT/scripts/registry-harness.sh" bash "$SCRIPT" >"$OUT" 2>&1; then
         :

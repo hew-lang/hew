@@ -2806,29 +2806,31 @@ unsafe fn restart_child_from_spec_expected(
                 // SAFETY: opts is valid; ownership of `cloned` is transferred.
                 unsafe { actor::hew_actor_spawn_opts_adopt(&raw const opts, cloned) }
             }
+        } else if state_drop_fn.is_some() {
+            // No `state_clone_fn` registered, but `state_drop_fn` IS: the
+            // legacy byte-copy path below is only sound for BitCopy actor
+            // state (plain-old-data fields with no owned heap pointers). A
+            // registered `state_drop_fn` means the actor's state owns heap
+            // fields, so byte-copying the template would alias those owned
+            // pointers between the template and every spawned incarnation —
+            // a double-free on teardown. The checker
+            // (E_SUPERVISOR_INIT_ARG_NON_BITCOPY) rejects this at compile
+            // time for codegen-emitted actors; a C-ABI caller that bypasses
+            // the checker and registers `state_drop_fn` without
+            // `state_clone_fn` gets a refused restart here instead of a
+            // silent alias (#1893).
+            set_last_error(format!(
+                "hew_supervisor_set_child_state_drop: child {index} registered a state-drop \
+                 function without a matching state-clone function; restart refused rather than \
+                 byte-copying owned heap state"
+            ));
+            fail_restart_snapshot(sup, index, spec_identity, spec_revision, &template);
+            return ptr::null_mut();
         } else {
-            // Legacy byte-copy path: no `state_clone_fn` registered.
-            //
-            // SAFETY boundary: this byte-copy is only sound for BitCopy actor state
-            // (plain-old-data fields with no owned heap pointers).  If `state_drop_fn`
-            // is also set, the template and the spawned actor share heap pointer aliases
-            // → double-free on teardown.
-            //
-            // The checker (E_SUPERVISOR_INIT_ARG_NON_BITCOPY) is the primary authority
-            // and rejects owned-handle init args at compile time before this path is
-            // reached.  Out-of-tree / hand-rolled C ABI callers that bypass the checker
-            // and register `state_drop_fn` without `state_clone_fn` receive borrowed
-            // provenance: typed drop is suppressed and the aliased owned fields leak
-            // fail-closed rather than being freed through multiple incarnations.
-            //
-            // WHY this is not a debug_assert: the assert would fire in existing tests
-            // that probe the legacy byte-copy path directly (see
-            // `state_clone_fn_null_falls_back_to_bytecopy`), which are present to
-            // document backward compatibility for out-of-tree consumers.
-            // WHEN obsolete: when the v0.6 init-closure restart model lands and
-            // every supervised actor with owned-heap state registers `state_clone_fn`.
-            // REAL FIX: extend the checker wall to cover all paths, then make
-            // `state_clone_fn` mandatory for any actor with owned-heap fields.
+            // Legacy byte-copy path: neither `state_clone_fn` nor
+            // `state_drop_fn` is registered, so the actor's state is BitCopy
+            // (plain-old-data fields with no owned heap pointers) and a flat
+            // byte-copy of the template is sound.
             //
             // SAFETY: opts is valid.
             unsafe { actor::hew_actor_spawn_opts(&raw const opts) }
@@ -7942,12 +7944,14 @@ mod tests {
     }
 
     #[test]
-    fn state_clone_fn_null_falls_back_to_bytecopy() {
+    fn state_drop_fn_without_state_clone_fn_refuses_restart() {
         let _rt = crate::runtime_test_guard();
-        // No state_clone_fn registered: restart must still succeed via the
-        // legacy `hew_actor_spawn_opts` byte-copy path. This preserves
-        // backward compatibility for children whose codegen has not yet
-        // emitted a clone fn (out-of-tree consumers, hand-rolled actors).
+        // A `state_drop_fn` registered without a `state_clone_fn` means the
+        // actor's state owns heap fields but has no sound way to clone the
+        // spec template for a restart. Byte-copying it would alias those
+        // owned heap pointers between the template and the restarted actor
+        // (double-free at teardown). The restart must refuse rather than
+        // silently fall back to that unsound byte-copy (#1893).
         let _serial = CLONE_TEST_SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -7963,22 +7967,40 @@ mod tests {
 
             let restarted = restart_child_from_spec(sup, 0);
             assert!(
-                !restarted.is_null(),
-                "legacy byte-copy restart must still succeed"
+                restarted.is_null(),
+                "a state_drop_fn registered without state_clone_fn must refuse the restart"
             );
             assert_eq!(
                 CLONE_CALL_COUNT.load(Ordering::SeqCst),
                 0,
-                "legacy byte-copy path must NOT invoke clone_fn"
+                "a refused restart must NOT invoke clone_fn either"
             );
             assert!(
-                !(*restarted).init_state.is_null(),
-                "legacy path must populate actor.init_state via deep_copy_state"
+                locked_roster!(sup).children[0].is_null(),
+                "a refused restart must leave the child slot null"
             );
 
-            // Pin: the spec stayed in legacy mode (no in-place re-clone).
-            // No assertion on spec.init_state value — just that the test
-            // doesn't UAF.
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// Negative control for `state_drop_fn_without_state_clone_fn_refuses_restart`:
+    /// a genuinely `BitCopy` actor (neither `state_drop_fn` nor `state_clone_fn`
+    /// registered — no owned heap fields at all) must still restart via the
+    /// legacy byte-copy path. The refusal above is specific to the dangerous
+    /// drop-without-clone combination, not to "no clone fn" in general.
+    #[test]
+    fn no_state_ops_registered_still_uses_legacy_bytecopy_restart() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: test owns the supervisor tree.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let restarted = restart_child_from_spec(sup, 0);
+            assert!(
+                !restarted.is_null(),
+                "a BitCopy actor with neither state_drop_fn nor state_clone_fn \
+                 registered must still restart via the legacy byte-copy path"
+            );
             hew_supervisor_stop(sup);
         }
     }
@@ -8071,31 +8093,28 @@ mod tests {
     }
 
     unsafe fn run_forced_bytecopy_freed_spec_payload_probe() -> ! {
-        // Install a runtime so spawn/track resolve; this subprocess faults
-        // intentionally (GuardMalloc SIGSEGV) before the guard would drop.
+        // Install a runtime so spawn/track resolve. Before #1893 this
+        // subprocess faulted intentionally (GuardMalloc SIGSEGV) by forcing
+        // the legacy byte-copy path to alias a freed spec payload. That
+        // path is no longer reachable: a `state_drop_fn` registered without
+        // a `state_clone_fn` now refuses the restart outright, so this
+        // probe proves the refusal instead of the fault.
         let _rt = crate::runtime_test_guard();
         let (sup, _template) = make_supervisor_with_heap_child(false);
-        let dangling_payload = free_spec_template_payload(sup);
+        let _dangling_payload = free_spec_template_payload(sup);
 
         let restarted = restart_child_from_spec(sup, 0);
         assert!(
-            !restarted.is_null(),
-            "legacy byte-copy restart must produce an actor"
-        );
-        let restarted_state = &mut *(*restarted).state.cast::<HeapState>();
-        assert_eq!(
-            restarted_state.payload, dangling_payload,
-            "legacy byte-copy restart must preserve the freed payload alias"
+            restarted.is_null(),
+            "a state_drop_fn registered without state_clone_fn must refuse the restart, \
+             not byte-copy a freed spec payload"
         );
 
-        *restarted_state.payload = 0xCC;
         std::process::exit(0);
     }
 
     #[cfg(target_os = "macos")]
     fn assert_forced_bytecopy_freed_spec_faults_under_guard_malloc(test_name: &str) {
-        use std::os::unix::process::ExitStatusExt as _;
-
         if !std::path::Path::new(GUARD_MALLOC_DYLIB).exists() {
             eprintln!("skipping GuardMalloc alias-fault probe: {GUARD_MALLOC_DYLIB} not found");
             return;
@@ -8111,10 +8130,9 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .status()
             .expect("spawn GuardMalloc alias-fault helper");
-        assert_eq!(
-            status.signal(),
-            Some(libc::SIGSEGV),
-            "forced byte-copy of freed spec.init_state payload must SIGSEGV under GuardMalloc; status={status:?}"
+        assert!(
+            status.success(),
+            "the refused restart must exit cleanly under GuardMalloc, never fault; status={status:?}"
         );
     }
 

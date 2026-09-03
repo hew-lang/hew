@@ -2798,6 +2798,27 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
                 _ => None,
             })?
         }) else {
+            // `hew_lexer::lex` emits an entire f-string interpolation
+            // (`f"...{expr}..."`) as one `InterpolatedString` token; the
+            // identifier inside `{}` never appears as its own top-level
+            // `Identifier` token, so a bare-variant warning whose span falls
+            // inside one is a token-lookup miss, not a genuine
+            // checker/lexer disagreement. The automatic migration does not
+            // rewrite inside f-string interpolations yet, so skip this
+            // occurrence rather than refusing the whole file (#3243).
+            let inside_interpolated_string = tokens.iter().any(|(token, span)| {
+                matches!(token, hew_lexer::Token::InterpolatedString(_))
+                    && span.start <= error.span.start
+                    && error.span.end <= span.end
+            });
+            if inside_interpolated_string {
+                eprintln!(
+                    "{}:{}-{}: skipping bare-variant migration inside an f-string \
+                     interpolation (not yet supported by the automatic migration)",
+                    file, error.span.start, error.span.end
+                );
+                continue;
+            }
             refusals.push(format!(
                 "{}:{}-{}: checker-selected variant has no identifier token",
                 file, error.span.start, error.span.end

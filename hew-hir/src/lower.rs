@@ -13823,7 +13823,7 @@ impl LowerCtx {
             None
         };
         let mut body = self.with_current_return_type(source_return_ty.clone(), |ctx| {
-            ctx.lower_block(&func.body, &source_return_ty)
+            ctx.lower_block(&func.body, &source_return_ty, IntentKind::Consume)
         });
         let return_ty = if let Some(receiver) = &var_self_receiver {
             let abi_return_ty =
@@ -13895,7 +13895,7 @@ impl LowerCtx {
         let outer_bindings = self.visible_outer_bindings();
         self.generator_yield_tys.push(yield_ty.clone());
         let gen_body = self.with_current_return_type(gen_return_ty.clone(), |ctx| {
-            ctx.lower_block(&func.body, &gen_return_ty)
+            ctx.lower_block(&func.body, &gen_return_ty, IntentKind::Consume)
         });
         self.generator_yield_tys.pop();
         let captures = Self::collect_gen_captures(&gen_body, &outer_bindings);
@@ -15190,7 +15190,7 @@ impl LowerCtx {
         walk_block_for_machine_allowlist(block, state_names, &mut allowlist);
         let diag_snapshot = self.diagnostics.len();
         let prev_events = self.current_machine_events.replace(event_names);
-        let lowered = self.lower_block(block, &ResolvedTy::Unit);
+        let lowered = self.lower_block(block, &ResolvedTy::Unit, IntentKind::Read);
         self.current_machine_events = prev_events;
         self.retain_or_drop_machine_body_diags(diag_snapshot, &allowlist);
         lowered
@@ -15447,7 +15447,7 @@ impl LowerCtx {
         }
         let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
         let body = self.with_current_return_type(expected_ty.clone(), |ctx| {
-            ctx.lower_block(body, expected_ty)
+            ctx.lower_block(body, expected_ty, IntentKind::Consume)
         });
         self.pop_scope();
         self.scope_depth = saved_scope_depth;
@@ -15495,7 +15495,7 @@ impl LowerCtx {
 
         self.generator_yield_tys.push(yield_ty.clone());
         let gen_body = self.with_current_return_type(gen_return_ty.clone(), |ctx| {
-            ctx.lower_block(body, &gen_return_ty)
+            ctx.lower_block(body, &gen_return_ty, IntentKind::Consume)
         });
         self.generator_yield_tys.pop();
 
@@ -15677,7 +15677,26 @@ impl LowerCtx {
         (plain, hooks)
     }
 
-    fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
+    /// Lower a block. `tail_intent` is the ownership intent stamped on the
+    /// block's trailing expression.
+    ///
+    /// A block that IS a function/handler/closure body takes
+    /// `IntentKind::Consume`, exactly as an explicit `return` of the same
+    /// expression does (`Stmt::Return`): falling off the end of a body is the
+    /// same control-flow event as returning, so the two must not diverge in
+    /// what the ownership pipeline believes happened to the value.
+    ///
+    /// Every other block takes `IntentKind::Read`. A nested block in
+    /// statement position (a `while`/`loop`/`if` body lowered for effect, a
+    /// machine body) is not a return position at all; a value-position
+    /// `if`/`match` arm is one MIR already plans transfers for from the whole
+    /// selection's own intent, so its arms stay ordinary reads.
+    fn lower_block(
+        &mut self,
+        block: &Block,
+        expected_ty: &ResolvedTy,
+        tail_intent: IntentKind,
+    ) -> HirBlock {
         // Nested control-flow bodies (while, loop, if, match) must not
         // inherit the parent's `scope_depth`. The `scope_depth > 0` guard
         // in `lower_expression_stmt_kind` is intended to intercept only the
@@ -15697,7 +15716,7 @@ impl LowerCtx {
         let tail = block
             .trailing_expr
             .as_ref()
-            .map(|expr| Box::new(self.lower_expr(expr, IntentKind::Read)));
+            .map(|expr| Box::new(self.lower_expr(expr, tail_intent)));
         // A block's value type is its tail expression's type. With no tail it is
         // `Unit` UNLESS the block diverges: a trailing `return`/`break`/
         // `continue` (or a last statement that diverges in every branch, e.g. an
@@ -16692,7 +16711,8 @@ impl LowerCtx {
                 // descend into the branches.  `else if` chains are not yet
                 // wired; they fall through to Unsupported to stay fail-closed.
                 let lowered_condition = self.lower_expr(condition, IntentKind::Read);
-                let then_hir_block = self.lower_block(then_block, &ResolvedTy::Unit);
+                let then_hir_block =
+                    self.lower_block(then_block, &ResolvedTy::Unit, IntentKind::Read);
                 let then_ty = then_hir_block.ty.clone();
                 let then_expr = HirExpr {
                     node: self.ids.node(),
@@ -16724,7 +16744,8 @@ impl LowerCtx {
                             None
                         }
                     } else if let Some(block) = &eb.block {
-                        let hir_block = self.lower_block(block, &ResolvedTy::Unit);
+                        let hir_block =
+                            self.lower_block(block, &ResolvedTy::Unit, IntentKind::Read);
                         let else_ty = hir_block.ty.clone();
                         Some(Box::new(HirExpr {
                             node: self.ids.node(),
@@ -16763,7 +16784,7 @@ impl LowerCtx {
                 // `while cond { body }` — lowered to a HIR `While` expression
                 // so that MIR can build the header/body/exit CFG shape.
                 let cond_hir = self.lower_expr(condition, IntentKind::Read);
-                let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                let body_block = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                 let while_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -16820,7 +16841,7 @@ impl LowerCtx {
                     );
                     // Walk the body for checker-stream coverage.
                     self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                     self.pop_scope();
                     let unsupported_expr = HirExpr {
                         node: self.ids.node(),
@@ -16846,7 +16867,7 @@ impl LowerCtx {
                 // AST-derived resolution.
                 if self.record_shape_missing_plan(pattern) {
                     self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                     self.pop_scope();
                     let unsupported_expr = HirExpr {
                         node: self.ids.node(),
@@ -16892,7 +16913,7 @@ impl LowerCtx {
                     };
                     let condition =
                         self.literal_pattern_condition(scrutinee_hir, lit, pattern_span.clone());
-                    let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                    let body_block = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                     let while_expr = HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
@@ -16931,7 +16952,7 @@ impl LowerCtx {
                         "while-let-substrate",
                     );
                     self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                     self.pop_scope();
                     let unsupported_expr = HirExpr {
                         node: self.ids.node(),
@@ -16963,7 +16984,7 @@ impl LowerCtx {
                         "while-let-substrate",
                     );
                     self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                     self.pop_scope();
                     let unsupported_expr = HirExpr {
                         node: self.ids.node(),
@@ -17041,7 +17062,7 @@ impl LowerCtx {
                         break;
                     }
                 }
-                let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                let body_block = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                 self.pop_scope();
 
                 if binding_error || pvp_error {
@@ -17144,7 +17165,7 @@ impl LowerCtx {
                         // above is the actionable one.
                         self.push_scope();
                         let _ = self.bind(binding_name, ResolvedTy::I64, false, pattern.1.clone());
-                        let _ = self.lower_block(body, &ResolvedTy::Unit);
+                        let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                         self.pop_scope();
                         HirExprKind::Unsupported(
                             "for-in over `(a..b).step_by(k).rev()` (unsupported adapter order)"
@@ -17232,7 +17253,8 @@ impl LowerCtx {
                         // scoped to the body but visible during body lowering.
                         self.push_scope();
                         let binding = self.bind(binding_name, elem_ty, false, pattern.1.clone());
-                        let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                        let body_block =
+                            self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                         self.pop_scope();
 
                         HirExprKind::ForRange {
@@ -17262,7 +17284,7 @@ impl LowerCtx {
                             "for-while-lowering",
                         );
                         self.push_scope();
-                        let _ = self.lower_block(body, &ResolvedTy::Unit);
+                        let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                         self.pop_scope();
                         HirExprKind::Unsupported("for-range with non-identifier pattern".into())
                     }
@@ -17322,7 +17344,7 @@ impl LowerCtx {
                 } else {
                     ResolvedTy::Never
                 };
-                let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                let body_block = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                 let loop_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -17657,7 +17679,7 @@ impl LowerCtx {
                  only single payload-bearing enum-variant patterns are supported",
                 "let-else-substrate",
             );
-            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
+            let _ = self.lower_block(else_block, &ResolvedTy::Unit, IntentKind::Read);
             return None;
         };
 
@@ -17665,7 +17687,7 @@ impl LowerCtx {
         // struct-variant `Packet::Data { a, .. }`) with no checker `PatternPlan`
         // fails closed here rather than lowering off the AST-derived resolution.
         if self.record_shape_missing_plan(pattern) {
-            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
+            let _ = self.lower_block(else_block, &ResolvedTy::Unit, IntentKind::Read);
             return None;
         }
 
@@ -17679,7 +17701,7 @@ impl LowerCtx {
                  bindings, and or-patterns are reserved for a future lane",
                 "let-else-substrate",
             );
-            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
+            let _ = self.lower_block(else_block, &ResolvedTy::Unit, IntentKind::Read);
             return None;
         };
 
@@ -17691,7 +17713,7 @@ impl LowerCtx {
                 "let-else variant not registered in machine/enum ctor registry",
                 "let-else-substrate",
             );
-            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
+            let _ = self.lower_block(else_block, &ResolvedTy::Unit, IntentKind::Read);
             return None;
         };
         let variant_idx =
@@ -17730,7 +17752,7 @@ impl LowerCtx {
         // payload into the enclosing scope — so the else block cannot see the
         // escaping binders (matching the checker's failure-path scoping).
         self.push_scope();
-        let else_body = self.lower_block(else_block, &ResolvedTy::Unit);
+        let else_body = self.lower_block(else_block, &ResolvedTy::Unit, IntentKind::Read);
         self.pop_scope();
 
         // Bind the payload fields into the ENCLOSING scope (no push/pop) so the
@@ -17855,10 +17877,10 @@ impl LowerCtx {
                 "if-let-substrate",
             );
             self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
+            let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
             self.pop_scope();
             if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                let _ = self.lower_block(eb, &ResolvedTy::Unit, IntentKind::Read);
             }
             return None;
         };
@@ -17868,10 +17890,10 @@ impl LowerCtx {
         // fails closed here rather than lowering off the AST-derived resolution.
         if self.record_shape_missing_plan(pattern) {
             self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
+            let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
             self.pop_scope();
             if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                let _ = self.lower_block(eb, &ResolvedTy::Unit, IntentKind::Read);
             }
             return None;
         }
@@ -17884,16 +17906,16 @@ impl LowerCtx {
                     "if-let-substrate",
                 );
                 self.push_scope();
-                let _ = self.lower_block(body, &ResolvedTy::Unit);
+                let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                 self.pop_scope();
                 if let Some(eb) = else_body {
-                    let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                    let _ = self.lower_block(eb, &ResolvedTy::Unit, IntentKind::Read);
                 }
                 return None;
             };
             let condition =
                 self.literal_pattern_condition(scrutinee_hir, lit, pattern_span.clone());
-            let then_block = self.lower_block(body, result_ty);
+            let then_block = self.lower_block(body, result_ty, IntentKind::Read);
             let then_ty = then_block.ty.clone();
             let then_expr = HirExpr {
                 node: self.ids.node(),
@@ -17905,7 +17927,7 @@ impl LowerCtx {
                 span: span.clone(),
             };
             let else_expr = else_body.map(|eb| {
-                let else_block = self.lower_block(eb, result_ty);
+                let else_block = self.lower_block(eb, result_ty, IntentKind::Read);
                 let else_ty = else_block.ty.clone();
                 Box::new(HirExpr {
                     node: self.ids.node(),
@@ -17935,10 +17957,10 @@ impl LowerCtx {
                 "if-let-substrate",
             );
             self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
+            let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
             self.pop_scope();
             if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                let _ = self.lower_block(eb, &ResolvedTy::Unit, IntentKind::Read);
             }
             return None;
         };
@@ -17952,10 +17974,10 @@ impl LowerCtx {
                 "if-let-substrate",
             );
             self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
+            let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
             self.pop_scope();
             if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                let _ = self.lower_block(eb, &ResolvedTy::Unit, IntentKind::Read);
             }
             return None;
         };
@@ -18019,10 +18041,12 @@ impl LowerCtx {
                 break;
             }
         }
-        let body_block = self.lower_block(body, result_ty);
+        let body_block = self.lower_block(body, result_ty, IntentKind::Read);
         self.pop_scope();
 
-        let else_block = else_body.as_ref().map(|eb| self.lower_block(eb, result_ty));
+        let else_block = else_body
+            .as_ref()
+            .map(|eb| self.lower_block(eb, result_ty, IntentKind::Read));
 
         if binding_error || pvp_error {
             return None;
@@ -18914,13 +18938,13 @@ impl LowerCtx {
                 {
                     self.lower_map_literal(&[], &span)
                 } else {
-                    let block = self.lower_block(block, &ResolvedTy::Unit);
+                    let block = self.lower_block(block, &ResolvedTy::Unit, IntentKind::Read);
                     let ty = block.ty.clone();
                     (HirExprKind::Block(block), ty)
                 }
             }
             Expr::Block(block) => {
-                let block = self.lower_block(block, &ResolvedTy::Unit);
+                let block = self.lower_block(block, &ResolvedTy::Unit, IntentKind::Read);
                 let ty = block.ty.clone();
                 (HirExprKind::Block(block), ty)
             }
@@ -19900,7 +19924,7 @@ impl LowerCtx {
                 // body as a plain block.  The `in_unsafe` flag pushed by the type
                 // checker is not carried into HIR or MIR — pointer and FFI safety
                 // obligations are enforced by the checker before lowering.
-                let hir_block = self.lower_block(block, &ResolvedTy::Unit);
+                let hir_block = self.lower_block(block, &ResolvedTy::Unit, IntentKind::Read);
                 let ty = hir_block.ty.clone();
                 (HirExprKind::Block(hir_block), ty)
             }
@@ -21496,8 +21520,9 @@ impl LowerCtx {
         // outer locals are candidates. See `collect_gen_captures`.
         let outer_bindings = self.visible_outer_bindings();
         self.generator_yield_tys.push(yield_ty.clone());
-        let lowered_body = self
-            .with_current_return_type(return_ty.clone(), |ctx| ctx.lower_block(body, &return_ty));
+        let lowered_body = self.with_current_return_type(return_ty.clone(), |ctx| {
+            ctx.lower_block(body, &return_ty, IntentKind::Consume)
+        });
         self.generator_yield_tys.pop();
         let captures = Self::collect_gen_captures(&lowered_body, &outer_bindings);
 
@@ -27015,7 +27040,7 @@ impl LowerCtx {
                     );
                     self.push_scope();
                     let _ = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                     self.pop_scope();
                     return HirExprKind::Unsupported(
                         "for await over unsupported Receiver<T> element type".into(),
@@ -27046,7 +27071,7 @@ impl LowerCtx {
                     );
                     self.push_scope();
                     let _ = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                     self.pop_scope();
                     return HirExprKind::Unsupported(
                         "for await over unsupported Stream<T> element type".into(),
@@ -27114,7 +27139,7 @@ impl LowerCtx {
                     "iterator-runtime-dispatch",
                 );
                     self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    let _ = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
                     self.pop_scope();
                     return HirExprKind::Unsupported(
                         "for-in over unsupported non-Range iterable type".into(),
@@ -27341,7 +27366,7 @@ impl LowerCtx {
                 pattern.1.clone(),
             );
         }
-        let mut body_block = self.lower_block(body, &ResolvedTy::Unit);
+        let mut body_block = self.lower_block(body, &ResolvedTy::Unit, IntentKind::Read);
         if !body_prelude.is_empty() {
             body_prelude.extend(body_block.statements);
             body_block.statements = body_prelude;
@@ -30558,7 +30583,7 @@ impl LowerCtx {
     fn lower_cancellation_clause_block(&mut self, block: &Block) -> HirBlock {
         let saved_scope_depth = self.scope_depth;
         self.scope_depth = 0;
-        let lowered = self.lower_block(block, &ResolvedTy::Unit);
+        let lowered = self.lower_block(block, &ResolvedTy::Unit, IntentKind::Read);
         self.scope_depth = saved_scope_depth;
         lowered
     }

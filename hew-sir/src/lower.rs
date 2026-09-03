@@ -1208,6 +1208,62 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })
     }
 
+    /// Lower a block's trailing expression.
+    ///
+    /// A tail is not an ordinary operand use. When the block is a function
+    /// body, its tail IS the return value, and HIR stamps it `Consume` — the
+    /// same stamp it puts on an explicit `return` of that expression, because
+    /// falling off the end of a body and returning are one control-flow
+    /// event. SIR therefore admits here exactly what the `HirStmtKind::Return`
+    /// arm admits, so the two spellings cannot diverge again one layer down.
+    /// A `Read` tail keeps its previous acceptance, so the admitted domain
+    /// never shrinks.
+    fn lower_tail_operand(&mut self, expr: &HirExpr, context: &str) -> Result<Operand, String> {
+        let mode = use_mode_from_hir_intent(expr.intent)
+            .map_err(|reason| format!("{context}: {reason}"))?;
+        match mode {
+            UseMode::Read => {}
+            UseMode::Move => {
+                let ty = self.ty(&expr.ty);
+                initial_value_transfer_mode(expr.intent, &ty, context)?;
+            }
+            _ => {
+                return Err(format!(
+                    "{context}: HIR {:?} intent maps to SIR {mode:?}; initial SIR admits \
+                     only a read or a scalar value transfer here",
+                    expr.intent
+                ))
+            }
+        }
+        Ok(Operand {
+            value: self.lower_expr(expr)?,
+            mode: UseMode::Read,
+        })
+    }
+
+    /// Lower a `Unit`-typed block tail.
+    ///
+    /// Mirrors [`Self::lower_discarded_expr`], but a function body's tail
+    /// carries HIR's `Consume` stamp. For `Unit` that transfer has no
+    /// ownership obligation, exactly as `lower_initial_unit_return` records
+    /// for the explicit-`return` spelling.
+    fn lower_unit_tail(&mut self, expr: &HirExpr) -> Result<(), String> {
+        let mode = use_mode_from_hir_intent(expr.intent)
+            .map_err(|reason| format!("unit block tail: {reason}"))?;
+        if !matches!(mode, UseMode::Read | UseMode::Move) {
+            return Err(format!(
+                "unit block tail: HIR {:?} intent maps to SIR {mode:?}; initial SIR \
+                 admits only a read or a Unit transfer here",
+                expr.intent
+            ));
+        }
+        if matches!(expr.kind, HirExprKind::Call { .. }) {
+            self.lower_direct_call(expr, false)?;
+            return Ok(());
+        }
+        self.lower_expr(expr).map(|_| ())
+    }
+
     fn lower_block(&mut self, block: &HirBlock) -> Result<Option<Operand>, String> {
         for statement in &block.statements {
             if !self.is_open() {
@@ -1261,10 +1317,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if self.is_open() {
             match block.tail.as_deref() {
                 Some(expr) if self.ty(&expr.ty) == ResolvedTy::Unit => {
-                    self.lower_discarded_expr(expr)?;
+                    self.lower_unit_tail(expr)?;
                     Ok(None)
                 }
-                Some(expr) => Ok(Some(self.lower_read_operand(expr, "block tail value")?)),
+                Some(expr) => Ok(Some(self.lower_tail_operand(expr, "block tail value")?)),
                 None => Ok(None),
             }
         } else {

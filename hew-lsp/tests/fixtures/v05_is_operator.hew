@@ -7,8 +7,8 @@ fn is_probe() -> i32 {
     7
 }
 
-fn is_operator(value: Payload) -> i32 {
-    if value is Payload {
+fn is_operator(value: bytes, other: bytes) -> i32 {
+    if value is other {
         is_probe()
     } else {
         0

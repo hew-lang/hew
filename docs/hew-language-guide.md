@@ -862,7 +862,7 @@ fn main() {
 }
 ```
 
-To have a helper build a collection, pass it and mutate in place — the caller observes the result. This is reference semantics; `let`/`var` only controls rebinding the name, not interior mutation.
+To have a helper build a collection, pass it and mutate in place — the caller observes the result. A call borrows, so the caller's binding stays valid either way; the binding mode governs assignment through the name and calls to `var self` methods on it, not what a callee does with a collection it borrowed.
 
 ### Reuse a passed value without clone (intra-actor)
 

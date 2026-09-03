@@ -1309,10 +1309,10 @@ not how actor state is read.
 `this` is not a keyword and carries no actor meaning; the handle is `self`
 everywhere.
 
-A plain `fn` in an actor body is an associated function of the actor type. It
-has no receiver and no view of the fields, so a helper over actor state is a
-`receive fn`, a lifecycle hook, or a free function that takes the state as a
-parameter.
+A plain `fn` in an actor body has no receiver. Its body is checked against the
+actor's fields by bare name like a handler's, but no call form reaches it today
+(#3285), so a helper over actor state is a `receive fn`, a lifecycle hook, or a
+free function that takes the state as a parameter.
 
 **Variable shadowing:**
 

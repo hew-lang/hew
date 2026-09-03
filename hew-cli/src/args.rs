@@ -100,6 +100,14 @@ pub enum Command {
     Fmt(FmtArgs),
     /// Scaffold a manifest-first project (`hew.toml` + starter source + merged `.gitignore`).
     Init(InitArgs),
+    /// Create a new manifest-first project directory and initialize it as a
+    /// git repository.
+    ///
+    /// Like `cargo new`: creates `<name>/`, scaffolds it exactly as `hew
+    /// init` would, and runs `git init` unless the new directory already
+    /// sits inside a repository. Use `hew init` to scaffold the current
+    /// directory in place without touching git.
+    New(NewArgs),
     /// Curated playground example tools.
     ///
     /// Superseded by `hew tool playground-verify`. Kept as a hidden alias so
@@ -890,6 +898,22 @@ pub struct FmtArgs {
 pub struct InitArgs {
     /// Project name (creates the directory if needed; omit to init the current directory).
     pub name: Option<String>,
+    /// Scaffold a library project (`<final-package-segment>.hew`).
+    #[arg(long, conflicts_with = "actor")]
+    pub lib: bool,
+    /// Scaffold an actor project.
+    #[arg(long)]
+    pub actor: bool,
+}
+
+// ---------------------------------------------------------------------------
+// New
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Args)]
+pub struct NewArgs {
+    /// Project name; the new directory is created with this name.
+    pub name: String,
     /// Scaffold a library project (`<final-package-segment>.hew`).
     #[arg(long, conflicts_with = "actor")]
     pub lib: bool,

@@ -596,3 +596,139 @@ fn directory_reaching_the_compiler_gets_a_diagnostic() {
         describe_output(&output),
     );
 }
+
+/// `hew new <name>` creates the directory, scaffolds it like `hew init`,
+/// and — like `cargo new` — initializes a git repository of its own, since
+/// this fixture (a bare `tempfile::tempdir()`, unlike `workspace()`) sits
+/// outside any existing repository.
+#[test]
+fn hew_new_scaffolds_and_inits_git() {
+    let outside_any_repo = tempfile::tempdir().expect("temp dir outside the checkout");
+
+    let output = Command::new(hew_binary())
+        .args(["new", "svc"])
+        .current_dir(outside_any_repo.path())
+        .output()
+        .expect("run hew new");
+
+    assert!(
+        output.status.success(),
+        "hew new failed\n{}",
+        describe_output(&output),
+    );
+
+    let project_dir = outside_any_repo.path().join("svc");
+    assert!(
+        project_dir.join("hew.toml").exists(),
+        "hew new should scaffold hew.toml"
+    );
+    assert!(
+        project_dir.join("main.hew").exists(),
+        "hew new should scaffold main.hew"
+    );
+    assert!(
+        project_dir.join(".git").is_dir(),
+        "hew new should initialize a git repository of its own"
+    );
+    let gitignore = std::fs::read_to_string(project_dir.join(".gitignore")).unwrap();
+    assert!(
+        gitignore.lines().any(|l| l.trim() == "target/"),
+        "scaffold .gitignore should ignore target/:\n{gitignore}"
+    );
+}
+
+/// Negative control for the test above: `hew new` inside an existing
+/// repository must not nest a second `.git` (matching `cargo new`).
+#[test]
+fn hew_new_inside_a_repo_does_not_nest_git() {
+    let dir = workspace();
+
+    let output = Command::new(hew_binary())
+        .args(["new", "svc"])
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew new");
+
+    assert!(
+        output.status.success(),
+        "hew new failed\n{}",
+        describe_output(&output),
+    );
+    assert!(
+        !dir.path().join("svc").join(".git").exists(),
+        "hew new must not nest a repository inside an existing one"
+    );
+}
+
+/// `hew add` refuses an unknown package with exit 1 before writing the
+/// manifest — proven against a hermetic canned registry (a 404 for every
+/// package name), never the real default registry.
+#[test]
+fn hew_add_unknown_package_exits_1() {
+    let dir = workspace();
+    write_package(dir.path(), "consumer", "main.hew", "");
+
+    let port = support::http_canned::spawn_canned_response_server(
+        "404 Not Found",
+        r#"{"message":"package not found"}"#,
+    );
+    let manifest_before = std::fs::read_to_string(dir.path().join("hew.toml")).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["add", "hew.does.not.exist"])
+        .current_dir(dir.path())
+        // A fresh HEW_HOME keeps a developer's real ~/.hew/config.toml (a
+        // configured fallback-api, stored credentials) from leaking in.
+        .env("HEW_HOME", dir.path().join(".fresh-hew-home"))
+        .env("HEW_REGISTRY", format!("http://127.0.0.1:{port}"))
+        .output()
+        .expect("run hew add");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an unknown package must exit 1\n{}",
+        describe_output(&output),
+    );
+    let manifest_after = std::fs::read_to_string(dir.path().join("hew.toml")).unwrap();
+    assert_eq!(
+        manifest_before, manifest_after,
+        "hew.toml must be unchanged when the package is refused"
+    );
+}
+
+/// `hew add --dry-run` prints the manifest change and writes nothing. Uses
+/// a local path dependency so the test doubles as proof of the invariant
+/// that local-path dependencies never contact a registry.
+#[test]
+fn hew_add_dry_run_writes_nothing() {
+    let dir = workspace();
+    write_package(dir.path(), "consumer", "main.hew", "");
+    let dep_dir = dir.path().join("localdep");
+    std::fs::create_dir_all(&dep_dir).expect("create dependency dir");
+    write_package(&dep_dir, "localdep", "localdep.hew", "");
+
+    let manifest_before = std::fs::read_to_string(dir.path().join("hew.toml")).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["add", "localdep", "--path", "localdep", "--dry-run"])
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew add --dry-run");
+
+    assert!(
+        output.status.success(),
+        "hew add --dry-run failed\n{}",
+        describe_output(&output),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Would add"),
+        "dry-run should report the change it would make:\n{stdout}"
+    );
+    let manifest_after = std::fs::read_to_string(dir.path().join("hew.toml")).unwrap();
+    assert_eq!(
+        manifest_before, manifest_after,
+        "hew add --dry-run must not write hew.toml"
+    );
+}

@@ -72,6 +72,13 @@
 #       through its descriptor clone thunk, drops both Vecs, and explicitly
 #       closes the paired Receiver. An under-retained clone or duplicate close
 #       is an ASan failure; a missing sender-slot release is an LSan failure.
+#   actor-state stream for-await ownership (#3218, KNOWN v0.6.0 limit)
+#       A `for await` loop over an actor-state `Stream<T>` field. Loop
+#       exhaustion mints a second close authority for the cursor while the
+#       field's own state-drop close authority stays intact, so the runtime
+#       stream pointer is closed twice at teardown. Registered through
+#       `run_asan_fixture_expect_leak` as an EXPECTED finding rather than a
+#       zero-findings probe; flip it once P1-L3/P1-L5 land.
 #
 # SHIM: Linux-only gate.  On macOS the leak oracle is the `leaks --atExit`
 # path in hew-cli/tests/*_leak_oracle.rs; ASan + LSan on Darwin does not
@@ -413,6 +420,12 @@ ENUM_PAYLOAD_LOOP_SRC="${ROOT}/tests/vertical-slice/accept/enum_payload_call_loo
 CALL_SCRUTINEE_FRESH_SRC="${ROOT}/tests/vertical-slice/accept/call_scrutinee_fresh_forwarder_release.hew"
 ENUM_RESOURCE_MATCH_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_heap_sibling_asan.hew"
 ENUM_RESOURCE_STATE_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_state_overwrite_asan.hew"
+# Actor-state stream for-await ownership (#3218, KNOWN v0.6.0 limit): a
+# `for await` loop draining an actor-state `Stream<T>` field double-closes the
+# stream at teardown on the current lowerer, so this is registered below as an
+# EXPECTED ASan finding via `run_asan_fixture_expect_leak`. Flip it to
+# `compile_asan_fixture` + `run_asan_fixture ... 0` once #3218 is fixed.
+STREAM_STATE_FIELD_FOR_AWAIT_SRC="${ROOT}/tests/vertical-slice/accept/stream_state_field_for_await_asan.hew"
 # Owned-Vec element-store temp-leak (Linux arm of vec_push_temp_leak_oracle.rs):
 # a fresh unbound aggregate rvalue used as a `Vec::push` / `Vec::set` element
 # source is routed to the MOVE-in siblings (hew_vec_push_owned_move /
@@ -492,6 +505,9 @@ compile_asan_fixture "resource enum match-consume (#2641)" "${ENUM_RESOURCE_MATC
 
 ENUM_RESOURCE_STATE_BIN="${WORK_DIR}/enum_resource_state_overwrite_asan"
 compile_asan_fixture "resource enum actor-state overwrite (#2641)" "${ENUM_RESOURCE_STATE_SRC}" "${ENUM_RESOURCE_STATE_BIN}"
+
+STREAM_STATE_FIELD_FOR_AWAIT_BIN="${WORK_DIR}/stream_state_field_for_await_asan"
+compile_asan_fixture "actor-state stream for-await ownership (#3218)" "${STREAM_STATE_FIELD_FOR_AWAIT_SRC}" "${STREAM_STATE_FIELD_FOR_AWAIT_BIN}"
 
 VEC_ELEM_STORE_TEMP_BIN="${WORK_DIR}/vec_elem_store_owned_temp_no_leak"
 HASHMAP_ENTRIES_BIN="${WORK_DIR}/hashmap_entries"
@@ -629,6 +645,18 @@ else
 fi
 
 if run_asan_fixture "resource enum actor-state overwrite (#2641)" "${ENUM_RESOURCE_STATE_BIN}" 0; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1))
+fi
+
+# KNOWN (#3218, v0.6.0 documented limit): `for await` over an actor-state
+# `Stream<T>` field mints a second close authority for the loop cursor while
+# the field's own state-drop close authority stays intact, so the runtime
+# stream pointer is closed twice at teardown. Registered as an EXPECTED
+# finding until #3218 is fixed. When it is, this must flip to
+# `run_asan_fixture ... 0` and the ledger note above must be removed.
+if run_asan_fixture_expect_leak "actor-state stream for-await ownership (#3218)" "${STREAM_STATE_FIELD_FOR_AWAIT_BIN}"; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1))

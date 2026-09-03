@@ -79,6 +79,55 @@ fn typecheck_top_level_networking_demos() {
     }
 }
 
+// A module's `impl Trait for T` blocks are registered when the module is
+// loaded, not when the importer names `T` in an explicit `{...}` selection.
+// A bare `import std.net;` plus a qualified `net.NetError` therefore
+// satisfies the `Display` bound that `to_string` and f-string interpolation
+// require, with no `import std.net.{NetError};` line to prop it up.
+#[test]
+fn bare_module_import_satisfies_the_display_bound_from_the_modules_impl() {
+    assert_inline_typechecks_cleanly(
+        r#"
+import std.net;
+
+fn describe(err: net.NetError) -> string {
+    to_string(err)
+}
+
+fn interpolate(err: net.NetError) -> string {
+    f"{err}"
+}
+"#,
+        "bare module import with a qualified error type",
+    );
+}
+
+// Counterfactual for the test above: the same import spelling, the same
+// module, and the same qualified-type shape, on a type the module declares no
+// `impl Display` for, is still refused. Registration follows the module's
+// impls, not the import spelling.
+#[test]
+fn bare_module_import_without_a_display_impl_still_refuses_interpolation() {
+    let output = typecheck_inline(
+        r#"
+import std.net;
+
+fn interpolate(endpoint: net.Endpoint) -> string {
+    f"{endpoint}"
+}
+"#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::BoundsNotSatisfied
+                && e.message.contains("std.net.Endpoint")
+                && e.message.contains("Display")
+        }),
+        "expected a Display bound refusal for `std.net.Endpoint`, got: {:#?}",
+        output.errors
+    );
+}
+
 fn assert_typechecks(path: &Path, label: &str) {
     let source = fs::read_to_string(path).unwrap();
     let program = parse_program(&source);
@@ -732,14 +781,18 @@ fn respond(req: http.Request) -> i64 {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.is_empty(),
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { target: hew_types::check::CallTarget::ImplMethod(def), .. }
+                if def.full_path().ends_with("::respond_text")
+        )),
         "resource-wrapper methods must dispatch through their impl body, got: {:?}",
         output.method_call_rewrites
     );
 }
 
 #[test]
-fn module_qualified_call_rewrites_record_registry_c_symbol_metadata() {
+fn module_qualified_call_rewrites_record_owning_module_endpoint() {
     let output = typecheck_inline(
         r#"
 import std.fs;
@@ -758,9 +811,9 @@ fn main() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
-                if c_symbol == "hew_file_exists"
+                if c_symbol == "std.fs.exists"
         )),
-        "expected checker-owned module-qualified rewrite metadata, got: {:?}",
+        "expected the module-qualified rewrite to name the owning module endpoint, got: {:?}",
         output.method_call_rewrites
     );
 }
@@ -2683,8 +2736,21 @@ fn http_request_close_dispatches_through_resource_impl() {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.is_empty(),
-        "resource-wrapper close must not use the opaque-handle fallback rewrite, got: {:?}",
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { target: hew_types::check::CallTarget::ImplMethod(def), .. }
+                if def.full_path().starts_with("std.net.http.Request::")
+        )),
+        "resource-wrapper close must dispatch through the authored impl, got: {:?}",
+        output.method_call_rewrites
+    );
+    assert!(
+        !output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol.starts_with("hew_")
+        )),
+        "resource-wrapper close must not fall back to a raw FFI rewrite, got: {:?}",
         output.method_call_rewrites
     );
 }
@@ -2734,16 +2800,12 @@ fn http_request_unknown_method_is_undefined() {
 
 #[test]
 fn net_connection_write_arg_type_checked() {
-    // `write` is now a Hew wrapper function (`write_result_from_status(unsafe {
-    // hew_tcp_write(...) })`), not a direct single-call C shim. The stdlib
-    // loader's handle-method extractor only recognises single-call shims, so
-    // `write` no longer appears in `handle_methods` in the inline typecheck
-    // context (no module graph, no `resolved_items` path). As a result, the
-    // type checker correctly reports `UndefinedMethod` — the method is simply
-    // not visible in this path. The full compilation path (with a module graph
-    // that populates `resolved_items`) registers the Hew signature and enforces
-    // the `bytes` arg-type constraint; the `tcp_write_backpressure` vertical
-    // slice and the refactored examples validate the real call-site behaviour.
+    // `write` is a Hew wrapper function (`write_result_from_status(unsafe {
+    // hew_tcp_write(...) })`), not a direct single-call C shim, so the
+    // registry's handle-method extractor cannot see it. The module's own
+    // source declarations supply the signature on every import spelling, so
+    // the registry-only checker path enforces the same `bytes` argument type
+    // the full module-graph path does.
     let output = typecheck_inline(
         r#"
         import std.net;
@@ -2754,12 +2816,12 @@ fn net_connection_write_arg_type_checked() {
         "#,
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::UndefinedMethod),
-        "expected UndefinedMethod for conn.write in inline typecheck path \
-         (write is a Hew wrapper not a direct C shim), got: {:#?}",
+        output.errors.iter().any(|error| matches!(
+            &error.kind,
+            TypeErrorKind::Mismatch { expected, actual }
+                if expected == "bytes" && actual == "string"
+        )),
+        "expected conn.write to reject a string where `bytes` is required, got: {:#?}",
         output.errors
     );
 }

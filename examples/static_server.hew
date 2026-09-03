@@ -18,16 +18,6 @@ import std.net.mime;
 
 import std.net;
 
-// WHY: `to_string(err)` below needs `impl Display for NetError` in scope.
-// The checker only registers a module's `impl` blocks for a type named in
-// an explicit `{...}` import; a bare `import std.net;` publishes the
-// `net.` namespace for calls but not the Display impl for bound-checking.
-// WHEN obsolete: once module-level imports register the whole module's
-// impls (checker fix), not just explicitly named types.
-// WHAT the real fix looks like: `hew-types` registration change so
-// `import std.net;` alone is enough for `to_string`/f-string Display use.
-import std.net.{NetError};
-
 fn resolve_path(root: string, url_path: string) -> string {
     let path = root + url_path;
     if url_path.ends_with("/") {

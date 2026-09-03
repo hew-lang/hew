@@ -325,7 +325,7 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
 }
 
 #[test]
-fn module_qualified_call_rewrites_record_registry_c_symbol_metadata() {
+fn module_qualified_call_rewrites_record_owning_module_endpoint() {
     let parsed = hew_parser::parse(
         r#"
 import std.fs;
@@ -351,9 +351,9 @@ fn main() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
-                if c_symbol == "hew_file_exists"
+                if c_symbol == "std.fs.exists"
         )),
-        "expected checker-owned module-qualified rewrite metadata, got: {:?}",
+        "expected the module-qualified rewrite to name the owning module endpoint, got: {:?}",
         output.method_call_rewrites
     );
 }
@@ -385,7 +385,7 @@ fn main() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
-                if c_symbol == "path.dirname"
+                if c_symbol == "std.path.dirname"
         )),
         "expected pure-Hew stdlib wrapper to rewrite to module-qualified symbol, got: {:?}",
         output.method_call_rewrites

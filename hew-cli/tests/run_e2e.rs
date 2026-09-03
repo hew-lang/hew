@@ -5083,6 +5083,373 @@ fn run_record_of_handles_return_drops_each_field_once() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "record-ok\n");
 }
 
+/// Negative control for `run_record_of_handles_return_drops_each_field_once`:
+/// the SAME record with NO explicit close must still exit cleanly. The fix for
+/// the double close nulls the record's field slot when a consuming call takes
+/// the handle; a fix that instead retired the whole record drop would trade the
+/// double close for two leaked stream handles, and this program would keep
+/// passing. It pins that the composite is still the owner when nothing takes
+/// the fields off it.
+#[test]
+fn run_record_of_handles_return_without_explicit_close_exits_clean() {
+    require_codegen();
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("record_handle_return_noclose.hew");
+    std::fs::write(
+        &hew_src,
+        "import std.stream.{ Sink, Stream };\n\
+         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
+         fn make_pipe() -> Pipe {\n\
+         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let p = Pipe { sink: s, input: r };\n\
+         \x20   p\n\
+         }\n\
+         fn main() {\n\
+         \x20   let p = make_pipe();\n\
+         \x20   p.sink.send(\"alpha\");\n\
+         \x20   println(\"record-noclose-ok\");\n\
+         }\n",
+    )
+    .unwrap();
+    let output = run_bounded_hew_run(&hew_src, repo_root());
+    assert!(
+        output.status.success(),
+        "record of handles with no explicit close must run cleanly; status: {:?}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "record-noclose-ok\n"
+    );
+}
+
+/// The TUPLE spelling of the same field projection: `p.0.close()` on a
+/// let-bound tuple of handles. #3113 read the tuple return path as correct
+/// because the DESTRUCTURED form (`let (sink, input) = ...`) neutralizes its
+/// source slots in the pattern; projecting the field straight into the close
+/// took the borrow path and left the tuple's `TupleInPlace` walk closing the
+/// same handles again.
+///
+/// KNOWN FAILURE (#3070): on the current lowerer this prints
+/// `tuple-field-ok` and then exits non-zero (a double close during scope-exit
+/// teardown). See `scripts/nextest-expected-failures.tsv`.
+#[test]
+fn run_bound_tuple_field_close_drops_each_handle_once() {
+    require_codegen();
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("tuple_field_close.hew");
+    std::fs::write(
+        &hew_src,
+        "import std.stream.{ Sink, Stream };\n\
+         fn make_pipe() -> (Sink<string>, Stream<string>) {\n\
+         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   (s, r)\n\
+         }\n\
+         fn main() {\n\
+         \x20   let p = make_pipe();\n\
+         \x20   p.0.send(\"alpha\");\n\
+         \x20   p.0.close();\n\
+         \x20   p.1.close();\n\
+         \x20   println(\"tuple-field-ok\");\n\
+         }\n",
+    )
+    .unwrap();
+    let output = run_bounded_hew_run(&hew_src, repo_root());
+    assert!(
+        output.status.success(),
+        "tuple field close must not double-close; status: {:?}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "tuple-field-ok\n");
+}
+
+// ── `#[resource]`-record FIELD of a plain record (#3070) ────────────────
+//
+// A `#[resource]` record leaf has no null representation, so clearing the
+// composite's slot cannot make its `RecordInPlace` field walk skip it: the walk
+// would run the user `close(self)` over zeroed storage. The composite stops
+// owning the leaf instead, which retires the WHOLE root — the boundary these
+// three pin from all sides.
+
+/// Shared prelude: a `#[resource]` record over a real `malloc` block, so a
+/// second close is a genuine double free rather than only an extra line.
+const RESOURCE_FIELD_PRELUDE: &str = "\
+extern \"C\" {\n\
+    fn malloc(size: i64) -> i64;\n\
+    fn free(addr: i64);\n\
+}\n\
+#[resource]\n\
+type Slot { addr: i64 }\n\
+impl Slot {\n\
+    fn close(self) { println(\"close\"); unsafe { free(self.addr) }; }\n\
+}\n\
+fn acquire() -> Slot { Slot { addr: unsafe { malloc(64) } } }\n\
+type Two { a: Slot, b: Slot }\n";
+
+fn run_resource_field_program(name: &str, body: &str) -> std::process::Output {
+    let dir = support::tempdir();
+    let hew_src = dir.path().join(name);
+    std::fs::write(&hew_src, format!("{RESOURCE_FIELD_PRELUDE}{body}")).unwrap();
+    run_bounded_hew_run(&hew_src, repo_root())
+}
+
+/// Both fields closed by the program. Each close must retire the root at most
+/// once: a second transfer of an already-ended generation is reported as an
+/// ownership-generation ICE, so this also pins the compile side.
+///
+/// KNOWN FAILURE (#3070): on the current lowerer this double-frees. See
+/// `scripts/nextest-expected-failures.tsv`.
+#[test]
+fn run_record_resource_fields_both_closed_close_once_each() {
+    require_codegen();
+    let output = run_resource_field_program(
+        "resource_field_both.hew",
+        "fn main() {\n\
+         \x20   let t = Two { a: acquire(), b: acquire() };\n\
+         \x20   t.a.close();\n\
+         \x20   t.b.close();\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "closing both resource fields must run cleanly; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "close\nclose\ndone\n"
+    );
+}
+
+/// Neither field closed: the composite's own field walk is the sole closer, so
+/// both leaves still close. The leak control for the retirement.
+#[test]
+fn run_record_resource_fields_untouched_close_once_each() {
+    require_codegen();
+    let output = run_resource_field_program(
+        "resource_field_untouched.hew",
+        "fn main() {\n\
+         \x20   let t = Two { a: acquire(), b: acquire() };\n\
+         \x20   let _ = t;\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "an untouched record of resource fields must run cleanly; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "done\nclose\nclose\n"
+    );
+}
+
+/// The documented leak edge: closing ONE of two resource fields retires the
+/// whole root, so the untouched sibling is never closed. Pre-fix this program
+/// closed `a` twice; the trade is a leak, and this pins which side of it we are
+/// on so a future per-field retirement is a deliberate change.
+///
+/// KNOWN FAILURE (#3070): on the current lowerer this double-frees `a` instead
+/// of leaking `b`. See `scripts/nextest-expected-failures.tsv`.
+#[test]
+fn run_record_resource_field_partial_close_leaks_the_sibling() {
+    require_codegen();
+    let output = run_resource_field_program(
+        "resource_field_partial.hew",
+        "fn main() {\n\
+         \x20   let t = Two { a: acquire(), b: acquire() };\n\
+         \x20   t.a.close();\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "closing one of two resource fields must not double free; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "close\ndone\n",
+        "exactly one close: `a` through the program, `b` leaked by the whole-root retirement"
+    );
+}
+
+// ── `#[resource]`-record payload of an enum carrier (#3070) ──────────────
+//
+// A `#[resource]` RECORD payload has no null representation, so the shell's
+// tag-aware `EnumInPlace` walk cannot skip a slot the match binder already took
+// — it calls the user `close(self)` on zeroed storage. Each of these prints the
+// payload's own field from inside `close`, so a second close is visible as a
+// second line carrying a zeroed value rather than only as a sanitizer finding.
+
+/// Shared prelude: a `#[resource]` record whose `close` names the value it is
+/// closing, and a `Result`-returning producer.
+const RESOURCE_PAYLOAD_PRELUDE: &str = "\
+#[resource]\n\
+type Handle { id: i64 }\n\
+impl Handle {\n\
+    fn close(self) { println(f\"close {self.id}\"); }\n\
+}\n\
+fn acquire(ok: bool) -> Result<Handle, string> {\n\
+    if ok { Ok(Handle { id: 7 }) } else { Err(\"declined\") }\n\
+}\n";
+
+fn run_resource_payload_program(name: &str, body: &str) -> std::process::Output {
+    let dir = support::tempdir();
+    let hew_src = dir.path().join(name);
+    std::fs::write(&hew_src, format!("{RESOURCE_PAYLOAD_PRELUDE}{body}")).unwrap();
+    run_bounded_hew_run(&hew_src, repo_root())
+}
+
+/// The reported reduction: an `.Ok(h)` arm that reads a bit-copy field off the
+/// binder. The binder owns the close; the shell must not close the payload it
+/// handed over. Pre-fix this printed `close 7` and then `close 0` — the shell's
+/// walk running the user close over the zeroed variant slot.
+///
+/// KNOWN FAILURE (#3070): on the current lowerer this prints an extra
+/// `close 0` line. See `scripts/nextest-expected-failures.tsv`.
+#[test]
+fn run_result_resource_payload_field_read_closes_once() {
+    require_codegen();
+    let output = run_resource_payload_program(
+        "resource_payload_read.hew",
+        "fn main() {\n\
+         \x20   match acquire(true) {\n\
+         \x20       .Ok(h) => { println(f\"id={h.id}\"); },\n\
+         \x20       .Err(e) => { println(e); },\n\
+         \x20   }\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "field-read arm must run cleanly; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "id=7\nclose 7\ndone\n"
+    );
+}
+
+/// The same arm with the binder untouched. Reading the field is not what
+/// discharges the shell, so the untouched binder must close exactly once too.
+///
+/// KNOWN FAILURE (#3070): on the current lowerer this prints an extra
+/// `close 0` line. See `scripts/nextest-expected-failures.tsv`.
+#[test]
+fn run_result_resource_payload_untouched_binder_closes_once() {
+    require_codegen();
+    let output = run_resource_payload_program(
+        "resource_payload_untouched.hew",
+        "fn main() {\n\
+         \x20   match acquire(true) {\n\
+         \x20       .Ok(h) => { let _ = h; },\n\
+         \x20       .Err(e) => { println(e); },\n\
+         \x20   }\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "untouched binder must run cleanly; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "close 7\ndone\n");
+}
+
+/// The explicit-close arm, which was already correct: it must stay at one close
+/// after the shell's generation moved to the hand-off. This is the control that
+/// catches a fix which ends the shell's generation twice.
+#[test]
+fn run_result_resource_payload_explicit_close_stays_once() {
+    require_codegen();
+    let output = run_resource_payload_program(
+        "resource_payload_explicit.hew",
+        "fn main() {\n\
+         \x20   match acquire(true) {\n\
+         \x20       .Ok(h) => { h.close(); },\n\
+         \x20       .Err(e) => { println(e); },\n\
+         \x20   }\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "explicit close arm must run cleanly; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "close 7\ndone\n");
+}
+
+/// Leak control: an arm that binds NOTHING leaves the payload with the shell,
+/// whose in-place walk is the only close. A fix that retired the shell's
+/// generation unconditionally would print nothing here.
+///
+/// KNOWN FAILURE (#3070): on the current lowerer this prints an extra
+/// `close 0` line. See `scripts/nextest-expected-failures.tsv`.
+#[test]
+fn run_result_resource_payload_wildcard_arm_closes_once() {
+    require_codegen();
+    let output = run_resource_payload_program(
+        "resource_payload_wildcard.hew",
+        "fn main() {\n\
+         \x20   match acquire(true) {\n\
+         \x20       .Ok(_) => { println(\"ok\"); },\n\
+         \x20       .Err(e) => { println(e); },\n\
+         \x20   }\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "wildcard arm must run cleanly; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "ok\nclose 7\ndone\n"
+    );
+}
+
+/// The declining producer allocates no payload, so no close may run at all —
+/// the counterfactual that keeps the positive assertions from passing on a
+/// compiler that closes something unconditionally.
+#[test]
+fn run_result_resource_payload_error_arm_closes_nothing() {
+    require_codegen();
+    let output = run_resource_payload_program(
+        "resource_payload_error.hew",
+        "fn main() {\n\
+         \x20   match acquire(false) {\n\
+         \x20       .Ok(h) => { let _ = h; },\n\
+         \x20       .Err(e) => { println(e); },\n\
+         \x20   }\n\
+         \x20   println(\"done\");\n\
+         }\n",
+    );
+    assert!(
+        output.status.success(),
+        "error arm must run cleanly; status: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "declined\ndone\n");
+}
+
 // ── `clone <expr>` duplication prefix ────────────────────────────────────
 //
 // End-to-end coverage for the canonical duplication surface. These exercise

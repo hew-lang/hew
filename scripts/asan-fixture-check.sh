@@ -61,6 +61,14 @@
 #       A match-consumed resource payload with heap-owning sibling variants and
 #       an actor-state resource enum overwritten Loaded→Broken. Both must remain
 #       leak- and double-free-clean through recursive enum/record drop thunks.
+#   composite resource close-exactly-once (#3070, KNOWN v0.6.0 limit)
+#       A `#[resource]` leaf reached through a record field projection
+#       (`p.slot.close()`) and through an enum payload binder (`.Ok(s)`), with
+#       the untouched-binder and declining-arm controls. On the current
+#       lowerer the record-field shape double-frees on the first iteration, so
+#       this runs through `run_asan_fixture_expect_leak` as an EXPECTED
+#       finding rather than a zero-findings probe; flip it to a clean probe
+#       once #3070 is fixed.
 #   drop-only Vec<channel.Receiver<T>>
 #       Repeatedly moves the sole Receiver authority into `[rx]`, closes the
 #       paired Sender, and returns through the Vec's clone-null/drop-present
@@ -426,6 +434,14 @@ ENUM_RESOURCE_STATE_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_state
 # EXPECTED ASan finding via `run_asan_fixture_expect_leak`. Flip it to
 # `compile_asan_fixture` + `run_asan_fixture ... 0` once #3218 is fixed.
 STREAM_STATE_FIELD_FOR_AWAIT_SRC="${ROOT}/tests/vertical-slice/accept/stream_state_field_for_await_asan.hew"
+# Composite resource close-exactly-once (#3070, KNOWN v0.6.0 limit): a
+# `#[resource]` leaf reached through a record field projection
+# (`p.slot.close()`) double-frees on the current lowerer's first loop
+# iteration, so this is registered below as an EXPECTED ASan finding via
+# `run_asan_fixture_expect_leak`, the same predicate the deliberate leak-probe
+# uses (it accepts any ASan/LSan finding marker, not only a leak). Flip it to
+# `compile_asan_fixture` + `run_asan_fixture ... 0` once #3070 is fixed.
+COMPOSITE_RESOURCE_CLOSE_SRC="${ROOT}/tests/vertical-slice/accept/composite_resource_close_once_asan.hew"
 # Owned-Vec element-store temp-leak (Linux arm of vec_push_temp_leak_oracle.rs):
 # a fresh unbound aggregate rvalue used as a `Vec::push` / `Vec::set` element
 # source is routed to the MOVE-in siblings (hew_vec_push_owned_move /
@@ -508,6 +524,9 @@ compile_asan_fixture "resource enum actor-state overwrite (#2641)" "${ENUM_RESOU
 
 STREAM_STATE_FIELD_FOR_AWAIT_BIN="${WORK_DIR}/stream_state_field_for_await_asan"
 compile_asan_fixture "actor-state stream for-await ownership (#3218)" "${STREAM_STATE_FIELD_FOR_AWAIT_SRC}" "${STREAM_STATE_FIELD_FOR_AWAIT_BIN}"
+
+COMPOSITE_RESOURCE_CLOSE_BIN="${WORK_DIR}/composite_resource_close_once_asan"
+compile_asan_fixture "composite resource close-exactly-once (#3070)" "${COMPOSITE_RESOURCE_CLOSE_SRC}" "${COMPOSITE_RESOURCE_CLOSE_BIN}"
 
 VEC_ELEM_STORE_TEMP_BIN="${WORK_DIR}/vec_elem_store_owned_temp_no_leak"
 HASHMAP_ENTRIES_BIN="${WORK_DIR}/hashmap_entries"
@@ -657,6 +676,18 @@ fi
 # finding until #3218 is fixed. When it is, this must flip to
 # `run_asan_fixture ... 0` and the ledger note above must be removed.
 if run_asan_fixture_expect_leak "actor-state stream for-await ownership (#3218)" "${STREAM_STATE_FIELD_FOR_AWAIT_BIN}"; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1))
+fi
+
+# KNOWN (#3070, v0.6.0 documented limit): a composite's resource leaf can be
+# closed once by the composite's own field walk and once by the program's
+# explicit close. The current lowerer double-frees on the record-field shape's
+# first iteration, so this is registered as an EXPECTED finding until #3070 is
+# fixed. When it is, this must flip to `run_asan_fixture ... 0` and the
+# ledger note above and in LESSONS.md must be removed.
+if run_asan_fixture_expect_leak "composite resource close-exactly-once (#3070)" "${COMPOSITE_RESOURCE_CLOSE_BIN}"; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1))

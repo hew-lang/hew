@@ -2169,41 +2169,6 @@ fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
         })
 }
 
-fn is_builtin_display_impl(item: &Item) -> bool {
-    let Item::Impl(impl_decl) = item else {
-        return false;
-    };
-    let Some(trait_name) = impl_decl
-        .trait_bound
-        .as_ref()
-        .map(|bound| bound.name.as_str())
-    else {
-        return false;
-    };
-    let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
-        return false;
-    };
-    trait_name == "Display"
-        && matches!(
-            name.as_str(),
-            "i8" | "i16"
-                | "i32"
-                | "i64"
-                | "u8"
-                | "u16"
-                | "u32"
-                | "u64"
-                | "isize"
-                | "usize"
-                | "bool"
-                | "char"
-                | "f32"
-                | "f64"
-                | "string"
-                | "duration"
-        )
-}
-
 /// The pure-Hew `duration` constructor block in `std/builtins.hew`
 /// (`from_nanos` / `from_micros` / `from_millis` / `from_secs`).
 ///
@@ -2247,9 +2212,7 @@ fn is_duration_receiver_param(param: &Param) -> bool {
 }
 
 fn is_builtin_receiver_impl(item: &Item) -> bool {
-    is_builtin_vec_iterator_impl(item)
-        || is_builtin_display_impl(item)
-        || is_builtin_duration_ctor_impl(item)
+    is_builtin_vec_iterator_impl(item) || is_builtin_duration_ctor_impl(item)
 }
 
 fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
@@ -11977,20 +11940,31 @@ impl LowerCtx {
         let ty = dispatch_ty;
         match &ty {
             // String: route through a user `impl Display for string` if one
-            // is registered; otherwise pass through identity. The stdlib
+            // is registered in the user's OWN source (a root-level impl,
+            // bare `string::fmt` symbol — see `fstring_string_routes_
+            // through_user_display_impl`); otherwise the stdlib's own
+            // `impl Display for string` in `std/builtins.hew`, discovered
+            // like any imported module's impl (see
+            // `insert_builtins_display_module`), so its symbol carries that
+            // module prefix, exactly like `duration` below. The stdlib
             // identity impl ordinarily makes this a real (no-op) call so a
-            // user impl can transparently replace it.
+            // user impl can transparently replace it; falling through to
+            // raw identity below only happens with neither impl registered
+            // (zero-stdlib unit tests).
             ResolvedTy::String => {
-                let symbol = crate::node::HirImplBlock::method_symbol("string", &method_name);
+                let user_symbol = crate::node::HirImplBlock::method_symbol("string", &method_name);
+                let stdlib_symbol =
+                    crate::node::HirImplBlock::method_symbol("std.builtins.string", &method_name);
                 if let Some(call) =
-                    self.build_user_fn_call(&symbol, vec![value.clone()], span.clone())
+                    self.build_user_fn_call(&user_symbol, vec![value.clone()], span.clone())
+                {
+                    call
+                } else if let Some(call) =
+                    self.build_user_fn_call(&stdlib_symbol, vec![value.clone()], span.clone())
                 {
                     call
                 } else {
-                    // No registered impl (not even the stdlib identity) —
-                    // fall through to identity. This keeps zero-stdlib unit
-                    // tests working while preserving correctness in normal
-                    // builds.
+                    // No registered impl at all — fall through to identity.
                     value
                 }
             }
@@ -12011,14 +11985,19 @@ impl LowerCtx {
                 self.build_catalog_call(builtin, vec![value], span)
             }
             ResolvedTy::F32 => self.lower_f32_display(value, span),
-            // `duration` has a pure-Hew `impl Display for duration` (rendered
-            // through `is_builtin_display_impl`), so dispatch to its fmt symbol
-            // exactly like a user named-type Display impl. The `_` fail-closed
-            // arm below would otherwise reject it (checker–HIR contract
-            // violation) even though the checker admitted it.
-            ResolvedTy::Duration => {
-                self.dispatch_display_to_named_impl("duration", &method_name, value, span)
-            }
+            // `duration` has a pure-Hew `impl Display for duration` in
+            // `std/builtins.hew`, discovered and lowered like any imported
+            // module's impl (see `insert_builtins_display_module`), so
+            // dispatch to its module-qualified fmt symbol exactly like a
+            // user named-type Display impl. The `_` fail-closed arm below
+            // would otherwise reject it (checker–HIR contract violation)
+            // even though the checker admitted it.
+            ResolvedTy::Duration => self.dispatch_display_to_named_impl(
+                "std.builtins.duration",
+                &method_name,
+                value,
+                span,
+            ),
             ResolvedTy::Named {
                 builtin: Some(BuiltinType::Instant),
                 ..

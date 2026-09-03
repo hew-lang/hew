@@ -371,6 +371,109 @@ jobs:
           check_name: Compiled Hew Test Results
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Journeys — the day-one/day-two/week-one-local acceptance harness
+  # (V060-FD-1). Independent of the ci-shard-* Make targets and the
+  # compiled-hew-shards matrix above: a journey behind a red gate would
+  # produce no evidence, so it runs as its own job against the already-
+  # built compiled Hew artifact.
+  # ─────────────────────────────────────────────────────────────────────────
+  journeys:
+    name: Journeys (${{ matrix.journey }})
+    needs: compiled-hew-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        journey: [day-one, day-two, week-one-local]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Download compiled Hew bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compiled-hew-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/compiled-hew-download
+
+      - name: Unpack compiled Hew bundle
+        run: |
+          mkdir -p "${{ runner.temp }}/compiled-hew-artifact"
+          tar -xzf "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz" \
+            -C "${{ runner.temp }}/compiled-hew-artifact"
+
+      - name: Install wrangler
+        # day-two is the only journey with registry-gated steps
+        # (scripts/registry-harness.sh); no sibling hew-registry checkout
+        # exists in this job, so the harness exits 75 and those steps
+        # record the no_registry() failure -- the same outcome
+        # scripts/journeys-expected.tsv is seeded against.
+        if: matrix.journey == 'day-two'
+        run: npm install -g wrangler
+
+      - name: Run ${{ matrix.journey }}
+        # HEW_STD: the compiled-hew-linux artifact ships only the binary and
+        # libhew.a, no std/ sibling (hew-types/src/module_registry.rs's
+        # dev-build fallback needs std/builtins.hew two directories above
+        # the executable, which the unpacked artifact tree doesn't have).
+        # Every existing consumer of this artifact runs with cwd = the
+        # checkout root, where cwd/std resolves before that fallback is
+        # ever needed; the journey scripts `cd` into a scratch tempdir, so
+        # this job is the first to need the explicit override.
+        env:
+          HEW_BIN: ${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew
+          HEW_STD: ${{ github.workspace }}/std
+        run: bash scripts/run-journeys.sh ${{ matrix.journey }}
+
+  # windows-2022 has no compiled-hew artifact (compiled-hew-linux is
+  # Linux-only) and no `make`, so this builds hew fresh and runs day one's
+  # script directly -- day one is the journey most representative of a
+  # newcomer's first minutes and needs no registry, unlike day two.
+  journeys-windows-day-one:
+    name: Journeys (day-one, Windows)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup MSVC environment
+        uses: ./.github/actions/setup-msvc
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: journeys-windows-day-one
+
+      - name: Build hew
+        # hew-lib alongside hew-cli, not hew-cli alone: `hew build`/`hew run`
+        # link user programs against libhew (hew.lib on Windows), so day
+        # one's later steps need it beside the binary the same way
+        # build-and-test-windows's own PDB step does (cargo build -p
+        # hew-lib --release, immediately before `hew.exe build -g`).
+        run: cargo build -p hew-lib -p hew-cli --release
+
+      - name: Run day-one.sh
+        shell: bash
+        # HEW_BIN stays relative (run-journeys.sh resolves it against the
+        # repo root in POSIX form); an absolute github.workspace value is
+        # Windows-style (D:\a\hew\hew) and git-bash's `cd`/mktemp calls
+        # inside the journey script cannot use it. `shell: bash` here is
+        # git-bash with --noprofile --norc, so TMPDIR is unset and
+        # RUNNER_TEMP is a Windows path -- convert it to POSIX form first.
+        env:
+          HEW_BIN: target/release/hew.exe
+        run: |
+          TMPDIR="$(cygpath -u "$RUNNER_TEMP")"
+          export TMPDIR
+          bash scripts/run-journeys.sh day-one
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Build & test — Rust workspace
   # Produces JUnit XML for GitHub Actions test reporting.
   # ─────────────────────────────────────────────────────────────────────────

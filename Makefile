@@ -88,6 +88,7 @@
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
 .PHONY: sir-coverage sir-parity
+.PHONY: test-journeys check-time-ratchet check-time-ratchet-record
 
 help:
 	@$(PYTHON) scripts/make-help.py
@@ -1664,6 +1665,27 @@ hew-fmt-property: hew
 hew-check-all: hew-native
 	@echo "==> hew-check-all: compiling full .hew corpus"
 	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus
+
+# Runs one journey script under repros/journeys/ (day-one, day-two, or
+# week-one-local) against HEW_BIN and ratchets its `step <id>: pass|fail`
+# lines against scripts/journeys-expected.tsv: the target fails when a
+# step outside that file fails, or a step listed in it now passes (V060-FD-1).
+# inputs: repros/journeys/*.sh scripts/run-journeys.sh scripts/journeys-expected.tsv
+test-journeys: hew ## Test: run a repros/journeys script and ratchet its steps (JOURNEY=day-one|day-two|week-one-local)
+	@if [ -z "$(JOURNEY)" ]; then echo "usage: make test-journeys JOURNEY=day-one|day-two|week-one-local" >&2; exit 64; fi
+	HEW_BIN="$(HEW_BIN)" bash scripts/run-journeys.sh $(JOURNEY)
+
+# Five runs of `hew check` on the largest std module a newcomer's program
+# pulls in; the median wall-clock cannot exceed 2x the recorded baseline
+# for this host class (uname -m plus the CI runner label when CI is set,
+# else "local"). A class with no baseline records one and passes: a first
+# run on a new runner class cannot be compared against itself (V060-FD-1).
+# inputs: scripts/check-time-ratchet.sh scripts/check-time-baseline.tsv std/net/http/http.hew
+check-time-ratchet: hew ## Test: fail when hew check's median time on the fixture exceeds 2x baseline
+	HEW_BIN="$(HEW_BIN)" bash scripts/check-time-ratchet.sh check
+
+check-time-ratchet-record: hew ## Build: record scripts/check-time-baseline.tsv's median for this host class
+	HEW_BIN="$(HEW_BIN)" bash scripts/check-time-ratchet.sh record
 
 .PHONY: codegen-trap-inventory-check
 LINT_GATES += codegen-trap-inventory-check

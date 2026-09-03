@@ -1,0 +1,186 @@
+// repros/journeys/week-one-local/main.hew - the first service, and the Book's
+// "Your first service" chapter (§6.4). One node, one binary: a supervised Store
+// actor that persists a JSON snapshot, and an Api actor that hosts the HTTP
+// accept loop and asks the store with a deadline. Standard library only.
+// Every surface used here is decided in hew-platform-program.md; the deciding
+// item is named beside each first use. fable4/probes/local_svc.hew is this
+// program in today's dialect and runs on hew 0.6.0-rc3-dev.148 (fable4/probes.md).
+import std.net;                        // net.NetError
+import std.net.http.server as http;   // D22: net/http/server (was net/http/http)
+import std.encoding.wire as wire;
+import std.encoding.json as json;     // request and response bodies at 0.6.0 (B5 note below)
+import std.observe;
+import std.log;                        // D22: log (was misc/log)
+import std.os;
+import std.fs;
+
+#[wire] pub type Item { key: string @1; val: string @2; }
+#[wire] enum KvReq { Put(Item); Get(string); }          // variants carry no tags (review1/wrec.hew)
+#[wire] enum KvResp { Done; Found(Item); Missing; Failed(string); }
+
+/// The supervisor's construction-time config: a supervised child's owned init
+/// state comes from here and is deep-cloned per incarnation (§4.4).
+type StoreCfg { db_path: string; seed: string; }
+
+/// Index of `key` in `items`, or -1. A linear scan is the whole database.
+pub fn find(items: Vec<Item>, key: string) -> i64 {
+    for i in 0..items.len() {
+        if items[i].key == key { return i; }
+    }
+    -1
+}
+
+/// The snapshot text as items; an empty snapshot is an empty store. `boot`
+/// validated the text, so a decode failure here is unreachable.
+pub fn load(snapshot: string) -> Vec<Item> {
+    if snapshot == "" { return []; }
+    match wire.from_json<Vec<Item>>(snapshot) {                 // F10: a Vec of #[wire] records; the turbofish, never inference through `?` (D8)
+        .Ok(items) => items,
+        .Err(_) => [],
+    }
+}
+
+/// The store: a supervised actor whose whole state is the snapshot text,
+/// reloaded from `path` on every start (the first and every restart;
+/// fable3/sup_onstart.hew). A supervised child's state is scalars, `string`,
+/// and `bytes` on the current lowerer (D8: E_LIMIT_SUPERVISED_STATE, P2); the
+/// two-node service keeps a `Vec<Item>` field once P2 lands.
+actor Store {
+    var path: string;
+    var snapshot: string;
+
+    #[on(start)]
+    fn boot() {
+        match fs.read(path) {                                      // D20: Result<string, IoError>
+            .Ok(text) => match wire.from_json<Vec<Item>>(text) {   // D21: Result<T, wire.DecodeError>
+                .Ok(items) => {
+                    snapshot = text;
+                    log.info_with("store: up", [log.field_int("items", items.len())]);
+                },
+                .Err(e) => panic(f"kv: {path} is not a snapshot: {e}"),
+            },
+            .Err(.NotFound(_)) => log.info_with("store: up", [log.field_int("items", 0)]),   // first start
+            .Err(e) => panic(f"kv: cannot read {path}: {e}"),
+        }
+    }
+
+    receive fn handle(req: KvReq) -> KvResp {
+        match req {
+            .Put(item) => {
+                var items = load(snapshot);                        // D1: `var`, because `push` and index assignment mutate
+                let i = find(items, item.key);
+                if i >= 0 { items[i] = item; } else { items.push(item); }
+                snapshot = wire.to_json(items);
+                match fs.write(path, snapshot) {                   // D20: Result<(), IoError>
+                    .Ok(_) => .Done,
+                    .Err(e) => .Failed(f"{e}"),
+                }
+            },
+            .Get(key) => {
+                let items = load(snapshot);
+                let i = find(items, key);
+                if i >= 0 { .Found(items[i]) } else { .Missing }
+            },
+        }
+    }
+
+    /// The operator's crash lever (POST /admin/crash): `panic` is the crash
+    /// primitive (std/builtins.hew:1090) and the supervisor's restart is the recovery.
+    receive fn crash_now() {
+        panic("operator-requested crash");
+    }
+}
+
+supervisor StoreSup(config: StoreCfg) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child store: Store(path: config.db_path, snapshot: config.seed);
+}
+
+/// JSON bodies through `std.encoding.json` at 0.6.0: a bare `#[wire]` record is
+/// `Serializable` at P2 (B5), when `wire.to_json(item)` replaces these two.
+fn item_json(item: Item) -> string {
+    json.object().with_string("key", item.key).with_string("val", item.val).stringify()
+}
+fn error_json(msg: string) -> string {
+    json.object().with_string("error", msg).stringify()
+}
+
+/// A response the client did not wait for is logged, never an exit: the
+/// request loop answers requests; it does not return to `main` (§0.1, §6.4).
+fn reply(req: http.Request, status: i64, body: string) {
+    match req.respond_json(status, body) {                        // D20: Result<(), NetError>
+        .Ok(_) => {},
+        .Err(e) => log.debug(f"client went away: {e}"),
+    }
+}
+
+/// The HTTP loop lives in an actor: `await .. | after d` needs an actor
+/// context until D9 lands (v0.7.0), and one request is served at a time, so a
+/// slow store request delays `/health` by at most the ask deadline.
+actor Api {
+    var sup: LocalPid<StoreSup>;
+    var addr: string;
+
+    receive fn serve() -> Result<(), net.NetError> {
+        let srv = http.listen(addr)?;                             // the one `?`: no listener, no service
+        loop {
+            let req = match srv.accept() {                        // D20: Result<Request, NetError>
+                .Ok(r) => r,
+                .Err(e) => { log.warn(f"accept: {e}"); continue; },
+            };
+            let method = req.method();
+            let path = req.path();
+            if method == "POST" && path == "/items" {
+                match json.try_parse(req.body("utf-8")) {         // a bad body is a 400, never an exit
+                    .Ok(v) => {
+                        let item = Item { key: v.get_field("key").get_string(), val: v.get_field("val").get_string() };
+                        match await sup.store.handle(.Put(item)) | after 2s {
+                            .Ok(.Done) => reply(req, 201, "{}"),
+                            .Ok(.Failed(msg)) => reply(req, 500, error_json(msg)),
+                            .Ok(_) => reply(req, 500, "{}"),
+                            .Err(e) => reply(req, 503, error_json(f"{e}")),   // D21: AskError prints its variant
+                        }
+                    },
+                    .Err(e) => reply(req, 400, error_json(f"{e}")),
+                }
+            } else if method == "GET" && path.starts_with("/items/") {
+                match await sup.store.handle(.Get(path.slice(7, path.len()))) | after 2s {
+                    .Ok(.Found(item)) => reply(req, 200, item_json(item)),
+                    .Ok(.Missing) => reply(req, 404, "{}"),
+                    .Ok(_) => reply(req, 500, "{}"),
+                    .Err(e) => reply(req, 503, error_json(f"{e}")),
+                }
+            } else if method == "POST" && path == "/admin/crash" {
+                match sup.store.crash_now() {                     // D11: a send is Result<(), SendError>
+                    .Ok(_) => reply(req, 202, "{}"),
+                    .Err(e) => reply(req, 503, error_json(f"{e}")),
+                }
+            } else if method == "GET" && path == "/health" {
+                reply(req, 200, "{\"ok\":true}");
+            } else if method == "GET" && path == "/metrics" {
+                match req.respond(200, "text/plain", observe.scrape()) {   // §4.4: supervisor.* and actors.* series
+                    .Ok(_) => {},
+                    .Err(e) => log.debug(f"client went away: {e}"),
+                }
+            } else {
+                reply(req, 404, "{}");
+            }
+        }
+    }
+}
+
+fn main() -> Result<(), dyn Error> {
+    log.setup();
+    let db = os.env("KV_DB").unwrap_or("kv.json");               // D20: env -> Option<string>
+    let addr = os.env("KV_ADDR").unwrap_or("127.0.0.1:8080");
+    let sup = spawn StoreSup(config: StoreCfg { db_path: db, seed: "" });
+    let api = spawn Api(sup: sup, addr: addr);
+    // `main` parks on the server's ask and returns only when the server stops or
+    // dies: the process's exit path is the `Err` arm (fable4/probes/main_await_serve3.hew).
+    match await api.serve() {
+        .Ok(.Ok(_)) => .Ok(()),
+        .Ok(.Err(e)) => .Err(e),                                   // listen failed; D4 coerces NetError to dyn Error
+        .Err(e) => .Err(e),                                        // the Api actor died: AskError
+    }
+}

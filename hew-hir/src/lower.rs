@@ -4193,6 +4193,9 @@ pub fn lower_program_with_mono_cap(
             if !hir_decl.variants.is_empty() {
                 ctx.enum_variants_by_name
                     .insert(hir_decl.name.clone(), hir_decl.variants.clone());
+                if hir_decl.is_indirect {
+                    ctx.indirect_enum_names.insert(hir_decl.name.clone());
+                }
             }
             // Snapshot type-params and ItemId for the enum-layout discovery
             // pass (slice 2). Needed to substitute variant payload types and
@@ -4256,6 +4259,9 @@ pub fn lower_program_with_mono_cap(
                             if !hir_decl.variants.is_empty() {
                                 ctx.enum_variants_by_name
                                     .insert(canonical_name.clone(), hir_decl.variants.clone());
+                                if hir_decl.is_indirect {
+                                    ctx.indirect_enum_names.insert(canonical_name.clone());
+                                }
                             }
                             ctx.enum_type_params
                                 .insert(canonical_name.clone(), hir_decl.type_params.clone());
@@ -8003,6 +8009,10 @@ struct LowerCtx {
     /// `machine_ctor_registry`'s `(type_name, variant_idx)` indexes directly
     /// into it.
     enum_variants_by_name: HashMap<String, Vec<HirVariant>>,
+    /// Names of every enum declared `indirect`, keyed exactly as
+    /// `enum_variants_by_name` is. A generic instantiation of one keeps the
+    /// heap shape: its variables and self-referential payloads are pointers.
+    indirect_enum_names: HashSet<String>,
     /// Structural member types per named type, in declaration order: record
     /// fields, plus every enum variant's payload types. Populated alongside
     /// `type_classes` in the type-decl pre-pass, so it is complete before any
@@ -8720,6 +8730,7 @@ impl LowerCtx {
             const_registry: HashMap::new(),
             folded_integer_consts: HashMap::new(),
             enum_variants_by_name: HashMap::new(),
+            indirect_enum_names: HashSet::new(),
             type_member_tys: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             pattern_plans: tc_output.pattern_plans.clone(),
@@ -25496,6 +25507,8 @@ impl LowerCtx {
                         field_tys: Vec::new(),
                     },
                 ],
+                // `Option` is a builtin tagged union, never `indirect`.
+                false,
             )
             .is_err()
         {
@@ -30302,7 +30315,10 @@ impl LowerCtx {
                     }
                 })
                 .collect();
-            let insert_result = self.enum_layout_registry.insert(key, variant_layouts);
+            let is_indirect = self.indirect_enum_names.contains(name);
+            let insert_result = self
+                .enum_layout_registry
+                .insert(key, variant_layouts, is_indirect);
             if insert_result.is_err() {
                 // Cap exceeded — emit diagnostic and abort further expansion.
                 self.diagnostics.push(HirDiagnostic::new(

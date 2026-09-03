@@ -3474,14 +3474,7 @@ fn resolve_machine_base_ptr<'ctx>(
     let is_indirect = fn_ctx
         .local_tys
         .get(&local)
-        .and_then(|ty| {
-            if let ResolvedTy::Named { name, .. } = ty {
-                Some(crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts))
-            } else {
-                None
-            }
-        })
-        .unwrap_or(false);
+        .is_some_and(|ty| crate::layout::is_indirect_enum_for_ty(ty, fn_ctx.enum_layouts));
     if is_indirect {
         // The alloca holds a pointer to the heap struct.  Load it.
         let heap_ptr = fn_ctx
@@ -3713,10 +3706,8 @@ pub(crate) fn resolve_value_ty<'ctx>(
     record_layouts: &RecordLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
-    if let ResolvedTy::Named { name, .. } = ty {
-        if crate::layout::is_indirect_enum(name, enum_layouts) {
-            return Ok(ctx.ptr_type(AddressSpace::default()).into());
-        }
+    if crate::layout::is_indirect_enum_for_ty(ty, enum_layouts) {
+        return Ok(ctx.ptr_type(AddressSpace::default()).into());
     }
     resolve_ty(ctx, target_data, ty, record_layouts)
 }
@@ -7284,7 +7275,7 @@ pub(crate) fn emit_field_drop_step<'ctx>(
                 // thunk (synthesised on demand, idempotent bb-count guard). A
                 // pointer slot for a non-indirect enum is a classifier/layout
                 // drift — fail closed rather than mint a free thunk for it.
-                if !crate::layout::is_indirect_enum(name, w.enum_layouts) {
+                if !crate::layout::is_indirect_enum_layout_key(name, w.enum_layouts) {
                     return Err(CodegenError::FailClosed(format!(
                         "enum field drop: field {field_idx} of {st_ty:?} is a pointer but \
                          enum `{name}` is not an indirect enum — classifier/layout drift"
@@ -9273,10 +9264,7 @@ fn emit_indirect_enum_node_alloc(fn_ctx: &FnCtx<'_, '_>, local: u32) -> CodegenR
     let Some(ty) = fn_ctx.local_tys.get(&local) else {
         return Ok(());
     };
-    let ResolvedTy::Named { name, .. } = ty else {
-        return Ok(());
-    };
-    if !crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+    if !crate::layout::is_indirect_enum_for_ty(ty, fn_ctx.enum_layouts) {
         return Ok(());
     }
     let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, ty)?;
@@ -9345,10 +9333,7 @@ fn emit_indirect_enum_overwrite_release(fn_ctx: &FnCtx<'_, '_>, local: u32) -> C
     let Some(ty) = fn_ctx.local_tys.get(&local) else {
         return Ok(());
     };
-    let ResolvedTy::Named { name, .. } = ty else {
-        return Ok(());
-    };
-    if !crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+    if !crate::layout::is_indirect_enum_for_ty(ty, fn_ctx.enum_layouts) {
         return Ok(());
     }
     let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, ty)?;
@@ -9452,8 +9437,8 @@ pub(crate) fn emit_indirect_enum_free_body_raw<'ctx>(
     let mut child_enum_keys: Vec<String> = Vec::new();
     for field_tys in &layout.variant_field_tys {
         for fty in field_tys {
-            if let ResolvedTy::Named { name, .. } = fty {
-                if crate::layout::is_indirect_enum(name, enum_layouts) {
+            {
+                if crate::layout::is_indirect_enum_for_ty(fty, enum_layouts) {
                     let child_key = crate::layout::enum_layout_key_for_ty_from(enum_layouts, fty)?;
                     if child_key != enum_name && !child_enum_keys.contains(&child_key) {
                         child_enum_keys.push(child_key);
@@ -9736,7 +9721,7 @@ fn overwrite_heap_leaf_capacity(
                 // one leaf, no recursion (a self-recursive indirect enum would
                 // otherwise overflow the cyclic-graph depth guard). An inline
                 // enum reserves its worst-case variant's leaves.
-                if crate::layout::is_indirect_enum(name, cx.enum_layouts) {
+                if crate::layout::is_indirect_enum_layout_key(name, cx.enum_layouts) {
                     1
                 } else {
                     let mut max = 0usize;
@@ -9951,7 +9936,7 @@ fn emit_overwrite_collect_leaves<'ctx>(
                 // stored in the field slot — collect it directly (like a
                 // `String`), not by recursing into the inline variant structure
                 // (the slot holds a pointer, not an inline `{ tag, payload }`).
-                if crate::layout::is_indirect_enum(name, cx.enum_layouts) {
+                if crate::layout::is_indirect_enum_layout_key(name, cx.enum_layouts) {
                     Some(
                         builder
                             .build_struct_gep(
@@ -10413,7 +10398,7 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
                 // alias-neutralise the field slot directly (like a `String`), so
                 // a subsequent drop of the old value frees the node exactly once
                 // and never double-frees a node the new value now aliases.
-                if crate::layout::is_indirect_enum(name, cx.enum_layouts) {
+                if crate::layout::is_indirect_enum_layout_key(name, cx.enum_layouts) {
                     let slot = builder
                         .build_struct_gep(st_ty, base, idx_u, &format!("{label}_indirect_enum_ptr"))
                         .llvm_ctx_with(|| format!("{label} indirect enum gep"))?;
@@ -16939,7 +16924,7 @@ fn aggregate_kind_contains_inline_string(
             Ok(false)
         }
         StateFieldCloneKind::Enum { name } => {
-            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+            if crate::layout::is_indirect_enum_layout_key(name, fn_ctx.enum_layouts) {
                 return Ok(false);
             }
             for variant in classify_enum_drop_variants_for_key(fn_ctx, name)? {
@@ -17152,7 +17137,7 @@ fn retain_strings_in_aggregate_slot<'ctx>(
             Ok(())
         }
         StateFieldCloneKind::Enum { name } => {
-            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+            if crate::layout::is_indirect_enum_layout_key(name, fn_ctx.enum_layouts) {
                 return Ok(());
             }
             let BasicTypeEnum::StructType(outer_struct) = slot_ty else {
@@ -27037,11 +27022,7 @@ fn lower_field_drop_in_place(
             element_tys.len()
         )));
     };
-    let field_is_indirect_enum = matches!(
-        ty,
-        ResolvedTy::Named { name, .. }
-            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts)
-    );
+    let field_is_indirect_enum = crate::layout::is_indirect_enum_for_ty(ty, fn_ctx.enum_layouts);
     let expected_slot_ty: BasicTypeEnum = if field_is_indirect_enum {
         fn_ctx.ctx.ptr_type(AddressSpace::default()).into()
     } else {
@@ -36419,12 +36400,7 @@ fn lower_function<'ctx>(
         if idx < param_count {
             continue;
         }
-        let ty_name = if let ResolvedTy::Named { name, .. } = ty {
-            name.as_str()
-        } else {
-            continue;
-        };
-        if !crate::layout::is_indirect_enum(ty_name, enum_layouts) {
+        if !crate::layout::is_indirect_enum_for_ty(ty, enum_layouts) {
             continue;
         }
         let idx_u32 = u32::try_from(idx).expect("local index fits u32");
@@ -36694,10 +36670,10 @@ fn lower_function<'ctx>(
     // `borrow_mode != 0` entry trap below without breaking copy mode. Computed
     // before the FnCtx move.
     let has_indirect_enum_message_param = is_recv_handler
-        && func.params.iter().any(|ty| {
-            matches!(ty, ResolvedTy::Named { name, .. }
-                if crate::layout::is_indirect_enum(name, enum_layouts))
-        });
+        && func
+            .params
+            .iter()
+            .any(|ty| crate::layout::is_indirect_enum_for_ty(ty, enum_layouts));
     let borrow_escape_trap = borrow_mode.is_some()
         && (has_unhandled_borrow_escape(func, &borrow_tainted)
             || has_unhandled_non_string_borrow_use(func, &borrow_drop_tainted, &borrow_tainted)
@@ -39876,9 +39852,7 @@ fn emit_actor_codec_module_init<'ctx>(
             // pointer. The cross-node codec has no pointer-node representation,
             // so leaving this message unregistered keeps remote receipt on the
             // runtime's existing fail-closed no-codec path.
-            if matches!(msg_ty, ResolvedTy::Named { name, .. }
-                if crate::layout::is_indirect_enum(name, enum_layouts))
-            {
+            if crate::layout::is_indirect_enum_for_ty(msg_ty, enum_layouts) {
                 continue;
             }
             // Channel handles (`Sender<T>`/`Receiver<T>`) and actor identities

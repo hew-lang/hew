@@ -1496,14 +1496,37 @@ pub fn machine_event_enum_views(machine_layouts: &[MachineLayout]) -> Vec<EnumLa
         .collect()
 }
 
-/// Returns `true` when the named enum registered in `enum_layouts` has
-/// `is_indirect = true`, meaning every variable of the type holds a
-/// heap pointer rather than an inline tagged-union struct.
+/// Returns `true` when `ty`'s registered enum layout has `is_indirect = true`,
+/// meaning every variable of the type holds a heap pointer rather than an
+/// inline tagged-union struct.
+///
+/// The probe takes the whole type rather than its name because a generic
+/// instantiation is registered under the mangle of the bare name and its
+/// shortened argument spine: a name-only lookup found `Tree` but missed
+/// `List<i64>`, whose layout is registered as `List$$i64`, and a self-recursive
+/// member of a generic indirect enum then resolved to its own still-opaque
+/// struct instead of a pointer. Routing through [`find_enum_layout`] makes that
+/// miss structurally impossible.
 #[must_use]
-pub fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
+pub fn is_indirect_enum_for_ty(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
+    let ResolvedTy::Named { name, args, .. } = ty else {
+        return false;
+    };
+    find_enum_layout(name, args, enum_layouts).is_some_and(|el| el.is_indirect)
+}
+
+/// Returns `true` when the enum registered under the exact layout key `key` has
+/// `is_indirect = true`.
+///
+/// The input is a registered layout key, not a use-site type name: a generic
+/// instantiation is already mangled here. Use [`is_indirect_enum_for_ty`]
+/// wherever the caller holds the type instead, so the mangle is derived rather
+/// than assumed.
+#[must_use]
+pub fn is_indirect_enum_layout_key(key: &str, enum_layouts: &[EnumLayout]) -> bool {
     enum_layouts
         .iter()
-        .find(|el| el.name == name)
+        .find(|el| el.name == key)
         .is_some_and(|el| el.is_indirect)
 }
 

@@ -483,7 +483,7 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
             // structural authority. A non-indirect enum reply rides the inline
             // struct by value, so its buffer IS the `{ tag, payload }` union —
             // the inline helper is correct there and unchanged.
-            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+            if crate::layout::is_indirect_enum_for_ty(reply_ty, fn_ctx.enum_layouts) {
                 let sym = format!(
                     "__hew_reply_drop_indirect_{}",
                     hew_hir::mangle_resolved_ty(reply_ty)

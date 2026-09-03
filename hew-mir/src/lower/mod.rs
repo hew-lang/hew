@@ -2419,10 +2419,10 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             name: hir_layout.mangled_name.clone(),
             tag_width,
             variants,
-            // Generic enum instantiations (e.g. `Option<i64>`) are never
-            // `indirect` — the `indirect` modifier is only allowed on
-            // monomorphic user-declared enums.
-            is_indirect: false,
+            // A generic instantiation keeps its declaration's `indirect`
+            // modifier, so `List<i64>` of `indirect enum List<T>` is
+            // heap-shaped and its own `Cons` payload is a node pointer.
+            is_indirect: hir_layout.is_indirect,
         });
     }
     // Register the synthetic `__HewChildLookupResult` record layout used by the

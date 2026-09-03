@@ -4795,6 +4795,7 @@ mod enum_layout_tests {
                 type_args: vec![ResolvedTy::I64],
             },
             mangled_name: "Option$$i64".to_string(),
+            is_indirect: false,
             variants: vec![
                 EnumVariantLayout {
                     name: "Some".to_string(),

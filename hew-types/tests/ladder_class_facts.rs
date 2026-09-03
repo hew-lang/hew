@@ -503,7 +503,7 @@ indirect enum Nest<T> {
 }
 
 fn main() -> i64 {
-    let n: Nest<i64> = Nest.Leaf(1);
+    let n: Nest<i64> = Nest.More(Nest.Leaf(1));
     let _ = n;
     0
 }

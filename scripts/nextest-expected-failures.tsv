@@ -20,7 +20,9 @@ linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_on
 linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
 linux,macos	failure	hew-cli::match_payload_reassign_uaf_oracle	captured_binding_borrow_only_is_valid	#2523 preserves captured borrow-only payload authority
 linux,macos	failure	hew-cli::match_payload_reassign_uaf_oracle	field_place_borrow_only_keeps_scrutinee_live	#2523 preserves field-place borrow-only payload authority
+linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	if_let_borrow_only_keeps_scrutinee_live	#2523 keeps borrow-only if-let payload projections attached to the scrutinee
 linux,macos	failure	hew-cli::match_payload_reassign_uaf_oracle	nested_enum_borrow_only_is_valid	#2523 preserves nested borrow-only payload authority
+linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	while_let_borrow_only_keeps_scrutinee_live	#2523 keeps borrow-only while-let payload projections attached to the scrutinee
 linux,macos,freebsd	failure	hew-cli::nested_enum_whole_forward_handoff_leak_oracle	raw_and_elaborated_mir_pin_forwarding_shapes_and_single_drop_authority	#3079 removes competing nested-enum drop authorities
 linux,macos,freebsd	failure	hew-cli::nested_lexical_enum_payload_overwrite_leak_oracle	raw_mir_pins_release_authority_and_fail_closed_controls	#3079 keeps one parent-or-payload overwrite authority
 linux,macos,freebsd	failure	hew-cli::nested_projection_chain_leak_oracle	escaped_return_record_excludes_the_owner_composite	#3124 excludes escaped leaves from parent cleanup

@@ -551,22 +551,21 @@ for user-declared enums and for the prelude variants `Some`, `None`, `Ok`,
 and `Err` — there is no prelude exception, because a prelude exception is a
 second rule to teach where one does the work.
 
-A **bare** `Variant` — the name with neither a leading dot nor a qualifying
-type — is refused:
+The bare spelling — a variant name with neither the leading dot nor a type
+qualifier — is **not** part of edition 2026:
 
-| Position | Diagnostic | Channel |
-| --- | --- | --- |
-| pattern (`match` arm, `if let`, `while let`, `let` destructuring) | `E_BARE_VARIANT_PATTERN` | User |
-| expression | `E_BARE_VARIANT_EXPR` | User |
+- In pattern position it is a hard error, `E_BARE_VARIANT_PATTERN`, for every
+  enum including `Option` and `Result`.
+- In expression position it is `E_BARE_VARIANT_EXPR`, enforced for
+  user-defined enums. The four builtin variants (`Some`, `None`, `Ok`, `Err`)
+  still type-check bare in expression position at v0.6.0: the checker's
+  builtin-name dispatch resolves them before the rule can fire. Closing that
+  gap is tracked by issue #3240.
 
-Both carry a fix-it that inserts the dot, and `hew fmt --migrate` applies it
-across a source tree.
-
-> **Edition 2026 enforcement.** The pattern half is enforced at v0.6.0. The
-> expression half is enforced for user-declared enums; the prelude
-> constructors `Some`, `None`, `Ok`, and `Err` still admit their bare
-> expression spelling. That gap is a defect against this rule, not a
-> permitted form (hew-lang/hew#3240).
+Both diagnostics carry a machine-applicable fix-it that replaces `X` with
+`.X` where the context selects the enum, and with `Type.X` where it does not.
+`hew fmt --migrate` applies those fix-its across a source tree, so a pre-2026
+program is rewritten rather than hand-edited.
 
 State names inside a `machine` declaration are not variants at the surface,
 and this rule does not reach them (§3.11.3).

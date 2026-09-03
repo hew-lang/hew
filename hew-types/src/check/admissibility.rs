@@ -1302,12 +1302,13 @@ impl Checker {
                 }) {
                     return Some(format!("resource handle `{}`", resolved.user_facing()));
                 }
+                // `Instant`, `Unit` and `Duration` were named beside this
+                // marker read because they carried marker `None` while §1.1
+                // classed them `BitCopy`. The markers are corrected, so the
+                // marker read answers for them and the second list is deleted.
                 if builtin.is_some_and(|kind| {
                     kind.marker() == crate::builtin_type::BuiltinTypeMarker::BitCopy
-                }) || matches!(
-                    builtin,
-                    Some(BuiltinType::Instant | BuiltinType::Unit | BuiltinType::Duration)
-                ) {
+                }) {
                     return None;
                 }
                 match builtin {

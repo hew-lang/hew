@@ -211,22 +211,22 @@ and handle type whether the declared policy can lose work:
 That split is the v0.6.0 typing. The frozen dead-target rule of §5.6 widens
 every send to `Result<(), SendError>`, so the `()` rows above become
 `Result<(), SendError>` whose only `Err` inhabitant is `SendError.Dead`; the
-policy rows keep the variants listed here and gain `Dead`. Nothing about the
-`must_use` split below changes with that widening: a discarded
-unbounded-mailbox send stays a warning and a discarded policy-sensitive send
-stays an error (hew-lang/hew#3254).
+policy rows keep the variants listed here and gain `Dead`. A statement-position
+send or ask whose `Result` is discarded is `E_SEND_RESULT_DROPPED`, a compile
+error; there is no `must_use` lint tier below that widening (hew-lang/hew#3254).
 
-A bare statement that discards a policy-sensitive result is a compile error.
-The caller MUST handle it with `match` or `?`, or explicitly acknowledge the
-decision with `let _ = target.method(...);`. This explicit discard exists for
-metrics/sampling workloads, but loss can no longer be introduced by changing an
-actor declaration while leaving an ordinary bare send apparently successful.
+A bare statement that discards any send or ask result is
+`E_SEND_RESULT_DROPPED`, a compile error. The caller MUST handle it with
+`match` or `?`, or explicitly acknowledge the decision with the fix-it
+`_ = pid.m();`. This explicit discard exists for metrics/sampling workloads,
+but loss can no longer be introduced by changing an actor declaration while
+leaving an ordinary bare send apparently successful.
 
 A send to an actor that is already terminal — stopped or crashed — is not a
-no-op and does not trap. It reports `Err(SendError.Dead)`; §5.6 gives the rule
-in full, including the `must_use` split that keeps statement-position sends
-compiling. Nothing is enqueued and the payload is released at the send site,
-but the caller is told. Other unit-surface runtime failures trap the sender.
+no-op and does not trap. It reports `Err(SendError.Dead)`, the value a send to
+a dead target returns; §5.6 gives the `E_SEND_RESULT_DROPPED` rule in full.
+Nothing is enqueued and the payload is released at the send site, but the
+caller is told. Other unit-surface runtime failures trap the sender.
 
 > **Implementation status.** Today a unit-typed send to a terminal actor is a
 > silent no-op and a policy-sensitive send reports `Err(SendError.Closed)`. The
@@ -4345,11 +4345,11 @@ inhabitant of `Err` is `SendError.Dead`; for a bounded or policy-sensitive
 mailbox `Dead` joins the policy variants of §9.3. A send to a dead target never
 traps, and it never returns `Ok(())`.
 
-Discarding that result is the `must_use` split of §2.1.1, unchanged: a
-discarded unbounded-mailbox send is a warning, and a discarded
-policy-sensitive send is an error. Statement-position sends therefore keep
-compiling, and the warning is what tells an author that liveness has become
-visible where it was silent before.
+Discarding that result is `E_SEND_RESULT_DROPPED`, a compile error, matching
+§2.1.1: a statement-position send or ask whose `Result` is discarded is an
+error, with the fix-it `_ = pid.m()`. There is no `must_use` lint tier — the
+rule is the same for an unbounded mailbox and a policy-sensitive one, because
+both can now report `Dead`.
 
 `AskError` carries `Dead` and `StaleRef` for the same reason, so a remote ask's
 failure kinds are one enum rather than a split between the ask path and the

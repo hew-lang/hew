@@ -305,3 +305,41 @@ fn compile_mir_gate_failure_text_has_no_debug_payload() {
         "compile MIR diagnostic should be source-attributed; got:\n{stderr}",
     );
 }
+
+/// `E_MODULE_NOT_FOUND` locates itself at the offending `import` (not a zero
+/// span) and, for a std-module typo close to a real module, names the fix.
+#[test]
+fn module_not_found_has_span_and_suggestion() {
+    let (_dir, path) = write_fixture("import std.htp;\nfn main() { }\n");
+    let output = run(&["check", "--format", "json", path.to_str().unwrap()]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "module-not-found must exit 1\n{}",
+        describe_output(&output),
+    );
+
+    let diagnostics = parse_json_array(&output);
+    let not_found = diagnostics
+        .iter()
+        .find(|d| d["code"] == "E_MODULE_NOT_FOUND")
+        .unwrap_or_else(|| panic!("expected an E_MODULE_NOT_FOUND diagnostic: {diagnostics:?}"));
+
+    let span = &not_found["span"];
+    assert!(
+        span["start_line"].as_u64().unwrap_or(0) > 0,
+        "module-not-found must carry the import's own span, not a zero span: {span}",
+    );
+    assert_eq!(
+        span["start_line"], 1,
+        "the bad `import` is on line 1 of the fixture: {span}",
+    );
+    assert!(
+        not_found["message"]
+            .as_str()
+            .unwrap()
+            .contains("std.net.http"),
+        "a std-module typo close to `std.net.http` must suggest it: {not_found}",
+    );
+}

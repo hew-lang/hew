@@ -318,6 +318,60 @@ fn let_binding_reserved_keyword_names_it_as_reserved() {
     );
 }
 
+/// `let mut x = …` recovers as `var x = …` behind exactly one diagnostic: the
+/// message names Hew's `var` spelling, the hint spells out the fix-it, and
+/// parsing resumes cleanly — the following statement still parses, which
+/// would not hold if `mut` were left unconsumed (the three-error cascade this
+/// replaces: `mut` fails as a pattern, then as an expression, then triggers
+/// block-level token recovery).
+#[test]
+fn let_mut_reports_one_error_and_recovers() {
+    let result = parse("fn f() { let mut x = 1; x = 2; }");
+    assert_eq!(
+        result.errors.len(),
+        1,
+        "expected exactly one diagnostic, got: {:?}",
+        result.errors
+    );
+    let diagnostic = &result.errors[0];
+    assert!(
+        diagnostic.message.contains("var") && diagnostic.message.contains("let mut"),
+        "message must name Hew's `var` spelling; got: {}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic
+            .hint
+            .as_ref()
+            .is_some_and(|hint| hint.contains("var x")),
+        "a `let mut` diagnostic must carry a fix-it naming the corrected spelling; got: {:?}",
+        diagnostic.hint
+    );
+
+    let func = match &result.program.items[0].0 {
+        Item::Function(f) => f,
+        other => panic!("expected a function item, got {other:?}"),
+    };
+    assert_eq!(
+        func.body.stmts.len(),
+        2,
+        "expected the `let mut` statement plus the following assignment to both parse; got: {:?}",
+        func.body.stmts
+    );
+    assert!(
+        matches!(func.body.stmts[0].0, Stmt::Var { .. }),
+        "let mut recovers as a mutable (`var`) binding so a later reassignment does not raise a \
+         second, unrelated immutability error downstream; got: {:?}",
+        func.body.stmts[0].0
+    );
+    assert!(
+        matches!(func.body.stmts[1].0, Stmt::Assign { .. }),
+        "the statement after the recovered `let mut` must parse normally, proving `mut` was \
+         consumed rather than left for block-level recovery to eat; got: {:?}",
+        func.body.stmts[1].0
+    );
+}
+
 /// The same fact through the other pattern position.
 #[test]
 fn match_arm_reserved_keyword_names_it_as_reserved() {

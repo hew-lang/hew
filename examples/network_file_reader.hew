@@ -33,7 +33,7 @@ fn main() {
     // stdout stream used by this example.
     match fs.try_read(path) {
         .Ok(contents) => print(contents),
-        .Err(error) => println(f"Could not read `{path}`: {fs.io_error_message(error)}"),
+        .Err(error) => println(f"Could not read `{path}`: {error}"),
     }
     println("---");
 

@@ -8,6 +8,7 @@
 //!
 //! ```
 //! import std.net;
+//! import std.net.{NetError};
 //! import std.net.tls;
 //!
 //! fn main() {
@@ -15,11 +16,11 @@
 //!     let request = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
 //!     match tls.try_write(stream, request.to_bytes()) {
 //!         .Ok(_) => {},
-//!         .Err(err) => panic(net.net_error_message(err)),
+//!         .Err(err) => panic(to_string(err)),
 //!     }
 //!     let _response = match tls.read(stream, 4096) {
 //!         .Ok(data) => data,
-//!         .Err(err) => panic(net.net_error_message(err)),
+//!         .Err(err) => panic(to_string(err)),
 //!     };
 //!     tls.close(stream);
 //! }
@@ -200,7 +201,7 @@ pub fn connect(host: string, port: i64) -> TlsStream {
     let checked = match net.try_port_arg("tls.connect", port) {
         .Ok(value) => value,
         .Err(err) => {
-            panic(f"tls.connect failed: {net.net_error_message(err)}");
+            panic(f"tls.connect failed: {err}");
             0
         },
     };

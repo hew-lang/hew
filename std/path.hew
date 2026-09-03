@@ -43,11 +43,16 @@ pub enum PathError {
     IndexOutOfRange(string);
 }
 
-/// Return the human-readable detail carried by a `PathError`.
-pub fn path_error_message(err: PathError) -> string {
-    match err {
-        PathError.GlobFailed(message) => message,
-        PathError.IndexOutOfRange(message) => message,
+// Print the human-readable detail carried by a `PathError`.
+//
+// Plain `//`, not `///`: `hew fmt` deletes a doc comment immediately
+// preceding an `impl` block. Restore `///` once hew-lang/hew#3238 lands.
+impl Display for PathError {
+    fn fmt(err: PathError) -> string {
+        match err {
+            PathError.GlobFailed(message) => message,
+            PathError.IndexOutOfRange(message) => message,
+        }
     }
 }
 
@@ -148,7 +153,7 @@ pub fn glob(pattern: string) -> GlobResult {
 /// fn main() {
 ///     match path.try_glob("src/**/*.hew") {
 ///         .Ok(files) => println(f"{files.len()} match(es)"),
-///         .Err(err) => println(path.path_error_message(err)),
+///         .Err(err) => println(f"{err}"),
 ///     }
 /// }
 /// ```

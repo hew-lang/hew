@@ -21,7 +21,7 @@ import std.os;
 fn assert_ok(result: Result<(), net.NetError>) {
     match result {
         .Ok(_) => assert(true),
-        .Err(e) => panic("quic operation failed: " + net.net_error_message(e)),
+        .Err(e) => panic("quic operation failed: " + to_string(e)),
     }
 }
 

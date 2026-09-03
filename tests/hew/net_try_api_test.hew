@@ -5,6 +5,8 @@
 
 import std.net;
 
+import std.net.{WriteError};
+
 import std.testing;
 
 // ── try_connect ───────────────────────────────────────────────────────
@@ -153,7 +155,7 @@ fn test_try_read_reports_an_orderly_eof_as_an_empty_success() {
     client.close();
     match server.try_read() {
         .Ok(data) => testing.assert_eq(data.len(), 0),
-        .Err(err) => panic(f"expected EOF to be an empty success, got {net.net_error_message(err)}"),
+        .Err(err) => panic(f"expected EOF to be an empty success, got {err}"),
     }
     server.close();
     listener.close();
@@ -185,7 +187,7 @@ fn test_try_read_delivers_payload_bytes_unchanged() {
     let _ = client.write_string("ping");
     match server.try_read_string() {
         .Ok(text) => testing.assert_eq_str(text, "ping"),
-        .Err(err) => panic(f"expected a payload read to succeed: {net.net_error_message(err)}"),
+        .Err(err) => panic(f"expected a payload read to succeed: {err}"),
     }
     client.close();
     server.close();
@@ -202,23 +204,30 @@ fn test_connection_timeouts_accept_every_negative_clear_sentinel_without_narrowi
     let server = listener.accept();
     match client.set_read_timeout(-9223372036854775807) {
         .Ok(()) => {},
-        .Err(err) => panic(f"negative read-timeout clear failed: {net.net_error_message(err)}"),
+        .Err(err) => panic(f"negative read-timeout clear failed: {err}"),
     }
     match client.set_write_timeout(-4294967296) {
         .Ok(()) => {},
-        .Err(err) => panic(f"negative write-timeout clear failed: {net.net_error_message(err)}"),
+        .Err(err) => panic(f"negative write-timeout clear failed: {err}"),
     }
     match client.set_read_timeout(2147483648) {
         .Ok(()) => panic("unrepresentable read timeout reached the i32 runtime ABI"),
         .Err(NetError.InvalidArgument(_)) => {},
-        .Err(err) => panic(f"unexpected read-timeout error: {net.net_error_message(err)}"),
+        .Err(err) => panic(f"unexpected read-timeout error: {err}"),
     }
     match client.set_write_timeout(4294967796) {
         .Ok(()) => panic("wrapped write timeout reached the i32 runtime ABI"),
         .Err(NetError.InvalidArgument(_)) => {},
-        .Err(err) => panic(f"unexpected write-timeout error: {net.net_error_message(err)}"),
+        .Err(err) => panic(f"unexpected write-timeout error: {err}"),
     }
     client.close();
     server.close();
     listener.close();
+}
+
+#[test]
+fn test_write_error_display_formats_variant_and_errno() {
+    testing.assert_eq_str(to_string(WriteError.BackpressureExceeded(11)), "BackpressureExceeded(11)");
+    testing.assert_eq_str(to_string(WriteError.Disconnected(104)), "Disconnected(104)");
+    testing.assert_eq_str(to_string(WriteError.Other(0)), "Other(0)");
 }

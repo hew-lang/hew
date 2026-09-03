@@ -1,0 +1,8 @@
+// `path.path_error_message` was replaced by `impl Display for PathError`; the
+// deleted function name must no longer resolve.
+import std.path;
+
+fn main() {
+    let e = PathError.GlobFailed("x");
+    println(path.path_error_message(e));
+}

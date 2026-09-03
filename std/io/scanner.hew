@@ -56,7 +56,7 @@
 //!                 sc = scanner.scan(sc);
 //!             }
 //!         },
-//!         .Err(e) => panic(fs.io_error_message(e)),
+//!         .Err(e) => panic(f"{e}"),
 //!     }
 //! }
 //! ```

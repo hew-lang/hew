@@ -58,7 +58,6 @@ pub trait Closable {
 /// # Pattern matching
 ///
 /// ```
-/// import std.fs;
 /// import std.io.closable;
 ///
 /// type Handle {
@@ -79,7 +78,7 @@ pub trait Closable {
 ///     match handle.close() {
 ///         .Ok(_) => {},
 ///         .Err(err) => match err {
-///             closable.CloseError.Io(e) => println(fs.io_error_message(e)),
+///             closable.CloseError.Io(e) => println(f"{e}"),
 ///             closable.CloseError.AlreadyClosed => {},
 ///         },
 ///     }
@@ -96,4 +95,13 @@ pub enum CloseError {
     /// `close()` on an already-moved value is a compile error, not a
     /// runtime `AlreadyClosed`.
     AlreadyClosed;
+}
+
+impl Display for CloseError {
+    fn fmt(err: CloseError) -> string {
+        match err {
+            CloseError.Io(e) => f"{e}",
+            CloseError.AlreadyClosed => "the resource was already closed",
+        }
+    }
 }

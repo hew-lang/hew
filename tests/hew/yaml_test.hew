@@ -397,3 +397,9 @@ fn test_get_int_panics_at_legacy_boundary_on_an_unrepresentable_value() {
         .Err(_) => panic("expected the document to parse"),
     }
 }
+
+#[test]
+fn test_parse_error_display_prints_the_carried_detail() {
+    let err = ParseError.Invalid("mapping values are not allowed here");
+    testing.assert_eq_str(to_string(err), "mapping values are not allowed here");
+}

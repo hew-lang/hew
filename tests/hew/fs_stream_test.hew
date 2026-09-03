@@ -435,19 +435,19 @@ fn test_net_error_from_errno_network_variants() {
 }
 
 #[test]
-fn test_io_error_message_formats_fs_variants() {
+fn test_io_error_display_formats_fs_variants() {
     // Let-bind each call: direct `f(Enum::Variant(...))` on multiple string-
     // returning calls in one function body triggers a codegen hang at 2e6fac15
     // (tracked v0.5.1 under enum drop multi-call pattern).
-    let m1 = fs.io_error_message(IoError.NotFound(2));
+    let m1 = to_string(IoError.NotFound(2));
     testing.assert_eq_str(m1, "NotFound(2)");
-    let m2 = fs.io_error_message(IoError.PermissionDenied(13));
+    let m2 = to_string(IoError.PermissionDenied(13));
     testing.assert_eq_str(m2, "PermissionDenied(13)");
-    let m3 = fs.io_error_message(IoError.AlreadyExists(17));
+    let m3 = to_string(IoError.AlreadyExists(17));
     testing.assert_eq_str(m3, "AlreadyExists(17)");
-    let m4 = fs.io_error_message(IoError.TimedOut(110));
+    let m4 = to_string(IoError.TimedOut(110));
     testing.assert_eq_str(m4, "TimedOut(110)");
-    let m5 = fs.io_error_message(IoError.Other(0));
+    let m5 = to_string(IoError.Other(0));
     testing.assert_eq_str(m5, "Other(0)");
 }
 
@@ -493,18 +493,18 @@ fn test_try_mkdir_existing_returns_already_exists() {
 }
 
 #[test]
-fn test_net_error_message_formats_net_variants() {
+fn test_net_error_display_formats_net_variants() {
     // Let-bind each call: direct `f(Enum::Variant(...))` on multiple string-
     // returning calls in one function body triggers a codegen hang at 2e6fac15
     // (tracked v0.5.1 under enum drop multi-call pattern).
-    let m1 = net.net_error_message(NetError.ConnectionRefused(111));
+    let m1 = to_string(NetError.ConnectionRefused(111));
     testing.assert_eq_str(m1, "ConnectionRefused(111)");
-    let m2 = net.net_error_message(NetError.AddressInUse(98));
+    let m2 = to_string(NetError.AddressInUse(98));
     testing.assert_eq_str(m2, "AddressInUse(98)");
-    let m3 = net.net_error_message(NetError.TimedOut(110));
+    let m3 = to_string(NetError.TimedOut(110));
     testing.assert_eq_str(m3, "TimedOut(110)");
-    let m4 = net.net_error_message(NetError.AddressNotAvailable(99));
+    let m4 = to_string(NetError.AddressNotAvailable(99));
     testing.assert_eq_str(m4, "AddressNotAvailable(99)");
-    let m5 = net.net_error_message(NetError.Other(0));
+    let m5 = to_string(NetError.Other(0));
     testing.assert_eq_str(m5, "Other(0)");
 }

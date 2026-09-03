@@ -1,0 +1,11 @@
+//! Display coverage for std.concurrency.lifecycle.Error.
+
+import std.concurrency.lifecycle.{Error};
+
+import std.testing;
+
+#[test]
+fn test_lifecycle_error_display_prints_the_carried_code() {
+    let err = Error.Code(7);
+    testing.assert_eq_str(to_string(err), "lifecycle error (code 7)");
+}

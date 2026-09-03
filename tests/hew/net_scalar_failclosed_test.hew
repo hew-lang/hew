@@ -28,7 +28,7 @@ fn expect_invalid(label: string, result: Result<i64, net.NetError>) -> string {
             panic(f"{label}: expected rejection, got {value}");
             ""
         },
-        .Err(err) => net.net_error_message(err),
+        .Err(err) => to_string(err),
     }
 }
 
@@ -84,7 +84,7 @@ fn expect_endpoint_rejected(addr: string) -> string {
             panic(f"expected '{addr}' to be rejected, got {endpoint.host}:{endpoint.port}");
             ""
         },
-        .Err(err) => net.net_error_message(err),
+        .Err(err) => to_string(err),
     }
 }
 
@@ -114,7 +114,7 @@ fn endpoint_text(addr: string) -> string {
     match net.try_parse_endpoint("net.connect_timeout", addr) {
         .Ok(endpoint) => f"{endpoint.host}|{endpoint.port}",
         .Err(err) => {
-            panic(f"expected '{addr}' to parse: {net.net_error_message(err)}");
+            panic(f"expected '{addr}' to parse: {err}");
             ""
         },
     }
@@ -133,15 +133,15 @@ fn test_valid_endpoints_are_preserved_exactly() {
 fn test_connect_timeout_deadline_overflow_is_rejected() {
     match net.try_connect_timeout("127.0.0.1:9", 4294967, 0) {
         .Ok(_) => panic("expected an out-of-range deadline to be rejected"),
-        .Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid timeout_sec 4294967 (deadline exceeds 2147483647 ms))"),
+        .Err(err) => testing.assert_eq_str(to_string(err), "InvalidArgument(net.connect_timeout: invalid timeout_sec 4294967 (deadline exceeds 2147483647 ms))"),
     }
     match net.try_connect_timeout("127.0.0.1:9", 2147483, 648000) {
         .Ok(_) => panic("expected an accumulated deadline overflow to be rejected"),
-        .Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid deadline (timeout_sec 2147483 + timeout_usec 648000 exceeds 2147483647 ms))"),
+        .Err(err) => testing.assert_eq_str(to_string(err), "InvalidArgument(net.connect_timeout: invalid deadline (timeout_sec 2147483 + timeout_usec 648000 exceeds 2147483647 ms))"),
     }
     match net.try_connect_timeout("127.0.0.1:9", -1, 0) {
         .Ok(_) => panic("expected a negative timeout_sec to be rejected"),
-        .Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid timeout_sec -1 (must be >= 0))"),
+        .Err(err) => testing.assert_eq_str(to_string(err), "InvalidArgument(net.connect_timeout: invalid timeout_sec -1 (must be >= 0))"),
     }
 }
 
@@ -149,7 +149,7 @@ fn test_connect_timeout_deadline_overflow_is_rejected() {
 fn test_connect_timeout_rejects_a_malformed_address_before_connecting() {
     match net.try_connect_timeout("::1:9000", 1, 0) {
         .Ok(_) => panic("expected an unbracketed IPv6 address to be rejected"),
-        .Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid endpoint '::1:9000' (unbracketed IPv6 literal; write [address]:port))"),
+        .Err(err) => testing.assert_eq_str(to_string(err), "InvalidArgument(net.connect_timeout: invalid endpoint '::1:9000' (unbracketed IPv6 literal; write [address]:port))"),
     }
 }
 
@@ -169,7 +169,7 @@ fn test_connect_timeout_panics_at_legacy_boundary_on_a_missing_port() {
 fn test_http_client_timeout_above_abi_range_is_rejected() {
     match http_client.try_set_timeout(wrapped_to_500()) {
         .Ok(_) => panic("expected a wrapped HTTP timeout to be rejected"),
-        .Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(http_client.set_timeout: invalid duration 4294967796 ms (must be <= 2147483647))"),
+        .Err(err) => testing.assert_eq_str(to_string(err), "InvalidArgument(http_client.set_timeout: invalid duration 4294967796 ms (must be <= 2147483647))"),
     }
     match http_client.try_set_timeout(1000) {
         .Ok(_) => {},

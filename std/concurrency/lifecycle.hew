@@ -5,6 +5,14 @@ pub enum Error {
     Code(i64);
 }
 
+impl Display for Error {
+    fn fmt(err: Error) -> string {
+        match err {
+            Error.Code(code) => f"lifecycle error (code {code})",
+        }
+    }
+}
+
 pub machine Lifecycle<T> {
     events {
         Initialise;

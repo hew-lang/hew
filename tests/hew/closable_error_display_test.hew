@@ -1,0 +1,18 @@
+//! Display coverage for std.io.closable.CloseError.
+
+import std.fs;
+
+import std.io.closable.{CloseError};
+
+import std.testing;
+
+#[test]
+fn test_close_error_display_delegates_to_the_wrapped_io_error() {
+    let err = CloseError.Io(IoError.NotFound(2));
+    testing.assert_eq_str(to_string(err), "NotFound(2)");
+}
+
+#[test]
+fn test_close_error_display_names_already_closed() {
+    testing.assert_eq_str(to_string(CloseError.AlreadyClosed), "the resource was already closed");
+}

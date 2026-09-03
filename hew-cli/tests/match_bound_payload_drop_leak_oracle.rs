@@ -90,7 +90,7 @@ fn cancellation_window() -> i64 {
     match result {
         Ok(endpoint) => endpoint.port,
         Err(err) => {
-            let message = net.net_error_message(err);
+            let message = to_string(err);
             let _ = unsafe { usleep(300000) };
             message.len()
         },

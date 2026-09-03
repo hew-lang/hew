@@ -192,3 +192,12 @@ fn test_try_start_returns_a_live_child_for_a_shell_command() {
         .Err(_) => panic("expected the shell command to launch"),
     }
 }
+
+// ── Display ────────────────────────────────────────────────────────────────
+#[test]
+fn test_process_error_display_prints_the_carried_detail() {
+    let invalid_arguments = ProcessError.InvalidArguments("boom");
+    testing.assert_eq_str(to_string(invalid_arguments), "boom");
+    let launch_failed = ProcessError.LaunchFailed("could not exec");
+    testing.assert_eq_str(to_string(launch_failed), "could not exec");
+}

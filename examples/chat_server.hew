@@ -53,7 +53,7 @@ actor ClientHandler {
     receive fn start(unused: i32) {
         match conn.write_string(f"[server] welcome {name}") {
             .Ok(_) => {},
-            .Err(err) => println(f"[server] welcome write failed: {net.write_error_message(err)}"),
+            .Err(err) => println(f"[server] welcome write failed: {err}"),
         }
         var running = true;
         while running {
@@ -66,7 +66,7 @@ actor ClientHandler {
                         room.unregister(name);
                         match conn.write_string("__HEW_TCP_DISCONNECT__") {
                             .Ok(_) => {},
-                            .Err(err) => println(f"[server] disconnect write failed: {net.write_error_message(err)}"),
+                            .Err(err) => println(f"[server] disconnect write failed: {err}"),
                         }
                         running = false;
                     } else {
@@ -78,7 +78,7 @@ actor ClientHandler {
                     }
                 },
                 .Err(err) => {
-                    println(f"[server] client read failed: {net.net_error_message(err)}");
+                    println(f"[server] client read failed: {err}");
                     room.unregister(name);
                     running = false;
                 },
@@ -90,7 +90,7 @@ actor ClientHandler {
         // the message rather than applying per-client flow control.
         match conn.write_string(msg) {
             .Ok(_) => {},
-            .Err(err) => println(f"[server] client write failed: {net.write_error_message(err)}"),
+            .Err(err) => println(f"[server] client write failed: {err}"),
         }
     }
 }
@@ -104,7 +104,7 @@ fn main() {
     let addr = f"0.0.0.0:{port}";
     let listener = match net.try_listen(addr) {
         .Ok(listener) => listener,
-        .Err(err) => panic(f"[server] listen on {addr} failed: {net.net_error_message(err)}"),
+        .Err(err) => panic(f"[server] listen on {addr} failed: {err}"),
     };
     println("=== Hew TCP Chat Server ===");
     println(f"Listening on {addr}");

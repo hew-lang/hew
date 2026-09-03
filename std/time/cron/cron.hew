@@ -48,11 +48,13 @@ fn cron_last_error_message() -> string {
     }
 }
 
-fn cron_error_message(err: CronError) -> string {
-    match err {
-        CronError.NoNextOccurrence(message) => message,
-        CronError.InvalidInput(message) => message,
-        CronError.InvalidEpoch(message) => message,
+impl Display for CronError {
+    fn fmt(err: CronError) -> string {
+        match err {
+            CronError.NoNextOccurrence(message) => message,
+            CronError.InvalidInput(message) => message,
+            CronError.InvalidEpoch(message) => message,
+        }
     }
 }
 
@@ -87,7 +89,7 @@ impl ExprMethods for Expr {
         match expr.try_next(after_epoch_secs) {
             .Ok(epoch_secs) => epoch_secs,
             .Err(err) => {
-                panic(f"cron.next failed: {cron_error_message(err)}");
+                panic(f"cron.next failed: {err}");
                 0
             },
         }

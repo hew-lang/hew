@@ -328,3 +328,9 @@ fn _test_render_selects_the_else_branch_with_a_spaced_end_tag() {
         .Err(e) => panic(f"a spaced end tag must render: {e}"),
     }
 }
+
+#[test]
+fn test_template_error_display_prints_the_carried_detail() {
+    let err = TemplateError.UnknownDirective("template: unknown directive `{{foo}}`");
+    testing.assert_eq_str(to_string(err), "template: unknown directive `{{foo}}`");
+}

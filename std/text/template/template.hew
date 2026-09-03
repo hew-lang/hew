@@ -129,14 +129,16 @@ pub enum TemplateError {
     DuplicateElse(string);
 }
 
-fn template_error_message(e: TemplateError) -> string {
-    match e {
-        TemplateError.UnclosedDirective(message) => message,
-        TemplateError.UnclosedBlock(message) => message,
-        TemplateError.UnexpectedTag(message) => message,
-        TemplateError.DotOutsideRange(message) => message,
-        TemplateError.UnknownDirective(message) => message,
-        TemplateError.DuplicateElse(message) => message,
+impl Display for TemplateError {
+    fn fmt(e: TemplateError) -> string {
+        match e {
+            TemplateError.UnclosedDirective(message) => message,
+            TemplateError.UnclosedBlock(message) => message,
+            TemplateError.UnexpectedTag(message) => message,
+            TemplateError.DotOutsideRange(message) => message,
+            TemplateError.UnknownDirective(message) => message,
+            TemplateError.DuplicateElse(message) => message,
+        }
     }
 }
 
@@ -527,7 +529,7 @@ pub fn parse(src: string) -> Template {
     match parsed {
         .Ok(t) => t,
         .Err(err) => {
-            panic(template_error_message(err));
+            panic(f"{err}");
             Template { src: "" }
         },
     }
@@ -546,7 +548,7 @@ pub fn render_template(t: Template, ctx: Ctx) -> string {
     match rendered {
         .Ok(s) => s,
         .Err(err) => {
-            panic(template_error_message(err));
+            panic(f"{err}");
             ""
         },
     }
@@ -682,9 +684,9 @@ pub fn render(tmpl: string, ctx: Ctx) -> Result<string, string> {
             let rendered = render_segment(t.src, ctx, "", false);
             match rendered {
                 .Ok(s) => Ok(s),
-                .Err(err) => Err(template_error_message(err)),
+                .Err(err) => Err(to_string(err)),
             }
         },
-        .Err(err) => Err(template_error_message(err)),
+        .Err(err) => Err(to_string(err)),
     }
 }

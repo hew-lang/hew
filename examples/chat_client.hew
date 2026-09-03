@@ -67,7 +67,7 @@ fn main() {
     let conn = match net.try_connect_timeout(addr, connect_timeout_sec, connect_timeout_usec) {
         .Ok(conn) => conn,
         .Err(err) => {
-            panic(f"[client] connect to {addr} failed: {net.net_error_message(err)}");
+            panic(f"[client] connect to {addr} failed: {err}");
         },
     };
     match conn.set_read_timeout(-1) {

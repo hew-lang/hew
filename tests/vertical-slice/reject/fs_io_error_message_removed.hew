@@ -1,0 +1,8 @@
+// `fs.io_error_message` was replaced by `impl Display for IoError`; the
+// deleted function name must no longer resolve.
+import std.fs;
+
+fn main() {
+    let e = IoError.Other(0);
+    println(fs.io_error_message(e));
+}

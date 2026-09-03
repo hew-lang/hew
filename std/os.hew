@@ -71,6 +71,14 @@ pub enum EnvError {
     InvalidName(string);
 }
 
+impl Display for EnvError {
+    fn fmt(err: EnvError) -> string {
+        match err {
+            EnvError.InvalidName(name) => f"invalid environment variable name: `{name}`",
+        }
+    }
+}
+
 /// Set an environment variable for the current process.
 ///
 /// Environment names must be non-empty and cannot contain `=`.

@@ -13,7 +13,7 @@
 //!     let ciphertext = encrypt.seal(key, "hello world");
 //!     match encrypt.try_open(key, ciphertext) {
 //!         .Ok(plaintext) => println(plaintext),
-//!         .Err(err) => println(encrypt.error_message(err)),
+//!         .Err(err) => println(err),
 //!     }
 //! }
 //! ```
@@ -51,16 +51,17 @@ fn crypto_error_from_i32(code: i32) -> CryptoError { // INTERNAL-ABI: C ABI erro
     }
 }
 
-/// Return a human-readable message for a [`CryptoError`].
-pub fn error_message(err: CryptoError) -> string {
-    match err {
-        CryptoError.None => "no error",
-        CryptoError.InvalidKey => "encrypt key must be 32 bytes",
-        CryptoError.ShortCiphertext => "encrypt ciphertext is too short",
-        CryptoError.AuthFailed => "encrypt authentication failed",
-        CryptoError.InvalidUtf8 => "encrypt plaintext was not valid UTF-8",
-        CryptoError.AllocationFailure => "encrypt native allocation failed",
-        CryptoError.EntropyFailure => "encrypt system entropy source failed",
+impl Display for CryptoError {
+    fn fmt(err: CryptoError) -> string {
+        match err {
+            CryptoError.None => "no error",
+            CryptoError.InvalidKey => "encrypt key must be 32 bytes",
+            CryptoError.ShortCiphertext => "encrypt ciphertext is too short",
+            CryptoError.AuthFailed => "encrypt authentication failed",
+            CryptoError.InvalidUtf8 => "encrypt plaintext was not valid UTF-8",
+            CryptoError.AllocationFailure => "encrypt native allocation failed",
+            CryptoError.EntropyFailure => "encrypt system entropy source failed",
+        }
     }
 }
 
@@ -91,7 +92,7 @@ pub fn seal(key: bytes, plaintext: string) -> bytes {
     match result {
         .Ok(ciphertext) => ciphertext,
         .Err(err) => {
-            panic(f"encrypt.seal failed: {error_message(err)}");
+            panic(f"encrypt.seal failed: {err}");
             "".to_bytes()
         },
     }
@@ -136,7 +137,7 @@ pub fn open(key: bytes, ciphertext: bytes) -> string {
     match try_open(key, ciphertext) {
         .Ok(plaintext) => plaintext,
         .Err(err) => {
-            panic(f"encrypt.open failed: {error_message(err)}");
+            panic(f"encrypt.open failed: {err}");
             ""
         },
     }

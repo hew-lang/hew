@@ -46,6 +46,18 @@ pub type RemotePid<T> {
 }
 
 /// Error returned when a pid send cannot be completed.
+///
+/// WHY no `impl Display`: this enum is registered through the prelude's
+/// synthetic-item path (`std/builtins.hew` is loaded out-of-band and never
+/// appears in a normal compile's `module_graph`), which the checker accepts
+/// but which `plan_imported_impl_bodies` and `is_builtin_display_impl` do not
+/// reach — `hew run` fails closed with `E_NOT_YET_IMPLEMENTED: display
+/// dispatch: missing std.builtins.SendError::fmt`. Tracked in #3224.
+/// WHEN obsolete: once the checker/HIR registration for prelude types is
+/// unified so all three paths agree on one `Display` dispatch mechanism.
+/// WHAT the real fix looks like: `hew-hir`/`hew-types` change (not
+/// stdlib-only) per #3224 — this comment is removed and `impl Display for
+/// SendError` added alongside the other public `std` error enums.
 pub enum SendError {
     /// The destination mailbox is full.
     Full;
@@ -80,6 +92,9 @@ pub enum SendError {
 /// deferred to follow-on polish; today the runtime collapses every failure
 /// into `NotFound` since the underlying registry surface is fail-closed
 /// per `set_last_error` for the diagnostic detail.
+/// WHY no `impl Display`: same prelude synthetic-item registration gap as
+/// `SendError` above — tracked in #3224.
+/// WHEN obsolete / WHAT the real fix: see the `SendError` comment above.
 pub enum LookupError {
     /// No actor is registered under the requested name.
     NotFound;
@@ -103,6 +118,9 @@ pub enum LookupError {
 ///
 /// Variant order matches the native runtime ask ABI so codegen can project
 /// the runtime error discriminant directly into this public enum.
+/// WHY no `impl Display`: same prelude synthetic-item registration gap as
+/// `SendError` above — tracked in #3224.
+/// WHEN obsolete / WHAT the real fix: see the `SendError` comment above.
 pub enum AskError {
     /// Internal no-error sentinel; should not be returned as `Err`.
     NoError;
@@ -167,6 +185,9 @@ pub enum AskError {
 ///     Err(_)      => -2,      // deadline fired
 /// }
 /// ```
+/// WHY no `impl Display`: same prelude synthetic-item registration gap as
+/// `SendError` above — tracked in #3224.
+/// WHEN obsolete / WHAT the real fix: see the `SendError` comment above.
 pub enum TimeoutError {
     /// The deadline fired before the recv completed.
     Timeout;
@@ -183,6 +204,9 @@ pub enum TimeoutError {
 /// `AlreadyLinked` is an idempotent non-fatal condition — callers may treat it
 /// as `Ok(())`. `TargetDead` is returned when the target actor has already
 /// exited; the caller's exit handler will fire immediately.
+/// WHY no `impl Display`: same prelude synthetic-item registration gap as
+/// `SendError` above — tracked in #3224.
+/// WHEN obsolete / WHAT the real fix: see the `SendError` comment above.
 pub enum LinkError {
     AlreadyLinked;
     TargetDead;

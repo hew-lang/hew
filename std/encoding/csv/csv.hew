@@ -113,7 +113,7 @@ pub fn try_parse_no_headers(data: string) -> Result<Table, string> {
 pub fn try_parse_file(path: string) -> Result<Table, string> {
     match fs.try_read(path) {
         .Ok(content) => parse_impl(content, true),
-        .Err(reason) => Err(fs.io_error_message(reason)),
+        .Err(reason) => Err(to_string(reason)),
     }
 }
 

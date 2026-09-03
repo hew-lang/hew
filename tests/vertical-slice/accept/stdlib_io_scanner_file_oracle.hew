@@ -28,13 +28,13 @@ fn main() {
             print_line("third=", third);
             print_line("eof=", eof);
         },
-        Err(e) => println("file_err=" + fs.io_error_message(e)),
+        Err(e) => println("file_err=" + to_string(e)),
     }
 
     let _ = fs.delete(path);
 
     match scanner.from_file(".tmp/stdlib-io-scanner-definitely-missing.txt") {
         Ok(_) => println("missing=unexpected-ok"),
-        Err(e) => println("missing=" + fs.io_error_message(e)),
+        Err(e) => println("missing=" + to_string(e)),
     }
 }

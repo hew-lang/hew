@@ -206,7 +206,7 @@ pub fn request_string(method: string, url: string, body: string, headers: Vec<(s
 pub fn set_timeout(timeout_ms: i64) {
     match try_set_timeout(timeout_ms) {
         .Ok(_) => {},
-        .Err(err) => panic(f"http_client.set_timeout failed: {net.net_error_message(err)}"),
+        .Err(err) => panic(f"http_client.set_timeout failed: {err}"),
     }
 }
 

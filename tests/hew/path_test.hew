@@ -279,7 +279,7 @@ fn test_try_glob_reports_an_unreadable_directory_as_a_failure() {
     testing.assert_true(chmod_dir("000", inner) == 0);
     let observed = match path.try_glob(f"{inner}/*") {
         .Ok(_) => "fabricated-empty-success",
-        .Err(err) => path.path_error_message(err),
+        .Err(err) => to_string(err),
     };
     chmod_dir("755", inner);
     fs.delete(f"{inner}/present.txt");
@@ -321,4 +321,13 @@ fn test_glob_try_get_rejects_a_wrapped_index() {
         .None => false,
     });
     matches.close();
+}
+
+// ── Display ────────────────────────────────────────────────────────────────
+#[test]
+fn test_path_error_display_prints_the_carried_detail() {
+    let glob_failed = PathError.GlobFailed("boom");
+    testing.assert_eq_str(to_string(glob_failed), "boom");
+    let out_of_range = PathError.IndexOutOfRange("index 3 out of range");
+    testing.assert_eq_str(to_string(out_of_range), "index 3 out of range");
 }

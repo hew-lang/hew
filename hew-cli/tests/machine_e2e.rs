@@ -979,10 +979,12 @@ fn machine_diagram_renders_no_machine_a_file_does_not_reach() {
 }
 
 #[test]
-fn machine_diagram_succeeds_on_every_compiling_machine_example() {
+fn machine_commands_succeed_on_every_compiling_machine_example() {
     // The shipped examples are the front door: every one that compiles must
-    // diagram. The `reject_*` fixtures are deliberate compile errors and are
-    // this test's negative control — they must keep failing, not be skipped.
+    // diagram and list. The `reject_*` fixtures are deliberate compile errors
+    // and are this test's negative control — they must keep failing, not be
+    // skipped. `select_on_transition.hew` carries an imported machine beside an
+    // f-string interpolation, so the pairing is covered here too.
     let examples = support::repo_root().join("examples/machine");
     let mut sources: Vec<std::path::PathBuf> = std::fs::read_dir(&examples)
         .unwrap_or_else(|e| panic!("read {}: {e}", examples.display()))
@@ -999,31 +1001,38 @@ fn machine_diagram_succeeds_on_every_compiling_machine_example() {
     let mut rejected = 0usize;
     for source in &sources {
         let name = source.file_name().unwrap().to_string_lossy().into_owned();
-        let output = Command::new(hew_binary())
-            .args(["machine", "diagram"])
-            .arg(source)
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        if name.starts_with("reject_") {
+        let reject_fixture = name.starts_with("reject_");
+        if reject_fixture {
             rejected += 1;
-            assert!(
-                !output.status.success(),
-                "{name} is a reject fixture and must not diagram; stdout:\n{stdout}"
-            );
-            continue;
         }
 
-        assert!(
-            output.status.success(),
-            "{name}: `hew machine diagram` must succeed; stderr:\n{stderr}"
-        );
-        assert!(
-            stdout.contains("stateDiagram-v2"),
-            "{name}: must emit a state diagram; stdout:\n{stdout}"
-        );
+        for (subcommand, marker) in [("diagram", "stateDiagram-v2"), ("list", "machine ")] {
+            let output = Command::new(hew_binary())
+                .args(["machine", subcommand])
+                .arg(source)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            if reject_fixture {
+                assert!(
+                    !output.status.success(),
+                    "{name} is a reject fixture; `machine {subcommand}` must refuse it; \
+                     stdout:\n{stdout}"
+                );
+                continue;
+            }
+
+            assert!(
+                output.status.success(),
+                "{name}: `hew machine {subcommand}` must succeed; stderr:\n{stderr}"
+            );
+            assert!(
+                stdout.contains(marker),
+                "{name}: `machine {subcommand}` must render a machine; stdout:\n{stdout}"
+            );
+        }
     }
     assert!(
         rejected > 0,

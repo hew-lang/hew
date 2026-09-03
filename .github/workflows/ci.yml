@@ -371,6 +371,86 @@ jobs:
           check_name: Compiled Hew Test Results
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Journeys — the day-one/day-two/week-one-local acceptance harness
+  # (V060-FD-1). Independent of the ci-shard-* Make targets and the
+  # compiled-hew-shards matrix above: a journey behind a red gate would
+  # produce no evidence, so it runs as its own job against the already-
+  # built compiled Hew artifact.
+  # ─────────────────────────────────────────────────────────────────────────
+  journeys:
+    name: Journeys (${{ matrix.journey }})
+    needs: compiled-hew-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        journey: [day-one, day-two, week-one-local]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Download compiled Hew bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compiled-hew-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/compiled-hew-download
+
+      - name: Unpack compiled Hew bundle
+        run: |
+          mkdir -p "${{ runner.temp }}/compiled-hew-artifact"
+          tar -xzf "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz" \
+            -C "${{ runner.temp }}/compiled-hew-artifact"
+
+      - name: Install wrangler
+        # day-two is the only journey with registry-gated steps
+        # (scripts/registry-harness.sh); no sibling hew-registry checkout
+        # exists in this job, so the harness exits 75 and those steps
+        # record the no_registry() failure -- the same outcome
+        # scripts/journeys-expected.tsv is seeded against.
+        if: matrix.journey == 'day-two'
+        run: npm install -g wrangler
+
+      - name: Run ${{ matrix.journey }}
+        env:
+          HEW_BIN: ${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew
+        run: bash scripts/run-journeys.sh ${{ matrix.journey }}
+
+  # windows-2022 has no compiled-hew artifact (compiled-hew-linux is
+  # Linux-only) and no `make`, so this builds hew fresh and runs day one's
+  # script directly -- day one is the journey most representative of a
+  # newcomer's first minutes and needs no registry, unlike day two.
+  journeys-windows-day-one:
+    name: Journeys (day-one, Windows)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup MSVC environment
+        uses: ./.github/actions/setup-msvc
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: journeys-windows-day-one
+
+      - name: Build hew
+        run: cargo build -p hew-cli --release
+
+      - name: Run day-one.sh
+        shell: bash
+        env:
+          HEW_BIN: ${{ github.workspace }}/target/release/hew.exe
+        run: bash scripts/run-journeys.sh day-one
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Build & test — Rust workspace
   # Produces JUnit XML for GitHub Actions test reporting.
   # ─────────────────────────────────────────────────────────────────────────

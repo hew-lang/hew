@@ -5270,7 +5270,7 @@ pub unsafe extern "C" fn hew_actor_register_type(
 /// multiple actor types use overlapping `msg_type` integers (unlike the WASM
 /// bridge's flat `msg_type → name` map).
 ///
-/// `name` must be a NUL-terminated `"ActorName::handler_name"` string with
+/// `name` must be a NUL-terminated `"ActorName.handler_name"` string with
 /// static lifetime (a string literal baked into the binary).
 ///
 /// # Safety

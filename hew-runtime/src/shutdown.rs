@@ -22,7 +22,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crate::reactor;
-use crate::runtime::{rt_current, rt_default};
+use crate::runtime::{rt_current, rt_current_opt, rt_default};
 use crate::scheduler;
 
 // ---------------------------------------------------------------------------
@@ -205,6 +205,24 @@ pub(crate) unsafe fn free_registered_supervisors() -> bool {
 #[cfg(feature = "profiler")]
 pub(crate) fn registered_supervisors_snapshot() -> Vec<*mut crate::supervisor::HewSupervisor> {
     with_supervisor_roots(|sups| sups.iter().map(|sup| sup.0).collect())
+}
+
+/// Like [`registered_supervisors_snapshot`] but reports an empty tree instead
+/// of panicking when no runtime is installed.
+///
+/// The observability scrape surface (`observe::scrape_text`) may run before
+/// `hew_sched_init` installs a runtime or after teardown drops it — there is
+/// simply no supervisor tree to read, the same case [`rt_current_opt`]'s docs
+/// describe for `metrics::render_snapshot`. `registered_supervisors_snapshot`
+/// keeps its fail-closed `rt_current` panic for its other callers (the
+/// profiler tree dump, shutdown's own drain), where running with no runtime
+/// installed is the caller's lifecycle bug, not a legitimate scrape.
+#[cfg(feature = "profiler")]
+pub(crate) fn registered_supervisors_snapshot_opt() -> Vec<*mut crate::supervisor::HewSupervisor> {
+    rt_current_opt().map_or_else(Vec::new, |rt| {
+        rt.supervisor_roots
+            .access(|sups| sups.iter().map(|sup| sup.0).collect())
+    })
 }
 
 // ---------------------------------------------------------------------------

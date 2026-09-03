@@ -193,6 +193,95 @@ pub fn snapshot_tree_json() -> String {
     json
 }
 
+/// Append `(supervisor_label, child_label, restarts)` rows for one supervisor
+/// and, recursively, every nested child supervisor beneath it.
+///
+/// `restarts` reads the same `CrashStats::total_crashes` lifetime counter
+/// `append_supervisor_rows` formats into its debug tree row above (under the
+/// same `roster.lock_or_recover()` discipline), not the bounded
+/// `roster.restart_count` ring used only for the restart-budget window.
+#[cfg(feature = "profiler")]
+fn append_restart_rows(rows: &mut Vec<(String, String, u64)>, sup: *mut HewSupervisor) {
+    if sup.is_null() {
+        return;
+    }
+
+    // SAFETY: copy the self-actor pointer from the live allocation.
+    let self_actor = unsafe { (*sup).self_actor };
+    let self_actor_id = if self_actor.is_null() {
+        0
+    } else {
+        // SAFETY: self_actor belongs to the live supervisor.
+        unsafe { (*self_actor).id }
+    };
+    let supervisor_label = format!("supervisor:{self_actor_id}");
+
+    // Snapshot restart counts and nested pins under this node's roster, then
+    // release it before recursive descent — same discipline as
+    // `append_supervisor_rows` above.
+    let (child_rows, nested) = {
+        // SAFETY: top-level supervisor pointers remain valid while registered;
+        // nested calls carry a stable pin acquired by their parent snapshot.
+        let roster = unsafe { &(*sup).roster }.lock_or_recover();
+        let child_rows = roster
+            .children
+            .iter()
+            .take(roster.child_count)
+            .enumerate()
+            .map(|(index, _child)| {
+                let spec = &roster.child_specs[index];
+                let name = child_name(spec.name, &format!("child[{index}]"));
+                let restarts: u64 = if spec.circuit_breaker.crash_stats.is_null() {
+                    0
+                } else {
+                    // SAFETY: crash stats pointer belongs to the child spec.
+                    u64::from(unsafe { (*spec.circuit_breaker.crash_stats).total_crashes })
+                };
+                (name, restarts)
+            })
+            .collect::<Vec<_>>();
+        let nested = roster
+            .child_supervisors
+            .iter()
+            .copied()
+            .zip(roster.child_supervisor_tokens.iter().copied())
+            .filter_map(|(child, token)| {
+                let pin = crate::lifetime::local_handles::pin_current_supervisor(token)?;
+                (pin.supervisor() == child).then_some((child, pin))
+            })
+            .collect::<Vec<_>>();
+        (child_rows, nested)
+    };
+
+    for (child, restarts) in child_rows {
+        rows.push((supervisor_label.clone(), child, restarts));
+    }
+    for (child_sup, _pin) in nested {
+        append_restart_rows(rows, child_sup);
+    }
+}
+
+/// Snapshot the lifetime restart total of every child across every registered
+/// supervisor tree, as `(supervisor_label, child_label, restarts)` rows.
+///
+/// Backs the `supervisor.restarts_by_child` observe series
+/// ([`crate::observe::scrape_text`]); mirrors [`snapshot_tree_json`]'s walk,
+/// but reads through the non-panicking
+/// [`crate::shutdown::registered_supervisors_snapshot_opt`] rather than
+/// [`crate::shutdown::registered_supervisors_snapshot`] — a scrape may run
+/// before `hew_sched_init` installs a runtime or after teardown drops it,
+/// where there is legitimately no supervisor tree yet, not a caller bug.
+#[cfg(feature = "profiler")]
+#[must_use]
+pub fn restarts_by_child_snapshot() -> Vec<(String, String, u64)> {
+    let roots = crate::shutdown::registered_supervisors_snapshot_opt();
+    let mut rows = Vec::new();
+    for root in roots {
+        append_restart_rows(&mut rows, root);
+    }
+    rows
+}
+
 // ---------------------------------------------------------------------------
 // Child lookup result types (shared by static and pool ABI)
 // ---------------------------------------------------------------------------

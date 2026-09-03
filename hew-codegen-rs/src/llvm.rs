@@ -5073,7 +5073,7 @@ pub(crate) fn emit_native_actor_metadata_registration<'ctx>(
                 "actor `{actor_name}` handler index exceeds u32::MAX"
             ))
         })?;
-        let handler_name = format!("{actor_name}::{}", handler.name);
+        let handler_name = format!("{actor_name}.{}", handler.name);
         let handler_name_fragment = llvm_global_name_fragment(&handler.name);
         let handler_name_ptr = intern_global_string_ptr(
             fn_ctx,

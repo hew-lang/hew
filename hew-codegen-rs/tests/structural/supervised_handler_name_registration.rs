@@ -1,6 +1,6 @@
 //! Codegen test: a SUPERVISED actor's handler names are registered into the
 //! runtime profiler registry so a crash inside a supervised handler is reported
-//! by name (`Worker::run`) instead of the bare `msg_type` discriminant.
+//! by name (`Worker.run`) instead of the bare `msg_type` discriminant.
 //!
 //! Background: the direct-`spawn` path emits the handler-name registration via
 //! `emit_native_actor_metadata_registration`. A supervised child, however, is
@@ -11,9 +11,9 @@
 //! integer.
 //!
 //! The source below supervises `Worker` but NEVER directly `spawn`s it, so the
-//! only path that can register `Worker::run` is the supervisor child-spec
+//! only path that can register `Worker.run` is the supervisor child-spec
 //! emission. The IR assertions therefore pin that path specifically: drop the
-//! registration and `Worker::run` disappears from the emitted module.
+//! registration and `Worker.run` disappears from the emitted module.
 
 use std::path::Path;
 
@@ -109,7 +109,7 @@ fn emit_supervised_ir() -> String {
 }
 
 /// The supervised child's per-handler name is registered: the emitted IR both
-/// references `hew_register_handler_name` and embeds the `Worker::run` name
+/// references `hew_register_handler_name` and embeds the `Worker.run` name
 /// string. Because `Worker` is never directly `spawn`ed, this proves the
 /// registration came from the supervisor child-spec path.
 #[test]
@@ -120,8 +120,8 @@ fn supervised_child_registers_handler_name() {
         "expected a `hew_register_handler_name` reference in the emitted IR;\ngot:\n{ir}"
     );
     assert!(
-        ir.contains("Worker::run"),
-        "expected the `Worker::run` handler-name string in the emitted IR \
+        ir.contains("Worker.run"),
+        "expected the `Worker.run` handler-name string in the emitted IR \
          (registered via the supervisor child-spec path);\ngot:\n{ir}"
     );
     // A `call void @hew_register_handler_name(` must actually be emitted, not

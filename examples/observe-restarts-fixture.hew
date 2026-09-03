@@ -1,0 +1,38 @@
+import std.observe;
+
+actor Fragile {
+    let id: i32;
+    receive fn break_it() {
+        panic("fragile crash");
+    }
+}
+
+supervisor Pair {
+    strategy: one_for_one;
+    intensity: 10 within 60s;
+
+    child a: Fragile(id: 1);
+    child b: Fragile(id: 2);
+}
+
+fn main() {
+    let sup = spawn Pair;
+    sleep(30ms);
+
+    let a = sup.a;
+    a.break_it();
+    sleep(300ms);
+
+    var b = sup.b;
+    var i = 0;
+    while i < 3 {
+        b.break_it();
+        sleep(300ms);
+        b = sup.b;
+        i = i + 1;
+    }
+
+    let _barrier = observe.barrier();
+    println("restarts fixture ready");
+    sleep(15s);
+}

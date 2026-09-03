@@ -969,7 +969,7 @@ pub extern "C" fn hew_trace_reset() {
 ///                 "lambda_spawned"|"lambda_released"|"unknown",
 ///   "msg_type": N,
 ///   "timestamp_ns": N,
-///   "handler_name": "ActorType::handler_name"|null
+///   "handler_name": "ActorType.handler_name"|null
 /// }
 /// ```
 ///
@@ -1593,7 +1593,7 @@ mod tests {
         hew_trace_reset();
     }
 
-    /// Verify that `drain_events_json` emits `"handler_name":"ActorType::handler"`
+    /// Verify that `drain_events_json` emits `"handler_name":"ActorType.handler"`
     /// for a registered `msg_type` and `"handler_name":null` for an unknown one.
     ///
     /// This test exercises the bridge registration path together with the tracing
@@ -1647,9 +1647,9 @@ mod tests {
 
         let json = crate::tracing::drain_events_json();
 
-        // The known msg_type must carry "handler_name":"TestActor::on_ping".
+        // The known msg_type must carry "handler_name":"TestActor.on_ping".
         assert!(
-            json.contains(r#""handler_name":"TestActor::on_ping""#),
+            json.contains(r#""handler_name":"TestActor.on_ping""#),
             "expected handler_name for known msg_type in: {json}"
         );
         // The unknown msg_type must carry "handler_name":null.
@@ -1711,7 +1711,7 @@ mod tests {
             "registered actor_type_id must be non-zero: {json}"
         );
         assert!(
-            json.contains(r#""handler_name":"TypedActor::on_tick""#),
+            json.contains(r#""handler_name":"TypedActor.on_tick""#),
             "{json}"
         );
         assert!(

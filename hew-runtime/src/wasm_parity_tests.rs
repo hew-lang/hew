@@ -1225,7 +1225,7 @@ fn wasm_trace_json_uses_registered_actor_type_attribution() {
         "registered actor type should render in WASM/test trace JSON: {json}"
     );
     assert!(
-        json.contains(r#""handler_name":"WasmActor::on_ping""#),
+        json.contains(r#""handler_name":"WasmActor.on_ping""#),
         "registered handler name should render in WASM/test trace JSON: {json}"
     );
     assert!(

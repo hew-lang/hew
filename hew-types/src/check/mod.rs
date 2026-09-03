@@ -603,10 +603,19 @@ impl Checker {
     /// The walk is closed under a type's own components so a `Vec<Conn>` row is
     /// always accompanied by its `Conn` row: consumers key on the exact type
     /// they hold, and glue emission descends into elements.
+    /// Publish the §6.2 fact table, with the refusals §1.1 could not decide.
+    ///
+    /// A type §1.1 refuses gets no row, and for most refusals that is the whole
+    /// statement: the type is a template parameter, or a declaration the
+    /// boundary cannot render, and a consumer that misses the key fails closed.
+    /// `RecursiveInstantiation` is different - it refuses a declaration the
+    /// user wrote, whose members reach it at a growing instantiation - so it is
+    /// stated as `E_LIMIT_CLASS_RECURSION` rather than left as an absence, once
+    /// per declaration.
     fn build_type_facts(
         &self,
         resolved: &HashMap<SpanKey, ResolvedTy>,
-    ) -> BTreeMap<TypeInstanceKey, TypeFacts> {
+    ) -> (BTreeMap<TypeInstanceKey, TypeFacts>, Vec<TypeError>) {
         let declarations = self.class_declarations();
         let context = crate::value_class::ClassContext::new(&declarations);
         let mut facts: BTreeMap<TypeInstanceKey, TypeFacts> = BTreeMap::new();
@@ -615,10 +624,21 @@ impl Checker {
         // for ever through a recursive declaration.
         let mut visited: std::collections::BTreeSet<TypeInstanceKey> =
             std::collections::BTreeSet::new();
-        let mut pending: Vec<ResolvedTy> = resolved.values().cloned().collect();
-        pending.sort();
-        pending.dedup();
-        while let Some(ty) = pending.pop() {
+        // Each pending type carries the span of the accepted expression it came
+        // from, so a refusal names a place in the user's program rather than
+        // the start of the file. A component inherits its container's span.
+        let mut refusals: BTreeMap<String, TypeError> = BTreeMap::new();
+        let mut pending: Vec<(ResolvedTy, Span)> = resolved
+            .iter()
+            .map(|(key, ty)| (ty.clone(), key.start..key.end))
+            .collect();
+        pending.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.start.cmp(&right.1.start))
+        });
+        pending.dedup_by(|left, right| left.0 == right.0);
+        while let Some((ty, span)) = pending.pop() {
             let key = TypeInstanceKey(ty.clone());
             if !visited.insert(key.clone()) {
                 continue;
@@ -651,15 +671,36 @@ impl Checker {
                     crate::eq_eligibility::ty_is_eq_eligible(&as_ty, &self.type_defs),
                     crate::eq_eligibility::EqEligibility::Eligible
                 );
-            // A type §1.1 refuses gets no row at all. There is no default class
-            // and no `Unknown`, so a consumer that misses a key fails closed
-            // rather than reading a guess.
-            if let Ok(row) = TypeFacts::of_type(&ty, &context, send, hash, eq) {
-                facts.insert(key, row);
+            match TypeFacts::of_type(&ty, &context, send, hash, eq) {
+                Ok(row) => {
+                    facts.insert(key, row);
+                }
+                Err(crate::value_class::ClassError::RecursiveInstantiation { name }) => {
+                    refusals.entry(name.clone()).or_insert_with(|| {
+                        TypeError::new(
+                            TypeErrorKind::ClassRecursion,
+                            span.clone(),
+                            format!(
+                                "E_LIMIT_CLASS_RECURSION: `{name}` reaches itself through its own members at a growing instantiation, so it has no value class and no ownership obligation can be decided for it"
+                            ),
+                        )
+                    });
+                }
+                // Every other refusal is an absence a consumer fails closed on:
+                // a template parameter the instance service substitutes first,
+                // a name this boundary cannot render, or a compiler-internal
+                // carrier that is never the type of a value.
+                Err(_) => {}
             }
-            crate::type_facts::push_type_components(&ty, &mut pending);
+            let mut components = Vec::new();
+            crate::type_facts::push_type_components(&ty, &mut components);
+            pending.extend(
+                components
+                    .into_iter()
+                    .map(|component| (component, span.clone())),
+            );
         }
-        facts
+        (facts, refusals.into_values().collect())
     }
 
     /// The §1.1 declaration lookup backed by this checker's tables.
@@ -2224,7 +2265,9 @@ impl Checker {
         // bottom. Building nothing there is the same rule the typed
         // `resolved_expr_types` handoff above states for its own totality.
         let type_facts = if self.errors.is_empty() {
-            self.build_type_facts(&resolved_expr_types_typed)
+            let (facts, refusals) = self.build_type_facts(&resolved_expr_types_typed);
+            self.errors.extend(refusals);
+            facts
         } else {
             BTreeMap::new()
         };

@@ -296,6 +296,41 @@ impl Walk {
     }
 }
 
+/// Does `ty` mention one of `params`, the mentioning declaration's own type
+/// parameters, anywhere inside it?
+///
+/// An argument that mentions none of them is a constant: substituting the
+/// declaration's parameters cannot change it, so an edge carrying it reaches
+/// one fixed instantiation however many times the cycle turns.
+fn mentions_type_param(ty: &ResolvedTy, params: &[String]) -> bool {
+    if is_own_parameter(ty, params) {
+        return true;
+    }
+    match ty {
+        ResolvedTy::Tuple(elements) => elements
+            .iter()
+            .any(|element| mentions_type_param(element, params)),
+        ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) => {
+            mentions_type_param(element, params)
+        }
+        ResolvedTy::Task(inner) => mentions_type_param(inner, params),
+        ResolvedTy::Named { args, .. } => args.iter().any(|arg| mentions_type_param(arg, params)),
+        ResolvedTy::Closure {
+            params: p,
+            ret,
+            captures,
+        } => {
+            p.iter().any(|t| mentions_type_param(t, params))
+                || mentions_type_param(ret, params)
+                || captures.iter().any(|t| mentions_type_param(t, params))
+        }
+        ResolvedTy::Function { params: p, ret } => {
+            p.iter().any(|t| mentions_type_param(t, params)) || mentions_type_param(ret, params)
+        }
+        _ => false,
+    }
+}
+
 /// Is `arg` one of `params`, the mentioning declaration's own type parameters?
 ///
 /// A parameter reaches here spelled either as an abstract `TypeParam` or, when
@@ -401,13 +436,15 @@ fn collect_mentions(
 /// instantiation other than its own parameters?
 ///
 /// This is §1.1's polymorphic-recursion question, and it is asked of the
-/// declaration's **pre-substitution** members: `L<T>` whose body mentions
+/// declaration's **pre-substitution** members. `L<T>` whose body mentions
 /// `L<T>` reaches finitely many instantiations from any starting argument and
-/// takes the owning edge, while `L<T>` whose body mentions `L<Vec<T>>` — alone
-/// or through an intermediary declaration — grows its argument on every turn of
-/// the cycle and has no finite fixpoint to join. A declaration that never
-/// reaches itself refuses nothing, whatever arguments a caller supplies: a
-/// nested `Wrapper<Wrapper<i64>>` is an ordinary aggregate.
+/// takes the owning edge, and so does `Tree<T>` whose body mentions a constant
+/// `Tree<i64>`: substitution cannot change a constant, so that cycle reaches
+/// one fixed instantiation. `L<T>` whose body mentions `L<Vec<T>>` — alone or
+/// through an intermediary declaration — wraps the parameter and grows its
+/// argument on every turn, so it has no finite fixpoint to join. A declaration
+/// that never reaches itself refuses nothing, whatever arguments a caller
+/// supplies: a nested `Wrapper<Wrapper<i64>>` is an ordinary aggregate.
 fn is_polymorphically_recursive(name: &str, decls: &ClassContext<'_>) -> bool {
     let mut seen: BTreeSet<(String, bool)> = BTreeSet::new();
     let mut stack = vec![(name.to_string(), false)];
@@ -423,9 +460,29 @@ fn is_polymorphically_recursive(name: &str, decls: &ClassContext<'_>) -> bool {
             collect_mentions(member, decls, &mut mentions);
         }
         for (mentioned, args) in mentions {
-            let grows = !args
-                .iter()
-                .all(|arg| is_own_parameter(arg, &declared.type_params));
+            // An argument grows the instantiation only when substitution can
+            // make it bigger: it must mention one of the mentioning
+            // declaration's parameters and must not be exactly one of them.
+            // `Tree<T> { Node(Tree<i64>) }` carries a constant, so every turn
+            // of that cycle reaches the same `Tree<i64>` and the walk is
+            // finite; `L<T> { n: L<Vec<T>> }` wraps the parameter and grows.
+            //
+            // MARKED SHORTCUT - a permutation of parameters counts as no
+            // growth, which is right, but a substitution that merely reorders
+            // or duplicates them is admitted by the same test rather than
+            // proved finite.
+            // WHY: the exact question is whether the substitution composed
+            // around the cycle is idempotent, which needs the composed map and
+            // not one edge at a time.
+            // WHEN: the walk carries the composed substitution rather than a
+            // per-edge boolean.
+            // WHAT: refuse exactly when the composition around the cycle is not
+            // idempotent, which admits `Pair<T, U> { Pair<U, T> }` by proof
+            // instead of by this argument-shape test.
+            let grows = args.iter().any(|arg| {
+                mentions_type_param(arg, &declared.type_params)
+                    && !is_own_parameter(arg, &declared.type_params)
+            });
             let grew = grew || grows;
             if grew && mentioned == name {
                 return true;

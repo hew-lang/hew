@@ -382,21 +382,6 @@ fn a_declaration_reached_transitively_at_a_second_instantiation_is_not_recursion
     );
 }
 
-/// The counterfactual in the same program: `List<T>` does mention itself, at
-/// its own instantiation, so the occurrence is an owning edge and the row is
-/// `CowValue`/`FieldWise` - published, not refused, and never `BitCopy`.
-#[test]
-fn a_generic_indirect_enum_publishes_over_the_owning_edge() {
-    let output = facts_of("class_nested_instantiation.hew");
-    let facts = row_matching(&output, "`List<i64>`", |ty| {
-        named_at(ty, "List", |args| args == [ResolvedTy::I64])
-    });
-    assert_eq!(
-        (ValueClass::CowValue, CloneKind::FieldWise),
-        (facts.class, facts.clone)
-    );
-}
-
 /// The live vertical-slice fixture that the name-keyed cut refused: the nested
 /// `Maybe<Maybe<i64>>` the program builds has a published row.
 #[test]

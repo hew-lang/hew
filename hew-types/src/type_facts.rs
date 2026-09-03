@@ -867,23 +867,96 @@ mod tests {
         );
     }
 
-    /// Polymorphic recursion is a property of `Pair`'s own members - its body
-    /// mentions `Pair<Conn>` while its parameter is `T` - so the refusal is the
-    /// declaration's, at every instantiation. Answering per walk instead let
-    /// `Pair<Conn>` class over the owning edge while `Pair<i64>`, which holds
-    /// exactly that `Pair<Conn>`, refused.
+    /// A constant argument never grows the instantiation: `Pair<T>` mentions
+    /// `Pair<Conn>`, and substituting `T` cannot change `Conn`, so every turn
+    /// of that cycle reaches the same `Pair<Conn>` and the walk is finite. Both
+    /// instantiations class, and both carry the `Conn`'s obligation - the
+    /// entered `Pair<Conn>` directly, and `Pair<i64>` through the `Pair<Conn>`
+    /// it holds.
     #[test]
-    fn every_instantiation_of_a_polymorphically_recursive_declaration_refuses() {
+    fn a_cycle_carrying_only_constant_arguments_classes_at_every_instantiation() {
         let decls = recursive_declarations();
         let context = ClassContext::new(&decls);
         for argument in [conn(), ResolvedTy::I64] {
             assert_eq!(
-                Err(ClassError::RecursiveInstantiation {
-                    name: "Pair".to_string()
-                }),
+                Ok((ValueClass::AffineResource, CloneKind::None)),
                 crate::value_class::classify_ty(&named("Pair", None, vec![argument]), &context)
             );
         }
+    }
+
+    /// The same rule one declaration apart: `Holder<T>` reaches itself through
+    /// the non-generic `Expr`, which mentions `Holder<i64>`. Neither edge grows,
+    /// because `Expr` has no parameters for `i64` to mention, so both class over
+    /// the owning edge rather than refusing.
+    #[test]
+    fn a_cycle_through_a_constant_instantiation_of_another_declaration_classes() {
+        let mut decls = recursive_declarations();
+        decls.insert(
+            "Holder".to_string(),
+            DeclaredType {
+                is_opaque: false,
+                marker: DeclarationMarker::None,
+                type_params: vec!["T".to_string()],
+                members: vec![named("Expr", None, vec![])],
+            },
+        );
+        decls.insert(
+            "Expr".to_string(),
+            DeclaredType {
+                is_opaque: false,
+                marker: DeclarationMarker::None,
+                type_params: vec![],
+                members: vec![named("Holder", None, vec![ResolvedTy::I64])],
+            },
+        );
+        let context = ClassContext::new(&decls);
+        assert_eq!(
+            Ok((ValueClass::CowValue, CloneKind::FieldWise)),
+            crate::value_class::classify_ty(
+                &named("Holder", None, vec![ResolvedTy::I64]),
+                &context
+            )
+        );
+        assert_eq!(
+            Ok((ValueClass::CowValue, CloneKind::FieldWise)),
+            crate::value_class::classify_ty(&named("Expr", None, vec![]), &context)
+        );
+    }
+
+    /// The negative control the rule above must not swallow: `Deep<T>` wraps
+    /// its own parameter on the way round, so each turn is a strictly larger
+    /// type and the walk has no finite fixpoint.
+    #[test]
+    fn a_cycle_that_wraps_its_own_parameter_still_refuses() {
+        let mut decls = recursive_declarations();
+        decls.insert(
+            "Deep".to_string(),
+            DeclaredType {
+                is_opaque: false,
+                marker: DeclarationMarker::None,
+                type_params: vec!["T".to_string()],
+                members: vec![named(
+                    "Deep",
+                    None,
+                    vec![ResolvedTy::Named {
+                        name: "Vec".to_string(),
+                        args: vec![ResolvedTy::TypeParam {
+                            name: "T".to_string(),
+                        }],
+                        builtin: Some(BuiltinType::Vec),
+                        is_opaque: false,
+                    }],
+                )],
+            },
+        );
+        let context = ClassContext::new(&decls);
+        assert_eq!(
+            Err(ClassError::RecursiveInstantiation {
+                name: "Deep".to_string()
+            }),
+            crate::value_class::classify_ty(&named("Deep", None, vec![ResolvedTy::I64]), &context)
+        );
     }
 
     /// The counterfactual for the refusal above: a declaration whose members

@@ -1401,7 +1401,9 @@ fn main() {
     }
 
     fn structured_concurrency_scope_source() -> &'static str {
-        "fn main() { let result = scope { 1 + 2 }; println(result); }"
+        // `scope { .. }` is a statement, not a `Primary` (HEW-SPEC-2026 §4.2),
+        // so the WASM admission check sees it through a statement-expression.
+        "fn main() { var result: i64 = 0; scope { result = 1 + 2; }; println(result); }"
     }
 
     fn scope_tasks_source() -> &'static str {

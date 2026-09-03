@@ -198,11 +198,13 @@ fn bare_loop_with_break_lowers_to_loop_node() {
 }
 
 #[test]
-fn break_with_value_lowers_and_carries_operand() {
-    // `break <value>` — Stage 1 carries the operand on the node so Stage 2
-    // can lower it for side-effects before the jump (LESSONS
-    // `cleanup-all-exits`). Loop-as-expression value return is out of scope.
-    let output = typecheck_and_lower(
+fn break_with_operand_never_reaches_lowering() {
+    // `break <value>` is refused at the parser (`E_BREAK_VALUE`,
+    // HEW-SPEC-2026 §12.4): a loop produces no value, so the operand has
+    // nowhere to go. This is the counterfactual for the bare-`break` tests
+    // above — they must keep lowering, while this spelling never arrives, so
+    // `HirExprKind::Break`'s operand slot has no producer left.
+    let parsed = hew_parser::parse(
         r"
         fn main() {
             loop {
@@ -212,23 +214,12 @@ fn break_with_value_lowers_and_carries_operand() {
         ",
     );
     assert!(
-        !has_not_yet_implemented(&output),
-        "`break <value>;` must not emit NotYetImplemented: {:#?}",
-        output.diagnostics
-    );
-    let body = main_body(&output);
-    assert!(
-        block_has_kind(body, |k| matches!(
-            k,
-            HirExprKind::Break { value: Some(_), .. }
-        )),
-        "expected a HirExprKind::Break carrying a value operand"
-    );
-    // The operand expression must be lowered (not dropped): the `1 + 2`
-    // Binary node is reachable through the Break node's value.
-    assert!(
-        block_has_kind(body, |k| matches!(k, HirExprKind::Binary { .. })),
-        "expected the break operand `1 + 2` to be lowered into a Binary node"
+        parsed
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_BREAK_VALUE")),
+        "expected the parser to refuse `break <value>;`, got: {:#?}",
+        parsed.errors
     );
 }
 

@@ -296,10 +296,10 @@ fn fire_detach_post_evict_hook() {
 /// (`actor::take_actor_serial`), so no two incarnations in a process ever share
 /// one and `0` can name none. Stub actors allocate from a disjoint high base
 /// (`test_actor::next_stub_spawn_serial`) to hold that property under test.
-/// Carrying the `actor_id` half as well would add
-/// nothing but a second word, and a two-word guard cannot be published or
-/// probed atomically — a torn read would let a teardown conclude "not my
-/// incarnation" and free the box under an in-flight delivery.
+/// Carrying the `actor_id` half as well would add nothing but a second word,
+/// and a two-word guard cannot be published or probed atomically — a torn read
+/// would let a teardown conclude "not my incarnation" and free the box under an
+/// in-flight delivery.
 struct IncarnationGuard(AtomicU64);
 
 impl IncarnationGuard {
@@ -1807,7 +1807,7 @@ pub(crate) fn reactor_detach_conn(conn: c_int) {
     REACTOR_STATE.access(|state| state.pending.push(Pending::Remove { conn }));
 }
 
-/// Remove every registration owned by `actor` (its `*mut HewActor` address).
+/// Remove every registration owned by the incarnation `actor` names.
 /// Called SYNCHRONOUSLY from the actor-teardown hook
 /// (`prepare_quiescent_actor_for_cleanup`) while the actor is still valid but
 /// about to be freed.
@@ -2852,7 +2852,7 @@ mod tests {
     }
 
     // The actor-teardown hook path: detach-by-actor removes every registration
-    // owned by that actor key (so a stopped actor leaks no fd registration).
+    // owned by that incarnation (so a stopped actor leaks no fd registration).
     #[cfg(unix)]
     #[test]
     fn detach_actor_removes_all_registrations_for_that_actor() {
@@ -2878,7 +2878,7 @@ mod tests {
             );
         }
 
-        // Two fds owned by the same actor key, one by a different actor.
+        // Two fds owned by the same incarnation, one by a different actor.
         inject_registration_for_test(rfd1, 201, dead_actor_ref(), test_incarnation(0xAA));
         inject_registration_for_test(rfd2, 202, dead_actor_ref(), test_incarnation(0xAA));
         let (rfd3, wfd3) = make_pipe();
@@ -2921,11 +2921,11 @@ mod tests {
     // `on_data`/`on_close` msg types. On fd readiness the reactor deposits the
     // read result into the slot + `enqueue_resume`s the parked continuation
     // (instead of auto-sending a mailbox message). The detach scrub keyed on
-    // `actor_key` covers it UNCHANGED, and dropping the registration releases the
+    // `Registration.actor` covers it UNCHANGED, and dropping the registration releases the
     // reactor's slot ref (the abandon-edge no-leak property).
 
     /// Slice 1: a resume-mode registration is scrubbed by `reactor_detach_actor`
-    /// exactly like an active-mode one (the scrub is keyed on `actor_key`, mode-
+    /// exactly like an active-mode one (the scrub is keyed on the incarnation, mode-
     /// agnostic), and dropping the evicted registration releases the reactor's
     /// slot ref so the slot is reclaimed once the creator ref also drops (the
     /// abandon edge: handler freed while parked on the fd).
@@ -3314,12 +3314,12 @@ mod tests {
         // slot carries the reactor ref the Registration's Drop will release.
         let actor = spawn_full_reject_actor();
         // SAFETY: `actor` is live here.
-        let actor_key = unsafe { ActorIncarnation::of(actor) };
+        let registrant = unsafe { ActorIncarnation::of(actor) };
         let actor_ref = unsafe { crate::transport::hew_actor_ref_local(actor) };
         let slot = crate::read_slot::hew_read_slot_new();
         // SAFETY: creator ref held → slot live for this retain.
         unsafe { crate::read_slot::read_slot_retain(slot) }; // reactor ref (owned by reg)
-        inject_resume_registration_for_test(rfd, 911, actor_ref, actor_key, slot);
+        inject_resume_registration_for_test(rfd, 911, actor_ref, registrant, slot);
         assert_eq!(registration_count_for_test(), 1);
 
         // The detacher freed the actor in the snapshot→publish window (untrack +
@@ -3835,7 +3835,7 @@ mod tests {
         while Instant::now() < blocked_deadline {
             assert!(
                 !detach_returned.load(Ordering::SeqCst),
-                "reactor_detach_actor returned while PROMOTING_ACTOR == actor_key — \
+                "reactor_detach_actor returned while PROMOTING_ACTOR still named the actor — \
                  the phase-2 promotion guard is not gating the free (UAF risk)"
             );
             std::thread::sleep(Duration::from_millis(2));
@@ -3965,7 +3965,7 @@ mod tests {
         while Instant::now() < blocked_deadline {
             assert!(
                 !detach_returned.load(Ordering::SeqCst),
-                "reactor_detach_actor returned while DELIVERING_ACTOR == actor_key after the \
+                "reactor_detach_actor returned while DELIVERING_ACTOR still named the actor after the \
                  re-scrub — a delivery begun between the spin-wait exit and the re-scrub was \
                  not waited out (residual promote-during-detach UAF)"
             );
@@ -4003,7 +4003,7 @@ mod tests {
     //
     // `reactor_detach_actor` runs on the actor-teardown path (synchronously from
     // `hew_actor_free`) and MUST NOT return while the reactor thread is
-    // mid-delivery to the same actor (`DELIVERING_ACTOR == actor_key`). If it
+    // mid-delivery to the same actor (`DELIVERING_ACTOR` names it). If it
     // returned early, `hew_actor_free` would tear the mailbox down while an
     // in-flight `hew_actor_try_send` is still writing to it — a use-after-free.
     // The Phase-2 spin-wait (reactor.rs Phase 2) is that guard. These tests
@@ -4048,7 +4048,7 @@ mod tests {
         while Instant::now() < blocked_deadline {
             assert!(
                 !detach_returned.load(Ordering::SeqCst),
-                "reactor_detach_actor returned while DELIVERING_ACTOR == actor_key — \
+                "reactor_detach_actor returned while DELIVERING_ACTOR still named the actor — \
                  the Phase-2 spin-wait is not guarding the in-flight delivery (UAF risk)"
             );
             std::thread::sleep(Duration::from_millis(2));

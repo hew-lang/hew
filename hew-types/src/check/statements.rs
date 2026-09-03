@@ -1320,8 +1320,9 @@ impl Checker {
                     Expr::FieldAccess { object, field } => {
                         match self.actor_self_state_field(&object.0, field) {
                             Some(state_field) => {
-                                receiver_target =
-                                    (Expr::Identifier(state_field.to_string()), target.1.clone());
+                                let state_field = state_field.to_string();
+                                self.record_actor_self_state_field(&target.1);
+                                receiver_target = (Expr::Identifier(state_field), target.1.clone());
                                 &receiver_target
                             }
                             None => target,

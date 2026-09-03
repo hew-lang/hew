@@ -1882,6 +1882,7 @@ impl Checker {
             caller_visible_param_projections: std::mem::take(
                 &mut self.caller_visible_param_projections,
             ),
+            actor_self_state_fields: std::mem::take(&mut self.actor_self_state_fields),
             resolved_expr_types: resolved_expr_types_typed,
             is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),

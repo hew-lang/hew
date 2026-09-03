@@ -678,7 +678,6 @@ impl<'a> PackageEmitter<'a> {
                 Some(field.ty.1.clone()),
             );
             ctx.bindings.insert(field.name.clone(), local.clone());
-            ctx.actor_state_fields.push(field.name.clone());
             params.push(local.clone());
             state_locals.push(local);
         }
@@ -1232,10 +1231,6 @@ struct FunctionEmitter<'pkg, 'src> {
     /// Set only inside receive-handler emission; drives correct early-return
     /// lowering (see `ReceiveHandlerContext`).
     receive_context: Option<ReceiveHandlerContext>,
-    /// State field names of the actor body being emitted, empty outside one.
-    /// The fields are ordinary mutable locals here, so `self.count` is the
-    /// receiver spelling of the local `count` and is rewritten to it.
-    actor_state_fields: Vec<String>,
 }
 
 impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
@@ -1252,26 +1247,18 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             bindings: HashMap::new(),
             loop_targets: Vec::new(),
             receive_context: None,
-            actor_state_fields: Vec::new(),
         }
     }
 
-    /// The actor state field an `object.field` projection names when `object`
-    /// is the actor receiver `self`, or `None` when it is an ordinary
-    /// projection. Mirrors the checker predicate of the same name; the
-    /// checker has already rejected `self` where it means nothing, so a bound
-    /// `self` here is an impl receiver and its projections are left alone.
-    fn actor_self_state_field<'a>(&self, object: &Expr, field: &'a str) -> Option<&'a str> {
-        if !matches!(object, Expr::Identifier(name) if name == "self") {
-            return None;
-        }
-        if self.bindings.contains_key("self") {
-            return None;
-        }
-        self.actor_state_fields
-            .iter()
-            .any(|name| name == field)
-            .then_some(field)
+    /// Whether the projection at `span` is the receiver spelling of an actor
+    /// state field. The checker resolved it and published the span; the field
+    /// name is in the AST there. Reading the published fact keeps the sandbox
+    /// and the native lowerer agreeing on which spelling a projection is.
+    fn is_actor_self_state_field(&self, span: &std::ops::Range<usize>) -> bool {
+        self.package
+            .type_output
+            .actor_self_state_fields
+            .contains(&SpanKey::from(span))
     }
 
     fn finish(self) -> Vec<Block> {
@@ -1467,15 +1454,11 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 // path below runs the bare-name shell.
                 let receiver_target;
                 let target = match &target.0 {
-                    Expr::FieldAccess { object, field } => {
-                        match self.actor_self_state_field(&object.0, field) {
-                            Some(state_field) => {
-                                receiver_target =
-                                    (Expr::Identifier(state_field.to_string()), target.1.clone());
-                                &receiver_target
-                            }
-                            None => target,
-                        }
+                    Expr::FieldAccess { field, .. }
+                        if self.is_actor_self_state_field(&target.1) =>
+                    {
+                        receiver_target = (Expr::Identifier(field.clone()), target.1.clone());
+                        &receiver_target
                     }
                     _ => target,
                 };
@@ -1679,9 +1662,9 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         // `self.count` in an actor body names the state local `count`. The
         // span is unchanged, so the checker-recorded type still resolves, and
         // the receiver spelling reaches the same local the bare spelling does.
-        if let Expr::FieldAccess { object, field } = kind {
-            if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
-                let bare = (Expr::Identifier(state_field.to_string()), span.clone());
+        if let Expr::FieldAccess { field, .. } = kind {
+            if self.is_actor_self_state_field(span) {
+                let bare = (Expr::Identifier(field.clone()), span.clone());
                 return self.lower_expr(&bare);
             }
         }

@@ -1297,6 +1297,20 @@ impl Checker {
             .then_some(field)
     }
 
+    /// Publish the receiver resolution for one `self.field` projection at
+    /// `span`, the span of the whole projection.
+    ///
+    /// [`Self::actor_self_state_field`] is the predicate several checker sites
+    /// read; this is the one place that writes the answer down. Every lowerer
+    /// looks the projection up in
+    /// [`TypeCheckOutput::actor_self_state_fields`](crate::TypeCheckOutput)
+    /// instead of re-deciding it, so a projection is the receiver spelling in
+    /// every backend or in none.
+    pub(super) fn record_actor_self_state_field(&mut self, span: &Span) {
+        self.actor_self_state_fields
+            .insert(SpanKey::in_module(span, self.current_module_idx));
+    }
+
     /// Whether an expression is the actor receiver `self`: the bare name,
     /// inside an actor body, with no `self` binding in scope to mean something
     /// else. The projected name may still not be a state field — that case
@@ -6763,6 +6777,7 @@ impl Checker {
         // type, the same use-after-move reporting, and the same HIR binding
         // reference the bare spelling gets at this site.
         if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
+            self.record_actor_self_state_field(span);
             return self.synthesize_identifier(state_field, span);
         }
         if self.is_actor_self_receiver(&object.0) {

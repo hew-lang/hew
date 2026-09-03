@@ -7696,11 +7696,12 @@ struct LowerCtx {
     /// `mem::replace` so the outer self-binding doesn't leak into an inner
     /// lambda's classification.
     current_actor_self: Option<(BindingId, String)>,
-    /// State field names of the actor body currently being lowered, empty
-    /// outside one. Set by the body lowerers that bind those fields into
-    /// scope, so `self.count` can be recognised as the receiver spelling of
-    /// the state binding `count` and rewritten to it.
-    actor_state_fields: Vec<String>,
+    /// Checker-resolved `self.field` projections that name the enclosing
+    /// actor's own state. Keyed by the projection's span; the field name is in
+    /// the AST at that span. The checker decides this while the actor's fields
+    /// and the enclosing scope are both in hand, so lowering consumes the
+    /// answer rather than re-deriving it from a mirror of the field names.
+    actor_self_state_fields: HashSet<SpanKey>,
     /// Checker-resolved type arguments for generic function calls that
     /// lack explicit type annotations. Keyed by the call expression span.
     ///
@@ -8665,7 +8666,7 @@ impl LowerCtx {
             current_return_type: None,
             await_position: AwaitPosition::Other,
             current_actor_self: None,
-            actor_state_fields: Vec::new(),
+            actor_self_state_fields: tc_output.actor_self_state_fields.clone(),
             call_type_args: tc_output.call_type_args.clone(),
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
@@ -15444,15 +15445,10 @@ impl LowerCtx {
                 field.span.clone(),
             );
         }
-        let saved_state_fields = std::mem::replace(
-            &mut self.actor_state_fields,
-            state_fields.iter().map(|f| f.name.clone()).collect(),
-        );
         let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
         let body = self.with_current_return_type(expected_ty.clone(), |ctx| {
             ctx.lower_block(body, expected_ty)
         });
-        self.actor_state_fields = saved_state_fields;
         self.pop_scope();
         self.scope_depth = saved_scope_depth;
         (params, body)
@@ -15489,10 +15485,6 @@ impl LowerCtx {
             );
             state_field_bindings.insert(binding.id);
         }
-        let saved_state_fields = std::mem::replace(
-            &mut self.actor_state_fields,
-            state_fields.iter().map(|f| f.name.clone()).collect(),
-        );
         let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
 
         // Snapshot the enclosing scope (state fields + params, just bound
@@ -15507,7 +15499,6 @@ impl LowerCtx {
         });
         self.generator_yield_tys.pop();
 
-        self.actor_state_fields = saved_state_fields;
         self.pop_scope();
         self.scope_depth = saved_scope_depth;
 
@@ -18418,13 +18409,13 @@ impl LowerCtx {
         let in_bindable_value_position = await_position == AwaitPosition::BindableValueLet;
         let span = expr.1.clone();
         // `self.count` inside an actor body names the state binding `count`.
-        // The checker resolved the projection to that binding (its
-        // `actor_self_state_field`), so rewrite the receiver spelling to the
-        // bare name and lower it through the identifier shell: both spellings
-        // then produce one binding reference, and MIR sees one place.
-        if let Expr::FieldAccess { object, field } = &expr.0 {
-            if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
-                let bare = Expr::Identifier(state_field.to_string());
+        // The checker resolved the projection to that binding and published the
+        // span, so rewrite the receiver spelling to the bare name and lower it
+        // through the identifier shell: both spellings then produce one binding
+        // reference, and MIR sees one place.
+        if let Expr::FieldAccess { field, .. } = &expr.0 {
+            if self.actor_self_state_fields.contains(&self.mk_key(&span)) {
+                let bare = Expr::Identifier(field.clone());
                 return self.lower_expr_inner(&(bare, span), intent);
             }
         }
@@ -29156,26 +29147,6 @@ impl LowerCtx {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name, (id, ty, span));
         }
-    }
-
-    /// The actor state field an `object.field` projection names when `object`
-    /// is the actor receiver `self`, or `None` when it is an ordinary
-    /// projection. Mirrors the checker predicate of the same name.
-    ///
-    /// `self` is a bound parameter on impl and trait methods, and the machine
-    /// receiver resolves against the source state's payload instead, so both
-    /// disqualify the reading and leave the projection alone.
-    fn actor_self_state_field<'a>(&self, object: &Expr, field: &'a str) -> Option<&'a str> {
-        if !matches!(object, Expr::Identifier(name) if name == "self") {
-            return None;
-        }
-        if self.current_machine_name.is_some() || self.lookup("self").is_some() {
-            return None;
-        }
-        self.actor_state_fields
-            .iter()
-            .any(|name| name == field)
-            .then_some(field)
     }
 
     fn lookup(&self, name: &str) -> Option<(BindingId, ResolvedTy)> {

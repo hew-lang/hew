@@ -288,6 +288,36 @@ fn test_actor_self_field_write_obeys_field_mutability() {
 }
 
 #[test]
+fn test_actor_self_nested_write_obeys_field_mutability() {
+    // The mutability rule is keyed on the binding the target is rooted in, and
+    // the receiver is not a binding. A target that only reaches the receiver
+    // below an index or a further projection must still root in the state
+    // field, or the write passes on a `let` field.
+    let output = typecheck(
+        r"
+        actor Bag {
+            let items: Vec<i64>;
+
+            receive fn poke() {
+                self.items[0] = 5;
+            }
+        }
+
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("immutable field `items`")),
+        "an indexed write through the receiver should reject like the bare \
+         spelling: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn test_actor_on_stop_hook_valid_field_access() {
     let output = typecheck(
         r"

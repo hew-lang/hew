@@ -10,6 +10,10 @@
 //
 // `Point::sum(self)` in the same file keeps the impl receiver honest: there
 // `self` is a bound parameter and `self.x` stays an ordinary projection.
+//
+// A write through the record field (`self.origin.y = ...`) is deliberately
+// absent: #3266 drops that write for both spellings, so pinning it here would
+// pin the defect. Add it to both twins when that lands.
 type Point {
     x: i64,
     y: i64,

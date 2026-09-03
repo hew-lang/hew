@@ -1,0 +1,39 @@
+// Accept fixture: the receiver spelling of `actor_field_method_dispatch.hew`.
+//
+// A state field holding an actor handle dispatches sends and asks through the
+// mailbox, and the method-call path reads the receiver's shape to decide that.
+// `self.out.put(n)` must reach the same dispatch `out.put(n)` reaches, so this
+// twin shares that fixture's expected output.
+actor W {
+    var total: i64 = 0;
+    receive fn put(n: i64) {
+        self.total = self.total + n;
+    }
+    receive fn get() -> i64 {
+        self.total
+    }
+}
+
+actor B {
+    let out: W;
+    receive fn go(n: i64) {
+        self.out.put(n);
+    }
+    receive fn total() -> i64 {
+        match await self.out.get() {
+            .Ok(v) => v,
+            .Err(_) => -1,
+        }
+    }
+}
+
+fn main() {
+    let w = spawn W;
+    let b = spawn B(out: w);
+    b.go(42);
+    b.go(8);
+    match await b.total() {
+        .Ok(v) => println(f"total={v}"),
+        .Err(_) => println("err"),
+    }
+}

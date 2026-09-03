@@ -1,0 +1,30 @@
+// Reject fixture: the receiver spelling of
+// `actor_state_field_consumed_unplugged.hew`. Consuming state leaves a hole
+// the next message consumes again, and the place that records the consume is
+// rooted in the state binding whichever way the access is spelled.
+#[resource]
+type Socket {
+    fd: i64;
+}
+
+impl Socket {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+actor Vault {
+    let sock: Socket;
+    receive fn steal() -> i64 {
+        return self.sock.detach();
+    }
+}
+
+fn main() -> i64 {
+    let vault = spawn Vault(sock: Socket { fd: 3 });
+    return match await vault.steal() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
+}

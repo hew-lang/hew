@@ -1501,6 +1501,27 @@ expect_check_fail_contains \
     '`self` is not a valid identifier in Hew' \
     "self_outside_actor_or_impl"
 
+# Mutability and the consume obligation are keyed on the binding the target is
+# rooted in, and the receiver is not a binding. Both rejections must fire on
+# the receiver spelling exactly as they do on their bare twins
+# (`actor_let_field_assign`, `actor_state_field_consumed_unplugged`).
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_self_index_immutable_field.hew" \
+    'cannot assign to immutable field `items`' \
+    "actor_self_index_immutable_field"
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_self_state_field_consumed.hew" \
+    'actor state `sock` is consumed here and never re-initialised' \
+    "actor_self_state_field_consumed"
+
+# A state field holding an actor handle dispatches through the mailbox whether
+# the receiver is spelled or not: same expected output as the bare twin.
+run_accept_expect_stdout "actor_self_field_method_dispatch"
+diff -u "${ROOT}/tests/vertical-slice/accept/actor_field_method_dispatch.expected" \
+    "${ROOT}/tests/vertical-slice/accept/actor_self_field_method_dispatch.expected"
+
 # Actor field mutability: a `let` state field is writable only inside
 # `init`; a receive-fn write must fail at check time and name the var fix.
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match

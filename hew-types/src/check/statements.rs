@@ -229,12 +229,21 @@ impl Checker {
         Some(self.project_assoc_types(&item_projection))
     }
 
-    fn assignment_root_binding_name(expr: &Expr) -> Option<&str> {
+    fn assignment_root_binding_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
         match expr {
             Expr::Identifier(name) => Some(name.as_str()),
-            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
-                Self::assignment_root_binding_name(&object.0)
+            Expr::FieldAccess { object, field } => {
+                // The receiver is not a binding: `self.items[0]` is rooted in
+                // the state binding `items`, exactly where the bare spelling
+                // roots it. Without this the mutability and written-ness rules
+                // keyed on the root would look up a binding called `self`,
+                // find none, and silently pass a write they must reject.
+                if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
+                    return Some(state_field);
+                }
+                self.assignment_root_binding_name(&object.0)
             }
+            Expr::Index { object, .. } => self.assignment_root_binding_name(&object.0),
             _ => None,
         }
     }
@@ -1377,7 +1386,8 @@ impl Checker {
                     self.place_base_depth -= 1;
                     let resolved = self.subst.resolve(&obj_ty);
                     if let Ty::Named { name, .. } = &resolved {
-                        let root_is_mutable = Self::assignment_root_binding_name(&target.0)
+                        let root_is_mutable = self
+                            .assignment_root_binding_name(&target.0)
                             .is_some_and(|root| {
                                 self.current_actor_fields.iter().any(|f| f.name == root)
                                     || self
@@ -1449,7 +1459,7 @@ impl Checker {
                 }
                 let root_binding_name = match &target.0 {
                     Expr::Identifier(_) | Expr::FieldAccess { .. } | Expr::Index { .. } => {
-                        Self::assignment_root_binding_name(&target.0)
+                        self.assignment_root_binding_name(&target.0)
                     }
                     _ => None,
                 };
@@ -1592,7 +1602,7 @@ impl Checker {
                 } = expr
                 {
                     if method == "set" {
-                        if let Some(name) = Self::assignment_root_binding_name(&receiver.0) {
+                        if let Some(name) = self.assignment_root_binding_name(&receiver.0) {
                             self.env.mark_written(name);
                         }
                     }

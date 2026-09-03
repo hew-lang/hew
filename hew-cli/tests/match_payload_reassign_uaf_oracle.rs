@@ -1097,3 +1097,65 @@ fn borrow_only_guard_fallthrough_runs_safely() {
         3,
     );
 }
+
+/// A borrow-only `if let` over an owning binding, re-projected on every loop
+/// iteration. `if let` destructures through the same payload-binder registrar
+/// as `match`, so an owner minted for the borrowed payload frees it at the end
+/// of the first iteration and leaves `b` holding null. Totals `3 * 5 = 15`.
+fn if_let_borrow_only_source() -> String {
+    format!(
+        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let b = Box.Full(seed());\n\
+         \x20   var i = 0;\n\
+         \x20   var sum = 0;\n\
+         \x20   while i < 5 {{\n\
+         \x20       if let Box.Full(v) = b {{\n\
+         \x20           sum = sum + v.len();\n\
+         \x20       }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   sum\n\
+         }}\n\
+         \n\
+         {SEED_FN}"
+    )
+}
+
+/// A borrow-only `while let` over an owning binding: the loop re-projects the
+/// same payload every iteration and breaks once the total passes ten, so a
+/// binder that released the payload on the first iteration would read freed
+/// memory on the second. Totals `3 * 4 = 12`.
+fn while_let_borrow_only_source() -> String {
+    format!(
+        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let b = Box.Full(seed());\n\
+         \x20   var sum = 0;\n\
+         \x20   while let Box.Full(v) = b {{\n\
+         \x20       sum = sum + v.len();\n\
+         \x20       if sum > 10 {{\n\
+         \x20           break;\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \x20   sum\n\
+         }}\n\
+         \n\
+         {SEED_FN}"
+    )
+}
+
+/// (Alias control) A borrow-only `if let` keeps its scrutinee live across the
+/// loop: the binder aliases `b`'s payload instead of minting a second release
+/// authority for it.
+#[test]
+fn if_let_borrow_only_keeps_scrutinee_live() {
+    assert_scribbled_run_exit("if_let_borrow", &if_let_borrow_only_source(), 15);
+}
+
+/// (Alias control) The same for `while let`, whose payload binders escape into
+/// the loop body scope and are released on a different edge.
+#[test]
+fn while_let_borrow_only_keeps_scrutinee_live() {
+    assert_scribbled_run_exit("while_let_borrow", &while_let_borrow_only_source(), 12);
+}

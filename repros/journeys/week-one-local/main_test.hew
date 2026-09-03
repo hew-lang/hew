@@ -1,0 +1,21 @@
+// repros/journeys/week-one-local/main_test.hew - a peer test module of the package (D17).
+import std.testing;
+import std.encoding.wire as wire;
+
+#[test]
+fn items_round_trip_through_json() {
+    let back = wire.from_json<Vec<Item>>(wire.to_json([Item { key: "a", val: "1" }])).unwrap();
+    testing.assert_eq(back[0].val, "1");                          // D22: one generic assert_eq
+}
+
+#[test]
+fn empty_snapshot_loads_as_empty_store() {
+    testing.assert_eq(load("").len(), 0);
+}
+
+#[test]
+fn find_reports_absence_as_minus_one() {
+    let items: Vec<Item> = [Item { key: "a", val: "1" }];
+    testing.assert_eq(find(items, "a"), 0);
+    testing.assert_eq(find(items, "zzz"), -1);
+}

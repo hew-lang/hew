@@ -1,0 +1,82 @@
+# step_id	issue_or_lane	reason
+#
+# The ratchet for `make test-journeys JOURNEY=<name>` (scripts/run-journeys.sh):
+# exactly the step ids listed here may fail. A listed step that starts
+# passing is a stale row — the lane that fixed it deletes the row in the
+# same PR (never leave it for a later lane to notice). A failing step with
+# no row here is a new regression and fails the gate. Seeded from a real
+# run against `hew 0.6.0-rc3-dev.155+7c1490375` on 2026-09-02 (V060-FD-1);
+# day-two ran under scripts/registry-harness.sh against a local
+# hew-registry checkout with wrangler dev.
+#
+# day-one: hew new/--actor/--lib do not exist yet (V060-FD-5), so every
+# step downstream of scaffolding a package fails too.
+day-one.1	V060-FD-5	hew new: unrecognized subcommand
+day-one.2	V060-FD-5	hew new does not exist; scaffold ships no test file
+day-one.3	V060-FD-5	hew new does not exist; no repository to check
+day-one.4	V060-FD-5	hew new does not exist; no .gitignore to check
+day-one.5	V060-FD-5	hew new does not exist; hew run finds no hew.toml
+day-one.6	V060-FD-5	hew new does not exist; hew test finds no test files
+day-one.7	V060-FD-5	hew new does not exist; hew build finds no hew.toml
+day-one.8	V060-FD-5	hew new does not exist; no target/release/svc artefact
+day-one.9	V060-FD-5	hew new does not exist; no release binary to run
+day-one.11	V060-FD-5	hew new --actor: unrecognized subcommand
+day-one.12	V060-FD-5	hew new --actor does not exist; actor scaffold never created
+day-one.13	V060-FD-5	hew new --lib: unrecognized subcommand
+day-one.14	V060-FD-5	hew new --lib does not exist; lib scaffold never created
+day-one.16	V060-FD-4	let mut error text says "rename this binding", not "var x"
+day-one.17	V060-FD-4	let mut is a three-error cascade, not one error
+day-one.20	V060-FD-4	module-not-found JSON carries a zero span (start_line: 0)
+day-one.21	V060-FD-4	module-not-found JSON carries no nearest-module suggestion
+day-one.22	V060-FD-3	HEW_CC=/nonexistent/cc build exits 0, not 1
+day-one.23	V060-FD-3	missing C driver: no error output naming the bad path
+day-one.24	V060-FD-3	missing C driver: no error output naming a package to install
+day-one.26	V060-DIAG-1	scope { fork {..} } in main exits 1 (E_NOT_YET_IMPLEMENTED), not 3
+day-one.27	V060-DIAG-1	limitation output has no "compiler limitation:" prefix
+day-one.28	V060-DIAG-1	refusal carries no E_LIMIT_MAIN_CONTEXT code
+day-one.30	V060-DIAG-1	refusal text does not name join {} as the fan-out that works from main
+#
+# day-two: trap symbolization (V060-FD-7) is unimplemented; hew new
+# (V060-FD-5) cascades through the whole dependency/build/deploy chain
+# once app/ is never created; two -o-in-file-mode bugs are V060-FD-2.
+day-two.3	V060-FD-7	trap message has no crash.hew:2 file:line
+day-two.4	V060-FD-7	trap message does not name the function (boom)
+day-two.5	V060-FD-7	HEW_BACKTRACE=1 output has no caller frame line
+day-two.7	V060-FD-7	release-build trap has no file:line either
+day-two.8	V060-FD-5	hew new: unrecognized subcommand
+day-two.9	V060-FD-5	search prints hew::math::stats, not the dotted hew.math.stats that add accepts
+day-two.10	V060-FD-5	hew new never created app/; add runs with no hew.toml
+day-two.11	V060-FD-5	cascades from day-two.8/10: no hew.toml to write the dependency into
+day-two.15	V060-FD-5	cascades from day-two.8: hew.toml never had a [package] table to append to
+day-two.16	V060-FD-5	cascades from day-two.8/15: install has no valid manifest to read
+day-two.17	V060-FD-5	cascades: no hew.lock without a working install
+day-two.18	V060-FD-5	cascades: main.hew never compiles without the dependency installed
+day-two.19	V060-FD-5	cascades: tests never compile without the dependency installed
+day-two.22	V060-SURFACE	.Err(AErr.Bad)/.Ok(()) construction refused: "no variant Err/Ok" on Result<(), AErr> (D3 bare-variant expression construction, unshipped; owning S-lane not yet assigned)
+day-two.23	V060-FD-5	cascades from day-two.8: build has no [package] table
+day-two.25	V060-FD-5	cascades from day-two.8: cross-object emission has no [package] table
+day-two.26	V060-FD-5	cascades from day-two.8: app-aarch64.o never written
+day-two.28	V060-FD-5	cascades from day-two.8: app-aarch64.o never written
+day-two.30	V060-FD-2	file-mode --emit-obj -o obj-aarch64.o did not write the named file
+day-two.31	V060-FD-2	file-mode --emit-obj wrote obj.o instead of honouring -o
+#
+# week-one-local: the decided-dialect program does not run today by design
+# (hew-platform-program.md §0.1: it is fable4/probes/local_svc.hew rewritten
+# by exactly ten substitutions into the decided dialect); this journey joins
+# the gate set at V060-RELEASE, after V060-STDLIB and the SURFACE lanes it
+# depends on land (plan lifecycle table, v0.6.0 row). Peer test compilation
+# (week-one-local.1) is the one row a single lane, V060-FD-6, can flip early.
+week-one-local.1	V060-FD-6	main_test.hew cannot see Item/load/find declared in main.hew (D17 peer test modules)
+week-one-local.2	V060-RELEASE	std.net.http.server does not exist yet (D22 rename net/http/http -> net/http/server, V060-STDLIB)
+week-one-local.3	V060-RELEASE	cascades from week-one-local.2: kvlocal binary never built
+week-one-local.4	V060-RELEASE	cascades from week-one-local.2
+week-one-local.5	V060-RELEASE	cascades from week-one-local.2
+week-one-local.6	V060-RELEASE	cascades from week-one-local.2
+week-one-local.7	V060-RELEASE	cascades from week-one-local.2
+week-one-local.8	V060-RELEASE	cascades from week-one-local.2
+week-one-local.9	V060-RELEASE	cascades from week-one-local.2
+week-one-local.10	V060-RELEASE	cascades from week-one-local.2
+week-one-local.11	V060-RELEASE	cascades from week-one-local.2
+week-one-local.12	V060-RELEASE	cascades from week-one-local.2
+week-one-local.13	V060-RELEASE	cascades from week-one-local.2
+week-one-local.14	V060-RELEASE	cascades from week-one-local.2

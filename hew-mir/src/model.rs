@@ -5314,6 +5314,10 @@ pub enum Instr {
     /// collections, `Duplex`) `ptrtoint` the loaded handle; a `bytes` slot is
     /// a `BytesTriple` struct, so the word is field 0, the refcounted buffer.
     ///
+    /// Both operands are BORROWED: reading an identity word releases nothing,
+    /// so a fresh temporary in operand position keeps its drop obligation
+    /// (`temp_drop::bytes_temp_instr_use_is_borrow_only`).
+    ///
     /// LESSONS: `checker-authority` (P0) — codegen reads the operand's
     /// `ResolvedTy` to select between the pointer-path and the integer-path.
     /// The identity allowance set is the checker's sole responsibility; MIR

@@ -9066,12 +9066,19 @@ pub extern "C" fn hew_supervisor_role_send(
 /// Cooperatively submit a bounded `overflow block` tell through a stable
 /// supervisor role. Resolution and mailbox registration occur under one
 /// identity pin; on acceptance, `out_actor_id` receives the exact incarnation
-/// whose mailbox owns the waiter so cancellation can detach from that mailbox.
+/// whose mailbox owns the waiter so cancellation can detach from that
+/// mailbox, and `out_registration_id` receives the
+/// [`crate::mailbox::BlockedSenderId`] minted for a parked waiter (`0` when
+/// admitted immediately). Detach must name the registration id rather than
+/// the read-slot address: slot allocations are recycled, so a detach keyed on
+/// the pointer could remove a different registration that reused the freed
+/// address (#3147).
 ///
 /// # Safety
 ///
 /// `data`, `sender`, and `slot` must satisfy
-/// [`crate::actor::actor_await_send_pinned`]. `out_actor_id` must be writable.
+/// [`crate::actor::actor_await_send_pinned`]. `out_actor_id` and
+/// `out_registration_id` must be writable.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_role_await_send(
@@ -9083,20 +9090,24 @@ pub unsafe extern "C" fn hew_supervisor_role_await_send(
     sender: *mut HewActor,
     slot: *mut crate::read_slot::HewReadSlot,
     out_actor_id: *mut u64,
+    out_registration_id: *mut u64,
 ) -> c_int {
-    if out_actor_id.is_null() {
-        set_last_error("stable-role cooperative tell received a null actor-id output".to_string());
+    if out_actor_id.is_null() || out_registration_id.is_null() {
+        set_last_error("stable-role cooperative tell received a null output".to_string());
         return crate::internal::types::HewError::ErrActorStopped as i32;
     }
-    // SAFETY: the null check above establishes the caller-provided output is
-    // writable. Initialize it even on refusal because codegen loads before
-    // branching on status and only uses the value on the suspend edge.
-    unsafe { out_actor_id.write(0) };
+    // SAFETY: the null check above establishes the caller-provided outputs
+    // are writable. Initialize them even on refusal because codegen loads
+    // before branching on status and only uses the values on the suspend edge.
+    unsafe {
+        out_actor_id.write(0);
+        out_registration_id.write(0);
+    }
     let (child_id, child_serial) = match role_resolve_current_child_id(token, key, false) {
         Ok(ids) => ids,
         Err(code) => return code,
     };
-    let rc = crate::lifetime::live_actors::with_actor_send_by_identity(
+    let (rc, registration_id) = crate::lifetime::live_actors::with_actor_send_by_identity(
         child_id,
         child_serial,
         |pin| {
@@ -9118,11 +9129,14 @@ pub unsafe extern "C" fn hew_supervisor_role_await_send(
         set_last_error(format!(
             "stable-role cooperative tell refused: child slot {key} incarnation retired during submission"
         ));
-        crate::internal::types::HewError::ErrActorStopped as i32
+        (crate::internal::types::HewError::ErrActorStopped as i32, 0)
     });
     if rc >= 0 {
-        // SAFETY: non-null writable output is part of this ABI's contract.
-        unsafe { out_actor_id.write(child_id) };
+        // SAFETY: non-null writable outputs are part of this ABI's contract.
+        unsafe {
+            out_actor_id.write(child_id);
+            out_registration_id.write(registration_id);
+        }
     }
     rc
 }
@@ -9138,6 +9152,7 @@ pub extern "C" fn hew_supervisor_role_await_send(
     _sender: *mut HewActor,
     _slot: *mut crate::read_slot::HewReadSlot,
     _out_actor_id: *mut u64,
+    _out_registration_id: *mut u64,
 ) -> c_int {
     crate::internal::types::HewError::ErrActorStopped as i32
 }

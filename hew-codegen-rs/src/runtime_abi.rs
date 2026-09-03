@@ -4787,6 +4787,8 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         ),
         // Cooperative bounded Block send. `0` registers a parked producer;
         // `1` means immediate admission; negative values retain caller ownership.
+        // The final pointer receives the minted `BlockedSenderId` for detach
+        // (`0` when admitted immediately) — issue #3147.
         "hew_actor_await_send_by_id" => i32_ty.fn_type(
             &[
                 i64_ty.into(),
@@ -4795,11 +4797,13 @@ pub(crate) fn intern_runtime_decl<'ctx>(
                 size_ty.into(),
                 ptr_ty.into(),
                 ptr_ty.into(),
+                ptr_ty.into(),
             ],
             false,
         ),
-        // Stable-role sibling of `hew_actor_await_send_by_id`. The final
-        // pointer receives the exact accepted incarnation id for detach.
+        // Stable-role sibling of `hew_actor_await_send_by_id`. The penultimate
+        // pointer receives the exact accepted incarnation id for detach; the
+        // final pointer receives the minted `BlockedSenderId` (#3147).
         "hew_supervisor_role_await_send" => i32_ty.fn_type(
             &[
                 i64_ty.into(),
@@ -4810,12 +4814,17 @@ pub(crate) fn intern_runtime_decl<'ctx>(
                 ptr_ty.into(),
                 ptr_ty.into(),
                 ptr_ty.into(),
+                ptr_ty.into(),
             ],
             false,
         ),
+        // `registration_id` is the opaque `BlockedSenderId` scalar minted by
+        // `hew_actor_await_send_by_id` / `hew_supervisor_role_await_send`, not
+        // a pointer — matching by slot address let a recycled allocation
+        // detach the wrong registration (#3147).
         "hew_actor_detach_await_send_by_id" => ctx
             .void_type()
-            .fn_type(&[i64_ty.into(), ptr_ty.into()], false),
+            .fn_type(&[i64_ty.into(), i64_ty.into()], false),
         // hew_tcp_attach_local(conn: c_int, actor: *mut HewActor,
         //                      on_data_type: i32, on_close_type: i32) -> c_int
         // (`hew-runtime/src/transport.rs`). The active-mode `conn.attach(handler)`

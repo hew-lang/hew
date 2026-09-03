@@ -5138,7 +5138,7 @@ mod tests {
             0
         );
         let slot = crate::read_slot::hew_read_slot_new();
-        assert_eq!(
+        let (rc, _id) =
             // SAFETY: sender, mailbox, and slot remain live until the waiter is resolved.
             unsafe {
                 crate::mailbox::mailbox_await_send(
@@ -5149,7 +5149,9 @@ mod tests {
                     sender.ptr(),
                     slot,
                 )
-            },
+            };
+        assert_eq!(
+            rc,
             crate::mailbox::MAILBOX_AWAIT_SEND_SUSPEND,
             "a full bounded Block mailbox must park the producer"
         );
@@ -5210,13 +5212,12 @@ mod tests {
             0
         );
         let slot = crate::read_slot::hew_read_slot_new();
-        assert_eq!(
+        let (rc, _id) =
             // SAFETY: sender, mailbox, and slot remain live until the waiter is resolved.
             unsafe {
                 crate::mailbox::mailbox_await_send(mailbox, 2, ptr::null_mut(), 0, sender_ptr, slot)
-            },
-            crate::mailbox::MAILBOX_AWAIT_SEND_SUSPEND
-        );
+            };
+        assert_eq!(rc, crate::mailbox::MAILBOX_AWAIT_SEND_SUSPEND);
 
         assert!(
             BLOCKED_SENDER_REINCARNATION

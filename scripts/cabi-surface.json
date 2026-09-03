@@ -99,7 +99,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_await_send_by_id( u64, i32, *mut c_void, usize, *mut HewActor, *mut HewReadSlot, ) -> c_int"
+        "native": "fn hew_actor_await_send_by_id( u64, i32, *mut c_void, usize, *mut HewActor, *mut HewReadSlot, *mut u64, ) -> c_int"
       },
       "symbol": "hew_actor_await_send_by_id"
     },
@@ -181,11 +181,11 @@
         "native"
       ],
       "classification": "codegen-stable",
-      "extent": "no-in-signature-extent",
+      "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_detach_await_send_by_id( u64, *mut HewReadSlot, )"
+        "native": "fn hew_actor_detach_await_send_by_id( u64, mailbox::BlockedSenderId, )"
       },
       "symbol": "hew_actor_detach_await_send_by_id"
     },
@@ -15208,7 +15208,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_supervisor_role_await_send( HewLocalPidId, u32, i32, *mut c_void, usize, *mut HewActor, *mut HewReadSlot, *mut u64, ) -> c_int"
+        "native": "fn hew_supervisor_role_await_send( HewLocalPidId, u32, i32, *mut c_void, usize, *mut HewActor, *mut HewReadSlot, *mut u64, *mut u64, ) -> c_int"
       },
       "symbol": "hew_supervisor_role_await_send"
     },

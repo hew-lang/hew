@@ -8,6 +8,7 @@
 //!
 //! ```
 //! import std.net;
+//! import std.net.{NetError};
 //! import std.net.tls;
 //!
 //! fn main() {
@@ -15,11 +16,11 @@
 //!     let request = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
 //!     match tls.try_write(stream, request.to_bytes()) {
 //!         .Ok(_) => {},
-//!         .Err(err) => panic(err),
+//!         .Err(err) => panic(to_string(err)),
 //!     }
 //!     let _response = match tls.read(stream, 4096) {
 //!         .Ok(data) => data,
-//!         .Err(err) => panic(err),
+//!         .Err(err) => panic(to_string(err)),
 //!     };
 //!     tls.close(stream);
 //! }

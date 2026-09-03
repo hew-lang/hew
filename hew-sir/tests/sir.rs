@@ -1548,23 +1548,30 @@ fn verifier_refuses_an_own_kind_the_class_table_contradicts() {
 /// A type the class rule cannot decide has no kind to check against, and §1.1
 /// has no default: the verifier refuses it rather than admitting whatever the
 /// definition happens to claim.
+///
+/// The type sits on an operation result rather than on a parameter, because a
+/// parameter of a non-scalar type is already refused by the callable header
+/// check (`InvalidCallable`). Nothing else refuses an undecidable type in the
+/// middle of a body, so this is the case that needs the value-level rule.
 #[test]
 fn verifier_refuses_a_value_whose_type_the_class_rule_cannot_decide() {
     let mut function = own_kind_function(OwnKind::None, OwnKind::None);
-    function.params[0].ty = ResolvedTy::Named {
+    let undecidable = ResolvedTy::Named {
         name: "Conn".to_string(),
         args: vec![],
         builtin: None,
         is_opaque: false,
     };
+    function.blocks[0].ops[0].results[0].ty = undecidable.clone();
+    function.blocks[1].args[0].ty = undecidable;
     let diagnostics = verify_module(&module(vec![function]));
     assert!(
         diagnostics.iter().any(|diagnostic| matches!(
             &diagnostic.kind,
             SirDiagnosticKind::OwnershipKind { value, reason }
-                if *value == ValueId(0) && reason.contains("cannot decide the ownership kind")
+                if *value == ValueId(1) && reason.contains("cannot decide the ownership kind")
         )),
-        "a user declaration the class rule cannot reach must be refused, got {diagnostics:?}"
+        "an operation result whose type the class rule cannot reach must be refused, got {diagnostics:?}"
     );
 }
 
@@ -1649,6 +1656,11 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
 /// carries. A field the lowering writes and nothing ever reads is a fact no
 /// reviewer and no later lane can see, so the dump renders the two kinds that
 /// carry an obligation.
+///
+/// This module fails `verify_own_kind` by construction - no class produces
+/// `Guaranteed` - and the dump must render it anyway: a dump is what a
+/// reviewer reads about malformed IR, so it stays total where the verifier
+/// refuses.
 #[test]
 fn the_dump_renders_the_ownership_kind_a_value_carries() {
     let function = SemFunction {

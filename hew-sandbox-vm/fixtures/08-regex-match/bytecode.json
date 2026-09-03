@@ -4,9 +4,7 @@
       "disposition": "allowed",
       "id": "core.stdout",
       "reason": "stdout is captured by the educational sandbox trace",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
+      "required_by": ["sym:core.stdout.println"]
     },
     {
       "disposition": "reserved",
@@ -424,9 +422,19 @@
         "name": "std.failure.CrashNotification"
       },
       {
+        "id": "type:std.text.regex.CaptureMatches",
+        "kind": "record",
+        "name": "std.text.regex.CaptureMatches"
+      },
+      {
         "id": "type:std.text.regex.Pattern",
         "kind": "regex",
         "name": "std.text.regex.Pattern"
+      },
+      {
+        "id": "type:std.text.regex.PatternHandle",
+        "kind": "record",
+        "name": "std.text.regex.PatternHandle"
       },
       {
         "id": "type:string",
@@ -449,9 +457,7 @@
     "entry": "mod:main",
     "modules": [
       {
-        "functions": [
-          "fn:main"
-        ],
+        "functions": ["fn:main"],
         "id": "mod:main",
         "imports": [
           {
@@ -464,7 +470,7 @@
       }
     ]
   },
-  "package_id": "pkg:5a43ea225b4cafb8",
+  "package_id": "pkg:73691b5fc7a7bf4d",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
@@ -625,9 +631,7 @@
       "id": "sym:core.stdout.println",
       "module": "core.stdout",
       "name": "println",
-      "params": [
-        "type:string"
-      ],
+      "params": ["type:string"],
       "result": "type:unit"
     },
     {

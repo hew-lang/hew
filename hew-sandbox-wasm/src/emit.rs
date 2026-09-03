@@ -344,11 +344,12 @@ impl<'a> PackageEmitter<'a> {
             let type_id = self.type_id_for_named(name, &[]);
             match type_def.kind {
                 TypeDefKind::Struct | TypeDefKind::Record => {
+                    let kind = self.named_layout_kind(name, &type_id).to_string();
                     self.type_layouts
                         .entry(type_id.clone())
                         .or_insert(TypeLayout {
                             id: type_id,
-                            kind: "record".to_string(),
+                            kind,
                             name: name.clone(),
                             parameters: Vec::new(),
                         });
@@ -846,15 +847,7 @@ impl<'a> PackageEmitter<'a> {
             Ty::Named { name, args, .. } => {
                 let params: Vec<_> = args.iter().map(|arg| self.type_id_for_ty(arg)).collect();
                 let named_id = self.type_id_for_named(name, args);
-                let kind = if name == "Vec" {
-                    "vector"
-                } else if name == REGEX_HANDLE_TYPE {
-                    "regex"
-                } else if self.enum_layouts.contains_key(&named_id) {
-                    "enum"
-                } else {
-                    "record"
-                };
+                let kind = self.named_layout_kind(name, &named_id);
                 (named_id, kind.to_string(), name.clone(), params)
             }
             Ty::Tuple(items) => {
@@ -951,6 +944,26 @@ impl<'a> PackageEmitter<'a> {
             parameters,
         });
         id
+    }
+
+    /// The bytecode layout kind of a named type.
+    ///
+    /// The one authority for the two sites that register a `TypeLayout` for a
+    /// named type: the declaration sweep over `type_defs` and the on-demand
+    /// `type_id_for_ty`. They disagreed on a stdlib handle whose declaration is
+    /// an ordinary struct - the sweep runs first and `or_insert` keeps its
+    /// answer, so `std.text.regex.Pattern` reached the VM as a plain record and
+    /// lost the handle kind its ops are keyed on.
+    fn named_layout_kind(&self, name: &str, named_id: &str) -> &'static str {
+        if name == "Vec" {
+            "vector"
+        } else if name == REGEX_HANDLE_TYPE {
+            "regex"
+        } else if self.enum_layouts.contains_key(named_id) {
+            "enum"
+        } else {
+            "record"
+        }
     }
 
     fn type_id_for_named(&mut self, name: &str, args: &[Ty]) -> String {

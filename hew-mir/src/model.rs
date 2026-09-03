@@ -2956,6 +2956,14 @@ pub enum SourceOrigin {
         kind: ActorHandlerKind,
         actor_layout_key: String,
     },
+    /// An actor-body plain `fn`, lowered as an ordinary `Default`-callconv
+    /// function whose header carries the execution context and the actor-state
+    /// pointer as its two leading parameters. It is entered from Hew code
+    /// inside the actor — never from a runtime trampoline — so it takes no
+    /// dispatch slot and no `borrow_mode` ABI parameter, and it is deliberately
+    /// NOT a `SynthesizedActorHandler`. Codegen reads the layout key to type
+    /// the state pointer for `ActorStateFieldLoad`/`Store`.
+    SynthesizedActorMethod { actor_layout_key: String },
     /// A synthesised machine step function. The machine declaration identity is
     /// carried directly rather than recovered from the emitted symbol.
     SynthesizedMachineStep { machine_name: String },

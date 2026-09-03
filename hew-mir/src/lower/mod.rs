@@ -3481,11 +3481,26 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // Structured static-trait-dispatch registry. Built once from
     // `HirItem::Impl` metadata and threaded into every user-fn builder.
     let trait_impl_index = hew_hir::dispatch::build_trait_impl_method_index(&module.items);
-    let direct_call_symbols = hew_hir::dispatch::build_direct_call_symbol_index(&module.items);
+    let mut direct_call_symbols = hew_hir::dispatch::build_direct_call_symbol_index(&module.items);
+    // An actor-body plain `fn` is emitted by this crate's actor lowering, not by
+    // HIR's item list, so HIR's symbol index cannot know its name. Fold the rows
+    // in from the one mangler that produces them, keyed by the checker-minted
+    // declaration — the callee's identity, never its spelling.
+    let actor_method_symbols = machine_synth::actor_method_symbols(&module.items);
+    direct_call_symbols.extend(actor_method_symbols.iter().cloned());
     let mut emitted_actor_handler_symbols: HashMap<String, String> = module_fn_names
         .iter()
         .map(|name| (name.clone(), format!("function `{name}`")))
         .collect();
+    // Actor methods are direct-call targets like any module function: the
+    // `Expr::Call` arm requires the projected symbol to name an emitted body
+    // before it lowers a `Terminator::Call`. Added AFTER the collision seed
+    // above, which inventories the symbols this module already emits — an
+    // actor method is emitted by the actor loop, so seeding it there would
+    // report it as colliding with itself.
+    for (_, symbol) in &actor_method_symbols {
+        module_fn_names.insert(symbol.clone());
+    }
 
     // Build origin lookup: ItemId → &HirFn. Each monomorphisation's
     // `key.origin` resolves to the generic origin fn whose body is

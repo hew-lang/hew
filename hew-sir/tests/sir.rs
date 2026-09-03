@@ -1730,3 +1730,160 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
         "a no-obligation result must render unchanged: {dump}"
     );
 }
+
+/// A callee whose header slot is `passing`, and a caller that calls it.
+fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
+    let callee = unit_function(
+        0,
+        "borrow_callee",
+        "borrow_callee",
+        FunctionSourceOrigin::Unknown,
+        vec![BlockArg {
+            value: ValueId(0),
+            ty: ResolvedTy::I64,
+            own: match passing {
+                SemParamPassing::Borrow => OwnKind::Guaranteed,
+                SemParamPassing::ReadOnly => OwnKind::None,
+            },
+            provenance: None,
+        }],
+    );
+    let mut call_site = unit_function(
+        1,
+        "borrow_caller",
+        "borrow_caller",
+        FunctionSourceOrigin::Unknown,
+        Vec::new(),
+    );
+    call_site.callable = CallableId(1);
+    call_site.blocks[0].ops = vec![
+        SemOp {
+            id: OpId(0),
+            results: vec![definition(1)],
+            kind: SemOpKind::ConstI64(7),
+            provenance: Provenance::Synthesized,
+        },
+        SemOp {
+            id: OpId(1),
+            results: Vec::new(),
+            kind: SemOpKind::Call {
+                callee: CallableId(0),
+                args: vec![read(ValueId(1))],
+            },
+            provenance: Provenance::Synthesized,
+        },
+    ];
+    let mut module = module(vec![callee, call_site]);
+    module.callables[0].signature.params[0].passing = passing;
+    module
+}
+
+/// Does any diagnostic carry `needle` in its reason?
+fn any_reason_contains(diagnostics: &[hew_sir::SirDiagnostic], needle: &str) -> bool {
+    diagnostics.iter().any(|diagnostic| match &diagnostic.kind {
+        SirDiagnosticKind::InvalidCallable { reason, .. }
+        | SirDiagnosticKind::InvalidGenericTemplate { reason, .. }
+        | SirDiagnosticKind::InvalidOperation { reason, .. } => reason.contains(needle),
+        _ => false,
+    })
+}
+
+/// §1.2 rule 3's `Borrow` header slot is representable and walled: the callable
+/// table refuses a header that carries it, before any body reads it.
+#[test]
+fn verifier_refuses_a_callable_header_carrying_a_borrow_slot() {
+    let diagnostics = verify_module(&borrow_slot_module(SemParamPassing::Borrow));
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidCallable { callable, reason }
+            if *callable == CallableId(0)
+                && reason.contains("parameter 0 has non-ReadOnly ABI passing")
+    )));
+}
+
+/// The second wall on the same module: a direct call to a callee whose slot is
+/// `Borrow` is refused at the call site too, so a header that slipped through
+/// cannot be reached by a call.
+#[test]
+fn verifier_refuses_a_direct_call_to_a_borrow_slot_parameter() {
+    let diagnostics = verify_module(&borrow_slot_module(SemParamPassing::Borrow));
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason.contains("parameter 0 has non-ReadOnly ABI passing")
+    )));
+}
+
+/// The counterfactual for both walls: the same header and the same call with a
+/// `ReadOnly` slot verify clean, so the refusals are about the slot and not
+/// about the module shape.
+#[test]
+fn verifier_admits_the_same_header_and_call_with_a_read_only_slot() {
+    let diagnostics = verify_module(&borrow_slot_module(SemParamPassing::ReadOnly));
+    assert!(
+        !any_reason_contains(&diagnostics, "non-ReadOnly ABI passing"),
+        "{diagnostics:#?}"
+    );
+}
+
+/// A generic template header carries the same wall: SIR does not own parameter
+/// ownership policy before substitution either.
+#[test]
+fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
+    let mut module = borrow_slot_module(SemParamPassing::ReadOnly);
+    module.generic_templates = vec![hew_sir::SemGenericTemplate {
+        id: GenericTemplateId {
+            declaration: DefId::for_test("borrow_template"),
+        },
+        function: ItemId(2),
+        symbol: "borrow_template".to_string(),
+        source_origin: FunctionSourceOrigin::Unknown,
+        type_params: vec!["T".to_string()],
+        signature: SemSignature {
+            params: vec![SemAbiParam {
+                ty: ResolvedTy::I64,
+                passing: SemParamPassing::Borrow,
+                caller_visible_projection: false,
+            }],
+            return_ty: ResolvedTy::Unit,
+        },
+    }];
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidGenericTemplate { reason, .. }
+            if reason.contains("template parameter 0 carries ownership or caller-visible ABI policy")
+    )));
+}
+
+/// The counterfactual for the template wall: the same template with a
+/// `ReadOnly` slot and no caller-visible projection is admitted.
+#[test]
+fn verifier_admits_a_generic_template_parameter_with_a_read_only_slot() {
+    let mut module = borrow_slot_module(SemParamPassing::ReadOnly);
+    module.generic_templates = vec![hew_sir::SemGenericTemplate {
+        id: GenericTemplateId {
+            declaration: DefId::for_test("read_only_template"),
+        },
+        function: ItemId(2),
+        symbol: "read_only_template".to_string(),
+        source_origin: FunctionSourceOrigin::Unknown,
+        type_params: vec!["T".to_string()],
+        signature: SemSignature {
+            params: vec![SemAbiParam {
+                ty: ResolvedTy::I64,
+                passing: SemParamPassing::ReadOnly,
+                caller_visible_projection: false,
+            }],
+            return_ty: ResolvedTy::Unit,
+        },
+    }];
+    let diagnostics = verify_module(&module);
+    assert!(
+        !any_reason_contains(
+            &diagnostics,
+            "carries ownership or caller-visible ABI policy"
+        ),
+        "{diagnostics:#?}"
+    );
+}

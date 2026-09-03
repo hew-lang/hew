@@ -2864,6 +2864,52 @@ mod tests {
         assert!(error.reason.contains("parameter-boundary fact 0"));
     }
 
+    /// §1.2 rule 3's `Borrow` header slot has no raw-MIR boundary mode: the
+    /// caller keeps the obligation and the raw fact set cannot state that. The
+    /// SIR verifier refuses such a header first; this bridge is the second wall,
+    /// so a callable that reached the boundary with the slot is refused rather
+    /// than realized as a read-only borrow.
+    #[test]
+    fn strict_post_lowering_verifier_rejects_a_borrow_abi_slot() {
+        let function = strict_i64_identity_function();
+        let mut module = test_module(vec![function.clone()]);
+        let lowered =
+            lower_sir_function(&module, &function).expect("the identity function should lower");
+        module.callables[0].signature.params[0].passing = SemParamPassing::Borrow;
+        let callable = module
+            .callable(function.callable)
+            .expect("test callable must exist");
+
+        let error =
+            verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
+                .expect_err("a borrow ABI slot has no raw-MIR boundary mode");
+        assert!(
+            error.reason.contains("carries a borrow ABI slot"),
+            "{}",
+            error.reason
+        );
+    }
+
+    /// The counterfactual: the same function and the same facts with the
+    /// `ReadOnly` slot the lowering wrote cross the bridge, so the refusal is
+    /// about the slot rather than about the identity function.
+    #[test]
+    fn strict_post_lowering_verifier_accepts_a_read_only_abi_slot() {
+        let function = strict_i64_identity_function();
+        let module = test_module(vec![function.clone()]);
+        let lowered =
+            lower_sir_function(&module, &function).expect("the identity function should lower");
+        let callable = module
+            .callable(function.callable)
+            .expect("test callable must exist");
+        assert_eq!(
+            SemParamPassing::ReadOnly,
+            callable.signature.params[0].passing
+        );
+        verify_strict_sir_raw_checked(&module, callable, &lowered.raw, &lowered.checked)
+            .expect("a read-only slot realizes as a raw-MIR borrow boundary");
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,

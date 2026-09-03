@@ -1,0 +1,19 @@
+// A plain `fn` in an actor body is callable by bare name from that actor's
+// handlers, with the same bare state-field access a handler has (#3285).
+actor Counter {
+    var count: i64 = 0;
+
+    fn helper() -> i64 {
+        count + 1
+    }
+
+    receive fn bump() {
+        count = helper();
+        println(count);
+    }
+}
+
+fn main() {
+    let c = spawn Counter(count: 0);
+    c.bump();
+}

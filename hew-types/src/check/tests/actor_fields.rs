@@ -273,11 +273,9 @@ fn pid_call_to_receive_fn_still_dispatches() {
 fn plain_method_self_call_from_receive_fn_does_not_gain_undefined_method() {
     // Bare-name self-dispatch (`bump()` with no receiver) never reaches the
     // `LocalPid<T>` match arm — it resolves through call-expression lookup
-    // (`hew-types/src/check/calls.rs`), a distinct path. That path
-    // independently emits `UndefinedFunction` for this fixture already
-    // (pre-existing, unrelated to #2366 — bare self-calls to plain actor
-    // methods are not yet wired to resolve as calls). This test pins the
-    // regression boundary for the new pid-dispatch guard: the guard in the
+    // (`hew-types/src/check/calls.rs`), a distinct path, which since #3285
+    // resolves it to the enclosing actor's own method. This test pins the
+    // regression boundary for the pid-dispatch guard: the guard in the
     // `LocalPid<T>` arm must not additionally fire `UndefinedMethod` on a
     // fixture it was never meant to see.
     let output = check_source(
@@ -300,6 +298,159 @@ actor Counter {
             .any(|e| matches!(e.kind, TypeErrorKind::UndefinedMethod)),
         "bare self-dispatch never reaches the LocalPid<T> arm, so the new \
          pid-dispatch guard must not fire UndefinedMethod here; got: {:#?}",
+        output.errors
+    );
+}
+
+// ── An actor-body plain `fn` is a callable inside its own actor (#3285) ────
+//
+// The signature is filed under `{actor}::{name}`, a key no bare spelling
+// reconstructs, so `check_call` probes the enclosing actor after both
+// free-function keys. Outside the actor the same declaration is refused.
+
+#[test]
+fn bare_call_to_sibling_actor_method_resolves() {
+    let output = check_source(
+        r"
+actor Counter {
+    var count: i64 = 0;
+    fn helper() -> i64 { count + 1 }
+    receive fn bump() { count = helper(); }
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a bare call to a sibling actor method must resolve; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn bare_call_to_actor_method_prefers_a_free_function_of_the_same_name() {
+    // The actor rung is the LAST one before the undefined-function fallback,
+    // so a module function keeps its meaning inside an actor body. The oracle
+    // is the return type: the free fn returns `string`, the method `i64`.
+    let output = check_source(
+        r#"
+fn helper() -> string { "free" }
+actor Counter {
+    var count: i64 = 0;
+    fn helper() -> i64 { count + 1 }
+    receive fn bump() { let picked: string = helper(); println(picked); }
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "the free function must still win inside an actor body; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn bare_call_to_another_actors_method_is_undefined() {
+    let output = check_source(
+        r"
+actor Other {
+    var count: i64 = 0;
+    fn helper() -> i64 { count + 1 }
+}
+actor Counter {
+    var count: i64 = 0;
+    receive fn bump() { count = helper(); }
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::UndefinedFunction)),
+        "only the ENCLOSING actor's methods are in scope; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn qualified_actor_method_call_from_main_is_refused_on_the_user_channel() {
+    let output = check_source(
+        r"
+actor Counter {
+    var count: i64 = 0;
+    fn helper() -> i64 { count + 1 }
+    receive fn bump() { count = helper(); }
+}
+fn main() {
+    let c = spawn Counter(count: 0);
+    c.bump();
+    println(Counter.helper());
+}
+",
+    );
+    let refusals: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(e.kind, TypeErrorKind::ActorMethodOutsideActor))
+        .collect();
+    assert_eq!(
+        refusals.len(),
+        1,
+        "naming an actor method from main must be refused exactly once; got: {:#?}",
+        output.errors
+    );
+    assert!(
+        refusals[0].message.contains("send a message instead"),
+        "the refusal must name the reachable surface; got: {}",
+        refusals[0].message
+    );
+}
+
+#[test]
+fn qualified_actor_method_call_from_a_different_actor_is_refused() {
+    let output = check_source(
+        r"
+actor Other {
+    var count: i64 = 0;
+    fn helper() -> i64 { count + 1 }
+}
+actor Counter {
+    var count: i64 = 0;
+    receive fn bump() { count = Other.helper(); }
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::ActorMethodOutsideActor)),
+        "another actor's state is not reachable from this one; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn bare_call_to_a_lifecycle_hook_stays_undefined() {
+    // An `#[on(...)]` hook shares the `methods` list and the `ActorMethod`
+    // identity kind, but the runtime enters it through its own trampoline: it
+    // publishes no declaration row and stays uncallable from Hew code.
+    let output = check_source(
+        r"
+actor Counter {
+    var count: i64 = 0;
+    #[on(start)]
+    fn started() { count = 1; }
+    receive fn bump() { started(); }
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::UndefinedFunction)),
+        "a lifecycle hook must not become callable; got: {:#?}",
         output.errors
     );
 }

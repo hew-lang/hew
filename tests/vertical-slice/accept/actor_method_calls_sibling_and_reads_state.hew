@@ -1,0 +1,35 @@
+// An actor method may call a sibling method, take parameters, read and write
+// the actor's state, and be named by its qualified `Actor.method` spelling
+// from inside the actor. Both spellings resolve to the one declaration (#3285).
+actor Ledger {
+    var total: i64 = 0;
+    var label: string = "";
+
+    fn scaled(by: i64) -> i64 {
+        total * by
+    }
+
+    fn bumped(by: i64) -> i64 {
+        scaled(2) + by
+    }
+
+    fn record(amount: i64) {
+        total = total + amount;
+    }
+
+    fn describe() -> string {
+        label
+    }
+
+    receive fn add(amount: i64) {
+        record(amount);
+        println(total);
+        println(bumped(1));
+        println(Ledger.describe());
+    }
+}
+
+fn main() {
+    let l = spawn Ledger(total: 4, label: "ledger");
+    l.add(3);
+}

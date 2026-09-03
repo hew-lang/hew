@@ -943,6 +943,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_impl(&mut self, decl: &ImplDecl, span_end: usize) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
         self.write("impl");
         self.format_opt_type_params(decl.type_params.as_ref());
@@ -4235,6 +4236,30 @@ mod tests {
     #[test]
     fn simple_function() {
         let src = "fn main() -> i32 {\n    0\n}\n";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn doc_comment_before_impl_block_is_preserved() {
+        // Regression test for #3238: the formatter's item model attached
+        // `doc_comment` to every other item kind (fn/struct/enum/trait) but
+        // not to `impl`, so a `///` comment immediately preceding an `impl`
+        // block was collected by the parser and then dropped on the floor.
+        let src = "\
+enum Foo {
+    A;
+}
+
+/// Doc comment for Foo Display.
+impl Display for Foo {
+    fn fmt(f: Foo) -> string {
+        match f {
+            .A => \"a\",
+        }
+    }
+}
+";
         let formatted = roundtrip(src);
         assert_eq!(formatted, src);
     }

@@ -536,7 +536,9 @@ impl Parser<'_> {
             }
             Some(Token::Impl) => {
                 self.advance();
-                Item::Impl(self.parse_impl_decl()?)
+                let mut i = self.parse_impl_decl()?;
+                i.doc_comment = doc_comment;
+                Item::Impl(i)
             }
             Some(Token::Actor) => {
                 self.advance();
@@ -1533,6 +1535,7 @@ impl Parser<'_> {
             where_clause,
             type_aliases,
             methods,
+            doc_comment: None,
         })
     }
 

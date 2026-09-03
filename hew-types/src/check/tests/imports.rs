@@ -3274,6 +3274,7 @@ fn orphan_impl_emits_warning() {
         where_clause: None,
         type_aliases: vec![],
         methods: vec![],
+        doc_comment: None,
     };
     let output = check_items(vec![(Item::Impl(impl_decl), 0..0)]);
 
@@ -3328,6 +3329,7 @@ fn noncanonical_builtin_spelling_does_not_own_intrinsic_impls() {
         where_clause: None,
         type_aliases: vec![],
         methods: vec![],
+        doc_comment: None,
     };
     let mut checker = Checker {
         current_module: Some("std.builtins".to_string()),
@@ -3590,6 +3592,7 @@ fn local_type_impl_no_orphan_warning() {
         where_clause: None,
         type_aliases: vec![],
         methods: vec![],
+        doc_comment: None,
     };
     let output = check_items(vec![
         (Item::TypeDecl(type_decl), 0..0),
@@ -3644,6 +3647,7 @@ fn local_actor_impl_no_orphan_warning() {
         where_clause: None,
         type_aliases: vec![],
         methods: vec![],
+        doc_comment: None,
     };
     let output = check_items(vec![
         (Item::Actor(actor), 0..0),

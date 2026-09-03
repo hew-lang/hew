@@ -661,6 +661,7 @@ mod non_root_module_inference_scope {
             where_clause: None,
             type_aliases: vec![],
             methods: vec![],
+            doc_comment: None,
         };
         let program = Program {
             module_graph: None,

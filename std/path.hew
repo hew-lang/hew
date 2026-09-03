@@ -43,10 +43,7 @@ pub enum PathError {
     IndexOutOfRange(string);
 }
 
-// Print the human-readable detail carried by a `PathError`.
-//
-// Plain `//`, not `///`: `hew fmt` deletes a doc comment immediately
-// preceding an `impl` block. Restore `///` once hew-lang/hew#3238 lands.
+/// Print the human-readable detail carried by a `PathError`.
 impl Display for PathError {
     fn fmt(err: PathError) -> string {
         match err {

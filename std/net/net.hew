@@ -135,10 +135,7 @@ pub fn net_error_from_errno(errno: i64) -> NetError {
     }
 }
 
-// Print a `NetError`'s variant name and raw OS errno.
-//
-// Plain `//`, not `///`: `hew fmt` deletes a doc comment immediately
-// preceding an `impl` block. Restore `///` once hew-lang/hew#3238 lands.
+/// Print a `NetError`'s variant name and raw OS errno.
 impl Display for NetError {
     fn fmt(e: NetError) -> string {
         match e {
@@ -391,10 +388,7 @@ pub fn write_error_from_errno(errno: i64) -> WriteError {
     }
 }
 
-// Print a `WriteError`'s variant name and raw OS errno.
-//
-// Plain `//`, not `///`: `hew fmt` deletes a doc comment immediately
-// preceding an `impl` block. Restore `///` once hew-lang/hew#3238 lands.
+/// Print a `WriteError`'s variant name and raw OS errno.
 impl Display for WriteError {
     fn fmt(e: WriteError) -> string {
         match e {

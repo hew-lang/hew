@@ -142,10 +142,19 @@ impl Session {
 
         match &kind {
             InputKind::Item => {
-                // The new item goes at the top level; we still need a main.
+                // The new item goes at the top level; we still need a main —
+                // unless the combined source (remembered items plus this
+                // input) already defines one. That covers both a whole file
+                // evaluated in one shot (e.g. `hew playground verify`, whose
+                // sole item is its own `fn main`) and a `main` remembered
+                // from an earlier REPL item: checking `input` alone missed
+                // the latter, so a later item eval always got the synthetic
+                // `fn main() {}` appended and collided with the real one.
                 source.push_str(input);
                 source.push('\n');
-                source.push_str("fn main() {}\n");
+                if !source_defines_main(&source) {
+                    source.push_str("fn main() {}\n");
+                }
             }
             InputKind::Statement => {
                 source.push_str("fn main() {\n    ");
@@ -256,6 +265,23 @@ impl SessionItem {
             summary: source_preview(source),
         }
     }
+}
+
+/// True if `source` (remembered session items plus the new item, concatenated
+/// in build order but before any synthetic `fn main` is appended) defines a
+/// top-level `fn main` anywhere in it. Parse failures are treated as "no" —
+/// the synthetic `fn main() {}` wrapper is still appended, and the resulting
+/// duplicate-parse-error path is unchanged from before this check existed.
+///
+/// Reuses `program_defines_main` (the same predicate `:load`/whole-file eval
+/// use) rather than a second hand-rolled check, so there is one authority for
+/// "does this program already define main".
+fn source_defines_main(source: &str) -> bool {
+    let parse_result = hew_parser::parse(source);
+    if !parse_result.errors.is_empty() {
+        return false;
+    }
+    super::repl::program_defines_main(&parse_result.program)
 }
 
 fn session_items_from_source(source: &str) -> Vec<SessionItem> {
@@ -461,6 +487,47 @@ mod tests {
         let session = Session::new();
         let prog = session.build_program("fn foo() -> i32 { 42 }");
         assert_eq!(prog.kind, InputKind::Item);
+        assert!(prog.source.contains("fn main() {}\n"));
+    }
+
+    #[test]
+    fn item_input_defining_main_is_not_duplicated() {
+        // A whole-file eval (e.g. `hew playground verify` on a program whose
+        // sole item is its own `fn main`) must not get a second synthetic
+        // `fn main() {}` appended — that duplicate definition is a compile
+        // error the user's file never had.
+        let session = Session::new();
+        let prog = session.build_program("fn main() {\n    println(\"hi\");\n}");
+        assert_eq!(prog.kind, InputKind::Item);
+        assert_eq!(prog.source.matches("fn main").count(), 1);
+    }
+
+    #[test]
+    fn remembered_main_item_is_not_duplicated_by_a_later_item() {
+        // Regression for the REPL replay case: typing `fn main() { ... }`
+        // succeeds and is remembered as a session item (unlike before this
+        // fix, when it always failed the duplicate-main check and was never
+        // recorded). The *next* item eval replays that remembered `main`
+        // ahead of the new item — checking only the new input for `main`
+        // missed the remembered one and always appended a second synthetic
+        // `fn main() {}`, so every item typed after a REPL-defined `main`
+        // failed with "main is defined multiple times".
+        let mut session = Session::new();
+        session.add_item("fn main() { println(\"hi\"); }");
+        let prog = session.build_program("fn foo() -> i32 { 42 }");
+        assert_eq!(prog.kind, InputKind::Item);
+        assert!(prog.source.contains("fn foo() -> i32 { 42 }"));
+        assert_eq!(prog.source.matches("fn main").count(), 1);
+    }
+
+    #[test]
+    fn item_input_not_defining_main_still_gets_synthetic_main() {
+        // Negative control for the above: an item that is NOT `fn main`
+        // still needs the synthetic empty main appended so the program has
+        // an entry point.
+        let session = Session::new();
+        let prog = session.build_program("fn foo() -> i32 { 42 }");
+        assert_eq!(prog.source.matches("fn main").count(), 1);
         assert!(prog.source.contains("fn main() {}\n"));
     }
 

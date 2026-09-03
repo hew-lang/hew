@@ -61,6 +61,7 @@ struct EntryResult {
     outcome: EntryOutcome,
 }
 
+#[derive(Debug)]
 enum EntryOutcome {
     Skipped,
     Verified(VerifyOutcome),
@@ -104,14 +105,33 @@ pub fn cmd_playground_verify(args: &crate::args::PlaygroundVerifyArgs) {
         std::process::exit(1);
     });
 
-    if entries.is_empty() {
-        eprintln!("Warning: manifest contains no entries.");
-        return;
-    }
-
-    // Run verification.
+    // Run verification. An empty manifest never reaches `verify_entry` — an
+    // empty `results` falls straight into `fail_closed_reason`'s "nothing was
+    // verified" branch below, so there is exactly one place that decides
+    // "did this run check anything real".
     let results = run_verify(&entries, &manifest_dir, timeout);
     print_results(&results);
+
+    if let Some(message) = fail_closed_reason(&results) {
+        eprintln!("Error: {message}");
+        std::process::exit(1);
+    }
+}
+
+/// Decide whether a completed run must fail the process even though no entry
+/// reported `Fail`/`RunError`/`IoError`, and name why.
+///
+/// Fails closed: an empty manifest, or a run where nothing passed (every
+/// entry skipped — e.g. a manifest regeneration or a capabilities flip
+/// emptied the runnable set), must not exit 0. A gate that goes green having
+/// verified nothing is worse than one that never ran; `failed > 0` alone
+/// does not catch either case, since both have zero failures too. The two
+/// are named with distinct messages so a reader can tell "there was nothing
+/// to check" from "everything present was skipped".
+fn fail_closed_reason(results: &[EntryResult]) -> Option<&'static str> {
+    if results.is_empty() {
+        return Some("manifest contains no entries");
+    }
 
     let failed = results
         .iter()
@@ -126,10 +146,19 @@ pub fn cmd_playground_verify(args: &crate::args::PlaygroundVerifyArgs) {
             )
         })
         .count();
-
     if failed > 0 {
-        std::process::exit(1);
+        return Some("one or more entries failed verification");
     }
+
+    let passed = results
+        .iter()
+        .filter(|r| matches!(&r.outcome, EntryOutcome::Verified(VerifyOutcome::Pass)))
+        .count();
+    if passed == 0 {
+        return Some("every manifest entry was skipped; nothing was verified");
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +473,141 @@ mod tests {
         assert!(
             matches!(outcome, EntryOutcome::Verified(VerifyOutcome::IoError(_))),
             "expected IoError when expected file is absent"
+        );
+    }
+
+    // --- Fail-closed exit decision ---
+
+    #[test]
+    fn empty_manifest_fails_closed_distinctly_from_all_skipped() {
+        // An empty manifest and an all-skipped run are both "nothing was
+        // verified", but for different reasons — the message must tell
+        // them apart so a reader knows whether to look at the manifest file
+        // or at `capabilities.wasi` values.
+        let empty_reason = fail_closed_reason(&[]).expect("empty manifest must fail closed");
+        let all_skipped_reason = fail_closed_reason(&[EntryResult {
+            id: "a".to_string(),
+            outcome: EntryOutcome::Skipped,
+        }])
+        .expect("all-skipped run must fail closed");
+        assert_ne!(empty_reason, all_skipped_reason);
+        assert!(empty_reason.contains("no entries"));
+        assert!(all_skipped_reason.contains("skipped"));
+    }
+
+    #[test]
+    fn all_skipped_run_fails_closed() {
+        // A run where every entry was skipped (e.g. `capabilities.wasi`
+        // flipped away from `"runnable"` for the whole manifest) verified
+        // nothing and must not report success.
+        let results = vec![
+            EntryResult {
+                id: "a".to_string(),
+                outcome: EntryOutcome::Skipped,
+            },
+            EntryResult {
+                id: "b".to_string(),
+                outcome: EntryOutcome::Skipped,
+            },
+        ];
+        assert!(fail_closed_reason(&results).is_some());
+    }
+
+    #[test]
+    fn run_with_a_pass_does_not_fail_closed() {
+        // Negative control: at least one entry actually verified, so the
+        // "nothing was checked" failure must not fire.
+        let results = vec![
+            EntryResult {
+                id: "a".to_string(),
+                outcome: EntryOutcome::Verified(VerifyOutcome::Pass),
+            },
+            EntryResult {
+                id: "b".to_string(),
+                outcome: EntryOutcome::Skipped,
+            },
+        ];
+        assert_eq!(fail_closed_reason(&results), None);
+    }
+
+    #[test]
+    fn a_failed_entry_fails_closed_distinctly_from_all_skipped() {
+        let results = vec![EntryResult {
+            id: "a".to_string(),
+            outcome: EntryOutcome::Verified(VerifyOutcome::RunError("boom".to_string())),
+        }];
+        let reason = fail_closed_reason(&results).expect("a failure must fail the run");
+        assert!(
+            !reason.contains("skipped"),
+            "a real failure must not be reported as an all-skipped run: {reason}"
+        );
+    }
+
+    /// True if this test binary can actually resolve `libhew.a` and drive a
+    /// full native compile — `verify_entry` runs the whole native
+    /// compile+link+execute pipeline, which `cargo test`'s binary layout
+    /// (`target/debug/deps/<hash>`, one directory deeper than the shipped
+    /// `target/debug/hew`) does not always support (see the identical probe
+    /// in `eval::repl::tests::require_toolchain`). Skip rather than fail
+    /// when it can't.
+    fn require_toolchain() -> bool {
+        static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *OK.get_or_init(|| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let bin_name = format!("probe{}", crate::platform::exe_suffix());
+            let bin_path = dir.path().join(bin_name);
+            let source = "fn main() { println(\"ok\"); }\n";
+            let parse_result = hew_parser::parse(source);
+            if !parse_result.errors.is_empty() {
+                eprintln!("playground verify_entry test skipped: probe parse failed");
+                return false;
+            }
+            let ok = crate::compile_native_from_program(
+                parse_result.program,
+                source,
+                "<playground-probe>",
+                &bin_path,
+                &crate::compile::CompileOptions::default(),
+            )
+            .is_ok();
+            if !ok {
+                eprintln!(
+                    "playground verify_entry test skipped: \
+                     in-process compile failed (codegen/runtime not available)"
+                );
+            }
+            ok
+        })
+    }
+
+    #[test]
+    fn verify_entry_passes_for_a_file_defining_its_own_main() {
+        // Regression test: a playground file's sole item is `fn main` itself
+        // (the shape every real playground entry has). Before the
+        // session-eval fix this hit "main is defined multiple times"
+        // because the whole-file eval path always appended a synthetic
+        // `fn main() {}` after the file's own definition.
+        if !require_toolchain() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("test.hew");
+        std::fs::write(&src, "fn main() { println(\"hi\"); }\n").unwrap();
+        let expected = dir.path().join("test.expected");
+        std::fs::write(&expected, "hi\n").unwrap();
+
+        let entry = ManifestEntry {
+            id: "test/own_main".to_string(),
+            source_path: "test.hew".to_string(),
+            expected_path: "test.expected".to_string(),
+            capabilities: Capabilities {
+                wasi: "runnable".to_string(),
+            },
+        };
+        let outcome = verify_entry(&entry, dir.path(), Duration::from_secs(30));
+        assert!(
+            matches!(outcome, EntryOutcome::Verified(VerifyOutcome::Pass)),
+            "expected Pass for a file defining its own main, got: {outcome:?}"
         );
     }
 

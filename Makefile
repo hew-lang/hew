@@ -89,6 +89,7 @@
 .PHONY: hew-check-all
 .PHONY: sir-coverage sir-parity
 .PHONY: test-journeys check-time-ratchet check-time-ratchet-record
+.PHONY: size-ratchet size-ratchet-record
 
 help:
 	@$(PYTHON) scripts/make-help.py
@@ -1686,6 +1687,16 @@ check-time-ratchet: hew ## Test: fail when hew check's median time on the fixtur
 
 check-time-ratchet-record: hew ## Build: record scripts/check-time-baseline.tsv's median for this host class
 	HEW_BIN="$(HEW_BIN)" bash scripts/check-time-ratchet.sh record
+
+# Per-crate `wc -l` over <crate>/src/**/*.rs against scripts/size-ratchet.tsv's
+# ceilings; a crate over its ceiling fails the gate. wc -l only, no hew build
+# needed.
+# inputs: scripts/size-ratchet.sh scripts/size-ratchet.tsv Cargo.toml
+size-ratchet: ## Test: fail when a workspace crate's line count exceeds its ceiling
+	bash scripts/size-ratchet.sh check
+
+size-ratchet-record: ## Build: record scripts/size-ratchet.tsv's per-crate counts as ceilings
+	bash scripts/size-ratchet.sh record
 
 .PHONY: codegen-trap-inventory-check
 LINT_GATES += codegen-trap-inventory-check

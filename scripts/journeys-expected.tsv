@@ -6,8 +6,17 @@
 # same PR (never leave it for a later lane to notice). A failing step with
 # no row here is a new regression and fails the gate. Seeded from a real
 # run against `hew 0.6.0-rc3-dev.155+7c1490375` on 2026-09-02 (V060-FD-1);
-# day-two ran under scripts/registry-harness.sh against a local
-# hew-registry checkout with wrangler dev.
+# day-two ran through scripts/registry-harness.sh with no hew-registry
+# checkout reachable (the CI job installs wrangler but does not check out
+# a sibling hew-registry, and most local worktrees have none either), so
+# every registry-gated step records the no_registry() failure. A dev
+# machine with a real local hew-registry checkout sibling gets a real
+# search/add/install run instead: two of its registry-gated steps
+# (day-two.12, day-two.20) happen to pass there today because they never
+# reach the registry either (no hew.toml, cascading from day-two.8) --
+# `make test-journeys JOURNEY=day-two` on such a machine reports those
+# two as stale rows even though nothing regressed; this is a known
+# environment difference, not a bug in the ratchet.
 #
 # day-one: hew new/--actor/--lib do not exist yet (V060-FD-5), so every
 # step downstream of scaffolding a package fails too.
@@ -47,11 +56,13 @@ day-two.8	V060-FD-5	hew new: unrecognized subcommand
 day-two.9	V060-FD-5	search prints hew::math::stats, not the dotted hew.math.stats that add accepts
 day-two.10	V060-FD-5	hew new never created app/; add runs with no hew.toml
 day-two.11	V060-FD-5	cascades from day-two.8/10: no hew.toml to write the dependency into
+day-two.12	V060-FD-5	no local registry (registry-harness.sh exit 75): unknown-package refusal never attempted
 day-two.15	V060-FD-5	cascades from day-two.8: hew.toml never had a [package] table to append to
 day-two.16	V060-FD-5	cascades from day-two.8/15: install has no valid manifest to read
 day-two.17	V060-FD-5	cascades: no hew.lock without a working install
 day-two.18	V060-FD-5	cascades: main.hew never compiles without the dependency installed
 day-two.19	V060-FD-5	cascades: tests never compile without the dependency installed
+day-two.20	V060-FD-5	no local registry (registry-harness.sh exit 75): info not-found never attempted
 day-two.22	V060-SURFACE	.Err(AErr.Bad)/.Ok(()) construction refused: "no variant Err/Ok" on Result<(), AErr> (D3 bare-variant expression construction, unshipped; owning S-lane not yet assigned)
 day-two.23	V060-FD-5	cascades from day-two.8: build has no [package] table
 day-two.25	V060-FD-5	cascades from day-two.8: cross-object emission has no [package] table

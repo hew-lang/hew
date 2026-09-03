@@ -986,6 +986,72 @@ mod tests {
         assert_eq!(CloneKind::FieldWise, facts.clone);
     }
 
+    /// `builtin` is the identity fact, and a `Named` carrying none that the
+    /// context holds no declaration for is refused in every context. Reading
+    /// the name against the builtin table instead gave a user declaration the
+    /// builtin's class whenever the two names collided.
+    #[test]
+    fn a_named_type_with_no_discriminator_and_no_declaration_refuses() {
+        let context = ClassContext::empty();
+        for name in ["Location", "Handle", "Range", "Trap", "Sender"] {
+            assert_eq!(
+                Err(ClassError::UnknownDeclaration {
+                    name: name.to_string()
+                }),
+                crate::value_class::classify_ty(&named(name, None, vec![]), &context),
+                "`{name}` carries no builtin discriminator"
+            );
+        }
+    }
+
+    /// The refusal propagates through a container: `Vec<Location>` has no class
+    /// in the empty context either, so a consumer cannot reach a guessed
+    /// element class through the collection floor.
+    #[test]
+    fn a_container_over_an_undecidable_element_refuses() {
+        let context = ClassContext::empty();
+        let element = named("Location", None, vec![]);
+        assert_eq!(
+            Err(ClassError::UnknownDeclaration {
+                name: "Location".to_string()
+            }),
+            crate::value_class::classify_ty(
+                &ResolvedTy::Named {
+                    name: "Vec".to_string(),
+                    args: vec![element],
+                    builtin: Some(BuiltinType::Vec),
+                    is_opaque: false,
+                },
+                &context
+            )
+        );
+    }
+
+    /// The counterfactual: the same three builtin names decide immediately when
+    /// they carry the discriminator, so the refusal above is about the missing
+    /// identity fact and not about the names.
+    #[test]
+    fn the_same_builtin_names_decide_when_they_carry_the_discriminator() {
+        let context = ClassContext::empty();
+        for (name, builtin) in [("Range", BuiltinType::Range), ("Trap", BuiltinType::Trap)] {
+            assert_eq!(
+                Ok((ValueClass::BitCopy, CloneKind::Bits)),
+                crate::value_class::classify_ty(&named(name, Some(builtin), vec![]), &context)
+            );
+        }
+        assert_eq!(
+            Ok((ValueClass::AffineResource, CloneKind::None)),
+            crate::value_class::classify_ty(
+                &named(
+                    "Sender",
+                    Some(BuiltinType::Sender),
+                    vec![ResolvedTy::String]
+                ),
+                &context
+            )
+        );
+    }
+
     /// What §1.2 owes for a class, as this module's tests read it.
     #[derive(Debug, PartialEq, Eq)]
     enum OwnershipObligation {

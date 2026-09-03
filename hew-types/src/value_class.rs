@@ -687,30 +687,13 @@ fn classify(
             builtin: None,
             is_opaque,
         } => {
+            // `builtin` is the identity fact. A `Named` that carries none and
+            // that the context holds no declaration for is refused in every
+            // context, the empty one included: reading the name against the
+            // builtin table here would be a second identity authority, and it
+            // is how an `#[opaque] type Location {}` came to publish `BitCopy`
+            // while an identical `Handle` was refused.
             let Some(declared) = decls.declaration(name) else {
-                // MARKED SHORTCUT - a `Named` with no discriminator whose name
-                // is a compiler-known builtin takes the builtin row.
-                // WHY: `ResolvedTy::Named.builtin` is the identity fact, but
-                // the checker still produces boundary types for `Option`,
-                // `Result`, `NodeId` and friends with the field absent, and
-                // those types are not aggregates over any user declaration.
-                // The declaration wins when one carries content, so a user
-                // record that shadows a builtin name keeps its own class.
-                // WHEN: every producer of a boundary `Named` stamps the
-                // discriminator.
-                // WHAT: this arm is unreachable and is deleted.
-                if let Some(builtin) = crate::builtin_type::lookup_builtin_type(name) {
-                    return classify(
-                        &ResolvedTy::Named {
-                            name: name.clone(),
-                            args: args.clone(),
-                            builtin: Some(builtin),
-                            is_opaque: *is_opaque,
-                        },
-                        decls,
-                        walk,
-                    );
-                }
                 return Err(ClassError::UnknownDeclaration { name: name.clone() });
             };
             match declared.marker {

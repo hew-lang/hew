@@ -239,6 +239,26 @@ mod tests {
         assert_eq!(OwnKind::Owned, OwnKind::of_class(ValueClass::Linear));
     }
 
+    /// A `Named` with no published row and no builtin discriminator has no
+    /// class in the empty declaration context, so SIR refuses it. The name
+    /// decides nothing: a user `Location`, whose name is in the builtin table,
+    /// is refused exactly as an identically-shaped `Handle` is.
+    #[test]
+    fn a_named_type_with_no_row_refuses_whether_or_not_its_name_is_a_builtin() {
+        let none = super::TypeFactTable::new();
+        for name in ["Location", "Handle"] {
+            let ty = hew_types::ResolvedTy::Named {
+                name: name.to_string(),
+                args: Vec::new(),
+                builtin: None,
+                is_opaque: false,
+            };
+            let error = OwnKind::of_ty(&ty, &none)
+                .expect_err("a type with no row and no declaration has no ownership kind");
+            assert!(error.contains(name), "{error}");
+        }
+    }
+
     /// `Guaranteed` is not a class: no class maps to it. It is minted only by
     /// `begin_borrow`.
     #[test]

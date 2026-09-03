@@ -696,9 +696,10 @@ mod tests {
 
     /// Declarations that reach themselves, for the recursion cases below.
     ///
-    /// `Tree` is the shape of the shipped `indirect enum` fixture; `Pair<T>`
-    /// mentions one fixed instantiation of itself, so a name-keyed cut sees
-    /// the same declaration for two different substitutions.
+    /// `Tree` is the shape of the shipped `indirect enum` fixture and `ResTree`
+    /// is the same shape over a resource payload. `Pair<T>` mentions one fixed
+    /// instantiation of itself, so the walk reaches the declaration at an
+    /// instantiation it did not enter.
     fn recursive_declarations() -> BTreeMap<String, DeclaredType> {
         let mut decls = declarations();
         decls.insert(
@@ -711,6 +712,14 @@ mod tests {
                     named("Tree", None, vec![]),
                     named("Tree", None, vec![]),
                 ],
+            },
+        );
+        decls.insert(
+            "ResTree".to_string(),
+            DeclaredType {
+                marker: DeclarationMarker::None,
+                type_params: vec![],
+                members: vec![conn(), named("ResTree", None, vec![])],
             },
         );
         decls.insert(
@@ -729,25 +738,50 @@ mod tests {
         decls
     }
 
-    /// A declaration that reaches itself is boxed on the heap, and the box is
-    /// not one of its members: classing it from the members alone would call a
-    /// heap allocation `BitCopy`, which §1.2 gives no owner and §1.3 lets
-    /// `copy_value` duplicate. §1.1 has no default class, so it refuses.
+    /// §1.1's indirect-enum row: the recursive occurrence is an owning edge,
+    /// so the declaration keeps its payload class and clones field-wise. The
+    /// payload here is a scalar, and the answer is still `CowValue` because the
+    /// recursion is only legal behind a heap box.
     #[test]
-    fn a_self_recursive_declaration_is_refused_rather_than_classed_bit_copy() {
+    fn a_self_recursive_declaration_keeps_its_payload_class_over_an_owning_edge() {
         let decls = recursive_declarations();
         let context = ClassContext::new(&decls);
         assert_eq!(
-            Err(ClassError::RecursiveDeclaration {
-                name: "Tree".to_string()
-            }),
+            Ok((ValueClass::CowValue, CloneKind::FieldWise)),
             crate::value_class::classify_ty(&named("Tree", None, vec![]), &context)
         );
     }
 
-    /// The counterfactual for the row above: a declaration whose members do
-    /// not reach it still classes, so the refusal is about the cycle and not
-    /// about user declarations in general.
+    /// The negative control for the row above, stated as the class the
+    /// bottom-element cut used to publish: §1.2 gives `BitCopy` no owner, §1.3
+    /// lets `copy_value` duplicate it at `clone == Bits`, and §2.1 bit-copies
+    /// it across an actor heap, so a heap-boxed payload must never carry it.
+    #[test]
+    fn a_self_recursive_declaration_is_never_bit_copyable() {
+        let decls = recursive_declarations();
+        let context = ClassContext::new(&decls);
+        let facts = crate::value_class::classify_ty(&named("Tree", None, vec![]), &context)
+            .expect("an indirect enum has a class");
+        assert_ne!((ValueClass::BitCopy, CloneKind::Bits), facts);
+        assert_eq!(OwnershipObligation::Owned, obligation_of(facts.0));
+    }
+
+    /// The payload decides which owning class: a recursive declaration holding
+    /// a resource is `AffineResource`, not the box's own `CowValue`, and its
+    /// clone column collapses to `None` because the resource has no clone.
+    #[test]
+    fn a_recursive_declaration_over_a_resource_payload_is_affine() {
+        let decls = recursive_declarations();
+        let context = ClassContext::new(&decls);
+        assert_eq!(
+            Ok((ValueClass::AffineResource, CloneKind::None)),
+            crate::value_class::classify_ty(&named("ResTree", None, vec![]), &context)
+        );
+    }
+
+    /// The counterfactual for the rows above: a declaration whose members do
+    /// not reach it takes no owning edge, so the heap floor is about the cycle
+    /// and not about user declarations in general.
     #[test]
     fn a_non_recursive_declaration_over_the_same_members_still_classes() {
         let decls = recursive_declarations();
@@ -762,38 +796,70 @@ mod tests {
         );
     }
 
-    /// The cut is keyed by declaration name, so it fires for an instantiation
-    /// the walk has not actually entered. Refusing keeps that conservative:
-    /// both instantiations refuse rather than one of them inheriting the
-    /// other's class.
+    /// The cut is keyed by the instantiation, so the instantiation the walk
+    /// actually entered takes the owning edge and keeps its payload class.
     #[test]
-    fn a_name_keyed_cut_refuses_every_instantiation_it_reaches() {
+    fn the_entered_instantiation_takes_the_owning_edge() {
         let decls = recursive_declarations();
         let context = ClassContext::new(&decls);
-        for arg in [ResolvedTy::I64, conn()] {
-            assert_eq!(
-                Err(ClassError::RecursiveDeclaration {
-                    name: "Pair".to_string()
-                }),
-                crate::value_class::classify_ty(&named("Pair", None, vec![arg.clone()]), &context),
-                "`Pair<{arg:?}>` must refuse rather than take a cut class"
-            );
-        }
+        assert_eq!(
+            Ok((ValueClass::AffineResource, CloneKind::None)),
+            crate::value_class::classify_ty(&named("Pair", None, vec![conn()]), &context)
+        );
     }
 
-    /// A refused type gets no fact row at all, which is what the table's
-    /// missing-key contract means: a consumer reads no guess.
+    /// A cycle that reaches the declaration at an instantiation the walk did
+    /// not enter has no finite fixpoint to join. Reading the entered
+    /// instantiation's edge there would class `Pair<i64>` as the box's
+    /// `CowValue` while the `Pair<Conn>` it holds owes a destructor, so this
+    /// refuses instead.
     #[test]
-    fn a_refused_recursive_type_publishes_no_fact_row() {
+    fn a_cycle_through_a_second_instantiation_refuses() {
         let decls = recursive_declarations();
         let context = ClassContext::new(&decls);
-        assert!(TypeFacts::of_type(
+        assert_eq!(
+            Err(ClassError::RecursiveInstantiation {
+                name: "Pair".to_string()
+            }),
+            crate::value_class::classify_ty(&named("Pair", None, vec![ResolvedTy::I64]), &context)
+        );
+    }
+
+    /// A classed recursive type publishes a row like any other aggregate: the
+    /// missing-key contract is for types §1.1 refuses, and a legal `indirect`
+    /// enum is not one of them.
+    #[test]
+    fn a_classed_recursive_type_publishes_its_row() {
+        let decls = recursive_declarations();
+        let context = ClassContext::new(&decls);
+        let facts = TypeFacts::of_type(
             &named("Tree", None, vec![]),
             &context,
             SendFact::Known(true),
             false,
-            false
+            false,
         )
-        .is_err());
+        .expect("an indirect enum publishes a row");
+        assert_eq!(ValueClass::CowValue, facts.class);
+        assert_eq!(CloneKind::FieldWise, facts.clone);
+    }
+
+    /// What §1.2 owes for a class, as this module's tests read it.
+    #[derive(Debug, PartialEq, Eq)]
+    enum OwnershipObligation {
+        None,
+        Owned,
+    }
+
+    /// §1.2's kind table, restated locally so the assertion above is about the
+    /// obligation and not about a spelling.
+    fn obligation_of(class: ValueClass) -> OwnershipObligation {
+        match class {
+            ValueClass::BitCopy | ValueClass::View => OwnershipObligation::None,
+            ValueClass::CowValue
+            | ValueClass::PersistentShare
+            | ValueClass::AffineResource
+            | ValueClass::Linear => OwnershipObligation::Owned,
+        }
     }
 }

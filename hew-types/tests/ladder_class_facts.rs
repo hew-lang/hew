@@ -268,30 +268,48 @@ fn the_published_table_carries_a_row_for_every_component_type() {
     }
 }
 
-/// §1.1 has no default class, so a declaration the aggregate rule cannot
-/// decide gets no row at all. An `indirect` enum is that case today: the
-/// recursion is legal only because the payload is heap-boxed, and the
-/// declaration facts carry the members rather than the box. Publishing the
-/// join's bottom for it would say `BitCopy` — no owner under §1.2, and a
-/// `copy_value` of the box pointer under §1.3.
+/// §1.1's indirect-enum row, on a real program: the recursive occurrence is an
+/// owning edge, so the declaration keeps its payload class and clones
+/// field-wise. The payload here is a scalar and the class is still `CowValue`,
+/// because the recursion is legal only behind a heap box.
 #[test]
-fn an_indirect_enum_publishes_no_row_rather_than_a_bit_copy_one() {
-    let output = facts_of("class_indirect_enum_refused.hew");
-    let recursive = output
-        .type_facts
-        .keys()
-        .find(|key| matches!(&key.0, ResolvedTy::Named { name, .. } if name.ends_with("Tree")));
-    assert!(
-        recursive.is_none(),
-        "a heap-boxed recursive enum must publish no class row, got {recursive:?}"
+fn an_indirect_enum_publishes_its_payload_class_over_an_owning_edge() {
+    let output = facts_of("class_indirect_enum_owning_edge.hew");
+    let facts = row_matching(
+        &output,
+        "the recursive enum `Tree`",
+        |ty| matches!(ty, ResolvedTy::Named { name, .. } if name.ends_with("Tree")),
+    );
+    assert_eq!(
+        (ValueClass::CowValue, CloneKind::FieldWise),
+        (facts.class, facts.clone)
     );
 }
 
-/// The counterfactual in the same program: a non-recursive enum still has a
-/// row, so the missing row above is about the cycle and not about user enums.
+/// The negative control for the row above, stated as the class a
+/// bottom-element cut published: §1.2 gives `BitCopy` no owner, §1.3 lets
+/// `copy_value` duplicate it at `clone == Bits`, and §2.1 bit-copies it across
+/// an actor heap, so a heap-boxed payload must never carry it.
 #[test]
-fn a_non_recursive_enum_in_the_same_program_still_publishes_a_row() {
-    let output = facts_of("class_indirect_enum_refused.hew");
+fn an_indirect_enum_is_never_published_bit_copyable() {
+    let output = facts_of("class_indirect_enum_owning_edge.hew");
+    let facts = row_matching(
+        &output,
+        "the recursive enum `Tree`",
+        |ty| matches!(ty, ResolvedTy::Named { name, .. } if name.ends_with("Tree")),
+    );
+    assert_ne!(
+        (ValueClass::BitCopy, CloneKind::Bits),
+        (facts.class, facts.clone)
+    );
+}
+
+/// The counterfactual in the same program: a non-recursive enum over the same
+/// scalar payloads is bit-copyable, so the owning edge above is about the cycle
+/// and not about user enums.
+#[test]
+fn a_non_recursive_enum_in_the_same_program_stays_bit_copyable() {
+    let output = facts_of("class_indirect_enum_owning_edge.hew");
     let facts = row_matching(
         &output,
         "the non-recursive enum `Colour`",

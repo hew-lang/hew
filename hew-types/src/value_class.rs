@@ -197,10 +197,11 @@ pub enum ClassError {
     /// An `#[opaque]` handle declaration with no ownership marker: the
     /// Aggregate rule cannot see through it and there is no default.
     OpaqueWithoutMarker { name: String },
-    /// The declaration reaches itself through its own members. §1.1's
-    /// indirect-enum row boxes that payload on the heap, and the box is not
-    /// visible from [`DeclaredType`], so the aggregate walk has no term for it.
-    RecursiveDeclaration { name: String },
+    /// The declaration reaches itself through its own members at a *different*
+    /// instantiation (`type L<T> { n: L<Vec<T>> }`). Every instantiation on the
+    /// cycle is a distinct type, so the walk has no finite fixpoint to join and
+    /// there is no default class: this refuses.
+    RecursiveInstantiation { name: String },
 }
 
 impl std::fmt::Display for ClassError {
@@ -221,9 +222,9 @@ impl std::fmt::Display for ClassError {
                 f,
                 "opaque handle `{name}` carries no ownership marker and has no visible fields"
             ),
-            Self::RecursiveDeclaration { name } => write!(
+            Self::RecursiveInstantiation { name } => write!(
                 f,
-                "`{name}` reaches itself through its own members and its heap box is not a visible field"
+                "`{name}` reaches itself at a different instantiation, so its member walk has no finite fixpoint"
             ),
         }
     }
@@ -301,7 +302,7 @@ fn aggregate_facts(members: &[(ValueClass, CloneKind)]) -> (ValueClass, CloneKin
 fn classify_all(
     tys: &[ResolvedTy],
     decls: &ClassContext<'_>,
-    in_progress: &mut Vec<String>,
+    in_progress: &mut Vec<(String, Vec<ResolvedTy>)>,
 ) -> Result<Vec<(ValueClass, CloneKind)>, ClassError> {
     tys.iter()
         .map(|ty| classify(ty, decls, in_progress))
@@ -369,7 +370,7 @@ fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]) -> Resolv
 fn classify(
     ty: &ResolvedTy,
     decls: &ClassContext<'_>,
-    in_progress: &mut Vec<String>,
+    in_progress: &mut Vec<(String, Vec<ResolvedTy>)>,
 ) -> Result<(ValueClass, CloneKind), ClassError> {
     let bits = (ValueClass::BitCopy, CloneKind::Bits);
     let view = (ValueClass::View, CloneKind::Bits);
@@ -558,34 +559,49 @@ fn classify_declaration(
     name: &str,
     args: &[ResolvedTy],
     decls: &ClassContext<'_>,
-    in_progress: &mut Vec<String>,
+    in_progress: &mut Vec<(String, Vec<ResolvedTy>)>,
 ) -> Result<(ValueClass, CloneKind), ClassError> {
     let declared = decls
         .declaration(name)
         .ok_or_else(|| ClassError::UnknownDeclaration {
             name: name.to_string(),
         })?;
-    // MARKED SHORTCUT — a recursive occurrence refuses rather than classing.
-    // WHY: an `indirect` enum (`type List { Cons(i64, List) }`) is a legal
-    // declaration whose member walk does not terminate, and the recursion is
-    // only legal because the payload sits behind a heap box. `DeclaredType`
-    // carries the members, not the box, so the aggregate join has no term for
-    // the allocation: cutting the cycle at the join's bottom would publish
-    // `(BitCopy, Bits)` for a boxed payload, which §1.2 maps to no ownership
-    // obligation and §1.3 lets a `copy_value` duplicate — two owners of one
-    // allocation. There is no default class here, so this refuses.
-    // WHEN: §1.1's indirect-enum row lands with its own boxed-payload clone
-    // kind (P2).
-    // WHAT: `DeclaredType` carries `is_indirect` (`HirTypeDecl.is_indirect`),
-    // the box contributes the heap floor the way `collection_facts` does, and
-    // the walk iterates the join to a fixpoint over the payload instead of
-    // refusing.
-    if in_progress.iter().any(|entry| entry == name) {
-        return Err(ClassError::RecursiveDeclaration {
+    // §1.1's indirect-enum row: a recursive occurrence is an **owning edge**,
+    // not a base case. The recursion is legal only because the payload sits
+    // behind a heap box, so the occurrence contributes the same heap floor a
+    // collection's buffer does — `CowValue` with a `FieldWise` clone. The
+    // aggregate join then keeps the declaration's payload class: a `BitCopy`
+    // payload gives `(CowValue, FieldWise)`, a payload holding an
+    // `AffineResource` gives `AffineResource`. It is never `BitCopy`, which is
+    // what a bottom-element cut published and which §1.2 maps to no ownership
+    // obligation, §1.3 lets `copy_value` duplicate and §2.1 bit-copies across
+    // an actor heap.
+    //
+    // The cut key is the instantiation, not the name: a cycle that reaches the
+    // declaration at a *different* instantiation has no finite fixpoint, and
+    // that case refuses rather than under-approximating a `Pair<Conn>` reached
+    // from `Pair<i64>` as the box's own `CowValue`.
+    //
+    // MARKED SHORTCUT — the owning edge is the collection heap floor rather
+    // than the box's own retain path.
+    // WHY: `DeclaredType` carries the members, not the box, so the walk has no
+    // term for the allocation itself and borrows `collection_facts`' floor.
+    // The floor is sound for §1.2 (the class is `Owned` either way) and only
+    // approximates the clone column for a box whose payload is shareable.
+    // WHEN: `DeclaredType` carries `is_indirect` (`HirTypeDecl.is_indirect`)
+    // and the box's own class row lands (P2, §5.3).
+    // WHAT: the recursive occurrence reads the box's row instead of the
+    // collection floor.
+    let instance = (name.to_string(), args.to_vec());
+    if in_progress.contains(&instance) {
+        return Ok((ValueClass::CowValue, CloneKind::FieldWise));
+    }
+    if in_progress.iter().any(|(entry, _)| entry == name) {
+        return Err(ClassError::RecursiveInstantiation {
             name: name.to_string(),
         });
     }
-    in_progress.push(name.to_string());
+    in_progress.push(instance);
     let members: Vec<ResolvedTy> = declared
         .members
         .iter()

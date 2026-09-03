@@ -11,9 +11,9 @@
 # host_class with the measured median.
 # check: fails when the measured median exceeds 2x that row's median_ms.
 # A host_class with no row yet cannot be compared against itself, so
-# `check` records one and passes, printing that it did — CI records on
-# `main` pushes and checks on PRs, so a new runner class is compared from
-# its second run on (V060-FD-1).
+# `check` records one and passes, printing that it did; the recorded row
+# is only durable once someone commits it, so a new runner class is
+# compared from the first run after that (V060-FD-1).
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"

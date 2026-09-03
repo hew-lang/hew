@@ -15,8 +15,8 @@
 # (day-two.12, day-two.20) happen to pass there today because they never
 # reach the registry either (no hew.toml, cascading from day-two.8) --
 # `make test-journeys JOURNEY=day-two` on such a machine reports those
-# two as stale rows even though nothing regressed; this is a known
-# environment difference, not a bug in the ratchet.
+# two as stale rows even though nothing regressed. Tracked as #3297:
+# the gate should be green in its default configuration either way.
 #
 # day-one: hew new/--actor/--lib do not exist yet (V060-FD-5), so every
 # step downstream of scaffolding a package fails too.

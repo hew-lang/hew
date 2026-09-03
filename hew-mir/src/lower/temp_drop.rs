@@ -7476,6 +7476,8 @@ fn collect_nested_fresh_bytes_temp_drops(
                 t,
                 def,
                 blocks,
+                suspend_kinds,
+                locals,
                 &pred_count,
                 &binding_local_ids,
                 &instr_writers,
@@ -7677,6 +7679,8 @@ fn nested_fresh_bytes_temp_drop(
     t: u32,
     def: NestedDefSite,
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
     pred_count: &HashMap<u32, usize>,
     binding_local_ids: &HashSet<u32>,
     instr_writers: &HashMap<u32, Vec<(u32, usize)>>,
@@ -7735,11 +7739,15 @@ fn nested_fresh_bytes_temp_drop(
                 // `b[a..b].len()` shape — `hew_bytes_slice` then `hew_vec_len`
                 // in one block.
                 NestedDefSite::Instr { block, idx } => block == ub && idx < *ui,
-                // Terminator def `Call(next = U)`: a single-predecessor `U` is
-                // reached only from the def block, so the def ran before the use.
-                NestedDefSite::Term { block } => {
-                    call_terminator_next(&block_by_id(blocks, block)?.terminator) == Some(ub)
-                        && pred_count.get(&ub).copied().unwrap_or(0) == 1
+                // Terminator def `Call(next = …)`: walk the single-predecessor,
+                // single-successor chain from the producer to the use rather
+                // than demanding the use sit in the producer's immediate
+                // continuation. Two temps in one expression put a whole call
+                // block between the first producer and the use — `f(mk(), mk())`
+                // and `mk() is mk()` — and the single-hop test dropped only the
+                // nearer one, leaking the other (#3134).
+                NestedDefSite::Term { .. } => {
+                    fresh_bytes_owner_reaches_site(blocks, suspend_kinds, locals, t, ub, *ui)
                 }
             };
             // Drop immediately after the borrowing use (straight-line in `ub`),
@@ -7772,12 +7780,17 @@ fn nested_fresh_bytes_temp_drop(
             let def_dominates = match def {
                 // Instruction def in the use's own block precedes the terminator.
                 NestedDefSite::Instr { block, .. } => block == ub,
-                // Terminator def `Call(next = U)`: a single-predecessor `U` is
-                // reached only from the def block, so the def ran.
-                NestedDefSite::Term { block } => {
-                    call_terminator_next(&block_by_id(blocks, block)?.terminator) == Some(ub)
-                        && pred_count.get(&ub).copied().unwrap_or(0) == 1
-                }
+                // Terminator def: the same single-predecessor chain walk as the
+                // instruction-use arm, measured at the end of the use block so
+                // every instruction in it is inside the proof.
+                NestedDefSite::Term { .. } => fresh_bytes_owner_reaches_site(
+                    blocks,
+                    suspend_kinds,
+                    locals,
+                    t,
+                    ub,
+                    block_by_id(blocks, ub)?.instructions.len(),
+                ),
             };
             def_dominates.then_some((*next, 0, drop_place, drop_ty))
         }
@@ -7827,6 +7840,16 @@ fn bytes_temp_instr_use_is_borrow_only(instr: &Instr, t: u32) -> bool {
         // here, immediately after the decode. `Packet.decode(mk())` /
         // `Packet.decode(p.encode())` leaked the operand before this admission.
         Instr::WireCodec { operand, .. } => place_refs_local(*operand, t),
+        // `a is b` BORROWS both operands: codegen's `identity_word` loads field
+        // 0 of each `BytesTriple` and compares the two buffer addresses,
+        // releasing nothing. So a fresh `bytes` temp read only as an `is`
+        // operand keeps its single drop obligation and is released once, right
+        // after the compare. `mk() is mk()` leaked both buffers before this
+        // admission (#3134); a named `let b = mk(); b is b` never did, because
+        // the binding-scoped prover already covers it.
+        Instr::IdentityCompare { lhs, rhs, .. } => {
+            place_refs_local(*lhs, t) || place_refs_local(*rhs, t)
+        }
         _ => false,
     }
 }

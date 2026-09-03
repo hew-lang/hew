@@ -1496,7 +1496,7 @@ fn run_inprocess_compiled(
         &bin_path,
         &eval_compile_options(project_dir, backend),
     )
-    .map_err(|()| CompiledEvalError::DiagnosticsRendered)?;
+    .map_err(|_channel| CompiledEvalError::DiagnosticsRendered)?;
 
     match crate::process::run_binary_with_timeout(&bin_path, timeout) {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
@@ -1605,7 +1605,7 @@ fn run_wasm_eval_compiled(
         &module_path,
         &eval_compile_options(project_dir, backend),
     )
-    .map_err(|()| CompiledEvalError::DiagnosticsRendered)?;
+    .map_err(|_channel| CompiledEvalError::DiagnosticsRendered)?;
 
     match crate::wasi_runner::run_module_captured(&module_path, timeout) {
         Ok(crate::wasi_runner::WasiCapturedOutcome::Success { stdout }) => Ok(stdout),

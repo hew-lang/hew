@@ -148,10 +148,28 @@ fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_
     }
 }
 
-pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
+/// Render every frontend diagnostic and return the worst channel among them
+/// (`None` when `diagnostics` is empty). Parse and type errors are always
+/// User; a free-form `Message` diagnostic is always User (see
+/// [`crate::diagnostic_json::message_diagnostic`]); an HIR diagnostic's
+/// channel is `kind.channel()`. Computed once here — callers propagate the
+/// returned channel rather than re-deriving it from the diagnostics list.
+pub(crate) fn render_frontend_diagnostics(
+    diagnostics: &[FrontendDiagnostic],
+) -> Option<hew_types::error::DiagChannel> {
+    use hew_types::error::DiagChannel;
+    let worst = diagnostics
+        .iter()
+        .map(|diagnostic| match &diagnostic.kind {
+            FrontendDiagnosticKind::Hir(error) => error.kind.channel(),
+            FrontendDiagnosticKind::Message(_)
+            | FrontendDiagnosticKind::Parse(_)
+            | FrontendDiagnosticKind::Type(_) => DiagChannel::User,
+        })
+        .max();
     if crate::diagnostic_json::json_output_active() {
         push_frontend_diagnostics_json(diagnostics);
-        return;
+        return worst;
     }
     for diagnostic in diagnostics {
         match &diagnostic.kind {
@@ -204,6 +222,7 @@ pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
             }
         }
     }
+    worst
 }
 
 /// Append every frontend diagnostic to the JSON sink, reusing the per-kind
@@ -219,9 +238,11 @@ fn push_frontend_diagnostics_json(diagnostics: &[FrontendDiagnostic]) {
         let source = diagnostic.source.as_deref();
         let filename = diagnostic.filename.as_deref();
         let json = match &diagnostic.kind {
-            FrontendDiagnosticKind::Message(diagnostic) => {
-                coded_message_diagnostic(&diagnostic.code, &diagnostic.message)
-            }
+            FrontendDiagnosticKind::Message(diagnostic) => coded_message_diagnostic(
+                &diagnostic.code,
+                &diagnostic.message,
+                hew_types::error::DiagChannel::User,
+            ),
             FrontendDiagnosticKind::Parse(error) => match (source, filename) {
                 (Some(source), Some(filename)) => from_parse_error(source, filename, error),
                 _ => message_diagnostic(&error.message),

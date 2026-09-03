@@ -3187,8 +3187,9 @@ if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/free_fn_scope_spawn_in_
     echo "expected free-fn-scope-spawn-in-default fixture to fail" >&2
     exit 1
 fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-grep -qF "cannot spawn \`worker\` from \`main\`" "${reject_output}"
+grep -qF 'compiler limitation:' "${reject_output}"
+grep -q 'E_LIMIT_MAIN_CONTEXT' "${reject_output}"
+grep -qF "spawning \`worker\` needs an execution context" "${reject_output}"
 grep -qF 'ctx-bearing execution context' "${reject_output}"
 grep -qF 'W4.010-followup-caller-ctx-routing' "${reject_output}"
 

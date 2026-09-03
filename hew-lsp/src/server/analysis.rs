@@ -1421,9 +1421,7 @@ fn build_hir_lsp_diagnostics(
             Diagnostic {
                 range,
                 severity: Some(DiagnosticSeverity::ERROR),
-                code: Some(NumberOrString::String(hir_diagnostic_kind_string(
-                    &diagnostic.kind,
-                ))),
+                code: Some(NumberOrString::String(diagnostic.kind.kind_string())),
                 source: Some("hew-hir".to_string()),
                 message,
                 related_information,
@@ -1442,7 +1440,7 @@ fn hir_diagnostic_message(kind: &HirDiagnosticKind, note: &str) -> String {
             construct,
             owning_pass,
         } => format!("not yet implemented: {construct} (planned: {owning_pass})"),
-        _ => hir_diagnostic_kind_string(kind),
+        _ => kind.kind_string(),
     };
 
     if note.is_empty() {
@@ -1454,15 +1452,9 @@ fn hir_diagnostic_message(kind: &HirDiagnosticKind, note: &str) -> String {
 
 fn hir_diagnostic_data(kind: &HirDiagnosticKind) -> serde_json::Value {
     serde_json::json!({
-        "kind": hir_diagnostic_kind_string(kind),
+        "kind": kind.kind_string(),
         "source": "hir",
     })
-}
-
-fn hir_diagnostic_kind_string(kind: &HirDiagnosticKind) -> String {
-    let debug = format!("{kind:?}");
-    let end = debug.find([' ', '{', '(']).unwrap_or(debug.len());
-    debug[..end].to_string()
 }
 
 fn zero_range() -> tower_lsp_server::lsp_types::Range {

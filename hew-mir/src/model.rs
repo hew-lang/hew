@@ -9,6 +9,7 @@ use std::{
 };
 
 use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
+use hew_types::error::DiagChannel;
 use hew_types::{
     BuiltinType, NumericWidth, RcIntrinsicOp, ResolvedTy, TryConversionKind, WireCodecDirection,
     WireLayoutTable,
@@ -8285,6 +8286,16 @@ pub enum MirDiagnosticKind {
     /// When the full env-materialization protocol for Duplex captures is
     /// implemented, remove this guard AND the checker gate in `check_call`.
     ClosureCapturesDuplexHandle { name: String, site: SiteId },
+    /// D9: a `fork`/spawn reached MIR inside a function whose call-conv
+    /// carries no execution context (`main`, or any other plain
+    /// `Default`-callconv function). Every function may suspend in the
+    /// target design; today only an actor handler, a closure invoked in a
+    /// ctx-aware position, or a task-entry adapter carries one. `spawned`
+    /// names the callee symbol for a named-callee spawn, or the literal
+    /// `fork block` for an inline fork-block spawn. Limitation channel,
+    /// `E_LIMIT_MAIN_CONTEXT`: the program is legal Hew, this release's
+    /// runtime substrate has no execution context for `main`.
+    MainContextRequired { spawned: String },
 }
 
 impl MirDiagnosticKind {
@@ -8311,6 +8322,88 @@ impl MirDiagnosticKind {
             | Self::ObligationOverReleased { function, .. } => Some(function),
             _ => None,
         }
+    }
+
+    /// Which of the three diagnostic channels this kind reports on.
+    ///
+    /// Reuses [`Self::internal_compiler_error_function`] as the sole
+    /// authority for "compiler defect" rather than re-deriving the same
+    /// three-variant set: `Some(_)` means Internal. `NotYetImplemented`,
+    /// `DropPlanUndetermined`, and `OwnedHandleAggregateExtractionUnsupported`
+    /// are refusals, not defects — the elaborator proved nothing wrong, it
+    /// declined to emit a partial/unsafe lowering — so they are Limitation.
+    /// `MainContextRequired` (D9) is Limitation for the same reason: legal
+    /// Hew this release's runtime substrate cannot yet run. Every other kind
+    /// is the program's own ownership/move/init/actor-argument error: User.
+    #[must_use]
+    pub fn channel(&self) -> DiagChannel {
+        if self.internal_compiler_error_function().is_some() {
+            return DiagChannel::Internal;
+        }
+        match self {
+            Self::NotYetImplemented { .. }
+            | Self::DropPlanUndetermined { .. }
+            | Self::OwnedHandleAggregateExtractionUnsupported { .. }
+            | Self::MainContextRequired { .. } => DiagChannel::Limitation,
+            _ => DiagChannel::User,
+        }
+    }
+}
+
+#[cfg(test)]
+mod diag_channel_tests {
+    use super::*;
+
+    /// The three kinds `internal_compiler_error_function` recognises — an
+    /// obligation-balance or lowering-invariant compiler defect — must report
+    /// Internal, never User or Limitation.
+    #[test]
+    fn ice_kinds_are_internal_channel() {
+        let lowering_invariant = MirDiagnosticKind::LoweringInvariant {
+            function: "f".to_string(),
+            rule: "obligation-balance-unverified".to_string(),
+            block: None,
+            detail: "detail".to_string(),
+        };
+        let under_released = MirDiagnosticKind::ObligationUnderReleased {
+            function: "f".to_string(),
+            blocks: vec![0],
+            site: SiteId(0),
+            name: "x".to_string(),
+            local_ty: "i64".to_string(),
+            reason: "reason".to_string(),
+        };
+        let over_released = MirDiagnosticKind::ObligationOverReleased {
+            function: "f".to_string(),
+            blocks: vec![0],
+            site: SiteId(0),
+            name: "x".to_string(),
+            reason: "reason".to_string(),
+        };
+        assert_eq!(lowering_invariant.channel(), DiagChannel::Internal);
+        assert_eq!(under_released.channel(), DiagChannel::Internal);
+        assert_eq!(over_released.channel(), DiagChannel::Internal);
+    }
+
+    /// A refusal — the elaborator declined to emit a partial/unsupported
+    /// lowering, proving nothing wrong — is Limitation, not Internal or User.
+    #[test]
+    fn not_yet_implemented_is_limitation_channel() {
+        let kind = MirDiagnosticKind::NotYetImplemented {
+            construct: "some gap".to_string(),
+            site: SiteId(0),
+        };
+        assert_eq!(kind.channel(), DiagChannel::Limitation);
+    }
+
+    /// D9: `main` has no execution context in this release — legal Hew this
+    /// runtime substrate cannot run yet, so Limitation.
+    #[test]
+    fn main_context_required_is_limitation_channel() {
+        let kind = MirDiagnosticKind::MainContextRequired {
+            spawned: "println_str".to_string(),
+        };
+        assert_eq!(kind.channel(), DiagChannel::Limitation);
     }
 }
 

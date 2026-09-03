@@ -2126,6 +2126,9 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         MirDiagnosticKind::ClosureCapturesDuplexHandle { name, site } => {
             format!("ClosureCapturesDuplexHandle {name} site={site:?}")
         }
+        MirDiagnosticKind::MainContextRequired { spawned } => {
+            format!("MainContextRequired {spawned}")
+        }
     }
 }
 

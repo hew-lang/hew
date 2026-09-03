@@ -403,8 +403,11 @@ fn root_hir_diagnostic_rendered_with_source_context() {
     );
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    // `NotYetImplemented` is a Limitation-channel HIR kind (V060-DIAG-1): the
+    // rendered line carries the channel prefix ahead of the diagnostic's own
+    // code, `main.hew:3:15: error: compiler limitation: E_NOT_YET_IMPLEMENTED`.
     assert!(
-        stderr.contains("main.hew:3:15: error: E_NOT_YET_IMPLEMENTED"),
+        stderr.contains("main.hew:3:15: error: compiler limitation: E_NOT_YET_IMPLEMENTED"),
         "root HIR diagnostic must include file:line:col; got:\n{stderr}"
     );
     assert!(
@@ -443,8 +446,11 @@ fn imported_hir_diagnostic_rendered_with_imported_source_context() {
     );
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    // `NotYetImplemented` is a Limitation-channel HIR kind (V060-DIAG-1): the
+    // rendered line carries the channel prefix ahead of the diagnostic's own
+    // code, `dep.hew:3:15: error: compiler limitation: E_NOT_YET_IMPLEMENTED`.
     assert!(
-        stderr.contains("dep.hew:3:15: error: E_NOT_YET_IMPLEMENTED"),
+        stderr.contains("dep.hew:3:15: error: compiler limitation: E_NOT_YET_IMPLEMENTED"),
         "imported HIR diagnostic must name dep.hew; got:\n{stderr}"
     );
     assert!(

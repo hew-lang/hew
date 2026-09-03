@@ -77,17 +77,6 @@ pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'stat
     }
 }
 
-/// Stable, user-facing string identifier for an HIR diagnostic kind.
-///
-/// Returns the variant name (e.g. `NotYetImplemented`, `UnresolvedSymbol`)
-/// without any of the Rust `{:?}` struct payload. Used as the `code` field in
-/// JSON diagnostics and matches the LSP's `hir_diagnostic_kind_string`.
-pub(crate) fn hir_diagnostic_kind_string(kind: &hew_hir::HirDiagnosticKind) -> String {
-    let debug = format!("{kind:?}");
-    let end = debug.find([' ', '{', '(']).unwrap_or(debug.len());
-    debug[..end].to_string()
-}
-
 /// Build the user-facing message for an HIR diagnostic.
 ///
 /// For a `NotYetImplemented` gap, the message frames the gap as a current
@@ -147,6 +136,12 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { .. } => {
             "E_REMOTE_PAYLOAD_UNSUPPORTED"
         }
+        // D9: every function may suspend in the target design; today only an
+        // actor handler, a ctx-aware closure invocation, or a task-entry
+        // adapter carries an execution context. `main` (and any other plain
+        // function) cannot yet spawn — a limitation of this release's
+        // runtime substrate, not the user's program.
+        hew_mir::MirDiagnosticKind::MainContextRequired { .. } => "E_LIMIT_MAIN_CONTEXT",
         hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { .. } => "E_INVALID_SPAWN_ARGUMENT",
         hew_mir::MirDiagnosticKind::MissingActorSpawnArgument { .. } => "E_MISSING_SPAWN_ARGUMENT",
         hew_mir::MirDiagnosticKind::UnknownType { .. }
@@ -201,12 +196,45 @@ pub(crate) fn codegen_diagnostic_prefix(error: &hew_codegen_rs::CodegenError) ->
     }
 }
 
+/// Which diagnostic channel a codegen-front failure reports on.
+///
+/// `hew-codegen-rs/src` is fenced (D342): the classification lives here in
+/// `hew-cli`, beside [`codegen_diagnostic_prefix`], rather than as a method
+/// on `CodegenError` itself. `LlvmVerify`/`FailClosed`/`FailClosedAt` are the
+/// compiler disagreeing with the LLVM module it built (Internal).
+/// `Unsupported`/`UnsupportedAt`/`WasmUnsupportedSubstrate` are legal Hew
+/// this backend does not lower yet (Limitation). `Link`/`Io`/`TargetSetup`/
+/// `Llvm` are the build environment (a missing linker, a full disk, an
+/// unresolvable target triple) — nobody's channel but the user's, since
+/// there is no fourth channel for "the environment is wrong".
+#[must_use]
+pub(crate) fn codegen_channel(
+    error: &hew_codegen_rs::CodegenError,
+) -> hew_types::error::DiagChannel {
+    use hew_types::error::DiagChannel;
+    match error {
+        hew_codegen_rs::CodegenError::LlvmVerify(_)
+        | hew_codegen_rs::CodegenError::FailClosed(_)
+        | hew_codegen_rs::CodegenError::FailClosedAt { .. } => DiagChannel::Internal,
+        hew_codegen_rs::CodegenError::Unsupported(_)
+        | hew_codegen_rs::CodegenError::UnsupportedAt { .. }
+        | hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. } => DiagChannel::Limitation,
+        hew_codegen_rs::CodegenError::Link(_)
+        | hew_codegen_rs::CodegenError::Io(_)
+        | hew_codegen_rs::CodegenError::TargetSetup { .. }
+        | hew_codegen_rs::CodegenError::Llvm(_) => DiagChannel::User,
+    }
+}
+
 pub(crate) fn render_codegen_front_diagnostic(
     error: &hew_codegen_rs::CodegenError,
     source: Option<(&str, &str)>,
 ) {
     let prefix = codegen_diagnostic_prefix(error);
-    let msg = format!("{prefix}: codegen-front validation failed: {error}");
+    let msg = format!(
+        "{}{prefix}: codegen-front validation failed: {error}",
+        codegen_channel(error).prefix()
+    );
     // FAIL-CLOSED RENDER RULE: only render a `^^^` caret when ALL conditions hold:
     //   1. The error carries a source byte-range (FailClosedAt / UnsupportedAt).
     //   2. The caller supplied source text + filename (the root compilation unit).
@@ -253,6 +281,7 @@ pub(crate) fn render_codegen_emit_error(
     error: &hew_codegen_rs::CodegenError,
     source_path: Option<&std::path::Path>,
 ) {
+    let prefix = codegen_channel(error).prefix();
     if let Some((span_start, span_end)) = error.span() {
         if let Some(path) = source_path {
             if let Ok(text) = std::fs::read_to_string(path) {
@@ -261,13 +290,20 @@ pub(crate) fn render_codegen_emit_error(
                 if start < text.len() {
                     let filename = path.to_str().unwrap_or("<unknown>");
                     let span = start..end.min(text.len());
-                    render_diagnostic(&text, filename, &span, &format!("{error}"), &[], &[]);
+                    render_diagnostic(
+                        &text,
+                        filename,
+                        &span,
+                        &format!("{prefix}{error}"),
+                        &[],
+                        &[],
+                    );
                     return;
                 }
             }
         }
     }
-    emit_plain_diagnostic_line(&format!("E_NOT_YET_IMPLEMENTED: {error}"));
+    emit_plain_diagnostic_line(&format!("{prefix}E_NOT_YET_IMPLEMENTED: {error}"));
 }
 
 // ANSI colour helpers
@@ -644,6 +680,7 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::ClosureCapturesDuplexHandle { .. } => {
             "ClosureCapturesDuplexHandle"
         }
+        hew_mir::MirDiagnosticKind::MainContextRequired { .. } => "MainContextRequired",
     }
 }
 
@@ -715,7 +752,11 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. }
         | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. }
         | hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing { .. }
-        | hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid { .. } => None,
+        | hew_mir::MirDiagnosticKind::MailboxOverflowCoalesceKeyFieldInvalid { .. }
+        // D9: `MainContextRequired` carries no `SiteId` (see the variant's
+        // doc comment) — the raise site never had a site-anchored caret and
+        // this keeps that shape rather than inventing one.
+        | hew_mir::MirDiagnosticKind::MainContextRequired { .. } => None,
     }
 }
 
@@ -811,6 +852,11 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
              block {block}, so it refuses to emit a partial one (this is a \
              current Hew limitation, not your code): {reason}"
         ),
+        hew_mir::MirDiagnosticKind::MainContextRequired { spawned } => format!(
+            "spawning `{spawned}` needs an execution context and `main` has none \
+             in this release; run it inside an actor, or use `join {{ .. }}` for \
+             fan-out from `main`"
+        ),
         hew_mir::MirDiagnosticKind::ObligationUnderReleased {
             function,
             name,
@@ -825,7 +871,7 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
                 format!("owned value `{name}` of type `{local_ty}`")
             };
             format!(
-                "internal compiler error: the drop plan the compiler built for \
+                "the drop plan the compiler built for \
                  `{function}` never releases {typed_name} on {} of its exit \
                  path(s) (leak): {reason}",
                 blocks.len(),
@@ -839,7 +885,7 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             ..
         } => {
             format!(
-                "internal compiler error: the drop plan the compiler built for \
+                "the drop plan the compiler built for \
                  `{function}` releases owned value `{name}` more than once on \
                  {} of its exit path(s) (double-free): {reason}",
                 blocks.len(),
@@ -852,7 +898,7 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             ..
         } => {
             format!(
-                "internal compiler error: the ownership lowering of `{function}` \
+                "the ownership lowering of `{function}` \
                  violates its `{rule}` invariant ({detail})"
             )
         }
@@ -1138,7 +1184,8 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         | hew_mir::MirDiagnosticKind::CallableKeyCollision { .. }
         | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ActorProtocolDescriptorMissing { .. }
-        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => {}
+        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. }
+        | hew_mir::MirDiagnosticKind::MainContextRequired { .. } => {}
         hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
             handle_ty, ..
         } => {
@@ -1204,7 +1251,11 @@ fn render_mir_diagnostic_without_source(
     diagnostic: &hew_mir::MirDiagnostic,
     site: Option<&hew_hir::HirSiteSource>,
 ) {
-    emit_plain_diagnostic_line(&format!("error: {}", mir_diagnostic_message(diagnostic)));
+    let prefix = diagnostic.kind.channel().prefix();
+    emit_plain_diagnostic_line(&format!(
+        "error: {prefix}{}",
+        mir_diagnostic_message(diagnostic)
+    ));
     for note in mir_context_notes(diagnostic) {
         emit_plain_diagnostic_line(&format!("  = note: {note}"));
     }
@@ -1222,16 +1273,28 @@ fn render_mir_diagnostic_without_source(
 /// Routes through the JSON sink when `--format=json` is active so MIR
 /// diagnostics participate in machine-readable output identically to frontend
 /// diagnostics. The user-facing message is always the `mir_diagnostic_message`
-/// rendering — never the raw `MirDiagnostic` `{:?}` payload.
+/// rendering — never the raw `MirDiagnostic` `{:?}` payload. The channel
+/// prefix (`compiler limitation:` / `internal compiler error:`, empty for
+/// User) is applied only in text mode, ahead of the message's own `E_*`
+/// code — `mir_diagnostic_message` itself stays byte-identical so the JSON
+/// `message` field (which strips only the `E_*: ` lead-in) never picks up
+/// the channel prefix as part of the diagnostic's own code.
+///
+/// Returns the worst channel among the rendered diagnostics (`None` when
+/// `diagnostics` is empty), computed once here rather than re-derived by
+/// the caller.
 pub(crate) fn render_mir_diagnostics(
     root_source: &str,
     root_filename: &str,
     module_source_map: &ModuleSourceMap,
     site_spans: &HashMap<hew_hir::SiteId, hew_hir::HirSiteSource>,
     diagnostics: &[hew_mir::MirDiagnostic],
-) {
+) -> Option<hew_types::error::DiagChannel> {
     let json = crate::diagnostic_json::json_output_active();
+    let mut worst: Option<hew_types::error::DiagChannel> = None;
     for diagnostic in diagnostics {
+        let channel = diagnostic.kind.channel();
+        worst = Some(worst.map_or(channel, |w| w.max(channel)));
         let primary_site = mir_primary_site(&diagnostic.kind)
             .and_then(|site| site_spans.get(&site).map(|source| (site, source)));
         let Some((_, site)) = primary_site else {
@@ -1266,12 +1329,13 @@ pub(crate) fn render_mir_diagnostics(
                 source,
                 filename,
                 &site.span,
-                &mir_diagnostic_message(diagnostic),
+                &format!("{}{}", channel.prefix(), mir_diagnostic_message(diagnostic)),
                 &secondary_spans,
                 &suggestions,
             );
         }
     }
+    worst
 }
 
 /// Push a MIR diagnostic into the JSON sink, stripping the `E_*` prefix from
@@ -1301,6 +1365,7 @@ fn push_mir_json_diagnostic(
         message,
         secondary_spans,
         &mir_context_notes(diagnostic),
+        diagnostic.kind.channel(),
     ));
 }
 
@@ -1438,10 +1503,14 @@ pub(crate) fn render_hir_diagnostic(
         return;
     }
 
-    let message = hir_diagnostic_message(diagnostic);
-    let kind_note = format!("HIR kind: {}", hir_diagnostic_kind_string(&diagnostic.kind));
+    let channel = diagnostic.kind.channel();
+    let message = format!("{}{}", channel.prefix(), hir_diagnostic_message(diagnostic));
+    let kind_note = format!("HIR kind: {}", diagnostic.kind.kind_string());
+    let mut suggestions = vec![kind_note];
+    if channel == hew_types::error::DiagChannel::Internal {
+        push_lowering_invariant_notes(&mut suggestions, None);
+    }
     if let (Some(source), Some(filename)) = (source, filename) {
-        let suggestions = [kind_note];
         render_diagnostic_with_raw_notes(
             source,
             filename,
@@ -1454,7 +1523,9 @@ pub(crate) fn render_hir_diagnostic(
     }
 
     emit_plain_diagnostic_line(&format!("error: {message}"));
-    emit_plain_diagnostic_line(&format!("  = note: {kind_note}"));
+    for note in &suggestions {
+        emit_plain_diagnostic_line(&format!("  = note: {note}"));
+    }
     emit_plain_diagnostic_line(&format!(
         "  = note: {}",
         hir_source_context_unavailable_note(diagnostic)
@@ -1612,6 +1683,10 @@ mod tests {
         };
 
         assert_eq!(mir_diagnostic_prefix(&diagnostic.kind), "E_MIR_ICE");
+        assert_eq!(
+            diagnostic.kind.channel(),
+            hew_types::error::DiagChannel::Internal
+        );
         let message = mir_diagnostic_message(&diagnostic);
         let notes = mir_context_notes(&diagnostic);
         let rendered = std::iter::once(message.as_str())
@@ -1619,10 +1694,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(
-            message.starts_with("E_MIR_ICE: internal compiler error"),
-            "{message}"
-        );
+        // The `internal compiler error:` prose is supplied once, by the
+        // channel prefix at the render call site — never duplicated into the
+        // message body itself.
+        assert!(message.starts_with("E_MIR_ICE: "), "{message}");
+        assert!(!message.contains("internal compiler error"), "{message}");
         assert!(rendered.contains("`same_projection`"), "{rendered}");
         assert!(rendered.contains("`ownership-generation`"), "{rendered}");
         assert!(rendered.contains("b4294967210#2"), "{rendered}");
@@ -1657,6 +1733,10 @@ mod tests {
         };
 
         assert_eq!(mir_diagnostic_prefix(&diagnostic.kind), "E_MIR_ICE");
+        assert_eq!(
+            diagnostic.kind.channel(),
+            hew_types::error::DiagChannel::Internal
+        );
         let message = mir_diagnostic_message(&diagnostic);
         let notes = mir_context_notes(&diagnostic);
         let rendered = std::iter::once(message.as_str())
@@ -1664,10 +1744,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(
-            message.starts_with("E_MIR_ICE: internal compiler error"),
-            "{message}"
-        );
+        // The `internal compiler error:` prose is supplied once, by the
+        // channel prefix at the render call site — never duplicated into the
+        // message body itself.
+        assert!(message.starts_with("E_MIR_ICE: "), "{message}");
+        assert!(!message.contains("internal compiler error"), "{message}");
         assert!(
             message.contains("3 of its exit path(s)"),
             "the exit count travels with the one diagnostic: {message}"
@@ -1735,6 +1816,47 @@ mod tests {
         assert_eq!(diagnostic.kind.internal_compiler_error_function(), None);
         let message = mir_diagnostic_message(&diagnostic);
         assert!(message.contains("not your code"), "{message}");
+    }
+
+    /// `DiagChannel::Internal` exits 4 and its rendered text carries the
+    /// bug-report note exactly once — the channel prefix and the per-kind
+    /// message body must not both supply `internal compiler error:`.
+    #[test]
+    fn internal_channel_exit_code_and_prefix() {
+        assert_eq!(hew_types::error::DiagChannel::Internal.exit_code(), 4);
+        assert_eq!(
+            hew_types::error::DiagChannel::Internal.prefix(),
+            "internal compiler error: "
+        );
+
+        let diagnostic = hew_mir::MirDiagnostic {
+            kind: hew_mir::MirDiagnosticKind::LoweringInvariant {
+                function: "f".to_owned(),
+                rule: "ownership-place".to_owned(),
+                block: Some(1),
+                detail: "detail".to_owned(),
+            },
+            note: "a carried ownership fact disagrees with the re-derived one".to_owned(),
+        };
+        assert_eq!(
+            diagnostic.kind.channel(),
+            hew_types::error::DiagChannel::Internal
+        );
+
+        start_diagnostic_capture();
+        render_mir_diagnostic_without_source(&diagnostic, None);
+        let rendered = finish_diagnostic_capture();
+
+        assert_eq!(
+            rendered.matches("internal compiler error:").count(),
+            1,
+            "the channel prefix and the message body must not both render \
+             `internal compiler error:`: {rendered}"
+        );
+        assert!(
+            rendered.contains("please report it"),
+            "an Internal diagnostic must carry the bug-report note: {rendered}"
+        );
     }
 
     fn sample_type_error() -> hew_types::TypeError {
@@ -1903,12 +2025,9 @@ mod tests {
             hir_diagnostic_prefix(&constructor.kind),
             "E_ENUM_VARIANT_CONSTRUCTOR"
         );
+        assert_eq!(tuple.kind.kind_string(), "TuplePatternArityMismatch");
         assert_eq!(
-            hir_diagnostic_kind_string(&tuple.kind),
-            "TuplePatternArityMismatch"
-        );
-        assert_eq!(
-            hir_diagnostic_kind_string(&constructor.kind),
+            constructor.kind.kind_string(),
             "EnumVariantConstructorArityMismatch"
         );
         assert_eq!(

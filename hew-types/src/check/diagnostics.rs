@@ -119,12 +119,27 @@ impl Checker {
                 is_pub,
             ));
         }
+        // A root module with no `fn main` cannot link as a binary, so it is
+        // a library unit: every `pub fn` in it is public API for another
+        // crate/module to call, not dead code from this compilation unit's
+        // point of view. Reuses the same root lookup the BFS above tests
+        // `main` with (`root_owned_fn_leaf`), so "library" and "has no root
+        // main" stay one fact instead of two derivations of it.
+        let has_root_main = self
+            .fn_def_spans
+            .keys()
+            .any(|fn_name| self.root_owned_fn_leaf(fn_name) == Some("main"));
+        let library_unit = !self.repl_fragment && !has_root_main;
+
         // Route through the lint registry so `dead_code` is configurable
         // (`-A/-W/-D`) and suppressible (`// hew:allow(dead_code)`). The
         // collect-then-emit split releases the `&self.fn_def_spans` borrow
         // before the `&mut self` emit calls. Default level is `Warn`, so the
         // warning still appears exactly as before unless reconfigured.
         for (def_span, fn_name, stored_module, is_pub) in findings {
+            if is_pub && library_unit {
+                continue;
+            }
             // An unreferenced `pub fn` is dead only from THIS compilation
             // unit's point of view — it is public API another crate/module
             // may call. `_`-prefixing it would rename the public surface

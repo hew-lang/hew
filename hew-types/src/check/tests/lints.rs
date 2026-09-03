@@ -2651,6 +2651,57 @@ fn dead_code_private_fn_still_suggests_underscore() {
 }
 
 #[test]
+fn dead_code_library_unit_exempts_pub_fn() {
+    // #3273: a compilation unit whose root module declares no `fn main`
+    // cannot link as a binary, so it is a library unit — its `pub fn`s
+    // are public API, not dead code from this unit's point of view.
+    // Only the private `b` should still be reported.
+    let source = "pub fn a() -> i32 { 1 } fn b() -> i32 { 2 }";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert_eq!(
+        count_dead_code(&output.warnings),
+        1,
+        "expected exactly one dead_code warning (for `b`), got: {:?}",
+        output.warnings
+    );
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("`b`")),
+        "expected the dead_code warning to name `b`: {:?}",
+        output.warnings
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("`a`")),
+        "a library unit's pub fn must not be reported dead_code: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn dead_code_binary_unit_still_reports_pub_fn() {
+    // Negative control for `dead_code_library_unit_exempts_pub_fn`: the same
+    // two functions plus a root `fn main` make this a binary unit, so both
+    // the pub and private unused functions are still reported.
+    let source = "pub fn a() -> i32 { 1 } fn b() -> i32 { 2 } fn main() {}";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert_eq!(
+        count_dead_code(&output.warnings),
+        2,
+        "expected two dead_code warnings (`a` and `b`) once `main` makes this a binary unit, got: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
 fn no_warn_dead_code_main() {
     let source = "fn main() { println(1); }";
     let result = hew_parser::parse(source);

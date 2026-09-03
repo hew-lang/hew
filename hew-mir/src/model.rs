@@ -5302,18 +5302,17 @@ pub enum Instr {
     ///
     /// Produced exclusively from `HirExprKind::IdentityCompare`, which the
     /// HIR lowering emits for `Expr::Is` once the checker (D-2) has
-    /// validated that both operands are identity-bearing types (actor refs,
-    /// `Vec`, `HashMap`, `HashSet`, `bytes`, machine instances, user named
-    /// `type` declarations). The result is a boolean (`1` = same identity,
-    /// `0` = distinct identities), stored in `dest`.
+    /// validated that both operands are identity-bearing types: actor refs
+    /// and `Vec`, `HashMap`, `HashSet`, `bytes`. Records, enums (`indirect`
+    /// included) and machines are values and never reach here (#3108,
+    /// #3134). The result is a boolean (`1` = same identity, `0` = distinct
+    /// identities), stored in `dest`.
     ///
-    /// Codegen (D-3): for pointer-shaped LLVM values (`ptr` alloca, i.e.
-    /// `ResolvedTy::Named { name: "Duplex", .. }` and future heap-backed
-    /// types), `ptrtoint` both operands to `i64`, compare with `icmp eq`,
-    /// then `zext` the `i1` result to the dest's stored width. For
-    /// machine-id integers (encoded as stable `i64` identifiers by the
-    /// machine runtime), the `ptrtoint` step is skipped and `icmp eq` is
-    /// applied directly to the loaded integer values.
+    /// Codegen (D-3): each operand contributes an `i64` identity word, and
+    /// the two are compared with `icmp eq` and `zext`ed to the dest's stored
+    /// width. Pointer-shaped slots (`ptr` alloca — actor handles, the
+    /// collections, `Duplex`) `ptrtoint` the loaded handle; a `bytes` slot is
+    /// a `BytesTriple` struct, so the word is field 0, the refcounted buffer.
     ///
     /// LESSONS: `checker-authority` (P0) — codegen reads the operand's
     /// `ResolvedTy` to select between the pointer-path and the integer-path.

@@ -4588,6 +4588,70 @@ fn lower_call_trait_method(
     Ok(())
 }
 
+/// Load the `i64` identity word of an `Instr::IdentityCompare` operand.
+///
+/// `is` asks whether two handles designate the same heap object, so the word
+/// is whatever the operand's representation uses to name that object:
+///
+/// * Pointer-shaped slots (`LocalPid`, `Vec`/`HashMap`/`HashSet`, and the
+///   other opaque runtime handles) hold the handle pointer; `ptrtoint` it.
+/// * `bytes` is a stack-resident `BytesTriple { ptr, offset: u32, len: u32 }`
+///   (see `primitive_to_llvm`), so the whole slot is a struct and the identity
+///   word is field 0, the refcounted buffer. Two `bytes` values that share a
+///   buffer — a slice, or a `clone` that only bumped the refcount — are the
+///   same heap object and compare equal; a copy-on-write mutation allocates
+///   and splits them, which is the same story `Vec` tells. An empty `bytes`
+///   has no buffer at all (`lower_bytes_constructor_call` stores the all-zero
+///   triple), so every empty `bytes` shares the null word and compares equal.
+/// * Integer-shaped slots widen to `i64` so the `icmp` operands are uniform.
+///
+/// Anything else fails closed. That arm is unreachable from user source: the
+/// checker's `is_identity_capable` admits exactly the shapes above, and this
+/// is the backstop that proves it (#3108, #3134).
+fn identity_word<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    side: &str,
+) -> CodegenResult<IntValue<'ctx>> {
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let (slot_ptr, slot_ty) = place_pointer(fn_ctx, place)?;
+
+    if matches!(place_resolved_ty(fn_ctx, place)?, ResolvedTy::Bytes) {
+        let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+        let data_slot = fn_ctx
+            .builder
+            .build_struct_gep(slot_ty, slot_ptr, 0, &format!("is_{side}_data_addr"))
+            .llvm_ctx("is bytes data GEP")?;
+        let data_ptr = fn_ctx
+            .builder
+            .build_load(ptr_ty, data_slot, &format!("is_{side}_data"))
+            .llvm_ctx("is bytes data load")?
+            .into_pointer_value();
+        return fn_ctx
+            .builder
+            .build_ptr_to_int(data_ptr, i64_ty, &format!("is_{side}_int"))
+            .llvm_ctx("is bytes ptrtoint");
+    }
+
+    let value = fn_ctx
+        .builder
+        .build_load(slot_ty, slot_ptr, &format!("is_{side}"))
+        .llvm_ctx("is operand load")?;
+    match value {
+        BasicValueEnum::PointerValue(p) => fn_ctx
+            .builder
+            .build_ptr_to_int(p, i64_ty, &format!("is_{side}_int"))
+            .llvm_ctx("is ptrtoint"),
+        BasicValueEnum::IntValue(v) => fn_ctx
+            .builder
+            .build_int_z_extend_or_bit_cast(v, i64_ty, &format!("is_{side}_i64"))
+            .llvm_ctx("is int cast"),
+        _ => Err(CodegenError::FailClosed(format!(
+            "IdentityCompare {side} must be a pointer or integer value"
+        ))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Per-instruction lowering
 // ---------------------------------------------------------------------------
@@ -14486,22 +14550,16 @@ fn lower_instruction_with_cancel_drops(
             let _ = ctx;
         }
         Instr::IdentityCompare { dest, lhs, rhs } => {
-            // Emit pointer/handle identity comparison for `lhs is rhs`.
+            // Emit handle identity comparison for `lhs is rhs`.
             //
-            // The operands are pointer-shaped allocas (`ptr` LLVM type) —
-            // the checker (D-2) has already validated that only identity-
-            // bearing types reach this instruction. We load the `ptr`
-            // value from each operand's alloca, convert both to `i64` via
-            // `ptrtoint`, compare with `icmp eq` to get an `i1`, then
-            // zero-extend to the dest width (matching the `IntCmp` path).
+            // The checker (D-2, `is_identity_capable`) is the sole authority
+            // for which types reach this instruction; codegen only has to know
+            // where each admitted representation keeps its identity word.
+            // `identity_word` does that per operand and both sides go through
+            // it, so the two halves cannot drift apart.
             //
-            // LESSONS: `checker-authority` (P0) — the type is read from
-            // the operand's LLVM type at codegen time; we do not re-derive
-            // the identity allowance set here.
-            let i64_ty = fn_ctx.ctx.i64_type();
-            let ptr_ty = fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default());
-            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
-            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            // LESSONS: `checker-authority` (P0) — we do not re-derive the
+            // identity allowance set here.
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let dest_int = match dest_ty {
                 BasicTypeEnum::IntType(t) => t,
@@ -14511,53 +14569,8 @@ fn lower_instruction_with_cancel_drops(
                     ));
                 }
             };
-            // Load the pointer/handle value from each alloca.
-            let lhs_val = fn_ctx
-                .builder
-                .build_load(lhs_ty, lhs_ptr, "is_lhs")
-                .llvm_ctx("is lhs load")?;
-            let rhs_val = fn_ctx
-                .builder
-                .build_load(rhs_ty, rhs_ptr, "is_rhs")
-                .llvm_ctx("is rhs load")?;
-            // Convert both operands to i64 integers for comparison.
-            // Pointer operands: `ptrtoint ptr to i64`.
-            // Integer operands (machine-id, already i64): bitcast or no-op.
-            let lhs_int = match lhs_val {
-                inkwell::values::BasicValueEnum::PointerValue(p) => fn_ctx
-                    .builder
-                    .build_ptr_to_int(p, i64_ty, "is_lhs_int")
-                    .llvm_ctx("is lhs ptrtoint")?,
-                inkwell::values::BasicValueEnum::IntValue(v) => {
-                    // Machine-id or other integer-shaped handle: extend/truncate
-                    // to i64 so the icmp operands are uniform width.
-                    fn_ctx
-                        .builder
-                        .build_int_z_extend_or_bit_cast(v, i64_ty, "is_lhs_i64")
-                        .llvm_ctx("is lhs cast")?
-                }
-                _ => {
-                    return Err(CodegenError::FailClosed(
-                        "IdentityCompare lhs must be a pointer or integer value".into(),
-                    ));
-                }
-            };
-            let rhs_int = match rhs_val {
-                inkwell::values::BasicValueEnum::PointerValue(p) => fn_ctx
-                    .builder
-                    .build_ptr_to_int(p, i64_ty, "is_rhs_int")
-                    .llvm_ctx("is rhs ptrtoint")?,
-                inkwell::values::BasicValueEnum::IntValue(v) => fn_ctx
-                    .builder
-                    .build_int_z_extend_or_bit_cast(v, i64_ty, "is_rhs_i64")
-                    .llvm_ctx("is rhs cast")?,
-                _ => {
-                    return Err(CodegenError::FailClosed(
-                        "IdentityCompare rhs must be a pointer or integer value".into(),
-                    ));
-                }
-            };
-            let _ = (ptr_ty, lhs_ty, rhs_ty);
+            let lhs_int = identity_word(fn_ctx, *lhs, "lhs")?;
+            let rhs_int = identity_word(fn_ctx, *rhs, "rhs")?;
             let bit = fn_ctx
                 .builder
                 .build_int_compare(inkwell::IntPredicate::EQ, lhs_int, rhs_int, "is_bit")

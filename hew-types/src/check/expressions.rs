@@ -746,10 +746,11 @@ impl Checker {
 
             // Identity comparison: `lhs is rhs` (slice D-2).
             //
-            // Allowed receivers: machines, actors/actor refs, heap-backed
-            // `Vec`/`HashMap`/`HashSet`/`bytes`, and user `enum` declarations.
+            // Allowed receivers: actors/actor refs and heap-backed
+            // `Vec`/`HashMap`/`HashSet`/`bytes`.
             // Rejected with `E_IS_VALUE_TYPE`: scalars, `String`, `type
-            // Foo { ... }` record declarations, `record` types, tuples,
+            // Foo { ... }` record declarations, `record` types, enum
+            // declarations (`indirect` included), machines, tuples,
             // ranges, fn/closures.
             //
             // Result is always `bool`. Cross-class mismatches (e.g.
@@ -9830,18 +9831,24 @@ impl Checker {
     ///
     /// Returns `true` when `is` is valid on values of this type:
     ///
-    /// * Machines (`TypeDefKind::Machine`).
     /// * Actors and actor handles: `TypeDefKind::Actor` named types and
     ///   `LocalPid<T>`.
     /// * Heap-backed collections: `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`.
     /// * `bytes`.
-    /// * User `enum` declarations (`TypeDefKind::Enum`).
     ///
     /// Returns `false` for value types: scalars, `String`, `type Foo { ... }`
-    /// record declarations (`TypeDefKind::Struct`), `record` types,
+    /// record declarations (`TypeDefKind::Struct`), `record` types, `enum`
+    /// declarations (`TypeDefKind::Enum`), machines (`TypeDefKind::Machine`),
     /// tuples, arrays, slices, ranges, durations, functions, closures, and
     /// trait objects. Caller is responsible for handling `Ty::Var` / `Ty::Error`
     /// before invoking this predicate.
+    ///
+    /// This is the single authority for the `is` allowance set: HIR lowering,
+    /// MIR, and the codegen front all read the answer from here and never
+    /// re-derive it (LESSONS `checker-authority`). The set is exactly the set
+    /// of shapes the codegen front can identity-compare, so the
+    /// `Instr::IdentityCompare` legality check stays an unreachable backstop
+    /// rather than a user-visible diagnostic.
     fn is_identity_capable(&self, ty: &Ty) -> bool {
         match ty {
             // Heap-backed builtin handles.
@@ -9859,25 +9866,27 @@ impl Checker {
                 if builtin.is_some_and(BuiltinType::is_collection) {
                     return true;
                 }
-                // A `type Foo { ... }` record declaration
-                // (`TypeDefKind::Struct`) is not identity-capable: under the
-                // v0.5 value model a record is a copy-on-write value with
-                // structural `==` and no pointer identity
-                // (`docs/v05/ownership.md`), and the codegen front has no
-                // `IdentityCompare` lowering for its representation. The
-                // checker owns that answer, so the codegen-front legality
-                // check stays an unreachable backstop (#3108).
+                // Actor declarations are the only identity-bearing user
+                // `TypeDef`. Everything else a `TypeDef` can name is a value:
                 //
-                // Machines, actors and enums stay in the set: only the record
-                // answer is settled here. `is` on an `enum` or `machine` value
-                // still reaches the codegen-front check today; whether they are
-                // value-class too is a separate language decision, tracked as
-                // follow-up on #3108.
+                // * `type Foo { ... }` records (`TypeDefKind::Struct`) are
+                //   copy-on-write values with structural `==` and no pointer
+                //   identity (`docs/v05/ownership.md`), settled by #3108.
+                // * `enum` declarations are tagged values. An `indirect` enum
+                //   does carry a heap box, but `indirect` is a layout
+                //   annotation (HEW-SPEC-2026 §3.7.4) — admitting it to `is`
+                //   would promote it to a semantic one and make identity
+                //   depend on how a variant happens to be laid out, so every
+                //   enum is rejected uniformly (#3134).
+                // * Machines are tagged state values with payload fields, the
+                //   same value class as an enum.
+                //
+                // None of the three has an `IdentityCompare` representation in
+                // the codegen front, which is the other half of the answer:
+                // the set here is the set codegen can lower, so its legality
+                // check stays an unreachable backstop (#3108, #3134).
                 if let Some(td) = self.type_defs.get(name) {
-                    return matches!(
-                        td.kind,
-                        TypeDefKind::Machine | TypeDefKind::Actor | TypeDefKind::Enum
-                    );
+                    return matches!(td.kind, TypeDefKind::Actor);
                 }
                 false
             }

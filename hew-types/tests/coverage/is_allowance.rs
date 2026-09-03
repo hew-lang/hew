@@ -3,13 +3,17 @@
 //! Covers the checker rule (HEW-SPEC-2026 §operator precedence, entry 10):
 //! `is` is reference identity on heap *handles*, never on values.
 //!
-//! * Allowed: machines, actors/actor refs, `Vec`/`HashMap`/`HashSet`, `bytes`.
+//! * Allowed: actors/actor refs, `Vec`/`HashMap`/`HashSet`, `bytes`.
 //! * Rejected with `E_IS_VALUE_TYPE`: scalars (`i64`, `bool`, `char`, floats),
-//!   `string`, tuples, and user `type Foo { ... }` record declarations.
+//!   `string`, tuples, user `type Foo { ... }` record declarations, `enum`
+//!   declarations (`indirect` included), and machines.
 //!   Records are copy-on-write values under the v0.5 value model
-//!   (`docs/v05/ownership.md` — structural `==`, no pointer identity), so the
-//!   checker is the last word on them; the codegen-front `IdentityCompare`
-//!   legality check is an unreachable backstop, not a user diagnostic (#3108).
+//!   (`docs/v05/ownership.md` — structural `==`, no pointer identity); enums
+//!   and machines are tagged values, and `indirect` is a layout annotation
+//!   (HEW-SPEC-2026 §3.7.4) whose heap box `is` must not expose (#3134). The
+//!   checker is the last word on all of them; the codegen-front
+//!   `IdentityCompare` legality check is an unreachable backstop, not a user
+//!   diagnostic (#3108, #3134).
 //! * Cross-type mismatches collapse into `TypeErrorKind::Mismatch`.
 //! * Move/consumed-self follows the existing use-after-move rule (plan §D-D4).
 //!
@@ -128,6 +132,136 @@ fn bytes_is_bytes_accepted() {
                 let _eq: bool = a is b;
             }
         ",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// REJECTED: enums and machines are values, not handles (#3134)
+// ---------------------------------------------------------------------------
+
+/// A fieldless `enum` value is a bare tag. Before #3134 the checker admitted
+/// `a is b` on it and the program died in the codegen front with a span-less
+/// `E_CODEGEN_FRONT_FAIL_CLOSED`.
+#[test]
+fn enum_is_enum_rejected() {
+    assert_has_e_is_value_type(
+        r"
+            enum Colour {
+                Red;
+                Green;
+            }
+
+            fn main() {
+                let a = Colour.Red;
+                let b = Colour.Green;
+                let _eq: bool = a is b;
+            }
+        ",
+    );
+}
+
+/// A payload enum is still a tagged value — carrying fields does not give it
+/// an address to compare.
+#[test]
+fn payload_enum_is_payload_enum_rejected() {
+    assert_has_e_is_value_type(
+        r"
+            enum Shape {
+                Circle(f64);
+                Square(f64);
+            }
+
+            fn main() {
+                let a = Shape.Circle(1.0);
+                let b = Shape.Square(2.0);
+                let _eq: bool = a is b;
+            }
+        ",
+    );
+}
+
+/// The carve-out that is deliberately absent: an `indirect` enum really does
+/// carry a heap box, so `is` on it used to compile and answer from the box's
+/// address. `indirect` is a layout annotation (HEW-SPEC-2026 §3.7.4) and
+/// admitting it here would promote it to a semantic one, making identity
+/// depend on how a variant happens to be laid out. Every enum is rejected
+/// alike (#3134).
+#[test]
+fn indirect_enum_is_indirect_enum_rejected() {
+    assert_has_e_is_value_type(
+        r"
+            indirect enum Expr {
+                Lit(i64);
+                Neg(Expr);
+            }
+
+            fn main() {
+                let a = Expr.Lit(1);
+                let b = Expr.Lit(2);
+                let _eq: bool = a is b;
+            }
+        ",
+    );
+}
+
+/// A machine value is a tagged state with payload fields — the same value
+/// class as an enum, and the same rejection.
+#[test]
+fn machine_is_machine_rejected() {
+    assert_has_e_is_value_type(
+        r"
+            machine Tank {
+                events {
+                    Fill;
+                }
+
+                state Filling;
+                state Draining;
+
+                on Fill: Filling => Draining {
+                    Tank.Draining
+                }
+
+                default { state }
+            }
+
+            fn main() {
+                let t = Filling;
+                let u = Draining;
+                let _eq: bool = t is u;
+            }
+        ",
+    );
+}
+
+/// The diagnostic names the enum and points at `==`, the same shape the
+/// record answer takes.
+#[test]
+fn enum_rejection_names_the_type_and_suggests_equality() {
+    let output = typecheck_isolated(
+        r"
+            enum Colour {
+                Red;
+                Green;
+            }
+
+            fn main() {
+                let a = Colour.Red;
+                let b = Colour.Green;
+                let _eq: bool = a is b;
+            }
+        ",
+    );
+    let named = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("E_IS_VALUE_TYPE"))
+        .filter(|e| e.message.contains("Colour") && e.message.contains("`==`"))
+        .count();
+    assert!(
+        named > 0,
+        "expected an E_IS_VALUE_TYPE naming `Colour` and `==`, got: {:#?}",
+        output.errors
     );
 }
 
@@ -406,22 +540,20 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
 
 #[test]
 fn is_type_pattern_static_tautology_emits_redundant_is_warning() {
-    // Static-tautology: `holder is Holder` where `holder: Holder` is a
-    // user `enum` declaration. The checker records the type-pattern in
-    // `is_type_patterns`, HIR lowers it to `HirLiteral::Bool(true)`, and
-    // any `else` branch gated on the negation is dead. A `RedundantIs`
-    // warning surfaces this so the user is told before they wonder why
-    // their else-branch never runs.
+    // Static-tautology: `buf is bytes` where `buf: bytes`. The checker
+    // records the type-pattern in `is_type_patterns`, HIR lowers it to
+    // `HirLiteral::Bool(true)`, and any `else` branch gated on the negation
+    // is dead. A `RedundantIs` warning surfaces this so the user is told
+    // before they wonder why their else-branch never runs.
+    //
+    // The receiver is a `bytes` handle because the type-pattern branch runs
+    // the same identity-allowance predicate as the value branch: an enum or
+    // machine receiver is rejected outright (#3134).
     let output = common::typecheck_isolated(
         r"
-            enum Holder {
-                One;
-                Two;
-            }
-
             fn main() {
-                let holder = Holder.One;
-                let _eq: bool = holder is Holder;
+                let buf = bytes.new();
+                let _eq: bool = buf is bytes;
             }
         ",
     );
@@ -440,19 +572,9 @@ fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
     // flag the Mismatch (and not the static-tautology warning).
     let output = common::typecheck_isolated(
         r"
-            enum Holder {
-                One;
-                Two;
-            }
-
-            enum Other {
-                Three;
-                Four;
-            }
-
             fn main() {
-                let holder = Holder.One;
-                let _eq: bool = holder is Other;
+                let v: Vec<i64> = Vec.new();
+                let _eq: bool = v is bytes;
             }
         ",
     );
@@ -492,17 +614,12 @@ fn is_type_pattern_requires_identifier_lhs_emits_invalid_operation() {
     // doesn't fire first.
     let output = common::typecheck_isolated(
         r"
-            enum Holder {
-                One;
-                Two;
-            }
-
-            fn make() -> Holder {
-                Holder.One
+            fn make() -> bytes {
+                bytes.new()
             }
 
             fn main() {
-                let _eq: bool = make() is Holder;
+                let _eq: bool = make() is bytes;
             }
         ",
     );

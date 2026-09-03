@@ -62,24 +62,20 @@ fn walk_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
 
 #[test]
 fn is_type_pattern_lowers_to_bool_true_literal() {
-    // `holder is Holder` where `holder: Holder` is a user `enum` decl —
-    // the checker has recorded the static type-pattern match, so HIR
-    // lowers the comparison to a `Bool(true)` literal. Any `else` branch
-    // gated on the negation is therefore dead at the HIR level.
+    // `buf is bytes` where `buf: bytes` — the checker has recorded the
+    // static type-pattern match, so HIR lowers the comparison to a
+    // `Bool(true)` literal. Any `else` branch gated on the negation is
+    // therefore dead at the HIR level.
     //
-    // The receiver is an enum rather than a `type Foo { ... }` record
-    // because `is` on a record is rejected by the checker (#3108), and a
-    // rejected program records no type-pattern entry to read here.
+    // The receiver is a `bytes` handle because the type-pattern entry is
+    // only recorded for identity-bearing operands: records (#3108) and
+    // enums/machines (#3134) are rejected by the checker, and a rejected
+    // program records no entry to read here.
     let output = lower(
         r"
-        pub enum Holder {
-            One;
-            Two;
-        }
-
         fn main() {
-            let holder = Holder.One;
-            let _eq: bool = holder is Holder;
+            let buf = bytes.new();
+            let _eq: bool = buf is bytes;
         }
         ",
     );
@@ -104,7 +100,7 @@ fn is_type_pattern_lowers_to_bool_true_literal() {
         .any(|e| matches!(&e.kind, HirExprKind::Literal(HirLiteral::Bool(true))));
     assert!(
         bool_true,
-        "type-pattern `is Holder` must lower to HirLiteral::Bool(true); body: {:#?}",
+        "type-pattern `is bytes` must lower to HirLiteral::Bool(true); body: {:#?}",
         main_fn.body,
     );
     let any_identity = collected
@@ -112,7 +108,7 @@ fn is_type_pattern_lowers_to_bool_true_literal() {
         .any(|e| matches!(&e.kind, HirExprKind::IdentityCompare { .. }));
     assert!(
         !any_identity,
-        "type-pattern `is Holder` must NOT lower to HirExprKind::IdentityCompare; body: {:#?}",
+        "type-pattern `is bytes` must NOT lower to HirExprKind::IdentityCompare; body: {:#?}",
         main_fn.body,
     );
 }
@@ -123,14 +119,9 @@ fn is_value_pattern_lowers_to_identity_compare() {
     // runtime `IdentityCompare` form, NOT to a literal.
     let output = lower(
         r"
-        pub enum Holder {
-            One;
-            Two;
-        }
-
         fn main() {
-            let a = Holder.One;
-            let b = Holder.Two;
+            let a = bytes.new();
+            let b = bytes.new();
             let _eq: bool = a is b;
         }
         ",

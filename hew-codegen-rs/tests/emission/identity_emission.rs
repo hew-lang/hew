@@ -4,22 +4,21 @@
 //! file pins the LLVM-IR side: that `lhs is rhs` lowers to an `icmp eq`
 //! instruction in the emitted `.ll` and that the module verifies.
 //!
-//! Operand types used here are integer-shaped (`i64`) because those are
-//! within the current spine subset that reaches the LLVM emitter without
-//! a `D10 violation`.  Pointer-shaped operands (`Duplex`, actor handles,
-//! heap-backed types) exercise the `ptrtoint` path; that requires the
-//! Duplex/actor construction surface to be in the spine subset, which is
-//! not yet wired end-to-end (pending actor-call-lowering cluster).  The
-//! `icmp eq` shape is shared across both integer and pointer paths; this
-//! test pins its presence.
+//! Two operand shapes are covered. Integer-shaped (`i64`) operands are
+//! within the current spine subset and pin the shared `icmp eq` tail.
+//! `bytes` operands pin the struct path: a `bytes` local is a
+//! `BytesTriple { ptr, offset: u32, len: u32 }`, so the identity word is
+//! field 0 rather than the whole slot. Loading the slot whole is what made
+//! `is` on `bytes` fail closed in the codegen front (#3134).
 //!
 //! LESSONS applied:
-//! - `checker-authority` (P0): operand-type dispatch (ptrtoint vs.
-//!   integer cast) is read off the LLVM value kind at codegen time, never
-//!   re-derived from the checker's allowance set.
+//! - `checker-authority` (P0): operand-type dispatch (buffer GEP vs.
+//!   ptrtoint vs. integer cast) is read off the operand's own resolved type
+//!   at codegen time, never re-derived from the checker's allowance set.
 //! - `exhaustive-coverage` (P0): one assertion per code-path shape in the
-//!   `Instr::IdentityCompare` arm (i64-value path exercised here; pointer
-//!   path asserted structurally in `llvm.rs`).
+//!   `Instr::IdentityCompare` arm (i64-value and `bytes` struct paths
+//!   exercised here; the plain pointer path is asserted structurally in
+//!   `llvm.rs`).
 
 use std::path::Path;
 
@@ -100,5 +99,27 @@ fn identity_compare_module_verifies() {
     assert!(
         ll.contains("define"),
         "emitted module must define at least one function; got:\n{ll}"
+    );
+}
+
+#[test]
+fn identity_compare_on_bytes_compares_the_buffer_pointer() {
+    // Regression for #3134: a `bytes` local is a three-field struct, so
+    // loading the whole slot yields a `StructValue` and the arm used to
+    // fail closed with "IdentityCompare lhs must be a pointer or integer
+    // value". `emit_ll` panics on that error, so reaching the assertion at
+    // all is half the test; the `ptrtoint` proves the emitted comparison is
+    // on the buffer pointer rather than on some widened tag.
+    let ll = emit_ll(
+        "fn f() -> i64 { let a = bytes.new(); let b = bytes.new(); let r = a is b; 0 }",
+        "identity_cmp_bytes",
+    );
+    assert!(
+        ll.contains("ptrtoint"),
+        "`a is b` on `bytes` must compare the buffer pointer via `ptrtoint`; got:\n{ll}"
+    );
+    assert!(
+        ll.contains("icmp eq"),
+        "`a is b` on `bytes` must reach the shared `icmp eq` tail; got:\n{ll}"
     );
 }

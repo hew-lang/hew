@@ -279,6 +279,53 @@ fn native_prerequisite_failure_stops_the_build() {
     );
 }
 
+/// The `[native]` prerequisite's toolchain check (`E_NATIVE_TOOLCHAIN`) is
+/// the positive case: this test's own `cargo test` run builds both `libhew.a`
+/// and this fixture's `[native]` crate with the identical rustc, so the check
+/// passes and the package builds and links exactly as it did before the
+/// check existed. The mismatch case is `hew-pkg::native::
+/// build_native_refuses_mismatched_rustc`, which injects a deliberately wrong
+/// `expected` identity directly — this repo's own build never disagrees with
+/// itself, so there is no way to force a real mismatch from an e2e test.
+#[test]
+fn native_prerequisite_with_matching_toolchain_builds_and_links() {
+    require_codegen();
+    let dir = workspace();
+    write_package(
+        dir.path(),
+        "withnativeok",
+        "main.hew",
+        "\n[native]\nlib = \"withnativeok_native\"\ncrate = \"native\"\n",
+    );
+    let native_dir = dir.path().join("native");
+    std::fs::create_dir_all(native_dir.join("src")).expect("create native crate dir");
+    // `[workspace]` with no `members` makes this crate the root of its own
+    // single-package workspace — otherwise cargo would refuse to build it,
+    // since it sits inside the hew repo's own workspace directory tree
+    // without being one of that workspace's listed `members`.
+    std::fs::write(
+        native_dir.join("Cargo.toml"),
+        "[workspace]\n\n\
+         [package]\nname = \"withnativeok_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+         [lib]\ncrate-type = [\"staticlib\"]\n",
+    )
+    .expect("write native Cargo.toml");
+    std::fs::write(native_dir.join("src/lib.rs"), "").expect("write native lib.rs");
+
+    let output = Command::new(hew_binary())
+        .arg("build")
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew build");
+
+    assert!(
+        output.status.success(),
+        "a package whose [native] crate matches the runtime's rustc must build\n{}",
+        describe_output(&output),
+    );
+    assert_prints_greeting(&binary_in(dir.path(), "withnativeok"));
+}
+
 /// Outside any package, the file-less form is a usage error naming the search
 /// origin and the way out.
 #[test]

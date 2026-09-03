@@ -1210,7 +1210,7 @@ impl Checker {
     /// and [`Self::synthesize_identifier`]) own the use-after-move diagnostic.
     /// Reporting here as well would double-diagnose one consuming use.
     fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
-        let Some((root, path)) = Self::expr_place(expr) else {
+        let Some((root, path)) = self.expr_place(expr) else {
             return;
         };
         if !path.is_empty() {
@@ -1249,16 +1249,63 @@ impl Checker {
     /// ownership slot to attach a fact to, so nothing is recorded for them
     /// rather than a guess being recorded; element-of-collection places are the
     /// known remaining hole and belong to the MIR half of this family.
-    pub(super) fn expr_place(expr: &Expr) -> Option<(String, PlacePath)> {
+    pub(super) fn expr_place(&self, expr: &Expr) -> Option<(String, PlacePath)> {
         match expr {
             Expr::Identifier(name) => Some((name.clone(), PlacePath::new())),
             Expr::FieldAccess { object, field } => {
-                let (root, mut path) = Self::expr_place(&object.0)?;
+                // `self.count` in an actor body denotes the state binding
+                // `count`, so the place it names is rooted in that binding —
+                // never in a binding called `self`, which does not exist here.
+                if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
+                    return Some((state_field.to_string(), PlacePath::new()));
+                }
+                let (root, mut path) = self.expr_place(&object.0)?;
                 path.push(field.clone());
                 Some((root, path))
             }
             _ => None,
         }
+    }
+
+    /// The actor state field an `object.field` projection names when `object`
+    /// is the actor receiver `self`, or `None` when it is an ordinary
+    /// projection.
+    ///
+    /// An actor's state fields are bound as ordinary environment bindings for
+    /// the whole body, which is what makes bare `count` work; `self` is the
+    /// receiver that spells the same binding explicitly. Every site that
+    /// matches on the projection's shape routes through here so the two
+    /// spellings share one resolution, one mutability rule, and one lowering
+    /// instead of growing a parallel receiver path.
+    ///
+    /// `self` is a real bound parameter on impl and trait methods, so an
+    /// in-scope `self` binding means the projection is an ordinary field
+    /// access on the receiver value and is left alone. A name that is not a
+    /// declared state field is left alone too, so [`Self::check_field_access`]
+    /// can report it against the actor.
+    pub(super) fn actor_self_state_field<'a>(
+        &self,
+        object: &Expr,
+        field: &'a str,
+    ) -> Option<&'a str> {
+        if !self.is_actor_self_receiver(object) {
+            return None;
+        }
+        self.current_actor_fields
+            .iter()
+            .any(|f| f.name == field)
+            .then_some(field)
+    }
+
+    /// Whether an expression is the actor receiver `self`: the bare name,
+    /// inside an actor body, with no `self` binding in scope to mean something
+    /// else. The projected name may still not be a state field — that case
+    /// belongs to [`Self::check_field_access`], which reports it against the
+    /// actor rather than letting the receiver be synthesised as a value.
+    pub(super) fn is_actor_self_receiver(&self, object: &Expr) -> bool {
+        matches!(object, Expr::Identifier(name) if name == "self")
+            && self.current_actor_type.is_some()
+            && self.env.lookup_ref("self").is_none()
     }
 
     /// Render a place for diagnostics: `h.sock`, or plain `h` for the root.
@@ -2096,7 +2143,9 @@ impl Checker {
             }
             if name == "self" {
                 let message = if self.current_actor_type.is_some() {
-                    "`self` is not used in Hew actor bodies; access actor state with bare field names like `count` (not `self.count`), or use `this` when you need the actor handle".to_string()
+                    "`self` names actor state only through a field, as `self.count` or bare \
+                     `count`; use `this` when you need the actor handle"
+                        .to_string()
                 } else {
                     "`self` is not a valid identifier in Hew; \
                      use a named receiver parameter instead: \
@@ -6709,6 +6758,26 @@ impl Checker {
         field: &str,
         span: &Span,
     ) -> Ty {
+        // `self.count` is the receiver spelling of the actor state binding
+        // `count`. Delegate to the bare-name shell so the read gets the same
+        // type, the same use-after-move reporting, and the same HIR binding
+        // reference the bare spelling gets at this site.
+        if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
+            return self.synthesize_identifier(state_field, span);
+        }
+        if self.is_actor_self_receiver(&object.0) {
+            let similar = crate::error::find_similar(
+                field,
+                self.current_actor_fields.iter().map(|f| f.name.as_str()),
+            );
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedField,
+                span,
+                format!("actor state has no field `{field}`"),
+                similar,
+            );
+            return Ty::Error;
+        }
         if matches!(&object.0, Expr::This) && self.current_actor_type.is_some() {
             if self.current_actor_fields.iter().any(|f| f.name == field) {
                 self.report_error_with_suggestions(
@@ -6716,9 +6785,9 @@ impl Checker {
                     span,
                     format!(
                         "`this` is the actor handle, not actor state; access actor field \
-                         `{field}` as a bare name (`{field}`), not `this.{field}`"
+                         `{field}` as `self.{field}` or bare `{field}`, not `this.{field}`"
                     ),
-                    vec![field.to_string()],
+                    vec![format!("self.{field}"), field.to_string()],
                 );
             } else {
                 self.report_error(
@@ -6966,7 +7035,7 @@ impl Checker {
         // is a use-after-move. Assignment targets are exempt: the outermost
         // target place is written, not read.
         if self.place_write_depth == 0 || self.place_base_depth > 0 {
-            if let Some((root, mut path)) = Self::expr_place(&object.0) {
+            if let Some((root, mut path)) = self.expr_place(&object.0) {
                 path.push(field.to_string());
                 self.report_place_use_after_move(&root, &path, span);
             }

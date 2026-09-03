@@ -553,6 +553,81 @@ mod tests {
         assert!(ops.contains(&"i64.checked_add"));
     }
 
+    /// Bytecode for one actor handler, with every span reference erased.
+    ///
+    /// Two programs that differ only in how they spell a state access carry
+    /// different source text and therefore different span ids; everything the
+    /// VM executes must still match.
+    fn handler_shape_without_spans(source: &str) -> Vec<crate::bytecode::Function> {
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let mut functions = bytecode.functions;
+        for function in &mut functions {
+            function.span = None;
+            for local in &mut function.locals {
+                local.span = None;
+            }
+            for block in &mut function.blocks {
+                block.span = None;
+                for instruction in &mut block.instructions {
+                    instruction.span = None;
+                }
+                block.terminator.span = None;
+            }
+        }
+        functions
+    }
+
+    #[test]
+    fn actor_self_field_emits_the_bare_field_bytecode() {
+        let receiver = r"
+actor Counter {
+    var count: i64;
+    receive fn bump(n: i64) {
+        self.count = self.count + n;
+        self.count += 1;
+    }
+    receive fn total() -> i64 {
+        self.count
+    }
+}
+
+fn main() {
+    let c = spawn Counter(count: 0);
+    c.bump(4);
+}
+";
+        let bare = r"
+actor Counter {
+    var count: i64;
+    receive fn bump(n: i64) {
+        count = count + n;
+        count += 1;
+    }
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+fn main() {
+    let c = spawn Counter(count: 0);
+    c.bump(4);
+}
+";
+        assert_eq!(
+            handler_shape_without_spans(receiver),
+            handler_shape_without_spans(bare),
+            "the receiver spelling must emit the bytecode the bare spelling emits"
+        );
+    }
+
     #[test]
     fn literal_forms_export_constant_opcodes() {
         set_test_hewpath();

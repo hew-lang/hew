@@ -678,6 +678,7 @@ impl<'a> PackageEmitter<'a> {
                 Some(field.ty.1.clone()),
             );
             ctx.bindings.insert(field.name.clone(), local.clone());
+            ctx.actor_state_fields.push(field.name.clone());
             params.push(local.clone());
             state_locals.push(local);
         }
@@ -1231,6 +1232,10 @@ struct FunctionEmitter<'pkg, 'src> {
     /// Set only inside receive-handler emission; drives correct early-return
     /// lowering (see `ReceiveHandlerContext`).
     receive_context: Option<ReceiveHandlerContext>,
+    /// State field names of the actor body being emitted, empty outside one.
+    /// The fields are ordinary mutable locals here, so `self.count` is the
+    /// receiver spelling of the local `count` and is rewritten to it.
+    actor_state_fields: Vec<String>,
 }
 
 impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
@@ -1247,7 +1252,26 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             bindings: HashMap::new(),
             loop_targets: Vec::new(),
             receive_context: None,
+            actor_state_fields: Vec::new(),
         }
+    }
+
+    /// The actor state field an `object.field` projection names when `object`
+    /// is the actor receiver `self`, or `None` when it is an ordinary
+    /// projection. Mirrors the checker predicate of the same name; the
+    /// checker has already rejected `self` where it means nothing, so a bound
+    /// `self` here is an impl receiver and its projections are left alone.
+    fn actor_self_state_field<'a>(&self, object: &Expr, field: &'a str) -> Option<&'a str> {
+        if !matches!(object, Expr::Identifier(name) if name == "self") {
+            return None;
+        }
+        if self.bindings.contains_key("self") {
+            return None;
+        }
+        self.actor_state_fields
+            .iter()
+            .any(|name| name == field)
+            .then_some(field)
     }
 
     fn finish(self) -> Vec<Block> {
@@ -1438,6 +1462,23 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 self.lower_expr(expr)?;
             }
             Stmt::Assign { target, op, value } => {
+                // A state-field write through the receiver is a write to the
+                // state local: rewrite the target once so the whole assignment
+                // path below runs the bare-name shell.
+                let receiver_target;
+                let target = match &target.0 {
+                    Expr::FieldAccess { object, field } => {
+                        match self.actor_self_state_field(&object.0, field) {
+                            Some(state_field) => {
+                                receiver_target =
+                                    (Expr::Identifier(state_field.to_string()), target.1.clone());
+                                &receiver_target
+                            }
+                            None => target,
+                        }
+                    }
+                    _ => target,
+                };
                 if let Expr::Identifier(name) = &target.0 {
                     if let Some(local) = self.bindings.get(name).cloned() {
                         let rhs_local = self.lower_expr(value)?;
@@ -1635,6 +1676,15 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
     )]
     fn lower_expr(&mut self, expr: &Spanned<Expr>) -> Result<String, CompileError> {
         let (kind, span) = expr;
+        // `self.count` in an actor body names the state local `count`. The
+        // span is unchanged, so the checker-recorded type still resolves, and
+        // the receiver spelling reaches the same local the bare spelling does.
+        if let Expr::FieldAccess { object, field } = kind {
+            if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
+                let bare = (Expr::Identifier(state_field.to_string()), span.clone());
+                return self.lower_expr(&bare);
+            }
+        }
         match kind {
             Expr::ContextVariant(context) => {
                 if let Ty::Named { name, .. } = self.ty_for_expr(expr) {

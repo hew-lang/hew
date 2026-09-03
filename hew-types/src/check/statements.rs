@@ -1300,6 +1300,26 @@ impl Checker {
                 }
             }
             Stmt::Assign { target, op, value } => {
+                // `self.count = ...` in an actor body writes the state binding
+                // `count`. Rewrite the target to that bare name once, here, so
+                // the whole assignment rule below — target classification,
+                // mutability, place reinitialisation, RHS checking — runs the
+                // identical path the bare spelling runs, rather than each of
+                // those steps learning about the receiver separately.
+                let receiver_target;
+                let target = match &target.0 {
+                    Expr::FieldAccess { object, field } => {
+                        match self.actor_self_state_field(&object.0, field) {
+                            Some(state_field) => {
+                                receiver_target =
+                                    (Expr::Identifier(state_field.to_string()), target.1.clone());
+                                &receiver_target
+                            }
+                            None => target,
+                        }
+                    }
+                    _ => target,
+                };
                 // Classify the assignment target for the side-table before synthesising
                 // so that the entry is always emitted whenever the target is syntactically
                 // valid, regardless of whether subsequent type-checking finds errors.
@@ -1338,6 +1358,17 @@ impl Checker {
                 // roots that are known immutable so users see the value-type
                 // rule, not just a generic binding error.
                 if let Expr::FieldAccess { object, field } = &target.0 {
+                    // A state-field target was rewritten to its bare name
+                    // above, so a `self.` target still standing here names no
+                    // state field. Its receiver is not a value and must not be
+                    // synthesised as one: `check_field_access` owns that
+                    // diagnostic, and synthesising `self` would stack a second
+                    // error on the same mistake.
+                    if self.is_actor_self_receiver(&object.0) {
+                        self.synthesize(&target.0, &target.1);
+                        self.synthesize(&value.0, &value.1);
+                        return;
+                    }
                     // The object is the base of the target place, not a
                     // whole-value use: writing `h.sock` after `h.other` moved
                     // out is legal.
@@ -1548,7 +1579,7 @@ impl Checker {
                 // Evaluated after the RHS so `sock = take_from(sock)` still
                 // reports the read.
                 if op.is_none() {
-                    if let Some((root, path)) = Checker::expr_place(&target.0) {
+                    if let Some((root, path)) = self.expr_place(&target.0) {
                         self.env.reinit_place(&root, &path);
                     }
                 }

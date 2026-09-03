@@ -1,0 +1,43 @@
+// Accept fixture: one handler body reaching different fields through
+// different spellings. `hits` is written through the receiver, `misses` bare,
+// and the `init` block and the `#[on(start)]` hook mix them too — the two
+// spellings share one binding per field, so mixing them in a body is not a
+// mode the checker has to choose between.
+actor Tally {
+    var hits: i64;
+    var misses: i64;
+
+    init(seed: i64) {
+        self.hits = seed;
+        misses = 0;
+    }
+
+    #[on(start)]
+    fn boot() {
+        self.hits += 1;
+        misses = misses + 1;
+    }
+
+    receive fn record(hit: bool) {
+        if hit {
+            self.hits += 1;
+        } else {
+            misses += 1;
+        }
+    }
+
+    receive fn total() -> i64 {
+        self.hits * 10 + misses
+    }
+}
+
+fn main() -> i64 {
+    let tally = spawn Tally(seed: 1);
+    tally.record(true);
+    tally.record(true);
+    tally.record(false);
+    match await tally.total() {
+        .Ok(v) => v,
+        .Err(_) => 0,
+    }
+}

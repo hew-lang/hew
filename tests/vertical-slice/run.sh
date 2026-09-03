@@ -1459,6 +1459,48 @@ expect_check_fail_contains \
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
 
+# `self.field` names an actor's own state. The receiver spelling and the bare
+# spelling must reach one binding, so the two twins run the same program and
+# their expected outputs are pinned byte-identical here: a divergence in type,
+# mutability, or lowering between them surfaces as a stdout difference.
+run_accept_expect_stdout "actor_self_state_field"
+run_accept_expect_stdout "actor_bare_state_field"
+diff -u "${ROOT}/tests/vertical-slice/accept/actor_bare_state_field.expected" \
+    "${ROOT}/tests/vertical-slice/accept/actor_self_state_field.expected"
+
+# Mixing the two spellings for different fields in one body: `init`, the
+# start hook, and the handlers each reach one field through the receiver and
+# another bare. hits=4, misses=2.
+run_accept_expect_status "actor_self_state_field_mixed" 42
+
+# The receiver admits declared state fields only, and reports the miss against
+# the actor's state rather than synthesising `self` as a value.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains_without \
+    "${ROOT}/tests/vertical-slice/reject/actor_self_unknown_field.hew" \
+    'actor state has no field `counts`' \
+    'not a valid identifier' \
+    "actor_self_unknown_field"
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/actor_self_unknown_field.hew" \
+    1 \
+    "actor_self_unknown_field"
+
+# `self` reaches state only through a field: the bare receiver is not a value.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_self_bare_receiver.hew" \
+    '`self` names actor state only through a field' \
+    "actor_self_bare_receiver"
+
+# The receiver is scoped to actor bodies: outside one, `self` is still an
+# undefined name and the diagnostic still points at a named receiver param.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/self_outside_actor_or_impl.hew" \
+    '`self` is not a valid identifier in Hew' \
+    "self_outside_actor_or_impl"
+
 # Actor field mutability: a `let` state field is writable only inside
 # `init`; a receive-fn write must fail at check time and name the var fix.
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match

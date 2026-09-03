@@ -1,0 +1,14 @@
+// Reject fixture: the actor receiver is scoped to actor bodies. A free
+// function has no receiver, so `self` there is still an undefined name and
+// the diagnostic still points at a named receiver parameter.
+type Point {
+    x: i64,
+}
+
+fn origin_x() -> i64 {
+    self.x
+}
+
+fn main() {
+    println(origin_x());
+}

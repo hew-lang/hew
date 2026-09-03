@@ -1,0 +1,17 @@
+// Reject fixture: the receiver spelling admits declared state fields only.
+// `self.counts` names nothing, so it must fail closed against the actor's
+// state and suggest the field that was meant — never fall through to the
+// bare-`self` diagnostic, and never let the receiver be synthesised as a
+// value on the way to reporting.
+actor Counter {
+    var count: i64;
+
+    receive fn bump() {
+        self.counts = 1;
+    }
+}
+
+fn main() {
+    let counter = spawn Counter(count: 0);
+    counter.bump();
+}

@@ -1,0 +1,18 @@
+// Reject fixture: `self` reaches actor state only through a field. The bare
+// receiver is not a value — it names neither the state as an aggregate nor
+// the actor handle, which is what `this` is for — so binding it must still
+// fail closed.
+actor Counter {
+    var count: i64;
+
+    receive fn bump() {
+        let held = self;
+        count = count + 1;
+        println(held);
+    }
+}
+
+fn main() {
+    let counter = spawn Counter(count: 0);
+    counter.bump();
+}

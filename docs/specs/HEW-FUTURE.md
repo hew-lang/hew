@@ -39,17 +39,20 @@ forms, but the bounded MPSC surface itself is no longer a future item.
 
 ### 1.2 Cancellation tokens
 
-**[Target: v0.6]**
+**[REJECTED]**
 
-Edition 2026 cancellation is **scope-structural only**: a `scope {}`
-block cancels its children when any child fails or when the scope exits. No
-user-visible `CancellationToken` type, no `Token.cancel()`, no
-`#[noncancellable]` attribute as a stabilised surface (it parses today
-but is gated to future-edition status).
+Hew cancellation is **scope-structural only**: a `scope {}` block cancels its
+children when any child fails or when the scope exits. There is no
+user-visible `CancellationToken` type, no `Token.cancel()`, and no
+`#[noncancellable]` attribute — the attribute is deleted from the parser
+rather than left parsing as a mark that marks nothing, and an unknown
+attribute is an error everywhere (`E_UNKNOWN_ATTRIBUTE`).
 
-A first-class token vocabulary lets a parent abort *one* child without
-unwinding the whole scope. Useful for long-running computations the
-caller can preempt mid-flight. Defer until a real need arises.
+A first-class token vocabulary would let a parent abort *one* child without
+unwinding the whole scope. It is refused: it gives cancellation a second
+authority beside the scope, and a token that can be held past its scope is a
+liveness fact the compiler cannot check. A caller who needs to preempt one
+computation gives it its own scope.
 
 ### 1.3 Actor await and read-after-send barrier (former §4.10)
 
@@ -80,10 +83,11 @@ for the shipped arms):
   and a bare `Stream<T>.recv()` is not yet ABI-wired in codegen. Returns
   once stream-handle binding lands.
 - **Task-await arm** (`<id> from await <task>`, binding `T` for
-  `Task<T>`). Deferred because `Task<T>` is not nameable (§4.3) and
-  `fork name = expr;` is parser-only in this build, so there is no
-  bindable first-class task handle to select on. Returns with the
-  `fork`/`Task` substrate.
+  `Task<T>`). Deferred because there is no way to consume a bound task:
+  `fork name = expr;` parses and type-checks, but awaiting the resulting
+  `Task<T>` in a value position is refused at HIR
+  (`AwaitOutOfPosition`), so the binding reaches its scope exit unconsumed
+  and MIR refuses it. Returns with the `fork`/`Task` substrate.
 
 Both forms are rejected at **check** time today (the type checker
 restricts the arm set; codegen is not involved), so re-introducing them
@@ -91,23 +95,30 @@ is purely additive.
 
 ### 1.5 Supervision extras beyond ask / restart / escalation
 
-**[Target: v0.6]**
+**[Hot-swap REJECTED / remainder target: v0.8]**
 
 Edition 2026 ships supervisor strategies (`one_for_one`, `one_for_all`,
 `rest_for_one`), restart classifications (`permanent`, `transient`,
-`temporary`), and restart-budget escalation. Surfaces beyond this —
-hot-swap upgrades, dynamic strategy changes, supervisor introspection
-APIs — are deferred.
+`temporary`), and restart-budget escalation.
+
+**Hot-swap upgrades are refused.** Hew compiles to native code; there is no
+loadable unit to swap and no representation of a running actor's state that
+survives a code change the compiler did not see. The mechanism Hew offers
+instead is the one it already has: restart the supervised subtree under a new
+binary, with the child spec's `restart:` clause deciding what comes back.
+
+Dynamic strategy changes and supervisor introspection APIs remain deferred to
+v0.8 with the rest of the supervision ergonomics work.
 
 ### 1.6 Generators (`Lazy<T>`, `#[prefetch(N)]`)
 
-**[`gen fn`, `async gen fn`, and `receive gen fn` live in v0.5 / remaining forms deferred]**
+**[`gen fn` and `receive gen fn` live / remaining forms deferred]**
 
 `gen fn` functions compile and run, including parameterized forms with scalar
 parameters (e.g. `n: i64`) and fn-typed parameters. The LLVM coroutine
 machinery, `yield`, `.next()`, and `for x in generator()` are all live.
-`async gen fn` returning `AsyncGenerator<Y>` consumed with `for await` is
-also live. `receive gen fn` on actors returning `Stream<Y>` backed by
+A generator whose body suspends carries no signature marker; `for await`
+consumes one. `receive gen fn` on actors returning `Stream<Y>` backed by
 mailbox protocol (cross-actor streaming with natural backpressure) is live
 as well — the `receive_gen_fn_*` vertical-slice fixtures pass.
 
@@ -167,7 +178,7 @@ works.
 
 ### 2.2 Advanced trait surface (dyn, object safety, associated-type bounds, heavy where-clauses)
 
-**[Target: v0.6 / gated on coherence rules]**
+**[Target: v0.7 / gated on coherence rules]**
 
 Edition 2026 ships a deliberately small trait surface:
 
@@ -181,7 +192,9 @@ Out of scope for edition 2026:
   `examples/types_and_traits.hew`). Remaining partial: object-safety
   enforcement, associated-type bounds in `dyn` position, and higher-ranked
   trait bounds.
-- Associated-type bounds in where-clauses (`where T::Item: Display`).
+- Associated-type bounds in where-clauses (`where T.Item: Display`). Writing
+  one today is an error, `E_ASSOC_BOUND_UNSUPPORTED` (HEW-SPEC-2026 §3.8.3),
+  rather than a bound that parses and never resolves a method.
 - Trait coherence (orphan rule) across crates — the current single-crate
   coherence rule stays; multi-crate coherence depends on the package
   system maturing.

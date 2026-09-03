@@ -2300,7 +2300,49 @@ fn main() {
 }
 ```
 
-For a fallible operation with no meaningful success value, return `Result<i64, E>` and `Ok(0)`; match the success arm with `Ok(_)`. (Avoid `Ok(())` / `Result<(), E>`.)
+For a fallible operation with no meaningful success value, `Result<(), E>` and `Ok(())` are the shapes to reach for — that is what `os.set_env` and a `main` that can fail both return. The `Result<i64, E>` with `Ok(0)` form above is a payload nobody reads; it appears here because older stdlib signatures used it, not because it is the shape to copy.
+
+### Errors that compose: `dyn Error`
+
+`?` is exact. The error type of the operand has to be the error type of the enclosing function — there is no `From`, no `#[from]`, and no conversion the compiler inserts on your behalf, so two concrete error enums never flow into one another by accident.
+
+A function that calls into several modules names `dyn Error` as its error type instead:
+
+```hew
+import std.fs;
+
+enum PortError {
+    NotANumber(string);
+}
+
+impl Display for PortError {
+    fn fmt(self) -> string {
+        match self { .NotANumber(s) => f"NotANumber: {s} is not a port number" }
+    }
+}
+
+impl Error for PortError {}
+
+fn parse_port(text: string) -> Result<i64, PortError> {
+    Err(PortError.NotANumber(text))
+}
+
+fn load_port(path: string) -> Result<i64, dyn Error> {
+    let text = fs.read(path)?;        // IoError coerces into dyn Error
+    let port = parse_port(text)?;     // PortError coerces into the same
+    Ok(port)
+}
+```
+
+`Error` is a prelude trait whose supertrait is `Display`, so every std error type prints itself and a `dyn Error` prints through the supertrait: `f"{e}"` works on the erased value. Where you want a concrete error type instead of the trait object, convert explicitly with `.map_err(f)` on a `Result` or `.ok_or(e)` on an `Option`. Crash on the spot with `.unwrap()` or `.expect(msg)`.
+
+`fn main() -> Result<(), E>` needs `E: Error`. On `Err(e)` the runtime writes `error: {e}` to stderr and exits 1.
+
+### Fallible means `Result`
+
+Standard-library functions report failure in the type system. A fallible call returns `Result<T, E>` under its plain name — there is no `try_read` beside `read` — and a lookup that can miss returns `Option<T>`, so `os.env("PORT")` gives you `None` rather than an empty string you have to guess about. Nothing returns a status integer or a sentinel value.
+
+The exception is indexing: `v[i]` and `m[k]` trap when the index or key is absent, because that is a bug in the program rather than a condition to handle. Use `.get()` when a miss is expected.
 
 ## Strings
 
@@ -2614,24 +2656,24 @@ import std.sort;
 fn main() {
     let nums: Vec<i64> = Vec.new();
     nums.push(3); nums.push(1); nums.push(4); nums.push(1); nums.push(5);
-    let sorted   = sort.sort_ints(nums);       // returns new Vec — original unchanged
-    let reversed = sort.reverse_ints(sorted);
+    let sorted   = sort.sort(nums);            // returns new Vec — original unchanged
+    let reversed = sort.reverse(sorted);
     println(sorted[0]);    // 1
     println(reversed[0]);  // 5
 
     let words: Vec<string> = Vec.new();
     words.push("banana"); words.push("apple"); words.push("cherry");
-    let sw = sort.sort_strings(words);
+    let sw = sort.sort(words);
     println(sw[0]);        // apple
 
     let floats: Vec<f64> = Vec.new();
     floats.push(3.14); floats.push(1.41); floats.push(2.72);
-    let sf = sort.sort_floats(floats);
+    let sf = sort.sort(floats);
     println(sf[0]);        // 1.41
 }
 ```
 
-`sort_ints` / `sort_strings` / `sort_floats` return new sorted Vecs (ascending); `reverse_ints` / `reverse_strings` / `reverse_floats` return new reversed Vecs. The original is never modified. Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
+`sort<T: Ord>` returns a new sorted Vec (ascending) and `reverse<T>` returns a new reversed one; the original is never modified. One generic function covers every element type — the `sort_ints` / `sort_strings` / `sort_floats` family it replaces is listed in [the v0.6.0 migration note](migrations/v0.6.0.md). Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
 
 ### std.random — pseudo-random number generation
 
@@ -2643,10 +2685,7 @@ fn main() {
     let n = random.randint(1, 7);      // i64 in [1, 7)  — like a d6 roll
     let g = random.gauss(0.0, 1.0);   // Gaussian sample
 
-    let v: Vec<i64> = Vec.new();
-    v.push(10); v.push(20); v.push(30);
-    random.shuffle(v);                 // in-place Fisher-Yates shuffle
-    println(v[0]);                     // non-deterministic (seeded above)
+    println(f"{r} {n} {g}");
 }
 ```
 
@@ -3685,7 +3724,7 @@ fn main() {
 ```
 
 Use the FREE-FUNCTION surface — `tls.connect(host, port)` (system-root verified),
-`tls.write` / `tls.try_write`, `tls.read`, `tls.close`. Request/response bodies
+`tls.write`, `tls.read`, `tls.close` — each returning a `Result`. Request/response bodies
 are `bytes`: build a payload with the public `string.to_bytes()` surface and decode
 with `bytes.to_string()`. There is also a method form (`stream.read(n)` /
 `stream.write(payload)`, from `trait TlsStreamMethods`) — it type-checks and
@@ -3777,7 +3816,11 @@ test` — no warning, no error, it's simply never found. If a suite's pass
 
 `assert(condition: bool)` panics when `condition` is `false`. `assert_eq(a,
 b)` and `assert_ne(a, b)` panic with a diff of the two values on failure —
-prefer them over `assert(a == b)` for the readable failure message:
+prefer them over `assert(a == b)` for the readable failure message. Both take
+`dyn Display` values, so a value has to be able to print itself to be compared
+this way — the same constraint `std.testing`'s generic `assert_eq<T: Eq +
+Display>` carries. `Option` and `Result` gain `Display` at v0.7.0, and until
+then a test compares one by matching on it:
 
 ```
 ---- wrong_expectation_fails ----

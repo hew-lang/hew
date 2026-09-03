@@ -87,7 +87,7 @@ spec-0009   4166606024   # SNIPPET: bare `worker.send` + `await counter.get()` �
 spec-0010   3633579472   # NYI: bare `scope { ... }` — scope/structured-concurrency not yet lowered
 spec-0011   3107872017   # FRAGMENT: calls `open(path)` with no import — context-dependent snippet
 spec-0012   3219419134   # SNIPPET: bare before/after code — ? operator syntax illustration
-spec-0013   506748282   # SNIPPET: bare `let buf: bytes = bytes::new()` — bytes type illustration
+spec-0013   1440186796   # SNIPPET: bare `let buf: bytes = bytes::new()` — bytes type illustration (re-verified after the `bytes.get -> Option<u8>` correction, D18)
 spec-0014   3221762372   # SNIPPET: bare `let x = 5` / `var y = 0` — binding modes illustration
 spec-0015   1507524389   # SNIPPET: bare `type Point { ... }` + bare `var` — struct mutable field illustration
 spec-0020   3005964102   # SNIPPET: bare `let config = load_config()` — actor capture illustration
@@ -118,9 +118,9 @@ spec-0073   820125999   # SPEC-BUG: enum variants separated by `,` not `;` — i
 spec-0075   4120679691   # SPEC-BUG: malformed struct `impl` syntax — aspirational (re-verified after Vec<T> method-table correction, still fails identically: signature-only `;`-terminated impl bodies, no `{ }`)
 spec-0076   3414934173   # SNIPPET: bare `var`/`let` — HashMap bracket-indexing illustration (re-verified after the dotted-path migration and the corrected index-read result type: `m[k]` yields bare `V`, not `Option<V>`)
 spec-0077   3711765580   # SNIPPET: bare `let`/`var` — machine state illustration
-spec-0078   1861586926   # SNIPPET: bare `let` after machine transitions — illustration
+spec-0078   1632573552   # SNIPPET: bare `let`/`import` — stdlib module tour (re-verified after `testing.assert_true` became the generic `testing.assert`, D22)
 spec-0079   3943447574   # SNIPPET: bare `let m = ...` — machine instantiation illustration
-spec-0080   249349858   # SNIPPET: bare `Option` identifier — option-type illustration
+spec-0080   70193944   # SNIPPET: bare identifier list — prelude illustration (re-verified after the `Error` trait joined the prelude, D21)
 spec-0081   3231394512   # SNIPPET: placeholder `field: Type` on `StateB` — target has a required field so `.StateB` (fine for a unit state) hits E_PATH_KIND_MISMATCH; the fence never supplies a real field value
 spec-0082   3707425012   # SPEC-BUG: interleaved `event` declarations — old machine syntax pre-`events {}`
 spec-0083   813722226   # SNIPPET: bare `on event { ... }` — machine transition illustration
@@ -163,3 +163,5 @@ spec-0132   1635702216   # SNIPPET: bare labeled loop — labeled break/continue
 spec-0133   796057876   # SNIPPET: bare `var` — loop statement result-accumulator illustration
 spec-0134   642644102   # SNIPPET: bare `if let` — Option pattern-match illustration
 spec-0135   1695617851   # SNIPPET: bare `while let` — HashMap pattern-match illustration
+guide-0113   3703526555   # SPEC-BUG: shows D4's `dyn Error` composition and D20's `fs.read -> Result`; `?` into `dyn Error` and `Display` through the supertrait are refused today — tracked in #3258 and #3259
+guide-0132   1835391093   # SPEC-BUG: shows D22's generic `sort.sort` / `sort.reverse`; only the `sort_ints` family exists today — tracked in #3259

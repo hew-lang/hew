@@ -354,7 +354,7 @@ Specifically:
 
 Actors may declare `#[max_heap(N)]` to cap their per-actor arena. If an arena allocation would exceed that cap, the runtime fails closed with the `ExitReason::HeapExceeded` crash variant and the `HEW_TRAP_HEAP_EXCEEDED` trap-kind discriminator. Supervisors receive that heap-exhaustion payload through the same crash-report routing path as other traps, so restart policy, escalation, and `#[on(crash)]` observation all see the cap breach as an unrecoverable actor failure rather than a recoverable `Result`.
 
-> **Error propagation:** `Result<T, E>` and `Option<T>` are first-class. User functions may return either type and use `?` for propagation. The `?` operator is available in any function whose return type is `Result` or `Option` with a compatible error type.
+> **Error propagation:** `Result<T, E>` and `Option<T>` are first-class. User functions may return either type and use `?` for propagation. The `?` operator is available in any function whose return type is `Result` or `Option` with the same error type, or with `dyn Error` (§2.2.1).
 
 ### 2.2.1 Error Propagation
 
@@ -373,6 +373,47 @@ When a `receive fn` message handler returns `Err`, the error is:
 1. Logged to the actor's supervision context
 2. Returned to the caller (if request-response pattern)
 3. May cause trap if unhandled and configured to do so
+
+**`?` is exact (normative).** The error type of the operand must be the error
+type of the enclosing function. Two concrete error enums never convert into one
+another, implicitly or otherwise: there is no `From`-driven `?`, no `#[from]`
+attribute, and no compiler-inserted conversion call. A `?` whose operand error
+type differs from the function's is a type error.
+
+**`dyn Error` is the one composition point.** `Error` is a prelude trait
+declared in `std/builtins.hew`:
+
+```text
+trait Error: Display {}
+```
+
+Every public error enum in `std` and in a `hew::` package implements `Display`
+and `Error`. When the enclosing function's error type is `dyn Error`, `?`
+applies the ordinary `dyn Trait` coercion the language already performs in any
+`dyn Trait` value position — the concrete error is erased into the trait
+object, and nothing else about `?` changes. `dyn Error` is therefore the type a
+function names when it composes errors from several modules, and a concrete
+enum is what it names when it does not.
+
+`Display` resolves through the supertrait on a `dyn Error` value, so
+`f"{e}"` and `println(e)` work on one. Supertrait shapes the checker cannot yet
+resolve through a trait object are refused with `E_DYN_SUPERTRAIT` (User
+channel) rather than silently losing the method.
+
+**Explicit conversion is a call.** A concrete error becomes another error, or
+an absent value becomes an error, through methods the caller writes:
+
+| Call | Meaning |
+| --- | --- |
+| `Result<T, E>.map_err(f)` | `f: fn(E) -> F` applied to the `Err` payload, yielding `Result<T, F>` |
+| `Option<T>.ok_or(e)` | `Some(v)` becomes `Ok(v)`; `None` becomes `Err(e)` |
+| `Result<T, E>.expect(msg)` | the `Ok` payload, or a trap carrying `msg` |
+| `Result<T, E>.unwrap()` | the `Ok` payload, or a trap naming the error |
+
+**`main` returning a `Result`.** `fn main() -> Result<(), E>` requires
+`E: Error`. On `Err(e)` the runtime writes `error: {e}` to stderr using the
+error's `Display` text and exits with `user_code` 1 (§5.8). On `Ok(())` it
+exits 0.
 
 ### 2.2.2 Bind-and-Propagate Sugar (`let r? = expr`)
 
@@ -393,9 +434,10 @@ let r?: T = expr;       ≡  let r: T = expr?;
 - The expression `expr` must evaluate to `Result<T, E>` or `Option<T>`.
   Any other type is a type error (`InvalidOperation`), identical to the
   diagnostic produced by a bare `expr?` on a non-Result/Option expression.
-- The enclosing function must return `Result<_, E>` or `Option<_>` with a
-  compatible error type. If it does not, the checker reports the same
-  "`?` cannot be used in a function returning …`" diagnostic as for bare `?`.
+- The enclosing function must return `Result<_, E>` or `Option<_>` with the
+  same error type, or with `dyn Error` (§2.2.1). If it does not, the checker
+  reports the same "`?` cannot be used in a function returning …`" diagnostic
+  as for bare `?`.
 - The type annotation `T` in `let r?: T = expr` describes the *unwrapped*
   Ok-payload (type of `r` after propagation), not the Result itself — the
   same convention as `let r: T = expr?;`.
@@ -448,7 +490,7 @@ to use `type`.
 
 - Bindings are immutable by default: `let`.
 - Mutable bindings: `var`.
-- Type fields have no mutability qualifier. Field mutation is governed by the binding: a `var`-bound value allows `p.x = …`; a `let`-bound value rejects it.
+- Type fields have no mutability qualifier. Field mutation is governed by the binding: a `var`-bound value allows `p.x = …`; a `let`-bound value rejects it. The same wall covers every place rooted at the binding — `p.x = …`, `v[0] = …`, `m["k"] = …`, and `t.0 = …` — and calling a method declared `var self` (§3.7.1), which is how a value-category type is mutated.
 
 ### 3.3 Sendability / isolation rule
 
@@ -488,7 +530,11 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 > and `fn f(xs: [T])` both type-check and lower as `Vec<T>`, so an `[T; N]`
 > value does not satisfy an `[T]` annotation (``expected `Vec<i64>`, found
 > `[i64; 3]` ``). Prefer the explicit `Vec<T>` spelling for dynamically-sized
-> sequences.
+> sequences. `.len()` reads an array's length through the `Vec<T>` method
+> surface, so it is available on an inferred or `[T]`-annotated binding; a
+> binding annotated `[T; N]` does not resolve methods and is refused
+> (``no method `len` on `[i64; 3]` ``). Removing that asymmetry is a
+> checker fix, not a surface change.
 
 **Frozen derivation:**
 
@@ -514,7 +560,7 @@ let buf: bytes = bytes.new();
 buf.push(0x48);    // push a byte value (i64)
 buf.push(72);      // same as 'H' in ASCII
 let n = buf.len(); // i64
-let b = buf.get(0); // i64 — first byte
+let b = buf.get(0); // Option<u8> — first byte, or None when out of range
 buf.set(1, 0xFF);   // overwrite byte at index 1
 let last = buf.pop(); // i64 — removes and returns last byte
 println(buf.is_empty()); // bool
@@ -528,7 +574,7 @@ println(buf.contains(72)); // bool — linear scan
 | `bytes::new()` | `() -> bytes`      | Create an empty byte buffer     |
 | `.push(b)`     | `(i64) -> ()`      | Append a byte                   |
 | `.pop()`       | `() -> i64`        | Remove and return the last byte |
-| `.get(i)`      | `(i64) -> i64`     | Get the byte at index `i`       |
+| `.get(i)`      | `(i64) -> Option<u8>` | Byte at index `i`; `None` out of range |
 | `.set(i, b)`   | `(i64, i64) -> ()` | Overwrite the byte at index `i` |
 | `.len()`       | `() -> i64`        | Number of bytes                 |
 | `.is_empty()`  | `() -> bool`       | True if len is 0                |
@@ -890,14 +936,14 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 
 | Module             | Example functions                                                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `std.net.http`     | `http.listen`, `http.accept`, `http.path`, `http.method`, `http.body`, `http.header`, `http.respond`, `http.respond_text`, `http.respond_json`, `http.close` |
+| `std.net.http.server` | `http.listen`, `http.accept`, `http.path`, `http.method`, `http.body`, `http.header`, `http.respond`, `http.respond_text`, `http.respond_json`, `http.close` |
 | `std.fs`           | `fs.read`, `fs.write`, `fs.append`, `fs.exists`, `fs.delete`, `fs.size`                                                                                     |
 | `std.io`           | `io.read_line`, `io.write`, `io.write_err`, `io.read_all`                                                                                                   |
 | `std.os`           | `os.args_count`, `os.args`, `os.env`, `os.set_env`, `os.has_env`, `os.cwd`, `os.home_dir`, `os.hostname`, `os.pid`                                          |
-| `std.net`          | `net.listen`, `net.accept`, `net.connect`, `net.try_connect_timeout`, `net.try_parse_endpoint`, `net.read`, `net.try_read`, `net.write`, `net.close`         |
+| `std.net`          | `net.listen`, `net.accept`, `net.connect`, `net.connect_timeout`, `net.parse_endpoint`, `net.read`, `net.write`, `net.close`                                 |
 | `std.text.regex`   | `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`                                                                                                |
 | `std.net.mime`     | `mime.from_path`, `mime.from_ext`, `mime.is_text`                                                                                                           |
-| `std.process`      | `process.run`, `process.try_run`, `process.run_argv`, `process.try_run_argv`, `process.start`, `process.try_start`, `process.try_start_argv`                |
+| `std.process`      | `process.run`, `process.run_argv`, `process.start`, `process.start_argv`                                                                                     |
 
 Predicate functions (`fs.exists`, `path.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`) return `bool`.
 
@@ -1502,6 +1548,13 @@ fn main() {
 }
 ```
 
+**Field reads through an `Rc`.** Reading one field of an `Rc<T>` payload —
+`rc.field` where `T` is a record — is a `copy_value` through a borrow: the
+payload is not moved and the refcount does not change. Until that lowering
+lands, the checker refuses the projection with `E_LIMIT_RC_FIELD`
+(Limitation channel); `.get()` on a `T: Copy` payload is the accepted form in
+the meantime.
+
 Strong `Rc` cycles leak because Hew does not run a tracing collector. Use weak
 back-edges to break cycles. `Rc.new_cyclic`, dereference/borrow access to an Rc
 payload, and cross-actor transfer are not supported in edition 2026.
@@ -1594,7 +1647,7 @@ Semantics:
    single live binding.
 
 Typical example — file I/O with implicit cleanup (illustrative; no `File` type
-exists in stdlib — for file reading use `fs::try_read`):
+exists in stdlib — for file reading use `fs::read`):
 
 <!-- doctest: skip -->
 ```hew
@@ -1897,8 +1950,13 @@ where
 
 **Associated type bounds:**
 
-> See HEW-FUTURE.md §2.2 for `where T::Item: Display`-style associated-
-> type bounds — targeted for v0.6.
+An associated-type bound in a `where` clause — `where T.Item: Bound` — is
+**refused**, with `E_ASSOC_BOUND_UNSUPPORTED` (Limitation channel, target
+v0.7.0). The bound parses and type-checks today but never participates in
+method resolution, so a program that writes one is admitted and then behaves
+as though the bound were absent. A surface that does not act is not a surface:
+until the bound reaches method resolution, writing it is an error rather than
+a promise kept by nothing. See HEW-FUTURE.md §2.2.
 
 #### 3.8.4 Associated Types in Traits
 
@@ -2326,13 +2384,24 @@ Normative in edition 2026:
   `std.time`.
 - Formatting: `std.fmt`.
 - Encoding: `std.encoding.json`, `std.encoding.msgpack`.
-- HTTP: `std.net.http` (server + client at the request/response level).
+- HTTP: `std.net.http.server` and `std.net.http.client`, at the
+  request/response level.
 - Utilities: `std.math`, `std.testing`.
 
 See HEW-FUTURE.md §3 for modules that exist in `std/` today but are not yet
 normative — `std.net.dns`, `std.net.tls`, `std.net.quic`,
 `std.net.websocket`, `std.encoding.xml`/`yaml`/`toml`/`csv`,
 `std.text.regex`, `std.process`, `std.encoding.compress`.
+
+**Nothing is a grab-bag.** There is no `misc` namespace and no module whose
+job is "the rest": a module that cannot be named for what it holds is deleted,
+or its contents move to a module that can. `std.crypto.hash` names the hashing
+module; `std.log` and `std.uuid` sit at the top level. `std.deque` and
+`std.arena` are handle types (§3.4.3) rather than collections, so they stay at
+the top level and never move under a `collections/` path. Modules with no
+consumer are deleted rather than kept for symmetry. Retired spellings are
+recorded in [`docs/migrations/v0.6.0.md`](../migrations/v0.6.0.md) and nowhere
+else.
 
 #### 3.10.2 Core Traits
 
@@ -2353,6 +2422,26 @@ trait Releasable {
 }
 ```
 
+**`Error` (normative).** `Error` is a prelude trait declared in
+`std/builtins.hew` with `Display` as its supertrait and no members of its own:
+
+```text
+trait Error: Display {}
+```
+
+Every public error enum in `std` and in a `hew::` package implements both
+`Display` and `Error`. An error type that cannot print itself is not a
+finished error type: `f"{e}"`, `println(e)`, a log line, and a JSON error body
+all reach the same `Display` text, and `dyn Error` (§2.2.1) is the type that
+composes errors across modules.
+
+**`Display` style for errors (normative).** An error's `Display` text names its
+variant first, then the detail, separated by `": "` — for example
+`Partition: the route to the monitored peer is unavailable or the peer is
+suspect`. A log line or a JSON error body is then searchable by the same name
+the program matches on in a `match`. Prose-only text that omits the variant
+name is not conforming.
+
 #### 3.10.3 Core Types and Error Handling
 
 **Option and Result** are first-class generic enums:
@@ -2370,7 +2459,7 @@ enum Result<T, E> {
 ```
 
 User-authored functions may return `Result<T, E>` or `Option<T>` and use `?`
-for propagation. Any error type `E` may be used with `Result<T, E>`. The recommended pattern is for each module to define its own structured error enum, as demonstrated by the canonical `std::fs::IoError`:
+for propagation. Any error type `E` may be used with `Result<T, E>`. Each module defines its own structured error enum, as demonstrated by the canonical `std::fs::IoError`:
 
 ```hew
 pub enum IoError {
@@ -2379,13 +2468,51 @@ pub enum IoError {
     AlreadyExists(i64);
     Other(i64);
 }
-
-pub fn io_error_from_message(message: string) -> IoError {
-    IoError.Other(0)
-}
 ```
 
-This pattern is used across every `try_*` function in the `std::fs` module and pairs with the `?` operator for ergonomic error propagation. Each stdlib module defines its own error type following this shape; there is no single cross-module error enum. Future stdlib modules (under #1247) will adopt the same per-module structured error approach.
+Each stdlib module defines its own error type following this shape; there is no single cross-module error enum. A function that composes errors from several modules names `dyn Error` as its error type (§2.2.1) rather than declaring a union enum.
+
+**Fallible means `Result` (normative).** A standard-library function reports
+failure in the type system or not at all. Three rules cover the whole surface:
+
+1. **Fallible is `Result<T, E>` with `E: Error`.** The bare name carries the
+   `Result`; there is no `try_`-prefixed twin beside it. A caller that wants a
+   crash on failure writes `unwrap()` or `expect(msg)` at the call site, where
+   the decision is visible.
+2. **Absence is `Option<T>`.** A lookup that can miss returns `None`, never a
+   zero value, an empty string, or a designated "not found" variant of the
+   success type.
+3. **Nothing returns a status integer or a sentinel.** A negative `i64`, a
+   zero-length string standing for "unset", and an error enum variant meaning
+   "no error" are all fail-open shapes: the caller who forgets to test them
+   runs on with wrong data. `AskError` has no `NoError` variant.
+
+The one stated exception is **indexing**. `v[i]`, `m[k]`, and `Vec.set` out of
+bounds trap ("Bracket indexing" below), because a bounds failure is a
+program error rather than a fallible operation. `Vec.get` and `HashMap.get`
+remain the `Option`-returning forms for the case where a miss is expected.
+
+Signatures the rules fix:
+
+| Function | Signature |
+| --- | --- |
+| `os.env(name)` | `-> Option<string>` |
+| `os.args()` | `-> Vec<string>` |
+| `os.set_env(name, value)` | `-> Result<(), EnvError>` |
+| `fs.read(path)` | `-> Result<string, IoError>` |
+| `observe.read(key)` | `-> Option<i64>` |
+| `observe.barrier()` | `-> Result<(), ObserveError>` |
+| `http.Server.accept()` | `-> Result<Request, NetError>` |
+| `Request.respond*(…)` | `-> Result<(), NetError>` |
+| `wire.from_json(text)` | `-> Result<T, wire.DecodeError>` |
+
+**No error is reported by a side channel.** A module does not expose a
+`*_message(e) -> string` function beside its error type — `Display` is the one
+rendering authority (§3.10.2). A module does not expose a `last_error()` poll
+backed by a thread-local slot: an error that is returned cannot be missed,
+while an error that must be fetched can. The `*_message` family is gone at
+edition 2026; the remaining `last_error()` polls and the slots behind them are
+deleted with the FFI ownership table at v0.7.0.
 
 **`string` and Vec** are built-in generic/runtime-backed types with dot-syntax
 methods:
@@ -2525,7 +2652,7 @@ let dq = deque.new();
 println(math.abs(-5));
 println(fmt.to_hex(255));
 println(iter.sum(ints));
-testing.assert_true(true);
+testing.assert(true, "the set starts empty");
 println(io.read_all());
 ```
 
@@ -2543,12 +2670,28 @@ Important current details:
   any `Iterator`, driven by terminal helpers (`fold`, `count`, `collect`,
   `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`); drive a
   `Vec<T>` through it via `.iter()` or `.into_iter()`
-- `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,
-  `sort_floats`, `reverse_ints`, `reverse_strings`, and `reverse_floats`;
-  integer and string sorts copy their input and use iterative merge passes
-  with O(n log n) comparisons, while float sorting retains its total-order
-  runtime implementation
-- `std::testing` is a pure-Hew assertion library layered on top of `panic()`
+- `std::sort` exposes generic helpers — one `sort<T: Ord>` and one
+  `reverse<T>` over `Vec<T>` — rather than a per-element-type family. Both
+  copy their input and leave the original unchanged; integer and string sorts
+  use iterative merge passes with O(n log n) comparisons, and float sorting
+  retains its total-order runtime implementation
+- `std::testing` is a pure-Hew assertion library layered on top of `panic()`.
+  Its whole surface is `assert(cond, msg)`, `assert_eq<T: Eq + Display>`, and
+  `assert_ne<T: Eq + Display>`; the monomorphic per-type assertion family
+  (`assert_true`, `assert_eq_int`, and the rest) is deleted. A generic
+  assertion needs `Display` to report a mismatch, so comparing an `Option` or
+  a `Result` is done by matching on it until `Display` for those two types
+  lands at v0.7.0
+
+**One form per operation (normative).** Where a generic form compiles, the
+monomorphic twins beside it do not exist: `std::vec`, `std::option`,
+`std::result`, `std::sort`, and `std::testing` expose the generic function and
+nothing per element type. A module exposes an operation once — a method or a
+free function, never both — and a `#[resource]` type's release is its `close`
+method, so there is no `Closable` trait and no per-type `free` function
+(`csv.Table.free`, `semver.Version.free`, `json.Value.free` are all deleted;
+scope-exit drop glue and an early `close()` are the two ways a resource ends,
+§3.7.8).
 
 #### 3.10.5 Printing, Formatting, and Strings
 
@@ -2567,6 +2710,15 @@ let nested = f"len: {name.len()}";
 
 F-strings are the sole string interpolation syntax in Hew.
 
+**One string surface (normative).** String operations are methods on `string`.
+The `string_*` builtin family — the `string_*`-prefixed names, `substring`,
+the free `len`, and the four `*_to_string` conversions — is deleted, together
+with the free-function twins in `std::string` that shadowed the same methods
+and the aliases in `std::fmt` that shadowed them again. `s.len()`,
+`s.slice(a, b)`, `s.contains(t)`, and `f"{v}"` are the spellings; there is no
+second name for any of them. A type renders itself through `Display`
+(§3.10.2), never through a per-type `to_string` builtin.
+
 #### 3.10.6 Prelude (Automatically Imported)
 
 The following are automatically available in every Hew module:
@@ -2580,7 +2732,7 @@ string, Vec, Box
 // Traits
 Clone, Copy, Drop
 Send, Frozen
-Debug, Display
+Debug, Display, Error
 Iterator, IntoIterator
 Eq, Ord, Hash
 
@@ -2591,19 +2743,22 @@ panic, assert, debug_assert
 
 #### 3.10.7 Typed Handles
 
-Standard library functions return opaque typed handle objects. Callers
-**must** invoke `close()` explicitly to release the underlying
-resource. Dropping without `close()` is a resource leak; the compiler
-does not synthesise an implicit drop for these types in the current
-implementation.
+Standard library functions return opaque typed handle objects. A handle is
+released by its `close()` method or by scope-exit drop glue, whichever comes
+first: a `#[resource]` handle is closed at scope exit (§3.7.8), and `close()`
+is the way to release one early. A handle that is neither `#[resource]` nor
+closed is a leak, so a new handle type carries the attribute.
+
+Every acquisition and every operation that can fail reports it as a `Result`
+(§3.10.3); there is no `try_`-prefixed twin beside any of these names.
 
 | Type             | Created by                                 | Methods                                                                                                                              |
 | ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `http.Request`, `.close()`                                                                                              |
-| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)`, `.close()` |
-| `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()`                        |
-| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `bytes`, `.try_read()` → `Result<bytes, net.NetError>`, `.read_string()` → `string`, `.try_read_string()` → `Result<string, net.NetError>`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)`, `.write_string(data)`, `.close()` |
-| `process.Child`  | `process.start(cmd)`, `process.try_start(cmd)`, `process.try_start_argv(cmd, argv)` | `.wait()`, `.kill()`                                                                                 |
+| `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `Result<http.Request, NetError>`, `.close()`                                                                       |
+| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
+| `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()` |
+| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `Result<bytes, net.NetError>`, `.read_string()` → `Result<string, net.NetError>`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)` → `Result<(), net.NetError>`, `.write_string(data)` → `Result<(), net.NetError>`, `.close()` |
+| `process.Child`  | `process.start(cmd) -> Result<Child, ProcessError>`, `process.start_argv(cmd, argv) -> Result<Child, ProcessError>` | `.wait()`, `.kill()`                     |
 
 Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and
@@ -2999,10 +3154,14 @@ Task<T>
 > `scope { fork { call(); } }` in suspendable contexts (actor handlers,
 > closures, task entries), where the forked call takes no arguments and the
 > scope joins all children at its closing brace. The name-bound form
-> `fork name = call(...)` described below, argument-bearing forks, awaiting a
-> child's value, sibling cancellation on child failure, and the `?`
-> propagation sugar are specified here but not yet accepted — each refuses
-> with a named diagnostic rather than miscompiling.
+> `fork name = call(...)` described below parses and type-checks; what is
+> missing is the consuming half — awaiting the bound `Task<T>` in a value
+> position is refused at HIR (`AwaitOutOfPosition`), so the task binding
+> reaches its scope exit unconsumed and MIR refuses it
+> (`E_MIR_CHECK`, `MustConsume`). Argument-bearing forks, sibling cancellation
+> on child failure, and the `?` propagation sugar are specified here but not
+> yet accepted. Each of these refuses with a named diagnostic rather than
+> miscompiling.
 
 A `scope` block creates a structured concurrency boundary. All child tasks
 forked within the block must complete before the block returns.
@@ -3042,9 +3201,10 @@ scope {
 
 `fork name = expr` (or bare `fork expr`) is only legal dynamically inside a
 `scope` block. `scope { ... }` opens the structured-concurrency block;
-`fork` is exclusively the child-start verb. Today the accepted child
-form is the block form `fork { call(); }` with a zero-argument callee; the
-name-bound form parses but is rejected pending its type-checking slice.
+`fork` is exclusively the child-start verb. Today the runnable child form is
+the block form `fork { call(); }` with a zero-argument callee; the name-bound
+form is accepted by the checker and blocked further down the pipeline, at the
+`await` that would consume the task (see the callout above).
 Outside a scope-block, a child-form `fork` is a `ForkOutsideScopeBlock`
 error.
 
@@ -3380,13 +3540,13 @@ scope {
 ### 4.7 IO and Effects
 
 All IO operations in Hew are explicit and return `Result` types. Use
-`fs::try_read` (not `fs::open`) for file reading; the stdlib has no `File`
+`fs::read` (not `fs::open`) for file reading; the stdlib has no `File`
 handle type — reads and writes are free functions:
 
 <!-- doctest: skip -->
 ```hew
 fn read_config(path: string) -> Result<Config, string> {
-    let content = fs.try_read(path)?;
+    let content = fs.read(path)?;
     json.parse(content)
 }
 ```
@@ -3745,8 +3905,10 @@ generator environment is an alias; it must be cloned explicitly before being
 yielded or otherwise moved into another owner.
 
 > See HEW-FUTURE.md §1.6 for the remaining deferred generator forms
-> (`Lazy<T>`, `#[prefetch(N)]`). `gen fn`, `gen {}`, `async gen fn`, and
-> `receive gen fn` use the snapshot semantics above.
+> (`Lazy<T>`, `#[prefetch(N)]`). `gen fn`, `gen {}`, and `receive gen fn` use
+> the snapshot semantics above. There is no `async gen fn` form: a generator
+> whose body suspends carries no marker, because suspension is inferred from
+> the body rather than declared on the signature (§12).
 
 ---
 
@@ -3757,7 +3919,10 @@ Hew's supervision is modeled after OTP concepts with first-class language syntax
 - Supervisor owns children; children fail independently.
 - Restart classification: `permanent`, `transient`, `temporary`. ([Erlang.org][2])
 - Supervisor strategy: `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one`.
-- Crash isolation via signal handling: SEGV/BUS/FPE/ILL in an actor is caught by the runtime, the actor is marked as Crashed, and the supervisor is notified for restart.
+- Crash isolation covers traps raised by the program — `panic`, an arithmetic
+  or bounds fault the runtime detects, an exhausted `#[max_heap(N)]` arena.
+  Synchronous hardware faults (SEGV, SIGBUS, SIGFPE, SIGILL) are process-fatal
+  and are NOT converted into a supervised crash (§5.7).
 
 ### 5.1 Supervisor Declaration
 
@@ -3926,6 +4091,12 @@ final = user_code                    if user_code != 0
 failure and carries more information than `1`. A zero never masks a fault. This
 rule applies on EVERY termination path — returning from `main`, and an explicit
 `exit(code)` anywhere — so `exit(0)` cannot report success over a crashed actor.
+
+**`fn main() -> Result<(), E>`** requires `E: Error` (§2.2.1). Returning
+`Ok(())` sets `user_code` to 0. Returning `Err(e)` writes one line to stderr —
+`error: ` followed by the error's `Display` text — and sets `user_code` to 1.
+The error reaches the operator through the same `Display` a log line uses; a
+program that returns `Err` and prints nothing is not conforming.
 
 **Each supervised crash carries a record**, opened at the crash site and settled
 by exactly ONE ruling. A crash is HANDLED only when a recovery took EFFECT — the
@@ -4701,7 +4872,7 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 **Fairness guarantees (3-level preemption hierarchy):**
 
 1. **Message budget (256 msgs/activation):** Coarse scheduler preemption — after processing 256 messages, the actor yields to the scheduler so other actors can run.
-2. **Reduction budget (4000/dispatch):** The compiler inserts `cooperate` safepoints at function entry and loop back-edges. Each operation decrements a reduction counter; when exhausted, the actor yields to the scheduler.
+2. **Reduction budget (4000/dispatch) — v0.7.0.** The intended second level is a reduction counter decremented per operation, with compiler-inserted `cooperate` safepoints at function entry and loop back-edges, so a compute-bound actor yields without an `await`. Edition 2026 ships the message budget and the cooperative yield below; safepoint preemption lands with the coroutine work at v0.7.0.
 3. **Cooperative task yield:** `await` and compiler-inserted `cooperate` safepoints suspend on the `llvm.coro` switched-resume continuation substrate (see §4.3 "Substrate" — internal to `hew-runtime`, not a source-level distinction), parking the current coroutine so the actor's executor can resume the next ready one.
 
 - Round-robin within priority levels
@@ -4718,8 +4889,6 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 **I/O integration:**
 
 - Platform-specific event loops (epoll/kqueue/IOCP)
-- io_uring support on Linux for high-performance I/O
-- Separate thread pools for blocking operations
 - Timer wheels for supervision windows and timeouts
 
 ### 9.1 Actor lifecycle state machine
@@ -4741,7 +4910,7 @@ Runnable ──► Running        scheduler picks actor for execution on a worke
 Running ───► Idle           message budget exhausted or no more messages; yields to scheduler
 Running ───► Suspended      dispatch suspends at a non-final coro.suspend (slice-4 executor)
 Suspended ─► Running        readiness source fires; executor resumes the continuation
-Running ───► Stopping       supervisor requests shutdown, or actor calls stop()
+Running ───► Stopping       supervisor requests shutdown, or actor calls self.stop()
 Running ───► Sleeping       actor parks in the cooperative WASM sleep queue
 Sleeping ──► Runnable       sleep timer fires
 Stopping ──► Stopped        cleanup finished, normal exit

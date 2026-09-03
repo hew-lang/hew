@@ -1,0 +1,108 @@
+// Accept + run (ASan/LSan oracle): a recv frame is released exactly once on
+// every path out of the consuming body.
+//
+// A channel or stream recv hands the consumer a fresh, solely-owned frame per
+// iteration. The recv carrier owns that frame, the arm binder takes it by
+// transfer, and drop elaboration releases it wherever the binder's generation
+// ends. A withheld release leaks one heap block per iteration; a second
+// release underflows a refcount the program still reads. Both directions are
+// invisible to stdout, so this fixture exists for the sanitizer gate:
+// `scripts/asan-fixture-check.sh` runs it under LSan.
+//
+// Four shapes, each repeated enough times that one leaked count per iteration
+// is unmissable:
+//   drain           - the plain per-iteration release on the loop back edge
+//   early_exit      - the return edge out of the middle of a drain
+//   forward         - the frame forwarded through an identity callee that
+//                     retains on return, so binder and alias hold one count
+//                     each and both must be released
+//   record_frames   - a heap-owning record payload released through the
+//                     carrier's in-place thunk
+import std.channel.channel;
+
+type Frame {
+    name: string,
+    body: string,
+}
+
+actor Maker {
+    receive gen fn items(count: i64) -> string {
+        for i in 0..count {
+            yield f"frame-{i}-payload";
+        }
+    }
+
+    receive gen fn frames(count: i64) -> Frame {
+        for i in 0..count {
+            yield Frame { name: f"name-{i}", body: f"body-{i}-payload" };
+        }
+    }
+}
+
+fn keep(v: string) -> string {
+    return v;
+}
+
+fn drain(count: i64) -> i64 {
+    let m = spawn Maker;
+    var total = 0;
+    for await v in m.items(count) {
+        total = total + v.len();
+    }
+    total
+}
+
+fn early_exit(count: i64, stop: i64) -> i64 {
+    let m = spawn Maker;
+    var total = 0;
+    for await v in m.items(count) {
+        total = total + v.len();
+        if total > stop {
+            return total;
+        }
+    }
+    total
+}
+
+fn forward(count: i64) -> i64 {
+    let m = spawn Maker;
+    var carry = "init";
+    var total = 0;
+    for await v in m.items(count) {
+        carry = keep(v);
+        total = total + carry.len();
+    }
+    total
+}
+
+fn record_frames(count: i64) -> i64 {
+    let m = spawn Maker;
+    var total = 0;
+    for await f in m.frames(count) {
+        total = total + f.name.len() + f.body.len();
+    }
+    total
+}
+
+fn main() {
+    println(f"drain: {drain(500)}");
+    println(f"early: {early_exit(500, 100)}");
+    println(f"forward: {forward(500)}");
+    println(f"records: {record_frames(500)}");
+
+    // The direct-match shape #3127 reported: the value the match produces must
+    // survive the match, and its frame must still be released exactly once.
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(8);
+    var seen = 0;
+    for i in 0..500 {
+        tx.send(f"channel-frame-{i}-payload");
+        let got = match rx.recv() {
+            .Some(s) => s,
+            .None => "",
+        };
+        seen = seen + got.len();
+    }
+    tx.close();
+    rx.close();
+    println(f"channel: {seen}");
+}

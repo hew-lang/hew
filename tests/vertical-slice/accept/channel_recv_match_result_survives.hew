@@ -1,0 +1,50 @@
+// Accept + run: the value a `match` over a channel `recv()` produces must
+// survive the match.
+//
+// A channel receive is lowered as an intercepted layout-witness call that
+// writes the `Option<T>` carrier straight into a temp, so no
+// `__hew_call_scrutinee` owner is minted for it. Without a carrier owner the
+// arm binder becomes the sole owner of the payload; it is then consumed into
+// the match result and its drop entry canonicalizes onto the result place,
+// releasing and nulling the string the match just produced. The program sees
+// `Some("")` where the sender wrote a non-empty string.
+//
+// The second half is the negative control: binding the carrier to a local
+// first does mint the scrutinee owner, so that shape already yields the string
+// today and must keep doing so.
+import std.channel.channel;
+
+fn main() {
+    let (tx1, rx1): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    tx1.send("direct");
+    tx1.close();
+    let direct = match rx1.recv() {
+        .Some(s) => s,
+        .None => "empty",
+    };
+    println(f"direct: [{direct}]");
+    rx1.close();
+
+    let (tx2, rx2): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    tx2.send("via local");
+    tx2.close();
+    let carrier = rx2.recv();
+    let via_local = match carrier {
+        .Some(s) => s,
+        .None => "empty",
+    };
+    println(f"via local: [{via_local}]");
+    rx2.close();
+
+    // `try_recv` is the non-suspending sibling of `recv` and reaches the same
+    // codegen intercept, so it lost the same payload before the fix.
+    let (tx3, rx3): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    tx3.send("try");
+    tx3.close();
+    let attempted = match rx3.try_recv() {
+        .Some(s) => s,
+        .None => "empty",
+    };
+    println(f"try: [{attempted}]");
+    rx3.close();
+}

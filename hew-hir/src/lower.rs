@@ -15651,7 +15651,6 @@ impl LowerCtx {
                     "crash" => Some(HirLifecycleHookKind::Crash),
                     "exit" => Some(HirLifecycleHookKind::Exit),
                     "down" => Some(HirLifecycleHookKind::Down),
-                    "upgrade" => Some(HirLifecycleHookKind::Upgrade),
                     _ => None,
                 });
             match hook_kind {

@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::ownership::TypeFactTable;
 use crate::verify::verify_cfg_discard_safety;
 use crate::{
     build_cfg_index, verify_function, verify_module, BlockId, CallableId, SemFunction, SemModule,
@@ -59,7 +60,7 @@ pub fn canonicalize_constant_cfg(
     }
 
     let mut candidate = function.clone();
-    let report = canonicalize_verified_function(&mut candidate)
+    let report = canonicalize_verified_function(&mut candidate, &TypeFactTable::new())
         .map_err(SirOptimizationError::InvalidOutput)?;
     let diagnostics = verify_function(&candidate);
     if !diagnostics.is_empty() {
@@ -89,9 +90,10 @@ pub fn canonicalize_module_constant_cfg(
     }
 
     let mut candidate = module.clone();
+    let facts = candidate.type_facts.clone();
     let mut reports = Vec::with_capacity(candidate.functions.len());
     for function in &mut candidate.functions {
-        let report = canonicalize_verified_function(function)
+        let report = canonicalize_verified_function(function, &facts)
             .map_err(SirOptimizationError::InvalidOutput)?;
         reports.push((function.callable, report));
     }
@@ -106,6 +108,7 @@ pub fn canonicalize_module_constant_cfg(
 
 fn canonicalize_verified_function(
     function: &mut SemFunction,
+    facts: &TypeFactTable,
 ) -> Result<CfgCanonicalizationReport, Vec<SirDiagnostic>> {
     let before_folding = function.clone();
     let constants = direct_bool_constants(function);
@@ -147,7 +150,7 @@ fn canonicalize_verified_function(
     // public call boundary. This deliberately makes dead-block compaction a
     // separate audited transformation: later passes can follow this shape
     // without inventing a second validation convention.
-    let diagnostics = verify_function(function);
+    let diagnostics = crate::verify::verify_function_with_facts(function, facts);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -158,7 +161,7 @@ fn canonicalize_verified_function(
 
     let post_fold_cfg = build_cfg_index(function);
     let (removed_blocks, block_remap) = compact_unreachable(function, post_fold_cfg.reachable());
-    let diagnostics = verify_function(function);
+    let diagnostics = crate::verify::verify_function_with_facts(function, facts);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }

@@ -6,7 +6,7 @@ use hew_sir::{
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, DefId, ResolvedTy};
 
-fn lower_hir(source: &str) -> hew_hir::HirModule {
+fn lower_hir(source: &str) -> (hew_hir::HirModule, hew_types::TypeCheckOutput) {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -21,12 +21,12 @@ fn lower_hir(source: &str) -> hew_hir::HirModule {
         "source must lower to HIR before the SIR tuple lowering test: {:#?}",
         hir.diagnostics
     );
-    hir.module
+    (hir.module, type_check_output)
 }
 
 #[test]
 fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
-    let hir = lower_hir(
+    let (hir, type_facts) = lower_hir(
         r"
         fn main() -> i64 {
             let pair = (0, 42);
@@ -34,7 +34,7 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
         }
         ",
     );
-    let lowered = lower_module(&hir);
+    let lowered = lower_module(&hir, &type_facts);
     let entry = lowered
         .module
         .entry_callable
@@ -102,7 +102,7 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
 
 #[test]
 fn generic_scalar_instances_substitute_tuple_values_before_raw_mir() {
-    let hir = lower_hir(
+    let (hir, type_facts) = lower_hir(
         r"
         fn first<T>(left: T, right: T) -> T {
             let pair = (left, right);
@@ -114,7 +114,7 @@ fn generic_scalar_instances_substitute_tuple_values_before_raw_mir() {
         }
         ",
     );
-    let lowered = lower_module(&hir);
+    let lowered = lower_module(&hir, &type_facts);
     assert!(
         verify_module(&lowered.module).is_empty(),
         "the generic tuple instance must verify: {:#?}",
@@ -146,7 +146,7 @@ fn generic_scalar_instances_substitute_tuple_values_before_raw_mir() {
 
 #[test]
 fn nested_bitcopy_tuples_remain_abstract_through_projection() {
-    let hir = lower_hir(
+    let (hir, type_facts) = lower_hir(
         r"
         fn main() -> i64 {
             let pair = (0, (41, 42));
@@ -155,7 +155,7 @@ fn nested_bitcopy_tuples_remain_abstract_through_projection() {
         }
         ",
     );
-    let lowered = lower_module(&hir);
+    let lowered = lower_module(&hir, &type_facts);
     assert!(
         verify_module(&lowered.module).is_empty(),
         "nested tuple SIR must verify: {:#?}",

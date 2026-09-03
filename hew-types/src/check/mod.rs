@@ -455,42 +455,6 @@ pub(crate) fn class_is_non_owning(
     )
 }
 
-/// Push a type's immediate component types, so the fact table is closed under
-/// the types its rows are built from.
-fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
-    match ty {
-        ResolvedTy::Tuple(elements) => out.extend(elements.iter().cloned()),
-        ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) => {
-            out.push((**element).clone());
-        }
-        ResolvedTy::Named { args, .. } => out.extend(args.iter().cloned()),
-        ResolvedTy::Function { params, ret } => {
-            out.extend(params.iter().cloned());
-            out.push((**ret).clone());
-        }
-        ResolvedTy::Closure {
-            params,
-            ret,
-            captures,
-        } => {
-            out.extend(params.iter().cloned());
-            out.push((**ret).clone());
-            out.extend(captures.iter().cloned());
-        }
-        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
-            out.push((**pointee).clone());
-        }
-        ResolvedTy::Task(inner) => out.push((**inner).clone()),
-        ResolvedTy::TraitObject { traits } => {
-            for bound in traits {
-                out.extend(bound.args.iter().cloned());
-                out.extend(bound.assoc_bindings.iter().map(|(_, ty)| ty.clone()));
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Whether a declaration walk rooted at `ty` reaches no cycle.
 ///
 /// The eligibility walks in `hash_eligibility` and `eq_eligibility` descend
@@ -519,7 +483,7 @@ fn declaration_walk_terminates(
             out.push(name.clone());
         }
         let mut components = Vec::new();
-        push_type_components(ty, &mut components);
+        crate::type_facts::push_type_components(ty, &mut components);
         for component in &components {
             nominal_names(component, out);
         }
@@ -679,7 +643,7 @@ impl Checker {
             if let Ok(row) = TypeFacts::of_type(&ty, &context, send, hash, eq) {
                 facts.insert(key, row);
             }
-            push_type_components(&ty, &mut pending);
+            crate::type_facts::push_type_components(&ty, &mut pending);
         }
         facts
     }

@@ -569,13 +569,25 @@ fn verify_strict_sir_parameter_boundary_facts(
                 raw.name
             )));
         };
+        let mode = match parameter.passing {
+            SemParamPassing::ReadOnly => ParamBoundaryMode::BorrowReadOnly,
+            // §1.2 rule 3's borrow slot has no raw-MIR boundary mode: the
+            // parameter is `Guaranteed` for the whole body and the caller keeps
+            // the obligation, which the raw fact set cannot yet state. The SIR
+            // verifier already refuses a callable header carrying this slot, so
+            // this arm is the second wall rather than the first.
+            SemParamPassing::Borrow => {
+                return Err(SirMirLoweringError::unsupported(format!(
+                    "strict SIR raw/checked verifier: raw `{}` parameter {index} carries a borrow ABI slot, which has no raw-MIR boundary mode",
+                    raw.name
+                )))
+            }
+        };
         let expected = ParamBoundaryFact {
             param_index: parameter_index,
             param_count: parameter_count,
             caller_visible_projection: parameter.caller_visible_projection,
-            mode: match parameter.passing {
-                SemParamPassing::ReadOnly => ParamBoundaryMode::BorrowReadOnly,
-            },
+            mode,
         };
         if decision.site != SiteId(parameter_index)
             || decision.ty != parameter.ty

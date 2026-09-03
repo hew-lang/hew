@@ -4,8 +4,12 @@
 //! All ownership is explicit in the op stream. An operand's mode **is the op it
 //! feeds**; there is no side tag on a read.
 
+use crate::model::SemParamPassing;
 use hew_parser::ast::Span;
-use hew_types::{ResolvedTy, ValueClass};
+use hew_types::{ResolvedTy, TypeInstanceKey, ValueClass};
+
+/// The §6.2 fact table a module carries, as the ownership rules read it.
+pub type TypeFactTable = std::collections::BTreeMap<TypeInstanceKey, hew_types::TypeFacts>;
 
 /// The ownership obligation carried by one SSA value (§1.2).
 ///
@@ -34,29 +38,34 @@ impl OwnKind {
         }
     }
 
-    /// The §1.2 kind of a value of `ty`, read through the one class authority.
+    /// The §1.2 kind of a value of `ty`, read out of the module's fact table.
     ///
-    /// The lowering that writes `own` onto a definition and the verifier that
-    /// checks it both call this, so a value's kind cannot be decided by one
-    /// rule and audited by another.
+    /// The lowering that writes `own` onto a definition reads the class the
+    /// checker decided rather than deciding one of its own, so a value's kind
+    /// cannot be settled by one rule and audited by another.
     ///
-    /// MARKED SHORTCUT — the class is read against an empty declaration
-    /// context.
-    /// WHY: `lower_module` takes a `HirModule` and no `TypeCheckOutput`, so
-    /// §1.1's declaration facts are not in reach on this route. Every user
-    /// `Named` type therefore classes `UnknownDeclaration` and this refuses,
-    /// which is the fail-closed answer for a domain that admits only scalars
-    /// and tuples of scalars.
-    /// WHEN: HIR-to-SIR lowering threads the checker output through, and with
-    /// it `TypeCheckOutput::type_facts` (L3).
-    /// WHAT: the context is built from that table and this reads a decided
-    /// fact rather than recomputing one.
+    /// MARKED SHORTCUT — a type with no row falls back to the class rule over
+    /// an empty declaration context.
+    /// WHY: the checker publishes a row for every concrete accepted expression
+    /// type, closed under components, but the lowering also mints substituted
+    /// template types and synthesized unit types the checker never saw as an
+    /// expression type. Those are scalars and tuples of scalars in this domain,
+    /// which the class rule decides without declaration facts; a user `Named`
+    /// with no row classes `UnknownDeclaration` and this refuses, which is the
+    /// fail-closed answer.
+    /// WHEN: the substituted instance types the lowering mints are published on
+    /// `TypeCheckOutput` too, so every type SIR mentions has a row (L3).
+    /// WHAT: a missing row is `E_SIR_ICE structural MissingTypeFacts` (L2)
+    /// rather than a second computation of the class.
     ///
     /// # Errors
     ///
     /// Returns the class rule's refusal, rendered against the user-facing type
-    /// name, when §1.1 cannot decide the type's class.
-    pub fn of_ty(ty: &ResolvedTy) -> Result<Self, String> {
+    /// name, when neither the table nor §1.1 can decide the type's class.
+    pub fn of_ty(ty: &ResolvedTy, facts: &TypeFactTable) -> Result<Self, String> {
+        if let Some(row) = facts.get(&TypeInstanceKey(ty.clone())) {
+            return Ok(Self::of_class(row.class));
+        }
         hew_types::ValueClass::of_ty(ty, &hew_types::ClassContext::empty())
             .map(Self::of_class)
             .map_err(|error| {
@@ -65,6 +74,29 @@ impl OwnKind {
                     ty.user_facing()
                 )
             })
+    }
+
+    /// The §1.2 kind of a parameter, which is its ABI slot before it is its
+    /// type's class.
+    ///
+    /// Rule 3: a parameter whose header slot is [`SemParamPassing::Borrow`] is
+    /// a `Guaranteed` value for the whole body whatever its type's class says,
+    /// because the caller keeps the obligation. Every other slot takes the
+    /// class table's answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnKind::of_ty`]'s refusal for a non-borrow slot whose type
+    /// has no decidable class.
+    pub fn of_param(
+        ty: &ResolvedTy,
+        passing: SemParamPassing,
+        facts: &TypeFactTable,
+    ) -> Result<Self, String> {
+        match passing {
+            SemParamPassing::Borrow => Ok(Self::Guaranteed),
+            SemParamPassing::ReadOnly => Self::of_ty(ty, facts),
+        }
     }
 }
 

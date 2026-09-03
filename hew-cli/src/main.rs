@@ -295,7 +295,7 @@ fn lower_verified_hir_to_pipeline(
             Ok((output.pipeline, None))
         }
         compile::SirMode::Lower => {
-            let sir = lower_verified_hir_to_sir(module)?;
+            let sir = lower_verified_hir_to_sir(module, tco)?;
             let session = compiler_session(target);
             let component = session.lower_sir_module(&sir.module).map_err(|error| {
                 eprintln!("SIR strict lowering failed: {error}");
@@ -360,8 +360,9 @@ fn sir_unsupported_reason(status: Option<&hew_sir::SirLoweringStatus>) -> Option
 
 fn lower_verified_hir_to_sir(
     module: &hew_hir::HirModule,
+    tco: &hew_types::TypeCheckOutput,
 ) -> Result<hew_sir::LoweredModule, DiagChannel> {
-    let mut sir = hew_sir::lower_module(module);
+    let mut sir = hew_sir::lower_module(module, tco);
     let diagnostics = hew_sir::verify_module(&sir.module);
     if !diagnostics.is_empty() {
         render_sir_diagnostics("verifier", diagnostics);
@@ -484,7 +485,7 @@ fn lower_file_to_sir(
         DiagChannel::User
     })?;
     let verified = lower_file_to_verified_hir(input_path, &target, options)?;
-    lower_verified_hir_to_sir(&verified.lower_output.module)
+    lower_verified_hir_to_sir(&verified.lower_output.module, verified.typecheck_output())
 }
 
 fn lower_file_to_mir_with_options(
@@ -3345,7 +3346,7 @@ mod sir_driver_tests {
         // Negative control: the un-canonicalized HIR -> SIR lowering really does
         // produce the branch and the unselected constant, so the assertions
         // below pin canonicalization rather than an already-empty CFG.
-        let raw_sir = hew_sir::lower_module(&lowered.module);
+        let raw_sir = hew_sir::lower_module(&lowered.module, &type_check);
         let raw_main = sir_main(&raw_sir.module);
         assert!(
             raw_main

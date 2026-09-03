@@ -126,6 +126,42 @@ impl TypeFacts {
     }
 }
 
+/// Push a type's immediate component types, so the fact table is closed under
+/// the types its rows are built from.
+pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
+    match ty {
+        ResolvedTy::Tuple(elements) => out.extend(elements.iter().cloned()),
+        ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) => {
+            out.push((**element).clone());
+        }
+        ResolvedTy::Named { args, .. } => out.extend(args.iter().cloned()),
+        ResolvedTy::Function { params, ret } => {
+            out.extend(params.iter().cloned());
+            out.push((**ret).clone());
+        }
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            out.extend(params.iter().cloned());
+            out.push((**ret).clone());
+            out.extend(captures.iter().cloned());
+        }
+        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
+            out.push((**pointee).clone());
+        }
+        ResolvedTy::Task(inner) => out.push((**inner).clone()),
+        ResolvedTy::TraitObject { traits } => {
+            for bound in traits {
+                out.extend(bound.args.iter().cloned());
+                out.extend(bound.assoc_bindings.iter().map(|(_, ty)| ty.clone()));
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

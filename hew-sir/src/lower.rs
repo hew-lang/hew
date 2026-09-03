@@ -4,9 +4,9 @@ use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmtKind,
     IntentKind, ResolvedRef,
 };
-use hew_types::{CallTarget, DefId, ResolvedTy};
+use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeInstanceKey};
 
-use crate::ownership::{BindingProvenance, OwnKind};
+use crate::ownership::{BindingProvenance, OwnKind, TypeFactTable};
 use crate::{
     BlockArg, BlockId, CallableId, CallableInstance, Edge, FunctionSourceOrigin, GenericTemplateId,
     OpId, Operand, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind,
@@ -124,8 +124,8 @@ impl LoweredModule {
 ///
 /// A module with no entry callable is not a program: it lowers no bodies.
 #[must_use]
-pub fn lower_module(module: &HirModule) -> LoweredModule {
-    lower_module_with_demand(module, SirLoweringDemand::Entry)
+pub fn lower_module(module: &HirModule, facts: &TypeCheckOutput) -> LoweredModule {
+    lower_module_with_demand(module, facts, SirLoweringDemand::Entry)
 }
 
 /// Lower SIR bodies under an explicit demand policy.
@@ -136,12 +136,16 @@ pub fn lower_module(module: &HirModule) -> LoweredModule {
 /// The strict compile route never asks for that demand, so nothing about it
 /// changes here.
 #[must_use]
-pub fn lower_module_with_demand(module: &HirModule, demand: SirLoweringDemand) -> LoweredModule {
+pub fn lower_module_with_demand(
+    module: &HirModule,
+    facts: &TypeCheckOutput,
+    demand: SirLoweringDemand,
+) -> LoweredModule {
     // The HIR monomorphisation registry remains deliberately unused here.
     // SIR discovers concrete direct-user instances from each resolved call's
     // `SiteId -> call_site_type_args` fact, applies the enclosing semantic
     // substitution, and creates its own closed instance worklist.
-    let mut service = InstanceService::new(module, demand);
+    let mut service = InstanceService::new(module, &facts.type_facts, demand);
     match demand {
         SirLoweringDemand::Entry => service.request_entry(),
         SirLoweringDemand::EveryCallable => service.request_every_callable(),
@@ -401,6 +405,10 @@ enum CallableState {
 /// `HirModule::monomorphisations` or invokes MIR lowering.
 struct InstanceService<'a> {
     module: &'a HirModule,
+    /// The checker's §6.2 rows. The lowering reads a decided class out of this
+    /// rather than recomputing one, and projects the rows its own bodies
+    /// mention onto the module it produces.
+    checked_facts: &'a TypeFactTable,
     demand: SirLoweringDemand,
     table: CallableTable<'a>,
     states: Vec<CallableState>,
@@ -416,11 +424,16 @@ struct InstanceService<'a> {
 }
 
 impl<'a> InstanceService<'a> {
-    fn new(module: &'a HirModule, demand: SirLoweringDemand) -> Self {
+    fn new(
+        module: &'a HirModule,
+        checked_facts: &'a TypeFactTable,
+        demand: SirLoweringDemand,
+    ) -> Self {
         let table = CallableTable::from_hir(module);
         let count = table.callables.len();
         Self {
             module,
+            checked_facts,
             demand,
             table,
             states: vec![CallableState::Unreached; count],
@@ -768,11 +781,12 @@ impl<'a> InstanceService<'a> {
     fn into_module(self) -> SemModule {
         let Self {
             table,
+            checked_facts,
             used_templates,
             mut functions,
             ..
         } = self;
-        let generic_templates = table
+        let generic_templates: Vec<SemGenericTemplate> = table
             .generic_templates
             .into_iter()
             .filter(|template| used_templates.contains(&template.id))
@@ -782,23 +796,25 @@ impl<'a> InstanceService<'a> {
         // module — and every dump taken from it — a function of the program,
         // not of the traversal that discovered it.
         functions.sort_unstable_by_key(|function| function.callable);
+        let type_facts = project_type_facts(
+            checked_facts,
+            &table.callables,
+            &generic_templates,
+            &functions,
+        );
         SemModule {
             callables: table.callables,
             generic_templates,
             root_unit_callables: table.root_unit_callables,
             entry_callable: table.entry_callable,
             functions,
-            // MARKED SHORTCUT — the module ships with an empty fact table.
-            // WHY: `lower_module` takes a `HirModule` and no
-            // `TypeCheckOutput`, so `TypeCheckOutput::type_facts` is not in
-            // reach at this boundary.
-            // WHEN: HIR-to-SIR lowering threads the checker output through.
-            // WHAT: the projection of `type_facts` over the types these bodies
-            // mention is carried here, and rules 5 and 6 read it.
-            type_facts: BTreeMap::new(),
-            // The two literal pools are empty for the same reason and go the
-            // same way: §1.3.1's `const.str` and `const.bytes` producers are
-            // the phase that interns into them, and this domain emits neither.
+            type_facts,
+            // MARKED SHORTCUT — the two literal pools ship empty.
+            // WHY: §1.3.1's `const.str` and `const.bytes` producers are the
+            // phase that interns into them, and this domain emits neither, so
+            // there is nothing to pool.
+            // WHEN: the string and bytes literal producers land (L3).
+            // WHAT: the interning table the producers fill is carried here.
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),
         }
@@ -811,6 +827,67 @@ impl<'a> InstanceService<'a> {
             .map(|callable| (callable.id, self.callable_status(callable.id)))
             .collect()
     }
+}
+
+/// Project the checker's §6.2 rows onto the types one SIR module mentions.
+///
+/// The module carries the rows its own values and headers need and no others:
+/// a consumer keys on the exact type it holds, so the projection is closed
+/// under a type's components the same way the checker's table is. A type the
+/// checker published no row for gets none here either — there is no default
+/// class, and a missing key is the fail-closed case (`MissingTypeFacts`, L2).
+fn project_type_facts(
+    checked: &TypeFactTable,
+    callables: &[SemCallable],
+    templates: &[SemGenericTemplate],
+    functions: &[SemFunction],
+) -> TypeFactTable {
+    let mut mentioned: Vec<ResolvedTy> = Vec::new();
+    let push_signature = |signature: &SemSignature, out: &mut Vec<ResolvedTy>| {
+        for param in &signature.params {
+            out.push(param.ty.clone());
+        }
+        out.push(signature.return_ty.clone());
+    };
+    for callable in callables {
+        push_signature(&callable.signature, &mut mentioned);
+    }
+    for template in templates {
+        push_signature(&template.signature, &mut mentioned);
+    }
+    for function in functions {
+        mentioned.push(function.return_ty.clone());
+        for param in &function.params {
+            mentioned.push(param.ty.clone());
+        }
+        for place in &function.places {
+            mentioned.push(place.ty.clone());
+        }
+        for block in &function.blocks {
+            for arg in &block.args {
+                mentioned.push(arg.ty.clone());
+            }
+            for op in &block.ops {
+                for result in &op.results {
+                    mentioned.push(result.ty.clone());
+                }
+            }
+        }
+    }
+
+    let mut projected = TypeFactTable::new();
+    let mut seen: std::collections::BTreeSet<TypeInstanceKey> = std::collections::BTreeSet::new();
+    while let Some(ty) = mentioned.pop() {
+        let key = TypeInstanceKey(ty.clone());
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        if let Some(row) = checked.get(&key) {
+            projected.insert(key, *row);
+        }
+        hew_types::push_type_components(&ty, &mut mentioned);
+    }
+    projected
 }
 
 struct LoweringInput<'a> {
@@ -1110,19 +1187,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let value = ValueId(values);
                 values += 1;
                 bindings.insert(param.id, value);
-                // MARKED SHORTCUT — a parameter's kind comes from its type
-                // class alone, never from its ABI slot.
-                // WHY: §1.2 rule 3 makes a parameter whose header slot is
-                // `Borrow` a `Guaranteed` value for the whole body, but
-                // `SemParamPassing` has one variant (`ReadOnly`): the borrow
-                // slot is not representable yet, so there is no slot to read
-                // and no value in the module carries `Guaranteed`.
-                // WHEN: the callable header gains the borrow slot, with the
-                // ownership-bearing parameter types that need it (L3).
-                // WHAT: the kind is `Guaranteed` when the slot says `Borrow`
-                // and `OwnKind::of_class` otherwise, and rule 3's
-                // `E_OWN_CONSUME_BORROWED` wall becomes reachable.
-                let own = OwnKind::of_ty(&ty)?;
+                // §1.2 rule 3: the header slot decides before the type's
+                // class does. A `Borrow` slot makes the parameter
+                // `Guaranteed` for the whole body, so a consuming use of it is
+                // rule 3's `E_OWN_CONSUME_BORROWED` wall and not rule 1's
+                // leak. No lowering emits that slot yet, so every parameter
+                // here takes the class table's answer.
+                let own = OwnKind::of_param(&ty, abi.passing, service.checked_facts)?;
                 Ok(BlockArg {
                     value,
                     ty,
@@ -1241,21 +1312,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         .ok_or_else(|| {
                             "uninitialised bindings are not in the initial SIR subset".to_string()
                         })?;
-                    // MARKED SHORTCUT — a binding carries no §1.6 provenance.
-                    // WHY: a `let` aliases the SSA value its initializer
-                    // produced rather than defining one of its own, and that
-                    // value is an operation result whose `provenance` is
-                    // `None` because §1.6 reads `None` as "a lowering temp".
-                    // Attaching the binding here would overwrite whatever the
-                    // aliased definition already says, and for `let y = x` on
-                    // a parameter that definition is the parameter's own
-                    // provenance.
-                    // WHEN: §1.3's `alloc_place` / `store.init` land and a
-                    // binding gets a place of its own to name (L2).
-                    // WHAT: the binding's name, span and mutability ride on
-                    // that place, so rule 6a reads the mutability and §1.6
-                    // renders `E_OWN_*` rather than `E_SIR_ICE` for a wall
-                    // rooted in a user binding.
+                    // §1.6: the value a binding names carries the binding's
+                    // name, span and mutability, so a rule 2, 3, 4 or 6
+                    // violation rooted in it renders its `E_OWN_*` code rather
+                    // than `E_SIR_ICE`, and rule 6a has a mutability bit to
+                    // read. A `let` aliases the SSA value its initializer
+                    // produced rather than defining one of its own, so the
+                    // provenance lands on that definition — and only when it
+                    // has none, because `let y = x` must not rename the
+                    // parameter `x` already named.
+                    self.name_value(
+                        value,
+                        BindingProvenance {
+                            name: binding.name.clone(),
+                            span: binding.span.clone(),
+                            mutable: binding.mutable,
+                        },
+                    );
                     self.bindings.insert(binding.id, value);
                 }
                 HirStmtKind::Expr(expr) => {
@@ -1621,7 +1694,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let join_ty = self.ty(&whole.ty);
         let join_block = self.new_block(vec![BlockArg {
             value: join_value,
-            own: OwnKind::of_ty(&join_ty)?,
+            own: OwnKind::of_ty(&join_ty, self.service.checked_facts)?,
             ty: join_ty,
             provenance: None,
         }]);
@@ -1700,7 +1773,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let join_ty = self.ty(&whole.ty);
         let join = self.new_block(vec![BlockArg {
             value: result,
-            own: OwnKind::of_ty(&join_ty)?,
+            own: OwnKind::of_ty(&join_ty, self.service.checked_facts)?,
             ty: join_ty,
             provenance: None,
         }]);
@@ -1751,7 +1824,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             id: OpId(self.ops),
             results: vec![ValueDef {
                 id: value,
-                own: OwnKind::of_ty(&result_ty)?,
+                own: OwnKind::of_ty(&result_ty, self.service.checked_facts)?,
                 ty: result_ty,
                 provenance: None,
             }],
@@ -1773,6 +1846,44 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.current_block_mut().append_op(op)?;
         self.ops += 1;
         Ok(())
+    }
+
+    /// Attach a binding's §1.6 provenance to the definition of the value it
+    /// names, if that definition does not already carry one.
+    ///
+    /// The first name wins: a parameter, and then the outermost binding that
+    /// aliases it, is the root the wall wants to point at. A value with no
+    /// definition in this function is a parameter of one already named, so
+    /// there is nothing to do and nothing to refuse.
+    fn name_value(&mut self, value: ValueId, provenance: BindingProvenance) {
+        for param in &mut self.params {
+            if param.value == value {
+                if param.provenance.is_none() {
+                    param.provenance = Some(provenance);
+                }
+                return;
+            }
+        }
+        for block in &mut self.blocks {
+            for arg in &mut block.args {
+                if arg.value == value {
+                    if arg.provenance.is_none() {
+                        arg.provenance = Some(provenance);
+                    }
+                    return;
+                }
+            }
+            for op in &mut block.ops {
+                for result in &mut op.results {
+                    if result.id == value {
+                        if result.provenance.is_none() {
+                            result.provenance = Some(provenance);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     fn fresh_value(&mut self) -> ValueId {
@@ -1818,8 +1929,8 @@ mod tests {
         is_initial_value_type, require_initial_scalar_read, require_initial_value_transfer,
         PendingBlock,
     };
-    use crate::ownership::OwnKind;
-    use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemTerminator};
+    use crate::ownership::{OwnKind, TypeFactTable};
+    use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemParamPassing, SemTerminator};
     use hew_hir::IntentKind;
     use hew_types::ResolvedTy;
 
@@ -1878,23 +1989,80 @@ mod tests {
     /// than defaulted.
     #[test]
     fn lowering_reads_the_ownership_kind_from_the_class_table() {
-        assert_eq!(Ok(OwnKind::None), OwnKind::of_ty(&ResolvedTy::I64));
+        let none = TypeFactTable::new();
+        assert_eq!(Ok(OwnKind::None), OwnKind::of_ty(&ResolvedTy::I64, &none));
         assert_eq!(
             Ok(OwnKind::None),
-            OwnKind::of_ty(&ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]))
+            OwnKind::of_ty(
+                &ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]),
+                &none
+            )
         );
-        assert_eq!(Ok(OwnKind::Owned), OwnKind::of_ty(&ResolvedTy::String));
-        let refused = OwnKind::of_ty(&ResolvedTy::Named {
-            name: "Conn".to_string(),
-            args: vec![],
-            builtin: None,
-            is_opaque: false,
-        })
-        .expect_err("a user declaration is not in reach on this route and must be refused");
+        assert_eq!(
+            Ok(OwnKind::Owned),
+            OwnKind::of_ty(&ResolvedTy::String, &none)
+        );
+        let refused = OwnKind::of_ty(&conn_ty(), &none)
+            .expect_err("a user declaration with no row and no context must be refused");
         assert!(
             refused.contains("no declaration facts"),
             "the refusal must name the missing declaration: {refused}"
         );
+    }
+
+    /// The checker's row is the authority the lowering reads: a user
+    /// declaration the class rule cannot reach on its own is decided by its
+    /// published row, so the same type is refused without one and owning with
+    /// it.
+    #[test]
+    fn a_published_row_decides_a_kind_the_empty_context_refuses() {
+        let mut facts = TypeFactTable::new();
+        facts.insert(
+            hew_types::TypeInstanceKey(conn_ty()),
+            hew_types::TypeFacts {
+                class: hew_types::ValueClass::AffineResource,
+                clone: hew_types::CloneKind::None,
+                send: hew_types::SendFact::Known(true),
+                hash: false,
+                eq: false,
+            },
+        );
+        assert!(OwnKind::of_ty(&conn_ty(), &TypeFactTable::new()).is_err());
+        assert_eq!(Ok(OwnKind::Owned), OwnKind::of_ty(&conn_ty(), &facts));
+    }
+
+    /// §1.2 rule 3: a parameter whose header slot is `Borrow` is `Guaranteed`
+    /// for the whole body whatever its type's class says, and the same type in
+    /// a `ReadOnly` slot keeps the class table's kind. Without the slot read,
+    /// a borrowed parameter presents as an `Owned` value the callee owes a
+    /// consuming use it must never make.
+    #[test]
+    fn a_borrow_slot_parameter_is_guaranteed_whatever_its_class_says() {
+        let none = TypeFactTable::new();
+        assert_eq!(
+            Ok(OwnKind::Guaranteed),
+            OwnKind::of_param(&ResolvedTy::String, SemParamPassing::Borrow, &none)
+        );
+        assert_eq!(
+            Ok(OwnKind::Owned),
+            OwnKind::of_param(&ResolvedTy::String, SemParamPassing::ReadOnly, &none)
+        );
+        // The slot decides before the class rule is consulted, so a type the
+        // rule cannot decide is still `Guaranteed` in a borrow slot.
+        assert_eq!(
+            Ok(OwnKind::Guaranteed),
+            OwnKind::of_param(&conn_ty(), SemParamPassing::Borrow, &none)
+        );
+        assert!(OwnKind::of_param(&conn_ty(), SemParamPassing::ReadOnly, &none).is_err());
+    }
+
+    fn conn_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Conn".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        }
     }
 
     #[test]

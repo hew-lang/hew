@@ -255,6 +255,16 @@ pub enum SemCallableKind {
 pub enum SemParamPassing {
     /// The initial scalar direct-call domain accepts only non-owning reads.
     ReadOnly,
+    /// The callee borrows the caller's value for the whole body: §1.2 rule 3
+    /// makes the parameter a `Guaranteed` value, so a consuming use of it is
+    /// rule 3's `E_OWN_CONSUME_BORROWED` wall rather than a leak.
+    ///
+    /// No lowering emits this slot yet — the ownership-bearing parameter types
+    /// that need it arrive with the callable header's borrow disposition (L3) —
+    /// and every structural check in `verify.rs` refuses a non-`ReadOnly` slot
+    /// until then. The kind derivation reads the slot rather than the type
+    /// alone, so the slot is the only thing that has to change.
+    Borrow,
 }
 
 /// ABI-neutral parameter facts owned by a resolved SIR callable.

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use crate::ownership::TypeFactTable;
 use crate::OpId;
 use crate::{
     BlockId, CallableId, CallableInstance, GenericTemplateId, SemCallConv, SemCallable,
@@ -186,6 +187,13 @@ impl<'a> CallableContext<'a> {
     fn callable(&self, id: CallableId) -> Option<&'a SemCallable> {
         self.by_id.get(&id).copied()
     }
+
+    /// The ABI slot of one parameter of `id`, when the table names it.
+    fn param_passing(&self, id: CallableId, index: usize) -> Option<SemParamPassing> {
+        self.callable(id)
+            .and_then(|callable| callable.signature.params.get(index))
+            .map(|param| param.passing)
+    }
 }
 
 #[must_use]
@@ -213,7 +221,11 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
                 )),
             ));
         }
-        diagnostics.extend(verify_function_with_context(function, Some(&callables)));
+        diagnostics.extend(verify_function_with_context(
+            function,
+            Some(&callables),
+            &module.type_facts,
+        ));
     }
     diagnostics
 }
@@ -227,7 +239,11 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
 pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
     let callables = verify_callable_table(module, &mut diagnostics);
-    diagnostics.extend(verify_function_with_context(function, Some(&callables)));
+    diagnostics.extend(verify_function_with_context(
+        function,
+        Some(&callables),
+        &module.type_facts,
+    ));
     diagnostics
 }
 
@@ -242,7 +258,21 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
 )]
 #[must_use]
 pub fn verify_function(function: &SemFunction) -> Vec<SirDiagnostic> {
-    verify_function_with_context(function, None)
+    verify_function_with_facts(function, &TypeFactTable::new())
+}
+
+/// Verify one function against the §6.2 fact table its module carries.
+///
+/// A function verified away from its module has no fact table to read, so a
+/// value whose class needs declaration facts is refused rather than admitted.
+/// A pass that holds the module passes its table here so the kind it audits is
+/// the one the lowering wrote.
+#[must_use]
+pub(crate) fn verify_function_with_facts(
+    function: &SemFunction,
+    facts: &TypeFactTable,
+) -> Vec<SirDiagnostic> {
+    verify_function_with_context(function, None, facts)
 }
 
 /// Verify the semantic precondition for discarding blocks during a CFG rewrite.
@@ -342,6 +372,7 @@ fn cfg_discard_diag(
 fn verify_function_with_context(
     function: &SemFunction,
     callable_context: Option<&CallableContext<'_>>,
+    facts: &TypeFactTable,
 ) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
@@ -383,13 +414,19 @@ fn verify_function_with_context(
     let mut types = HashMap::new();
     let mut definitions = HashMap::new();
     let mut operations = HashSet::new();
-    for param in &function.params {
+    for (index, param) in function.params.iter().enumerate() {
         record_value(function, param.value, &mut values, &mut diagnostics);
+        // §1.2 rule 3: a parameter's kind is its header slot before it is its
+        // type's class, so the audit reads the slot the lowering read.
+        let passing = callable_context
+            .and_then(|context| context.param_passing(function.callable, index))
+            .unwrap_or(SemParamPassing::ReadOnly);
         verify_own_kind(
             function,
             param.value,
             &param.ty,
             param.own,
+            crate::OwnKind::of_param(&param.ty, passing, facts),
             &mut diagnostics,
         );
         types.insert(param.value, param.ty.clone());
@@ -398,7 +435,14 @@ fn verify_function_with_context(
     for block in &function.blocks {
         for arg in &block.args {
             record_value(function, arg.value, &mut values, &mut diagnostics);
-            verify_own_kind(function, arg.value, &arg.ty, arg.own, &mut diagnostics);
+            verify_own_kind(
+                function,
+                arg.value,
+                &arg.ty,
+                arg.own,
+                crate::OwnKind::of_ty(&arg.ty, facts),
+                &mut diagnostics,
+            );
             types.insert(arg.value, arg.ty.clone());
             definitions.insert(arg.value, (block.id, None));
         }
@@ -413,6 +457,7 @@ fn verify_function_with_context(
                     result.id,
                     &result.ty,
                     result.own,
+                    crate::OwnKind::of_ty(&result.ty, facts),
                     &mut diagnostics,
                 );
                 types.insert(result.id, result.ty.clone());
@@ -1493,35 +1538,35 @@ fn record_value(
     }
 }
 
-/// §1.2: a value's ownership kind is a pure function of its type's class.
+/// §1.2: a value's ownership kind is decided by one rule, and this reads that
+/// rule's answer back off the definition.
 ///
-/// The lowering derives `own` from [`OwnKind::of_ty`]; this reads the same
-/// authority back. Without it `own` is a free field the lowering writes and
-/// nothing audits, so an `i64` could present as `Owned` and a value could
-/// present as `Guaranteed` — a kind no class produces, because it belongs to
-/// the result of a `begin_borrow` no phase emits yet. A type the class rule
-/// cannot decide is refused here for the same reason the lowering refuses it:
-/// there is no default kind.
+/// `expected` comes from the same derivation the lowering used —
+/// [`OwnKind::of_param`] for a parameter, whose header slot decides before its
+/// type's class does, and [`OwnKind::of_ty`] for every other definition.
+/// Without the audit `own` is a free field the lowering writes and nothing
+/// reads, so an `i64` could present as `Owned`, and a `Guaranteed` could ride
+/// on a value no borrow produced. A type neither the fact table nor §1.1 can
+/// decide is refused for the same reason the lowering refuses it: there is no
+/// default kind.
 ///
-/// MARKED SHORTCUT - the kind is read from the type alone.
-/// WHY: §1.2 makes the kind a function of the class for every value this
-/// phase can define. `Guaranteed` is the one kind that is not a class, and it
-/// belongs to a `begin_borrow` result and to a parameter whose header slot is
-/// `Borrow`; neither exists yet, so refusing it is exact rather than
-/// conservative.
-/// WHEN: `begin_borrow` lands, or `SemParamPassing` grows the `Borrow` slot
-/// §1.2 rule 3 reads (L2/L3).
-/// WHAT: the check branches on the defining operation - a `begin_borrow`
-/// result and a borrow-slot parameter are `Guaranteed` whatever their type's
-/// class says, every other definition stays a pure function of the class.
+/// MARKED SHORTCUT - a `begin_borrow` result is not yet a case here.
+/// WHY: `Guaranteed` has two producers under §1.2 - a borrow-slot parameter,
+/// which this reads, and a `begin_borrow` result, which no phase emits on this
+/// route.
+/// WHEN: `begin_borrow` lands (L2).
+/// WHAT: a `begin_borrow` result is `Guaranteed` whatever its type's class
+/// says, so the derivation branches on the defining operation as well as on
+/// the header slot.
 fn verify_own_kind(
     function: &SemFunction,
     value: ValueId,
     ty: &ResolvedTy,
     own: crate::OwnKind,
+    expected: Result<crate::OwnKind, String>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    match crate::OwnKind::of_ty(ty) {
+    match expected {
         Ok(expected) if expected == own => {}
         Ok(expected) => diagnostics.push(diag(
             function,

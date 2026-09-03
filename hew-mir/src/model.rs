@@ -1699,6 +1699,14 @@ impl<S: std::hash::BuildHasher> HeapOwnershipLayouts for MirHeapLayouts<'_, S> {
 /// functions (the `derive_*` drop-allow derivations, `aggregate_ingress_*`,
 /// `ty_is_heap_owning_tuple`) already hold. Closes DIV-1 at every former
 /// record-blind call site without converting those free functions to methods.
+///
+/// LEGACY (P5): a second copy/heap-ownership predicate outside the §1.1 class
+/// table (`hew_types::ValueClass::of_ty`), exempted from `no-new-copy-
+/// predicate` by name rather than deleted. WHEN obsolete: the legacy lowerer
+/// (`docs/internal/ir-ladder.md` §9) is deleted and every MIR/codegen caller
+/// reads the checker's published `TypeFacts` instead. WHAT the real fix looks
+/// like: delete this function and its callers' second authority along with
+/// the legacy lowering path it serves.
 #[must_use]
 pub fn ty_owns_heap_mir<S: std::hash::BuildHasher>(
     ty: &ResolvedTy,
@@ -1913,6 +1921,14 @@ impl CloseObligationRegistry for NoCloseObligations {
 /// projection:
 /// the boolean a consumer reads off the value is exactly the boolean this
 /// authority would re-derive, so the swap is byte-identical by construction.
+///
+/// LEGACY (P5): a second copy/heap-ownership predicate outside the §1.1 class
+/// table (`hew_types::ValueClass::of_ty`), exempted from `no-new-copy-
+/// predicate` by name rather than deleted. WHEN obsolete: the legacy lowerer
+/// (`docs/internal/ir-ladder.md` §9) is deleted and every MIR/codegen caller
+/// reads the checker's published `TypeFacts` instead. WHAT the real fix looks
+/// like: delete this function and its callers' second authority along with
+/// the legacy lowering path it serves.
 #[must_use]
 pub fn ty_owns_heap(ty: &ResolvedTy, layouts: &impl HeapOwnershipLayouts) -> bool {
     ty_heap_ownership(ty, layouts).owns_heap
@@ -3152,6 +3168,14 @@ pub struct PolymorphicMirFunction {
 /// source operand and is excluded unconditionally (copy-in sources leak rather
 /// than double-free). This primitive documents the per-symbol release contract
 /// that a future copy-in-aware refinement will reinstate.
+///
+/// LEGACY (P5): a second copy/heap-ownership predicate outside the §1.1 class
+/// table (`hew_types::ValueClass::of_ty`), exempted from `no-new-copy-
+/// predicate` by name rather than deleted. WHEN obsolete: the legacy lowerer
+/// (`docs/internal/ir-ladder.md` §9) is deleted and every MIR/codegen caller
+/// reads the checker's published `TypeFacts` instead. WHAT the real fix looks
+/// like: delete this function and its callers' second authority along with
+/// the legacy lowering path it serves.
 #[must_use]
 pub fn container_ingress_is_copy_in(target_symbol: &str) -> bool {
     matches!(target_symbol, "hew_vec_push" | "hew_vec_set")

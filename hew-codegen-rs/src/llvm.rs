@@ -26084,6 +26084,14 @@ const AGGREGATE_DROP_DEPTH_BOUND: u32 = 64;
 /// (`dedup-semantic-boundary`). Consults the record/enum field registries so a
 /// `Header { name: string }` element (owns heap via a field, not a type arg) is
 /// correctly recognised.
+///
+/// LEGACY (P5): a second copy/heap-ownership predicate outside the §1.1 class
+/// table (`hew_types::ValueClass::of_ty`), exempted from `no-new-copy-
+/// predicate` by name rather than deleted. WHEN obsolete: the legacy lowerer
+/// (`docs/internal/ir-ladder.md` §9) is deleted and every MIR/codegen caller
+/// reads the checker's published `TypeFacts` instead. WHAT the real fix looks
+/// like: delete this function and its callers' second authority along with
+/// the legacy lowering path it serves.
 pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
     fn_ctx: &FnCtx<'_, '_>,
     elem: &ResolvedTy,

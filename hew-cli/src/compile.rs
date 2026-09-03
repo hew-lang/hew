@@ -173,17 +173,23 @@ pub(crate) fn render_frontend_diagnostics(
     }
     for diagnostic in diagnostics {
         match &diagnostic.kind {
-            FrontendDiagnosticKind::Message(diagnostic) => {
-                match (&diagnostic.span, diagnostic.source.as_deref()) {
-                    (Some(span), Some(source)) => crate::diagnostic::render_diagnostic(
-                        source,
-                        "",
-                        span,
-                        &diagnostic.message,
-                        &[],
-                        &[],
-                    ),
-                    _ => crate::diagnostic::emit_plain_diagnostic_line(&diagnostic.message),
+            FrontendDiagnosticKind::Message(inner) => {
+                match (
+                    &inner.span,
+                    inner.source.as_deref(),
+                    diagnostic.filename.as_deref(),
+                ) {
+                    (Some(span), Some(source), Some(filename)) => {
+                        crate::diagnostic::render_diagnostic(
+                            source,
+                            filename,
+                            span,
+                            &inner.message,
+                            &[],
+                            &[],
+                        );
+                    }
+                    _ => crate::diagnostic::emit_plain_diagnostic_line(&inner.message),
                 }
             }
             FrontendDiagnosticKind::Parse(error) => {
@@ -248,8 +254,8 @@ fn push_frontend_diagnostics_json(diagnostics: &[FrontendDiagnostic]) {
         let source = diagnostic.source.as_deref();
         let filename = diagnostic.filename.as_deref();
         let json = match &diagnostic.kind {
-            FrontendDiagnosticKind::Message(diagnostic) => {
-                from_coded_message_diagnostic(diagnostic)
+            FrontendDiagnosticKind::Message(inner) => {
+                from_coded_message_diagnostic(inner, filename)
             }
             FrontendDiagnosticKind::Parse(error) => match (source, filename) {
                 (Some(source), Some(filename)) => from_parse_error(source, filename, error),

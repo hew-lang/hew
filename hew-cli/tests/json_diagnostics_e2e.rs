@@ -342,4 +342,31 @@ fn module_not_found_has_span_and_suggestion() {
             .contains("std.net.http"),
         "a std-module typo close to `std.net.http` must suggest it: {not_found}",
     );
+    assert!(
+        not_found["file"].as_str().unwrap().ends_with("main.hew"),
+        "file field must name the source: {not_found}",
+    );
+}
+
+/// The right module name at the wrong nesting (`std.http` for `std.net.http`)
+/// is the single likeliest real mistake — not a typo `find_similar` would
+/// catch (the leaf spelling is exactly right), so it needs its own exact-leaf
+/// match ahead of the fuzzy fallback.
+#[test]
+fn module_not_found_suggests_an_exact_leaf_match_at_the_wrong_nesting() {
+    let (_dir, path) = write_fixture("import std.http;\nfn main() { }\n");
+    let output = run(&["check", "--format", "json", path.to_str().unwrap()]);
+
+    let diagnostics = parse_json_array(&output);
+    let not_found = diagnostics
+        .iter()
+        .find(|d| d["code"] == "E_MODULE_NOT_FOUND")
+        .unwrap_or_else(|| panic!("expected an E_MODULE_NOT_FOUND diagnostic: {diagnostics:?}"));
+    assert!(
+        not_found["message"]
+            .as_str()
+            .unwrap()
+            .contains("std.net.http"),
+        "the right leaf name at the wrong nesting must still suggest `std.net.http`: {not_found}",
+    );
 }

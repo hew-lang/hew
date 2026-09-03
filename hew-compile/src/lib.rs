@@ -264,17 +264,21 @@ impl FrontendDiagnostic {
 
     /// A coded message that also locates itself in source — the one shape
     /// [`FrontendMessageDiagnostic`] needs to render like a `Parse`/`Type`
-    /// diagnostic instead of a zero-span message. See
-    /// [`FrontendFailure::coded_message_at`], its only caller.
+    /// diagnostic instead of a zero-span message. `filename` lands on the
+    /// existing outer field (the same one `parse`/`type_` already populate)
+    /// rather than a new one, so the renderers' `(source, filename)` pattern
+    /// keeps working unchanged. See [`FrontendFailure::coded_message_at`],
+    /// its only caller.
     fn coded_message_at(
         code: &str,
         message: impl Into<String>,
         span: Range<usize>,
         source: &str,
+        filename: &str,
     ) -> Self {
         Self {
             source: None,
-            filename: None,
+            filename: Some(filename.to_string()),
             note_sources: Vec::new(),
             kind: FrontendDiagnosticKind::Message(FrontendMessageDiagnostic {
                 code: code.to_string(),
@@ -367,12 +371,13 @@ impl FrontendFailure {
         message: impl Into<String>,
         span: Range<usize>,
         source: &str,
+        filename: &str,
     ) -> Self {
         let message = message.into();
         Self::new(
             message.clone(),
             vec![FrontendDiagnostic::coded_message_at(
-                code, message, span, source,
+                code, message, span, source, filename,
             )],
         )
     }
@@ -587,14 +592,19 @@ fn module_leaf(full: &str) -> &str {
 }
 
 /// The closest existing `std` module to a mistyped import's last path
-/// segment, e.g. `htp` -> `std.net.http`.
+/// segment: an exact leaf match (`std.http` -> `std.net.http`, a missed or
+/// mis-nested path segment) when one exists, else a near-miss typo
+/// (`std.htp` -> `std.net.http`).
 ///
-/// Compares leaf names (the last dotted segment), not full dotted paths:
-/// `std.htp` and `std.net.http` differ by far more than
+/// Near-miss matching compares leaf names (the last dotted segment), not
+/// full dotted paths: `std.htp` and `std.net.http` differ by far more than
 /// [`hew_types::error::find_similar`]'s length-scaled Levenshtein threshold
 /// allows, but `htp` and `http` — the part the user actually mistyped — are
-/// one edit apart. Returns `None` when nothing is close enough, matching
-/// `find_similar`'s own "no good match" case.
+/// one edit apart. An exact leaf match is checked first because
+/// `find_similar` filters exact matches out entirely (it exists to catch
+/// spelling, not path mistakes) — without this, the single most likely
+/// real-world slip (the right module name, wrong or missing nesting) would
+/// get no suggestion at all. Returns `None` when neither finds anything.
 fn nearest_std_module(leaf: &str, search_paths: &[PathBuf]) -> Option<String> {
     let mut modules = Vec::new();
     for root in search_paths {
@@ -602,6 +612,9 @@ fn nearest_std_module(leaf: &str, search_paths: &[PathBuf]) -> Option<String> {
         if std_dir.is_dir() {
             collect_std_module_names(&std_dir, &mut modules);
         }
+    }
+    if let Some(exact) = modules.iter().find(|full| module_leaf(full) == leaf) {
+        return Some(exact.clone());
     }
     let leaves: Vec<&str> = modules.iter().map(|full| module_leaf(full)).collect();
     let best_leaf = hew_types::error::find_similar(leaf, leaves.iter().copied())
@@ -1823,15 +1836,25 @@ fn resolve_file_imports_internal(
                     } else {
                         String::new()
                     };
-                    let module_source = std::fs::read_to_string(source_file).unwrap_or_default();
-                    return Err(FrontendFailure::coded_message_at(
-                        "E_MODULE_NOT_FOUND",
-                        format!(
-                            "Error: module `{source_module}` not found (tried: {tried}){hint}{suggestion}"
+                    // No leading "Error: " here (unlike the sibling messages
+                    // above): this one now renders with a real
+                    // `file:line:col: error:` header, and the plain-text
+                    // fallback below only fires if `source_file` cannot be
+                    // re-read, which never happens on the path that just
+                    // parsed it.
+                    let message = format!(
+                        "module `{source_module}` not found (tried: {tried}){hint}{suggestion}"
+                    );
+                    return Err(match std::fs::read_to_string(source_file) {
+                        Ok(module_source) => FrontendFailure::coded_message_at(
+                            "E_MODULE_NOT_FOUND",
+                            message,
+                            items[*idx].1.clone(),
+                            &module_source,
+                            &source_file.display().to_string(),
                         ),
-                        items[*idx].1.clone(),
-                        &module_source,
-                    ));
+                        Err(_) => FrontendFailure::coded_message("E_MODULE_NOT_FOUND", message),
+                    });
                 }
             }
             _ => continue,

@@ -65,16 +65,16 @@ fn parse_machines(path: &str, source: &str) -> Vec<MachineDecl> {
 }
 
 /// Run the checker and HIR lowering + static checks on the file.  Returns the
-/// checked HIR machines declared by the file itself, or exits the process on
-/// failure.
+/// checked HIR machines the program contains, or exits the process on failure.
 ///
 /// HIR lowering resolves every declaration through the checker's identity
 /// table, so the file goes through the same import-resolving frontend as
 /// `hew check`; a default `TypeCheckOutput` would fail closed on every item.
-/// Import resolution flattens file-imported items into the checked program,
-/// so the result is narrowed to the machines the raw parse of this file
-/// declared (`ast_machines`).
-fn check_and_lower(path: &str, ast_machines: &[MachineDecl]) -> Vec<HirMachineDecl> {
+/// The checked module is the one authority for which machines a program has:
+/// it carries the machines the file declares (`defining_module` is `None`)
+/// beside the machines it imports, so a file whose only machine arrives
+/// through an import still has one to render.
+fn check_and_lower(path: &str) -> Vec<HirMachineDecl> {
     let state = match hew_compile::run_file_frontend_to_typecheck(path, &FrontendOptions::default())
     {
         Ok(state) => state,
@@ -109,7 +109,7 @@ fn check_and_lower(path: &str, ast_machines: &[MachineDecl]) -> Vec<HirMachineDe
         .items
         .into_iter()
         .filter_map(|item| match item {
-            HirItem::Machine(m) if ast_machines.iter().any(|ast| ast.name == m.name) => Some(m),
+            HirItem::Machine(m) => Some(m),
             _ => None,
         })
         .collect()
@@ -118,6 +118,56 @@ fn check_and_lower(path: &str, ast_machines: &[MachineDecl]) -> Vec<HirMachineDe
 enum MachineCheckResult {
     Checked(Vec<HirMachineDecl>),
     AstFallback,
+}
+
+/// One machine to render: its checked HIR declaration paired with the
+/// presentation facts HIR does not carry.
+struct MachineView<'a> {
+    hir: &'a HirMachineDecl,
+    /// Composite grouping of this machine's states, from the AST of the file
+    /// under inspection.
+    groups: &'a [hew_parser::ast::CompositeGroup],
+    /// The machine's `emits { … }` manifest, from the same AST.
+    emits: &'a [String],
+}
+
+/// Pair every checked machine with the AST facts HIR is flat about.
+///
+/// The join is by name within the root namespace, which the checker keeps
+/// unique: an AST machine is by construction declared by the file under
+/// inspection, so it can only describe a HIR machine whose `defining_module`
+/// is `None`.
+///
+/// WHY this shortcut: composite grouping and the `emits` manifest live only on
+/// `MachineDecl`, so a machine that arrives through an import renders with
+/// neither. No importable machine that ships declares either
+/// (`std/machines/toggle.hew`, `std/concurrency/lifecycle.hew`), so no diagram
+/// loses a fact today.
+/// WHEN obsolete: when the machine desugar (#3073) lands and HIR carries
+/// grouping and the emits manifest on the declaration.
+/// WHAT the real fix is: put both on `HirMachineDecl` beside `states` and
+/// `transitions` and delete this join, so every machine renders from the one
+/// authority regardless of which module declared it.
+fn machine_views<'a>(
+    hir_machines: &'a [HirMachineDecl],
+    ast_machines: &'a [MachineDecl],
+) -> Vec<MachineView<'a>> {
+    hir_machines
+        .iter()
+        .map(|hir| {
+            let ast = hir.defining_module.is_none().then(|| {
+                ast_machines
+                    .iter()
+                    .find(|candidate| candidate.name == hir.name)
+            });
+            let ast = ast.flatten();
+            MachineView {
+                hir,
+                groups: ast.map_or(&[][..], |m| m.composite_groups.as_slice()),
+                emits: ast.map_or(&[][..], |m| m.emits.as_slice()),
+            }
+        })
+        .collect()
 }
 
 fn check_machines_or_ast_fallback(
@@ -135,7 +185,7 @@ fn check_machines_or_ast_fallback(
         return MachineCheckResult::AstFallback;
     }
 
-    let hir_machines = check_and_lower(path, ast_machines);
+    let hir_machines = check_and_lower(path);
     if hir_machines.is_empty() {
         eprintln!("No machines found in {path}");
         std::process::exit(1);
@@ -144,46 +194,117 @@ fn check_machines_or_ast_fallback(
     MachineCheckResult::Checked(hir_machines)
 }
 
+/// Print one `machine Name { … }` entry.  Both the checked and the
+/// AST-fallback paths render through here so the two agree line for line.
+fn print_list_entry(
+    name: &str,
+    states: &[(&str, Vec<&str>)],
+    events: &[(&str, Vec<&str>)],
+    transitions: usize,
+    has_default: bool,
+    emits: &[String],
+) {
+    println!("machine {name} {{");
+    println!("  States:");
+    for (state, fields) in states {
+        if fields.is_empty() {
+            println!("    {state}");
+        } else {
+            println!("    {} {{ {} }}", state, fields.join(", "));
+        }
+    }
+    println!("  Events:");
+    for (event, fields) in events {
+        if fields.is_empty() {
+            println!("    {event}");
+        } else {
+            println!("    {} {{ {} }}", event, fields.join(", "));
+        }
+    }
+    println!("  Transitions: {transitions}");
+    if has_default {
+        println!("  Default: unhandled events stay in current state");
+    }
+    // fix 3: Emits section in cmd_list.
+    if !emits.is_empty() {
+        println!("  Emits: {}", emits.join(", "));
+    }
+    println!("}}");
+    println!();
+}
+
 fn cmd_list(path: &str) {
     let source = read_source(path);
-    let machines = parse_machines(path, &source);
+    let ast_machines = parse_machines(path, &source);
 
-    // `list` renders from the AST below, but keeps fail-closed HIR validation
-    // for non-generic machines.
-    check_machines_or_ast_fallback(path, &machines, false);
-
-    for md in &machines {
-        println!("machine {} {{", md.name);
-        println!("  States:");
-        for state in &md.states {
-            if state.fields.is_empty() {
-                println!("    {}", state.name);
-            } else {
-                let fields: Vec<String> =
-                    state.fields.iter().map(|(name, _)| name.clone()).collect();
-                println!("    {} {{ {} }}", state.name, fields.join(", "));
+    match check_machines_or_ast_fallback(path, &ast_machines, false) {
+        MachineCheckResult::Checked(hir_machines) => {
+            for view in machine_views(&hir_machines, &ast_machines) {
+                let states: Vec<(&str, Vec<&str>)> = view
+                    .hir
+                    .states
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.name.as_str(),
+                            s.fields.iter().map(|f| f.name.as_str()).collect(),
+                        )
+                    })
+                    .collect();
+                let events: Vec<(&str, Vec<&str>)> = view
+                    .hir
+                    .events
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.name.as_str(),
+                            e.fields.iter().map(|f| f.name.as_str()).collect(),
+                        )
+                    })
+                    .collect();
+                print_list_entry(
+                    &view.hir.name,
+                    &states,
+                    &events,
+                    view.hir.transitions.len(),
+                    view.hir.has_default,
+                    view.emits,
+                );
             }
         }
-        println!("  Events:");
-        for event in &md.events {
-            if event.fields.is_empty() {
-                println!("    {}", event.name);
-            } else {
-                let fields: Vec<String> =
-                    event.fields.iter().map(|(name, _)| name.clone()).collect();
-                println!("    {} {{ {} }}", event.name, fields.join(", "));
+        // Generic machines skip HIR lowering, so the AST is all there is.
+        MachineCheckResult::AstFallback => {
+            for md in &ast_machines {
+                let states: Vec<(&str, Vec<&str>)> = md
+                    .states
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.name.as_str(),
+                            s.fields.iter().map(|(name, _)| name.as_str()).collect(),
+                        )
+                    })
+                    .collect();
+                let events: Vec<(&str, Vec<&str>)> = md
+                    .events
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.name.as_str(),
+                            e.fields.iter().map(|(name, _)| name.as_str()).collect(),
+                        )
+                    })
+                    .collect();
+                print_list_entry(
+                    &md.name,
+                    &states,
+                    &events,
+                    md.transitions.len(),
+                    md.has_default,
+                    &md.emits,
+                );
             }
         }
-        println!("  Transitions: {}", md.transitions.len());
-        if md.has_default {
-            println!("  Default: unhandled events stay in current state");
-        }
-        // fix 3: Emits section in cmd_list.
-        if !md.emits.is_empty() {
-            println!("  Emits: {}", md.emits.join(", "));
-        }
-        println!("}}");
-        println!();
     }
 }
 
@@ -205,50 +326,30 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
                 // Fall through to AST rendering below.
             }
             MachineCheckResult::Checked(hir_machines) => {
-                // HIR is flat by invariant — composite grouping and the emits
-                // manifest live only on the AST. Build both side-tables keyed by
-                // machine name, threaded alongside the HIR (same pattern as
-                // groups_by_name that already existed for composites).
-                let groups_by_name: std::collections::HashMap<
-                    &str,
-                    &[hew_parser::ast::CompositeGroup],
-                > = ast_machines
-                    .iter()
-                    .map(|m| (m.name.as_str(), m.composite_groups.as_slice()))
-                    .collect();
-                // fix 3: emits manifest side-table for the HIR path.
-                let emits_by_name: std::collections::HashMap<&str, &[String]> = ast_machines
-                    .iter()
-                    .map(|m| (m.name.as_str(), m.emits.as_slice()))
-                    .collect();
+                let views = machine_views(&hir_machines, &ast_machines);
 
                 // Filter by --machine if specified.
-                let filtered: Vec<&HirMachineDecl> = if let Some(name) = &args.machine_name {
-                    let matched: Vec<_> = hir_machines.iter().filter(|m| &m.name == name).collect();
+                let filtered: Vec<&MachineView<'_>> = if let Some(name) = &args.machine_name {
+                    let matched: Vec<_> =
+                        views.iter().filter(|view| &view.hir.name == name).collect();
                     if matched.is_empty() {
                         eprintln!("No machine named `{name}` found in {path}");
                         std::process::exit(1);
                     }
                     matched
                 } else {
-                    hir_machines.iter().collect()
+                    views.iter().collect()
                 };
 
-                for machine in filtered {
-                    let groups = groups_by_name
-                        .get(machine.name.as_str())
-                        .copied()
-                        .unwrap_or(&[]);
-                    let emits = emits_by_name
-                        .get(machine.name.as_str())
-                        .copied()
-                        .unwrap_or(&[]);
+                for view in filtered {
                     match format {
-                        MachineFormat::Mermaid => print_mermaid_hir(machine, groups, emits),
-                        MachineFormat::Graphviz | MachineFormat::Dot => {
-                            print_dot_hir(machine, groups, emits);
+                        MachineFormat::Mermaid => {
+                            print_mermaid_hir(view.hir, view.groups, view.emits);
                         }
-                        MachineFormat::Json => print_json_hir(machine, groups, emits),
+                        MachineFormat::Graphviz | MachineFormat::Dot => {
+                            print_dot_hir(view.hir, view.groups, view.emits);
+                        }
+                        MachineFormat::Json => print_json_hir(view.hir, view.groups, view.emits),
                     }
                 }
                 return;

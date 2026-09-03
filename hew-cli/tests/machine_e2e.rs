@@ -819,3 +819,214 @@ fn machine_diagram_json_event_fields_present() {
         "JSON must include empty fields array for payload-free events; stdout:\n{stdout}"
     );
 }
+
+// ── machines reached through an import (#3229) ───────────────────────────────
+
+/// A file whose only machine arrives through an import: the machine lives in
+/// `std/machines/toggle.hew` and the root declares none of its own.
+fn imported_only_fixture() -> &'static str {
+    "import std.machines.toggle.{Toggle, ToggleEvent};\n\
+     fn main() {\n\
+     \x20   var t: Toggle = .Off;\n\
+     \x20   t.step(ToggleEvent.Flip);\n\
+     \x20   println(t.state_name());\n\
+     }\n"
+}
+
+/// A root machine beside an imported one, so the command has to render both.
+fn local_and_imported_fixture() -> &'static str {
+    "import std.machines.toggle.{Toggle, ToggleEvent};\n\
+     machine Door {\n\
+     \x20   events { Push; }\n\
+     \x20   state Closed;\n\
+     \x20   state Open;\n\
+     \x20   on Push: Closed => Open { .Open }\n\
+     \x20   on Push: Open => Closed { .Closed }\n\
+     }\n\
+     fn main() {\n\
+     \x20   var d: Door = .Closed;\n\
+     \x20   d.step(.Push);\n\
+     \x20   var t: Toggle = .Off;\n\
+     \x20   t.step(ToggleEvent.Flip);\n\
+     \x20   println(f\"{d.state_name()} {t.state_name()}\");\n\
+     }\n"
+}
+
+#[test]
+fn machine_diagram_renders_a_machine_reached_only_through_an_import() {
+    let dir = support::tempdir();
+    let input = dir.path().join("driver.hew");
+    std::fs::write(&input, imported_only_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "a file that only drives an imported machine must diagram it; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("stateDiagram-v2"), "stdout:\n{stdout}");
+    assert!(stdout.contains("[*] --> Off"), "stdout:\n{stdout}");
+    assert!(stdout.contains("Off --> On : Flip"), "stdout:\n{stdout}");
+    assert!(stdout.contains("On --> Off : Flip"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn machine_list_renders_a_machine_reached_only_through_an_import() {
+    let dir = support::tempdir();
+    let input = dir.path().join("driver.hew");
+    std::fs::write(&input, imported_only_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["machine", "list"])
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("machine Toggle {"), "stdout:\n{stdout}");
+    assert!(stdout.contains("    Off"), "stdout:\n{stdout}");
+    assert!(stdout.contains("    On"), "stdout:\n{stdout}");
+    assert!(stdout.contains("    Flip"), "stdout:\n{stdout}");
+    assert!(stdout.contains("  Transitions: 2"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn machine_diagram_renders_the_local_and_the_imported_machine() {
+    // Counterpart to the import-only case: rendering imported machines must not
+    // cost the file its own, and `--machine` still selects one of the two.
+    let dir = support::tempdir();
+    let input = dir.path().join("both.hew");
+    std::fs::write(&input, local_and_imported_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.matches("stateDiagram-v2").count(),
+        2,
+        "one diagram for the local machine and one for the imported; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Closed --> Open : Push"),
+        "stdout:\n{stdout}"
+    );
+    assert!(stdout.contains("Off --> On : Flip"), "stdout:\n{stdout}");
+
+    let selected = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(&input)
+        .args(["--machine", "Toggle"])
+        .output()
+        .unwrap();
+    assert!(selected.status.success());
+    let selected = String::from_utf8_lossy(&selected.stdout);
+    assert_eq!(
+        selected.matches("stateDiagram-v2").count(),
+        1,
+        "--machine must select one; stdout:\n{selected}"
+    );
+    assert!(
+        !selected.contains("Closed --> Open : Push"),
+        "--machine Toggle must not render Door; stdout:\n{selected}"
+    );
+}
+
+#[test]
+fn machine_diagram_renders_no_machine_a_file_does_not_reach() {
+    // Negative control for the import path: the standard library declares
+    // machines, and a file that imports none of them must diagram none.
+    let dir = support::tempdir();
+    let input = dir.path().join("light.hew");
+    std::fs::write(&input, machine_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.matches("stateDiagram-v2").count(),
+        1,
+        "only the file's own machine may render; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Flip"),
+        "no unimported standard-library machine may appear; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn machine_diagram_succeeds_on_every_compiling_machine_example() {
+    // The shipped examples are the front door: every one that compiles must
+    // diagram. The `reject_*` fixtures are deliberate compile errors and are
+    // this test's negative control — they must keep failing, not be skipped.
+    let examples = support::repo_root().join("examples/machine");
+    let mut sources: Vec<std::path::PathBuf> = std::fs::read_dir(&examples)
+        .unwrap_or_else(|e| panic!("read {}: {e}", examples.display()))
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "hew"))
+        .collect();
+    sources.sort();
+    assert!(
+        sources.len() > 1,
+        "expected machine examples under {}",
+        examples.display()
+    );
+
+    let mut rejected = 0usize;
+    for source in &sources {
+        let name = source.file_name().unwrap().to_string_lossy().into_owned();
+        let output = Command::new(hew_binary())
+            .args(["machine", "diagram"])
+            .arg(source)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if name.starts_with("reject_") {
+            rejected += 1;
+            assert!(
+                !output.status.success(),
+                "{name} is a reject fixture and must not diagram; stdout:\n{stdout}"
+            );
+            continue;
+        }
+
+        assert!(
+            output.status.success(),
+            "{name}: `hew machine diagram` must succeed; stderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains("stateDiagram-v2"),
+            "{name}: must emit a state diagram; stdout:\n{stdout}"
+        );
+    }
+    assert!(
+        rejected > 0,
+        "the reject fixtures are this test's negative control; none were found"
+    );
+}

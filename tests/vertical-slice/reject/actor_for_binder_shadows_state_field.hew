@@ -1,0 +1,33 @@
+// Reject fixture: a `for` binder may not take an actor state field's name.
+//
+// The field is bound for the whole actor body under its bare name, and
+// `self.count` is that same binding spelled through the receiver. A binder of
+// the same name used to split one field into two storages: the write
+// classified as an actor field by name and landed in state, while the read
+// resolved to the innermost binding and came back as the loop variable. The
+// program below printed 31 instead of 3.
+//
+// `let`, `var`, parameter, and match binders already reject this collision.
+// The induction variable is not exempt from it.
+actor Counter {
+    var count: i64;
+
+    receive fn go() {
+        for count in [10, 20, 30] {
+            self.count = self.count + 1;
+        }
+    }
+
+    receive fn total() -> i64 {
+        self.count
+    }
+}
+
+fn main() {
+    let counter = spawn Counter(count: 0);
+    counter.go();
+    match await counter.total() {
+        .Ok(total) => println(total),
+        .Err(_) => println("ask failed"),
+    }
+}

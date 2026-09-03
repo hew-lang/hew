@@ -7696,6 +7696,12 @@ struct LowerCtx {
     /// `mem::replace` so the outer self-binding doesn't leak into an inner
     /// lambda's classification.
     current_actor_self: Option<(BindingId, String)>,
+    /// Checker-resolved `self.field` projections that name the enclosing
+    /// actor's own state. Keyed by the projection's span; the field name is in
+    /// the AST at that span. The checker decides this while the actor's fields
+    /// and the enclosing scope are both in hand, so lowering consumes the
+    /// answer rather than re-deriving it from a mirror of the field names.
+    actor_self_state_fields: HashSet<SpanKey>,
     /// Checker-resolved type arguments for generic function calls that
     /// lack explicit type annotations. Keyed by the call expression span.
     ///
@@ -8660,6 +8666,7 @@ impl LowerCtx {
             current_return_type: None,
             await_position: AwaitPosition::Other,
             current_actor_self: None,
+            actor_self_state_fields: tc_output.actor_self_state_fields.clone(),
             call_type_args: tc_output.call_type_args.clone(),
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
@@ -18401,6 +18408,17 @@ impl LowerCtx {
         let in_stmt_position = await_position == AwaitPosition::Statement;
         let in_bindable_value_position = await_position == AwaitPosition::BindableValueLet;
         let span = expr.1.clone();
+        // `self.count` inside an actor body names the state binding `count`.
+        // The checker resolved the projection to that binding and published the
+        // span, so rewrite the receiver spelling to the bare name and lower it
+        // through the identifier shell: both spellings then produce one binding
+        // reference, and MIR sees one place.
+        if let Expr::FieldAccess { field, .. } = &expr.0 {
+            if self.actor_self_state_fields.contains(&self.mk_key(&span)) {
+                let bare = Expr::Identifier(field.clone());
+                return self.lower_expr_inner(&(bare, span), intent);
+            }
+        }
         if let Expr::Call {
             function,
             type_args,

@@ -349,9 +349,20 @@ impl Checker {
     /// - **Outer-scope shadowing of a user-defined local variable**: warning, so the
     ///   programmer is informed but the program is not rejected.
     ///
-    /// Bindings with an underscore prefix and for-loop induction variables are always exempt.
+    /// Bindings with an underscore prefix are always exempt, and so are
+    /// for-loop induction variables — except when the name is an actor state
+    /// field. A state field is bound for the whole actor body under its bare
+    /// name, and `self.count` is that same binding spelled through the
+    /// receiver, so a binder that takes the name splits one field into two
+    /// storages: the write classifies as an actor field by name while the read
+    /// resolves to the innermost binding, the loop variable. Every other binder
+    /// kind already rejects that collision here; the induction variable is not
+    /// special enough to be allowed to make a field ambiguous.
     pub(super) fn check_shadowing(&mut self, name: &str, span: &Span) {
-        if name.starts_with('_') || self.in_for_binding {
+        if name.starts_with('_') {
+            return;
+        }
+        if self.in_for_binding && !self.current_actor_fields.iter().any(|f| f.name == name) {
             return;
         }
 

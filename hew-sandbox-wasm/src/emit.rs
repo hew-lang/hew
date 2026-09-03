@@ -1250,6 +1250,17 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         }
     }
 
+    /// Whether the projection at `span` is the receiver spelling of an actor
+    /// state field. The checker resolved it and published the span; the field
+    /// name is in the AST there. Reading the published fact keeps the sandbox
+    /// and the native lowerer agreeing on which spelling a projection is.
+    fn is_actor_self_state_field(&self, span: &std::ops::Range<usize>) -> bool {
+        self.package
+            .type_output
+            .actor_self_state_fields
+            .contains(&SpanKey::from(span))
+    }
+
     fn finish(self) -> Vec<Block> {
         self.blocks.into_iter().map(BlockBuilder::finish).collect()
     }
@@ -1438,6 +1449,19 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 self.lower_expr(expr)?;
             }
             Stmt::Assign { target, op, value } => {
+                // A state-field write through the receiver is a write to the
+                // state local: rewrite the target once so the whole assignment
+                // path below runs the bare-name shell.
+                let receiver_target;
+                let target = match &target.0 {
+                    Expr::FieldAccess { field, .. }
+                        if self.is_actor_self_state_field(&target.1) =>
+                    {
+                        receiver_target = (Expr::Identifier(field.clone()), target.1.clone());
+                        &receiver_target
+                    }
+                    _ => target,
+                };
                 if let Expr::Identifier(name) = &target.0 {
                     if let Some(local) = self.bindings.get(name).cloned() {
                         let rhs_local = self.lower_expr(value)?;
@@ -1635,6 +1659,15 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
     )]
     fn lower_expr(&mut self, expr: &Spanned<Expr>) -> Result<String, CompileError> {
         let (kind, span) = expr;
+        // `self.count` in an actor body names the state local `count`. The
+        // span is unchanged, so the checker-recorded type still resolves, and
+        // the receiver spelling reaches the same local the bare spelling does.
+        if let Expr::FieldAccess { field, .. } = kind {
+            if self.is_actor_self_state_field(span) {
+                let bare = (Expr::Identifier(field.clone()), span.clone());
+                return self.lower_expr(&bare);
+            }
+        }
         match kind {
             Expr::ContextVariant(context) => {
                 if let Ty::Named { name, .. } = self.ty_for_expr(expr) {

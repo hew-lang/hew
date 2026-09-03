@@ -229,12 +229,21 @@ impl Checker {
         Some(self.project_assoc_types(&item_projection))
     }
 
-    fn assignment_root_binding_name(expr: &Expr) -> Option<&str> {
+    fn assignment_root_binding_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
         match expr {
             Expr::Identifier(name) => Some(name.as_str()),
-            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
-                Self::assignment_root_binding_name(&object.0)
+            Expr::FieldAccess { object, field } => {
+                // The receiver is not a binding: `self.items[0]` is rooted in
+                // the state binding `items`, exactly where the bare spelling
+                // roots it. Without this the mutability and written-ness rules
+                // keyed on the root would look up a binding called `self`,
+                // find none, and silently pass a write they must reject.
+                if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
+                    return Some(state_field);
+                }
+                self.assignment_root_binding_name(&object.0)
             }
+            Expr::Index { object, .. } => self.assignment_root_binding_name(&object.0),
             _ => None,
         }
     }
@@ -1300,6 +1309,27 @@ impl Checker {
                 }
             }
             Stmt::Assign { target, op, value } => {
+                // `self.count = ...` in an actor body writes the state binding
+                // `count`. Rewrite the target to that bare name once, here, so
+                // the whole assignment rule below — target classification,
+                // mutability, place reinitialisation, RHS checking — runs the
+                // identical path the bare spelling runs, rather than each of
+                // those steps learning about the receiver separately.
+                let receiver_target;
+                let target = match &target.0 {
+                    Expr::FieldAccess { object, field } => {
+                        match self.actor_self_state_field(&object.0, field) {
+                            Some(state_field) => {
+                                let state_field = state_field.to_string();
+                                self.record_actor_self_state_field(&target.1);
+                                receiver_target = (Expr::Identifier(state_field), target.1.clone());
+                                &receiver_target
+                            }
+                            None => target,
+                        }
+                    }
+                    _ => target,
+                };
                 // Classify the assignment target for the side-table before synthesising
                 // so that the entry is always emitted whenever the target is syntactically
                 // valid, regardless of whether subsequent type-checking finds errors.
@@ -1338,6 +1368,17 @@ impl Checker {
                 // roots that are known immutable so users see the value-type
                 // rule, not just a generic binding error.
                 if let Expr::FieldAccess { object, field } = &target.0 {
+                    // A state-field target was rewritten to its bare name
+                    // above, so a `self.` target still standing here names no
+                    // state field. Its receiver is not a value and must not be
+                    // synthesised as one: `check_field_access` owns that
+                    // diagnostic, and synthesising `self` would stack a second
+                    // error on the same mistake.
+                    if self.is_actor_self_receiver(&object.0) {
+                        self.synthesize(&target.0, &target.1);
+                        self.synthesize(&value.0, &value.1);
+                        return;
+                    }
                     // The object is the base of the target place, not a
                     // whole-value use: writing `h.sock` after `h.other` moved
                     // out is legal.
@@ -1346,7 +1387,8 @@ impl Checker {
                     self.place_base_depth -= 1;
                     let resolved = self.subst.resolve(&obj_ty);
                     if let Ty::Named { name, .. } = &resolved {
-                        let root_is_mutable = Self::assignment_root_binding_name(&target.0)
+                        let root_is_mutable = self
+                            .assignment_root_binding_name(&target.0)
                             .is_some_and(|root| {
                                 self.current_actor_fields.iter().any(|f| f.name == root)
                                     || self
@@ -1418,7 +1460,7 @@ impl Checker {
                 }
                 let root_binding_name = match &target.0 {
                     Expr::Identifier(_) | Expr::FieldAccess { .. } | Expr::Index { .. } => {
-                        Self::assignment_root_binding_name(&target.0)
+                        self.assignment_root_binding_name(&target.0)
                     }
                     _ => None,
                 };
@@ -1548,7 +1590,7 @@ impl Checker {
                 // Evaluated after the RHS so `sock = take_from(sock)` still
                 // reports the read.
                 if op.is_none() {
-                    if let Some((root, path)) = Checker::expr_place(&target.0) {
+                    if let Some((root, path)) = self.expr_place(&target.0) {
                         self.env.reinit_place(&root, &path);
                     }
                 }
@@ -1561,7 +1603,7 @@ impl Checker {
                 } = expr
                 {
                     if method == "set" {
-                        if let Some(name) = Self::assignment_root_binding_name(&receiver.0) {
+                        if let Some(name) = self.assignment_root_binding_name(&receiver.0) {
                             self.env.mark_written(name);
                         }
                     }

@@ -1,0 +1,16 @@
+// Reject fixture: mutability is decided by the binding the target is rooted
+// in, and `self.items[0]` roots in the state binding `items` exactly as
+// `items[0]` does. A receiver that resolved no root would look up a binding
+// called `self`, find none, and pass the write through.
+actor Bag {
+    let items: Vec<i64>;
+
+    receive fn poke() {
+        self.items[0] = 5;
+    }
+}
+
+fn main() {
+    let bag = spawn Bag(items: Vec.new());
+    bag.poke();
+}

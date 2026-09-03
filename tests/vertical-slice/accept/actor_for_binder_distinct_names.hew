@@ -1,0 +1,40 @@
+// Accept fixture: the negative control for
+// `actor_for_binder_shadows_state_field.hew`.
+//
+// Two things must keep working after a `for` binder is made to respect actor
+// state fields. A binder whose name is not a field is unaffected, and the
+// loop-variable exemption from the shadowing lints is otherwise intact: the
+// inner `i` below shadows the outer `i` and stays accepted, as does a binder
+// that shadows a `let` in the enclosing scope.
+//
+// Reading through the receiver in the same loops pins the value: the state
+// field is the storage every access reaches.
+actor Counter {
+    var count: i64;
+
+    receive fn go() {
+        let step = 100;
+        for i in 0..2 {
+            for i in 0..2 {
+                self.count = self.count + i;
+            }
+        }
+        for step in 0..3 {
+            self.count = self.count + step;
+        }
+        self.count = self.count + step;
+    }
+
+    receive fn total() -> i64 {
+        self.count
+    }
+}
+
+fn main() {
+    let counter = spawn Counter(count: 0);
+    counter.go();
+    match await counter.total() {
+        .Ok(total) => println(total),
+        .Err(_) => println("ask failed"),
+    }
+}

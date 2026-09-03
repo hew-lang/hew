@@ -229,6 +229,17 @@ pub struct TypeCheckOutput {
     /// combines it with an actual representation-replacing write before
     /// granting a representation loan; absence always fails closed.
     pub caller_visible_param_projections: HashSet<SpanKey>,
+    /// Spans of `self.field` projections the checker resolved to the enclosing
+    /// actor's own state field.
+    ///
+    /// An actor's state fields are ordinary bindings under their bare names for
+    /// the whole body; `self.count` is that same binding spelled through the
+    /// receiver. Deciding which spelling a projection is happens once, here,
+    /// while the actor's fields and the enclosing scope are both in hand. Every
+    /// lowerer reads this set rather than re-deriving the answer from a mirror
+    /// of the field names, so the two spellings cannot drift apart in one
+    /// backend and not another.
+    pub actor_self_state_fields: HashSet<SpanKey>,
     /// W4.047 P1.1 — the **typed** checker→HIR handoff side-table.
     ///
     /// Carries the post-substitution, post-literal-defaulting [`ResolvedTy`]
@@ -1287,6 +1298,7 @@ impl Default for TypeCheckOutput {
             produced_value_ownership: HashMap::new(),
             produced_value_dependencies: HashMap::new(),
             caller_visible_param_projections: HashSet::new(),
+            actor_self_state_fields: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
@@ -2690,6 +2702,9 @@ pub struct Checker {
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::caller_visible_param_projections`].
     pub(super) caller_visible_param_projections: HashSet<SpanKey>,
+    /// Checker-side accumulator for
+    /// [`TypeCheckOutput::actor_self_state_fields`].
+    pub(super) actor_self_state_fields: HashSet<SpanKey>,
     pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
@@ -3296,7 +3311,9 @@ pub struct Checker {
     pub(super) call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).
     pub(super) current_function: Option<String>,
-    /// Whether we are currently inside a for-loop binding (suppress shadowing for loop vars).
+    /// Whether we are currently inside a for-loop binding. Loop variables are
+    /// exempt from the shadowing lints, except over an actor state field —
+    /// see `check_shadowing`.
     pub(super) in_for_binding: bool,
     /// Names actually bound by each top-level pattern, keyed by the pattern's
     /// span. Recorded by `bind_pattern` — the single binder-vs-constructor
@@ -3790,6 +3807,7 @@ impl Checker {
             registration_is_flat_file_import: false,
             flat_file_import_module_names: HashSet::new(),
             caller_visible_param_projections: HashSet::new(),
+            actor_self_state_fields: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),

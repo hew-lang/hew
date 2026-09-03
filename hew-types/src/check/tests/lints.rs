@@ -2377,6 +2377,60 @@ fn test_actor_field_shadowing_is_error() {
 }
 
 #[test]
+fn for_binder_shadowing_actor_field_is_error() {
+    // A `for` binder is exempt from the shadowing lints, but not over an actor
+    // state field. Without the carve-out the write below classified as an
+    // actor field by name and landed in state while the read resolved to the
+    // innermost binding and came back as the loop variable, so one statement
+    // reached two storages and the program silently computed the wrong total.
+    let source = r"
+        actor Counter {
+            var count: i64 = 0;
+            receive fn go() {
+                for count in [10, 20, 30] {
+                    count = count + 1;
+                }
+            }
+        }
+    ";
+    let (errors, _warnings) = parse_and_check(source);
+    assert!(
+        errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
+            && e.message
+                .contains("variable `count` shadows a binding in an outer scope")),
+        "should error on for binder shadowing actor field, got: {errors:?}",
+    );
+}
+
+#[test]
+fn for_binder_shadowing_a_local_stays_exempt() {
+    // The carve-out is scoped to state field names. Reusing a loop variable
+    // over an enclosing local is idiomatic and unambiguous, so it must stay
+    // silent — neither an error nor the shadowing warning a `let` would draw.
+    let source = r"
+        actor Counter {
+            var count: i64 = 0;
+            receive fn go() {
+                let step = 100;
+                for step in 0..3 {
+                    count = count + step;
+                }
+                count = count + step;
+            }
+        }
+    ";
+    let (errors, warnings) = parse_and_check(source);
+    assert!(
+        !errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing),
+        "a loop variable over a local is not a shadowing error, got: {errors:?}",
+    );
+    assert!(
+        !warnings.iter().any(|w| w.kind == TypeErrorKind::Shadowing),
+        "a loop variable over a local is not warned about, got: {warnings:?}",
+    );
+}
+
+#[test]
 fn test_actor_fn_method_field_shadowing_is_error() {
     // Shadowing an actor field via an fn helper method is also a hard error.
     let source = r"

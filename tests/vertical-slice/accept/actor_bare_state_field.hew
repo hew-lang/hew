@@ -1,0 +1,53 @@
+// Accept fixture: the bare-field twin of `actor_self_state_field.hew`. Same
+// program, same order, every state access spelled without the receiver.
+//
+// It exists so the receiver spelling has a control to be identical to: run.sh
+// pins the two expected outputs byte-identical, so a divergence in type,
+// mutability, or lowering between `self.count` and `count` shows up as a
+// stdout difference rather than passing unnoticed.
+type Point {
+    x: i64,
+    y: i64,
+}
+
+impl Point {
+    fn sum(self) -> i64 {
+        self.x + self.y
+    }
+}
+
+actor Ledger {
+    var count: i64;
+    var label: string;
+    var items: Vec<i64>;
+    var origin: Point;
+
+    receive fn record(n: i64) {
+        count = count + n;
+        count += 1;
+        items.push(count);
+        label = "recorded";
+    }
+
+    receive fn tally() -> i64 {
+        count * 1000 + (items.len() as i64) * 100 + origin.sum()
+    }
+
+    receive fn name() -> string {
+        label
+    }
+}
+
+fn main() {
+    let ledger = spawn Ledger(count: 0, label: "new", items: Vec.new(), origin: Point { x: 3, y: 4 });
+    ledger.record(4);
+    ledger.record(2);
+    match await ledger.name() {
+        .Ok(line) => println(line),
+        .Err(_) => println("ask failed"),
+    }
+    match await ledger.tally() {
+        .Ok(total) => println(total),
+        .Err(_) => println("ask failed"),
+    }
+}

@@ -135,7 +135,7 @@ fn test_actor_method_valid_field_access() {
 }
 
 #[test]
-fn test_actor_receive_self_uses_actor_guidance() {
+fn test_actor_receive_self_field_reads_state() {
     let output = typecheck(
         r"
         actor Counter {
@@ -149,14 +149,72 @@ fn test_actor_receive_self_uses_actor_guidance() {
         fn main() {}
     ",
     );
+    assert!(
+        output.errors.is_empty(),
+        "`self.count` should read the actor's own state: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn test_actor_self_unknown_field_reports_against_state() {
+    let output = typecheck(
+        r"
+        actor Counter {
+            let count: i32;
+
+            receive fn current() -> i32 {
+                self.counts
+            }
+        }
+
+        fn main() {}
+    ",
+    );
+    let error = output
+        .errors
+        .iter()
+        .find(|e| e.message.contains("`counts`"))
+        .expect("expected an error naming the missing field");
+    assert!(
+        error.message.contains("actor state has no field"),
+        "a missing field should be reported against the actor's state: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("not a valid identifier")),
+        "the receiver must not also be reported as an undefined name: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn test_actor_bare_self_uses_actor_guidance() {
+    let output = typecheck(
+        r"
+        actor Counter {
+            let count: i32;
+
+            receive fn current() -> i32 {
+                let held = self;
+                count
+            }
+        }
+
+        fn main() {}
+    ",
+    );
     let self_error = output
         .errors
         .iter()
         .find(|e| e.message.contains("`self`"))
         .expect("expected an error mentioning `self`");
     assert!(
-        self_error.message.contains("bare field names like `count`"),
-        "actor `self` guidance should mention bare field access: {:?}",
+        self_error.message.contains("self.count"),
+        "actor `self` guidance should point at the field spelling: {:?}",
         output.errors
     );
     assert!(
@@ -172,17 +230,20 @@ fn test_actor_receive_self_uses_actor_guidance() {
 }
 
 #[test]
-fn test_actor_init_and_method_self_use_actor_guidance() {
+fn test_actor_init_and_method_self_field_reads_state() {
     // The `terminate { }` block surface was retired; the equivalent
     // `#[on(stop)]` fn is exercised by the dedicated lifecycle-hook
     // fixtures (see `hew-types/tests/actor_lifecycle_hooks.rs`).
+    //
+    // The receiver reaches state from every body that binds the fields, not
+    // just from `receive fn`: init and plain actor methods included.
     let output = typecheck(
         r"
         actor Counter {
-            let count: i32;
+            var count: i32;
 
             init() {
-                self.count
+                self.count = 1;
             }
 
             fn current() -> i32 {
@@ -193,34 +254,67 @@ fn test_actor_init_and_method_self_use_actor_guidance() {
         fn main() {}
     ",
     );
-    let self_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.message.contains("`self`"))
-        .collect();
-    assert_eq!(
-        self_errors.len(),
-        2,
-        "expected actor-specific `self` errors in init and method: {:?}",
+    assert!(
+        output.errors.is_empty(),
+        "`self.count` should reach state from init and actor methods: {:?}",
         output.errors
     );
-    for self_error in self_errors {
-        assert!(
-            self_error.message.contains("bare field names like `count`"),
-            "actor `self` guidance should mention bare field access: {:?}",
-            output.errors
-        );
-        assert!(
-            self_error.message.contains("`this`"),
-            "actor `self` guidance should mention `this`: {:?}",
-            output.errors
-        );
-        assert!(
-            !self_error.message.contains("named receiver parameter"),
-            "actor `self` guidance should not use trait/impl receiver advice: {:?}",
-            output.errors
-        );
-    }
+}
+
+#[test]
+fn test_actor_self_field_write_obeys_field_mutability() {
+    let output = typecheck(
+        r"
+        actor Counter {
+            let count: i32;
+
+            receive fn bump() {
+                self.count = 1;
+            }
+        }
+
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("immutable field `count`")),
+        "a write through the receiver should hit the same mutability rule as \
+         a bare write: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn test_actor_self_nested_write_obeys_field_mutability() {
+    // The mutability rule is keyed on the binding the target is rooted in, and
+    // the receiver is not a binding. A target that only reaches the receiver
+    // below an index or a further projection must still root in the state
+    // field, or the write passes on a `let` field.
+    let output = typecheck(
+        r"
+        actor Bag {
+            let items: Vec<i64>;
+
+            receive fn poke() {
+                self.items[0] = 5;
+            }
+        }
+
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("immutable field `items`")),
+        "an indexed write through the receiver should reject like the bare \
+         spelling: {:?}",
+        output.errors
+    );
 }
 
 #[test]

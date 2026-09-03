@@ -1,0 +1,28 @@
+// Reject fixture: the bare twin of `actor_for_binder_shadows_state_field.hew`.
+//
+// The collision is a property of the name, not of how the access is spelled,
+// so the rule lives in the shadowing check and both spellings reject there.
+// Pinning the bare twin proves the fix is not a special case bolted onto the
+// receiver path — this program is the one that mis-ran on main.
+actor Counter {
+    var count: i64;
+
+    receive fn go() {
+        for count in [10, 20, 30] {
+            count = count + 1;
+        }
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+fn main() {
+    let counter = spawn Counter(count: 0);
+    counter.go();
+    match await counter.total() {
+        .Ok(total) => println(total),
+        .Err(_) => println("ask failed"),
+    }
+}

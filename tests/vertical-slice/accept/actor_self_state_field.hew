@@ -1,0 +1,62 @@
+// Accept fixture: `self.field` is the receiver spelling of an actor's own
+// state. It reads, writes, and read-modify-writes the same storage the bare
+// field name reaches, projects further into a record field, and calls
+// methods on a collection field and on a record field.
+//
+// `actor_bare_state_field.hew` is the same program with every access spelled
+// bare, and run.sh pins the two expected outputs byte-identical: the receiver
+// spelling must resolve to one binding with one type, one mutability rule,
+// and one lowering, not to a parallel receiver path.
+//
+// `Point::sum(self)` in the same file keeps the impl receiver honest: there
+// `self` is a bound parameter and `self.x` stays an ordinary projection.
+//
+// A write through the record field (`self.origin.y = ...`) is deliberately
+// absent: #3266 drops that write for both spellings, so pinning it here would
+// pin the defect. Add it to both twins when that lands.
+type Point {
+    x: i64,
+    y: i64,
+}
+
+impl Point {
+    fn sum(self) -> i64 {
+        self.x + self.y
+    }
+}
+
+actor Ledger {
+    var count: i64;
+    var label: string;
+    var items: Vec<i64>;
+    var origin: Point;
+
+    receive fn record(n: i64) {
+        self.count = self.count + n;
+        self.count += 1;
+        self.items.push(self.count);
+        self.label = "recorded";
+    }
+
+    receive fn tally() -> i64 {
+        self.count * 1000 + (self.items.len() as i64) * 100 + self.origin.sum()
+    }
+
+    receive fn name() -> string {
+        self.label
+    }
+}
+
+fn main() {
+    let ledger = spawn Ledger(count: 0, label: "new", items: Vec.new(), origin: Point { x: 3, y: 4 });
+    ledger.record(4);
+    ledger.record(2);
+    match await ledger.name() {
+        .Ok(line) => println(line),
+        .Err(_) => println("ask failed"),
+    }
+    match await ledger.tally() {
+        .Ok(total) => println(total),
+        .Err(_) => println("ask failed"),
+    }
+}

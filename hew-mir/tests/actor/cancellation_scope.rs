@@ -685,10 +685,10 @@ fn scope_fork_after_lowers_to_executable_task_and_deadline_abi() {
 fn value_task_await_in_default_callconv_caller_fails_closed() {
     // A value-returning `fork x = compute(); let v = await x;` in a
     // Default-callconv function (here `main`) must be refused at MIR: the
-    // fork spawn itself emits `NotYetImplemented` (no execution-context to
-    // park a continuation on), and `lower_await_task` is an additional
+    // fork spawn itself emits `MainContextRequired` (D9: no execution-context
+    // to park a continuation on), and `lower_await_task` is an additional
     // defence-in-depth gate. This test asserts the pipeline emits a
-    // `NotYetImplemented` diagnostic — the value-task result-read path is
+    // `MainContextRequired` diagnostic — the value-task result-read path is
     // not wired for blocking callers.
     let source = r"
         fn compute() -> i64 { 42 }
@@ -701,16 +701,23 @@ fn value_task_await_in_default_callconv_caller_fails_closed() {
         }
     ";
     let mir = lower_to_mir(source);
+    let has_main_context_required = mir.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::MainContextRequired { spawned } if spawned == "compute"
+        )
+    });
     let has_nyi = mir.diagnostics.iter().any(|d| {
         matches!(
             &d.kind,
             MirDiagnosticKind::NotYetImplemented { construct, .. }
-                if construct.contains("cannot spawn") || construct.contains("await task result")
+                if construct.contains("await task result")
         )
     });
     assert!(
-        has_nyi,
-        "value-task await from a Default-callconv caller must emit NotYetImplemented; \
+        has_main_context_required || has_nyi,
+        "value-task await from a Default-callconv caller must emit \
+         MainContextRequired; \
          capabilities: hew_mir::ModuleCapabilities::EMPTY,
          diagnostics: {:#?}",
         mir.diagnostics

@@ -4,8 +4,8 @@
 //
 // Harness verb: hew compile
 // Expected diagnostics:
-//   - E_NOT_YET_IMPLEMENTED
-//   - "cannot spawn `worker` from `main`"
+//   - E_LIMIT_MAIN_CONTEXT (compiler limitation channel, exit 3)
+//   - "spawning `worker` needs an execution context"
 //   - "ctx-bearing execution context"
 //   - "W4.010-followup-caller-ctx-routing"
 

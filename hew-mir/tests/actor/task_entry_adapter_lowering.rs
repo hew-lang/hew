@@ -144,8 +144,7 @@ fn default_callconv_spawn_rejects_before_spawn_task_direct() {
         pipeline.diagnostics.iter().any(|diag| {
             matches!(
                 &diag.kind,
-                MirDiagnosticKind::NotYetImplemented { construct, .. }
-                    if construct.contains("cannot spawn `worker` from `main`")
+                MirDiagnosticKind::MainContextRequired { spawned } if spawned == "worker"
             ) && diag.note.contains("ctx-bearing execution context")
                 && diag.note.contains("Default call-conv")
                 && diag.note.contains("W4.010-followup-caller-ctx-routing")

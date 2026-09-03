@@ -1424,10 +1424,20 @@ not how actor state is read.
 `this` is not a keyword and carries no actor meaning; the handle is `self`
 everywhere.
 
-A plain `fn` in an actor body has no receiver. Its body is checked against the
-actor's fields by bare name like a handler's, but no call form reaches it today
-(#3285), so a helper over actor state is a `receive fn`, a lifecycle hook, or a
-free function that takes the state as a parameter.
+A plain `fn` in an actor body is an **actor method**: a helper over the actor's
+own state with no receiver. Its body is checked against the actor's fields by
+bare name like a handler's, and it is callable by bare name from that actor's
+handlers, lifecycle hooks, `init`, and sibling methods. It takes no mailbox
+slot: from outside the actor it is unreachable, and naming it there is
+`E_ACTOR_METHOD_OUTSIDE` — send a message instead.
+
+```hew
+actor Counter {
+    var count: i64 = 0;
+    fn next() -> i64 { count + 1 }
+    receive fn increment() { count = next(); }
+}
+```
 
 **Variable shadowing:**
 

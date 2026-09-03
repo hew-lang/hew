@@ -1489,7 +1489,21 @@ fn main() {
 }
 ```
 
-Put shared/helper logic in top-level free functions and call them from receive fns. (An actor's own non-receive `fn` method is not callable — extract helpers to free functions.)
+Put logic shared between actors in top-level free functions and call them from receive fns.
+
+### Actor methods
+
+A plain `fn` in an actor body is an actor method: a helper over that actor's own state, with the same bare field access a handler has. Call it by bare name from the actor's receive fns, lifecycle hooks, `init`, and sibling methods.
+
+```hew
+actor Counter {
+    var count: i64 = 0;
+    fn next() -> i64 { count + 1 }
+    receive fn increment() { count = next(); }
+}
+```
+
+An actor method has no mailbox slot, so it is unreachable from outside the actor — `Counter.next()` from `main` is `E_ACTOR_METHOD_OUTSIDE`. Send the actor a message instead; only a `receive fn` is reachable through a pid.
 
 ### Actor-to-actor messaging
 

@@ -1,0 +1,22 @@
+// §1.1: an `indirect` enum reaches itself through its own members, and the
+// recursion is legal only because the payload sits behind a heap box. The
+// declaration facts the aggregate rule sees carry the members, not the box,
+// so the class rule refuses rather than publishing a row. `Colour` is the
+// counterfactual in the same program: a non-recursive enum still classes.
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+enum Colour {
+    Red;
+    Green;
+}
+
+fn main() -> i64 {
+    let t: Tree = Tree.Leaf(1);
+    let c: Colour = Colour.Red;
+    let _ = t;
+    let _ = c;
+    0
+}

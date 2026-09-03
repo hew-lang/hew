@@ -3296,7 +3296,9 @@ pub struct Checker {
     pub(super) call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).
     pub(super) current_function: Option<String>,
-    /// Whether we are currently inside a for-loop binding (suppress shadowing for loop vars).
+    /// Whether we are currently inside a for-loop binding. Loop variables are
+    /// exempt from the shadowing lints, except over an actor state field —
+    /// see `check_shadowing`.
     pub(super) in_for_binding: bool,
     /// Names actually bound by each top-level pattern, keyed by the pattern's
     /// span. Recorded by `bind_pattern` — the single binder-vs-constructor

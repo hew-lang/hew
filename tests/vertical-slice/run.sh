@@ -1522,6 +1522,24 @@ run_accept_expect_stdout "actor_self_field_method_dispatch"
 diff -u "${ROOT}/tests/vertical-slice/accept/actor_field_method_dispatch.expected" \
     "${ROOT}/tests/vertical-slice/accept/actor_self_field_method_dispatch.expected"
 
+# A `for` binder may not take a state field's name in either spelling. The
+# binder used to capture the read while the write still landed in state, so one
+# statement reached two storages; both twins below mis-ran rather than failing.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_for_binder_shadows_state_field.hew" \
+    'variable `count` shadows a binding in an outer scope' \
+    "actor_for_binder_shadows_state_field"
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_for_binder_shadows_state_field_bare.hew" \
+    'variable `count` shadows a binding in an outer scope' \
+    "actor_for_binder_shadows_state_field_bare"
+
+# The negative control: binders that take no state field name still shadow each
+# other and an enclosing `let` freely, and the receiver reads the field.
+run_accept_expect_stdout "actor_for_binder_distinct_names"
+
 # Actor field mutability: a `let` state field is writable only inside
 # `init`; a receive-fn write must fail at check time and name the var fix.
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match

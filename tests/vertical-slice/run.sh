@@ -959,6 +959,25 @@ run_accept_expect_stdout "on_start_suspension_resumes"
 run_accept_expect_stdout "on_start_multi_suspension_resumes"
 run_accept_expect_stdout "init_suspension_resumes"
 
+# An actor-body plain `fn` is a callable (#3285): reachable by bare name from a
+# handler with the handler's own state access, from a sibling method, and from
+# `init` and an `#[on(start)]` hook — including when it WRITES state, where the
+# caller's dispatch phase decides the store transaction. The qualified
+# `Actor.method` spelling inside the actor resolves to the same declaration.
+# Exact-stdout oracles: the counterfactual (no MIR body, or the method's own
+# static transaction) is a compile refusal or a runtime trap, never wrong output.
+run_accept_expect_stdout "actor_method_bare_call"
+run_accept_expect_stdout "actor_method_calls_sibling_and_reads_state"
+run_accept_expect_stdout "actor_method_from_hook_and_init"
+
+# ... and unreachable from outside the actor, as a User-channel refusal rather
+# than the internal-error pair the unresolvable target used to produce.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_method_from_main.hew" \
+    "E_ACTOR_METHOD_OUTSIDE" \
+    "actor_method_from_main"
+echo "PASS actor_method_from_main (reject)"
+
 # A Sink<string> half moved into actor state is accepted: the actor's
 # state_drop_fn is the single free site (closed exactly once at teardown), so
 # the handle is not double-freed. Exact-stdout oracle prints the drained item.

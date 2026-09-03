@@ -1,0 +1,36 @@
+// `init` and an `#[on(start)]` hook reach the same actor method a handler
+// does, and a method that WRITES state works from all three: the caller's
+// state-cleanup phase, not the method's, decides the store transaction (#3285).
+actor Greeter {
+    var greeting: string = "";
+    var greeted: i64 = 0;
+
+    init(prefix: string) {
+        greeting = prefix;
+        remember();
+    }
+
+    #[on(start)]
+    fn started() {
+        remember();
+    }
+
+    fn remember() {
+        greeted = greeted + 1;
+    }
+
+    fn shout(name: string) -> string {
+        greeting + name
+    }
+
+    receive fn greet(name: string) {
+        remember();
+        println(shout(name));
+        println(greeted);
+    }
+}
+
+fn main() {
+    let g = spawn Greeter(prefix: "hello ");
+    g.greet("world");
+}

@@ -59,6 +59,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use args::Cli;
+use hew_types::error::DiagChannel;
 
 /// Stack budget for threads that run the in-process compiler pipeline.
 ///
@@ -168,14 +169,13 @@ fn render_pipeline_mir_diagnostics(
     label: &str,
     module: &hew_hir::HirModule,
     diagnostics: &[hew_mir::MirDiagnostic],
-) -> bool {
+) -> Option<hew_types::error::DiagChannel> {
     if diagnostics.is_empty() {
-        return false;
+        return None;
     }
     let module_source_map = diagnostic::build_module_source_map(program);
     let site_spans = hew_hir::collect_site_spans(module);
-    diagnostic::render_mir_diagnostics(source, label, &module_source_map, &site_spans, diagnostics);
-    true
+    diagnostic::render_mir_diagnostics(source, label, &module_source_map, &site_spans, diagnostics)
 }
 
 /// Surface the MIR-stage lint warnings recorded on `pipeline`, applying the
@@ -226,6 +226,7 @@ fn render_pipeline_mir_lints(
                         warning.lint.as_str(),
                         &warning.message,
                         false,
+                        hew_types::error::DiagChannel::User,
                     ));
                 } else {
                     diagnostic::render_warning_with_raw_notes(
@@ -247,6 +248,7 @@ fn render_pipeline_mir_lints(
                         warning.lint.as_str(),
                         &warning.message,
                         true,
+                        hew_types::error::DiagChannel::User,
                     ));
                 } else {
                     diagnostic::render_diagnostic_with_raw_notes(
@@ -286,7 +288,7 @@ fn lower_verified_hir_to_pipeline(
     tco: &hew_types::TypeCheckOutput,
     target: &target::TargetSpec,
     sir_mode: compile::SirMode,
-) -> Result<(hew_mir::IrPipeline, Option<SirLaneReport>), ()> {
+) -> Result<(hew_mir::IrPipeline, Option<SirLaneReport>), DiagChannel> {
     match sir_mode {
         compile::SirMode::Disabled => {
             let output = compiler_session(target).lower_hir_module(module, tco);
@@ -298,12 +300,13 @@ fn lower_verified_hir_to_pipeline(
             let component = session.lower_sir_module(&sir.module).map_err(|error| {
                 eprintln!("SIR strict lowering failed: {error}");
                 report_strict_sir_missing_body(&sir, error.missing_body);
+                DiagChannel::User
             })?;
             let callables = component.callables().to_vec();
             let pipeline = component.into_pipeline();
             if let Some(error) = session.check_pipeline(&pipeline) {
                 eprintln!("SIR strict backend-front validation failed: {error}");
-                return Err(());
+                return Err(DiagChannel::User);
             }
             Ok((pipeline, Some(SirLaneReport { sir, callables })))
         }
@@ -355,12 +358,14 @@ fn sir_unsupported_reason(status: Option<&hew_sir::SirLoweringStatus>) -> Option
     }
 }
 
-fn lower_verified_hir_to_sir(module: &hew_hir::HirModule) -> Result<hew_sir::LoweredModule, ()> {
+fn lower_verified_hir_to_sir(
+    module: &hew_hir::HirModule,
+) -> Result<hew_sir::LoweredModule, DiagChannel> {
     let mut sir = hew_sir::lower_module(module);
     let diagnostics = hew_sir::verify_module(&sir.module);
     if !diagnostics.is_empty() {
         render_sir_diagnostics("verifier", diagnostics);
-        return Err(());
+        return Err(DiagChannel::User);
     }
     if let Err(error) = hew_sir::canonicalize_module_constant_cfg(&mut sir.module) {
         let (stage, diagnostics) = match error {
@@ -372,7 +377,7 @@ fn lower_verified_hir_to_sir(module: &hew_hir::HirModule) -> Result<hew_sir::Low
             }
         };
         render_sir_diagnostics(stage, diagnostics);
-        return Err(());
+        return Err(DiagChannel::User);
     }
     Ok(sir)
 }
@@ -410,14 +415,15 @@ fn lower_file_to_verified_hir(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<VerifiedFileHir, ()> {
+) -> Result<VerifiedFileHir, DiagChannel> {
     let input = input_path.display().to_string();
     let fopts = compile::frontend_options(target, options);
     let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
-        compile::render_frontend_diagnostics(&failure.diagnostics);
+        let channel = compile::render_frontend_diagnostics(&failure.diagnostics);
         if failure.diagnostics.is_empty() {
             eprintln!("Error: {}", failure.message);
         }
+        channel.unwrap_or(DiagChannel::User)
     })?;
     compile::render_frontend_diagnostics(&state.diagnostics);
 
@@ -427,6 +433,7 @@ fn lower_file_to_verified_hir(
                 "Error: Hew lowering requires a type-checked program; \\
                  this path should be unreachable (no_typecheck = false)"
             );
+            DiagChannel::User
         })?;
         hew_hir::lower_program(
             &state.program,
@@ -454,8 +461,8 @@ fn lower_file_to_verified_hir(
             &input,
             hir_diagnostics,
         );
-        compile::render_frontend_diagnostics(&frontend_diagnostics);
-        return Err(());
+        let channel = compile::render_frontend_diagnostics(&frontend_diagnostics);
+        return Err(channel.unwrap_or(DiagChannel::User));
     }
 
     Ok(VerifiedFileHir {
@@ -471,9 +478,10 @@ fn lower_file_to_sir(
     input_path: &Path,
     requested_target: Option<&str>,
     options: &compile::CompileOptions,
-) -> Result<hew_sir::LoweredModule, ()> {
+) -> Result<hew_sir::LoweredModule, DiagChannel> {
     let target = target::TargetSpec::from_requested(requested_target).map_err(|error| {
         eprintln!("Error: {error}");
+        DiagChannel::User
     })?;
     let verified = lower_file_to_verified_hir(input_path, &target, options)?;
     lower_verified_hir_to_sir(&verified.lower_output.module)
@@ -483,9 +491,10 @@ fn lower_file_to_mir_with_options(
     input_path: &Path,
     requested_target: Option<&str>,
     options: &compile::CompileOptions,
-) -> Result<(hew_mir::IrPipeline, Option<SirLaneReport>), ()> {
+) -> Result<(hew_mir::IrPipeline, Option<SirLaneReport>), DiagChannel> {
     let target = target::TargetSpec::from_requested(requested_target).map_err(|e| {
         eprintln!("Error: {e}");
+        DiagChannel::User
     })?;
     let verified = lower_file_to_verified_hir(input_path, &target, options)?;
     let (pipeline, sir_report) = lower_verified_hir_to_pipeline(
@@ -494,14 +503,14 @@ fn lower_file_to_mir_with_options(
         &target,
         options.sir_mode,
     )?;
-    if render_pipeline_mir_diagnostics(
+    if let Some(channel) = render_pipeline_mir_diagnostics(
         &verified.state.program,
         &verified.state.source,
         &verified.input,
         &verified.lower_output.module,
         &pipeline.diagnostics,
     ) {
-        return Err(());
+        return Err(channel);
     }
 
     // `hew compile` exposes no `-A/-W/-D` flags, so MIR lints surface at their
@@ -512,7 +521,7 @@ fn lower_file_to_mir_with_options(
         &pipeline,
         &hew_types::LintLevels::default(),
     ) {
-        return Err(());
+        return Err(DiagChannel::User);
     }
 
     Ok((pipeline, sir_report))
@@ -527,7 +536,7 @@ fn lower_file_to_mir_for_target(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<(hew_mir::IrPipeline, Vec<std::path::PathBuf>), ()> {
+) -> Result<(hew_mir::IrPipeline, Vec<std::path::PathBuf>), DiagChannel> {
     let verified = lower_file_to_verified_hir(input_path, target, options)?;
     let (pipeline, sir_report) = lower_verified_hir_to_pipeline(
         &verified.lower_output.module,
@@ -538,14 +547,14 @@ fn lower_file_to_mir_for_target(
     if let Some(report) = sir_report.as_ref() {
         report_sir_lane(report);
     }
-    if render_pipeline_mir_diagnostics(
+    if let Some(channel) = render_pipeline_mir_diagnostics(
         &verified.state.program,
         &verified.state.source,
         &verified.input,
         &verified.lower_output.module,
         &pipeline.diagnostics,
     ) {
-        return Err(());
+        return Err(channel);
     }
 
     if render_pipeline_mir_lints(
@@ -554,7 +563,7 @@ fn lower_file_to_mir_for_target(
         &pipeline,
         &options.lint_levels,
     ) {
-        return Err(());
+        return Err(DiagChannel::User);
     }
 
     let native_pkg_dirs = native_link::collect_import_pkg_dirs(&verified.state.program);
@@ -611,7 +620,7 @@ fn run_check_deep_gates(
     target: &target::TargetSpec,
     state: &hew_compile::FileFrontendState,
     levels: &hew_types::LintLevels,
-) -> Result<(), ()> {
+) -> Result<(), DiagChannel> {
     // `std/builtins.hew` is compiler-embedded, while `std/prelude.hew` is an
     // import-only authority manifest. Neither has a standalone lowering
     // surface: the former is pre-registered by the checker and the latter's
@@ -650,21 +659,21 @@ fn run_check_deep_gates(
             input,
             hir_diagnostics,
         );
-        compile::render_frontend_diagnostics(&frontend_diagnostics);
-        return Err(());
+        let channel = compile::render_frontend_diagnostics(&frontend_diagnostics);
+        return Err(channel.unwrap_or(DiagChannel::User));
     }
 
     let output = compiler_session(target).lower_hir_module(&lower_output.module, tco);
     let codegen_error = output.codegen_error;
     let pipeline = output.pipeline;
-    if render_pipeline_mir_diagnostics(
+    if let Some(channel) = render_pipeline_mir_diagnostics(
         &state.program,
         &state.source,
         input,
         &lower_output.module,
         &pipeline.diagnostics,
     ) {
-        return Err(());
+        return Err(channel);
     }
 
     // Surface MIR lint warnings before the codegen-front gate so they read in
@@ -674,11 +683,11 @@ fn run_check_deep_gates(
 
     if let Some(error) = codegen_error {
         diagnostic::render_codegen_front_diagnostic(&error, Some((state.source.as_str(), input)));
-        return Err(());
+        return Err(diagnostic::codegen_channel(&error));
     }
 
     if lint_denied {
-        return Err(());
+        return Err(DiagChannel::User);
     }
 
     Ok(())
@@ -714,7 +723,7 @@ fn emit_module(
     link_freestanding_wasm: bool,
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
-) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
+) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
     emit_module_with_triple(
         pipeline,
         module_name,
@@ -750,7 +759,7 @@ fn emit_module_with_triple(
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
     source_path: Option<&Path>,
-) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
+) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
     let options = hew_codegen_rs::EmitOptions {
         module_name,
         out_dir: emit_dir,
@@ -775,12 +784,14 @@ fn emit_module_with_triple(
     match result {
         Ok(artefacts) => Ok(artefacts),
         Err(e @ hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. }) => {
-            eprintln!("Error: {e}");
-            Err(())
+            let channel = diagnostic::codegen_channel(&e);
+            eprintln!("{}Error: {e}", channel.prefix());
+            Err(channel)
         }
         Err(e) => {
+            let channel = diagnostic::codegen_channel(&e);
             diagnostic::render_codegen_emit_error(&e, source_path);
-            Err(())
+            Err(channel)
         }
     }
 }
@@ -809,7 +820,7 @@ fn emit_module_for_target(
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
     source_path: Option<&Path>,
-) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
+) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
     let codegen_triple = match emit_target {
         CompileEmitTarget::Native => Some(target.linker_triple()),
         CompileEmitTarget::Wasm => None,
@@ -828,7 +839,7 @@ fn emit_module_for_target(
     )
 }
 
-fn link_native_object(obj: &Path, bin_path: &Path) -> Result<(), ()> {
+fn link_native_object(obj: &Path, bin_path: &Path) -> Result<(), DiagChannel> {
     link_native_object_with_hew_lib(obj, bin_path, None)
 }
 
@@ -836,7 +847,7 @@ fn link_native_object_with_hew_lib(
     obj: &Path,
     bin_path: &Path,
     hew_lib: Option<&Path>,
-) -> Result<(), ()> {
+) -> Result<(), DiagChannel> {
     link_native_object_with_hew_lib_and_extra(obj, bin_path, hew_lib, &[])
 }
 
@@ -845,19 +856,23 @@ fn link_native_object_with_hew_lib_and_extra(
     bin_path: &Path,
     hew_lib: Option<&Path>,
     extra_libs: &[String],
-) -> Result<(), ()> {
+) -> Result<(), DiagChannel> {
     let target = target::TargetSpec::from_requested(None).map_err(|e| {
         eprintln!("Error: cannot determine host target: {e}");
+        DiagChannel::User
     })?;
     let obj_str = obj.to_str().ok_or_else(|| {
         eprintln!("Error: object path is not valid UTF-8");
+        DiagChannel::User
     })?;
     let bin_str = bin_path.to_str().ok_or_else(|| {
         eprintln!("Error: output path is not valid UTF-8");
+        DiagChannel::User
     })?;
     crate::link::link_executable_with_hew_lib(obj_str, bin_str, &target, extra_libs, false, hew_lib)
         .map_err(|e| {
             crate::diagnostic::emit_plain_diagnostic_line(&e);
+            DiagChannel::User
         })
 }
 
@@ -865,7 +880,7 @@ pub(crate) fn compile_native_binary(
     input: &Path,
     bin_path: &Path,
     options: &compile::CompileOptions,
-) -> Result<(), ()> {
+) -> Result<(), DiagChannel> {
     let (pipeline, sir_report) = lower_file_to_mir_with_options(input, None, options)?;
     if let Some(report) = sir_report.as_ref() {
         report_sir_lane(report);
@@ -886,6 +901,7 @@ pub(crate) fn compile_native_binary(
     )?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
+        DiagChannel::User
     })?;
     link_native_object(obj, bin_path)
 }
@@ -903,7 +919,7 @@ pub(crate) fn compile_native_from_program(
     source_label: &str,
     output_path: &Path,
     options: &compile::CompileOptions,
-) -> Result<(), ()> {
+) -> Result<(), DiagChannel> {
     compile_native_from_program_with_paths(
         program,
         source,
@@ -928,9 +944,10 @@ pub(crate) fn compile_native_from_program_with_paths(
     options: &compile::CompileOptions,
     paths: Option<&NativeBuildPaths>,
     extra_libs: &[String],
-) -> Result<(), ()> {
+) -> Result<(), DiagChannel> {
     let target = target::TargetSpec::from_requested(options.target.as_deref()).map_err(|e| {
         eprintln!("Error: {e}");
+        DiagChannel::User
     })?;
     let mut frontend_options = compile::frontend_options(&target, options);
     frontend_options.module_search_paths = paths.map(|paths| paths.module_search_paths.clone());
@@ -941,10 +958,11 @@ pub(crate) fn compile_native_from_program_with_paths(
         &frontend_options,
     )
     .map_err(|failure| {
-        compile::render_frontend_diagnostics(&failure.diagnostics);
+        let channel = compile::render_frontend_diagnostics(&failure.diagnostics);
         if failure.diagnostics.is_empty() {
             eprintln!("Error: {}", failure.message);
         }
+        channel.unwrap_or(DiagChannel::User)
     })?;
     compile::render_frontend_diagnostics(&state.diagnostics);
 
@@ -953,6 +971,7 @@ pub(crate) fn compile_native_from_program_with_paths(
             "Error: eval compilation requires a type-checked program; \
              this path should be unreachable (no_typecheck = false)"
         );
+        DiagChannel::User
     })?;
 
     let lower_output = hew_hir::lower_program(
@@ -977,8 +996,8 @@ pub(crate) fn compile_native_from_program_with_paths(
             source_label,
             hir_diagnostics,
         );
-        compile::render_frontend_diagnostics(&frontend_diagnostics);
-        return Err(());
+        let channel = compile::render_frontend_diagnostics(&frontend_diagnostics);
+        return Err(channel.unwrap_or(DiagChannel::User));
     }
 
     let (pipeline, sir_report) =
@@ -986,18 +1005,18 @@ pub(crate) fn compile_native_from_program_with_paths(
     if let Some(report) = sir_report.as_ref() {
         report_sir_lane(report);
     }
-    if render_pipeline_mir_diagnostics(
+    if let Some(channel) = render_pipeline_mir_diagnostics(
         &state.program,
         &state.source,
         source_label,
         &lower_output.module,
         &pipeline.diagnostics,
     ) {
-        return Err(());
+        return Err(channel);
     }
 
     if render_pipeline_mir_lints(&state.source, source_label, &pipeline, &options.lint_levels) {
-        return Err(());
+        return Err(DiagChannel::User);
     }
 
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
@@ -1011,7 +1030,7 @@ pub(crate) fn compile_native_from_program_with_paths(
         CompileEmitTarget::Native
     } else {
         eprintln!("{}", target.unsupported_native_link_error());
-        return Err(());
+        return Err(DiagChannel::User);
     };
     let artefacts = emit_module(
         &pipeline,
@@ -1027,6 +1046,7 @@ pub(crate) fn compile_native_from_program_with_paths(
         CompileEmitTarget::Native => {
             let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
                 eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
+                DiagChannel::User
             })?;
             link_native_object_with_hew_lib_and_extra(
                 obj,
@@ -1038,15 +1058,19 @@ pub(crate) fn compile_native_from_program_with_paths(
         CompileEmitTarget::Wasm => {
             let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
                 eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce an object");
+                DiagChannel::User
             })?;
             let obj_str = obj.to_str().ok_or_else(|| {
                 eprintln!("Error: WASM object path is not valid UTF-8");
+                DiagChannel::User
             })?;
             let output_str = output_path.to_str().ok_or_else(|| {
                 eprintln!("Error: WASM output path is not valid UTF-8");
+                DiagChannel::User
             })?;
             crate::link::link_executable(obj_str, output_str, &target, &[], false).map_err(|e| {
                 eprintln!("{e}");
+                DiagChannel::User
             })
         }
     }
@@ -1092,16 +1116,19 @@ fn link_native_object_for_target_with_hew_lib(
     debug: bool,
     extra_libs: &[String],
     hew_lib: Option<&Path>,
-) -> Result<(), ()> {
+) -> Result<(), DiagChannel> {
     let obj_str = obj.to_str().ok_or_else(|| {
         eprintln!("Error: object path is not valid UTF-8");
+        DiagChannel::User
     })?;
     let bin_str = bin_path.to_str().ok_or_else(|| {
         eprintln!("Error: output path is not valid UTF-8");
+        DiagChannel::User
     })?;
     crate::link::link_executable_with_hew_lib(obj_str, bin_str, target, extra_libs, debug, hew_lib)
         .map_err(|e| {
             crate::diagnostic::emit_plain_diagnostic_line(&e);
+            DiagChannel::User
         })
 }
 
@@ -1120,7 +1147,7 @@ fn compile_build_binary(
     emit_llvm: bool,
     extra_libs: &[String],
     options: &compile::CompileOptions,
-) -> Result<(), ()> {
+) -> Result<(), DiagChannel> {
     compile_build_binary_with_hew_lib(
         input,
         output_path,
@@ -1148,7 +1175,7 @@ fn compile_build_binary_with_hew_lib(
     extra_libs: &[String],
     options: &compile::CompileOptions,
     hew_lib: Option<&Path>,
-) -> Result<(), ()> {
+) -> Result<(), DiagChannel> {
     let wall_started = std::time::Instant::now();
     let lower_started = std::time::Instant::now();
     let (pipeline, native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
@@ -1184,12 +1211,14 @@ fn compile_build_binary_with_hew_lib(
         CompileEmitTarget::Native => {
             let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
                 eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
+                DiagChannel::User
             })?;
             // Auto-link native (FFI) staticlibs declared by imported packages
             // (`[native]` in their `hew.toml`), built on demand, in addition to
             // any explicit `--link-lib` archives.
             let auto_libs = native_link::build_native_link_libs(&native_pkg_dirs).map_err(|e| {
                 eprintln!("Error: {e}");
+                DiagChannel::User
             })?;
             let all_libs: Vec<String> = extra_libs.iter().cloned().chain(auto_libs).collect();
             link_native_object_for_target_with_hew_lib(
@@ -1205,6 +1234,7 @@ fn compile_build_binary_with_hew_lib(
         CompileEmitTarget::Wasm => {
             let wasm = artefacts.wasm_path.as_deref().ok_or_else(|| {
                 eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce a module");
+                DiagChannel::User
             })?;
             // `link_wasm_module` writes `<dir>/<name>.wasm`; rename to the
             // requested output path when they differ.
@@ -1214,10 +1244,12 @@ fn compile_build_binary_with_hew_lib(
                         "Error: cannot move wasm output to {}: {e}",
                         output_path.display()
                     );
+                    DiagChannel::User
                 })?;
             }
             let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
                 eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce an object");
+                DiagChannel::User
             })?;
             remove_intermediate_object(obj)
         }
@@ -1237,12 +1269,13 @@ fn measure_compile_phase(phase: &str, elapsed: std::time::Duration) {
     }
 }
 
-fn remove_intermediate_object(path: &Path) -> Result<(), ()> {
+fn remove_intermediate_object(path: &Path) -> Result<(), DiagChannel> {
     std::fs::remove_file(path).map_err(|error| {
         eprintln!(
             "Error: cannot remove intermediate object {}: {error}",
             path.display()
         );
+        DiagChannel::User
     })
 }
 
@@ -1258,7 +1291,7 @@ fn emit_obj_only(
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
     options: &compile::CompileOptions,
-) -> Result<(), ()> {
+) -> Result<(), DiagChannel> {
     let (pipeline, _native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
     let stem = input
         .file_stem()
@@ -1291,6 +1324,7 @@ fn emit_obj_only(
     }
     .ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: codegen did not produce an object");
+        DiagChannel::User
     })?;
 
     // Codegen writes `<dir>/<stem>.o` (or `.wasm.o`); rename to the
@@ -1299,6 +1333,7 @@ fn emit_obj_only(
     if produced != final_path {
         std::fs::rename(&produced, &final_path).map_err(|e| {
             eprintln!("Error: cannot move object to {}: {e}", final_path.display());
+            DiagChannel::User
         })?;
     }
     Ok(())
@@ -1392,7 +1427,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
     if a.emit_obj {
         return match emit_obj_only(input, &target, a.debug, opt_level, a.emit_llvm, &options) {
             Ok(()) => 0,
-            Err(()) => 1,
+            Err(channel) => channel.exit_code(),
         };
     }
 
@@ -1415,7 +1450,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
         &options,
     ) {
         Ok(()) => 0,
-        Err(()) => 1,
+        Err(channel) => channel.exit_code(),
     }
 }
 
@@ -1442,12 +1477,13 @@ fn cmd_compile(a: &args::CompileArgs) {
 /// caller holds and would drop accumulated advisories). Every failure path is a
 /// `return <code>`, so the caller's single flush chokepoint runs regardless.
 fn cmd_dump_sir(a: &args::CompileArgs, json: bool) -> i32 {
-    let Ok(sir) = lower_file_to_sir(
+    let sir = match lower_file_to_sir(
         &a.input,
         a.target.as_deref(),
         &compile::CompileOptions::default(),
-    ) else {
-        return 1;
+    ) {
+        Ok(sir) => sir,
+        Err(channel) => return channel.exit_code(),
     };
     let dump = hew_sir::dump_lowering(&sir);
     if json {
@@ -1469,11 +1505,11 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         sir_mode,
         ..compile::CompileOptions::default()
     };
-    let Ok((pipeline, sir_report)) =
-        lower_file_to_mir_with_options(&a.input, a.target.as_deref(), &options)
-    else {
-        return 1;
-    };
+    let (pipeline, sir_report) =
+        match lower_file_to_mir_with_options(&a.input, a.target.as_deref(), &options) {
+            Ok(result) => result,
+            Err(channel) => return channel.exit_code(),
+        };
 
     if let Some(report) = sir_report.as_ref() {
         report_sir_lane(report);
@@ -1528,7 +1564,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     let Ok(emit_target) = resolve_compile_emit_target(a.target.as_deref()) else {
         return 2;
     };
-    let Ok(artefacts) = emit_module(
+    let artefacts = match emit_module(
         &pipeline,
         module_name,
         emit_dir,
@@ -1536,8 +1572,9 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         true,
         opt_level,
         a.emit_llvm,
-    ) else {
-        return 1;
+    ) {
+        Ok(artefacts) => artefacts,
+        Err(channel) => return channel.exit_code(),
     };
 
     // Link the native object into an executable using the shared
@@ -1562,8 +1599,8 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
             }
         };
         let bin_path = host_target.executable_path(emit_dir, module_name);
-        if link_native_object(obj, &bin_path).is_err() {
-            return 1;
+        if let Err(channel) = link_native_object(obj, &bin_path) {
+            return channel.exit_code();
         }
         if !json {
             println!("native: {}", bin_path.display());
@@ -1675,7 +1712,7 @@ fn compile_temp_debug_artifact(
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
     extra_libs: &[String],
-) -> Result<CompiledTempExecutable, ()> {
+) -> Result<CompiledTempExecutable, DiagChannel> {
     // `hew debug` launches a native debugger on the artifact, so it must carry
     // DWARF debug info — emit it even though the shared `hew run` path does not.
     compile_temp_artifact(
@@ -1692,7 +1729,7 @@ fn compile_temp_run_artifact(
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
     extra_libs: &[String],
-) -> Result<CompiledTempExecutable, ()> {
+) -> Result<CompiledTempExecutable, DiagChannel> {
     // `hew run` is the fast-exec path; no debug info.
     compile_temp_artifact(
         input,
@@ -1714,7 +1751,7 @@ fn compile_temp_wasi_module(
     input: &str,
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
-) -> Result<CompiledTempExecutable, ()> {
+) -> Result<CompiledTempExecutable, DiagChannel> {
     // Compute the target spec before allocating temp files so that an early
     // `process::exit` does not leak a temp directory.
     let target_spec =
@@ -1738,7 +1775,7 @@ fn compile_temp_wasi_module(
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     };
 
-    let result = (|| -> Result<(), ()> {
+    let result = (|| -> Result<(), DiagChannel> {
         let (pipeline, _native_pkg_dirs) =
             lower_file_to_mir_for_target(Path::new(input), &target_spec, options)?;
         let emit_dir = tmp_dir_of_path(&wasm_path);
@@ -1760,24 +1797,28 @@ fn compile_temp_wasi_module(
         )?;
         let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
             eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce an object");
+            DiagChannel::User
         })?;
         let obj_str = obj.to_str().ok_or_else(|| {
             eprintln!("Error: WASM object path is not valid UTF-8");
+            DiagChannel::User
         })?;
         let out_str = wasm_path.to_str().ok_or_else(|| {
             eprintln!("Error: WASM output path is not valid UTF-8");
+            DiagChannel::User
         })?;
         crate::link::link_executable(obj_str, out_str, &target_spec, &[], false).map_err(|e| {
             eprintln!("{e}");
+            DiagChannel::User
         })
     })();
 
-    if let Err(()) = result {
+    if let Err(channel) = result {
         drop(artifact);
         if diagnostic_json::json_output_active() {
             diagnostic_json::flush_json_diagnostics();
         }
-        return Err(());
+        return Err(channel);
     }
 
     Ok(artifact)
@@ -1793,7 +1834,7 @@ fn compile_temp_artifact(
     options: &compile::CompileOptions,
     debug: bool,
     extra_libs: &[String],
-) -> Result<CompiledTempExecutable, ()> {
+) -> Result<CompiledTempExecutable, DiagChannel> {
     // Route through the same path as `hew build` so `hew run` honours
     // `--pkg-path` (resolving `hew::<pkg>` imports), auto-links the native
     // (FFI) staticlibs declared by imported packages, and threads explicit
@@ -1806,7 +1847,7 @@ fn compile_temp_artifact(
             std::process::exit(1);
         }
     };
-    if compile_build_binary(
+    match compile_build_binary(
         Path::new(input),
         artifact.path(),
         &target,
@@ -1817,18 +1858,17 @@ fn compile_temp_artifact(
         false,
         extra_libs,
         options,
-    )
-    .is_ok()
-    {
-        Ok(artifact)
-    } else {
-        drop(artifact);
-        // Flush any collected JSON diagnostics before the caller exits.
-        // No-op when JSON output is not active (e.g. `hew debug`).
-        if diagnostic_json::json_output_active() {
-            diagnostic_json::flush_json_diagnostics();
+    ) {
+        Ok(()) => Ok(artifact),
+        Err(channel) => {
+            drop(artifact);
+            // Flush any collected JSON diagnostics before the caller exits.
+            // No-op when JSON output is not active (e.g. `hew debug`).
+            if diagnostic_json::json_output_active() {
+                diagnostic_json::flush_json_diagnostics();
+            }
+            Err(channel)
         }
-        Err(())
     }
 }
 
@@ -1958,8 +1998,8 @@ fn cmd_run_wasi(
     target: &target::ExecutionTarget,
     timeout: Option<std::time::Duration>,
 ) -> ! {
-    let artifact =
-        compile_temp_wasi_module(input, options, target).unwrap_or_else(|()| std::process::exit(1));
+    let artifact = compile_temp_wasi_module(input, options, target)
+        .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
 
     match wasi_runner::run_module(artifact.path(), &a.program_args, timeout) {
         Ok(wasi_runner::WasiRunOutcome::Exited(status)) => {
@@ -1990,7 +2030,7 @@ fn cmd_run_native(
     timeout: Option<std::time::Duration>,
 ) -> ! {
     let artifact = compile_temp_run_artifact(input, options, target, link_libs)
-        .unwrap_or_else(|()| std::process::exit(1));
+        .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
 
     let mut command = std::process::Command::new(artifact.path());
     command.args(&a.program_args);
@@ -2135,11 +2175,11 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     let (result, state) = match hew_compile::check_file_with_state(&input, &frontend_options) {
         Ok(result) => result,
         Err(failure) => {
-            compile::render_frontend_diagnostics(&failure.diagnostics);
+            let channel = compile::render_frontend_diagnostics(&failure.diagnostics);
             if !json && failure.diagnostics.is_empty() {
                 eprintln!("{}", failure.message);
             }
-            return 1;
+            return channel.unwrap_or(DiagChannel::User).exit_code();
         }
     };
 
@@ -2156,8 +2196,8 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
         }
     }
 
-    if run_check_deep_gates(&input, &target, &state, &options.lint_levels).is_err() {
-        return 1;
+    if let Err(channel) = run_check_deep_gates(&input, &target, &state, &options.lint_levels) {
+        return channel.exit_code();
     }
 
     if !json {
@@ -2177,7 +2217,7 @@ fn cmd_debug(a: &args::DebugArgs) {
     let options = a.to_compile_options();
     let target = resolve_debug_target(options.target.as_deref());
     let artifact = compile_temp_debug_artifact(&input, &options, &target, &a.link_libs)
-        .unwrap_or_else(|()| std::process::exit(1));
+        .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
     let (debugger, debugger_args) =
         match resolve_debugger_invocation(artifact.path(), &a.program_args) {
             Ok(invocation) => invocation,

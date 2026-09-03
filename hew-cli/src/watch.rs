@@ -377,7 +377,7 @@ fn run_check_and_program(
             );
             run_compiled_binary(&tmp_bin, palette);
         }
-        Err(()) => emit_watch_status("✗ Build failed", palette.red, elapsed, palette),
+        Err(_channel) => emit_watch_status("✗ Build failed", palette.red, elapsed, palette),
     }
 
     drop(tmp_path);

@@ -34,8 +34,8 @@ pub use optimize::{
     canonicalize_module_constant_cfg, CfgCanonicalizationReport, SirOptimizationError,
 };
 pub use ownership::{
-    BindingProvenance, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, StringLiteralId,
-    SuspendInputMode, SuspendKind, TrapKind,
+    Binding, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, StringLiteralId, SuspendInputMode,
+    SuspendKind, TrapKind,
 };
 pub use verify::{
     verify_function, verify_function_in_module, verify_module, CfgDiscardSafetyReason,

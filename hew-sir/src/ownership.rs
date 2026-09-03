@@ -5,6 +5,7 @@
 //! feeds**; there is no side tag on a read.
 
 use crate::model::SemParamPassing;
+use crate::model::ValueId;
 use hew_parser::ast::Span;
 use hew_types::{ResolvedTy, TypeInstanceKey, ValueClass};
 
@@ -204,16 +205,25 @@ pub enum SuspendInputMode {
     Move,
 }
 
-/// The source binding an SSA value came from.
+/// One source binding, and the SSA value it names.
 ///
 /// §1.6 separates a user-facing wall from an internal error by asking whether
-/// the offending op's provenance is a source binding, and rule 6a needs the
-/// binding's mutability. A synthesized value carries no provenance.
+/// the offending value is named by a source binding, and rule 6a needs the
+/// binding's mutability.
+///
+/// A binding is not a property of a value: `let alias = x` names the value `x`
+/// already names, so one value carries as many bindings as the source wrote.
+/// Recording the name on the definition instead kept only the first, and every
+/// later alias vanished. The function carries the bindings in source order, and
+/// a value's user-facing name is its most recent binding
+/// ([`crate::SemFunction::binding_naming`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BindingProvenance {
+pub struct Binding {
     pub name: String,
     pub span: Span,
     pub mutable: bool,
+    /// The SSA value this binding names.
+    pub value: ValueId,
 }
 
 #[cfg(test)]

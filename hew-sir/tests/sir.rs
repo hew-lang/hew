@@ -17,7 +17,6 @@ fn definition(id: u32) -> ValueDef {
         id: ValueId(id),
         ty: ResolvedTy::I64,
         own: OwnKind::None,
-        provenance: None,
     }
 }
 
@@ -103,6 +102,7 @@ fn unit_function(
             terminator: SemTerminator::Return { value: None },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     }
 }
 
@@ -124,13 +124,11 @@ fn block_arguments_are_ssa_join_values() {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
                 own: OwnKind::None,
-                provenance: None,
             },
             BlockArg {
                 value: ValueId(1),
                 ty: ResolvedTy::I64,
                 own: OwnKind::None,
-                provenance: None,
             },
         ],
         return_ty: ResolvedTy::I64,
@@ -152,7 +150,6 @@ fn block_arguments_are_ssa_join_values() {
                             id: ValueId(3),
                             ty: ResolvedTy::Bool,
                             own: OwnKind::None,
-                            provenance: None,
                         }],
                         kind: SemOpKind::Binary {
                             op: BinaryOp::Greater,
@@ -180,7 +177,6 @@ fn block_arguments_are_ssa_join_values() {
                     value: ValueId(4),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 ops: vec![
                     SemOp {
@@ -211,7 +207,6 @@ fn block_arguments_are_ssa_join_values() {
                     value: ValueId(7),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 ops: vec![
                     SemOp {
@@ -242,7 +237,6 @@ fn block_arguments_are_ssa_join_values() {
                     value: ValueId(10),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 ops: vec![
                     SemOp {
@@ -268,6 +262,7 @@ fn block_arguments_are_ssa_join_values() {
             },
         ],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let module = module(vec![function]);
     assert!(
@@ -370,7 +365,6 @@ fn verifier_rejects_entry_block_arguments() {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
                 own: OwnKind::None,
-                provenance: None,
             }],
             ops: Vec::new(),
             terminator: SemTerminator::Return {
@@ -378,6 +372,7 @@ fn verifier_rejects_entry_block_arguments() {
             },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     }]);
 
     assert!(verify_module(&module).iter().any(|diagnostic| matches!(
@@ -408,6 +403,7 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
             terminator: SemTerminator::Return { value: None },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let caller = SemFunction {
         id: ItemId(1),
@@ -434,6 +430,7 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
             terminator: SemTerminator::Return { value: None },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let mut valid = module(vec![unit_helper, caller]);
     assert!(
@@ -495,6 +492,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
             },
         ],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let non_contiguous_diagnostics = verify_module(&module(vec![non_contiguous]));
     assert!(non_contiguous_diagnostics.iter().any(|diagnostic| matches!(
@@ -540,6 +538,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
             },
         ],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let out_of_order_diagnostics = verify_module(&module(vec![out_of_order]));
     assert!(out_of_order_diagnostics.iter().any(|diagnostic| matches!(
@@ -597,7 +596,6 @@ fn verifier_checks_resolved_direct_call_signature() {
             value: ValueId(0),
             ty: ResolvedTy::I64,
             own: OwnKind::None,
-            provenance: None,
         }],
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -610,6 +608,7 @@ fn verifier_checks_resolved_direct_call_signature() {
             },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let caller = SemFunction {
         id: ItemId(1),
@@ -622,7 +621,6 @@ fn verifier_checks_resolved_direct_call_signature() {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
             own: OwnKind::None,
-            provenance: None,
         }],
         return_ty: ResolvedTy::Bool,
         entry: BlockId(0),
@@ -635,7 +633,6 @@ fn verifier_checks_resolved_direct_call_signature() {
                     id: ValueId(1),
                     ty: ResolvedTy::Bool,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 kind: SemOpKind::Call {
                     callee: CallableId(0),
@@ -648,6 +645,7 @@ fn verifier_checks_resolved_direct_call_signature() {
             },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let diagnostics = verify_module(&module(vec![target, caller]));
     assert!(diagnostics.iter().any(|diagnostic| matches!(
@@ -691,6 +689,7 @@ fn verifier_rejects_unknown_direct_callable() {
             },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     assert!(verify_module(&module(vec![function]))
         .iter()
@@ -729,6 +728,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
             },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let caller = SemFunction {
         id: ItemId(1),
@@ -755,6 +755,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
             terminator: SemTerminator::Return { value: None },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     assert!(verify_module(&module(vec![scalar_callee, caller]))
         .iter()
@@ -782,7 +783,6 @@ fn verifier_rejects_eager_logical_ops() {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
             own: OwnKind::None,
-            provenance: None,
         }],
         return_ty: ResolvedTy::Bool,
         entry: BlockId(0),
@@ -795,7 +795,6 @@ fn verifier_rejects_eager_logical_ops() {
                     id: ValueId(1),
                     ty: ResolvedTy::Bool,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 kind: SemOpKind::Binary {
                     op: BinaryOp::And,
@@ -809,6 +808,7 @@ fn verifier_rejects_eager_logical_ops() {
             },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     }]);
 
     let diagnostics = verify_module(&module);
@@ -838,6 +838,7 @@ fn verifier_rejects_duplicate_semantic_and_emitted_function_identities() {
             terminator: SemTerminator::Return { value: None },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let diagnostics = verify_module(&module(vec![function.clone(), function]));
     assert!(diagnostics
@@ -929,7 +930,6 @@ fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_a
             value: ValueId(0),
             ty: ResolvedTy::I64,
             own: OwnKind::None,
-            provenance: None,
         }],
     ));
     assert!(verify_module(&parameterized_main)
@@ -959,7 +959,6 @@ fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_a
                     id: ValueId(0),
                     ty: ResolvedTy::Bool,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 kind: SemOpKind::ConstBool(true),
                 provenance: Provenance::Synthesized,
@@ -969,6 +968,7 @@ fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_a
             },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let bool_main = entry_module(bool_main);
     assert!(verify_module(&bool_main).iter().any(|diagnostic| matches!(
@@ -989,7 +989,6 @@ fn function_verifier_keeps_callable_table_diagnostics() {
             value: ValueId(0),
             ty: ResolvedTy::I64,
             own: OwnKind::None,
-            provenance: None,
         }],
     );
     let mut module = module(vec![function.clone()]);
@@ -1029,6 +1028,7 @@ fn verifier_rejects_value_carrying_return_from_unit_function() {
             },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
 
     let diagnostics = verify_module(&module(vec![function]));
@@ -1041,10 +1041,6 @@ fn verifier_rejects_value_carrying_return_from_unit_function() {
     );
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one complete hand-built body makes every rewrite site auditable in one place"
-)]
 fn rewrite_fixture() -> SemFunction {
     SemFunction {
         id: ItemId(0),
@@ -1058,25 +1054,21 @@ fn rewrite_fixture() -> SemFunction {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
                 own: OwnKind::None,
-                provenance: None,
             },
             BlockArg {
                 value: ValueId(1),
                 ty: ResolvedTy::I64,
                 own: OwnKind::None,
-                provenance: None,
             },
             BlockArg {
                 value: ValueId(2),
                 ty: ResolvedTy::Bool,
                 own: OwnKind::None,
-                provenance: None,
             },
             BlockArg {
                 value: ValueId(7),
                 ty: ResolvedTy::Bool,
                 own: OwnKind::None,
-                provenance: None,
             },
         ],
         return_ty: ResolvedTy::I64,
@@ -1113,7 +1105,6 @@ fn rewrite_fixture() -> SemFunction {
                     value: ValueId(4),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Goto(Edge {
@@ -1127,7 +1118,6 @@ fn rewrite_fixture() -> SemFunction {
                     value: ValueId(5),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Goto(Edge {
@@ -1141,7 +1131,6 @@ fn rewrite_fixture() -> SemFunction {
                     value: ValueId(6),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
@@ -1150,6 +1139,7 @@ fn rewrite_fixture() -> SemFunction {
             },
         ],
         places: Vec::new(),
+        bindings: Vec::new(),
     }
 }
 
@@ -1392,7 +1382,6 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
             value: ValueId(0),
             ty: ResolvedTy::I64,
             own: OwnKind::None,
-            provenance: None,
         }],
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -1424,6 +1413,7 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
             },
         ],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let diagnostics = verify_module(&module(vec![function]));
     assert!(
@@ -1459,6 +1449,7 @@ fn verifier_rejects_a_trap_endpoint_it_states_no_rule_for() {
             },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let diagnostics = verify_module(&module(vec![function]));
     assert!(
@@ -1486,7 +1477,6 @@ fn verifier_still_admits_the_terminators_it_states_rules_for() {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
             own: OwnKind::None,
-            provenance: None,
         }],
         return_ty: ResolvedTy::Bool,
         entry: BlockId(0),
@@ -1517,6 +1507,7 @@ fn verifier_still_admits_the_terminators_it_states_rules_for() {
             },
         ],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     assert!(verify_module(&module(vec![function])).is_empty());
 }
@@ -1610,7 +1601,6 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
             value: ValueId(0),
             ty: ResolvedTy::I64,
             own: OwnKind::None,
-            provenance: None,
         }],
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -1624,7 +1614,6 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
                         id: ValueId(1),
                         ty: ResolvedTy::I64,
                         own: result_own,
-                        provenance: None,
                     }],
                     kind: SemOpKind::ConstI64(7),
                     provenance: Provenance::Synthesized,
@@ -1640,7 +1629,6 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
                     value: ValueId(2),
                     ty: ResolvedTy::I64,
                     own: arg_own,
-                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
@@ -1649,6 +1637,7 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
             },
         ],
         places: Vec::new(),
+        bindings: Vec::new(),
     }
 }
 
@@ -1674,7 +1663,6 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
             value: ValueId(0),
             ty: ResolvedTy::String,
             own: OwnKind::Owned,
-            provenance: None,
         }],
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -1688,7 +1676,6 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
                         id: ValueId(1),
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
-                        provenance: None,
                     }],
                     kind: SemOpKind::ConstI64(7),
                     provenance: Provenance::Synthesized,
@@ -1704,7 +1691,6 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
                     value: ValueId(2),
                     ty: ResolvedTy::I64,
                     own: OwnKind::Guaranteed,
-                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
@@ -1713,6 +1699,7 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
             },
         ],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
     let dump = dump_sir(&module(vec![function]));
     assert!(
@@ -1745,7 +1732,6 @@ fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
                 SemParamPassing::Borrow => OwnKind::Guaranteed,
                 SemParamPassing::ReadOnly => OwnKind::None,
             },
-            provenance: None,
         }],
     );
     let mut call_site = unit_function(

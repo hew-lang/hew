@@ -5,8 +5,8 @@ use hew_parser::ast::Span;
 use hew_types::{DefId, ResolvedTy, TypeFacts, TypeInstanceKey};
 
 use crate::ownership::{
-    BindingProvenance, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, StringLiteralId,
-    SuspendInputMode, SuspendKind, TrapKind,
+    Binding, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, StringLiteralId, SuspendInputMode,
+    SuspendKind, TrapKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -135,9 +135,6 @@ pub struct ValueDef {
     pub ty: ResolvedTy,
     /// The §1.2 ownership obligation this value carries.
     pub own: OwnKind,
-    /// The source binding this value came from, when it has one. §1.6 asks for
-    /// it to tell a user-facing wall from an internal error.
-    pub provenance: Option<BindingProvenance>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,7 +144,6 @@ pub struct BlockArg {
     /// The §1.2 ownership obligation this argument carries. §1.4 requires edge
     /// argument kinds to match block argument kinds exactly.
     pub own: OwnKind,
-    pub provenance: Option<BindingProvenance>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -226,6 +222,24 @@ pub struct SemFunction {
     /// Memory places this body addresses (§1.3 `alloc_place`). Non-escaping
     /// `var`s never get one: HIR-to-SIR construction does mem2reg.
     pub places: Vec<PlaceDecl>,
+    /// Every source binding in this body, parameters first and then statement
+    /// bindings in source order (§1.6).
+    ///
+    /// Several bindings may name one value; a value no binding names is a
+    /// lowering temp.
+    pub bindings: Vec<Binding>,
+}
+
+impl SemFunction {
+    /// The binding a §1.6 diagnostic should name for `value`: the most recent
+    /// one, because a later `let` shadows an earlier name for the same value.
+    #[must_use]
+    pub fn binding_naming(&self, value: ValueId) -> Option<&Binding> {
+        self.bindings
+            .iter()
+            .rev()
+            .find(|binding| binding.value == value)
+    }
 }
 
 /// The call convention SIR is permitted to model before ownership/layout MIR

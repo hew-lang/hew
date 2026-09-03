@@ -2382,7 +2382,6 @@ mod tests {
             id: ValueId(id),
             ty,
             own: OwnKind::None,
-            provenance: None,
         }
     }
 
@@ -2420,7 +2419,6 @@ mod tests {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
                 own: OwnKind::None,
-                provenance: None,
             }],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
@@ -2433,6 +2431,7 @@ mod tests {
                 },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         }
     }
 
@@ -2454,6 +2453,7 @@ mod tests {
                 terminator: SemTerminator::Unreachable,
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         }
     }
 
@@ -2470,13 +2470,11 @@ mod tests {
                     value: ValueId(0),
                     ty: ResolvedTy::Bool,
                     own: OwnKind::None,
-                    provenance: None,
                 },
                 BlockArg {
                     value: ValueId(1),
                     ty: ResolvedTy::Bool,
                     own: OwnKind::None,
-                    provenance: None,
                 },
             ],
             return_ty: ResolvedTy::Bool,
@@ -2498,6 +2496,7 @@ mod tests {
                 },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         }
     }
 
@@ -2544,6 +2543,7 @@ mod tests {
                 },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         }
     }
 
@@ -2565,13 +2565,11 @@ mod tests {
                     value: ValueId(0),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 },
                 BlockArg {
                     value: ValueId(1),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 },
             ],
             return_ty: ResolvedTy::I64,
@@ -2601,6 +2599,7 @@ mod tests {
                 },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         }
     }
 
@@ -2928,13 +2927,11 @@ mod tests {
                     value: ValueId(0),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 },
                 BlockArg {
                     value: ValueId(1),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 },
             ],
             return_ty: ResolvedTy::I64,
@@ -2973,7 +2970,6 @@ mod tests {
                         value: ValueId(4),
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
-                        provenance: None,
                     }],
                     ops: vec![
                         op(2, definition(5, ResolvedTy::I64), SemOpKind::ConstI64(1)),
@@ -2998,7 +2994,6 @@ mod tests {
                         value: ValueId(7),
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
-                        provenance: None,
                     }],
                     ops: vec![
                         op(4, definition(8, ResolvedTy::I64), SemOpKind::ConstI64(2)),
@@ -3023,7 +3018,6 @@ mod tests {
                         value: ValueId(10),
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
-                        provenance: None,
                     }],
                     ops: vec![
                         op(6, definition(11, ResolvedTy::I64), SemOpKind::ConstI64(3)),
@@ -3043,6 +3037,7 @@ mod tests {
                 },
             ],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
 
         let module = test_module(vec![function.clone()]);
@@ -3168,7 +3163,6 @@ mod tests {
                     value: ValueId(0),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
@@ -3176,6 +3170,7 @@ mod tests {
                 },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
 
         let module = test_module(vec![function.clone()]);
@@ -3223,6 +3218,7 @@ mod tests {
                 },
             ],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
         let module = test_module(vec![function.clone()]);
 
@@ -3252,19 +3248,16 @@ mod tests {
                     value: ValueId(0),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 },
                 BlockArg {
                     value: ValueId(1),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 },
                 BlockArg {
                     value: ValueId(2),
                     ty: ResolvedTy::Bool,
                     own: OwnKind::None,
-                    provenance: None,
                 },
             ],
             return_ty: ResolvedTy::I64,
@@ -3293,13 +3286,11 @@ mod tests {
                             value: ValueId(3),
                             ty: ResolvedTy::I64,
                             own: OwnKind::None,
-                            provenance: None,
                         },
                         BlockArg {
                             value: ValueId(4),
                             ty: ResolvedTy::I64,
                             own: OwnKind::None,
-                            provenance: None,
                         },
                     ],
                     ops: Vec::new(),
@@ -3309,6 +3300,7 @@ mod tests {
                 },
             ],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
         let module = test_module(vec![function.clone()]);
         let lowered = lower_sir_function(&module, &function)
@@ -3371,7 +3363,6 @@ mod tests {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
                 own: OwnKind::None,
-                provenance: None,
             }],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
@@ -3395,6 +3386,7 @@ mod tests {
                 },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
         let caller = SemFunction {
             id: ItemId(0),
@@ -3438,6 +3430,7 @@ mod tests {
                 },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
         let module = test_module(vec![caller, callee]);
         let component = lower_closed_scalar_component(&module, &[CallableId(1)])
@@ -3599,7 +3592,6 @@ mod tests {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
                 own: OwnKind::None,
-                provenance: None,
             }],
             return_ty: ResolvedTy::Unit,
             entry: BlockId(0),
@@ -3610,6 +3602,7 @@ mod tests {
                 terminator: SemTerminator::Return { value: None },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
         let caller = SemFunction {
             id: ItemId(0),
@@ -3637,6 +3630,7 @@ mod tests {
                 terminator: SemTerminator::Return { value: None },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
         let component =
             lower_closed_scalar_component(&test_module(vec![caller, callee]), &[CallableId(1)])
@@ -3706,6 +3700,7 @@ mod tests {
                 },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
         let mut module = test_module(vec![caller]);
         module.callables.push(SemCallable {
@@ -3756,6 +3751,7 @@ mod tests {
                 },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
         let mut duplicate = function.clone();
         duplicate.id = ItemId(1);
@@ -3804,6 +3800,7 @@ mod tests {
                 },
             }],
             places: Vec::new(),
+            bindings: Vec::new(),
         };
         let mut module = test_module(vec![function]);
 

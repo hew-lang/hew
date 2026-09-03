@@ -110,6 +110,13 @@ pub enum SirDiagnosticKind {
         value: ValueId,
         reason: String,
     },
+    /// A source binding naming a value this body never defines. §1.6 reads the
+    /// table to tell a user-facing wall from an internal error, so a row it
+    /// cannot resolve would silently drop the user's name.
+    UnknownBinding {
+        name: String,
+        value: ValueId,
+    },
     /// A terminator kind this relation table states no rule for. The
     /// counterpart of [`SirDiagnosticKind::InvalidOperation`]'s
     /// outside-the-table arm: a terminator nothing checks is refused, not
@@ -491,6 +498,20 @@ pub(crate) fn verify_function_with_context(
                 types.insert(result.id, result.ty.clone());
                 definitions.insert(result.id, (block.id, Some(op_index)));
             }
+        }
+    }
+    // §1.6's binding table is read by every user-facing wall, so a row naming
+    // a value this body never defines is refused rather than silently dropped
+    // when the wall goes looking for the user's name.
+    for binding in &function.bindings {
+        if !values.contains(&binding.value) {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::UnknownBinding {
+                    name: binding.name.clone(),
+                    value: binding.value,
+                },
+            ));
         }
     }
     // Every value type is known before checking operations, edges, and
@@ -1666,7 +1687,6 @@ mod cfg_discard_safety_tests {
             value: ValueId(value),
             ty,
             own: OwnKind::None,
-            provenance: None,
         }
     }
 
@@ -1687,6 +1707,7 @@ mod cfg_discard_safety_tests {
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
             places: Vec::new(),
+            bindings: Vec::new(),
             blocks: vec![
                 SemBlock {
                     id: BlockId(0),
@@ -1760,6 +1781,7 @@ mod cfg_discard_safety_tests {
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
             places: Vec::new(),
+            bindings: Vec::new(),
             blocks: vec![
                 SemBlock {
                     id: BlockId(0),
@@ -1794,7 +1816,6 @@ mod cfg_discard_safety_tests {
                             id: ValueId(2),
                             ty: ResolvedTy::I64,
                             own: OwnKind::None,
-                            provenance: None,
                         }],
                         kind: SemOpKind::ConstI64(7),
                         provenance: Provenance::Synthesized,
@@ -1846,11 +1867,11 @@ mod parameter_own_kind_tests {
                 value: ValueId(0),
                 ty,
                 own,
-                provenance: None,
             }],
             return_ty: ResolvedTy::Unit,
             entry: BlockId(0),
             places: Vec::new(),
+            bindings: Vec::new(),
             blocks: vec![SemBlock {
                 id: BlockId(0),
                 args: Vec::new(),
@@ -1951,5 +1972,78 @@ mod parameter_own_kind_tests {
         let reason =
             kind_finding(&diagnostics).expect("no callable table means no slot to audit against");
         assert!(reason.contains("no header slot"), "{reason}");
+    }
+}
+
+#[cfg(test)]
+mod binding_table_tests {
+    use super::{verify_function, SirDiagnosticKind};
+    use crate::ownership::Binding;
+    use crate::{
+        BlockId, CallableId, FunctionSourceOrigin, SemBlock, SemFunction, SemTerminator, ValueId,
+    };
+    use hew_hir::ItemId;
+    use hew_types::{DefId, ResolvedTy};
+
+    fn function(bindings: Vec<Binding>) -> SemFunction {
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("named"),
+            name: "named".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: Vec::new(),
+            return_ty: ResolvedTy::Unit,
+            entry: BlockId(0),
+            places: Vec::new(),
+            bindings,
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return { value: None },
+            }],
+        }
+    }
+
+    fn binding(name: &str, value: u32) -> Binding {
+        Binding {
+            name: name.to_string(),
+            span: 0..0,
+            mutable: false,
+            value: ValueId(value),
+        }
+    }
+
+    /// §1.6 reads the binding table to give a wall the user's own name for the
+    /// value it refuses. A row naming a value this body never defines cannot be
+    /// resolved, so the wall would silently lose the name; the verifier refuses
+    /// the row instead.
+    #[test]
+    fn verifier_refuses_a_binding_naming_a_value_the_body_never_defines() {
+        let diagnostics = verify_function(&function(vec![binding("ghost", 7)]));
+        assert!(
+            diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                SirDiagnosticKind::UnknownBinding { name, value }
+                    if name == "ghost" && *value == ValueId(7)
+            )),
+            "{diagnostics:#?}"
+        );
+    }
+
+    /// The counterfactual: an empty table raises nothing, so the rule is about
+    /// the unresolvable row and not about carrying bindings at all.
+    #[test]
+    fn verifier_admits_a_body_whose_binding_table_is_empty() {
+        let diagnostics = verify_function(&function(Vec::new()));
+        assert!(
+            !diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                SirDiagnosticKind::UnknownBinding { .. }
+            )),
+            "{diagnostics:#?}"
+        );
     }
 }

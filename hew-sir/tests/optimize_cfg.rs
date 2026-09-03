@@ -20,7 +20,6 @@ fn value(id: u32, ty: ResolvedTy) -> ValueDef {
         id: ValueId(id),
         ty,
         own: OwnKind::None,
-        provenance: None,
     }
 }
 
@@ -80,6 +79,7 @@ fn function(
         entry: BlockId(0),
         blocks,
         places: Vec::new(),
+        bindings: Vec::new(),
     }
 }
 
@@ -110,13 +110,11 @@ fn false_same_target_diamond() -> SemFunction {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
                 own: OwnKind::None,
-                provenance: None,
             },
             BlockArg {
                 value: ValueId(1),
                 ty: ResolvedTy::I64,
                 own: OwnKind::None,
-                provenance: None,
             },
         ],
         ResolvedTy::I64,
@@ -161,7 +159,6 @@ fn false_same_target_diamond() -> SemFunction {
                     value: ValueId(4),
                     ty: ResolvedTy::I64,
                     own: OwnKind::None,
-                    provenance: None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
@@ -413,7 +410,6 @@ fn compaction_accepts_a_newly_dead_block_that_reads_an_entry_parameter() {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
             own: OwnKind::None,
-            provenance: None,
         }],
         ResolvedTy::Bool,
         vec![
@@ -539,7 +535,6 @@ fn compaction_remaps_multiblock_loop_edges_after_dead_block_removal() {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
             own: OwnKind::None,
-            provenance: None,
         }],
         ResolvedTy::Unit,
         vec![
@@ -666,7 +661,6 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
             own: OwnKind::None,
-            provenance: None,
         }],
         ResolvedTy::I64,
         vec![

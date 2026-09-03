@@ -208,7 +208,6 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
                         id: ValueId(0),
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
-                        provenance: None,
                     }],
                     kind: SemOpKind::ConstI64(0),
                     provenance: Provenance::Synthesized,
@@ -219,7 +218,6 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
                         id: ValueId(1),
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
-                        provenance: None,
                     }],
                     kind: SemOpKind::TupleMake {
                         elements: vec![Operand { value: ValueId(0) }],
@@ -232,7 +230,6 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
                         id: ValueId(2),
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
-                        provenance: None,
                     }],
                     kind: SemOpKind::TupleGet {
                         tuple: Operand { value: ValueId(0) },
@@ -246,6 +243,7 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
             },
         }],
         places: Vec::new(),
+        bindings: Vec::new(),
     };
 
     let diagnostics = verify_function(&function);
@@ -272,23 +270,27 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
     );
 }
 
-/// §1.6: the value a `let` names carries the binding's name, span and
-/// mutability, so a rule 2, 3, 4 or 6 wall rooted in a user binding renders its
-/// `E_OWN_*` code rather than `E_SIR_ICE`, and rule 6a has a mutability bit to
-/// read. Without it every definition in a body is an anonymous lowering temp.
+/// §1.6: every source binding is recorded with the value it names, so a rule 2,
+/// 3, 4 or 6 wall rooted in a user binding renders its `E_OWN_*` code rather
+/// than `E_SIR_ICE`, and rule 6a has a mutability bit to read.
 ///
-/// The counterfactual is in the same body: the constant the binding's
-/// initializer produced before it was named, and the `tuple.get` result that no
-/// binding names, must stay `None` — provenance says "a user wrote this", so a
-/// table where everything carries one says nothing.
+/// A binding is not a property of a value. `let alias = doubled` names the same
+/// SSA value `doubled` names, so both bindings are present and both point at
+/// it; recording the name on the definition kept only the first and every later
+/// alias vanished. The counterfactual is in the same body: the values no
+/// binding names carry no row, so a table where everything has a name says
+/// nothing.
 #[test]
-fn a_binding_names_the_value_it_defines() {
+fn every_binding_is_recorded_with_the_value_it_names() {
     let (hir, type_facts) = lower_hir(
         r"
         fn main() -> i64 {
-            let pair = (7, 9);
-            let first = pair.0;
-            first
+            let seed = 7;
+            let doubled = seed;
+            let alias = doubled;
+            let pair = (alias, (seed, seed));
+            let taken = pair.0;
+            taken
         }
         ",
     );
@@ -297,43 +299,68 @@ fn a_binding_names_the_value_it_defines() {
         .module
         .entry_callable
         .expect("root main must have a resolved SIR callable");
-    let main = lowered
+    let twice = lowered
         .module
         .function_index()
         .function(entry)
         .expect("the binding fixture must lower into SIR");
 
-    let named: Vec<(String, bool)> = main
-        .blocks
+    let names: Vec<&str> = twice
+        .bindings
         .iter()
-        .flat_map(|block| &block.ops)
-        .flat_map(|op| &op.results)
-        .filter_map(|result| {
-            result
-                .provenance
-                .as_ref()
-                .map(|provenance| (provenance.name.clone(), provenance.mutable))
-        })
+        .map(|binding| binding.name.as_str())
         .collect();
-    assert!(
-        named.contains(&("pair".to_string(), false)),
-        "the tuple binding must name its definition: {named:?}"
-    );
-    assert!(
-        named.contains(&("first".to_string(), false)),
-        "the scalar binding must name its definition: {named:?}"
+    assert_eq!(
+        vec!["seed", "doubled", "alias", "pair", "taken"],
+        names,
+        "every binding in source order: {:#?}",
+        twice.bindings
     );
 
-    let anonymous = main
+    let value_of = |name: &str| {
+        twice
+            .bindings
+            .iter()
+            .find(|binding| binding.name == name)
+            .unwrap_or_else(|| panic!("`{name}` must be recorded"))
+            .value
+    };
+    assert_eq!(
+        value_of("seed"),
+        value_of("doubled"),
+        "an alias names the value its initializer already names"
+    );
+    assert_eq!(
+        value_of("doubled"),
+        value_of("alias"),
+        "and so does an alias of an alias"
+    );
+    assert_eq!(
+        "alias",
+        twice
+            .binding_naming(value_of("doubled"))
+            .expect("the shared value has a binding")
+            .name,
+        "the most recent binding is the user-facing name"
+    );
+    assert!(
+        twice.bindings.iter().all(|binding| !binding.mutable),
+        "this lowering emits no mutable binding: {:#?}",
+        twice.bindings
+    );
+
+    let bound_values: std::collections::BTreeSet<_> =
+        twice.bindings.iter().map(|binding| binding.value).collect();
+    let anonymous = twice
         .blocks
         .iter()
         .flat_map(|block| &block.ops)
         .flat_map(|op| &op.results)
-        .filter(|result| result.provenance.is_none())
+        .filter(|result| !bound_values.contains(&result.id))
         .count();
     assert!(
         anonymous > 0,
-        "a lowering temp no binding names must stay anonymous: {main:#?}"
+        "a lowering temp no binding names must stay unnamed: {twice:#?}"
     );
 }
 

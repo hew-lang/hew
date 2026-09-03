@@ -471,12 +471,12 @@ mod tests {
                 value: ValueId(0),
                 ty: ResolvedTy::Bool,
                 own: crate::ownership::OwnKind::None,
-                provenance: None,
             }],
             return_ty: ResolvedTy::Unit,
             entry: BlockId(0),
             blocks,
             places: Vec::new(),
+            bindings: Vec::new(),
         }
     }
 

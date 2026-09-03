@@ -6,7 +6,7 @@ use hew_hir::{
 };
 use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeInstanceKey};
 
-use crate::ownership::{BindingProvenance, OwnKind, TypeFactTable};
+use crate::ownership::{Binding, OwnKind, TypeFactTable};
 use crate::{
     BlockArg, BlockId, CallableId, CallableInstance, Edge, FunctionSourceOrigin, GenericTemplateId,
     OpId, Operand, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind,
@@ -1148,6 +1148,9 @@ struct Builder<'hir, 'service> {
     values: u32,
     ops: u32,
     bindings: HashMap<BindingId, ValueId>,
+    /// Every source binding this body declares, parameters first and then
+    /// statement bindings in source order (§1.6).
+    source_bindings: Vec<Binding>,
     params: Vec<BlockArg>,
 }
 
@@ -1194,18 +1197,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 // leak. No lowering emits that slot yet, so every parameter
                 // here takes the class table's answer.
                 let own = OwnKind::of_param(&ty, abi.passing, service.checked_facts)?;
-                Ok(BlockArg {
-                    value,
-                    ty,
-                    own,
-                    provenance: Some(BindingProvenance {
+                Ok((
+                    BlockArg { value, ty, own },
+                    Binding {
                         name: param.name.clone(),
                         span: param.span.clone(),
                         mutable: param.mutable,
-                    }),
-                })
+                        value,
+                    },
+                ))
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<(BlockArg, Binding)>, String>>()?;
+        let (params, source_bindings): (Vec<BlockArg>, Vec<Binding>) = params.into_iter().unzip();
         Ok(Self {
             function,
             service,
@@ -1216,6 +1219,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             values,
             ops: 0,
             bindings,
+            source_bindings,
             params,
         })
     }
@@ -1278,6 +1282,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             // construction does mem2reg and the only escape hatch, an extern
             // `&`/`&mut` on a local, has no producer on this route yet.
             places: Vec::new(),
+            bindings: self.source_bindings,
         })
     }
 
@@ -1321,14 +1326,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     // provenance lands on that definition — and only when it
                     // has none, because `let y = x` must not rename the
                     // parameter `x` already named.
-                    self.name_value(
+                    self.source_bindings.push(Binding {
+                        name: binding.name.clone(),
+                        span: binding.span.clone(),
+                        mutable: binding.mutable,
                         value,
-                        BindingProvenance {
-                            name: binding.name.clone(),
-                            span: binding.span.clone(),
-                            mutable: binding.mutable,
-                        },
-                    );
+                    });
                     self.bindings.insert(binding.id, value);
                 }
                 HirStmtKind::Expr(expr) => {
@@ -1696,7 +1699,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             value: join_value,
             own: OwnKind::of_ty(&join_ty, self.service.checked_facts)?,
             ty: join_ty,
-            provenance: None,
         }]);
         self.set_terminator(SemTerminator::Branch {
             condition,
@@ -1775,7 +1777,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             value: result,
             own: OwnKind::of_ty(&join_ty, self.service.checked_facts)?,
             ty: join_ty,
-            provenance: None,
         }]);
         let (then_target, else_target) = if short_circuit_value {
             (short_circuit, evaluate_right)
@@ -1826,7 +1827,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 id: value,
                 own: OwnKind::of_ty(&result_ty, self.service.checked_facts)?,
                 ty: result_ty,
-                provenance: None,
             }],
             kind,
             provenance: Provenance::Site(expr.site),
@@ -1846,44 +1846,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.current_block_mut().append_op(op)?;
         self.ops += 1;
         Ok(())
-    }
-
-    /// Attach a binding's §1.6 provenance to the definition of the value it
-    /// names, if that definition does not already carry one.
-    ///
-    /// The first name wins: a parameter, and then the outermost binding that
-    /// aliases it, is the root the wall wants to point at. A value with no
-    /// definition in this function is a parameter of one already named, so
-    /// there is nothing to do and nothing to refuse.
-    fn name_value(&mut self, value: ValueId, provenance: BindingProvenance) {
-        for param in &mut self.params {
-            if param.value == value {
-                if param.provenance.is_none() {
-                    param.provenance = Some(provenance);
-                }
-                return;
-            }
-        }
-        for block in &mut self.blocks {
-            for arg in &mut block.args {
-                if arg.value == value {
-                    if arg.provenance.is_none() {
-                        arg.provenance = Some(provenance);
-                    }
-                    return;
-                }
-            }
-            for op in &mut block.ops {
-                for result in &mut op.results {
-                    if result.id == value {
-                        if result.provenance.is_none() {
-                            result.provenance = Some(provenance);
-                        }
-                        return;
-                    }
-                }
-            }
-        }
     }
 
     fn fresh_value(&mut self) -> ValueId {

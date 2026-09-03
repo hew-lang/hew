@@ -31,6 +31,6 @@ fn main() {
             let e_t = e.tag;
             println(f"dq {e_t} len={e_l}");
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

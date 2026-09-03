@@ -166,15 +166,15 @@ fn find_not_found_round_trips_negative_one() {
             let found = s.find("ell");
             let missing = s.find("zzz");
             match found {
-                Some(i) => print(f"found={i};"),
-                None => print("found=None;"),
+                .Some(i) => print(f"found={i};"),
+                .None => print("found=None;"),
             }
             match missing {
-                Some(i) => {
+                .Some(i) => {
                     print(f"missing={i};");
                     print("guard_broken");
                 }
-                None => {
+                .None => {
                     print("missing=None;");
                     print("guard_fires");
                 }
@@ -206,11 +206,11 @@ fn unicode_codepoint_at_oob_round_trips_negative_one() {
             let n = unicode.rune_count(s);
             let oob = unicode.codepoint_at(s, n);
             match oob {
-                Some(cp) => {
+                .Some(cp) => {
                     print(f"oob={cp};");
                     print("guard_broken");
                 }
-                None => {
+                .None => {
                     print("oob=None;");
                     print("guard_fires");
                 }

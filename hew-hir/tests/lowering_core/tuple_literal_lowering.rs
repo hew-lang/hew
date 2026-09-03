@@ -234,8 +234,8 @@ fn fallible() -> Result<(), i64> {
 
 fn main() -> i64 {
     match fallible() {
-        Ok(()) => 0,
-        Err(e) => e,
+        .Ok(()) => 0,
+        .Err(e) => e,
     }
 }
 ";

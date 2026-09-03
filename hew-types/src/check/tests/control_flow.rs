@@ -480,7 +480,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn iflet_stmt_or_pattern_is_accepted() {
         let errors =
-            check_iflet_whilelet(r"enum E { A; B; } fn foo(x: E) { if let A | B = x { 0 } }");
+            check_iflet_whilelet(r"enum E { A; B; } fn foo(x: E) { if let .A | .B = x { 0 } }");
         assert!(
             !errors
                 .iter()
@@ -525,7 +525,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn whilelet_stmt_struct_pattern_is_accepted() {
         let errors = check_iflet_whilelet(
-            r"enum Msg { Data { value: i64 }; Done; } fn foo(x: Msg) { while let Data { value } = x { break; } }",
+            r"enum Msg { Data { value: i64 }; Done; } fn foo(x: Msg) { while let .Data { value } = x { break; } }",
         );
         assert!(
             !errors
@@ -550,7 +550,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn whilelet_stmt_or_pattern_is_accepted() {
         let errors = check_iflet_whilelet(
-            r"enum E { A; B; } fn foo(x: E) { while let A | B = x { break; } }",
+            r"enum E { A; B; } fn foo(x: E) { while let .A | .B = x { break; } }",
         );
         assert!(
             !errors

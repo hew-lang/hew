@@ -8168,7 +8168,7 @@ pub(super) fn binder_read_is_borrow_safe_terminator(
 /// keeps `String` out of the owned-carrier protocol), so such a callee releases
 /// nothing and the caller keeps the sole drop obligation.
 ///
-/// Without this, `match mk() { Some(s) => println(f"v={s}") }` classified `s` as
+/// Without this, `match mk() { .Some(s) => println(f"v={s}") }` classified `s` as
 /// escaped — the f-string lowers to `string::fmt(s)`, a Hew-bodied stdlib
 /// `impl Display for string` — and the whole `Option<string>` composite lost its
 /// `EnumInPlace` drop, leaking the payload on every iteration.

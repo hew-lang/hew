@@ -18,18 +18,18 @@ import std.net.websocket;
 
 fn main() {
     match http.listen(":0") {
-        Ok(http_server) => {
+        .Ok(http_server) => {
             http_server.close();
         },
-        Err(_) => {
+        .Err(_) => {
             panic("http listener did not bind");
         },
     }
     match websocket.listen(":0") {
-        Ok(ws_server) => {
+        .Ok(ws_server) => {
             ws_server.close();
         },
-        Err(_) => {
+        .Err(_) => {
             panic("websocket listener did not bind");
         },
     }

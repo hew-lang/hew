@@ -36,10 +36,10 @@ fn count_items<I, A>(it: I) -> i64 where I: Iterator<Item = A> {
     var cur = it;
     loop {
         match cur.next() {
-            Some(_x) => {
+            .Some(_x) => {
                 c = c + 1;
             },
-            None => {
+            .None => {
                 break;
             },
         }
@@ -54,10 +54,10 @@ fn collect_items<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
     var cur = it;
     loop {
         match cur.next() {
-            Some(x) => {
+            .Some(x) => {
                 out.push(x);
             },
-            None => {
+            .None => {
                 break;
             },
         }

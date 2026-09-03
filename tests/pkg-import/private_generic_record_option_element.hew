@@ -18,7 +18,7 @@ fn main() {
     arena.insert("hello");
     arena.insert("world");
     match arena.value_at(1) {
-        Some(v) => println(v),
-        None => println("empty"),
+        .Some(v) => println(v),
+        .None => println("empty"),
     }
 }

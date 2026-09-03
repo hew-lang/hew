@@ -191,7 +191,7 @@ actor Worker {\n\
         let h = Holder { dq: unsafe { hew_deque_new() } };\n\
         let _ = h;\n\
         let e = spawn Echo;\n\
-        let v = match await e.ping() { Ok(x) => x, Err(_) => 0 };\n\
+        let v = match await e.ping() { .Ok(x) => x, .Err(_) => 0 };\n\
         v\n\
     }\n\
 }\n\

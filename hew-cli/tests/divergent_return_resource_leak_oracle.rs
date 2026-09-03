@@ -99,11 +99,11 @@ fn choose_or_error(bail: bool, c: bool) -> Result<Pipe, string> {
 fn main() {
     for i in 0..__FRAMES__ {
         match choose_or_error(true, i % 2 == 0) {
-            Ok(unexpected) => {
+            .Ok(unexpected) => {
                 unexpected.sink.close();
                 unexpected.input.close();
             },
-            Err(_) => {},
+            .Err(_) => {},
         }
         println("frame");
     }
@@ -178,18 +178,18 @@ fn main() {
         input2.close();
 
         match error_before_transfer(true, i % 2 == 0) {
-            Ok(unexpected) => {
+            .Ok(unexpected) => {
                 unexpected.sink.close();
                 unexpected.input.close();
             },
-            Err(_) => {},
+            .Err(_) => {},
         }
         match error_before_transfer(false, i % 2 != 0) {
-            Ok(chosen) => {
+            .Ok(chosen) => {
                 chosen.sink.close();
                 chosen.input.close();
             },
-            Err(_) => {},
+            .Err(_) => {},
         }
         let (sink3, input3) = cancel_before_transfer(i % 2 == 0);
         sink3.close();

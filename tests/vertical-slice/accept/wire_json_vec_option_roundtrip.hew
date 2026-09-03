@@ -15,14 +15,14 @@ fn main() -> i64 {
     let bag = Bag { items: xs, label: Some("tag") };
     let j = bag.to_json();
     match Bag.from_json(j) {
-        Ok(b) => {
+        .Ok(b) => {
             if b.items.len() != 3 { return 1; }
             match b.label {
-                Some(t) => { if t != "tag" { return 2; } }
-                None => { return 3; }
+                .Some(t) => { if t != "tag" { return 2; } }
+                .None => { return 3; }
             }
             b.items[0] + b.items[1] + b.items[2]
         }
-        Err(_) => 4,
+        .Err(_) => 4,
     }
 }

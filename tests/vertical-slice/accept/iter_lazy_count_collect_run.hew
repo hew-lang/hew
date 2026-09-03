@@ -49,8 +49,8 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     fn next(var self) -> Option<B> {
         var inner = self.iter;
         let result = match inner.next() {
-            Some(x) => Some((self.f)(x)),
-            None => None,
+            .Some(x) => Some((self.f)(x)),
+            .None => None,
         };
         self.iter = inner;
         result
@@ -68,10 +68,10 @@ fn count_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
     var iter = it;
     loop {
         match iter.next() {
-            Some(_) => {
+            .Some(_) => {
                 n = n + 1;
             },
-            None => {
+            .None => {
                 break;
             },
         }
@@ -85,10 +85,10 @@ fn collect_i64<I>(it: I) -> Vec<i64> where I: Iterator<Item = i64> {
     var iter = it;
     loop {
         match iter.next() {
-            Some(x) => {
+            .Some(x) => {
                 out.push(x);
             },
-            None => {
+            .None => {
                 break;
             },
         }

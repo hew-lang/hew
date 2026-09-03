@@ -17,14 +17,14 @@ fn main() -> i64 {
     Node.start("127.0.0.1:0");
 
     let node_id = match Node.id() {
-        Some(id) => id,
-        None => return 1,
+        .Some(id) => id,
+        .None => return 1,
     };
     let worker = spawn Worker();
     Node.register("identity-worker", worker);
     let pid = match Node.lookup<Worker>("identity-worker") {
-        Ok(found) => found,
-        Err(_) => return 2,
+        .Ok(found) => found,
+        .Err(_) => return 2,
     };
     let location = pid.location();
 

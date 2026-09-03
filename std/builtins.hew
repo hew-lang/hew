@@ -181,8 +181,8 @@ pub enum AskError {
 /// ```hew
 /// match await rx.recv() | after 50ms {
 ///     Ok(Some(v)) => v,       // item received before deadline
-///     Ok(None)    => -1,      // channel closed (no deadline race)
-///     Err(_)      => -2,      // deadline fired
+///     .Ok(None)    => -1,      // channel closed (no deadline race)
+///     .Err(_)      => -2,      // deadline fired
 /// }
 /// ```
 /// WHY no `impl Display`: same prelude synthetic-item registration gap as
@@ -403,7 +403,7 @@ pub trait Iterator {
 /// Convert a value into an `Iterator`.
 ///
 /// `for x in expr { ... }` desugars to `let mut it = expr.into_iter(); loop {
-/// match it.next() { Some(x) => ..., None => break } }` — the iterable on the
+/// match it.next() { .Some(x) => ..., .None => break } }` — the iterable on the
 /// right of `in` must implement `IntoIterator`, and the loop binding is typed
 /// as `<Self.IntoIter as Iterator>.Item`.
 ///

@@ -662,7 +662,7 @@ mod every_attribute {
         // block AFTER the let-else statement. If it did not escape, the use of
         // `n` would cascade into UndefinedVariable.
         let output = check_source(
-            "fn f(r: Result<i64, string>) -> Result<i64, string> {              let Ok(n) = r else { return Err(\"bad\") }; Ok(n + 1) }",
+            "fn f(r: Result<i64, string>) -> Result<i64, string> {              let .Ok(n) = r else { return Err(\"bad\") }; Ok(n + 1) }",
         );
         let unresolved: Vec<_> = output
             .errors
@@ -779,7 +779,7 @@ mod every_attribute {
         // variant) rides the same refutable-unit-variant path and type-checks
         // cleanly with a diverging else.
         let output = check_source(
-            "fn f(r: Option<i64>) -> Result<i64, string> { let None = r else { return Err(\"some\") }; Ok(0) }",
+            "fn f(r: Option<i64>) -> Result<i64, string> { let .None = r else { return Err(\"some\") }; Ok(0) }",
         );
         assert!(
             output.errors.is_empty(),
@@ -1641,8 +1641,8 @@ mod reserved_names {
 
             fn describe(t: Task) -> string {
                 match t {
-                    Pending => { return "pending"; }
-                    Done    => { return "done"; }
+                    .Pending => { return "pending"; }
+                    .Done    => { return "done"; }
                 }
             }
 

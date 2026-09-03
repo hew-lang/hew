@@ -4684,7 +4684,7 @@ fn let_else_nested_tuple_payload_escapes_leaf_binders() {
             if good { Ok((7, "p")) } else { Err("no") }
         }
         fn parse(good: bool) -> Result<i64, string> {
-            let Ok((n, s)) = make_pair(good) else { return Err("fallback") };
+            let .Ok((n, s)) = make_pair(good) else { return Err("fallback") };
             let _ = s;
             Ok(n + 35)
         }

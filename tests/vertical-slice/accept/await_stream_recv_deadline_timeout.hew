@@ -17,13 +17,13 @@ actor Pipeline {
         let frame: Result<Option<string>, TimeoutError> = await input.recv() | after 60ms;
         sink.close();
         match frame {
-            Ok(inner) => {
+            .Ok(inner) => {
                 match inner {
-                    Some(_s) => 1,
-                    None => -1,
+                    .Some(_s) => 1,
+                    .None => -1,
                 }
             },
-            Err(_) => 7,
+            .Err(_) => 7,
         }
     }
 }
@@ -31,7 +31,7 @@ actor Pipeline {
 fn main() -> i64 {
     let p = spawn Pipeline;
     match await p.run() {
-        Ok(v) => v,
-        Err(_e) => 99,
+        .Ok(v) => v,
+        .Err(_e) => 99,
     }
 }

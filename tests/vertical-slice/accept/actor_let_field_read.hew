@@ -18,7 +18,7 @@ fn main() -> i64 {
     counter.bump();
     counter.bump();
     match await counter.total() {
-        Ok(v) => v,
-        Err(_e) => 0,
+        .Ok(v) => v,
+        .Err(_e) => 0,
     }
 }

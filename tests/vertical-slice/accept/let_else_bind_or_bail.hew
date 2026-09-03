@@ -18,7 +18,7 @@ fn validate(s: string) -> Result<i64, string> {
 
 fn parse_one(s: string) -> Result<i64, string> {
     // The else block diverges; on a successful match `n` escapes to here.
-    let Ok(n) = validate(s) else {
+    let .Ok(n) = validate(s) else {
         return Err("invalid")
     };
     Ok(n + 1)
@@ -26,8 +26,8 @@ fn parse_one(s: string) -> Result<i64, string> {
 
 fn run(s: string) -> string {
     match parse_one(s) {
-        Ok(v) => f"ok: {v}",
-        Err(e) => f"err: {e}",
+        .Ok(v) => f"ok: {v}",
+        .Err(e) => f"err: {e}",
     }
 }
 

@@ -58,8 +58,8 @@ impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
         }
         var inner = self.iter;
         let result = match inner.next() {
-            Some(x) => Some(x),
-            None => None,
+            .Some(x) => Some(x),
+            .None => None,
         };
         self.iter = inner;
         self.remaining = self.remaining - 1;
@@ -73,8 +73,8 @@ fn fold_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
     var iter = it;
     loop {
         match iter.next() {
-            Some(x) => { acc = acc + x; },
-            None => { break; },
+            .Some(x) => { acc = acc + x; },
+            .None => { break; },
         }
     }
     acc

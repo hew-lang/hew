@@ -10,6 +10,6 @@ fn main() {
             let e_h = e.contains(1);
             println(f"len={e_l} has1={e_h}");
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

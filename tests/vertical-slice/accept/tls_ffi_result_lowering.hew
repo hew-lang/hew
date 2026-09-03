@@ -13,8 +13,8 @@ fn try_write_probe() -> i64 {
     match tls.try_write(stream, unsafe {
         hew_bytes_from_str("ping")
     }) {
-        Ok(n) => n,
-        Err(_) => -2,
+        .Ok(n) => n,
+        .Err(_) => -2,
     }
 }
 
@@ -26,8 +26,8 @@ fn try_write_probe() -> i64 {
 fn read_probe() -> i64 {
     let stream = tls.connect("127.0.0.1", 1);
     match tls.read(stream, 16) {
-        Ok(data) => data.len(),
-        Err(_) => -3,
+        .Ok(data) => data.len(),
+        .Err(_) => -3,
     }
 }
 

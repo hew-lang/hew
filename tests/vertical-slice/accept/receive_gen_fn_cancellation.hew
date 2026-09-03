@@ -28,7 +28,7 @@ fn main() {
     }
     let r = await t.ping();
     match r {
-        Ok(v) => println(f"ping={v}"),
-        Err(_) => println("ping failed"),
+        .Ok(v) => println(f"ping={v}"),
+        .Err(_) => println("ping failed"),
     }
 }

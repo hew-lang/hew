@@ -65,7 +65,7 @@
 //! The `continue` back-edge is registered the same way as the natural
 //! fall-through (the `Continue` lowering inserts the current block into
 //! `loop_back_edge_blocks` before emitting the `Goto`), so
-//! `match opt { Some(_) => { ...; continue; } }` releases `opt`'s
+//! `match opt { .Some(_) => { ...; continue; } }` releases `opt`'s
 //! `EnumInPlace` before re-entering the loop header. Both shapes appear
 //! in the slope-tested set.
 //!
@@ -73,7 +73,7 @@
 //!
 //! Separate `carry_continue_payload_escape_no_uaf` /
 //! `carry_fallthrough_payload_escape_no_uaf` tests assert STDOUT
-//! content (not leak counts) on a `var carry; while { Some(item) =>
+//! content (not leak counts) on a `var carry; while { .Some(item) =>
 //! carry = item; ... } println(carry)` shape. Pre-fix the back-edge
 //! `EnumInPlace` freed the payload while `carry` still aliased it and
 //! `MallocScribble` poisoned the freed cstring in place, so the
@@ -438,8 +438,8 @@ fn assert_sender_vec_clone_drop_work(bin: &Path, expected_frames: usize, context
     );
 }
 
-/// Source-level `let opt = await rx.recv(); match opt {{ Some(item) =>
-/// println(item), None => stop }}` over the same channel. The leak
+/// Source-level `let opt = await rx.recv(); match opt {{ .Some(item) =>
+/// println(item), .None => stop }}` over the same channel. The leak
 /// pre-fix is opt's payload (Local 14 in the elab MIR), not the Some-
 /// arm item binding (which is non-escaping); the fix populates opt's
 /// back-edge drop plan with the `EnumInPlace` drop on `Option<String>`.
@@ -462,7 +462,7 @@ fn await_recv_source(frames: usize) -> String {
          \x20           let opt = await rx.recv();\n\
          \x20           match opt {{\n\
          \x20               Some(item) => println(item),\n\
-         \x20               None => {{ keep_going = false; }},\n\
+         \x20               .None => {{ keep_going = false; }},\n\
          \x20           }}\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -498,7 +498,7 @@ fn try_recv_source(frames: usize) -> String {
          \x20           let opt = rx.try_recv();\n\
          \x20           match opt {{\n\
          \x20               Some(item) => println(item),\n\
-         \x20               None => {{ keep_going = false; }},\n\
+         \x20               .None => {{ keep_going = false; }},\n\
          \x20           }}\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -512,8 +512,8 @@ fn try_recv_source(frames: usize) -> String {
     )
 }
 
-/// `let opt = rx.try_recv(); match opt { Some(_) => { ...; continue; }
-/// None => break-out }`. Drives the `continue` back-edge path: the
+/// `let opt = rx.try_recv(); match opt { .Some(_) => { ...; continue; }
+/// .None => break-out }`. Drives the `continue` back-edge path: the
 /// Some arm runs `continue` BEFORE the loop body's natural fall-
 /// through, so the body-end Drop is past the terminator. `continue`
 /// must register its own back-edge `DropPlan` (mirroring the fall-
@@ -541,7 +541,7 @@ fn try_recv_continue_source(frames: usize) -> String {
          \x20                   println(\"got\");\n\
          \x20                   continue;\n\
          \x20               }},\n\
-         \x20               None => {{ keep_going = false; }},\n\
+         \x20               .None => {{ keep_going = false; }},\n\
          \x20           }}\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -555,8 +555,8 @@ fn try_recv_continue_source(frames: usize) -> String {
     )
 }
 
-/// Source-level `let opt = await rx.recv(); match opt { Some(_) =>
-/// { ...; continue; } None => break-out }`. Same continue back-edge
+/// Source-level `let opt = await rx.recv(); match opt { .Some(_) =>
+/// { ...; continue; } .None => break-out }`. Same continue back-edge
 /// path as `try_recv_continue_source`, but through the suspending
 /// recv ramp — the MIR loop terminator differs
 /// (`SuspendingChannelRecv` vs `Call`) but the back-edge `Goto` is
@@ -584,7 +584,7 @@ fn await_recv_continue_source(frames: usize) -> String {
          \x20                   println(\"got\");\n\
          \x20                   continue;\n\
          \x20               }},\n\
-         \x20               None => {{ keep_going = false; }},\n\
+         \x20               .None => {{ keep_going = false; }},\n\
          \x20           }}\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -891,8 +891,8 @@ fn try_recv_string_loop_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance_exact_lines("try_recv", try_recv_source, one_line_per_frame);
 }
 
-/// `let opt = rx.try_recv(); match opt { Some(_) => { ...; continue; }
-/// None => stop }`: no per-frame leak node growth. Drives the
+/// `let opt = rx.try_recv(); match opt { .Some(_) => { ...; continue; }
+/// .None => stop }`: no per-frame leak node growth. Drives the
 /// `continue` back-edge `DropPlan` registration; the Some arm's
 /// `continue` jumps to the loop header BEFORE the loop body's natural
 /// fall-through Goto, so the fall-through registration alone would
@@ -1201,8 +1201,8 @@ fn carry_for_await_bytes_payload_escape_no_uaf() {
 // exactly one back-edge to exercise, and reads the carried payload
 // after the loop closes.
 
-/// `var carry; while { match opt { Some(item) => { carry = item;
-/// continue; } None => break-out } } println(carry)`. Pre-fix, the
+/// `var carry; while { match opt { .Some(item) => { carry = item;
+/// continue; } .None => break-out } } println(carry)`. Pre-fix, the
 /// payload-binder forward-propagation marked `carry` as a benign
 /// onward hand-off (any `Move dest=carry src=item` propagated), so the
 /// `EnumInPlace` was admitted on the back-edge, the payload was freed,
@@ -1228,7 +1228,7 @@ fn carry_continue_escape_source() -> String {
      \x20                   carry = item;\n\
      \x20                   continue;\n\
      \x20               },\n\
-     \x20               None => { keep_going = false; },\n\
+     \x20               .None => { keep_going = false; },\n\
      \x20           }\n\
      \x20       }\n\
      \x20       println(carry);\n\
@@ -1269,7 +1269,7 @@ fn carry_fallthrough_escape_source() -> String {
      \x20                   carry = item;\n\
      \x20                   keep_going = false;\n\
      \x20               },\n\
-     \x20               None => { keep_going = false; },\n\
+     \x20               .None => { keep_going = false; },\n\
      \x20           }\n\
      \x20       }\n\
      \x20       println(carry);\n\

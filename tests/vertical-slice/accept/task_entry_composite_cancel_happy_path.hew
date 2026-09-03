@@ -28,7 +28,7 @@ fn main() {
     let d = spawn Driver;
     let r = await d.run_value();
     match r {
-        Ok(p) => println(f"x={p.x} y={p.y}"),
-        Err(_) => println("failed"),
+        .Ok(p) => println(f"x={p.x} y={p.y}"),
+        .Err(_) => println("failed"),
     }
 }

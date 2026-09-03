@@ -314,7 +314,7 @@ fn non_tail_call_argument_does_not_coerce() {
         enum E { Bad; }
         fn value() -> i64 { 23 }
         fn takes_result(r: Result<i64, E>) -> i64 {
-            match r { Ok(v) => v, Err(_) => 0 }
+            match r { .Ok(v) => v, .Err(_) => 0 }
         }
         fn caller() -> i64 { takes_result(value()) }
     ";
@@ -339,7 +339,7 @@ fn non_tail_identifier_argument_does_not_coerce() {
     let src = r"
         enum E { Bad; }
         fn takes_result(r: Result<i64, E>) -> i64 {
-            match r { Ok(v) => v, Err(_) => 0 }
+            match r { .Ok(v) => v, .Err(_) => 0 }
         }
         fn caller(x: i64) -> i64 { takes_result(x) }
     ";
@@ -364,7 +364,7 @@ fn non_tail_let_binding_does_not_coerce() {
         enum E { Bad; }
         fn f() -> i64 {
             let r: Result<i64, E> = 42;
-            match r { Ok(v) => v, Err(_) => 0 }
+            match r { .Ok(v) => v, .Err(_) => 0 }
         }
     ";
     let output = typecheck(src);

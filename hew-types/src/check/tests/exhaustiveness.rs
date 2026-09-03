@@ -8,7 +8,7 @@ pub(super) use super::*;
 fn typecheck_match_statement_exhaustive_enum_ok() {
     let (errors, _) = parse_and_check(concat!(
         "enum Light { Red; Green; }\n",
-        "fn main() { let v: Light = .Red; match v { Red => 1, Green => 2, } let _done = 0; }\n",
+        "fn main() { let v: Light = .Red; match v { .Red => 1, .Green => 2, } let _done = 0; }\n",
     ));
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
 }
@@ -162,7 +162,7 @@ enum Color { Red; Blue }
 enum Packet { Data { value: Color }; Empty }
 fn f(p: Packet) -> i64 {
     match p {
-        Packet.Data { value: Red } => 1,
+        Packet.Data { value: .Red } => 1,
     }
 }",
     );
@@ -822,8 +822,8 @@ fn borrowed_param_escape_match_payload_binder_not_overflagged() {
     // Guard against over-flagging: a genuine payload *binder* (`Some(inner)`)
     // must shadow the dangerous param so returning the bound payload is NOT an
     // escape, while a sibling arm that returns the borrow param directly still
-    // is. Exactly one BorrowedParamReturn — the `None => red` arm — must fire;
-    // the `Some(inner) => inner` arm must stay clean.
+    // is. Exactly one BorrowedParamReturn — the `.None => red` arm — must fire;
+    // the `.Some(inner) => inner` arm must stay clean.
     let (errors, _) = parse_and_check(concat!(
         "fn leak(red: Rc<i64>, opt: Option<Rc<i64>>) -> Rc<i64> {\n",
         "    match opt { Some(inner) => inner, None => red }\n",
@@ -843,7 +843,7 @@ fn borrowed_param_escape_match_payload_binder_not_overflagged() {
 
 #[test]
 fn borrowed_param_escape_consistent_or_binder_not_overflagged() {
-    // End-to-end of the or-pattern binder path: `Ok(x) | Err(x) => x` binds a
+    // End-to-end of the or-pattern binder path: `Ok(x) | .Err(x) => x` binds a
     // consistent `x` in both alternatives (recorded as the env delta of
     // `bind_pattern`), which `shadow_pattern_bindings` then shadows. Returning
     // the bound payload `x` (not the borrow param `p`) is safe and must raise
@@ -1379,8 +1379,8 @@ fn ok_unit_match_pattern_accepted() {
         "fn main() {\n",
         "    let r: Result<(), string> = Ok(());\n",
         "    let _ = match r {\n",
-        "        Ok(()) => 0,\n",
-        "        Err(_) => 1,\n",
+        "        .Ok(()) => 0,\n",
+        "        .Err(_) => 1,\n",
         "    };\n",
         "}\n",
     ));
@@ -1397,8 +1397,8 @@ fn err_unit_match_pattern_accepted() {
         "fn main() {\n",
         "    let r: Result<i64, ()> = Err(());\n",
         "    let _ = match r {\n",
-        "        Ok(n) => n,\n",
-        "        Err(()) => 0,\n",
+        "        .Ok(n) => n,\n",
+        "        .Err(()) => 0,\n",
         "    };\n",
         "}\n",
     ));
@@ -1535,8 +1535,8 @@ fn typecheck_tuple_payload_destructure_is_exhaustive() {
 fn main() {
     let x: Option<(i64, i64)> = Some((1, 2));
     let r = match x {
-        Some((a, b)) => a + b,
-        None => 0,
+        .Some((a, b)) => a + b,
+        .None => 0,
     };
     let _done = r;
 }",
@@ -1559,8 +1559,8 @@ enum Packet { Data { value: (i64, i64) }; Empty }
 fn main() {
     let p: Packet = Data { value: (1, 2) };
     let r = match p {
-        Data { value: (a, b) } => a + b,
-        Empty => 0,
+        .Data { value: (a, b) } => a + b,
+        .Empty => 0,
     };
     let _done = r;
 }",
@@ -1582,8 +1582,8 @@ enum Packet { Data { value: (i64, i64) }; Empty }
 fn main() {
     let p: Packet = Data { value: (1, 2) };
     match p {
-        Data { value: (1, b) } => b,
-        Empty => 0,
+        .Data { value: (1, b) } => b,
+        .Empty => 0,
     }
     let _done = 0;
 }",
@@ -1615,8 +1615,8 @@ fn typecheck_tuple_payload_with_literal_element_still_non_exhaustive() {
 fn main() {
     let x: Option<(i64, i64)> = Some((1, 2));
     match x {
-        Some((1, b)) => b,
-        None => 0,
+        .Some((1, b)) => b,
+        .None => 0,
     }
     let _done = 0;
 }",
@@ -1650,8 +1650,8 @@ fn typecheck_tuple_payload_arity_mismatch_still_non_exhaustive() {
 fn main() {
     let x: Option<(i64, i64)> = Some((1, 2));
     match x {
-        Some((a, b, c)) => a,
-        None => 0,
+        .Some((a, b, c)) => a,
+        .None => 0,
     }
     let _done = 0;
 }",
@@ -1680,8 +1680,8 @@ fn typecheck_nested_tuple_payload_destructure_is_exhaustive() {
 fn main() {
     let x: Option<(i64, (i64, i64))> = Some((1, (2, 3)));
     let r = match x {
-        Some((a, (b, c))) => a + b + c,
-        None => 0,
+        .Some((a, (b, c))) => a + b + c,
+        .None => 0,
     };
     let _done = r;
 }",

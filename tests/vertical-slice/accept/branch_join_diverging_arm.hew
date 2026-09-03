@@ -44,7 +44,7 @@ fn close_then_return(flag: bool) -> i64 {
 
 fn let_else_cleanup(o: Option<i64>) -> i64 {
     let held = Conn { fd: 12 };
-    let Some(v) = o else {
+    let .Some(v) = o else {
         held.close();
         return -1;
     };

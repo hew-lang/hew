@@ -5,7 +5,7 @@
 //! through a byte-alias of the composite's storage, so the composite must
 //! be excluded — its `EnumInPlace` walk would re-free them; the
 //! empirically reproduced two-step nested destructure `match opt {
-//! Some(row) => match row { Row { a, b: _ } => … } }` aborted under
+//! .Some(row) => match row { Row { a, b: _ } => … } }` aborted under
 //! Guard-Malloc while the composite stayed admitted). The differential
 //! control proves a genuine owning-sink read of the same binder still
 //! excludes the composite.

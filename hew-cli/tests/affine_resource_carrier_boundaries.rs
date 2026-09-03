@@ -85,8 +85,8 @@ fn main() -> i64 {
     let token = Token { id: 77 };
     sink.take(token);
     match await sink.fence() {
-        Ok(_) => 0,
-        Err(_) => 2,
+        .Ok(_) => 0,
+        .Err(_) => 2,
     }
 }
 ";

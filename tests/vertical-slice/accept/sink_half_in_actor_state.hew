@@ -15,7 +15,7 @@ fn main() {
     let w = spawn Writer(sink: sink);
     w.put("hello");
     match input.recv() {
-        Some(s) => println(s),
-        None => println("eof"),
+        .Some(s) => println(s),
+        .None => println("eof"),
     }
 }

@@ -31,6 +31,6 @@ fn main() {
     println(float_branch);
 
     let present: Option<i64> = Some(1);
-    let signed_if_let = if let Some(_) = present { narrow_lo } else { wide_hi };
+    let signed_if_let = if let .Some(_) = present { narrow_lo } else { wide_hi };
     println(signed_if_let);
 }

@@ -42,7 +42,7 @@
           "terminator": {
             "args": [],
             "op": "br",
-            "span": "span:93-179",
+            "span": "span:93-181",
             "target": "block:area.match_check_0.2"
           }
         },
@@ -50,7 +50,7 @@
           "id": "block:area.match_exit.1",
           "instructions": [],
           "params": [],
-          "span": "span:93-179",
+          "span": "span:93-181",
           "terminator": {
             "args": [
               {
@@ -59,7 +59,7 @@
               }
             ],
             "op": "return",
-            "span": "span:58-182"
+            "span": "span:58-184"
           }
         },
         {
@@ -74,7 +74,7 @@
               ],
               "dst": "local:area.4",
               "op": "const.i64",
-              "span": "span:115-125"
+              "span": "span:115-126"
             },
             {
               "args": [
@@ -89,11 +89,11 @@
               ],
               "dst": "local:area.5",
               "op": "cmp.eq",
-              "span": "span:115-125"
+              "span": "span:115-126"
             }
           ],
           "params": [],
-          "span": "span:115-125",
+          "span": "span:115-126",
           "terminator": {
             "args": [],
             "condition": {
@@ -102,7 +102,7 @@
             },
             "else_target": "block:area.match_check_1.4",
             "op": "br_if",
-            "span": "span:115-125",
+            "span": "span:115-126",
             "target": "block:area.match_arm_0.3"
           }
         },
@@ -122,7 +122,7 @@
               ],
               "dst": "local:area.6",
               "op": "enum.payload",
-              "span": "span:122-123"
+              "span": "span:123-124"
             },
             {
               "args": [
@@ -133,7 +133,7 @@
               ],
               "dst": "local:area.7",
               "op": "local.get",
-              "span": "span:128-130"
+              "span": "span:129-131"
             },
             {
               "args": [
@@ -144,7 +144,7 @@
               ],
               "dst": "local:area.8",
               "op": "local.get",
-              "span": "span:132-134"
+              "span": "span:133-135"
             },
             {
               "args": [
@@ -159,7 +159,7 @@
               ],
               "dst": "local:area.9",
               "op": "i64.checked_mul",
-              "span": "span:128-134"
+              "span": "span:129-135"
             },
             {
               "args": [
@@ -170,7 +170,7 @@
               ],
               "dst": "local:area.10",
               "op": "const.i64",
-              "span": "span:136-137"
+              "span": "span:137-138"
             },
             {
               "args": [
@@ -185,7 +185,7 @@
               ],
               "dst": "local:area.11",
               "op": "i64.checked_mul",
-              "span": "span:128-137"
+              "span": "span:129-138"
             },
             {
               "args": [
@@ -200,15 +200,15 @@
               ],
               "dst": null,
               "op": "local.set",
-              "span": "span:128-137"
+              "span": "span:129-138"
             }
           ],
           "params": [],
-          "span": "span:128-137",
+          "span": "span:129-138",
           "terminator": {
             "args": [],
             "op": "br",
-            "span": "span:128-137",
+            "span": "span:129-138",
             "target": "block:area.match_exit.1"
           }
         },
@@ -224,7 +224,7 @@
               ],
               "dst": "local:area.12",
               "op": "const.i64",
-              "span": "span:147-163"
+              "span": "span:148-165"
             },
             {
               "args": [
@@ -239,11 +239,11 @@
               ],
               "dst": "local:area.13",
               "op": "cmp.eq",
-              "span": "span:147-163"
+              "span": "span:148-165"
             }
           ],
           "params": [],
-          "span": "span:147-163",
+          "span": "span:148-165",
           "terminator": {
             "args": [],
             "condition": {
@@ -252,7 +252,7 @@
             },
             "else_target": "block:area.match_arm_1.5",
             "op": "br_if",
-            "span": "span:147-163",
+            "span": "span:148-165",
             "target": "block:area.match_arm_1.5"
           }
         },
@@ -272,7 +272,7 @@
               ],
               "dst": "local:area.14",
               "op": "enum.payload",
-              "span": "span:157-158"
+              "span": "span:159-160"
             },
             {
               "args": [
@@ -287,7 +287,7 @@
               ],
               "dst": "local:area.15",
               "op": "enum.payload",
-              "span": "span:160-161"
+              "span": "span:162-163"
             },
             {
               "args": [
@@ -298,7 +298,7 @@
               ],
               "dst": "local:area.16",
               "op": "local.get",
-              "span": "span:166-168"
+              "span": "span:168-170"
             },
             {
               "args": [
@@ -309,7 +309,7 @@
               ],
               "dst": "local:area.17",
               "op": "local.get",
-              "span": "span:170-171"
+              "span": "span:172-173"
             },
             {
               "args": [
@@ -324,7 +324,7 @@
               ],
               "dst": "local:area.18",
               "op": "i64.checked_mul",
-              "span": "span:166-171"
+              "span": "span:168-173"
             },
             {
               "args": [
@@ -339,15 +339,15 @@
               ],
               "dst": null,
               "op": "local.set",
-              "span": "span:166-171"
+              "span": "span:168-173"
             }
           ],
           "params": [],
-          "span": "span:166-171",
+          "span": "span:168-173",
           "terminator": {
             "args": [],
             "op": "br",
-            "span": "span:166-171",
+            "span": "span:168-173",
             "target": "block:area.match_exit.1"
           }
         }
@@ -372,7 +372,7 @@
           "id": "local:area.2",
           "mutable": true,
           "name": null,
-          "span": "span:93-179",
+          "span": "span:93-181",
           "type": "type:i64"
         },
         {
@@ -386,105 +386,105 @@
           "id": "local:area.4",
           "mutable": false,
           "name": null,
-          "span": "span:115-125",
+          "span": "span:115-126",
           "type": "type:i64"
         },
         {
           "id": "local:area.5",
           "mutable": false,
           "name": null,
-          "span": "span:115-125",
+          "span": "span:115-126",
           "type": "type:bool"
         },
         {
           "id": "local:area.6",
           "mutable": false,
           "name": "r",
-          "span": "span:122-123",
+          "span": "span:123-124",
           "type": "type:i64"
         },
         {
           "id": "local:area.7",
           "mutable": false,
           "name": null,
-          "span": "span:128-130",
+          "span": "span:129-131",
           "type": "type:i64"
         },
         {
           "id": "local:area.8",
           "mutable": false,
           "name": null,
-          "span": "span:132-134",
+          "span": "span:133-135",
           "type": "type:i64"
         },
         {
           "id": "local:area.9",
           "mutable": false,
           "name": null,
-          "span": "span:128-134",
+          "span": "span:129-135",
           "type": "type:i64"
         },
         {
           "id": "local:area.10",
           "mutable": false,
           "name": null,
-          "span": "span:136-137",
+          "span": "span:137-138",
           "type": "type:i64"
         },
         {
           "id": "local:area.11",
           "mutable": false,
           "name": null,
-          "span": "span:128-137",
+          "span": "span:129-138",
           "type": "type:i64"
         },
         {
           "id": "local:area.12",
           "mutable": false,
           "name": null,
-          "span": "span:147-163",
+          "span": "span:148-165",
           "type": "type:i64"
         },
         {
           "id": "local:area.13",
           "mutable": false,
           "name": null,
-          "span": "span:147-163",
+          "span": "span:148-165",
           "type": "type:bool"
         },
         {
           "id": "local:area.14",
           "mutable": false,
           "name": "w",
-          "span": "span:157-158",
+          "span": "span:159-160",
           "type": "type:i64"
         },
         {
           "id": "local:area.15",
           "mutable": false,
           "name": "h",
-          "span": "span:160-161",
+          "span": "span:162-163",
           "type": "type:i64"
         },
         {
           "id": "local:area.16",
           "mutable": false,
           "name": null,
-          "span": "span:166-168",
+          "span": "span:168-170",
           "type": "type:i64"
         },
         {
           "id": "local:area.17",
           "mutable": false,
           "name": null,
-          "span": "span:170-171",
+          "span": "span:172-173",
           "type": "type:i64"
         },
         {
           "id": "local:area.18",
           "mutable": false,
           "name": null,
-          "span": "span:166-171",
+          "span": "span:168-173",
           "type": "type:i64"
         }
       ],
@@ -492,7 +492,7 @@
       "name": "area",
       "params": ["local:area.0"],
       "result": "type:i64",
-      "span": "span:58-182"
+      "span": "span:58-184"
     },
     {
       "blocks": [
@@ -508,7 +508,7 @@
               ],
               "dst": "local:main.0",
               "op": "const.i64",
-              "span": "span:222-223"
+              "span": "span:224-225"
             },
             {
               "args": [
@@ -519,7 +519,7 @@
               ],
               "dst": "local:main.1",
               "op": "const.i64",
-              "span": "span:225-226"
+              "span": "span:227-228"
             },
             {
               "args": [
@@ -542,7 +542,7 @@
               ],
               "dst": "local:main.2",
               "op": "enum.new",
-              "span": "span:211-227"
+              "span": "span:213-229"
             },
             {
               "args": [
@@ -557,7 +557,7 @@
               ],
               "dst": "local:main.3",
               "op": "call.direct",
-              "span": "span:206-228"
+              "span": "span:208-230"
             },
             {
               "args": [
@@ -572,19 +572,19 @@
               ],
               "dst": null,
               "op": "call.stdlib",
-              "span": "span:198-229"
+              "span": "span:200-231"
             },
             {
               "args": [],
               "dst": "local:main.4",
               "op": "const.unit",
-              "span": "span:198-229"
+              "span": "span:200-231"
             },
             {
               "args": [],
               "dst": "local:main.5",
               "op": "const.unit",
-              "span": "span:182-232"
+              "span": "span:184-234"
             }
           ],
           "params": [],
@@ -597,7 +597,7 @@
               }
             ],
             "op": "return",
-            "span": "span:182-232"
+            "span": "span:184-234"
           }
         }
       ],
@@ -607,42 +607,42 @@
           "id": "local:main.0",
           "mutable": false,
           "name": null,
-          "span": "span:222-223",
+          "span": "span:224-225",
           "type": "type:i64"
         },
         {
           "id": "local:main.1",
           "mutable": false,
           "name": null,
-          "span": "span:225-226",
+          "span": "span:227-228",
           "type": "type:i64"
         },
         {
           "id": "local:main.2",
           "mutable": false,
           "name": null,
-          "span": "span:211-227",
+          "span": "span:213-229",
           "type": "type:Shape"
         },
         {
           "id": "local:main.3",
           "mutable": false,
           "name": null,
-          "span": "span:206-228",
+          "span": "span:208-230",
           "type": "type:i64"
         },
         {
           "id": "local:main.4",
           "mutable": false,
           "name": null,
-          "span": "span:198-229",
+          "span": "span:200-231",
           "type": "type:unit"
         },
         {
           "id": "local:main.5",
           "mutable": false,
           "name": null,
-          "span": "span:182-232",
+          "span": "span:184-234",
           "type": "type:unit"
         }
       ],
@@ -650,7 +650,7 @@
       "name": "main",
       "params": [],
       "result": "type:unit",
-      "span": "span:182-232"
+      "span": "span:184-234"
     }
   ],
   "hew_version": "0.6.0-rc3",
@@ -877,13 +877,13 @@
       }
     ]
   },
-  "package_id": "pkg:ca9ac1ef00a5277a",
+  "package_id": "pkg:c883612cc7d547b5",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
     "sources": [
       {
-        "content_sha256": "e6c44753381625d4849d48e74a46a2c303df35d343115b235105a0fc5756aff1",
+        "content_sha256": "be136e8a6e7e0286633e6423e2c90246d929e37c68208750131cc0f895bc9485",
         "id": "src:main",
         "path": "main.hew"
       }
@@ -891,11 +891,11 @@
     "spans": [
       {
         "end": {
-          "byte_offset": 182,
+          "byte_offset": 184,
           "column": 1,
           "line": 13
         },
-        "id": "span:58-182",
+        "id": "span:58-184",
         "source_id": "src:main",
         "start": {
           "byte_offset": 58,
@@ -919,11 +919,11 @@
       },
       {
         "end": {
-          "byte_offset": 179,
+          "byte_offset": 181,
           "column": 1,
           "line": 11
         },
-        "id": "span:93-179",
+        "id": "span:93-181",
         "source_id": "src:main",
         "start": {
           "byte_offset": 93,
@@ -947,11 +947,11 @@
       },
       {
         "end": {
-          "byte_offset": 125,
-          "column": 19,
+          "byte_offset": 126,
+          "column": 20,
           "line": 8
         },
-        "id": "span:115-125",
+        "id": "span:115-126",
         "source_id": "src:main",
         "start": {
           "byte_offset": 115,
@@ -961,252 +961,252 @@
       },
       {
         "end": {
+          "byte_offset": 124,
+          "column": 18,
+          "line": 8
+        },
+        "id": "span:123-124",
+        "source_id": "src:main",
+        "start": {
           "byte_offset": 123,
           "column": 17,
           "line": 8
-        },
-        "id": "span:122-123",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 122,
-          "column": 16,
-          "line": 8
         }
       },
       {
         "end": {
-          "byte_offset": 130,
-          "column": 24,
-          "line": 8
-        },
-        "id": "span:128-130",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 128,
-          "column": 22,
-          "line": 8
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 134,
-          "column": 28,
-          "line": 8
-        },
-        "id": "span:128-134",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 128,
-          "column": 22,
-          "line": 8
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 137,
-          "column": 31,
-          "line": 8
-        },
-        "id": "span:128-137",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 128,
-          "column": 22,
-          "line": 8
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 134,
-          "column": 28,
-          "line": 8
-        },
-        "id": "span:132-134",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 132,
-          "column": 26,
-          "line": 8
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 137,
-          "column": 31,
-          "line": 8
-        },
-        "id": "span:136-137",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 136,
-          "column": 30,
-          "line": 8
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 163,
+          "byte_offset": 131,
           "column": 25,
+          "line": 8
+        },
+        "id": "span:129-131",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 129,
+          "column": 23,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 135,
+          "column": 29,
+          "line": 8
+        },
+        "id": "span:129-135",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 129,
+          "column": 23,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 138,
+          "column": 32,
+          "line": 8
+        },
+        "id": "span:129-138",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 129,
+          "column": 23,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 135,
+          "column": 29,
+          "line": 8
+        },
+        "id": "span:133-135",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 133,
+          "column": 27,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 138,
+          "column": 32,
+          "line": 8
+        },
+        "id": "span:137-138",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 137,
+          "column": 31,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 165,
+          "column": 26,
           "line": 9
         },
-        "id": "span:147-163",
+        "id": "span:148-165",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 147,
+          "byte_offset": 148,
           "column": 9,
           "line": 9
         }
       },
       {
         "end": {
-          "byte_offset": 158,
+          "byte_offset": 160,
+          "column": 21,
+          "line": 9
+        },
+        "id": "span:159-160",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 159,
           "column": 20,
           "line": 9
-        },
-        "id": "span:157-158",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 157,
-          "column": 19,
-          "line": 9
         }
       },
       {
         "end": {
-          "byte_offset": 161,
+          "byte_offset": 163,
+          "column": 24,
+          "line": 9
+        },
+        "id": "span:162-163",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 162,
           "column": 23,
           "line": 9
-        },
-        "id": "span:160-161",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 160,
-          "column": 22,
-          "line": 9
         }
       },
       {
         "end": {
-          "byte_offset": 168,
-          "column": 30,
-          "line": 9
-        },
-        "id": "span:166-168",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 166,
-          "column": 28,
-          "line": 9
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 171,
-          "column": 33,
-          "line": 9
-        },
-        "id": "span:166-171",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 166,
-          "column": 28,
-          "line": 9
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 171,
-          "column": 33,
-          "line": 9
-        },
-        "id": "span:170-171",
-        "source_id": "src:main",
-        "start": {
           "byte_offset": 170,
-          "column": 32,
+          "column": 31,
+          "line": 9
+        },
+        "id": "span:168-170",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 168,
+          "column": 29,
           "line": 9
         }
       },
       {
         "end": {
-          "byte_offset": 232,
+          "byte_offset": 173,
+          "column": 34,
+          "line": 9
+        },
+        "id": "span:168-173",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 168,
+          "column": 29,
+          "line": 9
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 173,
+          "column": 34,
+          "line": 9
+        },
+        "id": "span:172-173",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 172,
+          "column": 33,
+          "line": 9
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 234,
           "column": 2,
           "line": 15
         },
-        "id": "span:182-232",
+        "id": "span:184-234",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 182,
+          "byte_offset": 184,
           "column": 1,
           "line": 13
         }
       },
       {
         "end": {
-          "byte_offset": 229,
+          "byte_offset": 231,
           "column": 36,
           "line": 14
         },
-        "id": "span:198-229",
+        "id": "span:200-231",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 198,
+          "byte_offset": 200,
           "column": 5,
           "line": 14
         }
       },
       {
         "end": {
-          "byte_offset": 228,
+          "byte_offset": 230,
           "column": 35,
           "line": 14
         },
-        "id": "span:206-228",
+        "id": "span:208-230",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 206,
+          "byte_offset": 208,
           "column": 13,
           "line": 14
         }
       },
       {
         "end": {
-          "byte_offset": 227,
+          "byte_offset": 229,
           "column": 34,
           "line": 14
         },
-        "id": "span:211-227",
+        "id": "span:213-229",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 211,
+          "byte_offset": 213,
           "column": 18,
           "line": 14
         }
       },
       {
         "end": {
-          "byte_offset": 223,
+          "byte_offset": 225,
           "column": 30,
           "line": 14
         },
-        "id": "span:222-223",
+        "id": "span:224-225",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 222,
+          "byte_offset": 224,
           "column": 29,
           "line": 14
         }
       },
       {
         "end": {
-          "byte_offset": 226,
+          "byte_offset": 228,
           "column": 33,
           "line": 14
         },
-        "id": "span:225-226",
+        "id": "span:227-228",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 225,
+          "byte_offset": 227,
           "column": 32,
           "line": 14
         }

@@ -613,6 +613,20 @@ impl Checker {
         }
     }
 
+    /// Whether `name` is a struct-variant of `ty`'s definition — the test that
+    /// separates a struct-variant pattern (`Shape { … }` where `Shape` names a
+    /// variant) from a record destructure (`Point { … }` where it names the
+    /// scrutinee's own type). Resolution decides it, never casing (#2116).
+    pub(super) fn names_struct_variant_of(&self, name: &str, ty: &Ty) -> bool {
+        let resolved = self.project_assoc_types(&self.subst.resolve(ty));
+        let Some(type_name) = resolved.type_name() else {
+            return false;
+        };
+        let short_name = name.rsplit("::").next().unwrap_or(name);
+        self.lookup_type_def(type_name)
+            .is_some_and(|td| matches!(td.variants.get(short_name), Some(VariantDef::Struct(_))))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "building the canonical plan keeps validation, declaration ordering, and subpattern classification in one authority"
@@ -1255,7 +1269,7 @@ impl Checker {
                 };
                 if is_constructor_like {
                     if !name.contains("::") {
-                        self.warn_bare_variant_pattern(name, span);
+                        self.report_bare_variant_pattern(name, span);
                     }
                     // A unit-variant constructor pattern introduces no binding. Gate the
                     // machine-event rejection for its side effect, then return WITHOUT
@@ -1284,7 +1298,7 @@ impl Checker {
                 // Look up variant in enum definition
                 if let Some(payload_tys) = self.lookup_variant_types(name, ty, patterns.len()) {
                     if !name.contains("::") {
-                        self.warn_bare_variant_pattern(name, span);
+                        self.report_bare_variant_pattern(name, span);
                     }
                     for (p, pty) in patterns.iter().zip(payload_tys.iter()) {
                         self.bind_pattern(&p.0, pty, is_mutable, &p.1);
@@ -1354,6 +1368,15 @@ impl Checker {
                     );
                     self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                     return;
+                }
+                // A struct-variant pattern names a variant, so the bare
+                // spelling is refused on the same footing as the unit and tuple
+                // forms. Reported before the record-plan hand-off below, which
+                // returns early for exactly these patterns. The record
+                // destructure that shares `Pattern::Struct` is unaffected: its
+                // name is a type, not a variant of the scrutinee.
+                if !name.contains("::") && self.names_struct_variant_of(name, ty) {
+                    self.report_bare_variant_pattern(name, span);
                 }
                 let key = super::types::SpanKey::in_module(span, self.current_module_idx);
                 if self.invalid_pattern_plan_spans.contains(&key) {

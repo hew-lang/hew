@@ -115,8 +115,8 @@ fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
     match await w.report() {
-        Ok(status) => status,
-        Err(_) => 2,
+        .Ok(status) => status,
+        .Err(_) => 2,
     }
 }
 "#;
@@ -138,8 +138,8 @@ fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
     match await w.report() {
-        Ok(status) => status,
-        Err(_) => 2,
+        .Ok(status) => status,
+        .Err(_) => 2,
     }
 }
 "#;
@@ -195,8 +195,8 @@ fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
     match await w.report() {
-        Ok(status) => status,
-        Err(_) => 2,
+        .Ok(status) => status,
+        .Err(_) => 2,
     }
 }
 "#;

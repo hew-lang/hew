@@ -46,8 +46,8 @@ fn main() -> i64 {
     crasher.boom();
     sleep(300ms);
     match await probe.ping() {
-        Ok(value) => value,
-        Err(_) => 1,
+        .Ok(value) => value,
+        .Err(_) => 1,
     }
 }
 "#;

@@ -12,8 +12,8 @@ actor Reader {
         sleep(100ms);
         let conn = net.connect(f"127.0.0.1:{port}");
         let code = match await conn.read_string() | after 5s {
-            Ok(_body) => 42,
-            Err(_e) => 7,
+            .Ok(_body) => 42,
+            .Err(_e) => 7,
         };
         exit(code);
     }

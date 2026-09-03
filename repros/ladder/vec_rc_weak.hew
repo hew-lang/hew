@@ -5,7 +5,7 @@ fn main() {
     v.push(a);
     println(v.len());
     match w.upgrade() {
-        Some(r) => println(r.get()),
-        None => println("gone"),
+        .Some(r) => println(r.get()),
+        .None => println("gone"),
     }
 }

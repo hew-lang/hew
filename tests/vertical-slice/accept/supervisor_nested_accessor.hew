@@ -43,7 +43,7 @@ fn main() -> i64 {
     let inner = root.sub;
     let leaf = inner.leaf;
     match await leaf.echo(42) {
-        Ok(v) => v,
-        Err(_e) => 0,
+        .Ok(v) => v,
+        .Err(_e) => 0,
     }
 }

@@ -15,8 +15,8 @@ actor Server {
     receive fn go() {
         let ln = net.listen("127.0.0.1:0");
         let code = match await ln.accept() | after 60ms {
-            Ok(_conn) => 42,
-            Err(e) => {
+            .Ok(_conn) => 42,
+            .Err(e) => {
                 match e {
                     NetError.TimedOut(_code) => 7,
                     _ => 8,

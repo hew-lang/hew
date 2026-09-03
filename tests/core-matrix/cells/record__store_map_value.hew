@@ -13,6 +13,6 @@ fn main() {
             let e_b = e.b;
             println(f"{e_a} {e_b}");
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

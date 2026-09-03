@@ -10,14 +10,14 @@ fn count(b: Bag) -> i64 {
 }
 
 fn peek(o: Option<Bag>) -> i64 {
-    if let Some(b) = o {
+    if let .Some(b) = o {
         return count(b) + count(b);
     }
     0
 }
 
 fn label(o: Option<string>) -> string {
-    if let Some(s) = o {
+    if let .Some(s) = o {
         return s;
     }
     "none"

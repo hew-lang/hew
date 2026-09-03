@@ -71,7 +71,7 @@ fn main() -> i64 {
     // the crash-message clone/drop without aborting.
     let w2 = await_restart sup.w;
     match await w2.get() {
-        Ok(n) => n, // 43 — on_crash mutated the restart template from 42.
-        Err(_) => 1,
+        .Ok(n) => n, // 43 — on_crash mutated the restart template from 42.
+        .Err(_) => 1,
     }
 }

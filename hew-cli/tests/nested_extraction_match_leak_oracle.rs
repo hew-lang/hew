@@ -11,7 +11,7 @@
 //! The extracted binding's storage is an interior ALIAS of the outer
 //! aggregate: `RecordFieldLoad` / `TupleFieldLoad` byte-copy the member
 //! with no retain (only `string`-typed dests retain), and an enum payload
-//! binder (`match opt { Some(row) => … }`) aliases the composite's payload
+//! binder (`match opt { .Some(row) => … }`) aliases the composite's payload
 //! storage the same way. The originals every wildcarded field points at
 //! are owned by the OUTER aggregate, whose composite in-place drop frees
 //! each of them exactly once at scope exit.

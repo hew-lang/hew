@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! enum Msg { Empty; Batch([i64]) }
-//! match m { Batch(items) => { for it in items { … } }, Empty => {} }
+//! match m { Batch(items) => { for it in items { … } }, .Empty => {} }
 //! ```
 //!
 //! `items` is a match-projected payload binder that CowShare-borrows the enum's

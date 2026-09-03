@@ -497,8 +497,8 @@ fn owned_vec_get_through_borrowing_helper_keeps_caller_drop() {
             let hs: Vec<Header> = Vec.new();
             hs.push(Header { name: "content-type" });
             match first(hs) {
-                Some(header) => header.name.len(),
-                None => 0,
+                .Some(header) => header.name.len(),
+                .None => 0,
             }
         }
         "#,

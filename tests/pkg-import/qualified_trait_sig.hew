@@ -34,7 +34,7 @@ impl ForeignClosable for ClosableHandle {
 fn main() {
     let m = ClosableHandle { id: 1 };
     match m.close() {
-        Ok(_) => println("ok"),
-        Err(_) => println("err"),
+        .Ok(_) => println("ok"),
+        .Err(_) => println("err"),
     }
 }

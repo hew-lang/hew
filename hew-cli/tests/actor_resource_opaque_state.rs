@@ -35,8 +35,8 @@ impl Dq {{
     fn close(self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.try_append("{marker_literal}", "closed\n") {{
-            Ok(_) => {{}},
-            Err(_) => panic("append close marker"),
+            .Ok(_) => {{}},
+            .Err(_) => panic("append close marker"),
         }}
     }}
 }}
@@ -56,8 +56,8 @@ type Holder {{
 fn actor_resource_state_closes_once() {{
     let keeper = {spawn_expr};
     match await keeper.ping() {{
-        Ok(n) => testing.assert_eq(n, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 1),
+        .Err(_) => testing.assert_true(false),
     }}
 }}
 "#
@@ -112,8 +112,8 @@ impl {type_name} {{
     fn close(self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.try_append("{marker_literal}", "closed\n") {{
-            Ok(_) => {{}},
-            Err(_) => panic("append close marker"),
+            .Ok(_) => {{}},
+            .Err(_) => panic("append close marker"),
         }}
     }}
 }}
@@ -132,8 +132,8 @@ actor Keeper {{
 fn colliding_resource_closes_once() {{
     let keeper = spawn Keeper(handle: unsafe {{ hew_deque_new() }});
     match await keeper.ping() {{
-        Ok(n) => testing.assert_eq(n, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 1),
+        .Err(_) => testing.assert_true(false),
     }}
 }}
 "#
@@ -187,8 +187,8 @@ impl UserReceiver {{
     fn close(self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.try_append("{marker_literal}", "closed\n") {{
-            Ok(_) => {{}},
-            Err(_) => panic("append close marker"),
+            .Ok(_) => {{}},
+            .Err(_) => panic("append close marker"),
         }}
     }}
 }}
@@ -225,8 +225,8 @@ extern "C" {{
 fn main() {{
     let keeper = spawn {actor}();
     match await keeper.ping() {{
-        Ok(n) => if n != 1 {{ panic("wrong reply") }},
-        Err(_) => panic("ask failed"),
+        .Ok(n) => if n != 1 {{ panic("wrong reply") }},
+        .Err(_) => panic("ask failed"),
     }}
 }}
 "#

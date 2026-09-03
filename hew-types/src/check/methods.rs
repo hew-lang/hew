@@ -3515,7 +3515,7 @@ impl Checker {
                             format!(
                                 "actor ask `{name}.{method_name}` requires `await`; \
                                  write `let v? = await ref.{method_name}(...)` \
-                                 or `match await ref.{method_name}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
+                                 or `match await ref.{method_name}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
                             ),
                         );
                         // Still record the dispatch so HIR/MIR have a sane entry; the
@@ -9441,7 +9441,7 @@ impl Checker {
                                 format!(
                                     "actor ask `{actor_identity}.{method}` requires `await`; \
                                      write `let v? = await ref.{method}(...)` \
-                                     or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
+                                     or `match await ref.{method}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
                                 ),
                             );
                         }
@@ -10285,7 +10285,7 @@ impl Checker {
                                 format!(
                                     "actor ask `{name}.{method}` requires `await`; \
                                      write `let v? = await ref.{method}(...)` \
-                                     or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
+                                     or `match await ref.{method}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
                                 ),
                             );
                         }

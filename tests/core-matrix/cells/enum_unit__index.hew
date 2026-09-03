@@ -10,5 +10,5 @@ fn main() {
     v.push(a);
     v.push(b);
     let e = v[0];
-    match e { Red => println("Red"), Green => println("Green"), }
+    match e { .Red => println("Red"), .Green => println("Green"), }
 }

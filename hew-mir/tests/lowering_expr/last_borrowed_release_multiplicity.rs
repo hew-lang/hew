@@ -90,8 +90,8 @@ type Rec { label: string }
 
 fn probe(xs: Vec<Rec>) {
     let value = match xs.get(0) {
-        Some(value) => value,
-        None => return,
+        .Some(value) => value,
+        .None => return,
     };
     println(value.label);
 }

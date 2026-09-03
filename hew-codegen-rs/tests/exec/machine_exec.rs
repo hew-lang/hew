@@ -602,8 +602,8 @@ fn counter_machine_example_executes_self_field_increment() {
              \x20   c.step(.Inc);\n\
              \x20   println(c.state_name());\n\
              \x20   let value = match c {{\n\
-             \x20       NonZero {{ value }} => value,\n\
-             \x20       Zero => 0,\n\
+             \x20       .NonZero {{ value }} => value,\n\
+             \x20       .Zero => 0,\n\
              \x20   }};\n\
              \x20   println(value);\n\
              }}\n"

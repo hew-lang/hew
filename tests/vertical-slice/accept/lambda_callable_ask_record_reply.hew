@@ -4,7 +4,7 @@ fn main() {
     let f = actor |n: i64| -> Pair { Pair { a: n, b: n + 1 } };
     let a = f(41);
     match a {
-        Ok(v) => {
+        .Ok(v) => {
             if v.b == 42 {
                 println("ok")
             } else {
@@ -12,6 +12,6 @@ fn main() {
                 println(v.b)
             }
         },
-        Err(_) => println("err"),
+        .Err(_) => println("err"),
     }
 }

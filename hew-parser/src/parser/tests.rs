@@ -641,6 +641,69 @@ fn parse_match_block_arms_without_commas() {
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
+/// A block-bodied arm needs no trailing comma, and a contextual variant
+/// pattern opens with `.` — the only spelling of the dotted form. The `.` after
+/// the closing `}` must start the next arm rather than read as member access on
+/// the block, which used to fail with "expected pattern, found `=>`".
+#[test]
+fn parse_match_block_arm_precedes_contextual_variant_pattern() {
+    let source = "fn main() { match r { .Ok(v) => { v } .Err(e) => { 0 } } }";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Function(function) = &result.program.items[0].0 else {
+        panic!("expected function item");
+    };
+    let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
+        panic!("expected trailing match expression");
+    };
+    assert_eq!(arms.len(), 2, "the dotted pattern must open a second arm");
+    let names = arms
+        .iter()
+        .map(|arm| match &arm.pattern.0 {
+            Pattern::ContextVariant(variant) => variant.name.clone(),
+            other => panic!("expected contextual variant pattern, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Ok", "Err"]);
+}
+
+/// Negative control for `parse_match_block_arm_precedes_contextual_variant_pattern`:
+/// the restriction covers the arm body itself, so a block expression *inside*
+/// the arm still takes an ordinary `.method()` postfix.
+#[test]
+fn block_expression_inside_a_match_arm_keeps_dot_postfix() {
+    let source = "fn main() { match r { .Ok(v) => { let n = { v }.len(); n } } }";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Function(function) = &result.program.items[0].0 else {
+        panic!("expected function item");
+    };
+    let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
+        panic!("expected trailing match expression");
+    };
+    let Expr::Block(block) = &arms[0].body.0 else {
+        panic!("expected a block arm body, got {:?}", arms[0].body.0);
+    };
+    let Some((
+        Stmt::Let {
+            value: Some(value), ..
+        },
+        _,
+    )) = block.stmts.first()
+    else {
+        panic!("expected a `let` statement in the arm body");
+    };
+    assert!(
+        matches!(
+            &value.0,
+            Expr::MethodCall { receiver, method, .. }
+                if method == "len" && matches!(receiver.0, Expr::Block(_))
+        ),
+        "the block inside the arm must still take `.len()`, got {:?}",
+        value.0
+    );
+}
+
 #[test]
 fn parse_match_bad_arm_pattern_recovers_to_later_arms() {
     let source = "fn main() { match n { fn => 0, 1 => 1, _ => 2 } }";

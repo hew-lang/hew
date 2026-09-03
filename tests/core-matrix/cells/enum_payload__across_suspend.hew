@@ -10,9 +10,9 @@ actor Holder {
     receive fn hold(v: Shape) -> i64 {
         sleep(2ms);
         match v {
-            Empty => println("empty"),
-            Circle(v_r) => println(f"circle {v_r}"),
-            Rect { w, h } => println(f"rect {w}x{h}"),
+            .Empty => println("empty"),
+            .Circle(v_r) => println(f"circle {v_r}"),
+            .Rect { w, h } => println(f"rect {w}x{h}"),
         }
         ready = true;
         1
@@ -24,6 +24,6 @@ fn main() {
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
         Result.Ok(n) => println(f"held {n}"),
-        Err(_) => println("err"),
+        Result.Err(_) => println("err"),
     }
 }

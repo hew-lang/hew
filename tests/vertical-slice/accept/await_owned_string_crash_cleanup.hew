@@ -12,8 +12,8 @@ actor CrashAfterUse {
 
     receive fn run(trigger: i64) -> i64 {
         let text = match await fresh.text() {
-            Ok(value) => value,
-            Err(_) => "fallback",
+            .Ok(value) => value,
+            .Err(_) => "fallback",
         };
         println(f"used={text}");
         if trigger != 0 {
@@ -27,7 +27,7 @@ fn main() {
     let fresh = spawn Fresh;
     let probe = spawn CrashAfterUse(fresh: fresh);
     match await probe.run(1) {
-        Ok(value) => println(f"unexpected={value}"),
-        Err(_) => println("handled-crash"),
+        .Ok(value) => println(f"unexpected={value}"),
+        .Err(_) => println("handled-crash"),
     }
 }

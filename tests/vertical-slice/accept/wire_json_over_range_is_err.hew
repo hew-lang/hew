@@ -9,7 +9,7 @@ type Narrow {
 
 fn main() -> i64 {
     match Narrow.from_json("{\"v\":300}") {
-        Ok(_) => 1,
-        Err(_) => 42,
+        .Ok(_) => 1,
+        .Err(_) => 42,
     }
 }

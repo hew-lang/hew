@@ -22,15 +22,15 @@ import hew.nestrelay;
 
 fn count_via_owner(a: string, b: string) -> i64 {
     match nestbox.collect(a, b) {
-        Ok(boxes) => boxes.len(),
-        Err(_) => -1,
+        .Ok(boxes) => boxes.len(),
+        .Err(_) => -1,
     }
 }
 
 fn count_via_relay(a: string, b: string) -> i64 {
     match nestrelay.relay_collect(a, b) {
-        Ok(boxes) => boxes.len(),
-        Err(_) => -1,
+        .Ok(boxes) => boxes.len(),
+        .Err(_) => -1,
     }
 }
 

@@ -26,11 +26,11 @@ actor Vault {
 fn main() {
     let vault = spawn Vault(sock: Socket { fd: 3 });
     match await vault.swap() {
-        Ok(v) => println(f"first={v}"),
-        Err(_) => println("swap failed"),
+        .Ok(v) => println(f"first={v}"),
+        .Err(_) => println("swap failed"),
     }
     match await vault.swap() {
-        Ok(v) => println(f"second={v}"),
-        Err(_) => println("swap failed"),
+        .Ok(v) => println(f"second={v}"),
+        .Err(_) => println("swap failed"),
     }
 }

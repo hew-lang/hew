@@ -81,8 +81,8 @@ fn guard_over_payload_binding_resolves_correctly() {
     );
 }
 
-/// Literal payload patterns: `MyOpt::Some(0) => "zero"` matches only when the
-/// payload equals the literal; `MyOpt::Some(n) => "nonzero"` catches the rest.
+/// Literal payload patterns: `MyOpt::.Some(0) => "zero"` matches only when the
+/// payload equals the literal; `MyOpt::.Some(n) => "nonzero"` catches the rest.
 #[test]
 fn literal_payload_discriminates_specific_value() {
     require_codegen();

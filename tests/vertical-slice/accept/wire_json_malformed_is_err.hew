@@ -10,7 +10,7 @@ type Point {
 
 fn main() -> i64 {
     match Point.from_json("{not valid json") {
-        Ok(_) => 1,
-        Err(_) => 42,
+        .Ok(_) => 1,
+        .Err(_) => 42,
     }
 }

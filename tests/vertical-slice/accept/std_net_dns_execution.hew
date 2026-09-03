@@ -2,12 +2,12 @@ import std.net.dns;
 
 fn main() {
     let addrs = match dns.try_resolve("localhost") {
-        Ok(values) => values,
-        Err(_) => panic("localhost resolution failed"),
+        .Ok(values) => values,
+        .Err(_) => panic("localhost resolution failed"),
     };
     let first = match dns.try_lookup_host("localhost") {
-        Ok(value) => value,
-        Err(_) => panic("localhost lookup failed"),
+        .Ok(value) => value,
+        .Err(_) => panic("localhost lookup failed"),
     };
     if first != "127.0.0.1" && first != "::1" || !addrs.contains(first) {
         panic("unexpected localhost resolution");

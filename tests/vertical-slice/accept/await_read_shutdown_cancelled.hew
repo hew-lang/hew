@@ -20,8 +20,8 @@ actor Reader {
     receive fn go() {
         let conn = net.connect(f"127.0.0.1:{port}");
         let code = match await conn.read() | after 10s {
-            Ok(_body) => 2,
-            Err(e) => match e {
+            .Ok(_body) => 2,
+            .Err(e) => match e {
                 NetError.Cancelled(_c) => 43,
                 NetError.TimedOut(_c) => 41,
                 _ => 3,

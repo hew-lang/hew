@@ -984,6 +984,18 @@ impl Checker {
                     Pattern::Identifier(name) => self.let_identifier_is_unit_variant(name),
                     _ => false,
                 };
+                // A let-position identifier that resolves to a unit variant is
+                // a tag-test pattern (`let None = opt else { … }`), so the bare
+                // spelling is refused here for the same reason it is in a match
+                // arm. This site binds nothing and never reaches `bind_pattern`,
+                // which is where every other pattern form is checked.
+                if identifier_is_unit_variant {
+                    if let Pattern::Identifier(name) = &pattern.0 {
+                        if !name.contains("::") {
+                            self.report_bare_variant_pattern(name, &pattern.1);
+                        }
+                    }
+                }
                 // For simple identifier patterns, track the definition span.
                 // A unit-variant identifier is NOT a binding — it falls through
                 // to the refutability gate below.

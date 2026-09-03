@@ -6,8 +6,8 @@ fn put<K: Hash + Eq, V>(m: HashMap<K, V>, k: K, v: V) {
 
 fn get_or<K: Hash + Eq, V>(m: HashMap<K, V>, k: K, fallback: V) -> V {
     match m.get(k) {
-        Some(v) => v,
-        None => fallback,
+        .Some(v) => v,
+        .None => fallback,
     }
 }
 

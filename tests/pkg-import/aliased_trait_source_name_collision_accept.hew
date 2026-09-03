@@ -32,7 +32,7 @@ impl A for W {
 fn main() {
     let w = W { id: 7 };
     match w.close() {
-        Ok(p) => println(f"ok {p.code}"),
-        Err(e) => println(f"err {e.code}"),
+        .Ok(p) => println(f"ok {p.code}"),
+        .Err(e) => println(f"err {e.code}"),
     }
 }

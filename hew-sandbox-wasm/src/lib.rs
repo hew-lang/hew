@@ -717,11 +717,11 @@ enum Score { High(i64); Low(i64); Zero; }
 
 fn classify(s: Score) -> string {
     match s {
-        High(n) if n > 90 => "excellent",
-        High(_) => "good",
-        Low(n) if n < 10 => "very low",
-        Low(_) => "low",
-        Zero => "zero",
+        .High(n) if n > 90 => "excellent",
+        .High(_) => "good",
+        .Low(n) if n < 10 => "very low",
+        .Low(_) => "low",
+        .Zero => "zero",
     }
 }
 
@@ -776,7 +776,7 @@ enum Score { High(i64); Low(i64); }
 
 fn classify(s: Score) -> string {
     match s {
-        High(n) if n > 90 => "excellent",
+        .High(n) if n > 90 => "excellent",
         _ if false => "never",
         _ => "fallback",
     }
@@ -1620,7 +1620,7 @@ fn main() {
             r"
 fn main() {
     var current = Some(1);
-    while let Some(value) = current {
+    while let .Some(value) = current {
         println(value);
         current = None;
     }
@@ -2105,7 +2105,7 @@ fn main() {
 enum Wrapped { Value(i64); Empty; }
 fn main() {
     let w: Wrapped = .Value(7);
-    if let Value(n) = w {
+    if let .Value(n) = w {
         println(n);
     }
     return;
@@ -2136,8 +2136,8 @@ actor Echo {
 fn main() {
     let e = spawn Echo;
     let r = match await e.echo(42) {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     println(r);
 }
@@ -2184,8 +2184,8 @@ actor Counter {
 }
 fn main() {
     let c = spawn Counter(count: 100);
-    println(match await c.bump(5) { Ok(v) => v, Err(_e) => 0-1 });
-    println(match await c.get()   { Ok(v) => v, Err(_e) => 0-1 });
+    println(match await c.bump(5) { .Ok(v) => v, .Err(_e) => 0-1 });
+    println(match await c.get()   { .Ok(v) => v, .Err(_e) => 0-1 });
 }
 ";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
@@ -2266,8 +2266,8 @@ actor Pair {
 }
 fn main() {
     let p = spawn Pair(a: 1, b: 99);
-    println(match await p.set_a_return_b(42) { Ok(v) => v, Err(_e) => 0-1 });
-    println(match await p.get_a()            { Ok(v) => v, Err(_e) => 0-1 });
+    println(match await p.set_a_return_b(42) { .Ok(v) => v, .Err(_e) => 0-1 });
+    println(match await p.get_a()            { .Ok(v) => v, .Err(_e) => 0-1 });
 }
 ";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
@@ -2327,8 +2327,8 @@ fn main() {
 enum Op { Add; Sub; }
 fn apply(op: Op, x: i64, y: i64) -> i64 {
     match op {
-        Add => x + y,
-        Sub => x - y,
+        .Add => x + y,
+        .Sub => x - y,
     }
 }
 fn main() {
@@ -2364,8 +2364,8 @@ fn main() {
 enum Op { Add; Sub; }
 fn apply(op: Op, x: i64, y: i64) -> i64 {
     match op {
-        Add => x + y,
-        Sub => x - y,
+        .Add => x + y,
+        .Sub => x - y,
     }
 }
 fn main() {

@@ -4046,7 +4046,7 @@ pub fn lower_program_with_mono_cap(
         // constructors (`Some/None/Ok/Err`) and match arms through the same
         // `machine_ctor_registry` / `enum_variants_by_name` registries as
         // user enums. Without these entries, `Ok(42)` would lower as an
-        // unresolved identifier and `match r { Ok(n) => ... }` would emit
+        // unresolved identifier and `match r { .Ok(n) => ... }` would emit
         // `match arm variant not registered in machine/enum ctor registry`.
         //
         // Local-shadows-global: skip the bare-form insertion for any builtin
@@ -40116,7 +40116,7 @@ impl Widget {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
             fn f() -> Option<i64> { None }
-            fn main() -> i64 { match f() { Some(x) => x, None => 7 } }
+            fn main() -> i64 { match f() { .Some(x) => x, .None => 7 } }
             ",
         );
 
@@ -40548,8 +40548,8 @@ impl Widget {
             fn main() {
                 let db = spawn Db(n: 0);
                 match await db.query("SELECT 1") {
-                    Ok(r) => println(f"handle={r.handle}"),
-                    Err(_) => println("ask failed"),
+                    .Ok(r) => println(f"handle={r.handle}"),
+                    .Err(_) => println("ask failed"),
                 }
             }
             "#,

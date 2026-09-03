@@ -195,7 +195,7 @@ fn if_let_bound_name_is_immutable() {
     let output = typecheck(
         r"
         fn main(opt: Option<i64>) {
-            if let Some(x) = opt {
+            if let .Some(x) = opt {
                 x = 5;
             }
         }
@@ -218,7 +218,7 @@ fn while_let_bound_name_is_immutable() {
     let output = typecheck(
         r"
         fn main(opt: Option<i64>) {
-            while let Some(x) = opt {
+            while let .Some(x) = opt {
                 x = 5;
             }
         }
@@ -913,7 +913,7 @@ fn nonexhaustive_match_option_missing_none() {
         r"
         fn check(x: Option<i64>) -> i64 {
             match x {
-                Some(v) => v,
+                .Some(v) => v,
             }
         }
         fn main() {
@@ -947,7 +947,7 @@ fn nonexhaustive_match_result_missing_err() {
         r"
         fn check(r: Result<i64, string>) -> i64 {
             match r {
-                Ok(v) => v,
+                .Ok(v) => v,
             }
         }
         fn main() {
@@ -982,8 +982,8 @@ fn nonexhaustive_match_enum_missing_variant() {
         enum Colour { Red; Green; Blue; }
         fn label(c: Colour) -> string {
             match c {
-                Red => "red",
-                Green => "green",
+                .Red => "red",
+                .Green => "green",
             }
         }
         fn main() {
@@ -1198,7 +1198,7 @@ fn match_over_error_scrutinee_no_arm_body_cascade() {
         r"
         fn main() {
             let _ = match missing() {
-                Some(x) => {
+                .Some(x) => {
                     let _ = x;
                     0
                 },
@@ -1270,7 +1270,7 @@ fn iflet_over_error_scrutinee_no_bound_var_error() {
     let output = typecheck(
         r"
         fn main() {
-            if let Some(x) = missing() {
+            if let .Some(x) = missing() {
                 let _ = x;
             } else {}
         }

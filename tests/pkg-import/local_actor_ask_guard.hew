@@ -15,12 +15,12 @@ actor Counter {
 fn main() {
     let c = spawn Counter(count: 0);
     match await c.bump() {
-        Ok(v) => println(f"local={v}"),
-        Err(_) => println("local ask failed"),
+        .Ok(v) => println(f"local={v}"),
+        .Err(_) => println("local ask failed"),
     }
     let db = spawn testffi.Db(seed: 2);
     match await db.count32() {
-        Ok(v) => println(f"imported={v}"),
-        Err(_) => println("imported ask failed"),
+        .Ok(v) => println(f"imported={v}"),
+        .Err(_) => println("imported ask failed"),
     }
 }

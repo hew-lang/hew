@@ -14,8 +14,8 @@ fn main() {
     // stream.from_file, which calls hew_stream_last_error() and returns the
     // allocated string as the Err payload.
     match stream.from_file("/no/such/path/that/could/exist") {
-        Ok(_) => println("unexpected success"),
-        Err(e) => {
+        .Ok(_) => println("unexpected success"),
+        .Err(e) => {
             // `e` is the hew_stream_last_error() result.  When this match arm
             // exits, `e` is dropped via hew_string_drop → free_cstring.
             // The old raw-malloc path caused libc::abort here.

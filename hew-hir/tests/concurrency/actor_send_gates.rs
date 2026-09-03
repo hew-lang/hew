@@ -204,8 +204,8 @@ fn awaited_send_non_unit_handler_accepted() {
         fn main() -> i64 {
             let d = spawn Doubler;
             match await d.send(21) {
-                Ok(v) => v,
-                Err(_) => 0,
+                .Ok(v) => v,
+                .Err(_) => 0,
             }
         }
         ",

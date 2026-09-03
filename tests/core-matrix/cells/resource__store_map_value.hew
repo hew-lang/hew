@@ -18,6 +18,6 @@ fn main() {
             let e_i = e.id;
             println(f"tok {e_i}");
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

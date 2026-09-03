@@ -136,8 +136,8 @@ fn select_record_element_cross_block_arm_runs_clean() {
          \x20       select {\n\
          \x20           t from rx.recv() => {\n\
          \x20               match t {\n\
-         \x20                   Some(tr) => println(f\"{tr.from_state} -> {tr.to_state}\"),\n\
-         \x20                   None => println(\"closed\"),\n\
+         \x20                   .Some(tr) => println(f\"{tr.from_state} -> {tr.to_state}\"),\n\
+         \x20                   .None => println(\"closed\"),\n\
          \x20               }\n\
          \x20           },\n\
          \x20           after 1s => println(\"timeout\"),\n\
@@ -178,12 +178,12 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
          \x20       select {\n\
          \x20           t from rx.recv() => {\n\
          \x20               match t {\n\
-         \x20                   Some(t2) => {\n\
+         \x20                   .Some(t2) => {\n\
          \x20                       match t2 {\n\
          \x20                           Transition.Moved { from_state, to_state } => println(f\"{from_state} -> {to_state}\"),\n\
          \x20                       }\n\
          \x20                   },\n\
-         \x20                   None => println(\"closed\"),\n\
+         \x20                   .None => println(\"closed\"),\n\
          \x20               }\n\
          \x20           },\n\
          \x20           after 1s => println(\"timeout\"),\n\
@@ -209,8 +209,8 @@ fn receiver_param_source() -> &'static str {
      actor Observer {\n\
      \x20   receive fn watch(rx: channel.Receiver<string>) {\n\
      \x20       match rx.recv() {\n\
-     \x20           Some(v) => println(v),\n\
-     \x20           None => println(\"closed\"),\n\
+     \x20           .Some(v) => println(v),\n\
+     \x20           .None => println(\"closed\"),\n\
      \x20       }\n\
      \x20       rx.close();\n\
      \x20   }\n\
@@ -262,8 +262,8 @@ fn channel_sender_actor_message_arg_transfers_locally() {
          \x20   let worker = spawn Worker;\n\
          \x20   worker.notify(tx);\n\
          \x20   match rx.recv() {\n\
-         \x20       Some(value) => println(value),\n\
-         \x20       None => println(\"closed\"),\n\
+         \x20       .Some(value) => println(value),\n\
+         \x20       .None => println(\"closed\"),\n\
          \x20   }\n\
          \x20   rx.close();\n\
          }\n",
@@ -365,13 +365,13 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20           select {\n\
          \x20               t from rx.recv() => {\n\
          \x20                   match t {\n\
-         \x20                       Some(tr) => {\n\
+         \x20                       .Some(tr) => {\n\
          \x20                           println(f\"{tr.from_state} -> {tr.to_state}\");\n\
          \x20                           if tr.to_state == \"Faulted\" {\n\
          \x20                               println(\"observer: child faulted\");\n\
          \x20                           }\n\
          \x20                       },\n\
-         \x20                       None => {\n\
+         \x20                       .None => {\n\
          \x20                           println(\"watch closed\");\n\
          \x20                           waiting = false;\n\
          \x20                       },\n\
@@ -421,8 +421,8 @@ fn select_after_genuine_expiry_takes_after_arm() {
          \x20       select {\n\
          \x20           v from rx.recv() => {\n\
          \x20               match v {\n\
-         \x20                   Some(_) => println(\"value\"),\n\
-         \x20                   None => println(\"closed\"),\n\
+         \x20                   .Some(_) => println(\"value\"),\n\
+         \x20                   .None => println(\"closed\"),\n\
          \x20               }\n\
          \x20           },\n\
          \x20           after 400ms => println(\"timeout\"),\n\
@@ -474,8 +474,8 @@ fn suspending_select_wake_gate_ir_shape_holds() {
          \x20       select {\n\
          \x20           v from rx.recv() => {\n\
          \x20               match v {\n\
-         \x20                   Some(_) => println(\"value\"),\n\
-         \x20                   None => println(\"closed\"),\n\
+         \x20                   .Some(_) => println(\"value\"),\n\
+         \x20                   .None => println(\"closed\"),\n\
          \x20               }\n\
          \x20           },\n\
          \x20           after 1s => println(\"timeout\"),\n\
@@ -723,14 +723,14 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20           select {\n\
          \x20               snap from rx.recv() => {\n\
          \x20                   match snap {\n\
-         \x20                       Some(s) => {\n\
+         \x20                       .Some(s) => {\n\
          \x20                           match s {\n\
          \x20                               Conn.Failed { reason } => println(f\"failed: {reason}\"),\n\
          \x20                               Conn.Open => println(\"open\"),\n\
          \x20                               Conn.Idle => println(\"idle\"),\n\
          \x20                           }\n\
          \x20                       },\n\
-         \x20                       None => {\n\
+         \x20                       .None => {\n\
          \x20                           println(\"watch closed\");\n\
          \x20                           waiting = false;\n\
          \x20                       },\n\
@@ -750,8 +750,8 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          fn main() {\n\
          \x20   let o = spawn Owner;\n\
          \x20   match await o.run() {\n\
-         \x20       Ok(_) => {},\n\
-         \x20       Err(_) => println(\"ask failed\"),\n\
+         \x20       .Ok(_) => {},\n\
+         \x20       .Err(_) => println(\"ask failed\"),\n\
          \x20   }\n\
          }\n\
          ",
@@ -967,14 +967,14 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \x20       select {\n\
          \x20           snap from rx.recv() => {\n\
          \x20               match snap {\n\
-         \x20                   Some(s) => {\n\
+         \x20                   .Some(s) => {\n\
          \x20                       match s {\n\
          \x20                           Conn.Failed { reason } => println(f\"failed: {reason}\"),\n\
          \x20                           Conn.Open => println(\"open\"),\n\
          \x20                           Conn.Idle => println(\"idle\"),\n\
          \x20                       }\n\
          \x20                   },\n\
-         \x20                   None => println(\"watch closed\"),\n\
+         \x20                   .None => println(\"watch closed\"),\n\
          \x20               }\n\
          \x20           },\n\
          \x20           after 2s => println(\"timeout\"),\n\
@@ -987,8 +987,8 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          fn main() {\n\
          \x20   let o = spawn Owner;\n\
          \x20   match await o.run() {\n\
-         \x20       Ok(r) => println(f\"r={r}\"),\n\
-         \x20       Err(_) => println(\"ask failed\"),\n\
+         \x20       .Ok(r) => println(f\"r={r}\"),\n\
+         \x20       .Err(_) => println(\"ask failed\"),\n\
          \x20   }\n\
          }\n";
 

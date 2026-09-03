@@ -44,8 +44,8 @@ fn run_holder(a: string, b: string) -> i64 {
 fn run_slot(a: string, b: string) -> i64 {
     let s: Slot<lmonobox.Box> = fill(lmonobox.make_box(a, b));
     match s {
-        Filled(bx) => bx.label.len(),
-        Empty => -1,
+        .Filled(bx) => bx.label.len(),
+        .Empty => -1,
     }
 }
 

@@ -74,9 +74,6 @@ source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
-# shellcheck source=scripts/lib/bare-variant-ratchet.sh
-# shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/bare-variant-ratchet.sh"
 # shellcheck source=scripts/lib/diagnostic-code-set.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/diagnostic-code-set.sh"
@@ -690,11 +687,8 @@ hew_suite_tail() {
 
 # ── Corpus: stdlib ────────────────────────────────────────────────────────────
 
-STDLIB_BARE_VARIANTS_STR=""
-STDLIB_BARE_VARIANT_COUNT=0
-
 run_stdlib() {
-    local stdlib_dir total relpath f check_output check_status bare_variants
+    local stdlib_dir total relpath f check_status
 
     stdlib_dir="$REPO_ROOT/std"
     require_hew_bin
@@ -710,21 +704,13 @@ run_stdlib() {
         total=$((total + 1))
         relpath="${f#"$REPO_ROOT"/}"
         RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${relpath}"$'\n'
-        check_output=""
         check_status=0
-        check_output="$("$HEW_BIN" check "$f" 2>&1)" || check_status=$?
+        "$HEW_BIN" check "$f" >/dev/null 2>&1 || check_status=$?
         if ((check_status != 0)); then
             ACTUAL_STR="${ACTUAL_STR}${relpath}"$'\n'
             record_expected_refusal_status "$relpath" "$check_status"
         else
             RATCHET_PASSED_STR="${RATCHET_PASSED_STR}${relpath}"$'\n'
-        fi
-        bare_variants=""
-        if bare_variants="$(
-            printf '%s\n' "$check_output" |
-                grep -E ': warning: E_BARE_VARIANT_(PATTERN|EXPR):'
-        )"; then
-            STDLIB_BARE_VARIANTS_STR="${STDLIB_BARE_VARIANTS_STR}${bare_variants}"$'\n'
         fi
     done < <(find "$stdlib_dir" -name '*.hew' -not -path '*/target/*' -print0 | sort -z)
 
@@ -736,7 +722,6 @@ run_stdlib() {
     echo "Files checked:     $total"
     echo "Expected failures: $(count_set "$EXPECTED_STR")"
     echo "Actual failures:   $(count_set "$ACTUAL_STR")"
-    echo "Bare variants:     $(count_set "$STDLIB_BARE_VARIANTS_STR")"
     echo ""
 }
 
@@ -750,29 +735,6 @@ stdlib_diagnostic() {
     # CI showing only one file. `head` closing the pipe early is a normal
     # outcome here, so the status is deliberately dropped.
     "$HEW_BIN" check "$REPO_ROOT/$1" 2>&1 | head -3 | sed 's/^/    /' || true
-}
-
-# Reached through RATCHET_EXTRA_FAIL_FN; shellcheck cannot see an indirect call.
-# shellcheck disable=SC2317,SC2329
-stdlib_extra_failures() {
-    local entry
-
-    case "$1" in
-    detect)
-        STDLIB_BARE_VARIANT_COUNT="$(count_set "$STDLIB_BARE_VARIANTS_STR")"
-        RATCHET_EXTRA_FAIL_COUNT="$STDLIB_BARE_VARIANT_COUNT"
-        ;;
-    report)
-        echo "$(bare_variant_ratchet_failure_message "$STDLIB_BARE_VARIANT_COUNT") in stdlib checks:"
-        while IFS= read -r entry; do
-            [[ -z "$entry" ]] && continue
-            echo "  BARE VARIANT: $entry"
-        done <<<"$STDLIB_BARE_VARIANTS_STR"
-        echo ""
-        echo "  Qualify every bare variant; bare variant diagnostics are not ratcheted."
-        echo ""
-        ;;
-    esac
 }
 
 # ── Corpus: hew-corpus ────────────────────────────────────────────────────────
@@ -954,8 +916,6 @@ hew_corpus_diagnostic() {
 DOC_FENCE_OUTDIR=""
 DOC_FENCE_EXPECTED_CKSUM_STR=""
 DOC_FENCE_STALE=""
-DOC_FENCE_BARE_VARIANTS_STR=""
-DOC_FENCE_BARE_VARIANT_COUNT=0
 DOC_FENCE_STALE_COUNT=0
 
 DOC_FENCE_SOURCES=(
@@ -1226,7 +1186,6 @@ doc_fence_read_expected() {
 run_doc_fences() {
     local entry doc_path prefix full_path total_fences
     local pass=0 fail=0 skip=0 idx fence_id is_skip outfile check_rc
-    local check_output bare_variants
 
     DOC_FENCE_OUTDIR="${OUTDIR_ARG:-$REPO_ROOT/.tmp/doc-fences}"
 
@@ -1279,14 +1238,7 @@ run_doc_fences() {
         fi
 
         check_rc=0
-        check_output="$("$HEW_BIN" check "$outfile" 2>&1)" || check_rc=$?
-        bare_variants=""
-        if bare_variants="$(
-            printf '%s\n' "$check_output" |
-                grep -E ': warning: E_BARE_VARIANT_(PATTERN|EXPR):'
-        )"; then
-            DOC_FENCE_BARE_VARIANTS_STR="${DOC_FENCE_BARE_VARIANTS_STR}${bare_variants}"$'\n'
-        fi
+        "$HEW_BIN" check "$outfile" >/dev/null 2>&1 || check_rc=$?
 
         if [[ "$check_rc" == "0" ]]; then
             pass=$((pass + 1))
@@ -1301,7 +1253,6 @@ run_doc_fences() {
     echo ""
     echo "==> Results: $pass passed, $fail failed, $skip skipped (NYI/aspirational)"
     echo "    Total fences: $total_fences"
-    echo "    Bare variants: $(count_set "$DOC_FENCE_BARE_VARIANTS_STR")"
     echo ""
     echo "==> Doc-test ratchet"
     echo "    Expected failures: $(count_set "$EXPECTED_STR")"
@@ -1341,21 +1292,9 @@ doc_fence_extra_failures() {
             fi
         done <<<"$DOC_FENCE_EXPECTED_CKSUM_STR"
         DOC_FENCE_STALE_COUNT="$(count_set "$DOC_FENCE_STALE")"
-        DOC_FENCE_BARE_VARIANT_COUNT="$(count_set "$DOC_FENCE_BARE_VARIANTS_STR")"
-        RATCHET_EXTRA_FAIL_COUNT=$((\
-            DOC_FENCE_STALE_COUNT + DOC_FENCE_BARE_VARIANT_COUNT))
+        RATCHET_EXTRA_FAIL_COUNT="$DOC_FENCE_STALE_COUNT"
         ;;
     report)
-        if ((DOC_FENCE_BARE_VARIANT_COUNT > 0)); then
-            echo "$(bare_variant_ratchet_failure_message "$DOC_FENCE_BARE_VARIANT_COUNT") in doc fences:"
-            while IFS= read -r entry; do
-                [[ -z "$entry" ]] && continue
-                echo "  BARE VARIANT: $entry"
-            done <<<"$DOC_FENCE_BARE_VARIANTS_STR"
-            echo ""
-            echo "  Qualify every bare variant; bare variant diagnostics are not ratcheted."
-            echo ""
-        fi
         ((DOC_FENCE_STALE_COUNT > 0)) || return 0
         plural="ies"
         ((DOC_FENCE_STALE_COUNT == 1)) && plural="y"
@@ -1391,7 +1330,6 @@ stdlib)
     RATCHET_ALL_PASS_TEXT="All stdlib files pass type-check. Remove entries from expected-failures file."
     RATCHET_LIST_TRACKED=1
     RATCHET_DIAGNOSTIC_FN=stdlib_diagnostic
-    RATCHET_EXTRA_FAIL_FN=stdlib_extra_failures
     RATCHET_UNEXPECTED_HELP="  To accept these as known failures, add them to:
   $EXPECTED_FAILURES_FILE"
     RATCHET_NOWPASS_HELP="  Delete these lines from:

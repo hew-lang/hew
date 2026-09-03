@@ -3,7 +3,7 @@ fn main() {
     let w = a.downgrade();
     println(f"{a.get()}");
     match w.upgrade() {
-        Some(_) => println("alive"),
-        None => println("dead"),
+        .Some(_) => println("alive"),
+        .None => println("dead"),
     }
 }

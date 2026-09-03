@@ -37,7 +37,7 @@ fn main() {
     sink.accept_receiver(Receiver { y: 22 });
     let sum = await sink.sum();
     match sum {
-        Ok(v) => println(f"sum {v}"),
-        Err(_) => println("sum failed"),
+        .Ok(v) => println(f"sum {v}"),
+        .Err(_) => println("sum failed"),
     }
 }

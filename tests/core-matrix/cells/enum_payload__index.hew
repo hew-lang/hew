@@ -12,8 +12,8 @@ fn main() {
     v.push(b);
     let e = v[0];
     match e {
-        Empty => println("empty"),
-        Circle(e_r) => println(f"circle {e_r}"),
-        Rect { w, h } => println(f"rect {w}x{h}"),
+        .Empty => println("empty"),
+        .Circle(e_r) => println(f"circle {e_r}"),
+        .Rect { w, h } => println(f"rect {w}x{h}"),
     }
 }

@@ -85,8 +85,8 @@
 # guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
 # the NYI label was stale (fence renumbered as guide grew).
 
-guide-0154   4278824673   # SURFACE-PENDING: `close(consume self)` — the parser still spells the consuming receiver `consuming self` (#3257)
-guide-0155   144626557   # SURFACE-PENDING: `commit`/`rollback(consume self)` — same receiver spelling (#3257)
+guide-0154   4278824673   # SURFACE-PENDING: `close(consume self)` — the parser still spells the consuming receiver `consuming self` (#3257) (renumbered 0153->0154, a fence shifted ahead of it now passes)
+guide-0155   144626557   # SURFACE-PENDING: `commit`/`rollback(consume self)` — same receiver spelling (#3257) (renumbered 0154->0155)
 
 
 # ─── Spec failures (86) ──────────────────────────────────────────────────────────
@@ -138,10 +138,10 @@ spec-0077   3711765580   # SNIPPET: bare `let`/`var` — machine state illustrat
 spec-0078   1632573552   # SNIPPET: bare `let`/`import` — stdlib module tour (re-verified after `testing.assert_true` became the generic `testing.assert`, D22)
 spec-0079   3943447574   # SNIPPET: bare `let m = ...` — machine instantiation illustration
 spec-0080   70193944   # SNIPPET: bare identifier list — prelude illustration (re-verified after the `Error` trait joined the prelude, D21)
-spec-0081   3231394512   # SNIPPET: placeholder `field: Type` on `StateB` — target has a required field so `.StateB` (fine for a unit state) hits E_PATH_KIND_MISMATCH; the fence never supplies a real field value
+spec-0081   356096974   # FRAGMENT: placeholder type name `Type` — declaration-syntax skeleton
 spec-0082   3707425012   # SPEC-BUG: interleaved `event` declarations — old machine syntax pre-`events {}`
 spec-0083   813722226   # SNIPPET: bare `on event { ... }` — machine transition illustration
-spec-0084   2915754722   # SNIPPET: bare `on event ...` — machine state illustration
+spec-0084   2693414511   # SNIPPET: bare `on event ...` — machine state illustration
 spec-0085   696588660   # SNIPPET: bare `on event ...` — machine event illustration
 spec-0086   3858180891   # SNIPPET: bare `var` — machine initial-state illustration
 spec-0087   3427923877   # SNIPPET: bare `match state { ... }` — machine pattern illustration

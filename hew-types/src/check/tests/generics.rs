@@ -678,8 +678,8 @@ fn test_trait_object_type_args_substitution() {
             let iter: dyn MyIter<i64> = Counter { count: 5 };
             let result = iter.next(); // Should be Option<i64>, not Option<T>
             match result {
-                Some(x) => x,
-                None => 0
+                .Some(x) => x,
+                .None => 0
             }
         }
     ";
@@ -1947,8 +1947,8 @@ fn array_literal_methods_index_and_get_resolve() {
             if values.len() != 3 { return 10; }
             if values[0] != 1 { return 11; }
             match values.get(0) {
-                Some(x) => { if x != 1 { return 12; } }
-                None => { return 13; }
+                .Some(x) => { if x != 1 { return 12; } }
+                .None => { return 13; }
             }
             0
         }

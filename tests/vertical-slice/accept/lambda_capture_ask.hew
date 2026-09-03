@@ -7,12 +7,12 @@ fn main() {
     let scale = actor |n: i64| -> i64 { n * factor };
     let a = scale(3);
     match a {
-        Ok(v) => println(f"scale3={v}"),
-        Err(_) => println("ask failed"),
+        .Ok(v) => println(f"scale3={v}"),
+        .Err(_) => println("ask failed"),
     }
     let b = scale(6);
     match b {
-        Ok(v) => println(f"scale6={v}"),
-        Err(_) => println("ask failed"),
+        .Ok(v) => println(f"scale6={v}"),
+        .Err(_) => println("ask failed"),
     }
 }

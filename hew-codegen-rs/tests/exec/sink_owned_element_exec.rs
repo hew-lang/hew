@@ -615,8 +615,8 @@ actor Producer {
         var done = false;
         while !done {
             match await input.recv() {
-                Some(s) => println(s),
-                None => { done = true; },
+                .Some(s) => println(s),
+                .None => { done = true; },
             }
         }
     }
@@ -655,8 +655,8 @@ actor Producer {
         var done = false;
         while !done {
             match await input.recv() {
-                Some(s) => println(s),
-                None => { done = true; },
+                .Some(s) => println(s),
+                .None => { done = true; },
             }
         }
     }
@@ -702,12 +702,12 @@ actor Writer {{
 
     receive fn run(unused: i64) {{
         match stream.to_file(path) {{
-            Ok(sink) => {{
+            .Ok(sink) => {{
                 await sink.send("line-a\n");
                 await sink.send("line-b\n");
                 sink.close();
             }},
-            Err(e) => println(f"open failed: {{e}}"),
+            .Err(e) => println(f"open failed: {{e}}"),
         }}
     }}
 }}
@@ -744,8 +744,8 @@ fn main() {
     let (sink, input) = stream.pipe(4);
     let _r = sink.try_send("hi");
     match input.recv() {
-        Some(s) => println(s),
-        None => println("eof"),
+        .Some(s) => println(s),
+        .None => println("eof"),
     }
 }
 "#;
@@ -779,8 +779,8 @@ fn main() {
     let w = spawn Writer(sink: sink);
     w.put("hello");
     match input.recv() {
-        Some(s) => println(s),
-        None => println("eof"),
+        .Some(s) => println(s),
+        .None => println("eof"),
     }
 }
 "#;
@@ -815,8 +815,8 @@ actor Consumer {
         var done = false;
         while !done {
             match await input.recv() {
-                Some(_s) => { count = count + 1; },
-                None => { done = true; },
+                .Some(_s) => { count = count + 1; },
+                .None => { done = true; },
             }
         }
         println(f"count={count}");
@@ -875,8 +875,8 @@ actor Consumer {
         var done = false;
         while !done {
             match await input.recv() {
-                Some(s) => println(s),
-                None => { done = true; },
+                .Some(s) => println(s),
+                .None => { done = true; },
             }
         }
         println("eof");
@@ -928,8 +928,8 @@ fn main() {
     p.run();
     sleep(200ms);
     match input.recv() {
-        Some(s) => println(s),
-        None => println("eof"),
+        .Some(s) => println(s),
+        .None => println("eof"),
     }
     println("main-exit");
 }
@@ -954,8 +954,8 @@ actor Consumer {
     receive fn drain() {
         var nones = 0;
         match await input.recv() {
-            Some(s) => println(s),
-            None => { nones = nones + 1; },
+            .Some(s) => println(s),
+            .None => { nones = nones + 1; },
         }
         println(f"nones={nones}");
     }
@@ -994,8 +994,8 @@ actor Consumer {
         var done = false;
         while !done {
             match await input.recv() {
-                Some(_v) => { count = count + 1; },
-                None => { eofs = eofs + 1; done = true; },
+                .Some(_v) => { count = count + 1; },
+                .None => { eofs = eofs + 1; done = true; },
             }
         }
         println(f"count={count} eofs={eofs}");
@@ -1054,8 +1054,8 @@ fn main() {
     p.go();
     sleep(100ms);
     match input.recv() {
-        Some(s) => println(s),
-        None => println("eof"),
+        .Some(s) => println(s),
+        .None => println("eof"),
     }
 }
 "#;
@@ -1095,8 +1095,8 @@ fn main() {
     p.go();
     sleep(100ms);
     match input.recv() {
-        Some(s) => println(s),
-        None => println("eof"),
+        .Some(s) => println(s),
+        .None => println("eof"),
     }
 }
 "#;
@@ -1128,8 +1128,8 @@ fn main() {
     let w = spawn Writer(sink: sink);
     w.reset();
     match input.recv() {
-        Some(s) => println(s),
-        None => println("eof"),
+        .Some(s) => println(s),
+        .None => println("eof"),
     }
 }
 "#;
@@ -1156,8 +1156,8 @@ fn main() {
     let w = spawn Writer(sink: sink);
     sink.send("after-move");
     match input.recv() {
-        Some(s) => println(s),
-        None => println("eof"),
+        .Some(s) => println(s),
+        .None => println("eof"),
     }
 }
 "#;

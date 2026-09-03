@@ -15,12 +15,12 @@ fn main() -> i64 {
     let got = helper(rx);
     let _ = tx;
     match got {
-        Ok(inner) => {
+        .Ok(inner) => {
             match inner {
-                Some(v) => v,
-                None => -1,
+                .Some(v) => v,
+                .None => -1,
             }
         },
-        Err(_) => -2,
+        .Err(_) => -2,
     }
 }

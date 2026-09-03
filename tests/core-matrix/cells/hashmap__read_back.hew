@@ -7,9 +7,9 @@ fn main() {
     match v.get(0) {
         Option.Some(e) => {
             let e_l = e.len();
-            let e_a = match e.get("a") { Option.Some(e_g) => e_g, None => -1, };
+            let e_a = match e.get("a") { Option.Some(e_g) => e_g, Option.None => -1, };
             println(f"len={e_l} a={e_a}");
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

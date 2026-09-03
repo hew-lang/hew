@@ -20,22 +20,22 @@ import std.time.cron;
 
 fn main() {
     match process.try_run("printf ok") {
-        Ok(output) => println(output.stdout),
-        Err(_) => (),
+        .Ok(output) => println(output.stdout),
+        .Err(_) => (),
     }
     let run_args: Vec<string> = Vec.new();
     match process.try_run_argv("printf", run_args) {
-        Ok(output) => println(output.stdout),
-        Err(_) => (),
+        .Ok(output) => println(output.stdout),
+        .Err(_) => (),
     }
     match process.try_start("true") {
-        Ok(child) => println(child.wait()),
-        Err(_) => (),
+        .Ok(child) => println(child.wait()),
+        .Err(_) => (),
     }
     let spawn_args: Vec<string> = Vec.new();
     match process.try_start_argv("true", spawn_args) {
-        Ok(child) => println(child.wait()),
-        Err(_) => (),
+        .Ok(child) => println(child.wait()),
+        .Err(_) => (),
     }
     let parsed = cron.parse("* * * * *");
     parsed.close();

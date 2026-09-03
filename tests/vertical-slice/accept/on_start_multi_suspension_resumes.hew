@@ -18,7 +18,7 @@ fn main() {
   let m = spawn Multi;
   sleep(150ms);
   match await m.get() {
-    Ok(v) => println(v),
-    Err(_) => println("ask failed"),
+    .Ok(v) => println(v),
+    .Err(_) => println("ask failed"),
   }
 }

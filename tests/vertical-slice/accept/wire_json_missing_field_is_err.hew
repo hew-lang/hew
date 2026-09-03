@@ -9,7 +9,7 @@ type Point {
 
 fn main() -> i64 {
     match Point.from_json("{\"x\":5}") {
-        Ok(_) => 1,
-        Err(_) => 42,
+        .Ok(_) => 1,
+        .Err(_) => 42,
     }
 }

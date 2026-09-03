@@ -268,8 +268,8 @@ fn remote_pid_lookup_annotation_keeps_builtin_discriminator() {
             receive fn go(unused: i64) {
                 let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
                 match found {
-                    Ok(peer) => { let reply = peer.ask(7, 1000); },
-                    Err(_) => {},
+                    .Ok(peer) => { let reply = peer.ask(7, 1000); },
+                    .Err(_) => {},
                 }
             }
         }
@@ -292,8 +292,8 @@ fn dotted_generic_node_lookup_carries_checker_executable_target() {
                 let found: Result<RemotePid<Echo>, LookupError> =
                     Node.lookup<Echo>("echo");
                 match found {
-                    Ok(peer) => { let reply = peer.ask(7, 1000); },
-                    Err(_) => {},
+                    .Ok(peer) => { let reply = peer.ask(7, 1000); },
+                    .Err(_) => {},
                 }
             }
         }

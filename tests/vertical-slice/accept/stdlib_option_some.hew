@@ -8,7 +8,7 @@ fn just() -> Option<i64> {
 
 fn main() -> i64 {
     match just() {
-        Some(v) => v,
-        None => 99,
+        .Some(v) => v,
+        .None => 99,
     }
 }

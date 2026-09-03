@@ -27,8 +27,8 @@
       "span": {
         "source_id": "src:main",
         "path": "main.hew",
-        "start": { "byte_offset": 198, "column": 5, "line": 14 },
-        "end": { "byte_offset": 229, "column": 36, "line": 14 }
+        "start": { "byte_offset": 200, "column": 5, "line": 14 },
+        "end": { "byte_offset": 231, "column": 36, "line": 14 }
       },
       "text": "24\n"
     },

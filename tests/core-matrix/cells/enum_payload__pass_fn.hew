@@ -6,9 +6,9 @@ enum Shape {
 
 fn use_it(v: Shape) {
     match v {
-        Empty => println("empty"),
-        Circle(v_r) => println(f"circle {v_r}"),
-        Rect { w, h } => println(f"rect {w}x{h}"),
+        .Empty => println("empty"),
+        .Circle(v_r) => println(f"circle {v_r}"),
+        .Rect { w, h } => println(f"rect {w}x{h}"),
     }
 }
 

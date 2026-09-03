@@ -4379,6 +4379,13 @@ impl Checker {
         span: &Span,
     ) -> Option<String> {
         let resolved = self.subst.resolve(expected);
+        // An already-broken expected type has a diagnostic of its own. Naming
+        // it again as "found `<error>`" is a cascade, and since v0.6.0 the
+        // dotted spelling is the only one users write, so every scrutinee or
+        // argument that fails to resolve would carry this second error.
+        if matches!(resolved, Ty::Error) {
+            return None;
+        }
         let Ty::Named { name, builtin, .. } = &resolved else {
             self.report_error(
                 TypeErrorKind::ContextVariantNoType,

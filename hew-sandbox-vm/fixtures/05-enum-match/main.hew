@@ -5,8 +5,8 @@ enum Shape {
 
 fn area(shape: Shape) -> i64 {
     match shape {
-        Circle(r) => r * r * 3,
-        Rectangle(w, h) => w * h,
+        .Circle(r) => r * r * 3,
+        .Rectangle(w, h) => w * h,
     }
 }
 

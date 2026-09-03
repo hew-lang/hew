@@ -18,7 +18,7 @@ fn main() -> i64 {
     a.add(10);
     a.add(32);
     match await a.get() {
-        Ok(v) => v,
-        Err(_e) => 0,
+        .Ok(v) => v,
+        .Err(_e) => 0,
     }
 }

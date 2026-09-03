@@ -32,45 +32,45 @@ enum Box {
 fn same_scope(i: i64) -> i64 {
     let b = Box.Text(f"same-{i}");
     match b {
-        Text(s) => {
+        .Text(s) => {
             let inner = s;
             inner.len() + s.len()
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn nested_scope(i: i64) -> i64 {
     let b = Box.Text(f"nested-{i}");
     match b {
-        Text(s) => {
+        .Text(s) => {
             let n = {
                 let inner = s;
                 inner.len()
             };
             n + s.len()
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn chained(i: i64) -> i64 {
     let b = Box.Text(f"chain-{i}");
     match b {
-        Text(s) => {
+        .Text(s) => {
             let first = s;
             let second = first;
             second.len() + first.len() + s.len()
         },
-        Empty => 0,
+        .Empty => 0,
     }
 }
 
 fn direct(i: i64) -> i64 {
     let b = Box.Text(f"direct-{i}");
     match b {
-        Text(s) => s.len(),
-        Empty => 0,
+        .Text(s) => s.len(),
+        .Empty => 0,
     }
 }
 

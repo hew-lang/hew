@@ -1637,12 +1637,12 @@ actor Sink {
             fn probe() {
                 let child = spawn Child;
                 match monitor(child) {
-                    Ok(m) => {
+                    .Ok(m) => {
                         let w = spawn Watcher(handle: m);
                         w.go();
                         m.close();
                     },
-                    Err(_) => {},
+                    .Err(_) => {},
                 }
             }
             ",

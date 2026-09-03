@@ -14,7 +14,7 @@ fn main() {
     let app = spawn App();
     let cfg = AppConfig { label: "hello" };
     match await app.describe(cfg) {
-        Ok(n) => println(n),
-        Err(_) => println(-1),
+        .Ok(n) => println(n),
+        .Err(_) => println(-1),
     }
 }

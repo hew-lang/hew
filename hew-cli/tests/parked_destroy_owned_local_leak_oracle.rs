@@ -184,8 +184,8 @@ actor Sleeper {
         m.insert("key-alpha-long-enough-to-heap-allocate", "val-alpha-long-enough-to-heap-allocate");
         m.insert("key-beta-long-enough-to-heap-allocate", "val-beta-long-enough-to-heap-allocate");
         let taken = match m.remove("key-beta-long-enough-to-heap-allocate") {
-            Some(s) => s,
-            None => "MISS",
+            .Some(s) => s,
+            .None => "MISS",
         };
         sleep(10s);
         println(f"{taken.len()} {m.len()}");
@@ -221,12 +221,12 @@ actor Sleeper {
     receive fn work() {
         var opt = Box.Full(f"parked-overwritten-payload");
         match opt {
-            Full(s) => {
+            .Full(s) => {
                 opt = Box.Empty;
                 sleep(10s);
                 println(f"{s.len()}");
             },
-            Empty => {},
+            .Empty => {},
         }
     }
 }

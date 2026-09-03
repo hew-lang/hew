@@ -12,7 +12,7 @@ fn main() {
     var x = Zero;
     x.step(.Inc);
     match x {
-        Zero => println("zero"),
-        NonZero { value } => println(f"n {value}"),
+        .Zero => println("zero"),
+        .NonZero { value } => println(f"n {value}"),
     }
 }

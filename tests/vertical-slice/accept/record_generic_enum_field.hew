@@ -13,7 +13,7 @@ fn main() -> i64 {
     let a = Holder { val: Some(7) };
     let _b = Holder { val: None };
     match a.val {
-        Some(v) => v,
-        None => -1,
+        .Some(v) => v,
+        .None => -1,
     }
 }

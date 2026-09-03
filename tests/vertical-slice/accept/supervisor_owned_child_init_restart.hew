@@ -48,8 +48,8 @@ fn main() -> i64 {
     let t = sup.t;
     // Initial deep-cloned owned value: "restart-me" (length 10).
     match await t.name_len() {
-        Err(_) => { return 1; },
-        Ok(n) => {
+        .Err(_) => { return 1; },
+        .Ok(n) => {
             if n != 10 {
                 return 2;
             }
@@ -64,7 +64,7 @@ fn main() -> i64 {
     // The restarted child re-derived "restart-me" (length 10) from config,
     // independent of the dead instance's mutated "x".
     match await t2.name_len() {
-        Ok(n) => n,
-        Err(_) => 4,
+        .Ok(n) => n,
+        .Err(_) => 4,
     }
 }

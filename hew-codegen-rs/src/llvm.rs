@@ -25956,7 +25956,7 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
         // M2 substrate handle drops: Duplex close-both-directions, half-handle
         // close-one-direction, lambda-actor release. The production MIR always
         // carries the matching `Runtime`-descriptor `drop_fn` here (`Some` →
-        // `lower_drop`); the `None => Ok(())` path is retained for the
+        // `lower_drop`); the `.None => Ok(())` path is retained for the
         // refcounted / null-tolerant handle shapes the drop-plan validator
         // admits with no drop_fn. The `DropKind::Resource` fail-closed split
         // above is intentionally scoped to the generic `@resource` close arm

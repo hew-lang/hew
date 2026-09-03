@@ -191,8 +191,8 @@ fn foo(x: i64) -> i64 {
             r"
 fn foo(opt: Option<i64>) -> i64 {
     match opt {
-        Some(v) => v,
-        None => 0,
+        .Some(v) => v,
+        .None => 0,
     }
 }",
         );
@@ -272,8 +272,8 @@ fn foo(opt: Option<i64>) -> i64 {
             r"
 fn foo(opt: Option<i64>) {
     match opt {
-        Some(_) => {},
-        None => {},
+        .Some(_) => {},
+        .None => {},
     }
 }",
         );
@@ -300,8 +300,8 @@ fn foo(opt: Option<i64>) {
             r"
 fn foo(r: Result<i64, string>) -> i64 {
     match r {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     }
 }",
         );
@@ -343,9 +343,9 @@ fn foo(r: Result<i64, string>) -> i64 {
 enum Color { Red; Green; Blue }
 fn foo(c: Color) {
     match c {
-        Red => {},
-        Green => {},
-        Blue => {},
+        .Red => {},
+        .Green => {},
+        .Blue => {},
     }
 }",
         );
@@ -365,8 +365,8 @@ fn foo(c: Color) {
 enum Shape { Circle(i64); Square(i64) }
 fn foo(s: Shape) -> i64 {
     match s {
-        Circle(r) => r,
-        Square(side) => side,
+        .Circle(r) => r,
+        .Square(side) => side,
     }
 }",
         );
@@ -422,8 +422,8 @@ fn foo(s: Shape) -> i64 {
             r"
 fn foo(opt: Option<i64>) -> i64 {
     let v = match opt {
-        Some(x) => x,
-        None => 0,
+        .Some(x) => x,
+        .None => 0,
     };
     v
 }",
@@ -768,8 +768,8 @@ fn foo(x: i64) -> i64 {
             r"
 fn foo(opt: Option<i64>) -> i64 {
     match opt {
-        Some(v) => v,
-        None => 0,
+        .Some(v) => v,
+        .None => 0,
     }
 }",
         );
@@ -859,8 +859,8 @@ fn foo(x: i64) -> i64 {
             r"
 fn foo(opt: Option<i64>) -> i64 {
     match opt {
-        None => 0,
-        Some(v) => v,
+        .None => 0,
+        .Some(v) => v,
     }
 }",
         );
@@ -888,8 +888,8 @@ fn foo(opt: Option<i64>) -> i64 {
             r"
 fn foo(opt: Option<i64>) -> i64 {
     match opt {
-        Some(MAX) => MAX,
-        None => 0,
+        .Some(MAX) => MAX,
+        .None => 0,
     }
 }",
         );
@@ -963,7 +963,7 @@ fn record_case(p: Point) -> i64 {
     fn struct_variant_field_uppercase_binder_compiles() {
         // The concrete repro from issue #2116:
         //   enum Packet { Data { value: i64 }; Empty }
-        //   match p { Packet::Data { value: MAX } => MAX, Empty => 0 }
+        //   match p { Packet::Data { value: MAX } => MAX, .Empty => 0 }
         //
         // `MAX` does not resolve as a variant of `i64`, so it must be classified
         // as a binder rather than a "nested constructor".  The old casing heuristic
@@ -975,7 +975,7 @@ enum Packet { Data { value: i64 }; Empty }
 fn f(p: Packet) -> i64 {
     match p {
         Packet.Data { value: MAX } => MAX,
-        Empty => 0,
+        .Empty => 0,
     }
 }",
         );
@@ -998,9 +998,9 @@ enum Color { Red; Blue }
 enum Packet { Data { value: Color }; Empty }
 fn f(p: Packet) -> i64 {
     match p {
-        Packet.Data { value: Red } => 1,
+        Packet.Data { value: .Red } => 1,
         Packet.Data { value: _ } => 2,
-        Empty => 0,
+        .Empty => 0,
     }
 }",
         );
@@ -1201,9 +1201,9 @@ fn doubly() -> Result<Result<i64, string>, string> {
 }
 fn main() -> i64 {
     match doubly() {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => 0 - 1,
-        Err(e) => 0 - 2,
+        .Ok(.Ok(v)) => v,
+        .Ok(.Err(e)) => 0 - 1,
+        .Err(e) => 0 - 2,
     }
 }",
     );

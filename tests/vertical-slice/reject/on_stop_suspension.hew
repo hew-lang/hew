@@ -15,7 +15,7 @@ actor Cleaner {
 fn main() {
   let c = spawn Cleaner;
   match await c.get() {
-    Ok(v) => println(v),
-    Err(_) => println("ask failed"),
+    .Ok(v) => println(v),
+    .Err(_) => println("ask failed"),
   }
 }

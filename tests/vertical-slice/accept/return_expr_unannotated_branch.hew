@@ -20,8 +20,8 @@ fn combine(n: i64) -> Result<i64, string> {
 
 fn show(r: Result<i64, string>) -> string {
     match r {
-        Ok(v) => f"ok={v}",
-        Err(e) => f"err={e}",
+        .Ok(v) => f"ok={v}",
+        .Err(e) => f"err={e}",
     }
 }
 

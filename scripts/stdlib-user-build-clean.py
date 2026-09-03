@@ -236,14 +236,28 @@ def report_command_failure(module: Module, command: CommandResult) -> None:
             print(f"    {stream}: {line}", file=sys.stderr)
 
 
-def verify_imported_stdlib_diagnostic_boundary(
+def verify_broken_stdlib_refuses_user_builds(
     hew_bin: Path, stdlib_dir: Path, modules: list[Module]
 ) -> None:
-    """Prove direct stdlib diagnostics stay out of importing user builds."""
+    """Prove the sweep's clean verdict is earned, not vacuous.
+
+    Injects a bare variant pattern into a scratch copy of `std/arena.hew` and
+    asserts three things: the direct source audit catches it, and both
+    user-facing paths refuse rather than build against a stdlib that does not
+    type-check, disclosing the defect they refused on.
+
+    Refusing is the point. `retain_user_facing_diagnostics` drops stdlib-owned
+    *advisories* because a user cannot act on a compiler-shipped implementation
+    site, but an error is never dropped silently: a stdlib that fails to
+    type-check cannot be compiled around, and the user needs the span to report
+    it. Until v0.6.0 the pattern form of this rule was a deprecation warning, so
+    this probe used to assert the opposite - that the user paths succeeded with
+    the warning filtered out. Both halves of the rule refuse now.
+    """
 
     arena = next((module for module in modules if module.name == "std.arena"), None)
     if arena is None:
-        raise ValueError("diagnostic-boundary probe requires std.arena")
+        raise ValueError("broken-stdlib probe requires std.arena")
     with tempfile.TemporaryDirectory(prefix="hew-stdlib-user-boundary-") as tmp:
         scratch_root = Path(tmp)
         scratch_std = scratch_root / "std"
@@ -252,9 +266,7 @@ def verify_imported_stdlib_diagnostic_boundary(
         source = scratch_arena.read_text(encoding="utf-8")
         changed = source.replace(".Some(slot)", "Some(slot)", 1)
         if changed == source:
-            raise ValueError(
-                "diagnostic-boundary injection site `.Some(slot)` is missing"
-            )
+            raise ValueError("broken-stdlib injection site `.Some(slot)` is missing")
         scratch_arena.write_text(changed, encoding="utf-8")
 
         result = audit_module(
@@ -279,24 +291,24 @@ def verify_imported_stdlib_diagnostic_boundary(
         for command in result.commands:
             if command.label == "source-check":
                 continue
-            if command_failed(command):
+            if command.status == 0:
                 report_command_failure(arena, command)
                 raise ValueError(
-                    f"{command.label} failed while verifying the stdlib diagnostic boundary"
+                    f"{command.label} accepted a stdlib that does not type-check"
                 )
-            leaked = [
+            disclosed = [
                 diagnostic
                 for diagnostic in command.diagnostics
-                if from_stdlib(diagnostic, scratch_std)
+                if diagnostic.get("code") == "E_BARE_VARIANT_PATTERN"
+                and diagnostic.get("severity") == "error"
+                and from_stdlib(diagnostic, scratch_std)
             ]
-            if leaked:
-                codes = ", ".join(str(diagnostic.get("code")) for diagnostic in leaked)
+            if not disclosed:
+                report_command_failure(arena, command)
                 raise ValueError(
-                    f"{command.label} exposed scratch stdlib diagnostics to the user: {codes}"
+                    f"{command.label} refused without disclosing the stdlib defect"
                 )
-        print(
-            "PASS: direct stdlib diagnostics are caught without leaking into user builds"
-        )
+        print("PASS: a stdlib that does not type-check refuses every user build")
 
 
 def main() -> int:
@@ -317,7 +329,7 @@ def main() -> int:
             module for module in all_modules if not selected or module.name in selected
         ]
         if not selected:
-            verify_imported_stdlib_diagnostic_boundary(hew_bin, stdlib_dir, all_modules)
+            verify_broken_stdlib_refuses_user_builds(hew_bin, stdlib_dir, all_modules)
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

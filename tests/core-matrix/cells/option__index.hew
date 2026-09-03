@@ -5,5 +5,5 @@ fn main() {
     v.push(a);
     v.push(b);
     let e = v[0];
-    match e { Option.Some(e_v) => println(f"some {e_v}"), None => println("none"), }
+    match e { Option.Some(e_v) => println(f"some {e_v}"), Option.None => println("none"), }
 }

@@ -8,8 +8,8 @@ fn main() {
     let x: Shape = .Circle(3);
     let y = x;
     match y {
-        Empty => println("empty"),
-        Circle(y_r) => println(f"circle {y_r}"),
-        Rect { w, h } => println(f"rect {w}x{h}"),
+        .Empty => println("empty"),
+        .Circle(y_r) => println(f"circle {y_r}"),
+        .Rect { w, h } => println(f"rect {w}x{h}"),
     }
 }

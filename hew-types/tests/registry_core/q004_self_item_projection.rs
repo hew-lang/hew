@@ -68,8 +68,8 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     fn next(var self) -> Option<B> {
         var inner = self.iter;
         let result = match inner.next() {
-            Some(x) => Some((self.f)(x)),
-            None => None,
+            .Some(x) => Some((self.f)(x)),
+            .None => None,
         };
         self.iter = inner;
         result
@@ -104,8 +104,8 @@ impl<I> Iterator for IsPositive<I> where I: Iterator<Item = i64> {
     fn next(var self) -> Option<bool> {
         var it = self.inner;
         let result = match it.next() {
-            Some(x) => Some(x > 0),
-            None => None,
+            .Some(x) => Some(x > 0),
+            .None => None,
         };
         self.inner = it;
         result
@@ -135,10 +135,10 @@ pub fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B where I: Iterator<It
     var iter = it;
     loop {
         match iter.next() {
-            Some(x) => {
+            .Some(x) => {
                 acc = f(acc, x);
             }
-            None => {
+            .None => {
                 break;
             }
         }

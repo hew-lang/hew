@@ -10,8 +10,8 @@ fn test_non_exhaustive_match() {
         enum Colour { Red; Green; Blue; }
         fn check(c: Colour) -> i64 {
             match c {
-                Red => 1,
-                Green => 2,
+                .Red => 1,
+                .Green => 2,
             }
         }
         fn main() {
@@ -45,8 +45,8 @@ fn test_non_exhaustive_match_stmt() {
         fn main() {
             let colour: Colour = Red;
             match colour {
-                Red => {},
-                Green => {},
+                .Red => {},
+                .Green => {},
             }
         }
     ",
@@ -112,7 +112,7 @@ fn test_non_exhaustive_option_match() {
         r"
         fn check(opt: Option<i64>) -> i64 {
             match opt {
-                Some(x) => x,
+                .Some(x) => x,
             }
         }
         fn main() {
@@ -158,7 +158,7 @@ fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
 
         fn label(packet: Packet) -> i64 {
             match packet {
-                Empty => 0,
+                .Empty => 0,
             }
         }
     ",
@@ -217,7 +217,7 @@ fn test_exhaustive_or_enum_match() {
         enum Colour { Red; Green; Blue; }
         fn check(c: Colour) -> i64 {
             match c {
-                Red | Green | Blue => 1,
+                .Red | .Green | .Blue => 1,
             }
         }
         fn main() {

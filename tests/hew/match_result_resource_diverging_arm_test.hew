@@ -1,7 +1,7 @@
 //! Regression for the diverging-arm double-free on a call-scrutinee
 //! `Result<Resource, _>`.
 //!
-//! `match make() { Ok(w) => use(w), Err(_) => panic(...) }` over a call that
+//! `match make() { .Ok(w) => use(w), .Err(_) => panic(...) }` over a call that
 //! returns a heap-owning `#[resource]` payload double-freed the payload: the
 //! owning enum composite frees the payload through its recursive `EnumInPlace`
 //! scope-exit drop, so the `Ok` binder is a non-owning interior alias that must

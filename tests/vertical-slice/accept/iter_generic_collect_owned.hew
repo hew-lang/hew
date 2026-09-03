@@ -35,10 +35,10 @@ fn collect_items<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
     var cur = it;
     loop {
         match cur.next() {
-            Some(x) => {
+            .Some(x) => {
                 out.push(x);
             },
-            None => {
+            .None => {
                 break;
             },
         }

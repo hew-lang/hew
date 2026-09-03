@@ -43,8 +43,8 @@ fn main() {
     await c.increment(5);
     await c.increment(3);
     match await c.increment(12) {
-        Ok(total) => println(f"Total: {total}"),
-        Err(_) => println("send failed"),
+        .Ok(total) => println(f"Total: {total}"),
+        .Err(_) => println("send failed"),
     }
 }
 "#;

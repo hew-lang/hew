@@ -104,13 +104,13 @@ fn if_let_stmt_some_prints_payload_none_prints_else() {
         "if_let_stmt_option",
         r#"fn main() {
     let some_val: Option<i64> = Some(42);
-    if let Some(v) = some_val {
+    if let .Some(v) = some_val {
         println(v);
     } else {
         println(-1);
     }
     let none_val: Option<i64> = None;
-    if let Some(v) = none_val {
+    if let .Some(v) = none_val {
         println(v);
     } else {
         println(-1);
@@ -134,10 +134,10 @@ fn if_let_expr_position_binds_result() {
         "if_let_expr_position",
         r#"fn main() {
     let opt_some: Option<i64> = Some(7);
-    let y = if let Some(v) = opt_some { v } else { 0 };
+    let y = if let .Some(v) = opt_some { v } else { 0 };
     println(y);
     let opt_none: Option<i64> = None;
-    let z = if let Some(v) = opt_none { v } else { 0 };
+    let z = if let .Some(v) = opt_none { v } else { 0 };
     println(z);
 }
 "#,

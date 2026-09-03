@@ -14,8 +14,8 @@ actor Holder {
     receive fn hold(v: Counter) -> i64 {
         sleep(2ms);
         match v {
-            Zero => println("zero"),
-            NonZero { value } => println(f"n {value}"),
+            .Zero => println("zero"),
+            .NonZero { value } => println(f"n {value}"),
         }
         ready = true;
         1
@@ -28,6 +28,6 @@ fn main() {
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
         Result.Ok(n) => println(f"held {n}"),
-        Err(_) => println("err"),
+        Result.Err(_) => println("err"),
     }
 }

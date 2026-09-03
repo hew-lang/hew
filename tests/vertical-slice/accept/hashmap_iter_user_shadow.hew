@@ -23,8 +23,8 @@ impl Iterator for HashMapIter {
 pub fn main() -> i64 {
     var user = HashMapIter { value: 40, done: false };
     let user_value = match user.next() {
-        Some(value) => value,
-        None => 90,
+        .Some(value) => value,
+        .None => 90,
     };
 
     let map: HashMap<i64, i64> = HashMap.new();

@@ -106,8 +106,8 @@ fn gen_block_next_yields_some_value() {
         r"fn main() {
     let g = gen { yield 7; 0 };
     match g.next() {
-        Some(v) => println(v),
-        None => println(-1),
+        .Some(v) => println(v),
+        .None => println(-1),
     }
 }
 ",
@@ -131,8 +131,8 @@ fn gen_fn_first_next_yields_first_value() {
 fn main() {
     let g = count();
     match g.next() {
-        Some(v) => println(v),
-        None => println(-1),
+        .Some(v) => println(v),
+        .None => println(-1),
     }
 }
 ",
@@ -151,9 +151,9 @@ fn gen_repeated_next_advances_then_none() {
         "gen_repeated_next",
         r"fn main() {
     let g = gen { yield 1; yield 2; 0 };
-    let a = match g.next() { Some(v) => v, None => -1 };
-    let b = match g.next() { Some(v) => v, None => -1 };
-    let c = match g.next() { Some(v) => v, None => -9 };
+    let a = match g.next() { .Some(v) => v, .None => -1 };
+    let b = match g.next() { .Some(v) => v, .None => -1 };
+    let c = match g.next() { .Some(v) => v, .None => -9 };
     println(a);
     println(b);
     println(c);
@@ -232,8 +232,8 @@ fn gen_cross_yield_live_local_is_preserved() {
     let g = gen { let k = 10; yield 1; yield k; };
     let _first = g.next();
     match g.next() {
-        Some(v) => println(v),
-        None => println(-1),
+        .Some(v) => println(v),
+        .None => println(-1),
     }
 }
 ",
@@ -1091,8 +1091,8 @@ fn gen_unit_yield_next_is_some() {
         r"fn main() {
     let g = gen { yield (); 0 };
     match g.next() {
-        Some(_) => println(42),
-        None => println(-1),
+        .Some(_) => println(42),
+        .None => println(-1),
     }
 }
 ",

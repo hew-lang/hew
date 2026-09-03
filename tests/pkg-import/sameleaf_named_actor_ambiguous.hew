@@ -4,7 +4,7 @@ import ambiguity.actor_right.{ClashActor};
 fn main() {
     let worker = spawn ClashActor();
     match await worker.ping() {
-        Ok(value) => println(value),
-        Err(_) => println("ask failed"),
+        .Ok(value) => println(value),
+        .Err(_) => println("ask failed"),
     }
 }

@@ -11,7 +11,7 @@ fn main() -> i64 {
     let h = Holder { maybe: Some(42) };
     let back = Holder.decode(h.encode());
     match back.maybe {
-        Some(v) => v,
-        None => -1,
+        .Some(v) => v,
+        .None => -1,
     }
 }

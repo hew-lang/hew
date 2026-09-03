@@ -5766,6 +5766,26 @@ expect_check_fail_contains \
     "else" \
     "refutable_let_no_else_message"
 
+# Reject: a variant named bare in a pattern. Every pattern position reports,
+# so the count pins that none of the four shapes slipped past the rule: tuple
+# arm, struct-variant arm, unit arm, and the let-position tag test.
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/bare_variant_pattern.hew" \
+    4 \
+    "bare_variant_pattern"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/bare_variant_pattern.hew" \
+    "E_BARE_VARIANT_PATTERN" \
+    "bare_variant_pattern_code"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/bare_variant_pattern.hew" \
+    "replace \`Named\` with \`.Named\`" \
+    "bare_variant_pattern_fixit"
+# Accept twin: the same program with the dots, which must check, run, and
+# print. Without it the reject above would pass for a program that is simply
+# broken.
+run_check_run_expect_stdout dotted_variant_pattern
+
 # .wrapping_as_<W> and .saturating_as_<W> width-conversion methods.
 # Tests exact values: wrapping narrowing/widening/sign-change and
 # saturating clamp to [W.MIN, W.MAX].

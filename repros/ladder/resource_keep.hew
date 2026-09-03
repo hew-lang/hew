@@ -7,7 +7,7 @@ actor Holder {
     var conn: Option<Conn>;
     receive fn take(c: Conn) { conn = Some(c); println("kept"); }
     receive fn show() -> i64 {
-        match conn { Some(c) => c.fd, None => -1 }
+        match conn { .Some(c) => c.fd, .None => -1 }
     }
 }
 fn main() {

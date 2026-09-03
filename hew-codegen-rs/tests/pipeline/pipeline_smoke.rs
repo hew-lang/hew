@@ -250,8 +250,8 @@ fn actor_multiple_on_stop_emits_fan_out_trampoline_calling_both_hooks() {
         fn main() -> i64 {
             let s = spawn Sequencer(counter: 0);
             match await s.value() {
-                Ok(v) => v,
-                Err(_e) => 0,
+                .Ok(v) => v,
+                .Err(_e) => 0,
             }
         }
     "#;

@@ -158,8 +158,8 @@ fn vec_array_literal_owned_enum_runs() {
             let v: Vec<Shape> = [.Circle(3), .Named("box")];
             for s in v {
                 match s {
-                    Circle(r) => println("circle"),
-                    Named(n) => println(n),
+                    .Circle(r) => println("circle"),
+                    .Named(n) => println(n),
                 }
             }
         }

@@ -25,20 +25,20 @@ fn one_frame() -> i64 {
     let host = os.hostname();
     let temp = os.temp_dir();
     let process_len = match process.try_run("printf stdout; printf stderr >&2") {
-        Ok(output) => output.stdout.len() + output.stderr.len(),
-        Err(_) => 0,
+        .Ok(output) => output.stdout.len() + output.stderr.len(),
+        .Err(_) => 0,
     };
     let codec_len = match compress.try_gzip_decompress("not-a-gzip".to_bytes(), 1024) {
-        Ok(data) => data.len(),
-        Err(reason) => reason.len(),
+        .Ok(data) => data.len(),
+        .Err(reason) => reason.len(),
     };
     let process_discard = match process.try_run("printf discarded") {
-        Ok(_) => 1,
-        Err(_) => 0,
+        .Ok(_) => 1,
+        .Err(_) => 0,
     };
     let codec_discard = match compress.try_gzip_decompress("not-a-gzip".to_bytes(), 1024) {
-        Ok(_) => 0,
-        Err(_) => 1,
+        .Ok(_) => 0,
+        .Err(_) => 1,
     };
     arg.len() + env.len() + cwd.len() + home.len() + host.len() + temp.len() + process_len + codec_len + process_discard + codec_discard
 }

@@ -134,12 +134,12 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "enum unit-variant construction + dispatch",
-        probe: "enum Op { Double; }\nfn apply(op: Op, x: i64) -> i64 {\n    match op { Double => x * 2 }\n}\nfn main() {\n    println(f\"{apply(.Double, 5)}\");\n}\n",
+        probe: "enum Op { Double; }\nfn apply(op: Op, x: i64) -> i64 {\n    match op { .Double => x * 2 }\n}\nfn main() {\n    println(f\"{apply(.Double, 5)}\");\n}\n",
         coverage: Coverage::Parity("function_composition"),
     },
     Construct {
         id: "match with constructor-payload patterns",
-        probe: "enum Box { Has(i64); Empty; }\nfn unwrap(b: Box) -> i64 {\n    match b { Has(x) => x, Empty => 0 }\n}\nfn main() {\n    println(unwrap(.Has(7)));\n}\n",
+        probe: "enum Box { Has(i64); Empty; }\nfn unwrap(b: Box) -> i64 {\n    match b { .Has(x) => x, .Empty => 0 }\n}\nfn main() {\n    println(unwrap(.Has(7)));\n}\n",
         coverage: Coverage::Parity("pattern_matching"),
     },
     Construct {
@@ -159,12 +159,12 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "actor spawn + receive + mutable state",
-        probe: "actor Counter {\n    var count: i64;\n    receive fn bump(n: i64) -> i64 { count = count + n; count }\n}\nfn main() {\n    let c = spawn Counter(count: 0);\n    println(match await c.bump(3) { Ok(v) => v, Err(_e) => 0 - 1 });\n}\n",
+        probe: "actor Counter {\n    var count: i64;\n    receive fn bump(n: i64) -> i64 { count = count + n; count }\n}\nfn main() {\n    let c = spawn Counter(count: 0);\n    println(match await c.bump(3) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
         coverage: Coverage::Parity("counter_actor"),
     },
     Construct {
         id: "actor ask via await + Ok/Err reply match",
-        probe: "actor Echo {\n    receive fn echo(n: i64) -> i64 { n }\n}\nfn main() {\n    let e = spawn Echo;\n    println(match await e.echo(9) { Ok(v) => v, Err(_e) => 0 - 1 });\n}\n",
+        probe: "actor Echo {\n    receive fn echo(n: i64) -> i64 { n }\n}\nfn main() {\n    let e = spawn Echo;\n    println(match await e.echo(9) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
         coverage: Coverage::Parity("actor_pipeline"),
     },
     Construct {
@@ -172,7 +172,7 @@ const CONSTRUCTS: &[Construct] = &[
         // Probed only at parity-name level; the real supervisor case lives in
         // parity.rs (a minimal inline supervisor needs more scaffolding than a
         // probe warrants). The exit-0 cross-check uses the simpler actor probe.
-        probe: "actor W {\n    receive fn ping() -> i64 { 1 }\n}\nfn main() {\n    let w = spawn W;\n    println(match await w.ping() { Ok(v) => v, Err(_e) => 0 });\n}\n",
+        probe: "actor W {\n    receive fn ping() -> i64 { 1 }\n}\nfn main() {\n    let w = spawn W;\n    println(match await w.ping() { .Ok(v) => v, .Err(_e) => 0 });\n}\n",
         coverage: Coverage::Parity("supervisor"),
     },
     Construct {
@@ -237,7 +237,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "match with wildcard arm",
-        probe: "enum C { A; B; }\nfn name(c: C) -> string {\n    match c { A => \"a\", _ => \"other\" }\n}\nfn main() {\n    println(name(.B));\n}\n",
+        probe: "enum C { A; B; }\nfn name(c: C) -> string {\n    match c { .A => \"a\", _ => \"other\" }\n}\nfn main() {\n    println(name(.B));\n}\n",
         coverage: Coverage::Parity("wildcard_match"),
     },
     Construct {
@@ -279,17 +279,17 @@ const CONSTRUCTS: &[Construct] = &[
         // scrutinee is a separate, still-NotYetRunnable construct (`enum.tag`
         // dispatch traps on a non-enum value), so this probe isolates the
         // statement-position lowering #1901 made runnable.
-        probe: "enum Color { Red; Green; }\nfn main() {\n    let c: Color = .Green;\n    match c {\n        Red => println(\"stop\"),\n        Green => println(\"go\"),\n    }\n    return;\n}\n",
+        probe: "enum Color { Red; Green; }\nfn main() {\n    let c: Color = .Green;\n    match c {\n        .Red => println(\"stop\"),\n        .Green => println(\"go\"),\n    }\n    return;\n}\n",
         coverage: Coverage::Parity("stmt_match"),
     },
     Construct {
         id: "match arm guard (guarded enum arm)",
-        probe: "enum L { Hi(i64); Lo(i64); }\nfn f(l: L) -> i64 {\n    match l { Hi(n) if n > 50 => 2, Hi(_) => 1, Lo(_) => 0 }\n}\nfn main() { println(f(.Hi(99))); }\n",
+        probe: "enum L { Hi(i64); Lo(i64); }\nfn f(l: L) -> i64 {\n    match l { .Hi(n) if n > 50 => 2, .Hi(_) => 1, .Lo(_) => 0 }\n}\nfn main() { println(f(.Hi(99))); }\n",
         coverage: Coverage::Parity("match_guard_parity"),
     },
     Construct {
         id: "match arm guard (non-last guarded catch-all)",
-        probe: "enum L { Hi(i64); Lo(i64); }\nfn never() -> bool { 1 == 2 }\nfn main() {\n    let l: L = .Lo(7);\n    match l { Hi(n) if n > 50 => println(\"high\"), _ if never() => println(\"never\"), _ => println(\"fallback\") }\n    return;\n}\n",
+        probe: "enum L { Hi(i64); Lo(i64); }\nfn never() -> bool { 1 == 2 }\nfn main() {\n    let l: L = .Lo(7);\n    match l { .Hi(n) if n > 50 => println(\"high\"), _ if never() => println(\"never\"), _ => println(\"fallback\") }\n    return;\n}\n",
         coverage: Coverage::Parity("match_guard_catch_all_fallthrough"),
     },
     Construct {
@@ -298,7 +298,7 @@ const CONSTRUCTS: &[Construct] = &[
         // effects. The pattern is a constructor-with-binding (the runnable form
         // the stmt_if_let case proves); a unit-variant `if let` binds no payload
         // and exercises a different path. Pinned to the stmt_if_let case.
-        probe: "enum Wrapped { Value(i64); Empty; }\nfn main() {\n    let w: Wrapped = .Value(7);\n    if let Value(n) = w {\n        println(f\"value {n}\");\n    }\n    return;\n}\n",
+        probe: "enum Wrapped { Value(i64); Empty; }\nfn main() {\n    let w: Wrapped = .Value(7);\n    if let .Value(n) = w {\n        println(f\"value {n}\");\n    }\n    return;\n}\n",
         coverage: Coverage::Parity("stmt_if_let"),
     },
 
@@ -409,7 +409,7 @@ const CONSTRUCTS: &[Construct] = &[
         // { y }`) is the separate "value-position if-let" construct below, which
         // joins the arm values on a result local. This row covers only the
         // discarded-result / no-else form.
-        probe: "enum Box { Has(i64); Empty; }\nfn describe(b: Box) {\n    if let Has(x) = b {\n        println(f\"has {x}\");\n    } else {\n        println(\"empty\");\n    }\n}\nfn main() {\n    describe(.Has(9));\n    describe(.Empty);\n}\n",
+        probe: "enum Box { Has(i64); Empty; }\nfn describe(b: Box) {\n    if let .Has(x) = b {\n        println(f\"has {x}\");\n    } else {\n        println(\"empty\");\n    }\n}\nfn main() {\n    describe(.Has(9));\n    describe(.Empty);\n}\n",
         coverage: Coverage::Parity("stmt_if_let"),
     },
     Construct {
@@ -421,7 +421,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `Expr::If`. Before #1901's follow-up this silently yielded unit
         // regardless of the matched value (a G1-class silent-wrong hole); it now
         // runs at parity. Pinned to the if_let_value case.
-        probe: "enum Wrapped { Value(i64); Empty; }\nfn pick(w: Wrapped) -> i64 {\n    let v = if let Value(n) = w { n } else { 0 };\n    v\n}\nfn main() {\n    println(pick(.Value(7)));\n    println(pick(.Empty));\n}\n",
+        probe: "enum Wrapped { Value(i64); Empty; }\nfn pick(w: Wrapped) -> i64 {\n    let v = if let .Value(n) = w { n } else { 0 };\n    v\n}\nfn main() {\n    println(pick(.Value(7)));\n    println(pick(.Empty));\n}\n",
         coverage: Coverage::Parity("if_let_value"),
     },
     Construct {
@@ -472,12 +472,12 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "postfix-try (`?`)",
-        probe: "fn ok() -> Result<i64, string> { Ok(1) }\nfn run() -> Result<i64, string> {\n    let v = ok()?;\n    Ok(v + 1)\n}\nfn main() {\n    println(match run() { Ok(v) => v, Err(_) => 0 - 1 });\n}\n",
+        probe: "fn ok() -> Result<i64, string> { Ok(1) }\nfn run() -> Result<i64, string> {\n    let v = ok()?;\n    Ok(v + 1)\n}\nfn main() {\n    println(match run() { .Ok(v) => v, .Err(_) => 0 - 1 });\n}\n",
         coverage: Coverage::Parity("trap_residual"),
     },
     Construct {
         id: "Option Some/None construction",
-        probe: "fn main() {\n    let o = Some(5);\n    println(match o { Some(x) => x, None => 0 });\n}\n",
+        probe: "fn main() {\n    let o = Some(5);\n    println(match o { .Some(x) => x, .None => 0 });\n}\n",
         coverage: Coverage::Parity("option_some_none"),
     },
     Construct {
@@ -502,7 +502,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "let-else refutable pattern",
-        probe: "fn main() {\n    let value = Some(1);\n    let Some(n) = value else { return; };\n    println(n);\n}\n",
+        probe: "fn main() {\n    let value = Some(1);\n    let .Some(n) = value else { return; };\n    println(n);\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },

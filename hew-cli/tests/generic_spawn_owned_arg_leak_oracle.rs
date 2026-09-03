@@ -81,7 +81,7 @@ fn generic_fork_source(iters: usize) -> String {
          \x20   let d = spawn ForkDriver;\n\
          \x20   match await d.run_n({iters}) {{\n\
          \x20       Ok(v) => v,\n\
-         \x20       Err(_) => -1,\n\
+         \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
     )

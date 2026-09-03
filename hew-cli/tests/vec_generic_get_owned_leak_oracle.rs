@@ -68,8 +68,8 @@ fn main() {\n\
 \x20   let vn: Vec<Name> = Vec.new();\n\
 \x20   vn.push(Name { label: \"owned-ok\" });\n\
 \x20   let got = match first(vn) {\n\
-\x20       Some(g) => g,\n\
-\x20       None => { print(\"none\"); return; }\n\
+\x20       .Some(g) => g,\n\
+\x20       .None => { print(\"none\"); return; }\n\
 \x20   };\n\
 \x20   print(got.label);\n\
 }\n";
@@ -81,7 +81,7 @@ const GENERIC_GET_SINGLE_ROUNDTRIP_EXPECTED: &str = "owned-ok";
 /// Looped push-get(move-out)-drop cycle for the per-iteration slope probe. Each
 /// cycle builds a FRESH single-element `Vec<Name>` with a HEAP `label`
 /// (`"owned-ok".to_upper()` — non-vacuous), moves the element out of the
-/// generic getter's `Option<Name>` (`Some(g) => g`), and returns `got.label.len()`
+/// generic getter's `Option<Name>` (`.Some(g) => g`), and returns `got.label.len()`
 /// so the moved element cannot be elided. A getter that transfers the owned
 /// element without running its `label` drop on the moved-out value (or a by-value
 /// generic param that leaves the Vec unreleased) leaks per iteration.
@@ -97,8 +97,8 @@ fn generic_get_loop_source(frames: usize) -> String {
          \x20   let vn: Vec<Name> = Vec.new();\n\
          \x20   vn.push(Name {{ label: \"owned-ok\".to_upper() }});\n\
          \x20   let got = match first(vn) {{\n\
-         \x20       Some(g) => g,\n\
-         \x20       None => {{ return 0; }}\n\
+         \x20       .Some(g) => g,\n\
+         \x20       .None => {{ return 0; }}\n\
          \x20   }};\n\
          \x20   got.label.len()\n\
          }}\n\

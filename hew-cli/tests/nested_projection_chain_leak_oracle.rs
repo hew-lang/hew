@@ -7,7 +7,7 @@
 //! let o    = make_outer(k);   // fresh owner of the whole tree
 //! let mid  = o.mid;           // byte-copy interior alias of `o`
 //! let leaf = mid.leaf;        // byte-copy interior alias of `mid` (of `o`)
-//! match leaf { Leaf { s, t: _ } => … }
+//! match leaf { .Leaf { s, t: _ } => … }
 //! ```
 //!
 //! Each `let x = agg.field` where the field is an inline aggregate

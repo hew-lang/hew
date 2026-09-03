@@ -50,8 +50,8 @@ fn main() {
     q.enqueue(WorkItem { name: "only", priority: 1 });
     let r = await q.remove_front();
     match r {
-        Ok(n) => println(f"r={n}"),
-        Err(_) => println("err"),
+        .Ok(n) => println(f"r={n}"),
+        .Err(_) => println("err"),
     }
     println("done");
 }

@@ -6,6 +6,6 @@ fn main() {
         Option.Some(e) => {
             println(f"{e}");
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

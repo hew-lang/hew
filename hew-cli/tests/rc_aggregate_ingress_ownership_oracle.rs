@@ -449,8 +449,8 @@ fn main() -> i64 {{
         var c: Cell = .Empty;
         c.step(.Fill);
         match c {{
-            Empty => {{ total = total + 0; }}
-            Full {{ r }} => {{ total = total + r.get().id; }}
+            .Empty => {{ total = total + 0; }}
+            .Full {{ r }} => {{ total = total + r.get().id; }}
         }}
         println("frame");
     }}

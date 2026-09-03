@@ -32,14 +32,14 @@ fn main() -> i64 {
     // `builtin_enum_specs()` catalog would surface here as
     // "variant `LinkError::AlreadyLinked` is not a member of `LinkError`".
     match r {
-        Ok(()) => {},
-        Err(LinkError.AlreadyLinked) => {
+        .Ok(()) => {},
+        .Err(LinkError.AlreadyLinked) => {
             exit(2);
         },
-        Err(LinkError.TargetDead) => {
+        .Err(LinkError.TargetDead) => {
             exit(3);
         },
-        Err(_) => {
+        .Err(_) => {
             exit(4);
         },
     }

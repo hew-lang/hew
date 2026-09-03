@@ -1,8 +1,8 @@
 //! `break` as a bare match-arm expression (v0.6 loop ergonomics).
 //!
 //! Before this slice, `break` was only valid in statement position; a bare
-//! `None => break` arm errored with "expected expression, found `break`" even
-//! though the identical-shape `None => { break; }` compiled. `break` is now a
+//! `.None => break` arm errored with "expected expression, found `break`" even
+//! though the identical-shape `.None => { break; }` compiled. `break` is now a
 //! first-class divergent (`Never`-typed) expression usable directly as a
 //! match-arm body, desugaring to the already-working block form.
 //!
@@ -14,8 +14,8 @@ fn sum_all(v: Vec<i64>) -> i64 {
     var total: i64 = 0;
     loop {
         let n = match v.get(i) {
-            Some(x) => x,
-            None => break,
+            .Some(x) => x,
+            .None => break,
         };
         total = total + n;
         i = i + 1;

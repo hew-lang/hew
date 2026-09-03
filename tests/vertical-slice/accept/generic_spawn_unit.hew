@@ -23,7 +23,7 @@ actor Driver {
 fn main() -> i64 {
     let d = spawn Driver;
     match await d.drive() {
-        Ok(v) => v,
-        Err(_) => 1,
+        .Ok(v) => v,
+        .Err(_) => 1,
     }
 }

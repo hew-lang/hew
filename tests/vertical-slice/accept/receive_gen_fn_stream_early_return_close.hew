@@ -35,7 +35,7 @@ fn main() {
     let value = first(t);
     println(f"first={value}");
     match await t.ping() {
-        Ok(v) => println(f"ping={v}"),
-        Err(_) => println("ping failed"),
+        .Ok(v) => println(f"ping={v}"),
+        .Err(_) => println("ping failed"),
     }
 }

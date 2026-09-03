@@ -11,7 +11,7 @@ fn make_pair(good: bool) -> Result<(i64, string), string> {
 }
 
 fn parse(good: bool) -> Result<string, string> {
-    let Ok((n, s)) = make_pair(good) else {
+    let .Ok((n, s)) = make_pair(good) else {
         return Err("fallback")
     };
     let later = n + 35;
@@ -20,8 +20,8 @@ fn parse(good: bool) -> Result<string, string> {
 
 fn run(good: bool) -> string {
     match parse(good) {
-        Ok(v) => f"ok={v}",
-        Err(e) => f"err={e}",
+        .Ok(v) => f"ok={v}",
+        .Err(e) => f"err={e}",
     }
 }
 

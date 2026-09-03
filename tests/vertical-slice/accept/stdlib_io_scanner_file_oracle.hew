@@ -3,8 +3,8 @@ import std.io.scanner;
 
 fn print_line(label: string, line: Option<string>) {
     match line {
-        Some(value) => println(label + value),
-        None => println(label + "<eof>"),
+        .Some(value) => println(label + value),
+        .None => println(label + "<eof>"),
     }
 }
 
@@ -13,7 +13,7 @@ fn main() {
     let _ = fs.write(path, "red\n\nblue\n");
 
     match scanner.from_file(path) {
-        Ok(sc0) => {
+        .Ok(sc0) => {
             var sc = sc0;
             let (sc1, first) = scanner.next_line(sc);
             sc = sc1;
@@ -28,13 +28,13 @@ fn main() {
             print_line("third=", third);
             print_line("eof=", eof);
         },
-        Err(e) => println("file_err=" + to_string(e)),
+        .Err(e) => println("file_err=" + to_string(e)),
     }
 
     let _ = fs.delete(path);
 
     match scanner.from_file(".tmp/stdlib-io-scanner-definitely-missing.txt") {
-        Ok(_) => println("missing=unexpected-ok"),
-        Err(e) => println("missing=" + to_string(e)),
+        .Ok(_) => println("missing=unexpected-ok"),
+        .Err(e) => println("missing=" + to_string(e)),
     }
 }

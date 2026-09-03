@@ -359,8 +359,8 @@ fn fstring_enum_payload_interp_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       match mkopt(i) {{\n\
-         \x20           Some(s) => {{ println(f\"v={{s}}\"); total = total + s.len(); }}\n\
-         \x20           None => {{}}\n\
+         \x20           .Some(s) => {{ println(f\"v={{s}}\"); total = total + s.len(); }}\n\
+         \x20           .None => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -435,8 +435,8 @@ fn fstring_enum_payload_escapes_loop_source(frames: usize) -> String {
          \x20   var last: string = \"\";\n\
          \x20   while i < {frames} {{\n\
          \x20       match mkopt(i) {{\n\
-         \x20           Some(s) => {{ println(f\"v={{s}}\"); last = s; }}\n\
-         \x20           None => {{}}\n\
+         \x20           .Some(s) => {{ println(f\"v={{s}}\"); last = s; }}\n\
+         \x20           .None => {{}}\n\
          \x20       }}\n\
          \x20       total = total + last.len();\n\
          \x20       i = i + 1;\n\

@@ -30,7 +30,7 @@ actor _Worker {
 fn main() -> i64 {
     let w = spawn _Worker;
     match await w.run() {
-        Ok(v) => v,
-        Err(_e) => 0,
+        .Ok(v) => v,
+        .Err(_e) => 0,
     }
 }

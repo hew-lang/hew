@@ -22,14 +22,14 @@ fn main() {
     // Accepted: Send reply.
     let ok = spawn replysend.Producer(seed: 1);
     match await ok.make() {
-        Ok(r) => println("send ok"),
-        Err(e) => println("send err"),
+        .Ok(r) => println("send ok"),
+        .Err(e) => println("send err"),
     }
     // Rejected: non-Send reply, even though a same-bare-name Send `Reply` is
     // also in scope.
     let bad = spawn replynonsend.Producer(seed: 0);
     match await bad.make() {
-        Ok(r) => println("nonsend ok"),
-        Err(e) => println("nonsend err"),
+        .Ok(r) => println("nonsend ok"),
+        .Err(e) => println("nonsend err"),
     }
 }

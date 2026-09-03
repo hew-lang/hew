@@ -1,6 +1,6 @@
 //! From-call match-scrutinee composite drop elaboration (#2429).
 //!
-//! `match f() { Ok(b) => …, Err(e) => {} }` consumes the called function's
+//! `match f() { .Ok(b) => …, .Err(e) => {} }` consumes the called function's
 //! `Result`/`Option` return through an anonymous MIR temp. Before this fix the
 //! temp had no `BindingId`, so the drop elaborator never minted an owner for
 //! it and the arm-destructured payload was released on NO edge — not the loop
@@ -403,8 +403,8 @@ fn main() {
     var i = 0;
     while i < 5 {
         match f() {
-            Ok(b) => { let n = b.len(); }
-            Err(e) => {}
+            .Ok(b) => { let n = b.len(); }
+            .Err(e) => {}
         }
         i = i + 1;
     }
@@ -431,12 +431,12 @@ fn main() {
     while i < 4 {
         i = i + 1;
         match f() {
-            Ok(b) => {
+            .Ok(b) => {
                 if b.len() == 7 && i == 2 {
                     continue;
                 }
             }
-            Err(e) => {}
+            .Err(e) => {}
         }
     }
 }
@@ -496,8 +496,8 @@ fn f() -> Result<bytes, string> {
 
 fn main() {
     match f() {
-        Ok(b) => { let n = b.len(); }
-        Err(e) => {}
+        .Ok(b) => { let n = b.len(); }
+        .Err(e) => {}
     }
 }
 "#,
@@ -520,8 +520,8 @@ fn main() {
     var i = 0;
     while i < 5 {
         match f() {
-            Ok(b) => { let n = b.len(); }
-            Err(e) => {}
+            .Ok(b) => { let n = b.len(); }
+            .Err(e) => {}
         }
         i = i + 1;
     }
@@ -609,8 +609,8 @@ fn f() -> Result<bytes, string> {
 fn main() {
     let r = f();
     match r {
-        Ok(b) => { let n = b.len(); }
-        Err(e) => {}
+        .Ok(b) => { let n = b.len(); }
+        .Err(e) => {}
     }
 }
 "#,
@@ -639,8 +639,8 @@ fn f() -> Result<string, string> {
 fn main() {
     let r = f();
     match r {
-        Ok(b) => { let n = b.len(); }
-        Err(e) => {}
+        .Ok(b) => { let n = b.len(); }
+        .Err(e) => {}
     }
 }
 "#,
@@ -674,8 +674,8 @@ fn problem_message(problem: Problem) -> string {
 
 fn main() -> i64 {
     let value = match f() {
-        Ok(text) => text,
-        Err(error) => problem_message(error),
+        .Ok(text) => text,
+        .Err(error) => problem_message(error),
     };
     value.len()
 }
@@ -721,8 +721,8 @@ fn make() -> Result<Handle, string> {
 
 fn main() -> i64 {
     let handle = match make() {
-        Ok(value) => value,
-        Err(_) => return 1,
+        .Ok(value) => value,
+        .Err(_) => return 1,
     };
     handle.close();
     0
@@ -777,14 +777,14 @@ fn resolve(n: i64) -> Result<Secret, CredErr> {
 fn collect(n: i64) -> string {
     let bag: Vec<Secret> = [];
     let secret = match resolve(n) {
-        Err(_) => return "error",
-        Ok(value) => value,
+        .Err(_) => return "error",
+        .Ok(value) => value,
     };
     bag.push(secret);
     let first = bag.get(0);
     match first {
-        Some(found) => found.value,
-        None => "empty",
+        .Some(found) => found.value,
+        .None => "empty",
     }
 }
 "#,
@@ -828,8 +828,8 @@ fn main() {
     var i = 0;
     while i < 5 {
         match f() {
-            Ok(b) => { carry = b; }
-            Err(e) => {}
+            .Ok(b) => { carry = b; }
+            .Err(e) => {}
         }
         i = i + 1;
     }
@@ -926,11 +926,11 @@ fn clone_slot() -> Option<Slot> {
 
 fn take() -> Option<string> {
     match clone_slot() {
-        Some(slot) => match slot.value {
-            Some(value) => Some(value),
-            None => None,
+        .Some(slot) => match slot.value {
+            .Some(value) => Some(value),
+            .None => None,
         },
-        None => None,
+        .None => None,
     }
 }
 "#,

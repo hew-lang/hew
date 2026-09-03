@@ -73,9 +73,17 @@ def ind(text: str, n: int = 4) -> str:
 
 
 def ratify_surface(src: str) -> str:
-    """Emit dotted constructors and owner-qualified enum variants."""
+    """Emit dotted constructors and owner-qualified enum variants.
+
+    Covers both positions: a bare variant is refused in an expression
+    (`E_BARE_VARIANT_EXPR`) and in a pattern (`E_BARE_VARIANT_PATTERN`), so the
+    unit variants matched in `show` bodies need qualifying too, not only the
+    payload constructors built in `mk`.
+    """
     src = re.sub(r"(?<![.\w])Some\(", "Option.Some(", src)
     src = re.sub(r"(?<![.\w])Ok\(", "Result.Ok(", src)
+    src = re.sub(r"(?<![.\w])Err\(", "Result.Err(", src)
+    src = re.sub(r"(?<![.\w])None\b", "Option.None", src)
     return src
 
 
@@ -341,7 +349,7 @@ ROWS.append(
         decls=ENUM_UNIT,
         mk=lambda n, i: f"let {n}: Colour = .{'Red' if i == 0 else 'Green'};",
         show=lambda n: (
-            f'match {n} {{ Red => println("Red"), Green => println("Green"), }}'
+            f'match {n} {{ .Red => println("Red"), .Green => println("Green"), }}'
         ),
         exp=lambda i: "Red" if i == 0 else "Green",
         display=False,
@@ -363,9 +371,9 @@ ROWS.append(
         mk=lambda n, i: f"let {n}: Shape = .Circle({3 + i});",
         show=lambda n: (
             f"match {n} {{\n"
-            f'    Empty => println("empty"),\n'
-            f'    Circle({n}_r) => println(f"circle {{{n}_r}}"),\n'
-            f'    Rect {{ w, h }} => println(f"rect {{w}}x{{h}}"),\n'
+            f'    .Empty => println("empty"),\n'
+            f'    .Circle({n}_r) => println(f"circle {{{n}_r}}"),\n'
+            f'    .Rect {{ w, h }} => println(f"rect {{w}}x{{h}}"),\n'
             f"}}"
         ),
         exp=lambda i: f"circle {3 + i}",
@@ -463,8 +471,8 @@ ROWS.append(
         + "\n".join([f"{n}.step(.Inc);"] * (1 + i)),
         show=lambda n: (
             f"match {n} {{\n"
-            f'    Zero => println("zero"),\n'
-            f'    NonZero {{ value }} => println(f"n {{value}}"),\n'
+            f'    .Zero => println("zero"),\n'
+            f'    .NonZero {{ value }} => println(f"n {{value}}"),\n'
             f"}}"
         ),
         exp=lambda i: f"n {1 + i}",
@@ -989,8 +997,8 @@ OVERRIDES = {
     ),
     ("machine", "mutate"): OV(
         "var c = Zero;\nc.step(.Inc);\nc.step(.Inc);\n"
-        'match c {\n    Zero => println("zero"),\n'
-        '    NonZero { value } => println(f"n {value}"),\n}',
+        'match c {\n    .Zero => println("zero"),\n'
+        '    .NonZero { value } => println(f"n {value}"),\n}',
         ["n 2"],
         decls=MACHINE,
     ),

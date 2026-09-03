@@ -168,7 +168,7 @@ fn break_with_semicolon_in_else_block_tail_still_parses() {
 
 #[test]
 fn statement_position_match_arm_break_still_parses() {
-    // `None => break,` as a full statement (not a `let` initialiser) — the
+    // `.None => break,` as a full statement (not a `let` initialiser) — the
     // acceptance bar's "statement-position match" case.
     parse_ok("fn f() { while true { match 1 { 1 => break, _ => () } } }");
 }

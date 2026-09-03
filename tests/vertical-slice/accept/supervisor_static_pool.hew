@@ -39,28 +39,28 @@ fn main() -> i64 {
     // all three proves N distinct Live members were spawned + registered.
     let m0 = sup.workers[0];
     match await m0.id() {
-        Ok(v) => {
+        .Ok(v) => {
             total = total + v;
         },
-        Err(_) => {
+        .Err(_) => {
             return 0;
         },
     }
     let m1 = sup.workers[1];
     match await m1.id() {
-        Ok(v) => {
+        .Ok(v) => {
             total = total + v;
         },
-        Err(_) => {
+        .Err(_) => {
             return 0;
         },
     }
     let m2 = sup.workers[2];
     match await m2.id() {
-        Ok(v) => {
+        .Ok(v) => {
             total = total + v;
         },
-        Err(_) => {
+        .Err(_) => {
             return 0;
         },
     }

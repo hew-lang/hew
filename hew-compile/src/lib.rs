@@ -3092,8 +3092,8 @@ mod tests {
                 receive fn go(unused: i64) {
                     let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
                     match found {
-                        Ok(peer) => { let reply = peer.ask(7, 1000); },
-                        Err(_) => {},
+                        .Ok(peer) => { let reply = peer.ask(7, 1000); },
+                        .Err(_) => {},
                     }
                 }
             }
@@ -5683,7 +5683,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                  let item: pipeline.PipelineItemI64 = PipelineItemI64 {\n\
                      value: 21, label: \"probe\", crash_stage: false\n\
                  };\n\
-                 match await chain.push(item) { Ok(_) => {}, Err(_) => {} }\n\
+                 match await chain.push(item) { .Ok(_) => {}, .Err(_) => {} }\n\
              }\n",
         );
         let state = run_file_frontend_to_typecheck(

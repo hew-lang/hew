@@ -56,8 +56,8 @@ fn return_some_from_option_no_type_mismatch() {
 
         fn main() -> i64 {
             match f() {
-                Some(x) => x,
-                None => 0,
+                .Some(x) => x,
+                .None => 0,
             }
         }
         ",
@@ -82,8 +82,8 @@ fn return_ok_from_result_no_type_mismatch() {
 
         fn main() -> i64 {
             match g() {
-                Ok(x) => x,
-                Err(e) => e,
+                .Ok(x) => x,
+                .Err(e) => e,
             }
         }
         ",
@@ -109,8 +109,8 @@ fn expression_return_option_still_lowers_cleanly() {
 
         fn main() -> i64 {
             match f() {
-                Some(x) => x,
-                None => 0,
+                .Some(x) => x,
+                .None => 0,
             }
         }
         ",

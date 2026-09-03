@@ -106,10 +106,10 @@ fn hashmap_get_layout_call_uses_clone_runtime_abi() {
             m.insert("k", "owned-value");
             let got: Option<string> = m.get("k");
             match got {
-                Some(s) => {
+                .Some(s) => {
                     if s == "owned-value" { 0 } else { 1 }
                 },
-                None => 2,
+                .None => 2,
             }
         }"#,
         "hashmap_get_clone_abi",

@@ -99,22 +99,22 @@ fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI6
 fn main() {
     let source = pipeline.run(pipeline.from(1));
     match await source.push(item(9, "crash-owned", true)) {
-        Ok(admitted) => if admitted {
+        .Ok(admitted) => if admitted {
             panic("crashing item was admitted")
         },
-        Err(_) => panic("crashing push did not settle"),
+        .Err(_) => panic("crashing push did not settle"),
     }
     match await source.count() {
-        Ok(value) => if value != 0 {
+        .Ok(value) => if value != 0 {
             panic("crashing item reached the sink")
         },
-        Err(_) => panic("pipeline count did not settle"),
+        .Err(_) => panic("pipeline count did not settle"),
     }
     match await source.push(item(10, "after-crash", false)) {
-        Ok(admitted) => if admitted {
+        .Ok(admitted) => if admitted {
             panic("post-crash item was admitted")
         },
-        Err(_) => panic("post-crash push did not settle"),
+        .Err(_) => panic("post-crash push did not settle"),
     }
     println("PIPELINE_CRASH_SETTLED");
 }

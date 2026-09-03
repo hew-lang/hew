@@ -5,6 +5,6 @@ fn main() {
     v.push(a);
     v.push(b);
     for e in v {
-        match e { Result.Ok(e_v) => println(f"ok {e_v}"), Err(e_e) => println(f"err {e_e}"), }
+        match e { Result.Ok(e_v) => println(f"ok {e_v}"), Result.Err(e_e) => println(f"err {e_e}"), }
     }
 }

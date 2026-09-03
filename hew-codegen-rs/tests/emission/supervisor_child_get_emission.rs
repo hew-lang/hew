@@ -195,8 +195,8 @@ supervisor Pool {
 fn inspect(sup: LocalPid<Pool>) -> i64 {
     let workers = sup.workers;
     match workers.get(0) {
-        Some(_) => workers.len(),
-        None => -1,
+        .Some(_) => workers.len(),
+        .None => -1,
     }
 }
 ";

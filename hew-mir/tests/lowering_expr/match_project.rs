@@ -1175,7 +1175,7 @@ fn carrier_param_return_transfers_payload_and_keeps_terminal_drop() {
     let pipeline = pipeline_with_tc(
         r#"
 fn ef(e: Result<string, string>) -> string {
-    match e { Ok(x) => x, Err(y) => "e" + "rr" }
+    match e { .Ok(x) => x, .Err(y) => "e" + "rr" }
 }
 
 fn main() -> i64 {
@@ -1302,15 +1302,15 @@ fn stash(s: string) -> i64 {
 }
 
 fn forward(e: Result<string, string>) -> i64 {
-    match e { Ok(x) => stash(x), Err(y) => y.len() }
+    match e { .Ok(x) => stash(x), .Err(y) => y.len() }
 }
 
 fn inspect(e: Result<string, string>) -> i64 {
-    match e { Ok(x) => x.len(), Err(y) => y.len() }
+    match e { .Ok(x) => x.len(), .Err(y) => y.len() }
 }
 
 fn take(e: Result<string, string>) -> string {
-    match e { Ok(x) => x, Err(y) => y }
+    match e { .Ok(x) => x, .Err(y) => y }
 }
 
 fn main() -> i64 {
@@ -1873,7 +1873,7 @@ fn may_fail(n: i64) -> i64 {
 
 fn ef(e: Result<string, string>, n: i64) -> string {
     let guard = may_fail(n);
-    match e { Ok(x) => x, Err(y) => "e" + "rr" }
+    match e { .Ok(x) => x, .Err(y) => "e" + "rr" }
 }
 
 fn main() -> i64 {

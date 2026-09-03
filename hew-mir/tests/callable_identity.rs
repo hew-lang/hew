@@ -466,8 +466,8 @@ fn fork_entry_and_task_entry_shims_are_children_of_the_forking_body() {
         fn main() -> i64 {
             let d = spawn Driver;
             match await d.go() {
-                Ok(v) => v - 7,
-                Err(_e) => 1,
+                .Ok(v) => v - 7,
+                .Err(_e) => 1,
             }
         }
         ",
@@ -522,8 +522,8 @@ fn a_lambda_actor_body_is_keyed_as_a_child_of_the_spawning_body() {
                 n * 2
             };
             match dbl(5) {
-                Ok(v) => println(v),
-                Err(_) => println(0),
+                .Ok(v) => println(v),
+                .Err(_) => println(0),
             }
         }
         ",

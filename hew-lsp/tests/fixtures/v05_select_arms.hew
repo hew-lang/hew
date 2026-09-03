@@ -18,8 +18,8 @@ fn select_arms() -> i32 {
         reply from recipient.ask(1) => reply,
         msg from rx.recv() => {
             match msg {
-                Some(value) => select_probe(),
-                None => 0,
+                .Some(value) => select_probe(),
+                .None => 0,
             }
         },
         after 1s => select_probe(),

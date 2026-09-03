@@ -18,7 +18,7 @@
 // and the `HashMap` value and `HashSet` element siblings.
 
 fn bump(counts: HashMap<string, i64>, category: string) {
-    let next = match counts.get(category) { Some(old) => old + 1, None => 1 };
+    let next = match counts.get(category) { .Some(old) => old + 1, .None => 1 };
     counts.insert(category, next);
 }
 
@@ -27,7 +27,7 @@ fn insert_only(counts: HashMap<string, i64>, category: string, amount: i64) {
 }
 
 fn lookup_only(counts: HashMap<string, i64>, category: string) -> i64 {
-    match counts.get(category) { Some(found) => found, None => -1 }
+    match counts.get(category) { .Some(found) => found, .None => -1 }
 }
 
 fn store_value(labels: HashMap<i64, string>, id: i64, label: string) {
@@ -93,7 +93,7 @@ fn siblings() -> i64 {
     // Overwrite an existing value key and re-add an existing set element.
     store_value(labels, 5, "REPLACED".to_lower());
     add_member(members, "member-5".to_upper());
-    let five = match labels.get(5) { Some(found) => found, None => "absent" };
+    let five = match labels.get(5) { .Some(found) => found, .None => "absent" };
     println(f"siblings labels={labels.len()} members={members.len()} five={five}");
     labels.len() + members.len()
 }

@@ -10691,7 +10691,7 @@ fn materialize_explicit_nested_move_relocations(blocks: &mut [BasicBlock], build
 /// Make a projected move into a freshly-minted owner physically disjoint from
 /// its parent carrier at the exact instruction point.
 ///
-/// Pattern lowering represents `Some(x) => ...` and analogous enum/aggregate
+/// Pattern lowering represents `.Some(x) => ...` and analogous enum/aggregate
 /// destructuring as `Move(projected payload -> binder); Mint(binder)`.  The
 /// destination owner is explicit, but without the paired projection
 /// neutralisation the still-live carrier's recursive destructor retains a

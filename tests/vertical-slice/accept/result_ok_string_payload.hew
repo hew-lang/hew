@@ -12,11 +12,11 @@ fn fetch(ok: bool) -> Result<string, i64> {
 
 fn main() {
     match fetch(true) {
-        Ok(s) => println(s),
-        Err(code) => println("err"),
+        .Ok(s) => println(s),
+        .Err(code) => println("err"),
     }
     match fetch(false) {
-        Ok(s) => println(s),
-        Err(code) => println("err"),
+        .Ok(s) => println(s),
+        .Err(code) => println("err"),
     }
 }

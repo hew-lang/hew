@@ -9,9 +9,9 @@ actor Sink {
 
     receive fn take(v: Shape) -> i64 {
         match v {
-            Empty => println("empty"),
-            Circle(v_r) => println(f"circle {v_r}"),
-            Rect { w, h } => println(f"rect {w}x{h}"),
+            .Empty => println("empty"),
+            .Circle(v_r) => println(f"circle {v_r}"),
+            .Rect { w, h } => println(f"rect {w}x{h}"),
         }
         hits = hits + 1;
         hits
@@ -23,6 +23,6 @@ fn main() {
     let s = spawn Sink(hits: 0);
     match await s.take(x) {
         Result.Ok(n) => println(f"hits {n}"),
-        Err(_) => println("err"),
+        Result.Err(_) => println("err"),
     }
 }

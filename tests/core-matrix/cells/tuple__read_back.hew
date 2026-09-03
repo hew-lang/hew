@@ -7,6 +7,6 @@ fn main() {
             let (e_a, e_b) = e;
             println(f"{e_a} {e_b}");
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

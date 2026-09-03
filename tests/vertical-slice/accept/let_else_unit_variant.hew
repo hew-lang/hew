@@ -35,7 +35,7 @@ fn parse(good: bool) -> Result<string, string> {
 
 fn require_none(r: Option<i64>) -> Result<string, string> {
     // Built-in Option unit variant: matches None or diverges.
-    let None = r else {
+    let .None = r else {
         return Err("had-some")
     };
     Ok("none")
@@ -43,15 +43,15 @@ fn require_none(r: Option<i64>) -> Result<string, string> {
 
 fn show_parse(good: bool) -> string {
     match parse(good) {
-        Ok(v) => f"ok: {v}",
-        Err(e) => f"err: {e}",
+        .Ok(v) => f"ok: {v}",
+        .Err(e) => f"err: {e}",
     }
 }
 
 fn show_none(r: Option<i64>) -> string {
     match require_none(r) {
-        Ok(v) => f"ok: {v}",
-        Err(e) => f"err: {e}",
+        .Ok(v) => f"ok: {v}",
+        .Err(e) => f"err: {e}",
     }
 }
 

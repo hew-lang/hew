@@ -33,12 +33,12 @@ fn main() -> i64 {
     let _ = worker.update(9, "latest-payload", 0ns);
     sleep(350ms);
     let count = match await worker.count() {
-        Ok(value) => value,
-        Err(_) => -1,
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
     let length = match await worker.length() {
-        Ok(value) => value,
-        Err(_) => -1,
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
     if count == 2 && length == 14 {
         0

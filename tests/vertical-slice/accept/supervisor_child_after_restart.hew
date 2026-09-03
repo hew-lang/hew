@@ -69,10 +69,10 @@ fn main() -> i64 {
     let w = sup.w1;
     // Confirm initial value before crash (proves init_state was applied).
     match await w.get_value() {
-        Err(_) => {
+        .Err(_) => {
             return 0;
         },
-        Ok(v) => {
+        .Ok(v) => {
             if v != 7 {
                 return 0;
             }
@@ -94,7 +94,7 @@ fn main() -> i64 {
     let w2 = sup.w1;
     // Restarted child has the original init value from HewChildSpec.
     match await w2.get_value() {
-        Ok(v) => v,
-        Err(_) => 0,
+        .Ok(v) => v,
+        .Err(_) => 0,
     }
 }

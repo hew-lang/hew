@@ -1321,7 +1321,7 @@ o2-differential-selftest:
 # Shell only; no artifacts.
 
 test-stdlib-ratchet: hew-native ## Test: type-check the standard library against its ratchet
-	@bash scripts/tests/test_stdlib_ratchet_deprecations.sh
+	@bash scripts/tests/test_stdlib_ratchet_bare_variants.sh
 	@echo "==> Type-checking stdlib (ratcheted)"
 	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib
 

@@ -200,8 +200,8 @@ fn opt_string_escape_loop_source(frames: usize) -> String {
          \x20           r from m.make(i) => r,\n\
          \x20       }};\n\
          \x20       match x {{\n\
-         \x20           Some(s) => {{ total = total + s.len(); }}\n\
-         \x20           None => {{}}\n\
+         \x20           .Some(s) => {{ total = total + s.len(); }}\n\
+         \x20           .None => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -233,7 +233,7 @@ fn opt_record_escape_loop_source(frames: usize) -> String {
          \x20       }};\n\
          \x20       match x {{\n\
          \x20           Some(row) => {{ total = total + row.name.len(); }}\n\
-         \x20           None => {{}}\n\
+         \x20           .None => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -288,8 +288,8 @@ fn main() -> i64 {\n\
 \x20       r from m.make() => r,\n\
 \x20   };\n\
 \x20   match x {\n\
-\x20       Some(s) => { print(s); }\n\
-\x20       None => {}\n\
+\x20       .Some(s) => { print(s); }\n\
+\x20       .None => {}\n\
 \x20   }\n\
 \x20   0\n\
 }\n";

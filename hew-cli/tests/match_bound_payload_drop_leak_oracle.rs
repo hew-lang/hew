@@ -35,7 +35,7 @@
 //!
 //! Two shapes (the Stage-0 `g63_iso_A2_clean` / `g63_iso_F` templates):
 //!
-//! * `match opt { Some(s) => … }` — the match-arm binder; and
+//! * `match opt { .Some(s) => … }` — the match-arm binder; and
 //! * `if let Some(s) = opt { … }` — the if-let binder.
 //!
 //! macOS-only for the slope assertion (`leaks(1)` is Darwin's allocator
@@ -69,8 +69,8 @@ fn make(n: i64) -> Option<string> {\n\
 fn run() {\n\
 \x20   let opt = make(1);\n\
 \x20   match opt {\n\
-\x20       Some(s) => { if !s.is_empty() { print(\"m\"); } }\n\
-\x20       None => { print(\"e\"); }\n\
+\x20       .Some(s) => { if !s.is_empty() { print(\"m\"); } }\n\
+\x20       .None => { print(\"e\"); }\n\
 \x20   }\n\
 }\n\
 \n\
@@ -88,8 +88,8 @@ extern "C" {
 fn cancellation_window() -> i64 {
     let result = net.try_parse_endpoint("nested-enum-cancel", "missing-port");
     match result {
-        Ok(endpoint) => endpoint.port,
-        Err(err) => {
+        .Ok(endpoint) => endpoint.port,
+        .Err(err) => {
             let message = to_string(err);
             let _ = unsafe { usleep(300000) };
             message.len()
@@ -131,8 +131,8 @@ fn match_bound_loop_source(frames: usize) -> String {
          \x20   let opt = make(n);\n\
          \x20   var got: i64 = 0;\n\
          \x20   match opt {{\n\
-         \x20       Some(s) => {{ if !s.is_empty() {{ got = 1; }} }}\n\
-         \x20       None => {{}}\n\
+         \x20       .Some(s) => {{ if !s.is_empty() {{ got = 1; }} }}\n\
+         \x20       .None => {{}}\n\
          \x20   }}\n\
          \x20   got\n\
          }}\n\

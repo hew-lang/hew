@@ -1,7 +1,7 @@
 //! Match-result record ownership oracle for the panic-sibling join shape.
 //!
-//! `let Endpoint { host, port } = match try_parse_endpoint(...) { Ok(e) => e,
-//! Err(_) => panic(...) }` moves a heap-owning record payload out of a fresh
+//! `let Endpoint { host, port } = match try_parse_endpoint(...) { .Ok(e) => e,
+//! .Err(_) => panic(...) }` moves a heap-owning record payload out of a fresh
 //! call carrier while the sibling arm diverges through `hew_panic_msg`. The
 //! panic shim's poison continuation is structurally reachable (a
 //! `Terminator::Call` requires a `next` block) but can never execute; letting

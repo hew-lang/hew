@@ -21,8 +21,8 @@ actor Server {
     receive fn go() {
         let ln = net.listen("127.0.0.1:0");
         let code = match await ln.accept() | after 10s {
-            Ok(_conn) => 2,
-            Err(_e) => 3,
+            .Ok(_conn) => 2,
+            .Err(_e) => 3,
         };
         exit(code);
     }

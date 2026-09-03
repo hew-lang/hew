@@ -35,15 +35,15 @@ fn main() -> i64 {
             crash_stage: false,
         };
         match await source.push(item) {
-            Ok(admitted) => { if !admitted { return 2; } },
-            Err(_) => { return 3; },
+            .Ok(admitted) => { if !admitted { return 2; } },
+            .Err(_) => { return 3; },
         }
         println("normal");
         i = i + 1;
     }
     match await source.shutdown(__FRAMES__) {
-        Ok(drained) => if drained { 0 } else { 4 },
-        Err(_) => 5,
+        .Ok(drained) => if drained { 0 } else { 4 },
+        .Err(_) => 5,
     }
 }
 "#,
@@ -62,16 +62,16 @@ fn item(value: i64, label: string) -> pipeline.PipelineItemI64 {
 fn main() -> i64 {
     let source = pipeline.run(pipeline.from(0));
     let control = match await source.control_handle() {
-        Ok(value) => value,
-        Err(_) => { return 10; },
+        .Ok(value) => value,
+        .Err(_) => { return 10; },
     };
     match await source.push(item(-2, "cancel-seed-one")) {
-        Ok(admitted) => { if !admitted { return 11; } },
-        Err(_) => { return 12; },
+        .Ok(admitted) => { if !admitted { return 11; } },
+        .Err(_) => { return 12; },
     }
     match await source.push(item(-1, "cancel-seed-two")) {
-        Ok(admitted) => { if !admitted { return 13; } },
-        Err(_) => { return 14; },
+        .Ok(admitted) => { if !admitted { return 13; } },
+        .Err(_) => { return 14; },
     }
 
     var i: i64 = 0;
@@ -87,8 +87,8 @@ fn main() -> i64 {
         var posts: i64 = 0;
         while posts < i + 3 {
             match await control.post_sends() {
-                Ok(value) => { posts = value; },
-                Err(_) => { return 16; },
+                .Ok(value) => { posts = value; },
+                .Err(_) => { return 16; },
             }
             if posts < i + 3 {
                 sleep(1ms);
@@ -101,8 +101,8 @@ fn main() -> i64 {
     control.release();
     control.release();
     match await source.shutdown(__FRAMES__ + 2) {
-        Ok(drained) => if drained { 0 } else { 17 },
-        Err(_) => 18,
+        .Ok(drained) => if drained { 0 } else { 17 },
+        .Err(_) => 18,
     }
 }
 "#,
@@ -124,12 +124,12 @@ fn main() -> i64 {
             crash_stage: true,
         };
         match await source.push(item) {
-            Ok(admitted) => { if admitted { return 20; } },
-            Err(_) => { return 21; },
+            .Ok(admitted) => { if admitted { return 20; } },
+            .Err(_) => { return 21; },
         }
         match await source.count() {
-            Ok(count) => { if count != 0 { return 22; } },
-            Err(_) => { return 23; },
+            .Ok(count) => { if count != 0 { return 22; } },
+            .Err(_) => { return 23; },
         }
         println("crashed");
         i = i + 1;
@@ -155,15 +155,15 @@ fn main() -> i64 {
             crash_stage: false,
         };
         match await source.push(item) {
-            Ok(admitted) => { if !admitted { return 30; } },
-            Err(_) => { return 31; },
+            .Ok(admitted) => { if !admitted { return 30; } },
+            .Err(_) => { return 31; },
         }
         println("queued");
         i = i + 1;
     }
     match await source.shutdown(__FRAMES__) {
-        Ok(drained) => if drained { 0 } else { 32 },
-        Err(_) => 33,
+        .Ok(drained) => if drained { 0 } else { 32 },
+        .Err(_) => 33,
     }
 }
 "#,

@@ -9,15 +9,15 @@
   },
   {
     "id": "while-let",
-    "source": "// Test while-let pattern matching loops with Option types\n\nfn countdown(n: i64) -> Option<i64> {\n    if n > 0 {\n        Some(n - 1)\n    } else {\n        let none: Option<i64> = None;\n        none\n    }\n}\n\nfn main() -> i64 {\n    // Basic while-let: iterate until None\n    var opt: Option<i64> = Some(3);\n    while let Some(x) = opt {\n        println(x);\n        opt = countdown(x);\n    }\n\n    // Early exit with break\n    var opt2: Option<i64> = Some(10);\n    while let Some(x) = opt2 {\n        if x < 8 {\n            break;\n        }\n        println(x);\n        opt2 = countdown(x);\n    }\n    println(\"done\");\n\n    return 0;\n}\n"
+    "source": "// Test while-let pattern matching loops with Option types\n\nfn countdown(n: i64) -> Option<i64> {\n    if n > 0 {\n        Some(n - 1)\n    } else {\n        let none: Option<i64> = None;\n        none\n    }\n}\n\nfn main() -> i64 {\n    // Basic while-let: iterate until None\n    var opt: Option<i64> = Some(3);\n    while let .Some(x) = opt {\n        println(x);\n        opt = countdown(x);\n    }\n\n    // Early exit with break\n    var opt2: Option<i64> = Some(10);\n    while let .Some(x) = opt2 {\n        if x < 8 {\n            break;\n        }\n        println(x);\n        opt2 = countdown(x);\n    }\n    println(\"done\");\n\n    return 0;\n}\n"
   },
   {
     "id": "pattern-matching",
-    "source": "enum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n    Triangle(i64, i64);\n}\n\nfn area(shape: Shape) -> i64 {\n    match shape {\n        Circle(r) => r * r * 3,\n        Rectangle(w, h) => w * h,\n        Triangle(b, h) => b * h / 2,\n    }\n}\n\nfn main() {\n    let c = Shape.Circle(5);\n    let r = Shape.Rectangle(4, 6);\n    let t = Shape.Triangle(3, 8);\n\n    print(\"Circle area: \");\n    println(area(c));\n    print(\"Rectangle area: \");\n    println(area(r));\n    // Or using inline interpolation\n    println(f\"Triangle area: {area(t)}\");\n}\n"
+    "source": "enum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n    Triangle(i64, i64);\n}\n\nfn area(shape: Shape) -> i64 {\n    match shape {\n        .Circle(r) => r * r * 3,\n        .Rectangle(w, h) => w * h,\n        .Triangle(b, h) => b * h / 2,\n    }\n}\n\nfn main() {\n    let c = Shape.Circle(5);\n    let r = Shape.Rectangle(4, 6);\n    let t = Shape.Triangle(3, 8);\n\n    print(\"Circle area: \");\n    println(area(c));\n    print(\"Rectangle area: \");\n    println(area(r));\n    // Or using inline interpolation\n    println(f\"Triangle area: {area(t)}\");\n}\n"
   },
   {
     "id": "actor-counter",
-    "source": "actor Counter {\n    var count: i64;\n\n    receive fn increment(n: i64) -> i64 {\n        count = count + n;\n        print(\"Count is now: \");\n        println(count);\n        count\n    }\n}\n\nfn main() {\n    let c = spawn Counter(count: 0);\n    await c.increment(5);\n    await c.increment(3);\n    match await c.increment(12) {\n        Ok(total) => println(f\"Final total: {total}\"),\n        Err(_) => println(\"send failed\"),\n    }\n}\n"
+    "source": "actor Counter {\n    var count: i64;\n\n    receive fn increment(n: i64) -> i64 {\n        count = count + n;\n        print(\"Count is now: \");\n        println(count);\n        count\n    }\n}\n\nfn main() {\n    let c = spawn Counter(count: 0);\n    await c.increment(5);\n    await c.increment(3);\n    match await c.increment(12) {\n        .Ok(total) => println(f\"Final total: {total}\"),\n        .Err(_) => println(\"send failed\"),\n    }\n}\n"
   },
   {
     "id": "multiple-actors",
@@ -37,11 +37,11 @@
   },
   {
     "id": "enums",
-    "source": "enum Direction {\n    North;\n    South;\n    East;\n    West;\n}\n\nfn describe(dir: Direction) -> string {\n    match dir {\n        North => \"heading north\",\n        South => \"heading south\",\n        East => \"heading east\",\n        West => \"heading west\",\n    }\n}\n\nfn main() {\n    let dir = Direction.North;\n    println(describe(dir));\n    println(describe(.South));\n}\n"
+    "source": "enum Direction {\n    North;\n    South;\n    East;\n    West;\n}\n\nfn describe(dir: Direction) -> string {\n    match dir {\n        .North => \"heading north\",\n        .South => \"heading south\",\n        .East => \"heading east\",\n        .West => \"heading west\",\n    }\n}\n\nfn main() {\n    let dir = Direction.North;\n    println(describe(dir));\n    println(describe(.South));\n}\n"
   },
   {
     "id": "error-handling",
-    "source": "fn divide(a: i64, b: i64) -> Option<i64> {\n    if b == 0 {\n        None\n    } else {\n        Some(a / b)\n    }\n}\n\nfn main() {\n    match divide(10, 3) {\n        Some(result) => println(f\"10 / 3 = {result}\"),\n        None => println(\"cannot divide by zero\"),\n    }\n\n    match divide(10, 0) {\n        Some(result) => println(f\"10 / 0 = {result}\"),\n        None => println(\"cannot divide by zero\"),\n    }\n}\n"
+    "source": "fn divide(a: i64, b: i64) -> Option<i64> {\n    if b == 0 {\n        None\n    } else {\n        Some(a / b)\n    }\n}\n\nfn main() {\n    match divide(10, 3) {\n        .Some(result) => println(f\"10 / 3 = {result}\"),\n        .None => println(\"cannot divide by zero\"),\n    }\n\n    match divide(10, 0) {\n        .Some(result) => println(f\"10 / 0 = {result}\"),\n        .None => println(\"cannot divide by zero\"),\n    }\n}\n"
   },
   {
     "id": "higher-order-functions",

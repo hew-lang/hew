@@ -254,12 +254,12 @@ fn method_get_returns_option_some_and_none() {
     var m: HashMap<string, i64> = HashMap.new();
     m.insert("k", 40);
     let hit = match m.get("k") {
-        Some(v) => v,
-        None => 0,
+        .Some(v) => v,
+        .None => 0,
     };
     let miss = match m.get("absent") {
-        Some(_) => 0,
-        None => 2,
+        .Some(_) => 0,
+        .None => 2,
     };
     hit + miss
 }

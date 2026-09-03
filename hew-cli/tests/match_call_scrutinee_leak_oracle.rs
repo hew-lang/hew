@@ -1,6 +1,6 @@
 //! From-call match-scrutinee enum-payload leak oracle (#2429 guard).
 //!
-//! `match f() { Ok(b) => …, Err(e) => {} }` over a `Result`/`Option` returned
+//! `match f() { .Ok(b) => …, .Err(e) => {} }` over a `Result`/`Option` returned
 //! from a called function consumes the composite through an anonymous MIR
 //! temp. Before the fix the temp had no owner, so the arm-destructured payload
 //! was released on NO edge: each iteration of a

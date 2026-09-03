@@ -339,12 +339,12 @@ fn legal_hash_collection_clone_out_and_remove_paths_remain_admitted() {
                 total = total + value;
             }
             match got {
-                Some(value) => { total = total + value; }
-                None => {}
+                .Some(value) => { total = total + value; }
+                .None => {}
             }
             match removed {
-                Some(value) => { total = total + value; }
-                None => {}
+                .Some(value) => { total = total + value; }
+                .None => {}
             }
             total
         }

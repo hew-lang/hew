@@ -52,8 +52,8 @@ fn main() -> i64 {
             };
             if send_code == 0 {
                 let total = match await worker.total() {
-                    Ok(v) => v,
-                    Err(_e) => -1,
+                    .Ok(v) => v,
+                    .Err(_e) => -1,
                 };
                 assert_eq(total, 42);
                 0

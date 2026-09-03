@@ -12,8 +12,8 @@ fn make() -> Shape {
 fn main() {
     let x = make();
     match x {
-        Empty => println("empty"),
-        Circle(x_r) => println(f"circle {x_r}"),
-        Rect { w, h } => println(f"rect {w}x{h}"),
+        .Empty => println("empty"),
+        .Circle(x_r) => println(f"circle {x_r}"),
+        .Rect { w, h } => println(f"rect {w}x{h}"),
     }
 }

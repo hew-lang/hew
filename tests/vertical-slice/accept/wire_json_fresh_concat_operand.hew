@@ -16,7 +16,7 @@ fn main() -> i64 {
     let a = p.to_json();
     let b = "";
     match Packet.from_json(a + b) {
-        Ok(back) => back.id,
-        Err(_) => 7,
+        .Ok(back) => back.id,
+        .Err(_) => 7,
     }
 }

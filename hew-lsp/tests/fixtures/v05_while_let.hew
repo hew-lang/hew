@@ -1,7 +1,7 @@
 fn while_let_probe() -> i64 {
     var current: Option<i64> = Some(3);
     var total: i64 = 0;
-    while let Some(value) = current {
+    while let .Some(value) = current {
         total = total + value;
         if value > 0 {
             current = Some(value - 1);

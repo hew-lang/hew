@@ -18,7 +18,7 @@ fn main() {
     let d: dyn Show = h;
     println(f"{d.show()}");
     match w.upgrade() {
-        Some(v) => println("alive"),
-        None => println("dead"),
+        .Some(v) => println("alive"),
+        .None => println("dead"),
     }
 }

@@ -21,8 +21,8 @@ impl Conn {
 fn close_in_match_arms(r: Result<i64, string>) {
     let held = Conn { fd: 1 };
     match r {
-        Ok(_) => { held.close(); },
-        Err(_) => { held.close(); },
+        .Ok(_) => { held.close(); },
+        .Err(_) => { held.close(); },
     }
 }
 
@@ -48,7 +48,7 @@ fn close_in_else_if_chain(n: i64) {
 
 fn close_in_if_let_arms(o: Option<i64>) {
     let held = Conn { fd: 4 };
-    if let Some(_v) = o {
+    if let .Some(_v) = o {
         held.close();
     } else {
         held.close();

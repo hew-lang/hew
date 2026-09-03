@@ -33,8 +33,8 @@ fn main() -> i64 {
     let s = string_concat("msg-", "payload");
     e.note(s);
     let c = match await e.count() {
-        Ok(v) => v,
-        Err(_e) => 0,
+        .Ok(v) => v,
+        .Err(_e) => 0,
     };
     println("done");
     c - 11

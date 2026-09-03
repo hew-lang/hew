@@ -35,6 +35,6 @@ fn main() {
         Option.Some(e) => {
             show_named(e);
         },
-        None => println("missing"),
+        Option.None => println("missing"),
     }
 }

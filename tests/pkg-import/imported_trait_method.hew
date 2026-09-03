@@ -6,7 +6,7 @@ import hew.testffi;
 fn main() {
     let db = spawn testffi.Db(seed: 9);
     match await db.query(3) {
-        Ok(r) => {
+        .Ok(r) => {
             let n = r.rows();
             println(f"rows={n}");
             for i in 0 .. n {
@@ -17,6 +17,6 @@ fn main() {
             println(f"total={sum}");
             r.free();
         },
-        Err(_) => println("ask failed"),
+        .Err(_) => println("ask failed"),
     }
 }

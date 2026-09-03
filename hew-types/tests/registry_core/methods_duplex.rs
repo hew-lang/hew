@@ -858,8 +858,8 @@ fn recv_match_exhaustive_partition() {
             let (d, _) = duplex_pair<i64, i64>(16);
             let result: Result<i64, RecvError> = d.recv();
             match result {
-                Ok(_) => println(0),
-                Err(_) => println(1),
+                .Ok(_) => println(0),
+                .Err(_) => println(1),
             }
         }
     ";
@@ -877,8 +877,8 @@ fn recv_match_exhaustive_partition() {
             let (d, _) = duplex_pair<i64, i64>(16);
             let result: Result<i64, RecvError> = d.recv();
             match result {
-                Ok(_) => println(0),
-                Err(e) => println(1),
+                .Ok(_) => println(0),
+                .Err(e) => println(1),
             }
         }
     ";

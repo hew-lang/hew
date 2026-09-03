@@ -13,7 +13,7 @@
 //   * the transition body reads the aliased field (`self.item.code + 2`), which
 //     only type-checks if `item` is `aliassrc.Payload` (it has `.code`), and
 //   * matching the machine value externally binds the payload
-//     (`Holder::Full { item } => item.code`) and reads it back.
+//     (`Holder::.Full { item } => item.code`) and reads it back.
 //
 // Harness verb: hew run
 // Expected: the code carried in the aliased state field after two steps.

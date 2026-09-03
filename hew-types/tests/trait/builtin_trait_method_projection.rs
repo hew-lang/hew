@@ -50,8 +50,8 @@ fn vec_generic_trait_method_projects_output() {
         fn main() {
             let v: Vec<i64> = [10, 20, 30];
             match v.fetch(1) {
-                Some(x) => takes_int(x),
-                None => {}
+                .Some(x) => takes_int(x),
+                .None => {}
             }
         }
         ",
@@ -78,8 +78,8 @@ fn user_record_control_still_projects() {
         fn main() {
             let b = Box2 { inner: 42 };
             match b.fetch(0) {
-                Some(x) => takes_int(x),
-                None => {}
+                .Some(x) => takes_int(x),
+                .None => {}
             }
         }
         ",
@@ -105,8 +105,8 @@ fn hashmap_generic_trait_method_projects_value() {
         fn main() {
             let m: HashMap<string, i64> = HashMap.new();
             match m.grab("a") {
-                Some(x) => takes_int(x),
-                None => {}
+                .Some(x) => takes_int(x),
+                .None => {}
             }
         }
         "#,
@@ -132,8 +132,8 @@ fn vec_string_element_projects() {
         fn main() {
             let v: Vec<string> = ["a", "b"];
             match v.fetch(0) {
-                Some(s) => takes_str(s),
-                None => {}
+                .Some(s) => takes_str(s),
+                .None => {}
             }
         }
         "#,
@@ -160,8 +160,8 @@ fn vec_owned_record_element_projects() {
         fn main() {
             let pts: Vec<Point> = [Point { x: 1, y: 2 }];
             match pts.fetch(0) {
-                Some(p) => takes_int(p.x),
-                None => {}
+                .Some(p) => takes_int(p.x),
+                .None => {}
             }
         }
         ",
@@ -317,8 +317,8 @@ fn concrete_self_impl_projects_for_matching_receiver() {
         fn main() {
             let v: Vec<i64> = [1, 2];
             match v.fetch(0) {
-                Some(x) => takes_int(x),
-                None => {}
+                .Some(x) => takes_int(x),
+                .None => {}
             }
         }
         ",

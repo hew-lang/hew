@@ -207,7 +207,7 @@ impl Builder {
         // representation). Substitute `Unit` — the canonical zero-sized
         // stand-in (an i8 alloca) — so the dead result place has a valid LLVM
         // type. Idiomatic Hew uses `panic(...)` directly as a match-arm body
-        // (`Some(v) => panic(...), None => {}`); this keeps that form compiling.
+        // (`.Some(v) => panic(...), .None => {}`); this keeps that form compiling.
         let result_ty = if matches!(result_ty, ResolvedTy::Never) {
             &ResolvedTy::Unit
         } else {
@@ -423,8 +423,8 @@ impl Builder {
     /// True when the match scrutinee is a stream/channel recv call returning
     /// `Option<T>` whose `Some` payload owns heap. This covers every recv shape
     /// that surfaces through `lower_match_enum_tag`: the for-await desugar's
-    /// synthetic `match channel.recv(__hew_for_iter_X) { Some(item) => body,
-    /// None => break }` and source-level `match await rx.recv() { ... }` /
+    /// synthetic `match channel.recv(__hew_for_iter_X) { .Some(item) => body,
+    /// .None => break }` and source-level `match await rx.recv() { ... }` /
     /// `match rx.try_recv() { ... }` whose scrutinee lowers to the same direct
     /// `Call { callee: hew_channel_*_layout / hew_stream_*_layout }` shape.
     ///
@@ -5807,7 +5807,7 @@ impl Builder {
                 }
             }
             let mut value = self.lower_composite_result_value(&arm.body);
-            // A direct whole-record match result (`Some(g) => g`) transfers the
+            // A direct whole-record match result (`.Some(g) => g`) transfers the
             // selected field out of a proved-fresh call carrier. The carrier's
             // active payload drop is suppressed on that arm, so the resulting
             // binder is the sole recursive owner. Exempt exactly that moved-out

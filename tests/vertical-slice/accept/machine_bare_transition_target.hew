@@ -1,0 +1,30 @@
+// Accept fixture: a body-less transition (`on E: Src => Tgt;`) whose target
+// is a bare (non-`.`-prefixed) state name resolves against the machine's own
+// `state` declarations and runs cleanly end to end. Regression for #3264 —
+// the desugared body (`Expr::Identifier(Tgt)` checked against the machine's
+// own type) was previously routed through the general bare-variant
+// fallback and wrongly rejected with E_BARE_VARIANT_EXPR, even though
+// HEW-SPEC-2026 §3.11.3 states state names in target position are not enum
+// variants.
+//
+// Harness verb: run_accept_expect_stdout
+
+machine Light {
+    events {
+        Go;
+    }
+
+    state Idle;
+    state Running;
+
+    on Go: Idle => Running;
+
+    default { state }
+}
+
+fn main() {
+    var light: Light = .Idle;
+    println(light.state_name());
+    light.step(.Go);
+    println(light.state_name());
+}

@@ -271,3 +271,120 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
         .effects()
     );
 }
+
+/// §1.6: the value a `let` names carries the binding's name, span and
+/// mutability, so a rule 2, 3, 4 or 6 wall rooted in a user binding renders its
+/// `E_OWN_*` code rather than `E_SIR_ICE`, and rule 6a has a mutability bit to
+/// read. Without it every definition in a body is an anonymous lowering temp.
+///
+/// The counterfactual is in the same body: the constant the binding's
+/// initializer produced before it was named, and the `tuple.get` result that no
+/// binding names, must stay `None` — provenance says "a user wrote this", so a
+/// table where everything carries one says nothing.
+#[test]
+fn a_binding_names_the_value_it_defines() {
+    let (hir, type_facts) = lower_hir(
+        r"
+        fn main() -> i64 {
+            let pair = (7, 9);
+            let first = pair.0;
+            first
+        }
+        ",
+    );
+    let lowered = lower_module(&hir, &type_facts);
+    let entry = lowered
+        .module
+        .entry_callable
+        .expect("root main must have a resolved SIR callable");
+    let main = lowered
+        .module
+        .function_index()
+        .function(entry)
+        .expect("the binding fixture must lower into SIR");
+
+    let named: Vec<(String, bool)> = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .flat_map(|op| &op.results)
+        .filter_map(|result| {
+            result
+                .provenance
+                .as_ref()
+                .map(|provenance| (provenance.name.clone(), provenance.mutable))
+        })
+        .collect();
+    assert!(
+        named.contains(&("pair".to_string(), false)),
+        "the tuple binding must name its definition: {named:?}"
+    );
+    assert!(
+        named.contains(&("first".to_string(), false)),
+        "the scalar binding must name its definition: {named:?}"
+    );
+
+    let anonymous = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .flat_map(|op| &op.results)
+        .filter(|result| result.provenance.is_none())
+        .count();
+    assert!(
+        anonymous > 0,
+        "a lowering temp no binding names must stay anonymous: {main:#?}"
+    );
+}
+
+/// The module carries the §6.2 rows its own bodies mention, so a consumer of
+/// SIR reads a decided class rather than recomputing one. An empty table is
+/// the defect this replaces: rules 5, 6b and 6c and the layout fill all key on
+/// it.
+///
+/// The counterfactual is the type the program never mentions: the projection
+/// is closed under the components of the types this module holds, not a copy
+/// of the checker's whole table.
+#[test]
+fn the_module_carries_the_rows_its_own_bodies_mention() {
+    let (hir, type_facts) = lower_hir(
+        r"
+        fn main() -> i64 {
+            let pair = (1, true);
+            if pair.1 {
+                pair.0
+            } else {
+                0
+            }
+        }
+        ",
+    );
+    let lowered = lower_module(&hir, &type_facts);
+    let rows = &lowered.module.type_facts;
+    let key = |ty: ResolvedTy| hew_types::TypeInstanceKey(ty);
+
+    assert!(
+        rows.contains_key(&key(ResolvedTy::I64)),
+        "a type the body holds must have a row: {rows:?}"
+    );
+    assert!(
+        rows.contains_key(&key(ResolvedTy::Bool)),
+        "a type the body holds must have a row: {rows:?}"
+    );
+    assert!(
+        rows.contains_key(&key(ResolvedTy::Tuple(vec![
+            ResolvedTy::I64,
+            ResolvedTy::Bool
+        ]))),
+        "the tuple the body builds must have a row: {rows:?}"
+    );
+    assert!(
+        !rows.contains_key(&key(ResolvedTy::String)),
+        "a type this module never mentions must not be projected: {rows:?}"
+    );
+    assert_eq!(
+        Some(hew_types::ValueClass::BitCopy),
+        rows.get(&key(ResolvedTy::I64)).map(|row| row.class),
+        "the row must carry the class the checker decided"
+    );
+}

@@ -1,8 +1,11 @@
 # Hew Compiler & Runtime Diagrams
 
 Visual documentation of the Hew compilation pipeline, runtime architecture, and
-protocol formats using Mermaid diagrams. Every diagram reflects the current v0.5
-codebase.
+protocol formats using Mermaid diagrams. Every diagram reflects the current
+compiler pipeline. The `LADDER` program (final IR ladder, legacy lowerer
+deleted, `v0.7.0`) tracks this pipeline's evolution; its `P5-CUTOVER` phase
+deletes the `--sir-lower` flag shown below — see the orchestration registry's
+`MONIKERS.md`.
 
 > **Rendering:** These diagrams use [Mermaid](https://mermaid.js.org/) syntax. GitHub renders them natively in Markdown. For local viewing, use a Mermaid-compatible Markdown previewer or the [Mermaid Live Editor](https://mermaid.live/).
 
@@ -31,14 +34,16 @@ flowchart TD
     OBJ --> LINK["link"]
 ```
 
-**Current v0.5 inspection commands:**
+**Inspection commands:**
 
 - `hew tool compile --dump-mir raw|checked|elab <file.hew>` — inspect the MIR ladder without LLVM emission
 - `hew tool compile --emit-dir <dir> <file.hew>` — write LLVM/object/WASM artefacts for the Rust codegen path
 - `hew machine diagram [--format mermaid|graphviz|json] <file.hew>` — render machine declarations
 - `hew machine list <file.hew>` — list machines, states, and events
 
-The retired C++/MLIR flags (`--emit-mlir`, `--emit-llvm`, `--emit-obj`) are not available in v0.5.
+`hew tool compile` does not accept `--emit-mlir` or `--emit-obj`; it accepts
+`--emit-dir` (directory for emitted `.ll`/`.o`/`.wasm` artefacts) and
+`--emit-llvm` (retain the pre-optimization textual LLVM IR).
 
 ---
 

@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ownership::TypeFactTable;
 use crate::verify::verify_cfg_discard_safety;
 use crate::{
-    build_cfg_index, verify_function, verify_module, BlockId, CallableId, SemFunction, SemModule,
-    SemOpKind, SemTerminator, SirDiagnostic, ValueId,
+    build_cfg_index, verify_module, BlockId, CallableId, SemFunction, SemModule, SemOpKind,
+    SemTerminator, SirDiagnostic, ValueId,
 };
 
 /// Stable result facts from one constant-CFG canonicalization.
@@ -40,37 +40,6 @@ pub enum SirOptimizationError {
     InvalidOutput(Vec<SirDiagnostic>),
 }
 
-/// Fold direct constant-boolean branches and compact unreachable blocks.
-///
-/// This function is suitable for local SIR construction tests. Inter-IR
-/// boundaries that need direct-call validation should use
-/// [`canonicalize_module_constant_cfg`] instead.
-///
-/// # Errors
-///
-/// Returns [`SirOptimizationError::InvalidInput`] when `function` is not
-/// valid SIR, or [`SirOptimizationError::InvalidOutput`] if the pass would
-/// produce invalid SIR. In either case, `function` is unchanged.
-pub fn canonicalize_constant_cfg(
-    function: &mut SemFunction,
-) -> Result<CfgCanonicalizationReport, SirOptimizationError> {
-    let diagnostics = verify_function(function);
-    if !diagnostics.is_empty() {
-        return Err(SirOptimizationError::InvalidInput(diagnostics));
-    }
-
-    let mut candidate = function.clone();
-    let report = canonicalize_verified_function(&mut candidate, &TypeFactTable::new())
-        .map_err(SirOptimizationError::InvalidOutput)?;
-    let diagnostics = verify_function(&candidate);
-    if !diagnostics.is_empty() {
-        return Err(SirOptimizationError::InvalidOutput(diagnostics));
-    }
-
-    *function = candidate;
-    Ok(report)
-}
-
 /// Canonicalize every verified SIR body in a module transactionally.
 ///
 /// The module form preserves callable-table validation around direct calls and
@@ -91,9 +60,13 @@ pub fn canonicalize_module_constant_cfg(
 
     let mut candidate = module.clone();
     let facts = candidate.type_facts.clone();
+    // The callables are not touched by a CFG rewrite, so one index over them
+    // serves every body. `verify_module` above already validated the table.
+    let callables = candidate.callables.clone();
+    let context = crate::verify::callable_context(&callables);
     let mut reports = Vec::with_capacity(candidate.functions.len());
     for function in &mut candidate.functions {
-        let report = canonicalize_verified_function(function, &facts)
+        let report = canonicalize_verified_function(function, Some(&context), &facts)
             .map_err(SirOptimizationError::InvalidOutput)?;
         reports.push((function.callable, report));
     }
@@ -108,6 +81,7 @@ pub fn canonicalize_module_constant_cfg(
 
 fn canonicalize_verified_function(
     function: &mut SemFunction,
+    callable_context: Option<&crate::verify::CallableContext<'_>>,
     facts: &TypeFactTable,
 ) -> Result<CfgCanonicalizationReport, Vec<SirDiagnostic>> {
     let before_folding = function.clone();
@@ -150,7 +124,8 @@ fn canonicalize_verified_function(
     // public call boundary. This deliberately makes dead-block compaction a
     // separate audited transformation: later passes can follow this shape
     // without inventing a second validation convention.
-    let diagnostics = crate::verify::verify_function_with_facts(function, facts);
+    let diagnostics =
+        crate::verify::verify_function_with_context(function, callable_context, facts);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -161,7 +136,8 @@ fn canonicalize_verified_function(
 
     let post_fold_cfg = build_cfg_index(function);
     let (removed_blocks, block_remap) = compact_unreachable(function, post_fold_cfg.reachable());
-    let diagnostics = crate::verify::verify_function_with_facts(function, facts);
+    let diagnostics =
+        crate::verify::verify_function_with_context(function, callable_context, facts);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }

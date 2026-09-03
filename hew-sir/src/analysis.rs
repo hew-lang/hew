@@ -432,8 +432,9 @@ mod tests {
 
     use super::{build_cfg_index, compute_dominators, EdgeRef};
     use crate::{
-        BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemFunction,
-        SemTerminator, SuccessorSlot, ValueId,
+        BlockArg, BlockId, CallableId, CallableInstance, Edge, FunctionSourceOrigin, Operand,
+        SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
+        SemParamPassing, SemSignature, SemTerminator, SuccessorSlot, ValueId,
     };
 
     fn read(value: u32) -> Operand {
@@ -476,6 +477,45 @@ mod tests {
             entry: BlockId(0),
             blocks,
             places: Vec::new(),
+        }
+    }
+
+    /// The one-callable module `function` belongs to.
+    ///
+    /// A parameter's §1.2 kind is its ABI slot before it is its type's class,
+    /// so a function that has parameters is verified against the callable table
+    /// that names those slots rather than context-free.
+    fn module(function: SemFunction) -> SemModule {
+        SemModule {
+            callables: vec![SemCallable {
+                id: function.callable,
+                function: function.id,
+                declaration: function.declaration.clone(),
+                instance: CallableInstance::Monomorphic,
+                symbol: function.name.clone(),
+                source_origin: function.source_origin.clone(),
+                signature: SemSignature {
+                    params: function
+                        .params
+                        .iter()
+                        .map(|parameter| SemAbiParam {
+                            ty: parameter.ty.clone(),
+                            passing: SemParamPassing::ReadOnly,
+                            caller_visible_projection: false,
+                        })
+                        .collect(),
+                    return_ty: function.return_ty.clone(),
+                },
+                call_conv: SemCallConv::Default,
+                kind: SemCallableKind::HewDirect,
+            }],
+            generic_templates: Vec::new(),
+            root_unit_callables: Vec::new(),
+            entry_callable: None,
+            functions: vec![function],
+            type_facts: std::collections::BTreeMap::new(),
+            string_literals: std::collections::BTreeMap::new(),
+            bytes_literals: std::collections::BTreeMap::new(),
         }
     }
 
@@ -548,7 +588,7 @@ mod tests {
             block(3, SemTerminator::Return { value: None }),
             block(4, SemTerminator::Return { value: None }),
         ]);
-        assert!(crate::verify_function(&function).is_empty());
+        assert!(crate::verify_function_in_module(&module(function.clone()), &function).is_empty());
 
         let index = build_cfg_index(&function);
         let entry_then = EdgeRef {
@@ -623,7 +663,7 @@ mod tests {
         ]);
         function.return_ty = ResolvedTy::Bool;
 
-        assert!(crate::verify_function(&function).is_empty());
+        assert!(crate::verify_function_in_module(&module(function.clone()), &function).is_empty());
         let index = build_cfg_index(&function);
         assert_eq!(index.reachable(), &BTreeSet::from([BlockId(0), BlockId(1)]));
         assert_eq!(index.rpo(), &[BlockId(0), BlockId(1)]);

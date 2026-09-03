@@ -179,8 +179,23 @@ pub struct SirDiagnostic {
 }
 
 #[derive(Debug)]
-struct CallableContext<'a> {
+pub(crate) struct CallableContext<'a> {
     by_id: BTreeMap<CallableId, &'a SemCallable>,
+}
+
+/// Index an already-verified module's callable table.
+///
+/// [`verify_callable_table`] both validates and indexes; a pass that has
+/// already run [`verify_module`] over the same callables needs only the index,
+/// and building it here lets that pass hold the table while it mutates the
+/// module's bodies.
+pub(crate) fn callable_context(callables: &[SemCallable]) -> CallableContext<'_> {
+    CallableContext {
+        by_id: callables
+            .iter()
+            .map(|callable| (callable.id, callable))
+            .collect(),
+    }
 }
 
 impl<'a> CallableContext<'a> {
@@ -251,7 +266,11 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
 /// or the ownership/layout MIR boundary.
 ///
 /// Keeping this public lets every consumer fail closed rather than relying on
-/// a particular CLI lane to have run whole-module verification first.
+/// a particular CLI lane to have run whole-module verification first. Without a
+/// module it carries neither the callable table nor the §6.2 fact table, so it
+/// refuses a parameter, whose §1.2 kind is its ABI slot, and a value whose type
+/// §1.1 cannot class without declaration facts. Use
+/// [`verify_function_in_module`] wherever those facts exist.
 #[allow(
     clippy::too_many_lines,
     reason = "the verifier keeps SSA collection, CFG shape, and dominance checks together so the stage boundary is auditable"
@@ -369,7 +388,7 @@ fn cfg_discard_diag(
     clippy::too_many_lines,
     reason = "the verifier keeps SSA collection, CFG shape, and dominance checks together so the stage boundary is auditable"
 )]
-fn verify_function_with_context(
+pub(crate) fn verify_function_with_context(
     function: &SemFunction,
     callable_context: Option<&CallableContext<'_>>,
     facts: &TypeFactTable,
@@ -417,16 +436,25 @@ fn verify_function_with_context(
     for (index, param) in function.params.iter().enumerate() {
         record_value(function, param.value, &mut values, &mut diagnostics);
         // §1.2 rule 3: a parameter's kind is its header slot before it is its
-        // type's class, so the audit reads the slot the lowering read.
-        let passing = callable_context
+        // type's class, so the audit reads the slot the lowering read. Without
+        // the callable table there is no slot to read, and the rule has no
+        // authority to audit against: that is a finding, not a `ReadOnly`
+        // default, which would admit a `Guaranteed` borrow slot as `Owned` and
+        // refuse the borrow slot the lowering actually wrote.
+        let expected = match callable_context
             .and_then(|context| context.param_passing(function.callable, index))
-            .unwrap_or(SemParamPassing::ReadOnly);
+        {
+            Some(passing) => crate::OwnKind::of_param(&param.ty, passing, facts),
+            None => Err(format!(
+                "parameter {index} has no header slot in the callable table, so §1.2 rule 3 has no ABI fact to audit its ownership kind against"
+            )),
+        };
         verify_own_kind(
             function,
             param.value,
             &param.ty,
             param.own,
-            crate::OwnKind::of_param(&param.ty, passing, facts),
+            expected,
             &mut diagnostics,
         );
         types.insert(param.value, param.ty.clone());
@@ -1791,5 +1819,137 @@ mod cfg_discard_safety_tests {
                 ..
             }
         )));
+    }
+}
+
+#[cfg(test)]
+mod parameter_own_kind_tests {
+    use super::{callable_context, verify_function_with_context, SirDiagnosticKind};
+    use crate::ownership::{OwnKind, TypeFactTable};
+    use crate::{
+        BlockArg, BlockId, CallableId, CallableInstance, FunctionSourceOrigin, SemAbiParam,
+        SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemParamPassing,
+        SemSignature, SemTerminator, ValueId,
+    };
+    use hew_hir::ItemId;
+    use hew_types::{DefId, ResolvedTy};
+
+    fn function(ty: ResolvedTy, own: OwnKind) -> SemFunction {
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("takes_one_parameter"),
+            name: "takes_one_parameter".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: vec![BlockArg {
+                value: ValueId(0),
+                ty,
+                own,
+                provenance: None,
+            }],
+            return_ty: ResolvedTy::Unit,
+            entry: BlockId(0),
+            places: Vec::new(),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return { value: None },
+            }],
+        }
+    }
+
+    fn callable(function: &SemFunction, passing: SemParamPassing) -> SemCallable {
+        SemCallable {
+            id: function.callable,
+            function: function.id,
+            declaration: function.declaration.clone(),
+            instance: CallableInstance::Monomorphic,
+            symbol: function.name.clone(),
+            source_origin: function.source_origin.clone(),
+            signature: SemSignature {
+                params: function
+                    .params
+                    .iter()
+                    .map(|parameter| SemAbiParam {
+                        ty: parameter.ty.clone(),
+                        passing,
+                        caller_visible_projection: false,
+                    })
+                    .collect(),
+                return_ty: function.return_ty.clone(),
+            },
+            call_conv: SemCallConv::Default,
+            kind: SemCallableKind::HewDirect,
+        }
+    }
+
+    /// Is there a §1.2 ownership-kind finding about the one parameter?
+    fn kind_finding(diagnostics: &[crate::SirDiagnostic]) -> Option<&str> {
+        diagnostics
+            .iter()
+            .find_map(|diagnostic| match &diagnostic.kind {
+                SirDiagnosticKind::OwnershipKind { value, reason } if *value == ValueId(0) => {
+                    Some(reason.as_str())
+                }
+                _ => None,
+            })
+    }
+
+    /// §1.2 rule 3: a `Borrow` header slot makes the parameter `Guaranteed` for
+    /// the whole body whatever its type's class says. A `string` in that slot
+    /// carrying the class's `Owned` contradicts the slot, and the audit says so.
+    #[test]
+    fn verifier_refuses_a_borrow_slot_parameter_the_class_kind_contradicts() {
+        let function = function(ResolvedTy::String, OwnKind::Owned);
+        let callables = vec![callable(&function, SemParamPassing::Borrow)];
+        let context = callable_context(&callables);
+        let diagnostics =
+            verify_function_with_context(&function, Some(&context), &TypeFactTable::new());
+        let reason = kind_finding(&diagnostics).expect("a Borrow slot refuses an Owned parameter");
+        assert!(reason.contains("Guaranteed"), "{reason}");
+    }
+
+    /// The counterfactual: the same parameter in the same slot, carrying the
+    /// kind rule 3 gives it, is admitted. The finding above is about the slot
+    /// disagreement and not about `Borrow` being unrepresentable.
+    #[test]
+    fn verifier_admits_a_borrow_slot_parameter_that_is_guaranteed() {
+        let function = function(ResolvedTy::String, OwnKind::Guaranteed);
+        let callables = vec![callable(&function, SemParamPassing::Borrow)];
+        let context = callable_context(&callables);
+        let diagnostics =
+            verify_function_with_context(&function, Some(&context), &TypeFactTable::new());
+        assert_eq!(None, kind_finding(&diagnostics));
+    }
+
+    /// The same body in a `ReadOnly` slot takes the class table's answer, so
+    /// `Guaranteed` is the wrong kind there. Rule 3 reads the slot rather than
+    /// making `Guaranteed` always acceptable on a parameter.
+    #[test]
+    fn verifier_refuses_a_read_only_slot_parameter_that_claims_guaranteed() {
+        let function = function(ResolvedTy::String, OwnKind::Guaranteed);
+        let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
+        let context = callable_context(&callables);
+        let diagnostics =
+            verify_function_with_context(&function, Some(&context), &TypeFactTable::new());
+        let reason =
+            kind_finding(&diagnostics).expect("a ReadOnly slot refuses a Guaranteed parameter");
+        assert!(reason.contains("Owned"), "{reason}");
+    }
+
+    /// The negative control for the deleted `ReadOnly` default: with no callable
+    /// table there is no header slot, so rule 3 has no ABI fact to audit
+    /// against and the parameter is refused. Defaulting to `ReadOnly` admitted
+    /// this `i64` silently, and would have admitted a `Borrow` slot's
+    /// `Guaranteed` parameter as `Owned`.
+    #[test]
+    fn verifier_refuses_a_parameter_whose_header_slot_it_cannot_read() {
+        let function = function(ResolvedTy::I64, OwnKind::None);
+        let diagnostics = verify_function_with_context(&function, None, &TypeFactTable::new());
+        let reason =
+            kind_finding(&diagnostics).expect("no callable table means no slot to audit against");
+        assert!(reason.contains("no header slot"), "{reason}");
     }
 }

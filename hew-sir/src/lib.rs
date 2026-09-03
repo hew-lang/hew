@@ -31,8 +31,7 @@ pub use model::{
     SuspendInput, UseSite, ValueDef, ValueId,
 };
 pub use optimize::{
-    canonicalize_constant_cfg, canonicalize_module_constant_cfg, CfgCanonicalizationReport,
-    SirOptimizationError,
+    canonicalize_module_constant_cfg, CfgCanonicalizationReport, SirOptimizationError,
 };
 pub use ownership::{
     BindingProvenance, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, StringLiteralId,

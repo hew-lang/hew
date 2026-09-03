@@ -6983,6 +6983,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         // Composite-helper unit tests never exercise the P5-RX receive
         // borrow path; carry the inert defaults.
         borrow_mode: None,
+        actor_state_transaction_gate: None,
         borrow_tainted: HashSet::new(),
         borrow_drop_tainted: HashSet::new(),
         // Composite-helper unit tests never lower a `Terminator::Suspend`;

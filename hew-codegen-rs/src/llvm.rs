@@ -2286,6 +2286,16 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// already owns its private copy, so behaviour is byte-identical to the
     /// pre-Stage-2a path. The same compiled handler serves both modes.
     pub(crate) borrow_mode: Option<IntValue<'ctx>>,
+    /// The trailing `state_txn: i32` of an actor-body plain `fn`: non-zero when
+    /// the caller runs inside an open dispatch state-cleanup domain (a receive
+    /// handler and its transitive callees), zero when it is a lifecycle phase
+    /// (`init`, an `#[on(...)]` hook). `None` for every other function, whose
+    /// transaction is a static property of its own kind.
+    ///
+    /// An actor-state store branches on this instead of on
+    /// `actor_state_store_transaction`, because one method body is entered from
+    /// both phases and only the caller knows which is live.
+    pub(crate) actor_state_transaction_gate: Option<IntValue<'ctx>>,
     /// P5-RX Stage 2a (A625): the closed set of MIR `Place::Local` ids that
     /// carry a value derived (transitively, via `Instr::Move`) from a `String`
     /// receive parameter. Empty for every non-receive function and for receive
@@ -18374,11 +18384,83 @@ fn actor_state_replacement_slot<'ctx>(
     Ok(slot)
 }
 
+/// Lower an `Instr::ActorStateFieldStore` under the transaction the current
+/// function's phase decides.
+///
+/// An actor-body plain `fn` has no phase of its own: the same body is entered
+/// from a receive handler (inside an open dispatch state-cleanup domain) and
+/// from `init` or an `#[on(...)]` hook (outside one). Its caller supplies the
+/// verdict as the trailing `state_txn` argument, so the store emits both arms
+/// under a branch on that value rather than picking one at compile time.
 fn lower_actor_state_field_store(
     fn_ctx: &FnCtx<'_, '_>,
     field_offset: FieldOffset,
     src: Place,
     handoff: hew_mir::ActorStateStoreHandoff,
+) -> CodegenResult<()> {
+    let Some(gate) = fn_ctx.actor_state_transaction_gate else {
+        return lower_actor_state_field_store_under(
+            fn_ctx,
+            field_offset,
+            src,
+            handoff,
+            fn_ctx.actor_state_store_transaction,
+        );
+    };
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(inkwell::basic_block::BasicBlock::get_parent)
+        .ok_or_else(|| {
+            CodegenError::Llvm("actor-state store has no parent function".to_string())
+        })?;
+    let idx = field_offset.0;
+    let in_dispatch_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("state_f{idx}_txn_dispatch"));
+    let lifecycle_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("state_f{idx}_txn_lifecycle"));
+    let merge_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("state_f{idx}_txn_merge"));
+    let in_dispatch = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::NE,
+            gate,
+            gate.get_type().const_zero(),
+            &format!("state_f{idx}_txn_open"),
+        )
+        .llvm_ctx("actor-state transaction gate compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(in_dispatch, in_dispatch_bb, lifecycle_bb)
+        .llvm_ctx("actor-state transaction gate branch")?;
+    for (block, transaction) in [
+        (in_dispatch_bb, ActorStateStoreTransaction::Required),
+        (
+            lifecycle_bb,
+            ActorStateStoreTransaction::LifecycleOutsideDispatch,
+        ),
+    ] {
+        fn_ctx.builder.position_at_end(block);
+        lower_actor_state_field_store_under(fn_ctx, field_offset, src, handoff, transaction)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(merge_bb)
+            .llvm_ctx("actor-state transaction arm merge")?;
+    }
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
+fn lower_actor_state_field_store_under(
+    fn_ctx: &FnCtx<'_, '_>,
+    field_offset: FieldOffset,
+    src: Place,
+    handoff: hew_mir::ActorStateStoreHandoff,
+    transaction: ActorStateStoreTransaction,
 ) -> CodegenResult<()> {
     let state_ty = fn_ctx.actor_state_ty.ok_or_else(|| {
         CodegenError::FailClosed("ActorStateFieldStore has no registered actor state type".into())
@@ -18411,7 +18493,7 @@ fn lower_actor_state_field_store(
     // borrow-gated clone can produce an otherwise untracked owner. The runtime
     // validates the field range first, then atomically publishes the signal
     // guard before neutralizing this field in the old state escrow.
-    if fn_ctx.actor_state_store_transaction == ActorStateStoreTransaction::Required {
+    if transaction == ActorStateStoreTransaction::Required {
         emit_checked_dispatch_state_cleanup_call(
             fn_ctx,
             "hew_dispatch_state_cleanup_begin_replace",
@@ -18519,7 +18601,7 @@ fn lower_actor_state_field_store(
             true,
         )?;
     }
-    if fn_ctx.actor_state_store_transaction == ActorStateStoreTransaction::Required {
+    if transaction == ActorStateStoreTransaction::Required {
         emit_actor_state_cleanup_prepare(
             fn_ctx,
             src,
@@ -18539,9 +18621,7 @@ fn lower_actor_state_field_store(
     // without addressing whichever unrelated/no registry happens to be current.
     match handoff {
         hew_mir::ActorStateStoreHandoff::ConsumeSource => {
-            if fn_ctx.actor_state_store_transaction
-                == ActorStateStoreTransaction::LifecycleOutsideDispatch
-            {
+            if transaction == ActorStateStoreTransaction::LifecycleOutsideDispatch {
                 emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, src)?;
             }
         }
@@ -31838,6 +31918,23 @@ fn lower_terminator<'ctx>(
                             };
                             arg_vals.push(reconciled);
                         }
+                        if fn_ctx.actor_method_symbols.contains(callee) {
+                            // The trailing `state_txn` verdict. A caller that
+                            // was handed one forwards it (a sibling actor
+                            // method is reached from both phases too); every
+                            // other caller states its own static phase.
+                            let gate = match fn_ctx.actor_state_transaction_gate {
+                                Some(gate) => gate,
+                                None => fn_ctx.ctx.i32_type().const_int(
+                                    u64::from(
+                                        fn_ctx.actor_state_store_transaction
+                                            == ActorStateStoreTransaction::Required,
+                                    ),
+                                    false,
+                                ),
+                            };
+                            arg_vals.push(gate.into());
+                        }
                         let invoke_args: Vec<BasicMetadataValueEnum<'ctx>> =
                             arg_vals.iter().copied().map(Into::into).collect();
                         let call_site = build_owned_invoke(
@@ -34062,6 +34159,16 @@ fn declare_function<'ctx>(
     // only emitter updated to pass this arg, so only `__recv__` signatures may
     // grow it.
     if is_receive_handler(func) {
+        param_tys.push(ctx.i32_type().into());
+    }
+    // An actor-body plain `fn` gains a trailing `state_txn: i32`. Which of the
+    // two actor-state store transactions applies is a property of the CALLER's
+    // phase — a receive handler runs inside an open dispatch state-cleanup
+    // domain, `init` and an `#[on(...)]` hook do not — and one method body is
+    // reached from both. The caller supplies its own verdict here, the same way
+    // it supplies the context and state pointers; a sibling actor method
+    // forwards the gate it was given rather than inventing one.
+    if actor_method_identity(func).is_some() {
         param_tys.push(ctx.i32_type().into());
     }
     // W6.010 value routing needs NO extra parameter: a suspendable handler's
@@ -36655,6 +36762,25 @@ fn lower_function<'ctx>(
     } else {
         None
     };
+    // The caller's actor-state transaction verdict, appended by
+    // `declare_function` after the actor method's declared parameters (the
+    // header is `(ctx, state, <user params>)`, so the gate sits at index
+    // `params.len()`).
+    let actor_state_transaction_gate = if actor_method_identity(func).is_some() {
+        let gate_idx = u32::try_from(func.params.len()).map_err(|_| {
+            CodegenError::FailClosed("actor method exceeds u32::MAX params — impossible".into())
+        })?;
+        let param = llvm_fn.get_nth_param(gate_idx).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "actor method `{}` has no trailing state_txn LLVM param at index {gate_idx}; \
+                 declare_function and lower_function disagree on the actor-method ABI",
+                func.name
+            ))
+        })?;
+        Some(param.into_int_value())
+    } else {
+        None
+    };
     let borrow_tainted = compute_borrow_taint(func);
     let borrow_drop_tainted = compute_borrow_drop_taint(
         func,
@@ -36935,6 +37061,7 @@ fn lower_function<'ctx>(
         dyn_vtable_registry,
         const_globals,
         borrow_mode,
+        actor_state_transaction_gate,
         borrow_tainted,
         borrow_drop_tainted,
         coro: coro_state,

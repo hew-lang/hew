@@ -6775,7 +6775,31 @@ machine Traffic {
     fn v05_is_operator_rhs_type_pattern_lsp_surfaces_are_correct() {
         let source = include_str!("../../tests/fixtures/v05_is_operator.hew");
         let doc = make_typed_doc(source);
-        assert_no_hard_type_errors("v05_is_operator", &doc);
+
+        // The fixture's `value is Payload` is rejected: an enum is a value
+        // with no identity to compare, `indirect` included (#3134). The
+        // rejection is the only hard error the fixture may carry — the LSP
+        // surfaces below are about how the RHS *resolves*, not about whether
+        // the checker admits the comparison, and they must keep working on a
+        // program the checker refuses.
+        let errors = doc
+            .type_output
+            .as_ref()
+            .map_or(&[] as &[hew_types::error::TypeError], |output| {
+                output.errors.as_slice()
+            });
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.message.contains("E_IS_VALUE_TYPE")),
+            "v05_is_operator should carry only the `is` value-type rejection; got {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("E_IS_VALUE_TYPE")),
+            "`value is Payload` must be rejected: an enum has no identity to compare"
+        );
 
         let uri = Url::parse(&v05_fixture_path("v05_is_operator")).unwrap();
         let documents: DashMap<Url, DocumentState> = DashMap::new();

@@ -2685,6 +2685,23 @@ fn dead_code_library_unit_exempts_pub_fn() {
 }
 
 #[test]
+fn dead_code_binary_unit_still_reports_pub_fn() {
+    // Negative control for `dead_code_library_unit_exempts_pub_fn`: the same
+    // two functions plus a root `fn main` make this a binary unit, so both
+    // the pub and private unused functions are still reported.
+    let source = "pub fn a() -> i32 { 1 } fn b() -> i32 { 2 } fn main() {}";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert_eq!(
+        count_dead_code(&output.warnings),
+        2,
+        "expected two dead_code warnings (`a` and `b`) once `main` makes this a binary unit, got: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
 fn no_warn_dead_code_main() {
     let source = "fn main() { println(1); }";
     let result = hew_parser::parse(source);

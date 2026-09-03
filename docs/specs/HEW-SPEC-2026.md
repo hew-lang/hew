@@ -5465,6 +5465,17 @@ replacement rather than a bare parse error.
 carrying the `var` fix-it, not a parse cascade. Mutable bindings are `var`
 (§3.2).
 
+> **Edition 2026 enforcement.** The lexer has not yet closed to this table.
+> `try`, `catch`, `race`, `cooperate`, `foreign`, `super`, `async`,
+> `default`, `emit`, and `pool` are still lexed as reserved words, so
+> `docs/syntax-data.json` carries them and `let default = 1` is refused with
+> "`default` is a reserved word and cannot be used as a binding name". That
+> is a defect against this table, not a second reading of it
+> (hew-lang/hew#3262). `this` is absent from the table because the receiver
+> rule deletes it from the language; §3.6 still carries its actor
+> self-reference text and the lexer still reserves it, and the receiver
+> change removes both (hew-lang/hew#3075).
+
 ### 12.1 Built-in Numeric Types
 
 > Primitive integer annotations require explicit width (`i8`–`i64`, `u8`–`u64`) or

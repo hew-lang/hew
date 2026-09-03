@@ -37,9 +37,9 @@ day-one.16	V060-FD-4	let mut error text says "rename this binding", not "var x"
 day-one.17	V060-FD-4	let mut is a three-error cascade, not one error
 day-one.20	V060-FD-4	module-not-found JSON carries a zero span (start_line: 0)
 day-one.21	V060-FD-4	module-not-found JSON carries no nearest-module suggestion
-day-one.22	V060-FD-3	HEW_CC=/nonexistent/cc build exits 0, not 1
-day-one.23	V060-FD-3	missing C driver: no error output naming the bad path
-day-one.24	V060-FD-3	missing C driver: no error output naming a package to install
+day-one.22	V060-FD-3	HEW_CC has no reader in the compiler (grep -rn HEW_CC --include=*.rs is empty); the env var is silently ignored and build falls through to system cc, exit 0
+day-one.23	V060-FD-3	HEW_CC unimplemented (see day-one.22): no error output naming the bad path
+day-one.24	V060-FD-3	HEW_CC unimplemented (see day-one.22): no error output naming a package to install
 day-one.26	V060-DIAG-1	scope { fork {..} } in main exits 1 (E_NOT_YET_IMPLEMENTED), not 3
 day-one.27	V060-DIAG-1	limitation output has no "compiler limitation:" prefix
 day-one.28	V060-DIAG-1	refusal carries no E_LIMIT_MAIN_CONTEXT code

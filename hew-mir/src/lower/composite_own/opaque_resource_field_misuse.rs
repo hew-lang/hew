@@ -41,7 +41,7 @@ use super::{
 /// wording): the failure mode and the fail-closed rationale are identical.
 ///
 /// LESSONS: boundary-fail-closed, raii-null-after-move; sibling of the
-/// builtin-handle W3.053 gate [`detect_unproven_aggregate_handle_double_free`].
+/// builtin-handle W3.053 aggregate double-free defect class tracked by #3119.
 pub(in crate::lower) fn detect_opaque_resource_field_misuse(
     blocks: &[BasicBlock],
     local_tys: &[ResolvedTy],

@@ -6842,7 +6842,8 @@ fn validate_lambda_captures(captures: &[LambdaCapture], findings: &mut Vec<MirCh
     }
 }
 /// Runtime ABIs whose owned-handle-leaf arguments are ALSO borrowed (not just
-/// the non-handle-leaf args of [`is_borrowing_call_abi`]). The layout-witness
+/// the non-handle-leaf args of the retired per-arg borrow allowlist). The
+/// layout-witness
 /// stream recv / `try_recv` runtime entries — `hew_stream_next_layout` /
 /// `hew_stream_try_next_layout` for `Stream<T>::recv` / `try_recv` — READ
 /// one item from the stream and decode it into the consumer's `Option<T>`
@@ -6974,8 +6975,8 @@ mod close_obligated_borrow_alias_tests {
 /// `BitCopy`. They can NEVER alias a second free in ANY context (call-arg,
 /// actor-state field, tuple, return, re-aggregation). Gating them over-refuses
 /// the stored-pid idiom (`spawn Conn(fetcher: f)`); excluding it here un-gates
-/// the pid in every context and subsumes the per-call-arg borrow carve in
-/// `terminator_escape_places`. The `close_method().is_none()` guard inside
+/// the pid in every context and subsumes the per-call-arg borrow carve the
+/// escape-poison analysis used to apply. The `close_method().is_none()` guard inside
 /// `ty_is_nonowning_handle_leaf` keeps this executable: a future pid-like
 /// builtin that gains a release ABI would fall through and stay gated.
 ///

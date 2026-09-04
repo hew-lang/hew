@@ -1296,7 +1296,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",

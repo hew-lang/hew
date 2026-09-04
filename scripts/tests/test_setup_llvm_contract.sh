@@ -20,7 +20,8 @@ awk '
   }
 ' "$ACTION" |
     sed -e 's|\${{ runner\.os }}|$TEST_RUNNER_OS|g' \
-        -e 's|\${{ runner\.arch }}|$TEST_RUNNER_ARCH|g' >"$RESOLVER"
+        -e 's|\${{ runner\.arch }}|$TEST_RUNNER_ARCH|g' \
+        -e 's|\${{ inputs\.version }}|22.1.5|g' >"$RESOLVER"
 
 RUNNER_TEMP="$TMP_ROOT/runner-temp"
 GITHUB_OUTPUT="$TMP_ROOT/linux.output"

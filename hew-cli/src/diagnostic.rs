@@ -73,6 +73,10 @@ pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'stat
         | hew_hir::HirDiagnosticKind::EnumVariantConstructorArityMismatch { .. } => {
             "E_ENUM_VARIANT_CONSTRUCTOR"
         }
+        // D8/P3: a closure capturing a binding from further out than its own
+        // immediately enclosing closure. Legal Hew this release cannot
+        // lower — see the variant's doc comment on `HirDiagnosticKind`.
+        hew_hir::HirDiagnosticKind::SkipLevelClosureCapture { .. } => "E_LIMIT_SKIP_LEVEL_CAPTURE",
         _ => "E_HIR",
     }
 }
@@ -142,6 +146,10 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         // function) cannot yet spawn — a limitation of this release's
         // runtime substrate, not the user's program.
         hew_mir::MirDiagnosticKind::MainContextRequired { .. } => "E_LIMIT_MAIN_CONTEXT",
+        // D2/D8: the ratified rule for `Vec`/`HashMap`/`HashSet` is retain on
+        // a whole-binding rebind, not move; this lowering has no retain path
+        // yet, so the refusal names the release gap, not a use-after-move.
+        hew_mir::MirDiagnosticKind::CollectionCopyUnsupported { .. } => "E_LIMIT_COLLECTION_COPY",
         hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { .. } => "E_INVALID_SPAWN_ARGUMENT",
         hew_mir::MirDiagnosticKind::MissingActorSpawnArgument { .. } => "E_MISSING_SPAWN_ARGUMENT",
         hew_mir::MirDiagnosticKind::UnknownType { .. }
@@ -608,6 +616,7 @@ pub(crate) fn build_module_source_map(program: &hew_parser::ast::Program) -> Mod
 fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
     match kind {
         hew_mir::MirDiagnosticKind::UseAfterConsume { .. } => "UseAfterConsume",
+        hew_mir::MirDiagnosticKind::CollectionCopyUnsupported { .. } => "CollectionCopyUnsupported",
         hew_mir::MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace { .. } => {
             "ProjectedPayloadMoveFromReadablePlace"
         }
@@ -710,7 +719,8 @@ fn mir_place_label(place: &hew_mir::Place) -> String {
 
 fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId> {
     match kind {
-        hew_mir::MirDiagnosticKind::UseAfterConsume { used_at, .. } => Some(*used_at),
+        hew_mir::MirDiagnosticKind::UseAfterConsume { used_at, .. }
+        | hew_mir::MirDiagnosticKind::CollectionCopyUnsupported { used_at, .. } => Some(*used_at),
         hew_mir::MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace { site, .. } => {
             Some(*site)
         }
@@ -768,6 +778,12 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
     let message = match &diagnostic.kind {
         hew_mir::MirDiagnosticKind::UseAfterConsume { name, .. } => {
             format!("binding `{name}` is used after it was consumed")
+        }
+        hew_mir::MirDiagnosticKind::CollectionCopyUnsupported { name, .. } => {
+            format!(
+                "`{name}` is a `Vec`/`HashMap`/`HashSet`: a whole-binding rebind is retained, \
+                 not moved, but this release's lowering has no retain path yet"
+            )
         }
         hew_mir::MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace { name, reason, .. } => {
             let source = match reason {
@@ -1097,6 +1113,12 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
     let mut notes = vec![format!("MIR kind: {}", mir_kind_name(&diagnostic.kind))];
     match &diagnostic.kind {
         hew_mir::MirDiagnosticKind::UseAfterConsume {
+            binding,
+            consumed_at,
+            used_at,
+            ..
+        }
+        | hew_mir::MirDiagnosticKind::CollectionCopyUnsupported {
             binding,
             consumed_at,
             used_at,

@@ -428,6 +428,29 @@ grep -qF -- \
     "${reject_output}"
 echo "PASS borrow_type_outside_extern (reject)"
 
+# D8/D9/D25: every `reject/limit_*.hew` fixture names a known internal-error
+# gap now refused on the Limitation channel with its own `E_LIMIT_*` code
+# (`docs/diagnostics/README.md`) — exit 3, `compiler limitation:` prefix, the
+# code itself in the rendered text. A member whose fixture regresses to the
+# old `E_NOT_YET_IMPLEMENTED`/`E_MIR_ICE`/`E_HIR CheckerBoundaryViolation`
+# text, or to any other exit code, fails here.
+for limit_fixture in "${ROOT}"/tests/vertical-slice/reject/limit_*.hew; do
+    limit_name="$(basename "${limit_fixture}" .hew)"
+    limit_status=0
+    "${HEW}" check "${limit_fixture}" >"${reject_output}" 2>&1 || limit_status=$?
+    if [[ "${limit_status}" -ne 3 ]]; then
+        echo "expected ${limit_name} to exit 3 (Limitation), got ${limit_status}" >&2
+        cat "${reject_output}" >&2
+        exit 1
+    fi
+    if ! grep -qE 'compiler limitation: E_LIMIT_[A-Z_]+' "${reject_output}"; then
+        echo "expected ${limit_name} to render a compiler limitation: E_LIMIT_* prefix" >&2
+        cat "${reject_output}" >&2
+        exit 1
+    fi
+    echo "PASS ${limit_name} (reject, Limitation channel)"
+done
+
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/string_return.hew" >"${accept_output}"
 grep -qe '-> string' "${accept_output}"
 
@@ -2649,18 +2672,38 @@ reject_check_use_after_consume() {
     grep -q 'UseAfterConsume' "${reject_output}"
 }
 
+# D2/D8: the same relocation check that reports `UseAfterConsume` reports
+# `CollectionCopyUnsupported` (`E_LIMIT_COLLECTION_COPY`, Limitation) instead
+# when the moved-then-reread binding is a `Vec`/`HashMap`/`HashSet` — the
+# ratified rule is retain on any transfer (a rebind, a tuple/record/enum/
+# array element, ...), and this lowering has no retain path for any of them
+# yet. Sibling of `reject_check_use_after_consume` for that one type family.
+reject_check_collection_copy_unsupported() {
+    local fixture="$1"
+    if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/${fixture}.hew" >"${reject_output}" 2>&1; then
+        echo "expected ${fixture} fixture to fail" >&2
+        exit 1
+    fi
+    grep -q 'compiler limitation: E_LIMIT_COLLECTION_COPY' "${reject_output}"
+    grep -q 'CollectionCopyUnsupported' "${reject_output}"
+}
+
 for fixture in \
-    move_into_tuple_vec \
-    move_into_record_vec \
     move_into_tuple_owned_record \
     move_into_record_owned_record \
     move_into_tuple_resource \
     move_into_record_resource \
-    move_into_enum_vec \
-    move_into_array_vec \
     actor_nested_handle_tuple_use_after_send \
     actor_nested_handle_bound_tuple_rx_use_after_send; do
     reject_check_use_after_consume "${fixture}"
+done
+
+for fixture in \
+    move_into_tuple_vec \
+    move_into_record_vec \
+    move_into_enum_vec \
+    move_into_array_vec; do
+    reject_check_collection_copy_unsupported "${fixture}"
 done
 
 # Reject: defer body references a binding that was moved/consumed earlier

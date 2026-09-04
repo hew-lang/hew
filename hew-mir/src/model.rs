@@ -6811,6 +6811,20 @@ pub enum MirCheck {
         consumed_at: SiteId,
         used_at: SiteId,
     },
+    /// D2/D8: a whole-binding rebind of a `Vec`/`HashMap`/`HashSet` value
+    /// (`let b = a;`, then a use of `a`) hit the same relocation check as a
+    /// real use-after-move. The ratified rule for these builtin collections
+    /// is retain (copy-on-write), not move — this lowering has no retain
+    /// path yet, so the program is legal Hew this release cannot run, not a
+    /// user mistake. Same payload shape as `UseAfterConsume`; distinguished
+    /// at the raise site (`relocated_binding_use_checks`) by the relocated
+    /// binding's resolved type. `E_LIMIT_COLLECTION_COPY`.
+    CollectionCopyUnsupported {
+        binding: BindingId,
+        name: String,
+        consumed_at: SiteId,
+        used_at: SiteId,
+    },
     /// A shared and mutable borrow of the same place are simultaneously
     /// live, violating read-shared XOR mutate-unique. Declared variant;
     /// no construction surface in the v0.5 integer spine — borrow ops
@@ -8296,6 +8310,18 @@ pub enum MirDiagnosticKind {
     /// `E_LIMIT_MAIN_CONTEXT`: the program is legal Hew, this release's
     /// runtime substrate has no execution context for `main`.
     MainContextRequired { spawned: String },
+    /// D2/D8: a whole-binding rebind of a `Vec`/`HashMap`/`HashSet` value
+    /// hit the general relocation-use check that also reports
+    /// `UseAfterConsume`. The ratified rule for these builtin collections is
+    /// retain, not move, so the program is legal Hew this release's lowering
+    /// cannot yet run — not a use-after-move in the user's program.
+    /// Limitation channel, `E_LIMIT_COLLECTION_COPY`.
+    CollectionCopyUnsupported {
+        binding: BindingId,
+        name: String,
+        consumed_at: SiteId,
+        used_at: SiteId,
+    },
 }
 
 impl MirDiagnosticKind {
@@ -8333,8 +8359,12 @@ impl MirDiagnosticKind {
     /// are refusals, not defects — the elaborator proved nothing wrong, it
     /// declined to emit a partial/unsafe lowering — so they are Limitation.
     /// `MainContextRequired` (D9) is Limitation for the same reason: legal
-    /// Hew this release's runtime substrate cannot yet run. Every other kind
-    /// is the program's own ownership/move/init/actor-argument error: User.
+    /// Hew this release's runtime substrate cannot yet run.
+    /// `CollectionCopyUnsupported` (D2/D8) joins them: the ratified rule for
+    /// `Vec`/`HashMap`/`HashSet` is retain, so a whole-binding rebind is
+    /// legal Hew this lowering cannot yet honour, not a use-after-move.
+    /// Every other kind is the program's own ownership/move/init/actor-
+    /// argument error: User.
     #[must_use]
     pub fn channel(&self) -> DiagChannel {
         if self.internal_compiler_error_function().is_some() {
@@ -8344,7 +8374,8 @@ impl MirDiagnosticKind {
             Self::NotYetImplemented { .. }
             | Self::DropPlanUndetermined { .. }
             | Self::OwnedHandleAggregateExtractionUnsupported { .. }
-            | Self::MainContextRequired { .. } => DiagChannel::Limitation,
+            | Self::MainContextRequired { .. }
+            | Self::CollectionCopyUnsupported { .. } => DiagChannel::Limitation,
             _ => DiagChannel::User,
         }
     }

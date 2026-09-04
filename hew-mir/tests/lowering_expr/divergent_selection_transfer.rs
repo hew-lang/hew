@@ -480,6 +480,11 @@ fn unconditional_rebind_is_not_neutralized() {
 /// `a` afterwards is accepted today. Nulling `a` under that read would convert
 /// a leak into a use-after-move fault, so the shape holds its pre-existing
 /// posture until the surface decides the read is an error.
+///
+/// `Vec` is one of the D2-ratified retain (copy-on-write) collections, so this
+/// relocation still reports — but as `CollectionCopyUnsupported`
+/// (`E_LIMIT_COLLECTION_COPY`, D8), not `UseAfterConsume`: this lowering has
+/// no retain path yet, and the program is legal Hew, not a use-after-move.
 #[test]
 fn source_read_after_move_semantics_selection_is_rejected_without_an_explicit_clone() {
     let pl = pipeline_with_diagnostics(&format!(
@@ -494,10 +499,11 @@ fn source_read_after_move_semantics_selection_is_rejected_without_an_explicit_cl
     assert!(
         pl.diagnostics.iter().any(|diagnostic| matches!(
             diagnostic.kind,
-            hew_mir::MirDiagnosticKind::UseAfterConsume { .. }
+            hew_mir::MirDiagnosticKind::CollectionCopyUnsupported { .. }
         )),
-        "a move-semantics collection cannot be selected into a second owner and then read again \
-         without an explicit clone; diagnostics: {:?}",
+        "a move-semantics collection selected into a second owner and read again without an \
+         explicit clone is E_LIMIT_COLLECTION_COPY (D8), not a plain UseAfterConsume; \
+         diagnostics: {:?}",
         pl.diagnostics
     );
 }

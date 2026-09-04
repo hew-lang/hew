@@ -1,0 +1,11 @@
+// D2/D8: `Vec`/`HashMap`/`HashSet` are ratified as retain (copy-on-write) on
+// a whole-binding rebind, not move. This lowering has no retain path yet, so
+// `let b = a;` still moves `a`, and a later read of `a` reports the D8
+// limitation code (`E_LIMIT_COLLECTION_COPY`) rather than a plain
+// use-after-move — the compiler's own gap, not a mistake in this program.
+fn main() {
+    let a: Vec<i64> = [1, 2, 3];
+    let b = a;
+    println(a.len());
+    println(b.len());
+}

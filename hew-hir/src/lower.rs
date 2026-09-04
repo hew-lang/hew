@@ -21699,15 +21699,18 @@ impl LowerCtx {
                 }
             });
             let Some(fact_idx) = fact_idx else {
+                // D8/P3: the checker computes each closure's capture set in
+                // isolation and never propagates a nested closure's capture
+                // upward into its enclosing closure's own set, so a binding
+                // that lives outside the enclosing closure too (skip-level)
+                // reaches HIR with no fact recorded for it here. Legal Hew
+                // this release cannot lower — not a checker/HIR contract
+                // violation — so this is Limitation, not Internal.
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: name.clone(),
-                        reason:
-                            "closure_capture_facts has no unambiguous entry for captured HIR binding"
-                                .to_string(),
-                    },
+                    HirDiagnosticKind::SkipLevelClosureCapture { name: name.clone() },
                     span.clone(),
-                    "closure capture reached HIR without checker materialization metadata",
+                    "a closure may capture only its own locals or its immediately enclosing \
+                     closure's captures; this closure reaches further out",
                 ));
                 continue;
             };

@@ -444,6 +444,23 @@ pub enum HirDiagnosticKind {
         /// Human-readable description of the `BoundaryError` discriminant.
         reason: String,
     },
+    /// D8/P3: a closure captures a binding that is not a local of its own
+    /// enclosing scope, nor of its immediately enclosing closure, but of a
+    /// scope further out still (`let f = || { let g = || { x }; g() };` —
+    /// `g` closes over `x` from `f`'s own enclosing scope). Each closure's
+    /// capture set is checked in isolation (`Checker::check_lambda` saves
+    /// and restores `lambda_capture_facts` per nesting level), so the
+    /// checker records `x` as a capture of `g` but never propagates it up
+    /// as a capture `f` must also carry in its own environment for `g` to
+    /// reach it. HIR lowering's capture materialization
+    /// (`materialize_closure_capture_candidates`) is the one place this
+    /// gap is visible today — the same site that used to report the
+    /// generic `CheckerBoundaryViolation` "closure capture reached HIR
+    /// without checker materialization metadata". `E_LIMIT_SKIP_LEVEL_CAPTURE`.
+    SkipLevelClosureCapture {
+        /// The captured binding's name.
+        name: String,
+    },
     /// A generic-function call's recorded `call_type_args` failed the
     /// `ResolvedTy::from_ty` boundary conversion. Same shape as
     /// `CheckerBoundaryViolation` but specific to the monomorphisation
@@ -850,7 +867,8 @@ impl HirDiagnosticKind {
             Self::NotYetImplemented { .. }
             | Self::MonomorphisationCapExceeded { .. }
             | Self::RecordLayoutCapExceeded { .. }
-            | Self::MachineMonomorphisationCapExceeded { .. } => DiagChannel::Limitation,
+            | Self::MachineMonomorphisationCapExceeded { .. }
+            | Self::SkipLevelClosureCapture { .. } => DiagChannel::Limitation,
             _ => DiagChannel::User,
         }
     }

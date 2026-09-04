@@ -47,6 +47,22 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
             },
             note: "binding is used after an owned value move in checked MIR".to_string(),
         }),
+        MirCheck::CollectionCopyUnsupported {
+            binding,
+            name,
+            consumed_at,
+            used_at,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::CollectionCopyUnsupported {
+                binding: *binding,
+                name: name.clone(),
+                consumed_at: *consumed_at,
+                used_at: *used_at,
+            },
+            note: "Vec/HashMap/HashSet are retained, not moved, on a whole-binding rebind; \
+                   this lowering has no retain path yet"
+                .to_string(),
+        }),
         MirCheck::InitialisedBeforeUse {
             binding,
             name,

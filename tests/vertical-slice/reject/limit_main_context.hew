@@ -1,0 +1,7 @@
+// D9: `main` carries no execution context in this release, so a `fork`
+// inside `scope { .. }` reached from `main` is `E_LIMIT_MAIN_CONTEXT`
+// (Limitation, ledger D340) rather than a silent miscompile or an internal
+// error. `join {}` is the fan-out that works from `main` today.
+fn main() {
+    scope { fork { println("x"); } }
+}

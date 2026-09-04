@@ -1,0 +1,17 @@
+// D8/P3: the checker computes each closure's capture set in isolation, so a
+// closure nested two levels deep that reaches past its immediately enclosing
+// closure for a binding (`g` here closes over `x`, which lives outside `f`
+// too) reaches HIR lowering with no capture fact recorded for it. Before
+// this fixture's code existed, this reached the user as an internal
+// compiler error (`E_HIR CheckerBoundaryViolation`); it is now
+// `E_LIMIT_SKIP_LEVEL_CAPTURE`.
+fn main() {
+    let x: i64 = 1;
+    let f = || {
+        let g = || {
+            x
+        };
+        g()
+    };
+    println(f());
+}

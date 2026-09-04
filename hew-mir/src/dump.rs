@@ -1712,6 +1712,16 @@ fn render_mir_check(check: &MirCheck) -> String {
         } => {
             format!("UseAfterConsume {binding:?} {name} consumed={consumed_at:?} used={used_at:?}")
         }
+        MirCheck::CollectionCopyUnsupported {
+            binding,
+            name,
+            consumed_at,
+            used_at,
+        } => {
+            format!(
+                "CollectionCopyUnsupported {binding:?} {name} consumed={consumed_at:?} used={used_at:?}"
+            )
+        }
         MirCheck::Aliasing {
             conflicting_borrows,
         } => {
@@ -1914,6 +1924,14 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             used_at,
         } => format!(
             "UseAfterConsume {binding:?} {name} consumed={consumed_at:?} used={used_at:?}"
+        ),
+        MirDiagnosticKind::CollectionCopyUnsupported {
+            binding,
+            name,
+            consumed_at,
+            used_at,
+        } => format!(
+            "CollectionCopyUnsupported {binding:?} {name} consumed={consumed_at:?} used={used_at:?}"
         ),
         MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace {
             binding,

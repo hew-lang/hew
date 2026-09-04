@@ -213,6 +213,57 @@ fn is_channel_handle_ty(ty: &ResolvedTy) -> bool {
     )
 }
 
+/// D2/D8: `Vec`/`HashMap`/`HashSet` are ratified as retain (copy-on-write)
+/// on a whole-binding rebind, not move. This lattice has no retain path
+/// yet, so a rebind (`let b = a;`) still transitions `a` to `Consumed` and
+/// a later use of `a` would report a plain `UseAfterConsume` — the
+/// compiler's own gap, not a mistake in the user's program. Every
+/// `UseAfterConsume` raise site in this module checks this first and
+/// reports `CollectionCopyUnsupported` (`E_LIMIT_COLLECTION_COPY`)
+/// instead when it is true. `docs/diagnostics/README.md` carries the code.
+fn is_collection_copy_ty(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(
+                hew_types::BuiltinType::Vec
+                    | hew_types::BuiltinType::HashMap
+                    | hew_types::BuiltinType::HashSet
+            ),
+            ..
+        }
+    )
+}
+
+/// Builds the `UseAfterConsume` check for a binding re-read after its
+/// consuming use, routing to `CollectionCopyUnsupported` instead when the
+/// binding's type is a `Vec`/`HashMap`/`HashSet` (see
+/// [`is_collection_copy_ty`]) — the one predicate every raise site in this
+/// module shares, so the two diagnostics cannot drift apart.
+fn use_after_consume_check(
+    binding: BindingId,
+    name: &str,
+    consumed_at: SiteId,
+    used_at: SiteId,
+    ty: &ResolvedTy,
+) -> MirCheck {
+    if is_collection_copy_ty(ty) {
+        MirCheck::CollectionCopyUnsupported {
+            binding,
+            name: name.to_string(),
+            consumed_at,
+            used_at,
+        }
+    } else {
+        MirCheck::UseAfterConsume {
+            binding,
+            name: name.to_string(),
+            consumed_at,
+            used_at,
+        }
+    }
+}
+
 /// Forward-scan transfer function over one block's statements.
 /// Emits `InitialisedBeforeUse` / `UseAfterConsume` checks as it
 /// goes; returns the exit state for this block's terminator.
@@ -271,24 +322,26 @@ fn transfer_block<S: std::hash::BuildHasher>(
                         if matches!(intent, IntentKind::Consume | IntentKind::Discharge)
                             && use_after_consume_seen.insert((*binding, *site))
                         {
-                            checks.push(MirCheck::UseAfterConsume {
-                                binding: *binding,
-                                name: name.clone(),
-                                consumed_at: discharged_at,
-                                used_at: *site,
-                            });
+                            checks.push(use_after_consume_check(
+                                *binding,
+                                name,
+                                discharged_at,
+                                *site,
+                                ty,
+                            ));
                         }
                     }
                     BindingState::Consumed(consumed_at)
                     | BindingState::MaybeConsumed(consumed_at)
                     | BindingState::AliasedIntoAggregate(consumed_at) => {
                         if use_after_consume_seen.insert((*binding, *site)) {
-                            checks.push(MirCheck::UseAfterConsume {
-                                binding: *binding,
-                                name: name.clone(),
+                            checks.push(use_after_consume_check(
+                                *binding,
+                                name,
                                 consumed_at,
-                                used_at: *site,
-                            });
+                                *site,
+                                ty,
+                            ));
                         }
                     }
                 }

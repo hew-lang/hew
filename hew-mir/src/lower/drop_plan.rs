@@ -1423,6 +1423,7 @@ fn relocated_binding_use_checks(
                 binding,
                 name,
                 site,
+                ty,
                 ..
             } = statement
             else {
@@ -1447,11 +1448,35 @@ fn relocated_binding_use_checks(
                 continue;
             }
             if seen.insert((*binding, *site)) {
-                findings.push(MirCheck::UseAfterConsume {
-                    binding: *binding,
-                    name: name.clone(),
-                    consumed_at,
-                    used_at: *site,
+                // D2/D8: `Vec`/`HashMap`/`HashSet` are ratified as retain
+                // (copy-on-write), not move, on a whole-binding rebind. This
+                // relocation check has no retain path, so it would otherwise
+                // report a plain `UseAfterConsume` for a program the language
+                // accepts — the compiler's own gap, not the user's mistake.
+                // `E_LIMIT_COLLECTION_COPY` (`docs/diagnostics/README.md`).
+                let is_collection_copy = matches!(
+                    ty,
+                    ResolvedTy::Named {
+                        builtin: Some(
+                            BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet
+                        ),
+                        ..
+                    }
+                );
+                findings.push(if is_collection_copy {
+                    MirCheck::CollectionCopyUnsupported {
+                        binding: *binding,
+                        name: name.clone(),
+                        consumed_at,
+                        used_at: *site,
+                    }
+                } else {
+                    MirCheck::UseAfterConsume {
+                        binding: *binding,
+                        name: name.clone(),
+                        consumed_at,
+                        used_at: *site,
+                    }
                 });
             }
         }

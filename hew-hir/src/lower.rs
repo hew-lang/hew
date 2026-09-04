@@ -39477,6 +39477,107 @@ impl Widget {
     }
 
     #[test]
+    fn missing_checker_type_fact_is_a_typed_boundary_error() {
+        let parsed = hew_parser::parse(
+            r#"
+            fn main() {
+                let value = "owned";
+            }
+            "#,
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let mut type_output = checker.check_program(&parsed.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:#?}",
+            type_output.errors
+        );
+        assert!(
+            type_output
+                .type_facts
+                .remove(&hew_types::TypeInstanceKey(ResolvedTy::String))
+                .is_some(),
+            "checker must publish the String type fact"
+        );
+
+        let lowered = lower_program(
+            &parsed.program,
+            &type_output,
+            &ResolutionCtx,
+            TargetArch::host(),
+        );
+
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                    if name == "expression value class"
+                        && reason == "type_facts has no row for checker-resolved expression type"
+            )),
+            "missing checker type fact must emit a typed boundary diagnostic: {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            lowered.into_result().is_err(),
+            "missing checker type fact must stop HIR lowering"
+        );
+    }
+
+    #[test]
+    fn published_checker_type_fact_allows_hir_lowering() {
+        let parsed = hew_parser::parse(
+            r#"
+            fn main() {
+                let value = "owned";
+            }
+            "#,
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parsed.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:#?}",
+            type_output.errors
+        );
+        assert!(
+            type_output
+                .type_facts
+                .contains_key(&hew_types::TypeInstanceKey(ResolvedTy::String)),
+            "checker must publish the String type fact"
+        );
+
+        let lowered = lower_program(
+            &parsed.program,
+            &type_output,
+            &ResolutionCtx,
+            TargetArch::host(),
+        );
+
+        assert!(
+            !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { .. }
+            )),
+            "published checker type fact must cross into HIR: {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            lowered.into_result().is_ok(),
+            "published checker type fact must allow HIR lowering"
+        );
+    }
+
+    #[test]
     fn missing_closure_capture_facts_emit_boundary_diagnostic() {
         let (program, mut tco, _) = parse_typecheck_and_lower(
             r"

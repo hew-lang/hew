@@ -6587,6 +6587,11 @@ fn emit_suspending_ask_err_with_code<'ctx>(
     error_dest: Place,
     err_code: inkwell::values::IntValue<'ctx>,
 ) -> CodegenResult<()> {
+    let err_code = crate::runtime_abi::translate_runtime_ask_error_tag(
+        fn_ctx,
+        err_code,
+        "translate_suspending_ask_error_tag",
+    )?;
     let error_local = composite_dest_local(error_dest, "SuspendingAsk AskError")?;
     let (error_tag_ptr, error_tag_ty) = place_pointer(fn_ctx, Place::MachineTag(error_local))?;
     let error_tag_int_ty = match error_tag_ty {
@@ -6646,6 +6651,11 @@ fn emit_remote_ask_err_from_last_error<'ctx>(
             CodegenError::FailClosed("hew_node_ask_take_last_error returned void".into())
         })?
         .into_int_value();
+    let err_code = crate::runtime_abi::translate_runtime_ask_error_tag(
+        fn_ctx,
+        err_code,
+        "translate_remote_ask_error_tag",
+    )?;
     let error_local = composite_dest_local(error_dest, "RemoteAsk AskError")?;
     let (error_tag_ptr, error_tag_ty) = place_pointer(fn_ctx, Place::MachineTag(error_local))?;
     let error_tag_int_ty = match error_tag_ty {

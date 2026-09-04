@@ -1,0 +1,7 @@
+//! Reject: AskError.NoError was a runtime-only success sentinel and is not a
+//! public Hew error variant.
+
+fn main() {
+    let stale = AskError.NoError;
+    println(stale);
+}

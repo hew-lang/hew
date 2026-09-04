@@ -33318,6 +33318,11 @@ fn lower_terminator<'ctx>(
                     CodegenError::FailClosed("hew_actor_ask_take_last_error returned void".into())
                 })?
                 .into_int_value();
+            let err_code = crate::runtime_abi::translate_runtime_ask_error_tag(
+                fn_ctx,
+                err_code,
+                "translate_actor_ask_error_tag",
+            )?;
             let error_local = composite_dest_local(*error_dest, "Ask AskError")?;
             let (error_tag_ptr, error_tag_ty) =
                 place_pointer(fn_ctx, Place::MachineTag(error_local))?;

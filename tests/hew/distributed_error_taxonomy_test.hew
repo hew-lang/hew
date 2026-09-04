@@ -35,7 +35,6 @@ fn lookup_error_id(err: LookupError) -> i64 {
 
 fn ask_error_id(err: AskError) -> i64 {
     match err {
-        AskError.NoError => 1,
         AskError.NodeNotRunning => 2,
         AskError.RoutingFailed => 3,
         AskError.EncodeFailed => 4,
@@ -115,7 +114,6 @@ fn test_lookup_error_taxonomy_variants() {
 
 #[test]
 fn test_ask_error_taxonomy_variants() {
-    testing.assert_eq(ask_error_id(AskError.NoError), 1);
     testing.assert_eq(ask_error_id(AskError.NodeNotRunning), 2);
     testing.assert_eq(ask_error_id(AskError.RoutingFailed), 3);
     testing.assert_eq(ask_error_id(AskError.EncodeFailed), 4);

@@ -18260,8 +18260,8 @@ impl LowerCtx {
         let mut lowered = self.lower_expr_without_root_fact(expr, intent);
         let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
         lowered.value_class = self
-            .type_facts
-            .get(&hew_types::TypeInstanceKey(normalized_ty.clone()))
+            .checked_ty(&expr.1)
+            .and_then(|ty| self.type_facts.get(&hew_types::TypeInstanceKey(ty.clone())))
             .map_or(ValueClass::Unknown, |facts| match facts.class {
                 hew_types::ValueClass::BitCopy => ValueClass::BitCopy,
                 hew_types::ValueClass::View => ValueClass::View,

@@ -7777,13 +7777,15 @@ fn splice_normal_call_ownership_commits(blocks: &mut [BasicBlock], builder: &mut
             DischargeSite::CallArgumentTransfer,
         );
     }
+}
 
-    // A consuming receiver is discharged only if its call returns normally.
-    // Lowering records the typed `Discharge` use but deliberately leaves the
-    // OwnerId and guard untouched before the invoke so the unwind plan can
-    // still destroy it. Resolve the exact live generation from MIR state at
-    // the call, then commit the close in its normal successor. This is the
-    // receiver sibling of the ProvenConsume argument protocol above.
+/// A consuming receiver is discharged only if its call returns normally.
+/// Lowering records the typed `Discharge` use but deliberately leaves the
+/// `OwnerId` and guard untouched before the invoke so the unwind plan can still
+/// destroy it. Resolve the exact live generation from MIR state at the call,
+/// then commit the close in its normal successor. This runs after the first
+/// ownership-phi seal so a loop-carried receiver resolves to its joined owner.
+fn splice_normal_receiver_discharge_commits(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let exact_states = drop_plan::exact_owner_states(blocks);
     let owner_exits = &exact_states.1;
     let guards = blocks
@@ -8491,6 +8493,7 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     // consume. The pass runs again after all late operations to seal any new
     // joins they introduce.
     materialize_exact_owner_join_transfers(&mut *blocks, builder);
+    splice_normal_receiver_discharge_commits(&mut *blocks, builder);
     let resolved_outbound =
         resolve_outbound_actor_modes(&mut *blocks, builder, &projection_tainted);
     prepare_outbound_actor_payloads(

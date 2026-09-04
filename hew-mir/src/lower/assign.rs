@@ -133,6 +133,13 @@ impl Builder {
             }
         }
         let copy_in = self.assign_target_stays_copy_in(target, value);
+        let binding_target_place = match &target.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                ..
+            } => self.binding_locals.get(binding).copied(),
+            _ => None,
+        };
         // A Vec index assignment that MOVES a bound local (`v[i] = h`, routed
         // to `hew_vec_set_owned_move` below) hands the value to the runtime
         // only on the call's normal edge, after the bounds check lowered in
@@ -421,11 +428,23 @@ impl Builder {
                 name,
                 ..
             } => {
-                if let Some(dest) = self.binding_locals.get(binding).copied() {
+                if let Some(dest) = binding_target_place {
+                    self.binding_locals.insert(*binding, dest);
                     let mut cursor_owner_handoff = false;
                     let cursor_flag = self.vec_iter_drop_flags.get(binding).copied();
+                    let affine_release_flag = self.affine_release_flags.get(binding).copied();
                     let cursor_value_flag =
                         self.vec_iter_value_drop_flags.get(&value.site).copied();
+                    let receiver_identity_already_adopted = self
+                        .param_ownership
+                        .produced_value_facts
+                        .get(&value.site)
+                        .is_some_and(|fact| {
+                            matches!(
+                                fact.ownership,
+                                hew_types::ProducedValueOwnership::ReceiverIdentity
+                            )
+                        });
                     // #2420 -- the overwrite release below is sound ONLY when
                     // the incoming value cannot alias the outgoing value's
                     // heap. An RHS that reads the reassigned binding (`s =
@@ -441,7 +460,8 @@ impl Builder {
                     // posture for this aliasing channel. WHEN-OBSOLETE: the
                     // COW retain-on-share
                     // spine (every share retained => release always sound).
-                    let rhs_may_alias_old = self.reassign_rhs_may_alias_binding(value, *binding);
+                    let rhs_may_alias_old = self.reassign_rhs_may_alias_binding(value, *binding)
+                        || receiver_identity_already_adopted;
                     // #53 / #2301: release the prior heap-owning value before
                     // the slot is overwritten.
                     if let Some(flag) = cursor_flag {
@@ -477,7 +497,7 @@ impl Builder {
                                 &target.ty,
                             );
                         }
-                    } else if let Some(flag) = self.affine_release_flags.get(binding).copied() {
+                    } else if let Some(flag) = affine_release_flag {
                         // A `var` reassignment is a GENERATION BOUNDARY for an
                         // affine refcounted handle (`Rc` / `Weak`) or a user
                         // `#[resource]`. Two obligations meet here, and the
@@ -610,18 +630,7 @@ impl Builder {
                     // adopted the RHS temp, retire that exact source-place owner
                     // now; the destination binding remains the sole authority
                     // whose drop plan fans out across exits.
-                    let receiver_identity_already_adopted = src == dest
-                        && self
-                            .param_ownership
-                            .produced_value_facts
-                            .get(&value.site)
-                            .is_some_and(|fact| {
-                                matches!(
-                                    fact.ownership,
-                                    hew_types::ProducedValueOwnership::ReceiverIdentity
-                                )
-                            });
-                    if !cursor_owner_handoff && !receiver_identity_already_adopted {
+                    if !cursor_owner_handoff {
                         self.retire_provisional_owner_after_assignment_move(
                             *binding, dest, &target.ty, src, &value.ty,
                         );

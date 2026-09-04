@@ -81,15 +81,35 @@ directly and does not define a competing build graph. See the
 
 ### Test suite overview
 
-| Suite             | Command                       | Scope                                                                                        | Speed  |
-| ----------------- | ----------------------------- | -------------------------------------------------------------------------------------------- | ------ |
-| Full (default)    | `make test`                   | Rust workspace (via nextest)                                                                 | medium |
-| Stdlib type-check | `make test-stdlib-ratchet`    | `std/` type-check sweep, ratcheted against `scripts/stdlib-expected-failures.txt`            | medium |
-| Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers                                                      | medium |
-| Runtime (no-net)  | `make test-runtime-unit`      | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile) | fast   |
-| Hew test files    | `make test-hew-ratchet`       | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt`     | medium |
+| Suite             | Command                       | Scope                                                                                                                             | Speed  |
+| ----------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Full (default)    | `make test`                   | Rust workspace (via nextest)                                                                                                      | medium |
+| Stdlib type-check | `make test-stdlib-ratchet`    | `std/` type-check sweep, ratcheted against `scripts/stdlib-expected-failures.txt`                                                 | medium |
+| Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers                                                                                           | medium |
+| Runtime (no-net)  | `make test-runtime-unit`      | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile)                                      | fast   |
+| Hew test files    | `make test-hew-ratchet`       | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt`                                          | medium |
+| Grammar parity    | `make grammar-parity`         | Vertical-slice accept fixtures, `std/**`, `examples/**` parsed with the pinned tree-sitter-hew grammar; fails on any `ERROR` node | fast   |
 
 Use `test-runtime-unit` for no-network runtime iteration and `test-compiler-pipeline` for compiler iteration. Run `make test` before opening a PR.
+
+### Changing Hew syntax
+
+`hew-lexer`/`hew-parser` are the grammar authority; `tree-sitter-hew` (a
+sibling repo used by editor tooling) is a mirror kept honest by `make
+grammar-parity`, which parses the accepted corpus with the commit pinned in
+`tools/downstream/tree-sitter.lock`. A PR that adds or changes syntax:
+
+1. Updates `tree-sitter-hew/grammar.js` to match (a separate repo; see
+   ["Downstream grammar sync"](docs/release-runbook.md#downstream-grammar-sync)
+   for the full sibling chain: tree-sitter-hew, vscode-hew, vim-hew, hew.sh,
+   hew.run), pushes that change, and bumps `tools/downstream/tree-sitter.lock`'s
+   `commit` (and `npm` once a new package version is published) to match —
+   in the same PR, not a follow-up.
+2. Runs `make grammar-parity` locally to confirm the pinned commit parses
+   the new syntax cleanly.
+3. Runs `make downstream-check` (`scripts/sync-downstream.sh --check`),
+   which reports drift against `docs/syntax-data.json` for whichever
+   sibling repos are checked out next to this one.
 
 `make test-runtime-unit` is the recommended target when iterating on `hew-runtime` logic that does not touch QUIC, TLS, or the profiler. It runs the full `hew-runtime` test suite (lib unit tests + all integration tests) with `--no-default-features`, cutting compile time roughly 3× (measured: ~32 s vs ~85 s per integration test binary on a warm build cache). The two profiler allocator tests in `transport.rs` are excluded under this target because they require active allocation counters to be meaningful; they still run under `cargo test -p hew-runtime` (default features).
 

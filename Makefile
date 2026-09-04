@@ -87,6 +87,7 @@
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
+.PHONY: grammar-parity downstream-check
 .PHONY: sir-coverage sir-parity
 .PHONY: test-journeys check-time-ratchet check-time-ratchet-record
 
@@ -661,7 +662,7 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-asan-fixture-selftest hew-fmt-property stdlib-lint \
 	sir-coverage sir-parity
 
-ci-shard-3: mqtt-broker-e2e sandbox-parity \
+ci-shard-3: grammar-parity downstream-check mqtt-broker-e2e sandbox-parity \
 	fuzz-oracle fuzz-oracle-selftest test-package-install \
 	checked-mir-verify checked-mir-run \
 	test-core-matrix test-stdlib-ratchet \
@@ -1665,6 +1666,23 @@ hew-fmt-property: hew
 hew-check-all: hew-native
 	@echo "==> hew-check-all: compiling full .hew corpus"
 	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus
+
+# Parse the vertical-slice accept fixtures, std/, and examples/ with the
+# tree-sitter-hew grammar pinned in tools/downstream/tree-sitter.lock and
+# fail on any ERROR node (D19). The parser (hew-lexer/hew-parser) stays the
+# grammar authority; this only checks that the tree-sitter mirror used by
+# editor tooling has not drifted from it. See scripts/grammar-parity.sh.
+grammar-parity:
+	@echo "==> grammar-parity: parsing the accepted corpus with tree-sitter-hew"
+	scripts/grammar-parity.sh
+
+# Report drift between docs/syntax-data.json and every downstream sibling
+# repo checkout found next to this one (vscode-hew, hew.sh, hew.run,
+# tree-sitter-hew, vim-hew, hew-studio). A sibling repo not present locally
+# is skipped, not failed — see scripts/sync-downstream.sh.
+downstream-check:
+	@echo "==> downstream-check: comparing docs/syntax-data.json against sibling repos"
+	scripts/sync-downstream.sh --check
 
 # Runs one journey script under repros/journeys/ (day-one, day-two, or
 # week-one-local) against HEW_BIN and ratchets its `step <id>: pass|fail`

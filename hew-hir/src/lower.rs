@@ -18243,7 +18243,7 @@ impl LowerCtx {
             hew_types::ValueClass::AffineResource => ValueClass::AffineResource,
             hew_types::ValueClass::Linear => ValueClass::Linear,
         };
-        let mut lowered = self.lower_expr_without_root_fact(expr, intent);
+        let mut lowered = self.lower_expr_without_root_fact(expr, intent, &checked_ty);
         let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
         lowered.value_class = value_class;
         lowered.ty = normalized_ty;
@@ -18263,8 +18263,9 @@ impl LowerCtx {
         &mut self,
         expr: &Spanned<Expr>,
         intent: IntentKind,
+        checked_ty: &ResolvedTy,
     ) -> HirExpr {
-        let lowered = self.lower_expr_inner(expr, intent);
+        let lowered = self.lower_expr_inner(expr, intent, checked_ty);
 
         // Function-tail Ok-coercion: the checker marked this tail expression's
         // span when a `Result<Ok, Err>`-returning function's tail yields the
@@ -18521,7 +18522,12 @@ impl LowerCtx {
         clippy::single_match_else,
         reason = "single large match on expr variants; splitting would hurt readability"
     )]
-    fn lower_expr_inner(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
+    fn lower_expr_inner(
+        &mut self,
+        expr: &Spanned<Expr>,
+        intent: IntentKind,
+        published_ty: &ResolvedTy,
+    ) -> HirExpr {
         // Consume the await-position atomically. Every recursive call to
         // `lower_expr` (for arguments, operands, return values, block tails,
         // etc.) therefore sees `AwaitPosition::Other`. Only the
@@ -18540,7 +18546,7 @@ impl LowerCtx {
         if let Expr::FieldAccess { field, .. } = &expr.0 {
             if self.actor_self_state_fields.contains(&self.mk_key(&span)) {
                 let bare = Expr::Identifier(field.clone());
-                return self.lower_expr_inner(&(bare, span), intent);
+                return self.lower_expr_inner(&(bare, span), intent, published_ty);
             }
         }
         if let Expr::Call {
@@ -18562,7 +18568,7 @@ impl LowerCtx {
                             args: args.clone(),
                             is_tail_call: *is_tail_call,
                         };
-                        return self.lower_expr_inner(&(compatibility, span), intent);
+                        return self.lower_expr_inner(&(compatibility, span), intent, published_ty);
                     }
                 }
             }
@@ -18575,7 +18581,11 @@ impl LowerCtx {
                     self.lookup_variant_ctor(&qualified, checker_ty.as_ref()),
                     Some((_, _, HirVariantKind::Unit))
                 ) {
-                    return self.lower_expr_inner(&(Expr::Identifier(qualified), span), intent);
+                    return self.lower_expr_inner(
+                        &(Expr::Identifier(qualified), span),
+                        intent,
+                        published_ty,
+                    );
                 }
             }
         }
@@ -18613,7 +18623,7 @@ impl LowerCtx {
                             args: args.clone(),
                             is_tail_call: false,
                         };
-                        return self.lower_expr_inner(&(compatibility, span), intent);
+                        return self.lower_expr_inner(&(compatibility, span), intent, published_ty);
                     }
                 }
             }
@@ -18634,7 +18644,7 @@ impl LowerCtx {
                         args: args.clone(),
                         is_tail_call: false,
                     };
-                    return self.lower_expr_inner(&(compatibility, span), intent);
+                    return self.lower_expr_inner(&(compatibility, span), intent, published_ty);
                 }
             }
         }
@@ -18659,7 +18669,7 @@ impl LowerCtx {
             } else {
                 Expr::Identifier(contextual_name)
             };
-            return self.lower_expr_inner(&(compatibility, span), intent);
+            return self.lower_expr_inner(&(compatibility, span), intent, published_ty);
         }
         if let Expr::GenericApplySuffix { target, .. } = &expr.0 {
             return self.lower_expr(&(target.0.clone(), span), intent);
@@ -18671,7 +18681,7 @@ impl LowerCtx {
         // SiteId counts in tests stay stable (lower_expr previously
         // allocated node before site at the same call).
         let site = self.ids.site();
-        let (kind, ty) = match &expr.0 {
+        let (kind, _derived_ty) = match &expr.0 {
             Expr::Literal(lit) => {
                 let (kind, default_ty) = Self::lower_literal(lit);
                 // Apply checker authority for integer literals: the checker may have
@@ -20027,14 +20037,14 @@ impl LowerCtx {
                 receiver,
                 method,
                 args,
-            } => self.lower_method_call(receiver, method, args, span.clone(), site),
+            } => self.lower_method_call(receiver, method, args, span.clone(), site, published_ty),
             // `clone <operand>` reuses the `.clone()` lowering: the checker
             // recorded the method resolution / rewrite at this span (see
             // `synthesize` `Expr::Clone`), so this routes through the same
             // copy-path selection and fail-closed `CloneNotYetSupported`
             // diagnostic as `<operand>.clone()`.
             Expr::Clone(operand) => {
-                self.lower_method_call(operand, "clone", &[], span.clone(), site)
+                self.lower_method_call(operand, "clone", &[], span.clone(), site, published_ty)
             }
             Expr::UnsafeBlock(block) => {
                 // Unsafe clearance is a checker-only concept; the HIR represents the
@@ -20050,30 +20060,7 @@ impl LowerCtx {
                 // index expression's span. LESSONS: `checker-authority` P0 —
                 // we never re-derive the element type from the container;
                 // the checker is the sole owner.
-                let checker_key = self.mk_key(&span);
-                let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
-                    match ResolvedTy::from_ty(&ty) {
-                        Ok(resolved) => resolved,
-                        Err(err) => {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: "xs[..]".to_string(),
-                                    reason: err.to_string(),
-                                },
-                                span.clone(),
-                                "checker-authoritative index/slice result type failed boundary conversion",
-                            ));
-                            ResolvedTy::Unit
-                        }
-                    }
-                } else {
-                    // Fall through: no checker entry. This can happen when the
-                    // checker emitted an error for this expression (e.g.
-                    // indexing into a non-Vec) and skipped recording the
-                    // type. The diagnostic from the checker covers the
-                    // user-facing error; emit Unit to stay well-formed.
-                    ResolvedTy::Unit
-                };
+                let result_ty = published_ty.clone();
 
                 // Distinguish range-slice (`xs[a..b]` and the four open-end
                 // forms) from single-element indexing (`xs[i]`). The parser
@@ -20747,11 +20734,7 @@ impl LowerCtx {
                 // Expression-position `if let` — delegates to the shared helper.
                 // The result type is looked up from the checker's `resolved_expr_types`
                 // side-table, mirroring `Expr::If` (same authority path).
-                let result_ty = self
-                    .resolved_expr_types
-                    .get(&self.mk_key(&span))
-                    .cloned()
-                    .unwrap_or(ResolvedTy::Unit);
+                let result_ty = published_ty.clone();
                 match self.lower_if_let_inner(
                     pattern,
                     scrutinee_expr,
@@ -20872,6 +20855,7 @@ impl LowerCtx {
                 )
             }
         };
+        let ty = published_ty.clone();
         let inner = HirExpr {
             node: self.ids.node(),
             site,
@@ -22058,7 +22042,9 @@ impl LowerCtx {
         // prior value on exit.
         let my_self_id = self.current_actor_self.take();
         let lowered_body = self.with_current_return_type(reply_ty.clone(), |ctx| {
-            let body = ctx.lower_expr_without_root_fact(body, IntentKind::Read);
+            ctx.suppress_produced_value_recording_depth += 1;
+            let body = ctx.lower_expr(body, IntentKind::Read);
+            ctx.suppress_produced_value_recording_depth -= 1;
             ctx.record_synthetic_body_fact(&body.span, &body);
             body
         });
@@ -27630,6 +27616,7 @@ impl LowerCtx {
         args: &[hew_parser::ast::CallArg],
         span: Span,
         site: SiteId,
+        checked_result_ty: &ResolvedTy,
     ) -> (HirExprKind, ResolvedTy) {
         // Static-pool accessor method: `sup.pool.get(i)` / `sup.pool.len()`.
         // The checker recorded the resolved accessor for this method-call span;
@@ -27638,41 +27625,7 @@ impl LowerCtx {
         // emits the pool ABI — the synthetic callee is never resolved.
         let pool_key = self.mk_key(&span);
         if let Some(accessor) = self.pool_accessor_sites_checker.get(&pool_key).cloned() {
-            let Some(ty) = self.expr_types.get(&pool_key) else {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: format!("supervisor pool accessor `{method}`"),
-                        reason: "missing checker expression type".to_string(),
-                    },
-                    span.clone(),
-                    "a supervisor pool accessor must carry its checker-resolved return type; generic machine payloads cannot default to i64",
-                ));
-                return (
-                    HirExprKind::Unsupported(format!(
-                        "supervisor pool accessor `{method}` is missing its return type"
-                    )),
-                    ResolvedTy::Unit,
-                );
-            };
-            let result_ty = match ResolvedTy::from_ty(ty) {
-                Ok(resolved) => resolved,
-                Err(err) => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: format!("supervisor pool accessor `{method}`"),
-                            reason: err.to_string(),
-                        },
-                        span.clone(),
-                        "a supervisor pool accessor must carry its checker-resolved return type; generic machine payloads cannot default to i64",
-                    ));
-                    return (
-                        HirExprKind::Unsupported(format!(
-                            "supervisor pool accessor `{method}` has an unresolved return type"
-                        )),
-                        ResolvedTy::Unit,
-                    );
-                }
-            };
+            let result_ty = checked_result_ty.clone();
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
             let mut call_args = vec![lowered_receiver];
             for arg in args {
@@ -27835,7 +27788,7 @@ impl LowerCtx {
                         from_ty,
                         to_ty: to_ty.clone(),
                     },
-                    to_ty,
+                    checked_result_ty.clone(),
                 ),
                 hew_types::WidthCastKind::Saturating => (
                     HirExprKind::SaturatingWidthCast {
@@ -27843,7 +27796,7 @@ impl LowerCtx {
                         from_ty,
                         to_ty: to_ty.clone(),
                     },
-                    to_ty,
+                    checked_result_ty.clone(),
                 ),
             };
         }
@@ -27883,14 +27836,6 @@ impl LowerCtx {
                     ResolvedTy::Unit,
                 );
             };
-            let Ok(result_ty) = ResolvedTy::from_ty(&Ty::option(lowering.to_ty)) else {
-                return (
-                    HirExprKind::Unsupported(format!(
-                        "try-width-cast method `.{method}` has poisoned result type"
-                    )),
-                    ResolvedTy::Unit,
-                );
-            };
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
             return (
                 HirExprKind::TryWidthCast {
@@ -27899,7 +27844,7 @@ impl LowerCtx {
                     to_ty,
                     kind: lowering.kind,
                 },
-                result_ty,
+                checked_result_ty.clone(),
             );
         }
         if let Some(lowering) = self.numeric_method_lowerings.get(&key).cloned() {
@@ -27922,16 +27867,7 @@ impl LowerCtx {
                     ResolvedTy::Unit,
                 );
             }
-            let Some(result_ty) =
-                self.resolve_numeric_method_ty(&lowering.result_ty, &span, "numeric method result")
-            else {
-                return (
-                    HirExprKind::Unsupported(format!(
-                        "numeric method `.{method}` has poisoned result type"
-                    )),
-                    ResolvedTy::Unit,
-                );
-            };
+            let result_ty = checked_result_ty.clone();
             let Some(operand_ty) = self.resolve_numeric_method_ty(
                 &lowering.operand_ty,
                 &span,
@@ -27999,7 +27935,7 @@ impl LowerCtx {
                             checked: false,
                             blocking: false,
                         },
-                        ResolvedTy::Unit,
+                        checked_result_ty.clone(),
                     )
                 }
                 ActorMethodKind::BlockingFire(method_id) => {
@@ -28012,13 +27948,11 @@ impl LowerCtx {
                             checked: false,
                             blocking: true,
                         },
-                        ResolvedTy::Unit,
+                        checked_result_ty.clone(),
                     )
                 }
                 ActorMethodKind::CheckedFire(method_id) => {
                     let method_id = self.qualify_imported_actor_method_id(method_id);
-                    let result_ty = ResolvedTy::from_ty(&Ty::result(Ty::Unit, Ty::send_error()))
-                        .expect("checked actor send result type is compiler-owned");
                     (
                         HirExprKind::ActorSend {
                             receiver: Box::new(lowered_receiver),
@@ -28027,7 +27961,7 @@ impl LowerCtx {
                             checked: true,
                             blocking: false,
                         },
-                        result_ty,
+                        checked_result_ty.clone(),
                     )
                 }
                 ActorMethodKind::Ask(method_id, reply_ty) => {
@@ -28175,7 +28109,7 @@ impl LowerCtx {
                             receiver: Box::new(receiver),
                             event: Box::new(event),
                         },
-                        ResolvedTy::Unit,
+                        checked_result_ty.clone(),
                     )
                 }
                 hew_types::MachineMethodKind::StateName { machine_name } => {
@@ -28186,7 +28120,7 @@ impl LowerCtx {
                             machine_name,
                             receiver: Box::new(receiver),
                         },
-                        ResolvedTy::String,
+                        checked_result_ty.clone(),
                     )
                 }
                 hew_types::MachineMethodKind::TakeEmits { machine_name } => {
@@ -28213,7 +28147,7 @@ impl LowerCtx {
                             receiver: Box::new(receiver),
                             event: Box::new(event),
                         },
-                        ResolvedTy::I64,
+                        checked_result_ty.clone(),
                     )
                 }
             };
@@ -28233,18 +28167,7 @@ impl LowerCtx {
             );
             let lowered_receiver = self.lower_expr(receiver, receiver_intent);
             let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
-            // Result type comes from the checker's expr_types side-table
-            // (the call's full span). Fail-closed if absent or poisoned.
-            let ret_ty = self
-                .checked_ty(&span)
-                .cloned()
-                .or_else(|| {
-                    self.expr_types
-                        .get(&key)
-                        .cloned()
-                        .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                })
-                .unwrap_or(ResolvedTy::Unit);
+            let ret_ty = checked_result_ty.clone();
             if !self.ensure_executable_target(&dyn_call.target, "dynamic trait call", &span) {
                 return (
                     HirExprKind::Unsupported(
@@ -28328,42 +28251,7 @@ impl LowerCtx {
         // precedence is exercised by construction once dual-emit retires.
         if !runtime_rewrite_selected {
             if let Some(resolved) = self.resolved_calls.get(&key).cloned() {
-                // The checker's `expr_types` is the authoritative source for
-                // the call-site result type (LESSONS `checker-authority`).
-                // A missing or non-convertible entry is a checker boundary
-                // violation — we record it eagerly so the gap is visible
-                // long before the consumer is wired.
-                let ret_ty = match self
-                    .expr_types
-                    .get(&key)
-                    .cloned()
-                    .map(|ty| ResolvedTy::from_ty(&ty))
-                {
-                    Some(Ok(ty)) => Some(ty),
-                    Some(Err(err)) => {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: format!("resolved-impl call `.{method}`"),
-                                reason: err.to_string(),
-                            },
-                            span.clone(),
-                            "checker-resolved method call has poisoned result type",
-                        ));
-                        None
-                    }
-                    None => {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: format!("resolved-impl call `.{method}`"),
-                                reason: "missing expr_types entry for call site".to_string(),
-                            },
-                            span.clone(),
-                            "checker recorded a ResolvedCall for this site but no \
-                         expr_types entry — the side-tables are inconsistent",
-                        ));
-                        None
-                    }
-                };
+                let ret_ty = checked_result_ty.clone();
                 #[allow(
                     clippy::items_after_statements,
                     reason = "the activation gate lives next to the guard it controls; \
@@ -28372,51 +28260,43 @@ impl LowerCtx {
                 )]
                 const RESOLVED_IMPL_CALL_ACTIVATED: bool = true;
                 if RESOLVED_IMPL_CALL_ACTIVATED {
-                    // Only emit when the resolver verdict survived boundary
-                    // conversion; otherwise fall through to the legacy
-                    // `method_call_rewrites` arm below.
-                    if let Some(ret_ty) = ret_ty {
-                        if !self.ensure_executable_target(
-                            &resolved.target,
-                            "resolved impl call",
-                            &span,
-                        ) {
-                            return (
-                                HirExprKind::Unsupported(
-                                    "resolved impl call has no checker target".to_string(),
-                                ),
-                                ret_ty,
-                            );
-                        }
-                        // Register any enum instantiation that surfaces as the
-                        // return type (e.g. `HashMap::get -> Option<V>`,
-                        // `HashMap::remove -> Option<V>`). Without this the
-                        // module-level `enum_layouts` table lacks the matching
-                        // key for `Named { name: "Option", .. }`, MIR records
-                        // `ValueClass::Unknown → Strategy::UnknownBlocked` at
-                        // the call site, and the totality gate fires
-                        // (`DecisionMapTotal { offending_sites: [...] }`).
-                        // This mirrors the legacy `RewriteToFunction` arm
-                        // below — the new resolver-authority path inherits
-                        // the same boundary obligation.
-                        self.try_register_enum_instantiation(&span);
-                        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                        let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
+                    if !self.ensure_executable_target(&resolved.target, "resolved impl call", &span)
+                    {
                         return (
-                            HirExprKind::ResolvedImplCall {
-                                receiver: Box::new(lowered_receiver),
-                                target: resolved.target,
-                                impl_id: resolved.impl_id,
-                                method_name: resolved.method_name,
-                                target_symbol: resolved.method_target.symbol_name,
-                                target_family: resolved.method_target.family,
-                                type_args: resolved.type_args,
-                                args: lowered_args,
-                                ret_ty: ret_ty.clone(),
-                            },
+                            HirExprKind::Unsupported(
+                                "resolved impl call has no checker target".to_string(),
+                            ),
                             ret_ty,
                         );
                     }
+                    // Register any enum instantiation that surfaces as the
+                    // return type (e.g. `HashMap::get -> Option<V>`,
+                    // `HashMap::remove -> Option<V>`). Without this the
+                    // module-level `enum_layouts` table lacks the matching
+                    // key for `Named { name: "Option", .. }`, MIR records
+                    // `ValueClass::Unknown → Strategy::UnknownBlocked` at
+                    // the call site, and the totality gate fires
+                    // (`DecisionMapTotal { offending_sites: [...] }`).
+                    // This mirrors the legacy `RewriteToFunction` arm
+                    // below — the new resolver-authority path inherits
+                    // the same boundary obligation.
+                    self.try_register_enum_instantiation(&span);
+                    let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                    let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
+                    return (
+                        HirExprKind::ResolvedImplCall {
+                            receiver: Box::new(lowered_receiver),
+                            target: resolved.target,
+                            impl_id: resolved.impl_id,
+                            method_name: resolved.method_name,
+                            target_symbol: resolved.method_target.symbol_name,
+                            target_family: resolved.method_target.family,
+                            type_args: resolved.type_args,
+                            args: lowered_args,
+                            ret_ty: ret_ty.clone(),
+                        },
+                        ret_ty,
+                    );
                 }
                 // Dormant path: the lookup ran (and diagnostics fired if the
                 // boundary failed), but emission is deferred. Fall through to
@@ -28427,11 +28307,7 @@ impl LowerCtx {
         }
         match rewrite {
             Some(MethodCallRewrite::RcIntrinsic { op, payload_ty }) => {
-                let result_ty = self
-                    .resolved_expr_types
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or(ResolvedTy::Unit);
+                let result_ty = checked_result_ty.clone();
                 let receiver = (op != RcIntrinsicOp::New)
                     .then(|| Box::new(self.lower_expr(receiver, IntentKind::Read)));
                 let value = if matches!(op, RcIntrinsicOp::New | RcIntrinsicOp::Set) {
@@ -28505,14 +28381,7 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     );
                 }
-                let ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .cloned()
-                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                    .map_or(ResolvedTy::Unit, |ty| {
-                        self.qualify_current_module_record_ty(ty)
-                    });
+                let ret_ty = checked_result_ty.clone();
                 let reply_ty = match &ret_ty {
                     ResolvedTy::Named {
                         builtin: Some(BuiltinType::Result),
@@ -28583,18 +28452,7 @@ impl LowerCtx {
                 // `ValueClass::Unknown → Strategy::UnknownBlocked` at the
                 // MIR boundary.
                 self.try_register_enum_instantiation(&span);
-                // Read the actual return type from the checker's expr_types table.
-                // Unit-returning methods (e.g. channel send/recv) record Unit there,
-                // so the fallback is safe and this path remains correct for all callers.
-                // `params` is empty — the call arg list carries the real args.
-                let ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .cloned()
-                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                    .map_or(ResolvedTy::Unit, |ty| {
-                        self.qualify_current_module_record_ty(ty)
-                    });
+                let ret_ty = checked_result_ty.clone();
                 let c_symbol = match &target {
                     CallTarget::ImplMethod(declaration) => {
                         let Some(symbol) = self.registered_impl_method_symbol(declaration) else {
@@ -28747,52 +28605,28 @@ impl LowerCtx {
             }
             Some(MethodCallRewrite::GenericMathIntrinsic { op }) => {
                 let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
-                let checked_ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .map(Ty::materialize_literal_defaults)
-                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok());
-                let dispatch_ty = checked_ret_ty
-                    .as_ref()
-                    .filter(|ty| stdlib_catalog::generic_math_intrinsic_callee(op, ty).is_some())
-                    .cloned()
-                    .or_else(|| lowered_args.first().map(|arg| arg.ty.clone()));
-                let Some(dispatch_ty) = dispatch_ty else {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: format!("math.{method}"),
-                            reason: "generic math intrinsic had no lowered arguments".to_string(),
-                        },
-                        span.clone(),
-                        "generic math intrinsic dispatch requires at least one checked argument",
-                    ));
-                    return (
-                        HirExprKind::Unsupported(format!(
-                            "generic math intrinsic `math.{method}` has no dispatch type"
-                        )),
-                        ResolvedTy::Unit,
-                    );
-                };
-                let Some((symbol, ret_ty)) =
+                let dispatch_ty = checked_result_ty.clone();
+                let Some((symbol, _catalog_ret_ty)) =
                     stdlib_catalog::generic_math_intrinsic_callee(op, &dispatch_ty)
                 else {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
                             name: format!("math.{method}"),
                             reason: format!(
-                                "no generic math intrinsic for operand type `{dispatch_ty}`"
+                                "no generic math intrinsic for result type `{dispatch_ty}`"
                             ),
                         },
                         span.clone(),
-                        "current math intrinsic dispatch supports i64 and f64 operands",
+                        "generic math intrinsic dispatch requires a supported checker result type",
                     ));
                     return (
                         HirExprKind::Unsupported(format!(
-                            "generic math intrinsic `math.{method}` unsupported for `{dispatch_ty}`"
+                            "generic math intrinsic `math.{method}` has no supported result type"
                         )),
                         ResolvedTy::Unit,
                     );
                 };
+                let ret_ty = checked_result_ty.clone();
                 let resolved_ref =
                     self.fn_registry
                         .get(symbol)
@@ -28899,12 +28733,7 @@ impl LowerCtx {
                 consumes_receiver,
                 returns_receiver_identity,
             }) => {
-                let ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .cloned()
-                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                    .unwrap_or(ResolvedTy::Unit);
+                let ret_ty = checked_result_ty.clone();
                 // Trait default method body — concrete Self interception.
                 //
                 // When a trait default method body is lowered as a concrete
@@ -29045,18 +28874,7 @@ impl LowerCtx {
             // call to `__hew_record_clone_inplace_<record_name>`.
             // Non-consuming read of the receiver — the original stays live.
             Some(MethodCallRewrite::RecordCloneInplace { record_name }) => {
-                // Prefer the checker-typed result; fall back to constructing
-                // a Named type from the record name (should always resolve).
-                let ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-                    .unwrap_or_else(|| ResolvedTy::Named {
-                        name: record_name.clone(),
-                        args: vec![],
-                        builtin: None,
-                        is_opaque: false,
-                    });
+                let ret_ty = checked_result_ty.clone();
                 let sym = format!("__hew_record_clone_inplace_{record_name}");
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
                 (

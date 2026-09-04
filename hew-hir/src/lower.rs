@@ -39543,6 +39543,161 @@ impl Widget {
     }
 
     #[test]
+    fn missing_checked_result_type_rejects_non_unit_dynamic_call() {
+        let source = r"
+            #[resource]
+            type Builder { value: i64 }
+
+            trait Finish {
+                fn finish(consuming self) -> i64;
+            }
+
+            impl Finish for Builder {
+                fn finish(consuming self) -> i64 { self.value }
+            }
+
+            fn finish_dyn(value: dyn Finish) -> i64 {
+                value.finish()
+            }
+            ";
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let mut type_output = checker.check_program(&parsed.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:#?}",
+            type_output.errors
+        );
+        let call_key = type_output
+            .dyn_trait_method_calls
+            .keys()
+            .next()
+            .cloned()
+            .expect("checker must publish the dynamic call site");
+        assert_eq!(
+            type_output.resolved_expr_types.remove(&call_key),
+            Some(ResolvedTy::I64),
+            "checker must publish the dynamic call's non-unit result type"
+        );
+
+        let lowered = lower_program(
+            &parsed.program,
+            &type_output,
+            &ResolutionCtx,
+            TargetArch::host(),
+        );
+        let call_span = call_key.start..call_key.end;
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                    if diagnostic.span == call_span
+                        && name == "expression value class"
+                        && reason == "resolved_expr_types has no entry for expression"
+            )),
+            "missing dynamic-call result type must emit the typed boundary diagnostic: {:#?}",
+            lowered.diagnostics
+        );
+        let call = function_named(&lowered, "finish_dyn")
+            .body
+            .tail
+            .as_deref()
+            .expect("finish_dyn must retain its rejected tail");
+        assert!(
+            matches!(call.kind, HirExprKind::Unsupported(_)),
+            "the rejected call must not reach executable HIR: {:#?}",
+            call.kind
+        );
+        assert!(
+            !matches!(
+                &call.kind,
+                HirExprKind::CallDynMethod {
+                    ret_ty: ResolvedTy::Unit,
+                    ..
+                }
+            ),
+            "a missing checker result must never manufacture a Unit-typed dynamic call"
+        );
+        assert!(
+            lowered.into_result().is_err(),
+            "the typed boundary diagnostic must stop HIR lowering"
+        );
+    }
+
+    #[test]
+    fn published_checked_result_type_reaches_non_unit_dynamic_call() {
+        let source = r"
+            #[resource]
+            type Builder { value: i64 }
+
+            trait Finish {
+                fn finish(consuming self) -> i64;
+            }
+
+            impl Finish for Builder {
+                fn finish(consuming self) -> i64 { self.value }
+            }
+
+            fn finish_dyn(value: dyn Finish) -> i64 {
+                value.finish()
+            }
+            ";
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parsed.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:#?}",
+            type_output.errors
+        );
+        let call_key = type_output
+            .dyn_trait_method_calls
+            .keys()
+            .next()
+            .expect("checker must publish the dynamic call site");
+        assert_eq!(
+            type_output.resolved_expr_types.get(call_key),
+            Some(&ResolvedTy::I64),
+            "checker must publish the dynamic call's non-unit result type"
+        );
+
+        let lowered = lower_program(
+            &parsed.program,
+            &type_output,
+            &ResolutionCtx,
+            TargetArch::host(),
+        );
+        let call = function_named(&lowered, "finish_dyn")
+            .body
+            .tail
+            .as_deref()
+            .expect("finish_dyn must have a trailing call");
+        let HirExprKind::CallDynMethod { ret_ty, .. } = &call.kind else {
+            panic!("expected dynamic trait dispatch, got {:#?}", call.kind);
+        };
+        assert_eq!(call.ty, ResolvedTy::I64);
+        assert_eq!(*ret_ty, ResolvedTy::I64);
+        assert!(
+            !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { .. }
+            )),
+            "the published result type must cross the checker boundary: {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
     fn missing_closure_capture_facts_emit_boundary_diagnostic() {
         let (program, mut tco, _) = parse_typecheck_and_lower(
             r"

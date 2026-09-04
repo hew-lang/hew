@@ -292,7 +292,9 @@ fn parse_error_message() -> string {
 /// when parsing fails. Match on `ParseError.Invalid(message)` to recover the
 /// original parser message.
 pub fn parse(s: string) -> Result<Value, ParseError> {
-    let val = parse(s);
+    let val = unsafe {
+        hew_toml_parse(s)
+    };
     if val.type_of() >= 0 {
         Ok(val)
     } else {

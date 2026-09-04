@@ -635,7 +635,10 @@ actor Acceptor {
     let router: LocalPid<Router>;
     let addr: string;
     receive fn start() {
-        let lst = net.listen(addr);
+        let lst = match net.listen(addr) {
+            .Ok(listener) => listener,
+            .Err(_) => panic("failed to listen"),
+        };
         println(f"[listener] MQTT broker ready on {addr}");
         var next_id: i32 = 1;
         loop {
@@ -653,7 +656,9 @@ actor Acceptor {
 fn main() {
     var port = "1883";
     if os.args().len() > 1 {
-        port = os.args().get(1);
+        if let .Some(value) = os.args().get(1) {
+            port = value;
+        }
     }
     let addr = f"127.0.0.1:{port}";
     let empty_sessions: Vec<string> = Vec.new();

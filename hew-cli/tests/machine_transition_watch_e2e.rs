@@ -130,7 +130,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
          \n\
          actor Combined {\n\
          \x20   receive fn run() {\n\
-         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(4);\n\
+         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       tx.send(Transition { from_state: \"Created\", to_state: \"Initialising\" });\n\
          \x20       tx.close();\n\
          \x20       select {\n\
@@ -172,7 +172,7 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
          \n\
          actor Combined {\n\
          \x20   receive fn run() {\n\
-         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(4);\n\
+         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       tx.send(Transition.Moved { from_state: \"Created\", to_state: \"Initialising\" });\n\
          \x20       tx.close();\n\
          \x20       select {\n\
@@ -217,7 +217,7 @@ fn receiver_param_source() -> &'static str {
      }\n\
      \n\
      fn main() {\n\
-     \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
+     \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
      \x20   tx.send(\"hello\");\n\
      \x20   tx.close();\n\
      \x20   let obs = spawn Observer;\n\
@@ -258,7 +258,7 @@ fn channel_sender_actor_message_arg_transfers_locally() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let worker = spawn Worker;\n\
          \x20   worker.notify(tx);\n\
          \x20   match rx.recv() {\n\
@@ -291,7 +291,7 @@ fn channel_handle_use_after_transfer_refused() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let obs = spawn Observer;\n\
          \x20   obs.watch(rx, \"watch\");\n\
@@ -390,8 +390,8 @@ fn cross_actor_record_transition_watch_runs_clean() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(8);\n\
-         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
          \x20   obs.watch(rx, done_tx);\n\
          \x20   let svc = spawn Service;\n\
@@ -434,8 +434,8 @@ fn select_after_genuine_expiry_takes_after_arm() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
-         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
          \x20   obs.watch(rx, done_tx);\n\
          \x20   let _ = done_rx.recv();\n\
@@ -485,7 +485,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
          \x20   obs.watch(rx);\n\
          \x20   tx.close();\n\
@@ -711,7 +711,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \n\
          actor Owner {\n\
          \x20   receive fn run() -> i64 {\n\
-         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
+         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       var c: Conn = Conn.Idle;\n\
          \x20       c.step(ConnEvent.Connect);\n\
          \x20       tx.send(c);\n\
@@ -843,7 +843,7 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let w = spawn Worker;\n\
          \x20   w.accept((rx, 42));\n\
@@ -885,7 +885,7 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let w = spawn Worker;\n\
          \x20   w.deliver((rx, 99));\n\
@@ -958,7 +958,7 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \n\
          actor Owner {\n\
          \x20   receive fn run() -> i64 {\n\
-         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
+         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       var c: Conn = Conn.Idle;\n\
          \x20       c.step(ConnEvent.Connect);\n\
          \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\

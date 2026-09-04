@@ -18,25 +18,28 @@ import std.os;
 import std.process;
 
 fn one_frame() -> i64 {
-    let arg = os.args().get(0);
+    let arg = match os.args().get(0) {
+        .Some(value) => value,
+        .None => return 91,
+    };
     let env = os.env("PATH").unwrap_or("");
     let cwd = os.cwd();
     let home = os.home_dir();
     let host = os.hostname();
     let temp = os.temp_dir();
-    let process_len = match process.try_run("printf stdout; printf stderr >&2") {
+    let process_len = match process.run("printf stdout; printf stderr >&2") {
         .Ok(output) => output.stdout.len() + output.stderr.len(),
         .Err(_) => 0,
     };
-    let codec_len = match compress.try_gzip_decompress("not-a-gzip".to_bytes(), 1024) {
+    let codec_len = match compress.gzip_decompress("not-a-gzip".to_bytes(), 1024) {
         .Ok(data) => data.len(),
         .Err(reason) => reason.len(),
     };
-    let process_discard = match process.try_run("printf discarded") {
+    let process_discard = match process.run("printf discarded") {
         .Ok(_) => 1,
         .Err(_) => 0,
     };
-    let codec_discard = match compress.try_gzip_decompress("not-a-gzip".to_bytes(), 1024) {
+    let codec_discard = match compress.gzip_decompress("not-a-gzip".to_bytes(), 1024) {
         .Ok(_) => 0,
         .Err(_) => 1,
     };

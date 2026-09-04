@@ -109,8 +109,8 @@ import std.fs;
 import std.encoding.json;
 
 fn main() {
-    let data = fs.read("config.json");
-    let obj = json.parse(data);
+    let data = fs.read("config.json").unwrap();
+    let obj = json.parse(data).unwrap();
     println(obj.stringify());
 }
 ```

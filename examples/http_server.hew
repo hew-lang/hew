@@ -25,36 +25,42 @@ fn serve_forever(root: string, srv: Server) {
 fn serve_request(root: string, req: Request) {
     let request_path = req.path();
     if request_path.contains("..") {
-        req.respond_text(403, "403 Forbidden");
+        match req.respond_text(403, "403 Forbidden") {
+            .Ok(_) => {},
+            .Err(_) => panic("failed to send forbidden response"),
+        }
     } else {
         var file_path = root + request_path;
         if request_path.ends_with("/") {
             file_path = file_path + "index.html";
         }
         if fs.exists(file_path) {
-            match fs.read(file_path) {
-                .Ok(body) => {
-                    let content_type = mime.from_path(file_path);
-                    req.respond(200, content_type, body);
-                },
-                .Err(_) => {
-                    req.respond_text(500, "500 Internal Server Error");
-                },
+            let body = match fs.read(file_path) {
+                .Ok(body) => body,
+                .Err(_) => panic("failed to read requested file"),
+            };
+            let content_type = mime.from_path(file_path);
+            match req.respond(200, content_type, body) {
+                .Ok(_) => {},
+                .Err(_) => panic("failed to send file response"),
             }
         } else {
             let index_path = file_path + "/index.html";
             if fs.exists(index_path) {
-                match fs.read(index_path) {
-                    .Ok(body) => {
-                        let content_type = mime.from_path(index_path);
-                        req.respond(200, content_type, body);
-                    },
-                    .Err(_) => {
-                        req.respond_text(500, "500 Internal Server Error");
-                    },
+                let body = match fs.read(index_path) {
+                    .Ok(body) => body,
+                    .Err(_) => panic("failed to read index file"),
+                };
+                let content_type = mime.from_path(index_path);
+                match req.respond(200, content_type, body) {
+                    .Ok(_) => {},
+                    .Err(_) => panic("failed to send index response"),
                 }
             } else {
-                req.respond_text(404, "404 Not Found");
+                match req.respond_text(404, "404 Not Found") {
+                    .Ok(_) => {},
+                    .Err(_) => panic("failed to send not-found response"),
+                }
             }
         }
     }
@@ -64,21 +70,16 @@ fn serve_request(root: string, req: Request) {
 fn main() {
     var port: string = "8080";
     var root: string = ".";
-    let argc = os.args().len();
+    let arguments = os.args();
+    let argc = arguments.len();
     if argc > 1 {
-        match os.args().get(1) {
-            .Some(value) => {
-                port = value;
-            },
-            .None => {},
+        if let .Some(value) = arguments.get(1) {
+            port = value;
         }
     }
     if argc > 2 {
-        match os.args().get(2) {
-            .Some(value) => {
-                root = value;
-            },
-            .None => {},
+        if let .Some(value) = arguments.get(2) {
+            root = value;
         }
     }
     let addr = f"0.0.0.0:{port}";
@@ -88,10 +89,9 @@ fn main() {
         .Ok(srv) => {
             serve_forever(root, srv);
         },
-        .Err(err) => {
-            let reason = to_string(err);
+        .Err(_) => {
             let detail = http.listen_error();
-            println(f"cannot listen on {addr}: {reason} - {detail}");
+            println(f"cannot listen on {addr}: {detail}");
         },
     }
 }

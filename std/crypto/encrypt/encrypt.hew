@@ -9,8 +9,14 @@
 //! import std.crypto.encrypt;
 //!
 //! fn main() {
-//!     let key = crypto.random_bytes(32);
-//!     let ciphertext = encrypt.seal(key, "hello world");
+//!     let key = match crypto.random_bytes(32) {
+//!         .Ok(key) => key,
+//!         .Err(reason) => panic(reason),
+//!     };
+//!     let ciphertext = match encrypt.seal(key, "hello world") {
+//!         .Ok(ciphertext) => ciphertext,
+//!         .Err(error) => panic(to_string(error)),
+//!     };
 //!     match encrypt.open(key, ciphertext) {
 //!         .Ok(plaintext) => println(plaintext),
 //!         .Err(err) => println(err),

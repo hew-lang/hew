@@ -1,6 +1,6 @@
 //! Go-style text/template rendering.
 //!
-//! Parse a template string with `parse` / `parse`, then render the compiled
+//! Parse a template string with `parse`, then render the compiled
 //! `Template` against a `Ctx` value. Directives inside `{{...}}` are
 //! substituted; all other text passes through verbatim.
 //!
@@ -18,8 +18,8 @@
 //!
 //! `parse` and `render_try` return `TemplateError`:
 //! `UnclosedDirective`, `UnclosedBlock`, `UnexpectedTag`, `DotOutsideRange`,
-//! or `UnknownDirective`. `parse` and `render_template` panic with the same
-//! human-readable message.
+//! or `UnknownDirective`. `render_template` panics with the same human-readable
+//! message.
 //!
 //! # Method-style rendering
 //!
@@ -65,7 +65,10 @@
 //!     items.push("green");
 //!     template.ctx_set_list(ctx, "colours", items);
 //!
-//!     let t = template.parse("Hello {{.name}}, age {{.age}}!");
+//!     let t = match template.parse("Hello {{.name}}, age {{.age}}!") {
+//!         .Ok(template) => template,
+//!         .Err(_) => panic("template parse failed"),
+//!     };
 //!     let result = template.render_try(t, ctx);
 //!     match result {
 //!         .Ok(s) => println(s),
@@ -653,7 +656,10 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
 /// fn main() {
 ///     let ctx = template.new_ctx();
 ///     template.ctx_set_str(ctx, "who", "world");
-///     let t = template.parse("hello {{.who}}!");
+///     let t = match template.parse("hello {{.who}}!") {
+///         .Ok(template) => template,
+///         .Err(_) => panic("template parse failed"),
+///     };
 ///     let r = template.render_try(t, ctx);
 ///     match r {
 ///         .Ok(s) => println(s),    // "hello world!"

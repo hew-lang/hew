@@ -771,7 +771,8 @@ fn method_call_dispatches_resource_wrapper_through_impl() {
 import std.net.http;
 
 fn respond(req: http.Request) -> i64 {
-    req.respond_text(200, "ok")
+    req.respond_text(200, "ok").unwrap();
+    0
 }
 "#,
     );
@@ -1154,7 +1155,7 @@ fn stream_decode_fails_closed_before_codegen() {
         }
 
         fn main() {
-            let (_sink, input) = stream.bytes_pipe(4);
+            let (_sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let _decoded: stream.Stream<Message> = input.decode();
         }
         ",
@@ -1181,7 +1182,7 @@ fn sink_encode_fails_closed_before_codegen() {
         }
 
         fn main() {
-            let (sink, _input) = stream.bytes_pipe(4);
+            let (sink, _input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let _encoded: stream.Sink<Message> = sink.encode();
         }
         ",
@@ -1232,7 +1233,7 @@ fn for_await_receiver_string_ok() {
         import std.channel.channel;
 
         fn main() {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.send("hello");
             tx.close();
             for await msg in rx {
@@ -1256,7 +1257,7 @@ fn for_await_receiver_int_ok() {
         import std.channel.channel;
 
         fn main() {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.send(42);
             tx.close();
             for await val in rx {
@@ -1281,7 +1282,7 @@ fn for_await_receiver_missing_element_type_errors() {
         import std.channel.channel;
 
         fn main() {
-            let (tx, rx): (channel.Sender, channel.Receiver) = channel.new(4);
+            let (tx, rx): (channel.Sender, channel.Receiver) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.close();
             for await _ in rx {
                 println(0);
@@ -1312,7 +1313,7 @@ fn for_await_receiver_record_element_admitted() {
         fn make_foo() -> Foo { Foo { x: 1 } }
 
         fn main() {
-            let (tx, rx): (channel.Sender<Foo>, channel.Receiver<Foo>) = channel.new(4);
+            let (tx, rx): (channel.Sender<Foo>, channel.Receiver<Foo>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             for await item in rx {
                 println(item.x);
             }
@@ -1336,7 +1337,7 @@ fn for_await_receiver_container_element_errors() {
 
         fn main() {
             let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) =
-                channel.new(4);
+                match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             for await item in rx {
                 println(item.len());
             }
@@ -1950,7 +1951,7 @@ fn actor_spawn_still_moves_affine_handle_arguments() {
         }
 
         fn main() {
-            let (sink, _input) = stream.pipe(4);
+            let (sink, _input) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let _writer = spawn Writer(sink: sink);
             sink.send("after-move");
         }
@@ -2581,7 +2582,7 @@ fn http_respond_three_arg_typechecks() {
             match http.listen(":8080") {
                 .Ok(server) => {
                     let req = server.accept();
-                    req.respond(200, "text/plain", "Hello, Hew!");
+                    req.respond(200, "text/plain", "Hello, Hew!").unwrap();
                     req.close();
                     server.close();
                 },
@@ -2633,7 +2634,7 @@ fn wasm_http_server_surface_rejected_before_codegen() {
 
         fn inspect(server: http.Server, req: http.Request) -> string {
             let _next = server.accept();
-            req.respond_text(200, "ok");
+            req.respond_text(200, "ok").unwrap();
             server.close();
             req.path()
         }
@@ -2918,10 +2919,10 @@ fn builtin_string_to_int_typechecks_as_int() {
         import std.string;
 
         fn parse() -> i64 {
-            let value: Option<i64> = string.to_int("9223372036854775807");
+            let value: Result<i64, string> = string.to_int("9223372036854775807");
             match value {
-                .Some(n) => n,
-                .None => 0,
+                .Ok(n) => n,
+                .Err(_) => 0,
             }
         }
         "#,
@@ -2983,7 +2984,7 @@ fn smtp_one_shot_helpers_typecheck() {
                 "to@example.com",
                 "Subject",
                 "Body",
-            );
+            ).unwrap();
             smtp.send_html(
                 "smtp.example.com",
                 587,
@@ -2993,7 +2994,7 @@ fn smtp_one_shot_helpers_typecheck() {
                 "to@example.com",
                 "Subject",
                 "<h1>Hello</h1>",
-            );
+            ).unwrap();
         }
         "#,
     );
@@ -3092,7 +3093,7 @@ fn smtp_module_helpers_rejected_on_wasm() {
                 "to@example.com",
                 "Subject",
                 "Body",
-            );
+            ).unwrap();
         }
         "#,
     );
@@ -5635,7 +5636,7 @@ fn deferred_channel_recv_int_constrained_after_call() {
         import std.channel.channel;
 
         fn take_one() -> Option<i64> {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let v: Option<i64> = rx.recv();
             tx.close();
             v
@@ -5677,7 +5678,7 @@ fn deferred_channel_recv_string_constrained_after_call() {
         import std.channel.channel;
 
         fn take_one() -> Option<string> {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let v: Option<string> = rx.recv();
             tx.close();
             v
@@ -5709,7 +5710,7 @@ fn deferred_channel_try_recv_int_constrained_after_call() {
         import std.channel.channel;
 
         fn try_take() -> Option<i64> {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let v: Option<i64> = rx.try_recv();
             tx.close();
             v
@@ -5742,7 +5743,7 @@ fn deferred_channel_send_int_constrained_after_call() {
         import std.channel.channel;
 
         fn relay() {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             if let .Some(v) = rx.recv() {
                 tx.send(v);
             }
@@ -5776,7 +5777,7 @@ fn deferred_channel_unresolved_inner_fails_closed() {
         import std.channel.channel;
 
         fn untyped() {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let _ = rx.recv();
             tx.close();
         }
@@ -6045,7 +6046,7 @@ fn monomorphic_machine_channel_element_admitted() {
         }
 
         fn main() {
-            let (tx, rx): (channel.Sender<Light>, channel.Receiver<Light>) = channel.new(2);
+            let (tx, rx): (channel.Sender<Light>, channel.Receiver<Light>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.send(Light.Off);
             tx.close();
             let _ = rx.recv();
@@ -6075,7 +6076,7 @@ fn generic_machine_instantiation_channel_element_refused() {
         import std.channel.channel;
 
         fn main() {
-            let (tx, rx): (channel.Sender<lifecycle.Lifecycle<i64>>, channel.Receiver<lifecycle.Lifecycle<i64>>) = channel.new(2);
+            let (tx, rx): (channel.Sender<lifecycle.Lifecycle<i64>>, channel.Receiver<lifecycle.Lifecycle<i64>>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.close();
             let _ = rx.recv();
             rx.close();
@@ -6112,7 +6113,7 @@ fn container_bearing_machine_channel_element_refused() {
         }
 
         fn main() {
-            let (tx, rx): (channel.Sender<Buffered>, channel.Receiver<Buffered>) = channel.new(2);
+            let (tx, rx): (channel.Sender<Buffered>, channel.Receiver<Buffered>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.send(Buffered.Empty);
             tx.close();
             let _ = rx.recv();

@@ -1546,7 +1546,7 @@ mod module_body_diagnostic_envelope {
                 import std.channel.channel;
 
                 fn relay() {
-                    let (tx, rx) = channel.new(1);
+                    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
                     let _value = rx.recv();
                     tx.send("hello");
                 }

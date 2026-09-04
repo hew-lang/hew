@@ -19,21 +19,21 @@ import std.process;
 import std.time.cron;
 
 fn main() {
-    match process.try_run("printf ok") {
+    match process.run("printf ok") {
         .Ok(output) => println(output.stdout),
         .Err(_) => (),
     }
     let run_args: Vec<string> = Vec.new();
-    match process.try_run_argv("printf", run_args) {
+    match process.run_argv("printf", run_args) {
         .Ok(output) => println(output.stdout),
         .Err(_) => (),
     }
-    match process.try_start("true") {
+    match process.start("true") {
         .Ok(child) => println(child.wait()),
         .Err(_) => (),
     }
     let spawn_args: Vec<string> = Vec.new();
-    match process.try_start_argv("true", spawn_args) {
+    match process.start_argv("true", spawn_args) {
         .Ok(child) => println(child.wait()),
         .Err(_) => (),
     }
@@ -131,35 +131,28 @@ fn stdlib_raw_owned_failure_handles_are_released_once_after_detail_is_copied() {
 
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$std$mprocess$mCommandOutput$std$mprocess$mProcessError\" @\"std$process$try_run\"",
+        "define internal %\"Result$$std$mprocess$mCommandOutput$std$mprocess$mProcessError\" @\"std$process$run\"",
         "@\"std$process$last_process_error\"",
         "@hew_process_result_free(",
         None,
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$std$mprocess$mCommandOutput$std$mprocess$mProcessError\" @\"std$process$try_run_argv\"",
+        "define internal %\"Result$$std$mprocess$mCommandOutput$std$mprocess$mProcessError\" @\"std$process$run_argv\"",
         "@\"std$process$last_process_error\"",
         "@hew_process_result_free(",
         None,
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %std.process.Child @\"std$process$start\"",
+        "define internal %\"Result$$std$mprocess$mChild$std$mprocess$mProcessError\" @\"std$process$start\"",
         "@\"std$process$last_process_error\"",
         "@hew_process_drop(",
         Some("@\"std.process.Child::close\""),
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$std$mprocess$mChild$std$mprocess$mProcessError\" @\"std$process$try_start\"",
-        "@\"std$process$last_process_error\"",
-        "@hew_process_drop(",
-        Some("@\"std.process.Child::close\""),
-    );
-    assert_failure_cleanup(
-        &ir,
-        "define internal %\"Result$$std$mprocess$mChild$std$mprocess$mProcessError\" @\"std$process$try_start_argv\"",
+        "define internal %\"Result$$std$mprocess$mChild$std$mprocess$mProcessError\" @\"std$process$start_argv\"",
         "@\"std$process$last_process_error\"",
         "@hew_process_drop(",
         Some("@\"std.process.Child::close\""),

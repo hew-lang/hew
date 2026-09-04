@@ -49,7 +49,8 @@ type MatchState {
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 fn parse_args() -> Result<Config, string> {
-    let argc = os.args().len();
+    let arguments = os.args();
+    let argc = arguments.len();
     if argc < 2 {
         return Result.Err("usage: grep [FLAGS] PATTERN [FILE...]");
     }
@@ -63,7 +64,10 @@ fn parse_args() -> Result<Config, string> {
     let files: Vec<string> = Vec.new();
     var i = 1;
     while i < argc {
-        let arg = os.args().get(i);
+        let arg = match arguments.get(i) {
+            .Some(value) => value,
+            .None => return Result.Err("grep: missing argument"),
+        };
         if !pattern_set && arg.starts_with("-") && arg.len() > 1 {
             // Treat each character after '-' as an individual flag.
             // "--" ends flag parsing (next arg is the pattern).
@@ -72,7 +76,10 @@ fn parse_args() -> Result<Config, string> {
                 if i >= argc {
                     return Result.Err("grep: missing pattern after --");
                 }
-                pattern = os.args().get(i);
+                pattern = match arguments.get(i) {
+                    .Some(value) => value,
+                    .None => return Result.Err("grep: missing pattern after --"),
+                };
                 pattern_set = true;
                 i = i + 1;
                 continue;

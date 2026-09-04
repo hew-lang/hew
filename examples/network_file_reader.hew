@@ -23,12 +23,12 @@ import std.os;
 
 fn main() {
     println("=== File Reader + Actor Pipeline ===");
-    let path = if os.args().len() > 1 {
-        os.args().get(1)
-    } else {
-        "examples/test_input.txt"
+    let arguments = os.args();
+    let path = match arguments.get(1) {
+        .Some(value) => value,
+        .None => "examples/test_input.txt",
     };
-    // `try_read` keeps an input-path failure in the program's control flow.
+    // `read` keeps an input-path failure in the program's control flow.
     // The successful contents are printed unchanged, preserving the simple
     // stdout stream used by this example.
     match fs.read(path) {

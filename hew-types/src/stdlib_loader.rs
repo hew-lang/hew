@@ -1590,17 +1590,10 @@ mod tests {
         assert!(info.is_some(), "should load process module");
         let info = info.unwrap();
 
-        for name in ["try_run", "run", "try_run_argv", "run_argv", "start"] {
+        for name in ["run", "run_argv", "run_args", "start", "start_argv"] {
             assert!(
                 info.wrapper_fns.iter().any(|f| f.name == name),
                 "process module should expose `{name}`"
-            );
-        }
-
-        for name in ["try_run_args", "run_args"] {
-            assert!(
-                info.wrapper_fns.iter().any(|f| f.name == name),
-                "process module should retain legacy `{name}` wrapper for compatibility"
             );
         }
         assert!(
@@ -1851,10 +1844,13 @@ mod tests {
             .expect("channel module should expose new()");
         assert_eq!(
             new_sig.return_type,
-            Ty::Tuple(vec![
-                Ty::normalize_named("Sender".to_string(), vec![]),
-                Ty::normalize_named("Receiver".to_string(), vec![]),
-            ])
+            Ty::result(
+                Ty::Tuple(vec![
+                    Ty::normalize_named("Sender".to_string(), vec![]),
+                    Ty::normalize_named("Receiver".to_string(), vec![]),
+                ]),
+                Ty::String,
+            )
         );
     }
 

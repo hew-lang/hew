@@ -190,8 +190,8 @@ fn find_not_found_round_trips_negative_one() {
 }
 
 /// New UTF-8 codepoint helpers must also preserve the OOB signal across the
-/// i32 C-ABI return → Hew-facing `Option<i64>` boundary: the runtime's `-1`
-/// sentinel lifts to `None`, never a bogus zero-extended non-negative index.
+/// i32 C-ABI return to Hew-facing `Result<i64, string>` boundary: the runtime's
+/// `-1` sentinel lifts to `Err`, never a bogus non-negative index.
 #[test]
 fn unicode_codepoint_at_oob_round_trips_negative_one() {
     let repo = repo_root();
@@ -206,12 +206,12 @@ fn unicode_codepoint_at_oob_round_trips_negative_one() {
             let n = unicode.rune_count(s);
             let oob = unicode.codepoint_at(s, n);
             match oob {
-                .Some(cp) => {
+                .Ok(cp) => {
                     print(f"oob={cp};");
                     print("guard_broken");
                 }
-                .None => {
-                    print("oob=None;");
+                .Err(_) => {
+                    print("oob=Err;");
                     print("guard_fires");
                 }
             }
@@ -220,7 +220,7 @@ fn unicode_codepoint_at_oob_round_trips_negative_one() {
     );
 
     assert_eq!(
-        stdout, "oob=None;guard_fires",
-        "unicode.codepoint_at OOB sentinel did not round-trip as `None`: {stdout:?}",
+        stdout, "oob=Err;guard_fires",
+        "unicode.codepoint_at OOB sentinel did not round-trip as `Err`: {stdout:?}",
     );
 }

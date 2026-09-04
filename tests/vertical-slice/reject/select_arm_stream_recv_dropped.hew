@@ -15,7 +15,7 @@ import std.stream;
 actor Driver {
     #[on(start)]
     fn start() {
-        let (_sink, input) = stream.pipe(8);
+        let (_sink, input) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
         select {
             item from input.recv() => println("item"),
             after 1s => println("timeout"),

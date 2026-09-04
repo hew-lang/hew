@@ -28,6 +28,10 @@ fn main() {
     for cp in runes {
         let kind = classify(cp);
         let upper = unicode.to_upper(cp);
-        println(f"cp={cp} width={unicode.rune_len(cp)} kind={kind} upper_cp={upper}");
+        let width = match unicode.rune_len(cp) {
+            .Ok(width) => width,
+            .Err(error) => panic(error),
+        };
+        println(f"cp={cp} width={width} kind={kind} upper_cp={upper}");
     }
 }

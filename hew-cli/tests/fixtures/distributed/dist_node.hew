@@ -875,9 +875,13 @@ fn wait_for_file(path: string) -> string {
     var attempts: i64 = 0;
     loop {
         if fs.exists(path) {
-            let contents = fs.read(path);
-            if !contents.is_empty() {
-                return contents;
+            match fs.read(path) {
+                .Ok(contents) => {
+                    if !contents.is_empty() {
+                        return contents;
+                    }
+                },
+                .Err(_) => {},
             }
         }
         attempts = attempts + 1;

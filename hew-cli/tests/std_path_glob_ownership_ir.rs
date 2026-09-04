@@ -1,4 +1,4 @@
-//! Exact ownership contract for `std::path::{glob,try_glob}` failure paths.
+//! Exact ownership contract for the `std::path::glob` failure path.
 //!
 //! `hew_glob` always returns one heap-owned handle, including an expansion
 //! failure.  Its failure detail is borrowed from that handle, so each wrapper
@@ -106,10 +106,6 @@ fn path_glob_failure_handles_are_released_once_after_detail_is_copied() {
         .expect("read emitted LLVM IR");
     assert_one_failure_cleanup(
         &ir,
-        "define internal %std.path.GlobResult @\"std$path$glob\"",
-    );
-    assert_one_failure_cleanup(
-        &ir,
-        "define internal %\"Result$$std$mpath$mGlobResult$std$mpath$mPathError\" @\"std$path$try_glob\"",
+        "define internal %\"Result$$std$mpath$mGlobResult$std$mpath$mPathError\" @\"std$path$glob\"",
     );
 }

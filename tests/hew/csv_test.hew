@@ -9,7 +9,10 @@ import std.testing;
 // ── Happy-path parse ──────────────────────────────────────────────────
 #[test]
 fn test_parse_rows_count() {
-    let tbl = csv.parse("name,age\nAlice,30\nBob,25");
+    let tbl = match csv.parse("name,age\nAlice,30\nBob,25") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     // 2 data rows (header excluded)
     testing.assert_eq(tbl.rows(), 2);
     tbl.free();
@@ -17,14 +20,20 @@ fn test_parse_rows_count() {
 
 #[test]
 fn test_parse_cols_count() {
-    let tbl = csv.parse("name,age\nAlice,30");
+    let tbl = match csv.parse("name,age\nAlice,30") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.cols(), 2);
     tbl.free();
 }
 
 #[test]
 fn test_parse_get_by_index() {
-    let tbl = csv.parse("name,age\nAlice,30\nBob,25");
+    let tbl = match csv.parse("name,age\nAlice,30\nBob,25") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq_str(tbl.get(0, 0), "Alice");
     testing.assert_eq_str(tbl.get(1, 1), "25");
     tbl.free();
@@ -32,7 +41,10 @@ fn test_parse_get_by_index() {
 
 #[test]
 fn test_parse_get_by_name() {
-    let tbl = csv.parse("name,age\nAlice,30");
+    let tbl = match csv.parse("name,age\nAlice,30") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq_str(tbl.get_by_name(0, "name"), "Alice");
     testing.assert_eq_str(tbl.get_by_name(0, "age"), "30");
     tbl.free();
@@ -40,7 +52,10 @@ fn test_parse_get_by_name() {
 
 #[test]
 fn test_parse_header_names() {
-    let tbl = csv.parse("first,last\nJane,Doe");
+    let tbl = match csv.parse("first,last\nJane,Doe") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq_str(tbl.header(0), "first");
     testing.assert_eq_str(tbl.header(1), "last");
     tbl.free();
@@ -49,7 +64,10 @@ fn test_parse_header_names() {
 // ── Boundary / error ─────────────────────────────────────────────────
 #[test]
 fn test_parse_get_out_of_bounds_returns_empty() {
-    let tbl = csv.parse("x\n1");
+    let tbl = match csv.parse("x\n1") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq_str(tbl.get(99, 0), "");
     testing.assert_eq_str(tbl.get(0, 99), "");
     tbl.free();
@@ -57,14 +75,17 @@ fn test_parse_get_out_of_bounds_returns_empty() {
 
 #[test]
 fn test_parse_get_by_name_missing_column_returns_empty() {
-    let tbl = csv.parse("name\nAlice");
+    let tbl = match csv.parse("name\nAlice") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq_str(tbl.get_by_name(0, "nonexistent"), "");
     tbl.free();
 }
 
 #[test]
 #[serial]
-fn test_try_parse_file_missing_path_returns_err() {
+fn test_parse_file_missing_path_returns_err() {
     let path = "tests/hew/_csv_try_parse_missing.csv";
     let _ = fs.delete(path);
     match csv.parse_file(path) {
@@ -80,7 +101,10 @@ fn test_try_parse_file_missing_path_returns_err() {
 #[test]
 fn test_parse_quoted_field_with_comma_parses_as_one_field() {
     // "city" field contains a comma — must remain a single field, not split
-    let tbl = csv.parse("name,city\nAlice,\"Portland, OR\"");
+    let tbl = match csv.parse("name,city\nAlice,\"Portland, OR\"") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.cols(), 2);
     testing.assert_eq_str(tbl.get_by_name(0, "city"), "Portland, OR");
     tbl.free();
@@ -89,7 +113,10 @@ fn test_parse_quoted_field_with_comma_parses_as_one_field() {
 #[test]
 fn test_parse_escaped_quote_in_quoted_field_decoded() {
     // "" inside a quoted field → literal '"' in the decoded value
-    let tbl = csv.parse("name,quote\nAlice,\"say \"\"hi\"\"\"");
+    let tbl = match csv.parse("name,quote\nAlice,\"say \"\"hi\"\"\"") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq_str(tbl.get_by_name(0, "quote"), "say \"hi\"");
     tbl.free();
 }
@@ -97,7 +124,10 @@ fn test_parse_escaped_quote_in_quoted_field_decoded() {
 // ── Property round-trip (parse_no_headers → header naming) ───────────
 #[test]
 fn test_parse_no_headers_generates_synthetic_headers() {
-    let tbl = csv.parse_no_headers("a,b\nc,d");
+    let tbl = match csv.parse_no_headers("a,b\nc,d") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     // Synthetic headers are col0, col1
     testing.assert_eq_str(tbl.header(0), "col0");
     testing.assert_eq_str(tbl.header(1), "col1");
@@ -110,7 +140,10 @@ fn test_parse_no_headers_generates_synthetic_headers() {
 fn test_parse_empty_string_returns_zero_rows_and_cols() {
     // parse("") → input.len() == 0 → no lines processed →
     // Table { hdrs: empty, data: empty } → rows == 0, cols == 0.
-    let tbl = csv.parse("");
+    let tbl = match csv.parse("") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 0);
     testing.assert_eq(tbl.cols(), 0);
     tbl.free();
@@ -118,7 +151,10 @@ fn test_parse_empty_string_returns_zero_rows_and_cols() {
 
 #[test]
 fn test_parse_no_headers_empty_string_returns_zero_rows_and_cols() {
-    let tbl = csv.parse_no_headers("");
+    let tbl = match csv.parse_no_headers("") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 0);
     testing.assert_eq(tbl.cols(), 0);
     tbl.free();
@@ -129,7 +165,10 @@ fn test_parse_no_headers_empty_string_returns_zero_rows_and_cols() {
 fn test_parse_trailing_newline_yields_one_data_row() {
     // parse_impl strips a trailing newline before splitting lines, so
     // "a,b\n1,2\n" must produce exactly one data row (not two, and not zero).
-    let tbl = csv.parse("a,b\n1,2\n");
+    let tbl = match csv.parse("a,b\n1,2\n") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 1);
     testing.assert_eq_str(tbl.get(0, 0), "1");
     testing.assert_eq_str(tbl.get(0, 1), "2");
@@ -140,7 +179,10 @@ fn test_parse_trailing_newline_yields_one_data_row() {
 #[test]
 fn test_parse_no_headers_three_rows_three_cols_data() {
     // Verify all nine cells of a 3×3 parse_no_headers parse are accessible.
-    let tbl = csv.parse_no_headers("1,2,3\n4,5,6\n7,8,9");
+    let tbl = match csv.parse_no_headers("1,2,3\n4,5,6\n7,8,9") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 3);
     testing.assert_eq(tbl.cols(), 3);
     testing.assert_eq_str(tbl.get(0, 0), "1");
@@ -158,7 +200,10 @@ fn test_parse_every_cell_distinct_no_row_aliasing() {
     // contents. Assert ALL six cells of a 3×2 parse with pairwise-distinct
     // values so any cross-row aliasing shows up as a concrete mismatch,
     // not just a diagonal coincidence.
-    let tbl = csv.parse_no_headers("r0a,r0b\nr1a,r1b\nr2a,r2b");
+    let tbl = match csv.parse_no_headers("r0a,r0b\nr1a,r1b\nr2a,r2b") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 3);
     testing.assert_eq(tbl.cols(), 2);
     testing.assert_eq_str(tbl.get(0, 0), "r0a");
@@ -174,7 +219,10 @@ fn test_parse_every_cell_distinct_no_row_aliasing() {
 fn test_parse_no_headers_three_cols_get_by_name() {
     // parse_no_headers generates col0, col1, col2 synthetic headers;
     // get_by_name must resolve all three for each data row.
-    let tbl = csv.parse_no_headers("a,b,c\nd,e,f");
+    let tbl = match csv.parse_no_headers("a,b,c\nd,e,f") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq_str(tbl.get_by_name(0, "col0"), "a");
     testing.assert_eq_str(tbl.get_by_name(0, "col2"), "c");
     testing.assert_eq_str(tbl.get_by_name(1, "col1"), "e");
@@ -187,8 +235,14 @@ fn test_two_tables_sequential_alloc_free_reverse_order() {
     // Allocate two independent Table values, verify cells, then free in
     // reverse allocation order. Table.free() is a no-op (value type), but
     // the pattern establishes discipline for future handle-type codecs.
-    let tbl1 = csv.parse("x,y\n1,2");
-    let tbl2 = csv.parse("p,q\n3,4");
+    let tbl1 = match csv.parse("x,y\n1,2") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
+    let tbl2 = match csv.parse("p,q\n3,4") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq_str(tbl1.get_by_name(0, "x"), "1");
     testing.assert_eq_str(tbl2.get_by_name(0, "q"), "4");
     tbl2.free();
@@ -199,7 +253,10 @@ fn test_two_tables_sequential_alloc_free_reverse_order() {
 #[test]
 fn test_header_out_of_range_returns_empty() {
     // header(col) bounds-checks and returns "" for col >= hdrs.len().
-    let tbl = csv.parse("a,b\n1,2");
+    let tbl = match csv.parse("a,b\n1,2") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq_str(tbl.header(99), "");
     tbl.free();
 }
@@ -209,7 +266,10 @@ fn test_header_out_of_range_returns_empty() {
 fn test_parse_embedded_lf_in_quoted_field_preserved() {
     // A quoted field containing a literal '\n' must be treated as one field;
     // the newline is part of the value, not a record separator.
-    let tbl = csv.parse("a,b\n\"line1\nline2\",2");
+    let tbl = match csv.parse("a,b\n\"line1\nline2\",2") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 1);
     testing.assert_eq_str(tbl.get(0, 0), "line1\nline2");
     testing.assert_eq_str(tbl.get(0, 1), "2");
@@ -220,7 +280,10 @@ fn test_parse_embedded_lf_in_quoted_field_preserved() {
 fn test_parse_crlf_row_terminator_produces_correct_rows() {
     // '\r\n' is the canonical RFC 4180 row terminator and must work the same
     // as a bare '\n'.
-    let tbl = csv.parse("name,age\r\nAlice,30\r\nBob,25");
+    let tbl = match csv.parse("name,age\r\nAlice,30\r\nBob,25") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 2);
     testing.assert_eq_str(tbl.get_by_name(0, "name"), "Alice");
     testing.assert_eq_str(tbl.get_by_name(1, "age"), "25");
@@ -230,7 +293,10 @@ fn test_parse_crlf_row_terminator_produces_correct_rows() {
 #[test]
 fn test_parse_mixed_lf_and_crlf_terminators() {
     // Some producers mix '\n' and '\r\n'; both must split records correctly.
-    let tbl = csv.parse("a,b\r\n1,2\n3,4");
+    let tbl = match csv.parse("a,b\r\n1,2\n3,4") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 2);
     testing.assert_eq_str(tbl.get(0, 0), "1");
     testing.assert_eq_str(tbl.get(1, 0), "3");
@@ -241,7 +307,10 @@ fn test_parse_mixed_lf_and_crlf_terminators() {
 fn test_parse_crlf_inside_quoted_field_preserved() {
     // '\r\n' inside a quoted field must be kept verbatim, not collapsed to '\n'.
     // The old pre-normalization `data.replace("\r\n", "\n")` would corrupt this.
-    let tbl = csv.parse("a\n\"x\r\ny\"");
+    let tbl = match csv.parse("a\n\"x\r\ny\"") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 1);
     testing.assert_eq_str(tbl.get(0, 0), "x\r\ny");
     tbl.free();
@@ -251,7 +320,10 @@ fn test_parse_crlf_inside_quoted_field_preserved() {
 fn test_parse_empty_quoted_field() {
     // An empty quoted field ("") should decode to the empty string, not a
     // two-character literal.
-    let tbl = csv.parse("a,b,c\n1,\"\",3");
+    let tbl = match csv.parse("a,b,c\n1,\"\",3") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 1);
     testing.assert_eq_str(tbl.get(0, 1), "");
     testing.assert_eq_str(tbl.get(0, 0), "1");
@@ -264,7 +336,10 @@ fn test_parse_embedded_newline_with_escaped_quote_in_same_field() {
     // Combined case: a quoted field that contains both an embedded newline and
     // an escaped quote ('""') — exercises multiple state transitions inside
     // state 2 before the closing quote.
-    let tbl = csv.parse("h\n\"say \"\"hi\"\"\nbye\"");
+    let tbl = match csv.parse("h\n\"say \"\"hi\"\"\nbye\"") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 1);
     testing.assert_eq_str(tbl.get(0, 0), "say \"hi\"\nbye");
     tbl.free();
@@ -275,7 +350,10 @@ fn test_parse_trailing_crlf_yields_correct_row_count() {
 
     // A trailing '\r\n' should not produce a phantom empty row, same as the
     // existing trailing-'\n' test.
-    let tbl = csv.parse("a,b\r\n1,2\r\n");
+    let tbl = match csv.parse("a,b\r\n1,2\r\n") {
+        .Ok(tbl) => tbl,
+        .Err(reason) => panic(f"valid CSV failed to parse: {reason}"),
+    };
     testing.assert_eq(tbl.rows(), 1);
     testing.assert_eq_str(tbl.get(0, 0), "1");
     tbl.free();
@@ -283,7 +361,7 @@ fn test_parse_trailing_crlf_yields_correct_row_count() {
 
 // ── Malformed quote states are refused, not silently repaired ─────────
 #[test]
-fn test_try_parse_rejects_an_unterminated_quoted_field() {
+fn test_parse_rejects_an_unterminated_quoted_field() {
     match csv.parse("name,note\nAlice,\"never closed") {
         .Ok(tbl) => panic(f"expected an unterminated quote to be rejected, got {tbl.rows()} rows"),
         .Err(reason) => testing.assert_eq_str(reason, "csv: unterminated quoted field"),
@@ -291,7 +369,7 @@ fn test_try_parse_rejects_an_unterminated_quoted_field() {
 }
 
 #[test]
-fn test_try_parse_rejects_text_after_a_closing_quote() {
+fn test_parse_rejects_text_after_a_closing_quote() {
     match csv.parse("a,b\n\"x\"junk,y") {
         .Ok(tbl) => panic(f"expected junk after a closing quote to be rejected, got {tbl.get(0, 0)}"),
         .Err(reason) => testing.assert_eq_str(reason, "csv: unexpected text after a closing quote"),
@@ -299,7 +377,7 @@ fn test_try_parse_rejects_text_after_a_closing_quote() {
 }
 
 #[test]
-fn test_try_parse_rejects_a_quote_inside_an_unquoted_field() {
+fn test_parse_rejects_a_quote_inside_an_unquoted_field() {
     match csv.parse("a,b\nx\"y,z") {
         .Ok(tbl) => panic(f"expected a bare quote to be rejected, got {tbl.get(0, 0)}"),
         .Err(reason) => testing.assert_eq_str(reason, "csv: unescaped quote inside an unquoted field"),
@@ -307,7 +385,7 @@ fn test_try_parse_rejects_a_quote_inside_an_unquoted_field() {
 }
 
 #[test]
-fn test_try_parse_preserves_a_multiline_quoted_field() {
+fn test_parse_preserves_a_multiline_quoted_field() {
     match csv.parse("a,b\n\"line1\nline2\",z") {
         .Ok(tbl) => {
             testing.assert_eq(tbl.rows(), 1);
@@ -319,7 +397,7 @@ fn test_try_parse_preserves_a_multiline_quoted_field() {
 }
 
 #[test]
-fn test_try_parse_preserves_an_escaped_quote() {
+fn test_parse_preserves_an_escaped_quote() {
     match csv.parse("a,b\n\"say \"\"hi\"\"\",z") {
         .Ok(tbl) => {
             testing.assert_eq_str(tbl.get(0, 0), "say \"hi\"");
@@ -330,7 +408,7 @@ fn test_try_parse_preserves_an_escaped_quote() {
 }
 
 #[test]
-fn test_try_parse_accepts_an_empty_quoted_field_as_an_empty_value() {
+fn test_parse_accepts_an_empty_quoted_field_as_an_empty_value() {
     match csv.parse("a,b\n\"\",z") {
         .Ok(tbl) => {
             testing.assert_eq(tbl.rows(), 1);
@@ -342,7 +420,7 @@ fn test_try_parse_accepts_an_empty_quoted_field_as_an_empty_value() {
 }
 
 #[test]
-fn test_try_parse_accepts_an_empty_document_as_an_empty_table() {
+fn test_parse_accepts_an_empty_document_as_an_empty_table() {
     match csv.parse("") {
         .Ok(tbl) => {
             testing.assert_eq(tbl.rows(), 0);
@@ -353,7 +431,9 @@ fn test_try_parse_accepts_an_empty_document_as_an_empty_table() {
 }
 
 #[test]
-#[should_panic]
-fn test_parse_panics_at_legacy_boundary_on_an_unterminated_quote() {
-    let _ = csv.parse("a,b\n\"never closed");
+fn test_parse_returns_err_for_an_unterminated_quote() {
+    match csv.parse("a,b\n\"never closed") {
+        .Ok(tbl) => panic(f"unterminated quote unexpectedly parsed as {tbl.rows()} rows"),
+        .Err(reason) => testing.assert_eq_str(reason, "csv: unterminated quoted field"),
+    }
 }

@@ -54,20 +54,31 @@ actor ChatReader {
 fn main() {
     var port: string = "9000";
     var name: string = "guest";
-    let argc = os.args().len();
+    let arguments = os.args();
+    let argc = arguments.len();
     if argc > 1 {
-        port = os.args().get(1);
+        match arguments.get(1) {
+            .Some(value) => {
+                port = value;
+            },
+            .None => {},
+        }
     }
     if argc > 2 {
-        name = os.args().get(2);
+        match arguments.get(2) {
+            .Some(value) => {
+                name = value;
+            },
+            .None => {},
+        }
     }
     let addr = f"127.0.0.1:{port}";
     let connect_timeout_sec: i64 = 5;
     let connect_timeout_usec: i64 = 0;
     let conn = match net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec) {
         .Ok(conn) => conn,
-        .Err(err) => {
-            panic(f"[client] connect to {addr} failed: {err}");
+        .Err(_) => {
+            panic(f"[client] connect to {addr} failed");
         },
     };
     match conn.set_read_timeout(-1) {
@@ -83,7 +94,7 @@ fn main() {
     let (input, output) = conn.into_stream_sink();
     let (done_tx, done_rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {
         .Ok(pair) => pair,
-        .Err(err) => panic(f"channel.new failed: {err}"),
+        .Err(_) => panic("channel.new failed"),
     };
     let reader = spawn ChatReader(input: input, done: done_tx);
     reader.pump();

@@ -8,14 +8,23 @@
 import std.metrics;
 
 fn main() {
-    let hits = metrics.counter("app.cache_hits");
+    let hits = match metrics.counter("app.cache_hits") {
+        .Ok(counter) => counter,
+        .Err(_) => return,
+    };
     hits.inc();
     hits.add(4);
-    let active = metrics.gauge("app.active_connections");
+    let active = match metrics.gauge("app.active_connections") {
+        .Ok(gauge) => gauge,
+        .Err(_) => return,
+    };
     active.inc();
     active.dec();
     active.set(3);
     active.add(2);
-    let latency = metrics.histogram("app.request_latency");
+    let latency = match metrics.histogram("app.request_latency") {
+        .Ok(histogram) => histogram,
+        .Err(_) => return,
+    };
     latency.observe(12.5);
 }

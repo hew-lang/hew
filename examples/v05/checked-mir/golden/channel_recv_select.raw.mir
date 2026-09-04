@@ -2,233 +2,309 @@ fn Inbox__recv__run(i64) -> () [conv=actor_handler]
   key: Inbox::run [mono]
   locals:
     _0: i64
-    _1: i64
-    _2: (Sender<string>, Receiver<string>)
-    _3: (Sender<string>, Receiver<string>)
-    _4: Sender<string>
-    _5: Sender<string>
-    _6: Receiver<string>
-    _7: Receiver<string>
-    _8: string
-    _9: ()
-    _10: Option<string>
-    _11: i64
-    _12: i64
-    _13: bool
-    _14: i64
-    _15: bool
-    _16: string
-    _17: string
-    _18: ()
-    _19: Option<string>
-    _20: i64
-    _21: i64
-    _22: bool
+    _1: (Sender<string>, Receiver<string>)
+    _2: i64
+    _3: Result<(Sender<string>, Receiver<string>), string>
+    _4: i64
+    _5: i64
+    _6: bool
+    _7: i64
+    _8: bool
+    _9: (Sender<string>, Receiver<string>)
+    _10: string
+    _11: string
+    _12: string
+    _13: string
+    _14: (Sender<string>, Receiver<string>)
+    _15: Sender<string>
+    _16: Sender<string>
+    _17: Receiver<string>
+    _18: Receiver<string>
+    _19: string
+    _20: ()
+    _21: Option<string>
+    _22: i64
     _23: i64
     _24: bool
-    _25: string
-    _26: string
-    _27: ()
-    _28: Option<string>
-    _29: duration
-    _30: ()
+    _25: i64
+    _26: bool
+    _27: string
+    _28: string
+    _29: ()
+    _30: Option<string>
     _31: i64
     _32: i64
     _33: bool
     _34: i64
     _35: bool
     _36: string
-    _37: i64
-    _38: string
-    _39: ()
-    _40: string
+    _37: string
+    _38: ()
+    _39: Option<string>
+    _40: duration
+    _41: ()
+    _42: i64
+    _43: i64
+    _44: bool
+    _45: i64
+    _46: bool
+    _47: string
+    _48: i64
+    _49: string
+    _50: ()
+    _51: string
   bb0:
     enter_context
-    _1 = const.i64 4
-    _2 = call std$channel$new(_1) -> bb1
+    _2 = const.i64 4
+    _3 = call std$channel$new(_2) -> bb1
   bb1:
-    stmt: bind BindingId(2) __tuple_1 site=SiteId(0) ty=(Sender<string>, Receiver<string>)
-    stmt: use BindingId(2) __tuple_1 site=SiteId(3) ty=(Sender<string>, Receiver<string>) intent=Read
-    stmt: bind BindingId(3) tx site=SiteId(4) ty=Sender<string>
-    stmt: use BindingId(2) __tuple_1 site=SiteId(5) ty=(Sender<string>, Receiver<string>) intent=Read
-    stmt: bind BindingId(4) rx site=SiteId(6) ty=Receiver<string>
-    stmt: use BindingId(3) tx site=SiteId(8) ty=Sender<string> intent=Read
-    ownership Mint { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(3), ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]) }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(2), generation: 0 }, recipe: OwnerDropRecipe { ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]), drop_fn: None, kind: TupleInPlace, declaration_order: 0 } }
-    _3 = move _2
-    _4 = _3.0
-    aggregate_projection_neutralize _3 fields=[0] -> _4
-    ownership Mint { owner: OwnerId { binding: BindingId(3), generation: 0 }, place: Local(5), ty: Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false } }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(3), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, drop_fn: Some(Runtime(SenderClose)), kind: Resource, declaration_order: 1 } }
-    _5 = move _4
-    _6 = _3.1
-    aggregate_projection_neutralize _3 fields=[1] -> _6
-    ownership Mint { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(7), ty: Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false } }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(4), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }, drop_fn: Some(Runtime(ReceiverClose)), kind: Resource, declaration_order: 2 } }
-    _7 = move _6
-    _8 = string_lit "ready"
-    call hew_channel_send_layout(_5, _8) [authority=Runtime(ChannelSendLayout)] -> bb2
+    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(1) ty=Result<(Sender<string>, Receiver<string>), string>
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(3), ty: Named { name: "Result", args: [Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]), String], builtin: Some(Result), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Result", args: [Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]), String], builtin: Some(Result), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 0 } }
+    _4 = move etag3
+    _5 = const.i64 0
+    _6 = icmp.eq _4 _5
+    branch _6 ? bb3 : bb6
   bb2:
-    stmt: eval site=SiteId(7) ty=()
-    stmt: use BindingId(3) tx site=SiteId(12) ty=Sender<string> intent=Consume
-    ownership Transfer { owner: OwnerId { binding: BindingId(3), generation: 0 }, from: Local(5), to: None, to_owner: None, to_ty: None }
-    call hew_channel_sender_close(_5) [authority=Runtime(ChannelSenderClose)] -> bb3
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(0) ty=(Sender<string>, Receiver<string>)
+    stmt: bind BindingId(4) __tuple_3 site=SiteId(0) ty=(Sender<string>, Receiver<string>)
+    stmt: use BindingId(4294967228) __hew_produced_value site=SiteId(0) ty=(Sender<string>, Receiver<string>) intent=Consume
+    stmt: use BindingId(4) __tuple_3 site=SiteId(15) ty=(Sender<string>, Receiver<string>) intent=Read
+    stmt: bind BindingId(5) tx site=SiteId(16) ty=Sender<string>
+    stmt: use BindingId(4) __tuple_3 site=SiteId(17) ty=(Sender<string>, Receiver<string>) intent=Read
+    stmt: bind BindingId(6) rx site=SiteId(18) ty=Receiver<string>
+    stmt: use BindingId(5) tx site=SiteId(20) ty=Sender<string> intent=Read
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967228), generation: 0 }, place: Local(1), ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]) }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967228), generation: 0 }, recipe: OwnerDropRecipe { ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]), drop_fn: None, kind: TupleInPlace, declaration_order: 1 } }
+    _14 = move _1
+    neutralize_payload _1 -> _14 [WholeCarrierConsume]
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967228), generation: 0 }, from: Local(1), to: Some(Local(14)), to_owner: Some(OwnerId { binding: BindingId(4), generation: 0 }), to_ty: Some(Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }])) }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4), generation: 0 }, recipe: OwnerDropRecipe { ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]), drop_fn: None, kind: TupleInPlace, declaration_order: 2 } }
+    _15 = _14.0
+    aggregate_projection_neutralize _14 fields=[0] -> _15
+    ownership Mint { owner: OwnerId { binding: BindingId(5), generation: 0 }, place: Local(16), ty: Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(5), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, drop_fn: Some(Runtime(SenderClose)), kind: Resource, declaration_order: 3 } }
+    _16 = move _15
+    _17 = _14.1
+    aggregate_projection_neutralize _14 fields=[1] -> _17
+    ownership Mint { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(18), ty: Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(6), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }, drop_fn: Some(Runtime(ReceiverClose)), kind: Resource, declaration_order: 4 } }
+    _18 = move _17
+    _19 = string_lit "ready"
+    call hew_channel_send_layout(_16, _19) [authority=Runtime(ChannelSendLayout)] -> bb10
   bb3:
-    stmt: eval site=SiteId(11) ty=()
-    stmt: use BindingId(4) rx site=SiteId(16) ty=Receiver<string> intent=Read
-    suspend [channel_recv] elem_ty=string is_final=false -> resume=bb4 cleanup=bb4
+    stmt: bind BindingId(1) pair site=SiteId(4) ty=(Sender<string>, Receiver<string>)
+    stmt: use BindingId(1) pair site=SiteId(4) ty=(Sender<string>, Receiver<string>) intent=Read
+    _9 = move mvar3.0.0
+    ownership Mint { owner: OwnerId { binding: BindingId(1), generation: 0 }, place: Local(9), ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]) }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(1), generation: 0 }, recipe: OwnerDropRecipe { ty: Tuple([Named { name: "Sender", args: [String], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [String], builtin: Some(Receiver), is_opaque: false }]), drop_fn: None, kind: TupleInPlace, declaration_order: 5 } }
+    neutralize_payload mvar3.0.0 -> _9 [PayloadBindingTransfer]
+    _1 = move _9
+    neutralize_payload _9 -> _1 [WholeCarrierConsume]
+    ownership Transfer { owner: OwnerId { binding: BindingId(1), generation: 0 }, from: Local(9), to: Some(Local(1)), to_owner: None, to_ty: None }
+    ownership ScopeExit { scopes: [ScopeId(1)], owners: [], carry_places: [Local(1)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(3), target: 2 }
+    goto bb2
   bb4:
-    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(14) ty=Option<string>
-    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(10), ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false } }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 3 } }
-    _11 = move etag10
-    _12 = const.i64 0
-    _13 = icmp.eq _11 _12
-    branch _13 ? bb6 : bb9
+    stmt: bind BindingId(2) err site=SiteId(5) ty=string
+    stmt: use BindingId(2) err site=SiteId(8) ty=string intent=Read
+    _10 = move mvar3.1.0
+    ownership Mint { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(10), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(2), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 6 } }
+    neutralize_payload mvar3.1.0 -> _10 [PayloadBindingTransfer]
+    _11 = string_lit "channel.new failed: "
+    _12 = call to_string_str(_10) -> bb7
   bb5:
-    stmt: eval site=SiteId(24) ty=()
-    stmt: use BindingId(4) rx site=SiteId(26) ty=Receiver<string> intent=Read
-    _19 = call hew_channel_try_recv_layout(_7) [authority=Runtime(ChannelTryRecvLayout)] -> bb12
-  bb6:
-    stmt: bind BindingId(5) msg site=SiteId(18) ty=string
-    stmt: use BindingId(5) msg site=SiteId(19) ty=string intent=Read
-    _16 = move mvar10.0.0
-    ownership Mint { owner: OwnerId { binding: BindingId(5), generation: 0 }, place: Local(16), ty: String }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(5), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 4 } }
-    neutralize_payload mvar10.0.0 -> _16 [PayloadBindingTransfer]
-    call println_str(_16) -> bb10
-  bb7:
-    _17 = string_lit "closed"
-    call println_str(_17) -> bb11
-  bb8:
     exit_context
     trap(ExhaustivenessFallthrough)
+  bb6:
+    _7 = const.i64 1
+    _8 = icmp.eq _4 _7
+    branch _8 ? bb4 : bb5
+  bb7:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(11) ty=string
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(12), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 7 } }
+    _13 = call hew_string_concat(_11, _12) [authority=Runtime(StringConcat)] -> bb8
+  bb8:
+    stmt: bind BindingId(4294967229) __hew_temp_arg site=SiteId(6) ty=string
+    drop _12 ty=string fn=release(hew_string_drop)
+    ownership Release { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(12) }
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, place: Local(13), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967229), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 8 } }
+    call hew_panic_msg(_13) [authority=NoReturnExtern] -> bb9
   bb9:
-    _14 = const.i64 1
-    _15 = icmp.eq _11 _14
-    branch _15 ? bb7 : bb8
+    ownership ScopeExit { scopes: [ScopeId(2)], owners: [], carry_places: [Local(1)], carried: [] }
+    goto bb2
   bb10:
-    stmt: use BindingId(4294967231) __hew_call_scrutinee site=SiteId(18) ty=Option<string> intent=Consume
-    drop _10 ty=Option<string> fn=in_place(Enum)
-    ownership Release { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(10) }
-    drop _16 ty=string fn=release(hew_string_drop)
-    ownership Release { owner: OwnerId { binding: BindingId(5), generation: 0 }, place: Local(16) }
-    ownership ScopeExit { scopes: [ScopeId(1)], owners: [OwnerId { binding: BindingId(4294967231), generation: 0 }, OwnerId { binding: BindingId(5), generation: 0 }], carry_places: [Local(9)], carried: [] }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(3), target: 5 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(7), target: 5 }
-    goto bb5
+    stmt: eval site=SiteId(19) ty=()
+    stmt: use BindingId(5) tx site=SiteId(24) ty=Sender<string> intent=Consume
+    ownership Transfer { owner: OwnerId { binding: BindingId(5), generation: 0 }, from: Local(16), to: None, to_owner: None, to_ty: None }
+    call hew_channel_sender_close(_16) [authority=Runtime(ChannelSenderClose)] -> bb11
   bb11:
-    stmt: use BindingId(4294967231) __hew_call_scrutinee site=SiteId(21) ty=Option<string> intent=Consume
-    drop _10 ty=Option<string> fn=in_place(Enum)
-    ownership Release { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(10) }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(3), target: 5 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(7), target: 5 }
-    goto bb5
+    stmt: eval site=SiteId(23) ty=()
+    stmt: use BindingId(6) rx site=SiteId(28) ty=Receiver<string> intent=Read
+    suspend [channel_recv] elem_ty=string is_final=false -> resume=bb12 cleanup=bb12
   bb12:
-    _20 = move etag19
-    _21 = const.i64 0
-    _22 = icmp.eq _20 _21
-    branch _22 ? bb14 : bb17
+    stmt: bind BindingId(4294967227) __hew_call_scrutinee site=SiteId(26) ty=Option<string>
+    ownership Mint { owner: OwnerId { binding: BindingId(4294967227), generation: 0 }, place: Local(21), ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967227), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 9 } }
+    _22 = move etag21
+    _23 = const.i64 0
+    _24 = icmp.eq _22 _23
+    branch _24 ? bb14 : bb17
   bb13:
-    stmt: eval site=SiteId(34) ty=()
-    stmt: use BindingId(4) rx site=SiteId(36) ty=Receiver<string> intent=Read
-    _29 = const.duration 1000000000ns
-    suspend.select [[channel_recv(_7) elem_ty=string bind=_28->bb20], [after_timer(_29)->bb21]] -> resume=bb22 cleanup=bb22
+    stmt: eval site=SiteId(36) ty=()
+    stmt: use BindingId(6) rx site=SiteId(38) ty=Receiver<string> intent=Read
+    _30 = call hew_channel_try_recv_layout(_18) [authority=Runtime(ChannelTryRecvLayout)] -> bb20
   bb14:
-    stmt: bind BindingId(6) msg site=SiteId(28) ty=string
-    stmt: use BindingId(6) msg site=SiteId(29) ty=string intent=Read
-    _25 = move mvar19.0.0
-    ownership Mint { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(25), ty: String }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(6), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 5 } }
-    call println_str(_25) -> bb18
+    stmt: bind BindingId(7) msg site=SiteId(30) ty=string
+    stmt: use BindingId(7) msg site=SiteId(31) ty=string intent=Read
+    _27 = move mvar21.0.0
+    ownership Mint { owner: OwnerId { binding: BindingId(7), generation: 0 }, place: Local(27), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(7), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 10 } }
+    neutralize_payload mvar21.0.0 -> _27 [PayloadBindingTransfer]
+    call println_str(_27) -> bb18
   bb15:
-    _26 = string_lit "empty"
-    call println_str(_26) -> bb19
+    _28 = string_lit "closed"
+    call println_str(_28) -> bb19
   bb16:
     exit_context
     trap(ExhaustivenessFallthrough)
   bb17:
-    _23 = const.i64 1
-    _24 = icmp.eq _20 _23
-    branch _24 ? bb15 : bb16
+    _25 = const.i64 1
+    _26 = icmp.eq _22 _25
+    branch _26 ? bb15 : bb16
   bb18:
-    stmt: use BindingId(6) msg site=SiteId(28) ty=string intent=Consume
-    drop _25 ty=string fn=release(hew_string_drop)
-    ownership Release { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(25) }
-    ownership ScopeExit { scopes: [ScopeId(2)], owners: [OwnerId { binding: BindingId(6), generation: 0 }], carry_places: [Local(18)], carried: [] }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(3), target: 13 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(7), target: 13 }
+    stmt: use BindingId(4294967227) __hew_call_scrutinee site=SiteId(30) ty=Option<string> intent=Consume
+    drop _21 ty=Option<string> fn=in_place(Enum)
+    ownership Release { owner: OwnerId { binding: BindingId(4294967227), generation: 0 }, place: Local(21) }
+    drop _27 ty=string fn=release(hew_string_drop)
+    ownership Release { owner: OwnerId { binding: BindingId(7), generation: 0 }, place: Local(27) }
+    ownership ScopeExit { scopes: [ScopeId(3)], owners: [OwnerId { binding: BindingId(4294967227), generation: 0 }, OwnerId { binding: BindingId(7), generation: 0 }], carry_places: [Local(20)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(14), target: 13 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(18), target: 13 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(3), target: 13 }
     goto bb13
   bb19:
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(3), target: 13 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(7), target: 13 }
+    stmt: use BindingId(4294967227) __hew_call_scrutinee site=SiteId(33) ty=Option<string> intent=Consume
+    drop _21 ty=Option<string> fn=in_place(Enum)
+    ownership Release { owner: OwnerId { binding: BindingId(4294967227), generation: 0 }, place: Local(21) }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(14), target: 13 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(18), target: 13 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(3), target: 13 }
     goto bb13
   bb20:
-    stmt: bind BindingId(7) again site=SiteId(37) ty=Option<string>
-    stmt: use BindingId(7) again site=SiteId(39) ty=Option<string> intent=Read
-    ownership Mint { owner: OwnerId { binding: BindingId(7), generation: 0 }, place: Local(28), ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false } }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(7), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 6 } }
-    _31 = move etag28
+    _31 = move etag30
     _32 = const.i64 0
     _33 = icmp.eq _31 _32
-    branch _33 ? bb24 : bb27
+    branch _33 ? bb22 : bb25
   bb21:
-    _40 = string_lit "timeout"
-    call println_str(_40) -> bb30
+    stmt: eval site=SiteId(46) ty=()
+    stmt: use BindingId(6) rx site=SiteId(48) ty=Receiver<string> intent=Read
+    _40 = const.duration 1000000000ns
+    suspend.select [[channel_recv(_18) elem_ty=string bind=_39->bb28], [after_timer(_40)->bb29]] -> resume=bb30 cleanup=bb30
   bb22:
-    stmt: eval site=SiteId(35) ty=()
-    stmt: use BindingId(4) rx site=SiteId(51) ty=Receiver<string> intent=Consume
-    ownership Transfer { owner: OwnerId { binding: BindingId(4), generation: 0 }, from: Local(7), to: None, to_owner: None, to_ty: None }
-    call hew_channel_receiver_close(_7) [authority=Runtime(ChannelReceiverClose)] -> bb31
-  bb23:
-    _39 = move _30
-    ownership ScopeExit { scopes: [ScopeId(4)], owners: [], carry_places: [Local(39)], carried: [] }
-    _27 = move _39
-    drop _28 ty=Option<string> fn=in_place(Enum)
-    ownership Release { owner: OwnerId { binding: BindingId(7), generation: 0 }, place: Local(28) }
-    ownership ScopeExit { scopes: [ScopeId(3)], owners: [OwnerId { binding: BindingId(7), generation: 0 }], carry_places: [Local(27)], carried: [] }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(3), target: 22 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(7), target: 22 }
-    goto bb22
-  bb24:
     stmt: bind BindingId(8) msg site=SiteId(40) ty=string
     stmt: use BindingId(8) msg site=SiteId(41) ty=string intent=Read
-    _36 = move mvar28.0.0
+    _36 = move mvar30.0.0
     ownership Mint { owner: OwnerId { binding: BindingId(8), generation: 0 }, place: Local(36), ty: String }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(8), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 7 } }
-    neutralize_payload mvar28.0.0 -> _36 [PayloadBindingTransfer]
-    _37 = const.i64 1
-    ownership Guard { owner: OwnerId { binding: BindingId(8), generation: 0 }, flag: Local(37), kind: ProjectedPayload }
-    call println_str(_36) -> bb28
-  bb25:
-    _38 = string_lit "closed"
-    call println_str(_38) -> bb29
-  bb26:
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(8), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 11 } }
+    call println_str(_36) -> bb26
+  bb23:
+    _37 = string_lit "empty"
+    call println_str(_37) -> bb27
+  bb24:
     exit_context
     trap(ExhaustivenessFallthrough)
-  bb27:
+  bb25:
     _34 = const.i64 1
     _35 = icmp.eq _31 _34
-    branch _35 ? bb25 : bb26
-  bb28:
+    branch _35 ? bb23 : bb24
+  bb26:
+    stmt: use BindingId(8) msg site=SiteId(40) ty=string intent=Consume
     drop _36 ty=string fn=release(hew_string_drop)
     ownership Release { owner: OwnerId { binding: BindingId(8), generation: 0 }, place: Local(36) }
-    ownership ScopeExit { scopes: [ScopeId(5)], owners: [OwnerId { binding: BindingId(8), generation: 0 }], carry_places: [Local(30)], carried: [] }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(3), target: 23 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(7), target: 23 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(7), generation: 0 }, place: Local(28), target: 23 }
-    goto bb23
+    ownership ScopeExit { scopes: [ScopeId(4)], owners: [OwnerId { binding: BindingId(8), generation: 0 }], carry_places: [Local(29)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(14), target: 21 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(18), target: 21 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(3), target: 21 }
+    goto bb21
+  bb27:
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(14), target: 21 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(18), target: 21 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(3), target: 21 }
+    goto bb21
+  bb28:
+    stmt: bind BindingId(9) again site=SiteId(49) ty=Option<string>
+    stmt: use BindingId(9) again site=SiteId(51) ty=Option<string> intent=Read
+    ownership Mint { owner: OwnerId { binding: BindingId(9), generation: 0 }, place: Local(39), ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(9), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 12 } }
+    _42 = move etag39
+    _43 = const.i64 0
+    _44 = icmp.eq _42 _43
+    branch _44 ? bb32 : bb35
   bb29:
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(3), target: 23 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(7), target: 23 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(7), generation: 0 }, place: Local(28), target: 23 }
-    goto bb23
+    _51 = string_lit "timeout"
+    call println_str(_51) -> bb38
   bb30:
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(2), generation: 0 }, place: Local(3), target: 22 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(7), target: 22 }
-    goto bb22
+    stmt: eval site=SiteId(47) ty=()
+    stmt: use BindingId(6) rx site=SiteId(63) ty=Receiver<string> intent=Consume
+    ownership Transfer { owner: OwnerId { binding: BindingId(6), generation: 0 }, from: Local(18), to: None, to_owner: None, to_ty: None }
+    call hew_channel_receiver_close(_18) [authority=Runtime(ChannelReceiverClose)] -> bb39
   bb31:
-    stmt: eval site=SiteId(50) ty=()
+    _50 = move _41
+    ownership ScopeExit { scopes: [ScopeId(6)], owners: [], carry_places: [Local(50)], carried: [] }
+    _38 = move _50
+    drop _39 ty=Option<string> fn=in_place(Enum)
+    ownership Release { owner: OwnerId { binding: BindingId(9), generation: 0 }, place: Local(39) }
+    ownership ScopeExit { scopes: [ScopeId(5)], owners: [OwnerId { binding: BindingId(9), generation: 0 }], carry_places: [Local(38)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(14), target: 30 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(18), target: 30 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(3), target: 30 }
+    goto bb30
+  bb32:
+    stmt: bind BindingId(10) msg site=SiteId(52) ty=string
+    stmt: use BindingId(10) msg site=SiteId(53) ty=string intent=Read
+    _47 = move mvar39.0.0
+    ownership Mint { owner: OwnerId { binding: BindingId(10), generation: 0 }, place: Local(47), ty: String }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(10), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 13 } }
+    neutralize_payload mvar39.0.0 -> _47 [PayloadBindingTransfer]
+    _48 = const.i64 1
+    ownership Guard { owner: OwnerId { binding: BindingId(10), generation: 0 }, flag: Local(48), kind: ProjectedPayload }
+    call println_str(_47) -> bb36
+  bb33:
+    _49 = string_lit "closed"
+    call println_str(_49) -> bb37
+  bb34:
+    exit_context
+    trap(ExhaustivenessFallthrough)
+  bb35:
+    _45 = const.i64 1
+    _46 = icmp.eq _42 _45
+    branch _46 ? bb33 : bb34
+  bb36:
+    drop _47 ty=string fn=release(hew_string_drop)
+    ownership Release { owner: OwnerId { binding: BindingId(10), generation: 0 }, place: Local(47) }
+    ownership ScopeExit { scopes: [ScopeId(7)], owners: [OwnerId { binding: BindingId(10), generation: 0 }], carry_places: [Local(41)], carried: [] }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(14), target: 31 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(18), target: 31 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(9), generation: 0 }, place: Local(39), target: 31 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(3), target: 31 }
+    goto bb31
+  bb37:
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(14), target: 31 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(18), target: 31 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(9), generation: 0 }, place: Local(39), target: 31 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(3), target: 31 }
+    goto bb31
+  bb38:
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4), generation: 0 }, place: Local(14), target: 30 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(6), generation: 0 }, place: Local(18), target: 30 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(3), target: 30 }
+    goto bb30
+  bb39:
+    stmt: eval site=SiteId(62) ty=()
     exit_context
     return
 
@@ -239,17 +315,17 @@ fn main() -> () [conv=default]
     _1: i64
     _2: duration
   bb0:
-    stmt: bind BindingId(9) i site=SiteId(53) ty=LocalPid<Inbox>
-    stmt: use BindingId(9) i site=SiteId(55) ty=LocalPid<Inbox> intent=Read
+    stmt: bind BindingId(11) i site=SiteId(65) ty=LocalPid<Inbox>
+    stmt: use BindingId(11) i site=SiteId(67) ty=LocalPid<Inbox> intent=Read
     actor0 = spawn_actor Inbox cycle_capable=false
     _1 = const.i64 0
     send actor0[msg=625133102] _1 alias=Copy -> bb1
   bb1:
-    stmt: eval site=SiteId(54) ty=()
+    stmt: eval site=SiteId(66) ty=()
     _2 = const.duration 200000000ns
     call hew_sleep_ns(_2) -> bb2
   bb2:
-    stmt: eval site=SiteId(57) ty=()
+    stmt: eval site=SiteId(69) ty=()
     return
 
 fn std.channel.Sender::send(Sender, string) -> () [conv=default]
@@ -258,12 +334,12 @@ fn std.channel.Sender::send(Sender, string) -> () [conv=default]
     _0: Sender
     _1: string
   bb0:
-    stmt: use BindingId(10) tx site=SiteId(62) ty=Sender intent=Read
-    stmt: use BindingId(11) data site=SiteId(63) ty=string intent=Read
+    stmt: use BindingId(12) tx site=SiteId(74) ty=Sender intent=Read
+    stmt: use BindingId(13) data site=SiteId(75) ty=string intent=Read
     call hew_channel_send_layout(_0, _1) [authority=Runtime(ChannelSendLayout)] -> bb1
   bb1:
-    stmt: eval site=SiteId(60) ty=()
-    ownership ScopeExit { scopes: [ScopeId(8)], owners: [], carry_places: [], carried: [] }
+    stmt: eval site=SiteId(72) ty=()
+    ownership ScopeExit { scopes: [ScopeId(10)], owners: [], carry_places: [], carried: [] }
     return
 
 fn std.channel.Sender::clone(Sender) -> Sender [conv=default]
@@ -273,12 +349,12 @@ fn std.channel.Sender::clone(Sender) -> Sender [conv=default]
     _1: Sender
     _2: Sender
   bb0:
-    stmt: use BindingId(12) tx site=SiteId(67) ty=Sender intent=Read
+    stmt: use BindingId(14) tx site=SiteId(79) ty=Sender intent=Read
     _1 = call hew_channel_sender_clone(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(65)) ty=Sender
+    stmt: return site=Some(SiteId(77)) ty=Sender
     _2 = move _1
-    ownership ScopeExit { scopes: [ScopeId(10)], owners: [], carry_places: [Local(2)], carried: [] }
+    ownership ScopeExit { scopes: [ScopeId(12)], owners: [], carry_places: [Local(2)], carried: [] }
     ret = move _2
     return
 
@@ -287,11 +363,11 @@ fn std.channel.Sender::close(Sender) -> () [conv=default]
   locals:
     _0: Sender
   bb0:
-    stmt: use BindingId(13) tx site=SiteId(71) ty=Sender intent=Read
+    stmt: use BindingId(15) tx site=SiteId(83) ty=Sender intent=Read
     call hew_channel_sender_close(_0) -> bb1
   bb1:
-    stmt: eval site=SiteId(69) ty=()
-    ownership ScopeExit { scopes: [ScopeId(12)], owners: [], carry_places: [], carried: [] }
+    stmt: eval site=SiteId(81) ty=()
+    ownership ScopeExit { scopes: [ScopeId(14)], owners: [], carry_places: [], carried: [] }
     return
 
 fn std.channel.Receiver::recv(Receiver) -> Option<string> [conv=default]
@@ -301,17 +377,17 @@ fn std.channel.Receiver::recv(Receiver) -> Option<string> [conv=default]
     _1: Option<string>
     _2: Option<string>
   bb0:
-    stmt: use BindingId(14) rx site=SiteId(75) ty=Receiver intent=Read
+    stmt: use BindingId(16) rx site=SiteId(87) ty=Receiver intent=Read
     _1 = call hew_channel_recv_layout(_0) [authority=Runtime(ChannelRecvLayout)] -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(74) ty=Option<string>
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(73) ty=Option<string> intent=Consume
-    stmt: return site=Some(SiteId(73)) ty=Option<string>
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(86) ty=Option<string>
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(85) ty=Option<string> intent=Consume
+    stmt: return site=Some(SiteId(85)) ty=Option<string>
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false } }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 0 } }
     _2 = move _1
     neutralize_payload _1 -> _2 [WholeCarrierConsume]
-    ownership ScopeExit { scopes: [ScopeId(14)], owners: [], carry_places: [Local(2)], carried: [] }
+    ownership ScopeExit { scopes: [ScopeId(16)], owners: [], carry_places: [Local(2)], carried: [] }
     ownership Relocate { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Local(2) }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
@@ -324,17 +400,17 @@ fn std.channel.Receiver::try_recv(Receiver) -> Option<string> [conv=default]
     _1: Option<string>
     _2: Option<string>
   bb0:
-    stmt: use BindingId(15) rx site=SiteId(79) ty=Receiver intent=Read
+    stmt: use BindingId(17) rx site=SiteId(91) ty=Receiver intent=Read
     _1 = call hew_channel_try_recv_layout(_0) [authority=Runtime(ChannelTryRecvLayout)] -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(78) ty=Option<string>
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(77) ty=Option<string> intent=Consume
-    stmt: return site=Some(SiteId(77)) ty=Option<string>
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(90) ty=Option<string>
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(89) ty=Option<string> intent=Consume
+    stmt: return site=Some(SiteId(89)) ty=Option<string>
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false } }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Option", args: [String], builtin: Some(Option), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 0 } }
     _2 = move _1
     neutralize_payload _1 -> _2 [WholeCarrierConsume]
-    ownership ScopeExit { scopes: [ScopeId(16)], owners: [], carry_places: [Local(2)], carried: [] }
+    ownership ScopeExit { scopes: [ScopeId(18)], owners: [], carry_places: [Local(2)], carried: [] }
     ownership Relocate { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Local(2) }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _2
@@ -345,70 +421,15 @@ fn std.channel.Receiver::close(Receiver) -> () [conv=default]
   locals:
     _0: Receiver
   bb0:
-    stmt: use BindingId(16) rx site=SiteId(83) ty=Receiver intent=Read
+    stmt: use BindingId(18) rx site=SiteId(95) ty=Receiver intent=Read
     call hew_channel_receiver_close(_0) -> bb1
   bb1:
-    stmt: eval site=SiteId(81) ty=()
-    ownership ScopeExit { scopes: [ScopeId(18)], owners: [], carry_places: [], carried: [] }
+    stmt: eval site=SiteId(93) ty=()
+    ownership ScopeExit { scopes: [ScopeId(20)], owners: [], carry_places: [], carried: [] }
     return
 
-fn std$channel$new(i64) -> (Sender, Receiver) [conv=default]
+fn std$channel$new(i64) -> Result<(Sender, Receiver), string> [conv=default]
   key: std.channel.new [mono]
-  locals:
-    _0: i64
-    _1: (Sender, Receiver)
-    _2: Result<(Sender, Receiver), string>
-    _3: i64
-    _4: i64
-    _5: bool
-    _6: i64
-    _7: bool
-    _8: (Sender, Receiver)
-    _9: string
-  bb0:
-    stmt: use BindingId(17) capacity site=SiteId(87) ty=i64 intent=Read
-    _2 = call std$channel$try_new(_0) -> bb1
-  bb1:
-    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(86) ty=Result<(Sender, Receiver), string>
-    ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: Named { name: "Result", args: [Tuple([Named { name: "Sender", args: [], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [], builtin: Some(Receiver), is_opaque: false }]), String], builtin: Some(Result), is_opaque: false } }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Result", args: [Tuple([Named { name: "Sender", args: [], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [], builtin: Some(Receiver), is_opaque: false }]), String], builtin: Some(Result), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 0 } }
-    _3 = move etag2
-    _4 = const.i64 0
-    _5 = icmp.eq _3 _4
-    branch _5 ? bb3 : bb6
-  bb2:
-    stmt: return site=Some(SiteId(85)) ty=(Sender, Receiver)
-    ret = move _1
-    return
-  bb3:
-    stmt: bind BindingId(18) pair site=SiteId(89) ty=(Sender, Receiver)
-    stmt: use BindingId(18) pair site=SiteId(89) ty=(Sender, Receiver) intent=Read
-    _8 = move mvar2.0.0
-    neutralize_payload mvar2.0.0 -> _8 [PayloadBindingTransfer]
-    _1 = move _8
-    ownership ScopeExit { scopes: [ScopeId(20)], owners: [], carry_places: [Local(1)], carried: [] }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), target: 2 }
-    goto bb2
-  bb4:
-    stmt: bind BindingId(19) err site=SiteId(90) ty=string
-    stmt: use BindingId(19) err site=SiteId(91) ty=string intent=Read
-    _9 = move mvar2.1.0
-    ownership Mint { owner: OwnerId { binding: BindingId(19), generation: 0 }, place: Local(9), ty: String }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(19), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 1 } }
-    neutralize_payload mvar2.1.0 -> _9 [PayloadBindingTransfer]
-    call hew_panic_msg(_9) [authority=NoReturnExtern] -> bb7
-  bb5:
-    trap(ExhaustivenessFallthrough)
-  bb6:
-    _6 = const.i64 1
-    _7 = icmp.eq _3 _6
-    branch _7 ? bb4 : bb5
-  bb7:
-    ownership ScopeExit { scopes: [ScopeId(21)], owners: [], carry_places: [Local(1)], carried: [] }
-    goto bb2
-
-fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
-  key: std.channel.try_new [mono]
   locals:
     _0: i64
     _1: ()
@@ -447,23 +468,23 @@ fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     _34: i64
     _35: Result<(Sender, Receiver), string>
   bb0:
-    stmt: use BindingId(20) capacity site=SiteId(94) ty=i64 intent=Read
+    stmt: use BindingId(19) capacity site=SiteId(98) ty=i64 intent=Read
     _2 = const.i64 0
     _3 = icmp.slt _0 _2
     branch _3 ? bb1 : bb2
   bb1:
-    stmt: use BindingId(20) capacity site=SiteId(99) ty=i64 intent=Read
+    stmt: use BindingId(19) capacity site=SiteId(103) ty=i64 intent=Read
     _5 = string_lit "channel.new: invalid capacity "
     _6 = call hew_i64_to_string(_0) -> bb4
   bb2:
     goto bb3
   bb3:
-    stmt: eval site=SiteId(109) ty=()
-    stmt: use BindingId(20) capacity site=SiteId(113) ty=i64 intent=Read
+    stmt: eval site=SiteId(113) ty=()
+    stmt: use BindingId(19) capacity site=SiteId(117) ty=i64 intent=Read
     _11 = cast _0 i64 -> i64
     _12 = call hew_channel_new(_11) -> bb8
   bb4:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(102) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(106) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(6), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     _7 = call hew_string_concat(_5, _6) [authority=Runtime(StringConcat)] -> bb5
@@ -473,10 +494,10 @@ fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     _8 = string_lit " (must be >= 0)"
     _9 = call hew_string_concat(_7, _8) [authority=Runtime(StringConcat)] -> bb6
   bb6:
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(97) ty=string
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(96) ty=Result<(Sender, Receiver), string>
-    stmt: use BindingId(4294967229) __hew_produced_value site=SiteId(96) ty=Result<(Sender, Receiver), string> intent=Consume
-    stmt: return site=Some(SiteId(96)) ty=Result<(Sender, Receiver), string>
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(101) ty=string
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(100) ty=Result<(Sender, Receiver), string>
+    stmt: use BindingId(4294967229) __hew_produced_value site=SiteId(100) ty=Result<(Sender, Receiver), string> intent=Consume
+    stmt: return site=Some(SiteId(100)) ty=Result<(Sender, Receiver), string>
     drop _7 ty=string fn=release(hew_string_drop)
     ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(9), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 1 } }
@@ -492,21 +513,21 @@ fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     ret = move _4
     return
   bb7:
-    ownership ScopeExit { scopes: [ScopeId(23)], owners: [], carry_places: [], carried: [] }
+    ownership ScopeExit { scopes: [ScopeId(22)], owners: [], carry_places: [], carried: [] }
     goto bb3
   bb8:
-    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(111) ty=std.channel.ChannelPair
-    stmt: bind BindingId(21) pair site=SiteId(111) ty=std.channel.ChannelPair
-    stmt: use BindingId(4294967228) __hew_produced_value site=SiteId(111) ty=std.channel.ChannelPair intent=Consume
-    stmt: use BindingId(21) pair site=SiteId(117) ty=std.channel.ChannelPair intent=Read
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(115) ty=std.channel.ChannelPair
+    stmt: bind BindingId(20) pair site=SiteId(115) ty=std.channel.ChannelPair
+    stmt: use BindingId(4294967228) __hew_produced_value site=SiteId(115) ty=std.channel.ChannelPair intent=Consume
+    stmt: use BindingId(20) pair site=SiteId(121) ty=std.channel.ChannelPair intent=Read
     ownership Mint { owner: OwnerId { binding: BindingId(4294967228), generation: 0 }, place: Local(12), ty: Named { name: "std.channel.ChannelPair", args: [], builtin: None, is_opaque: true } }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967228), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "std.channel.ChannelPair", args: [], builtin: None, is_opaque: true }, drop_fn: Some(UserClose("std.channel.ChannelPair::close")), kind: Resource, declaration_order: 3 } }
     _13 = move _12
     neutralize_payload _12 -> _13 [WholeCarrierConsume]
-    ownership Transfer { owner: OwnerId { binding: BindingId(4294967228), generation: 0 }, from: Local(12), to: Some(Local(13)), to_owner: Some(OwnerId { binding: BindingId(21), generation: 0 }), to_ty: Some(Named { name: "std.channel.ChannelPair", args: [], builtin: None, is_opaque: true }) }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(21), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "std.channel.ChannelPair", args: [], builtin: None, is_opaque: true }, drop_fn: Some(UserClose("std.channel.ChannelPair::close")), kind: Resource, declaration_order: 4 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967228), generation: 0 }, from: Local(12), to: Some(Local(13)), to_owner: Some(OwnerId { binding: BindingId(20), generation: 0 }), to_ty: Some(Named { name: "std.channel.ChannelPair", args: [], builtin: None, is_opaque: true }) }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(20), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "std.channel.ChannelPair", args: [], builtin: None, is_opaque: true }, drop_fn: Some(UserClose("std.channel.ChannelPair::close")), kind: Resource, declaration_order: 4 } }
     _14 = const.i64 0
-    ownership Guard { owner: OwnerId { binding: BindingId(21), generation: 0 }, flag: Local(14), kind: AffineRelease }
+    ownership Guard { owner: OwnerId { binding: BindingId(20), generation: 0 }, flag: Local(14), kind: AffineRelease }
     _16 = call hew_channel_pair_is_valid(_13) -> bb9
   bb9:
     _17 = not _16
@@ -514,30 +535,30 @@ fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
   bb10:
     _18 = call hew_stream_last_error() -> bb13
   bb11:
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(21), generation: 0 }, place: Local(13), target: 12 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(20), generation: 0 }, place: Local(13), target: 12 }
     goto bb12
   bb12:
-    stmt: eval site=SiteId(131) ty=()
-    stmt: use BindingId(21) pair site=SiteId(133) ty=std.channel.ChannelPair intent=Read
+    stmt: eval site=SiteId(135) ty=()
+    stmt: use BindingId(20) pair site=SiteId(137) ty=std.channel.ChannelPair intent=Read
     _28 = call hew_channel_pair_sender(_13) -> bb19
   bb13:
-    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(119) ty=string
-    stmt: bind BindingId(22) detail site=SiteId(119) ty=string
-    stmt: use BindingId(4294967227) __hew_produced_value site=SiteId(119) ty=string intent=Consume
-    stmt: use BindingId(22) detail site=SiteId(122) ty=string intent=Read
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(123) ty=string
+    stmt: bind BindingId(21) detail site=SiteId(123) ty=string
+    stmt: use BindingId(4294967227) __hew_produced_value site=SiteId(123) ty=string intent=Consume
+    stmt: use BindingId(21) detail site=SiteId(126) ty=string intent=Read
     ownership Mint { owner: OwnerId { binding: BindingId(4294967227), generation: 0 }, place: Local(18), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967227), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 5 } }
     _19 = move _18
     neutralize_payload _18 -> _19 [WholeCarrierConsume]
-    ownership Transfer { owner: OwnerId { binding: BindingId(4294967227), generation: 0 }, from: Local(18), to: Some(Local(19)), to_owner: Some(OwnerId { binding: BindingId(22), generation: 0 }), to_ty: Some(String) }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(22), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 6 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(4294967227), generation: 0 }, from: Local(18), to: Some(Local(19)), to_owner: Some(OwnerId { binding: BindingId(21), generation: 0 }), to_ty: Some(String) }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(21), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 6 } }
     _21 = string_lit ""
     _22 = icmp.eq _19 _21
     branch _22 ? bb14 : bb15
   bb14:
-    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(124) ty=Result<(Sender, Receiver), string>
-    stmt: use BindingId(4294967226) __hew_produced_value site=SiteId(124) ty=Result<(Sender, Receiver), string> intent=Consume
-    stmt: return site=Some(SiteId(124)) ty=Result<(Sender, Receiver), string>
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(128) ty=Result<(Sender, Receiver), string>
+    stmt: use BindingId(4294967226) __hew_produced_value site=SiteId(128) ty=Result<(Sender, Receiver), string> intent=Consume
+    stmt: return site=Some(SiteId(128)) ty=Result<(Sender, Receiver), string>
     _24 = string_lit "channel.new: channel allocation failed"
     _25 = const.i64 1
     mtag23 = move _25
@@ -548,59 +569,59 @@ fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     ret = move _23
     return
   bb15:
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(21), generation: 0 }, place: Local(13), target: 16 }
-    ownership EdgeCarry { owner: OwnerId { binding: BindingId(22), generation: 0 }, place: Local(19), target: 16 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(20), generation: 0 }, place: Local(13), target: 16 }
+    ownership EdgeCarry { owner: OwnerId { binding: BindingId(21), generation: 0 }, place: Local(19), target: 16 }
     goto bb16
   bb16:
-    stmt: eval site=SiteId(127) ty=()
-    stmt: use BindingId(22) detail site=SiteId(129) ty=string intent=Read
-    stmt: bind BindingId(4294967225) __hew_produced_value site=SiteId(128) ty=Result<(Sender, Receiver), string>
-    stmt: use BindingId(4294967225) __hew_produced_value site=SiteId(128) ty=Result<(Sender, Receiver), string> intent=Consume
-    stmt: return site=Some(SiteId(128)) ty=Result<(Sender, Receiver), string>
+    stmt: eval site=SiteId(131) ty=()
+    stmt: use BindingId(21) detail site=SiteId(133) ty=string intent=Read
+    stmt: bind BindingId(4294967225) __hew_produced_value site=SiteId(132) ty=Result<(Sender, Receiver), string>
+    stmt: use BindingId(4294967225) __hew_produced_value site=SiteId(132) ty=Result<(Sender, Receiver), string> intent=Consume
+    stmt: return site=Some(SiteId(132)) ty=Result<(Sender, Receiver), string>
     _27 = const.i64 1
     mtag26 = move _27
     mvar26.1.0 = move _19
     neutralize_payload _19 -> mvar26.1.0 [WholeCarrierConsume]
-    ownership Relocate { owner: OwnerId { binding: BindingId(22), generation: 0 }, from: Local(19), to: MachineVariant { local: 26, variant_idx: 1, field_idx: 0 } }
-    ownership Transfer { owner: OwnerId { binding: BindingId(22), generation: 0 }, from: MachineVariant { local: 26, variant_idx: 1, field_idx: 0 }, to: Some(Local(26)), to_owner: None, to_ty: None }
+    ownership Relocate { owner: OwnerId { binding: BindingId(21), generation: 0 }, from: Local(19), to: MachineVariant { local: 26, variant_idx: 1, field_idx: 0 } }
+    ownership Transfer { owner: OwnerId { binding: BindingId(21), generation: 0 }, from: MachineVariant { local: 26, variant_idx: 1, field_idx: 0 }, to: Some(Local(26)), to_owner: None, to_ty: None }
     ownership Mint { owner: OwnerId { binding: BindingId(4294967225), generation: 0 }, place: Local(26), ty: Named { name: "Result", args: [Tuple([Named { name: "Sender", args: [], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [], builtin: Some(Receiver), is_opaque: false }]), String], builtin: Some(Result), is_opaque: false } }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967225), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "Result", args: [Tuple([Named { name: "Sender", args: [], builtin: Some(Sender), is_opaque: false }, Named { name: "Receiver", args: [], builtin: Some(Receiver), is_opaque: false }]), String], builtin: Some(Result), is_opaque: false }, drop_fn: None, kind: EnumInPlace, declaration_order: 8 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967225), generation: 0 }, from: Local(26), to: Some(ReturnSlot), to_owner: None, to_ty: None }
     ret = move _26
     return
   bb17:
-    ownership ScopeExit { scopes: [ScopeId(26)], owners: [], carry_places: [], carried: [] }
+    ownership ScopeExit { scopes: [ScopeId(25)], owners: [], carry_places: [], carried: [] }
     goto bb16
   bb18:
-    ownership ScopeExit { scopes: [ScopeId(25)], owners: [], carry_places: [], carried: [] }
+    ownership ScopeExit { scopes: [ScopeId(24)], owners: [], carry_places: [], carried: [] }
     goto bb12
   bb19:
-    stmt: bind BindingId(23) tx site=SiteId(132) ty=Sender
-    stmt: use BindingId(21) pair site=SiteId(136) ty=std.channel.ChannelPair intent=Read
+    stmt: bind BindingId(22) tx site=SiteId(136) ty=Sender
+    stmt: use BindingId(20) pair site=SiteId(140) ty=std.channel.ChannelPair intent=Read
     _29 = move _28
     _30 = call hew_channel_pair_receiver(_13) -> bb20
   bb20:
-    stmt: bind BindingId(24) rx site=SiteId(135) ty=Receiver
-    stmt: use BindingId(21) pair site=SiteId(139) ty=std.channel.ChannelPair intent=Consume
+    stmt: bind BindingId(23) rx site=SiteId(139) ty=Receiver
+    stmt: use BindingId(20) pair site=SiteId(143) ty=std.channel.ChannelPair intent=Consume
     _31 = move _30
     call hew_channel_pair_free(_13) -> bb21
   bb21:
-    stmt: eval site=SiteId(138) ty=()
-    stmt: use BindingId(23) tx site=SiteId(143) ty=Sender intent=Consume
-    stmt: use BindingId(24) rx site=SiteId(144) ty=Receiver intent=Consume
-    stmt: agg_alias BindingId(23) tx site=SiteId(143) ty=Sender
-    stmt: agg_alias BindingId(24) rx site=SiteId(144) ty=Receiver
-    stmt: return site=Some(SiteId(110)) ty=Result<(Sender, Receiver), string>
+    stmt: eval site=SiteId(142) ty=()
+    stmt: use BindingId(22) tx site=SiteId(147) ty=Sender intent=Consume
+    stmt: use BindingId(23) rx site=SiteId(148) ty=Receiver intent=Consume
+    stmt: agg_alias BindingId(22) tx site=SiteId(147) ty=Sender
+    stmt: agg_alias BindingId(23) rx site=SiteId(148) ty=Receiver
+    stmt: return site=Some(SiteId(114)) ty=Result<(Sender, Receiver), string>
     _14 = const.i64 1
     neutralize_payload _13 [CallDischargeConsume]
-    ownership Transfer { owner: OwnerId { binding: BindingId(21), generation: 0 }, from: Local(13), to: None, to_owner: None, to_ty: None }
+    ownership Transfer { owner: OwnerId { binding: BindingId(20), generation: 0 }, from: Local(13), to: None, to_owner: None, to_ty: None }
     _33 = tuple (_29, _31)
     _34 = const.i64 0
     mtag32 = move _34
     mvar32.0.0 = move _33
     neutralize_payload _33 -> mvar32.0.0 [ReturnedAggregateMemberConsume]
     _35 = move _32
-    ownership ScopeExit { scopes: [ScopeId(24)], owners: [], carry_places: [Local(35)], carried: [] }
+    ownership ScopeExit { scopes: [ScopeId(23)], owners: [], carry_places: [Local(35)], carried: [] }
     ret = move _35
     return
 
@@ -610,18 +631,18 @@ fn std.channel.ChannelPair::close(std.channel.ChannelPair) -> () [conv=default]
     _0: std.channel.ChannelPair
     _1: i64
   bb0:
-    stmt: use BindingId(25) self site=SiteId(147) ty=std.channel.ChannelPair intent=Consume
-    ownership Mint { owner: OwnerId { binding: BindingId(25), generation: 0 }, place: Local(0), ty: Named { name: "std.channel.ChannelPair", args: [], builtin: None, is_opaque: true } }
-    ownership DropRecipe { owner: OwnerId { binding: BindingId(25), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "std.channel.ChannelPair", args: [], builtin: None, is_opaque: true }, drop_fn: Some(UserClose("std.channel.ChannelPair::close")), kind: Resource, declaration_order: 0 } }
+    stmt: use BindingId(24) self site=SiteId(151) ty=std.channel.ChannelPair intent=Consume
+    ownership Mint { owner: OwnerId { binding: BindingId(24), generation: 0 }, place: Local(0), ty: Named { name: "std.channel.ChannelPair", args: [], builtin: None, is_opaque: true } }
+    ownership DropRecipe { owner: OwnerId { binding: BindingId(24), generation: 0 }, recipe: OwnerDropRecipe { ty: Named { name: "std.channel.ChannelPair", args: [], builtin: None, is_opaque: true }, drop_fn: Some(UserClose("std.channel.ChannelPair::close")), kind: Resource, declaration_order: 0 } }
     _1 = const.i64 0
-    ownership Guard { owner: OwnerId { binding: BindingId(25), generation: 0 }, flag: Local(1), kind: AffineRelease }
+    ownership Guard { owner: OwnerId { binding: BindingId(24), generation: 0 }, flag: Local(1), kind: AffineRelease }
     call hew_channel_pair_free(_0) -> bb1
   bb1:
-    stmt: eval site=SiteId(145) ty=()
+    stmt: eval site=SiteId(149) ty=()
     _1 = const.i64 1
     neutralize_payload _0 [CallDischargeConsume]
-    ownership Transfer { owner: OwnerId { binding: BindingId(25), generation: 0 }, from: Local(0), to: None, to_owner: None, to_ty: None }
-    ownership ScopeExit { scopes: [ScopeId(28)], owners: [], carry_places: [], carried: [] }
+    ownership Transfer { owner: OwnerId { binding: BindingId(24), generation: 0 }, from: Local(0), to: None, to_owner: None, to_ty: None }
+    ownership ScopeExit { scopes: [ScopeId(27)], owners: [], carry_places: [], carried: [] }
     return
 
 fn std.builtins.SendError::fmt(std.builtins.SendError) -> string [conv=default]
@@ -664,13 +685,13 @@ fn std.builtins.SendError::fmt(std.builtins.SendError) -> string [conv=default]
     _34: string
     _35: string
   bb0:
-    stmt: use BindingId(26) err site=SiteId(150) ty=std.builtins.SendError intent=Read
+    stmt: use BindingId(25) err site=SiteId(154) ty=std.builtins.SendError intent=Read
     _2 = move etag0
     _3 = const.i64 0
     _4 = icmp.eq _2 _3
     branch _4 ? bb2 : bb14
   bb1:
-    stmt: return site=Some(SiteId(149)) ty=string
+    stmt: return site=Some(SiteId(153)) ty=string
     ret = move _1
     return
   bb2:
@@ -791,13 +812,13 @@ fn std.builtins.LookupError::fmt(std.builtins.LookupError) -> string [conv=defau
     _25: string
     _26: string
   bb0:
-    stmt: use BindingId(27) err site=SiteId(163) ty=std.builtins.LookupError intent=Read
+    stmt: use BindingId(26) err site=SiteId(167) ty=std.builtins.LookupError intent=Read
     _2 = move etag0
     _3 = const.i64 0
     _4 = icmp.eq _2 _3
     branch _4 ? bb2 : bb11
   bb1:
-    stmt: return site=Some(SiteId(162)) ty=string
+    stmt: return site=Some(SiteId(166)) ty=string
     ret = move _1
     return
   bb2:
@@ -911,8 +932,8 @@ fn std.builtins.AskError::fmt(std.builtins.AskError) -> string [conv=default]
     _42: bool
     _43: i64
     _44: bool
-    _45: i64
-    _46: bool
+    _45: string
+    _46: string
     _47: string
     _48: string
     _49: string
@@ -932,193 +953,182 @@ fn std.builtins.AskError::fmt(std.builtins.AskError) -> string [conv=default]
     _63: string
     _64: string
     _65: string
-    _66: string
-    _67: string
-    _68: string
   bb0:
-    stmt: use BindingId(28) err site=SiteId(173) ty=std.builtins.AskError intent=Read
+    stmt: use BindingId(27) err site=SiteId(177) ty=std.builtins.AskError intent=Read
     _2 = move etag0
     _3 = const.i64 0
     _4 = icmp.eq _2 _3
-    branch _4 ? bb2 : bb25
+    branch _4 ? bb2 : bb24
   bb1:
-    stmt: return site=Some(SiteId(172)) ty=string
+    stmt: return site=Some(SiteId(176)) ty=string
     ret = move _1
     return
   bb2:
-    _47 = string_lit "no error"
-    _1 = move _47
+    _45 = string_lit "the local node is not running"
+    _1 = move _45
     goto bb1
   bb3:
-    _48 = string_lit "the local node is not running"
-    _1 = move _48
+    _46 = string_lit "the destination node or actor could not be routed"
+    _1 = move _46
     goto bb1
   bb4:
-    _49 = string_lit "the destination node or actor could not be routed"
-    _1 = move _49
+    _47 = string_lit "the request payload could not be encoded"
+    _1 = move _47
     goto bb1
   bb5:
-    _50 = string_lit "the request payload could not be encoded"
-    _1 = move _50
+    _48 = string_lit "the request could not be sent"
+    _1 = move _48
     goto bb1
   bb6:
-    _51 = string_lit "the request could not be sent"
-    _1 = move _51
+    _49 = string_lit "the caller-supplied timeout elapsed before a reply arrived"
+    _1 = move _49
     goto bb1
   bb7:
-    _52 = string_lit "the caller-supplied timeout elapsed before a reply arrived"
-    _1 = move _52
+    _50 = string_lit "the remote connection closed before the reply arrived"
+    _1 = move _50
     goto bb1
   bb8:
-    _53 = string_lit "the remote connection closed before the reply arrived"
-    _1 = move _53
+    _51 = string_lit "the reply payload did not match the expected reply size"
+    _1 = move _51
     goto bb1
   bb9:
-    _54 = string_lit "the reply payload did not match the expected reply size"
-    _1 = move _54
+    _52 = string_lit "the remote ask worker is at capacity"
+    _1 = move _52
     goto bb1
   bb10:
-    _55 = string_lit "the remote ask worker is at capacity"
-    _1 = move _55
+    _53 = string_lit "the destination actor is stopped"
+    _1 = move _53
     goto bb1
   bb11:
-    _56 = string_lit "the destination actor is stopped"
-    _1 = move _56
+    _54 = string_lit "the destination actor mailbox is full"
+    _1 = move _54
     goto bb1
   bb12:
-    _57 = string_lit "the destination actor mailbox is full"
-    _1 = move _57
+    _55 = string_lit "a reply arrived after its waiter was gone"
+    _1 = move _55
     goto bb1
   bb13:
-    _58 = string_lit "a reply arrived after its waiter was gone"
-    _1 = move _58
+    _56 = string_lit "the runtime had no runnable work while waiting for the reply"
+    _1 = move _56
     goto bb1
   bb14:
-    _59 = string_lit "the runtime had no runnable work while waiting for the reply"
-    _1 = move _59
+    _57 = string_lit "the inbound request payload could not be decoded; the handler was never dispatched"
+    _1 = move _57
     goto bb1
   bb15:
-    _60 = string_lit "the inbound request payload could not be decoded; the handler was never dispatched"
-    _1 = move _60
+    _58 = string_lit "the route to the peer is unavailable or the peer is suspected dead"
+    _1 = move _58
     goto bb1
   bb16:
-    _61 = string_lit "the route to the peer is unavailable or the peer is suspected dead"
-    _1 = move _61
+    _59 = string_lit "the pid refers to an old session or actor incarnation"
+    _1 = move _59
     goto bb1
   bb17:
-    _62 = string_lit "the pid refers to an old session or actor incarnation"
-    _1 = move _62
+    _60 = string_lit "the caller cancelled the ask before it completed"
+    _1 = move _60
     goto bb1
   bb18:
-    _63 = string_lit "the caller cancelled the ask before it completed"
-    _1 = move _63
+    _61 = string_lit "the local node is shutting down before the ask could complete"
+    _1 = move _61
     goto bb1
   bb19:
-    _64 = string_lit "the local node is shutting down before the ask could complete"
-    _1 = move _64
+    _62 = string_lit "the peer rejected the ask because protocol or schema versions differ"
+    _1 = move _62
     goto bb1
   bb20:
-    _65 = string_lit "the peer rejected the ask because protocol or schema versions differ"
-    _1 = move _65
+    _63 = string_lit "the peer rejected the ask because the caller lacks authority"
+    _1 = move _63
     goto bb1
   bb21:
-    _66 = string_lit "the peer rejected the ask because the caller lacks authority"
-    _1 = move _66
+    _64 = string_lit "the destination or route is applying flow control"
+    _1 = move _64
     goto bb1
   bb22:
-    _67 = string_lit "the destination or route is applying flow control"
-    _1 = move _67
+    _65 = string_lit "a monitor required to resolve the ask was lost before completion"
+    _1 = move _65
     goto bb1
   bb23:
-    _68 = string_lit "a monitor required to resolve the ask was lost before completion"
-    _1 = move _68
-    goto bb1
-  bb24:
     trap(ExhaustivenessFallthrough)
-  bb25:
+  bb24:
     _5 = const.i64 1
     _6 = icmp.eq _2 _5
-    branch _6 ? bb3 : bb26
-  bb26:
+    branch _6 ? bb3 : bb25
+  bb25:
     _7 = const.i64 2
     _8 = icmp.eq _2 _7
-    branch _8 ? bb4 : bb27
-  bb27:
+    branch _8 ? bb4 : bb26
+  bb26:
     _9 = const.i64 3
     _10 = icmp.eq _2 _9
-    branch _10 ? bb5 : bb28
-  bb28:
+    branch _10 ? bb5 : bb27
+  bb27:
     _11 = const.i64 4
     _12 = icmp.eq _2 _11
-    branch _12 ? bb6 : bb29
-  bb29:
+    branch _12 ? bb6 : bb28
+  bb28:
     _13 = const.i64 5
     _14 = icmp.eq _2 _13
-    branch _14 ? bb7 : bb30
-  bb30:
+    branch _14 ? bb7 : bb29
+  bb29:
     _15 = const.i64 6
     _16 = icmp.eq _2 _15
-    branch _16 ? bb8 : bb31
-  bb31:
+    branch _16 ? bb8 : bb30
+  bb30:
     _17 = const.i64 7
     _18 = icmp.eq _2 _17
-    branch _18 ? bb9 : bb32
-  bb32:
+    branch _18 ? bb9 : bb31
+  bb31:
     _19 = const.i64 8
     _20 = icmp.eq _2 _19
-    branch _20 ? bb10 : bb33
-  bb33:
+    branch _20 ? bb10 : bb32
+  bb32:
     _21 = const.i64 9
     _22 = icmp.eq _2 _21
-    branch _22 ? bb11 : bb34
-  bb34:
+    branch _22 ? bb11 : bb33
+  bb33:
     _23 = const.i64 10
     _24 = icmp.eq _2 _23
-    branch _24 ? bb12 : bb35
-  bb35:
+    branch _24 ? bb12 : bb34
+  bb34:
     _25 = const.i64 11
     _26 = icmp.eq _2 _25
-    branch _26 ? bb13 : bb36
-  bb36:
+    branch _26 ? bb13 : bb35
+  bb35:
     _27 = const.i64 12
     _28 = icmp.eq _2 _27
-    branch _28 ? bb14 : bb37
-  bb37:
+    branch _28 ? bb14 : bb36
+  bb36:
     _29 = const.i64 13
     _30 = icmp.eq _2 _29
-    branch _30 ? bb15 : bb38
-  bb38:
+    branch _30 ? bb15 : bb37
+  bb37:
     _31 = const.i64 14
     _32 = icmp.eq _2 _31
-    branch _32 ? bb16 : bb39
-  bb39:
+    branch _32 ? bb16 : bb38
+  bb38:
     _33 = const.i64 15
     _34 = icmp.eq _2 _33
-    branch _34 ? bb17 : bb40
-  bb40:
+    branch _34 ? bb17 : bb39
+  bb39:
     _35 = const.i64 16
     _36 = icmp.eq _2 _35
-    branch _36 ? bb18 : bb41
-  bb41:
+    branch _36 ? bb18 : bb40
+  bb40:
     _37 = const.i64 17
     _38 = icmp.eq _2 _37
-    branch _38 ? bb19 : bb42
-  bb42:
+    branch _38 ? bb19 : bb41
+  bb41:
     _39 = const.i64 18
     _40 = icmp.eq _2 _39
-    branch _40 ? bb20 : bb43
-  bb43:
+    branch _40 ? bb20 : bb42
+  bb42:
     _41 = const.i64 19
     _42 = icmp.eq _2 _41
-    branch _42 ? bb21 : bb44
-  bb44:
+    branch _42 ? bb21 : bb43
+  bb43:
     _43 = const.i64 20
     _44 = icmp.eq _2 _43
-    branch _44 ? bb22 : bb45
-  bb45:
-    _45 = const.i64 21
-    _46 = icmp.eq _2 _45
-    branch _46 ? bb23 : bb24
+    branch _44 ? bb22 : bb23
 
 fn std.builtins.TimeoutError::fmt(std.builtins.TimeoutError) -> string [conv=default]
   key: std.builtins.TimeoutError::<impl std.builtins.Display for std.builtins.TimeoutError>::fmt [mono]
@@ -1130,13 +1140,13 @@ fn std.builtins.TimeoutError::fmt(std.builtins.TimeoutError) -> string [conv=def
     _4: bool
     _5: string
   bb0:
-    stmt: use BindingId(29) err site=SiteId(197) ty=std.builtins.TimeoutError intent=Read
+    stmt: use BindingId(28) err site=SiteId(200) ty=std.builtins.TimeoutError intent=Read
     _2 = move etag0
     _3 = const.i64 0
     _4 = icmp.eq _2 _3
     branch _4 ? bb2 : bb3
   bb1:
-    stmt: return site=Some(SiteId(196)) ty=string
+    stmt: return site=Some(SiteId(199)) ty=string
     ret = move _1
     return
   bb2:
@@ -1183,13 +1193,13 @@ fn std.builtins.LinkError::fmt(std.builtins.LinkError) -> string [conv=default]
     _31: string
     _32: string
   bb0:
-    stmt: use BindingId(30) err site=SiteId(200) ty=std.builtins.LinkError intent=Read
+    stmt: use BindingId(29) err site=SiteId(203) ty=std.builtins.LinkError intent=Read
     _2 = move etag0
     _3 = const.i64 0
     _4 = icmp.eq _2 _3
     branch _4 ? bb2 : bb13
   bb1:
-    stmt: return site=Some(SiteId(199)) ty=string
+    stmt: return site=Some(SiteId(202)) ty=string
     ret = move _1
     return
   bb2:
@@ -1277,10 +1287,10 @@ fn std.builtins.NodeId::fmt(NodeId) -> string [conv=default]
     _0: NodeId
     _1: string
   bb0:
-    stmt: use BindingId(31) val site=SiteId(212) ty=NodeId intent=Read
+    stmt: use BindingId(30) val site=SiteId(215) ty=NodeId intent=Read
     _1 = call hew_node_id_display(_0) [authority=Compiler(IdentityAggregate(NodeIdDisplay))] -> bb1
   bb1:
-    stmt: return site=Some(SiteId(211)) ty=string
+    stmt: return site=Some(SiteId(214)) ty=string
     ret = move _1
     return
 
@@ -1290,10 +1300,10 @@ fn std.builtins.Location::fmt(Location) -> string [conv=default]
     _0: Location
     _1: string
   bb0:
-    stmt: use BindingId(32) val site=SiteId(215) ty=Location intent=Read
+    stmt: use BindingId(31) val site=SiteId(218) ty=Location intent=Read
     _1 = call hew_location_display(_0) [authority=Compiler(IdentityAggregate(LocationDisplay))] -> bb1
   bb1:
-    stmt: return site=Some(SiteId(214)) ty=string
+    stmt: return site=Some(SiteId(217)) ty=string
     ret = move _1
     return
 
@@ -1304,13 +1314,13 @@ fn std.builtins.i8::fmt(i8) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(34) val site=SiteId(222) ty=i8 intent=Read
+    stmt: use BindingId(33) val site=SiteId(225) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
     _2 = call hew_int_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(220) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(220) ty=string intent=Consume
-    stmt: return site=Some(SiteId(220)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(223) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(223) ty=string intent=Consume
+    stmt: return site=Some(SiteId(223)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1324,13 +1334,13 @@ fn std.builtins.i16::fmt(i16) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(35) val site=SiteId(226) ty=i16 intent=Read
+    stmt: use BindingId(34) val site=SiteId(229) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
     _2 = call hew_int_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(224) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(224) ty=string intent=Consume
-    stmt: return site=Some(SiteId(224)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(227) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(227) ty=string intent=Consume
+    stmt: return site=Some(SiteId(227)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1343,12 +1353,12 @@ fn std.builtins.i32::fmt(i32) -> string [conv=default]
     _0: i32
     _1: string
   bb0:
-    stmt: use BindingId(36) val site=SiteId(229) ty=i32 intent=Read
+    stmt: use BindingId(35) val site=SiteId(232) ty=i32 intent=Read
     _1 = call hew_int_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(228) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(228) ty=string intent=Consume
-    stmt: return site=Some(SiteId(228)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(231) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(231) ty=string intent=Consume
+    stmt: return site=Some(SiteId(231)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1361,12 +1371,12 @@ fn std.builtins.i64::fmt(i64) -> string [conv=default]
     _0: i64
     _1: string
   bb0:
-    stmt: use BindingId(37) val site=SiteId(232) ty=i64 intent=Read
+    stmt: use BindingId(36) val site=SiteId(235) ty=i64 intent=Read
     _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(231) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(231) ty=string intent=Consume
-    stmt: return site=Some(SiteId(231)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(234) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(234) ty=string intent=Consume
+    stmt: return site=Some(SiteId(234)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1379,12 +1389,12 @@ fn std.builtins.u8::fmt(u8) -> string [conv=default]
     _0: u8
     _1: string
   bb0:
-    stmt: use BindingId(38) val site=SiteId(235) ty=u8 intent=Read
+    stmt: use BindingId(37) val site=SiteId(238) ty=u8 intent=Read
     _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(234) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(234) ty=string intent=Consume
-    stmt: return site=Some(SiteId(234)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(237) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(237) ty=string intent=Consume
+    stmt: return site=Some(SiteId(237)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1397,12 +1407,12 @@ fn std.builtins.u16::fmt(u16) -> string [conv=default]
     _0: u16
     _1: string
   bb0:
-    stmt: use BindingId(39) val site=SiteId(238) ty=u16 intent=Read
+    stmt: use BindingId(38) val site=SiteId(241) ty=u16 intent=Read
     _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(237) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(237) ty=string intent=Consume
-    stmt: return site=Some(SiteId(237)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(240) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(240) ty=string intent=Consume
+    stmt: return site=Some(SiteId(240)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1415,12 +1425,12 @@ fn std.builtins.u32::fmt(u32) -> string [conv=default]
     _0: u32
     _1: string
   bb0:
-    stmt: use BindingId(40) val site=SiteId(241) ty=u32 intent=Read
+    stmt: use BindingId(39) val site=SiteId(244) ty=u32 intent=Read
     _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(240) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(240) ty=string intent=Consume
-    stmt: return site=Some(SiteId(240)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(243) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(243) ty=string intent=Consume
+    stmt: return site=Some(SiteId(243)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1433,12 +1443,12 @@ fn std.builtins.u64::fmt(u64) -> string [conv=default]
     _0: u64
     _1: string
   bb0:
-    stmt: use BindingId(41) val site=SiteId(244) ty=u64 intent=Read
+    stmt: use BindingId(40) val site=SiteId(247) ty=u64 intent=Read
     _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(243) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(243) ty=string intent=Consume
-    stmt: return site=Some(SiteId(243)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(246) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(246) ty=string intent=Consume
+    stmt: return site=Some(SiteId(246)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1452,13 +1462,13 @@ fn std.builtins.isize::fmt(isize) -> string [conv=default]
     _1: i64
     _2: string
   bb0:
-    stmt: use BindingId(42) val site=SiteId(248) ty=isize intent=Read
+    stmt: use BindingId(41) val site=SiteId(251) ty=isize intent=Read
     _1 = cast _0 isize -> i64
     _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(246) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(246) ty=string intent=Consume
-    stmt: return site=Some(SiteId(246)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(249) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(249) ty=string intent=Consume
+    stmt: return site=Some(SiteId(249)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1472,13 +1482,13 @@ fn std.builtins.usize::fmt(usize) -> string [conv=default]
     _1: u64
     _2: string
   bb0:
-    stmt: use BindingId(43) val site=SiteId(252) ty=usize intent=Read
+    stmt: use BindingId(42) val site=SiteId(255) ty=usize intent=Read
     _1 = cast _0 usize -> u64
     _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(250) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(250) ty=string intent=Consume
-    stmt: return site=Some(SiteId(250)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(253) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(253) ty=string intent=Consume
+    stmt: return site=Some(SiteId(253)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1491,12 +1501,12 @@ fn std.builtins.bool::fmt(bool) -> string [conv=default]
     _0: bool
     _1: string
   bb0:
-    stmt: use BindingId(44) val site=SiteId(255) ty=bool intent=Read
+    stmt: use BindingId(43) val site=SiteId(258) ty=bool intent=Read
     _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(254) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(254) ty=string intent=Consume
-    stmt: return site=Some(SiteId(254)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(257) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(257) ty=string intent=Consume
+    stmt: return site=Some(SiteId(257)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1509,12 +1519,12 @@ fn std.builtins.char::fmt(char) -> string [conv=default]
     _0: char
     _1: string
   bb0:
-    stmt: use BindingId(45) val site=SiteId(258) ty=char intent=Read
+    stmt: use BindingId(44) val site=SiteId(261) ty=char intent=Read
     _1 = call hew_char_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(257) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(257) ty=string intent=Consume
-    stmt: return site=Some(SiteId(257)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(260) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(260) ty=string intent=Consume
+    stmt: return site=Some(SiteId(260)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1527,12 +1537,12 @@ fn std.builtins.f64::fmt(f64) -> string [conv=default]
     _0: f64
     _1: string
   bb0:
-    stmt: use BindingId(46) val site=SiteId(261) ty=f64 intent=Read
+    stmt: use BindingId(45) val site=SiteId(264) ty=f64 intent=Read
     _1 = call hew_float_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(260) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(260) ty=string intent=Consume
-    stmt: return site=Some(SiteId(260)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(263) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(263) ty=string intent=Consume
+    stmt: return site=Some(SiteId(263)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(1), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(1), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1546,13 +1556,13 @@ fn std.builtins.f32::fmt(f32) -> string [conv=default]
     _1: f64
     _2: string
   bb0:
-    stmt: use BindingId(47) val site=SiteId(265) ty=f32 intent=Read
+    stmt: use BindingId(46) val site=SiteId(268) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
     _2 = call hew_float_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(263) ty=string
-    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(263) ty=string intent=Consume
-    stmt: return site=Some(SiteId(263)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(266) ty=string
+    stmt: use BindingId(4294967231) __hew_produced_value site=SiteId(266) ty=string intent=Consume
+    stmt: return site=Some(SiteId(266)) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     ownership Transfer { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, from: Local(2), to: Some(ReturnSlot), to_owner: None, to_ty: None }
@@ -1564,8 +1574,8 @@ fn std.builtins.string::fmt(string) -> string [conv=default]
   locals:
     _0: string
   bb0:
-    stmt: use BindingId(48) val site=SiteId(267) ty=string intent=Read
-    stmt: return site=Some(SiteId(267)) ty=string
+    stmt: use BindingId(47) val site=SiteId(270) ty=string intent=Read
+    stmt: return site=Some(SiteId(270)) ty=string
     string.retain _0
     ret = move _0
     return
@@ -1579,20 +1589,20 @@ fn std.builtins.duration::fmt(duration) -> string [conv=default]
     _3: string
     _4: string
   bb0:
-    stmt: use BindingId(49) val site=SiteId(271) ty=duration intent=Read
+    stmt: use BindingId(48) val site=SiteId(274) ty=duration intent=Read
     _1 = call hew_duration_nanos(_0) -> bb1
   bb1:
     _2 = call hew_i64_to_string(_1) -> bb2
   bb2:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(269) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(272) ty=string
     ownership Mint { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2), ty: String }
     ownership DropRecipe { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, recipe: OwnerDropRecipe { ty: String, drop_fn: None, kind: CowHeap { release: String }, declaration_order: 0 } }
     _3 = string_lit "ns"
     _4 = call hew_string_concat(_2, _3) [authority=Runtime(StringConcat)] -> bb3
   bb3:
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(268) ty=string
-    stmt: use BindingId(4294967230) __hew_produced_value site=SiteId(268) ty=string intent=Consume
-    stmt: return site=Some(SiteId(268)) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(271) ty=string
+    stmt: use BindingId(4294967230) __hew_produced_value site=SiteId(271) ty=string intent=Consume
+    stmt: return site=Some(SiteId(271)) ty=string
     drop _2 ty=string fn=release(hew_string_drop)
     ownership Release { owner: OwnerId { binding: BindingId(4294967231), generation: 0 }, place: Local(2) }
     ownership Mint { owner: OwnerId { binding: BindingId(4294967230), generation: 0 }, place: Local(4), ty: String }
@@ -1609,14 +1619,14 @@ fn duration::from_nanos(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(58) n site=SiteId(344) ty=i64 intent=Read
+    stmt: use BindingId(57) n site=SiteId(347) ty=i64 intent=Read
     _1 = const.duration 1ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(343)) ty=duration
+    stmt: return site=Some(SiteId(346)) ty=duration
     ret = move _2
     return
 
@@ -1628,14 +1638,14 @@ fn duration::from_micros(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(59) n site=SiteId(347) ty=i64 intent=Read
+    stmt: use BindingId(58) n site=SiteId(350) ty=i64 intent=Read
     _1 = const.duration 1000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(346)) ty=duration
+    stmt: return site=Some(SiteId(349)) ty=duration
     ret = move _2
     return
 
@@ -1647,14 +1657,14 @@ fn duration::from_millis(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(60) n site=SiteId(350) ty=i64 intent=Read
+    stmt: use BindingId(59) n site=SiteId(353) ty=i64 intent=Read
     _1 = const.duration 1000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(349)) ty=duration
+    stmt: return site=Some(SiteId(352)) ty=duration
     ret = move _2
     return
 
@@ -1666,14 +1676,14 @@ fn duration::from_secs(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(61) n site=SiteId(353) ty=i64 intent=Read
+    stmt: use BindingId(60) n site=SiteId(356) ty=i64 intent=Read
     _1 = const.duration 1000000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(352)) ty=duration
+    stmt: return site=Some(SiteId(355)) ty=duration
     ret = move _2
     return
 

@@ -16,14 +16,14 @@ actor Session {
 fn main() {
     let listener = match net.listen("127.0.0.1:0") {
         .Ok(listener) => listener,
-        .Err(err) => panic(f"network setup failed: {err}"),
+        .Err(_) => panic(f"network setup failed"),
     };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
     };
     let conn = match net.connect(f"127.0.0.1:{port}") {
         .Ok(conn) => conn,
-        .Err(err) => panic(f"network setup failed: {err}"),
+        .Err(_) => panic(f"network setup failed"),
     };
     let session = spawn Session(conn: conn);
     session.pump(0);

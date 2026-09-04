@@ -11,8 +11,8 @@
 //!
 //! fn main() {
 //!     let s = string.from_int(42);        // "42"
-//!     let n = string.to_int("42");        // Some(42)
-//!     let f = string.to_float("3.14");    // 3.14
+//!     let n = string.to_int("42").unwrap();       // 42
+//!     let f = string.to_float("3.14").unwrap();     // 3.14
 //!     let nl = string.from_char(10);      // "\n"
 //!     let stars = string.repeat("*", 3);  // "***"
 //!     let padded = string.pad_left("7", 3, "0");  // "007"
@@ -68,11 +68,9 @@ pub fn from_char(code: i64) -> string {
     }
 }
 
-/// Parse a string as an integer. Returns `None` if parsing fails.
-///
 /// Unlike C's `atoi`, this function does **not** stop at the first non-digit
 /// character — any non-digit anywhere in the string (after an optional leading
-/// Parse a string as an integer, returning a structured error on failure.
+/// sign) returns a structured error.
 pub fn to_int(s: string) -> Result<i64, string> {
     let slen = s.len();
     if slen == 0 {

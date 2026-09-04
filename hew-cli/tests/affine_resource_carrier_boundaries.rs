@@ -139,7 +139,7 @@ const CHANNEL_SENDER_CLONE_BODY: &str = r"
 import std.channel.channel;
 
 fn main() -> i64 {
-    let (tx, _rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (tx, _rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let senders: Vec<channel.Sender<Token>> = [tx];
     let senders_copy = senders.clone();
     println(senders_copy.len());
@@ -151,7 +151,7 @@ const CHANNEL_RECEIVER_CLONE_BODY: &str = r"
 import std.channel.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     let _receivers_copy = receivers.clone();
     0
@@ -165,7 +165,7 @@ const CHANNEL_RECEIVER_MOVE_BODY: &str = r"
 import std.channel.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     println(receivers.len());
     0
@@ -176,7 +176,7 @@ const CHANNEL_RECEIVER_GET_BODY: &str = r"
 import std.channel.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     let _item = receivers.get(0);
     0
@@ -187,7 +187,7 @@ const CHANNEL_RECEIVER_INDEX_BODY: &str = r"
 import std.channel.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     let _item = receivers[0];
     0
@@ -198,7 +198,7 @@ const CHANNEL_RECEIVER_SLICE_BODY: &str = r"
 import std.channel.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     let _slice = receivers[0..1];
     0
@@ -209,7 +209,7 @@ const CHANNEL_RECEIVER_ITER_BODY: &str = r"
 import std.channel.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     let _iter = receivers.iter();
     0
@@ -220,7 +220,7 @@ const CHANNEL_RECEIVER_COPY_PUSH_BODY: &str = r"
 import std.channel.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     var receivers: Vec<channel.Receiver<Token>> = Vec.new();
     receivers.push(rx);
     println(receivers.len());
@@ -232,8 +232,8 @@ const CHANNEL_RECEIVER_COPY_SET_BODY: &str = r"
 import std.channel.channel;
 
 fn main() -> i64 {
-    let (_tx1, rx1): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
-    let (_tx2, rx2): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx1, rx1): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (_tx2, rx2): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     var receivers: Vec<channel.Receiver<Token>> = [rx1];
     receivers.set(0, rx2);
     println(receivers.len());
@@ -363,10 +363,7 @@ fn function<'a>(dump: &'a str, header: &str) -> &'a str {
 }
 
 fn assert_channel_affine_guards(mir: &str) {
-    for symbol in [
-        "fn std$channel$try_new",
-        "fn std.channel.ChannelPair::close",
-    ] {
+    for symbol in ["fn std$channel$new", "fn std.channel.ChannelPair::close"] {
         let guarded_function = function(mir, symbol);
         assert!(
             guarded_function.lines().any(|line| {
@@ -553,7 +550,7 @@ fn channel_handle_clone_terminals_match_runtime_semantics() {
     let sender_mir = raw_mir("channel_sender_clone", CHANNEL_SENDER_CLONE_BODY);
     let channel_ctor = function(
         &sender_mir,
-        "fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string>",
+        "fn std$channel$new(i64) -> Result<(Sender, Receiver), string>",
     );
     let (_, after_pair_free) = channel_ctor
         .split_once("call hew_channel_pair_free")

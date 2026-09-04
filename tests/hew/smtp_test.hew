@@ -95,13 +95,6 @@ fn test_module_try_send_html_oversized_i64_port_does_not_wrap() {
 }
 
 #[test]
-fn test_module_send_oversized_i64_port_returns_nonzero() {
-    let rc = smtp.send("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "b");
-    testing.assert_true(rc != 0);
-    testing.assert_true(smtp.last_error().contains("out of range"));
-}
-
-#[test]
 fn test_conn_connect_oversized_i64_port_rejects_before_relay_init() {
     match smtp.connect("localhost", 4294967883, "u", "p") {
         .Ok(conn) => {

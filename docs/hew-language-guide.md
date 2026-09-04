@@ -831,7 +831,10 @@ fn main() -> i32 {
         println("usage: prog <arg>");
         return 1;
     }
-    println(f"arg: {arguments.get(1)}");
+    match arguments.get(1) {
+        .Some(argument) => println(f"arg: {argument}"),
+        .None => return 1,
+    }
     0
 }
 ```
@@ -1720,7 +1723,7 @@ actor Server {
     let addr: string;
 
     receive fn serve() {
-        let listener = net.listen(addr);
+        let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
         loop {
             let conn = await listener.accept();
             let _data = await conn.read();
@@ -2461,8 +2464,8 @@ import std.string;
 fn main() {
     println(string.from_int(42));            // 42
     let n = match string.to_int("42") {
-        .Some(v) => v,
-        .None => 0,
+        .Ok(v) => v,
+        .Err(_) => 0,
     };
     println(f"n={n}");                        // 42
     println(string.pad_left("7", 3, "0"));   // 007
@@ -3354,7 +3357,7 @@ import std.stream;
 actor Echo {
     let n: i64;
     receive fn run(unused: i64) {
-        let (sink, input) = stream.bytes_pipe(4);
+        let (sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
         for i in 0..n {
             await sink.send(f"x{i}".to_bytes());
         }
@@ -3396,7 +3399,7 @@ import std.channel.channel;
 
 actor Inbox {
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
         tx.send("ready");
         tx.close();
 
@@ -3794,7 +3797,7 @@ fn main() {
     let stream = tls.connect("example.com", 443);
     let req = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
     let payload = req.to_bytes();
-    let sent = tls.write(stream, payload);
+    let sent = tls.write(stream, payload).unwrap();
     println(f"sent {sent}/{payload.len()} bytes");
     // match tls.read(stream, 256) { .Ok(data) => ..., .Err(_) => ... }
     tls.close(stream);
@@ -3824,19 +3827,18 @@ Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
 import std.process;
 
 fn main() {
-    let out = process.run("echo shell-form");
-    println(out.trim());
+    let out = process.run("echo shell-form").unwrap();
+    println(out.stdout.trim());
 
     let args: Vec<string> = Vec.new();
     args.push("no-shell-form");
-    let result = process.run_argv("echo", args);
+    let result = process.run_argv("echo", args).unwrap();
     println(result.stdout.trim());
 }
 ```
 
 `process.run(command: string)` hands `command` to the system shell (`sh -c`
-on POSIX) and returns captured stdout as a `string`; it panics on launch
-failure (`process.run` returns a `Result` instead). Because it goes
+on POSIX) and returns `Result<CommandOutput, ProcessError>`. Because it goes
 through a shell, `command` is subject to shell quoting, globbing, and
 injection the same way a hand-built shell string always is — building
 `command` by concatenating untrusted input is a shell-injection bug in Hew

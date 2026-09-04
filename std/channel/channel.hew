@@ -32,7 +32,7 @@
 //! import std.channel.channel;
 //!
 //! fn main() {
-//!     let (tx, rx) = channel.new(8);
+//!     let (tx, rx) = match channel.new(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
 //!     tx.send("hello");
 //!     tx.close();
 //!

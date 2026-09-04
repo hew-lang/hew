@@ -1,5 +1,8 @@
 import std.fs;
 
 fn main() {
-    println(fs.read("secret.txt"));
+    match fs.read("secret.txt") {
+        .Ok(contents) => println(contents),
+        .Err(_) => println("read failed"),
+    }
 }

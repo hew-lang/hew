@@ -5,7 +5,7 @@
 //! handle it just returned. `hew_stream_from_file_write` is the sink twin of
 //! `hew_stream_from_file_read`, which already carries the measured row; without
 //! the same evidence for the write side the compiler cannot establish ownership
-//! of a `Sink` payload returned through `std.stream.try_to_file`.
+//! of a `Sink` payload returned through `std.stream.to_file`.
 //!
 //! The string oracles' three probes translate to a handle as follows.
 //! R1 keeps two results live and requires distinct addresses, so the runtime

@@ -11,7 +11,7 @@ fn helper(conn: Connection) -> Result<bytes, net.NetError> {
 }
 
 fn main() {
-    let conn = net.connect("127.0.0.1:9");
+    let conn = match net.connect("127.0.0.1:9") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let got = helper(conn);
     let _ = got;
 }

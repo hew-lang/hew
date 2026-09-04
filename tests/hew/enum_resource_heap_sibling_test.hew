@@ -74,7 +74,10 @@ fn user_enum_resource_and_heap_siblings() {
 
 #[test]
 fn scalar_sibling_control() {
-    let value = ScalarSibling.Loaded(xml.parse("<x/>"));
+    let value = match xml.parse("<x/>") {
+        .Ok(node) => ScalarSibling.Loaded(node),
+        .Err(reason) => panic(reason),
+    };
     match value {
         ScalarSibling.Loaded(node) => testing.assert_eq_str(node.get_tag(), "x"),
         ScalarSibling.Count(_) => testing.assert_true(false),

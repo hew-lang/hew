@@ -12,7 +12,7 @@ import std.time.datetime;
 
 fn cleanup_file(file_path: string) {
     if fs.exists(file_path) {
-        fs.delete(file_path);
+        let _ = fs.delete(file_path);
     }
 }
 
@@ -20,14 +20,20 @@ fn kill_zero_exit_code(pid: string) -> i64 {
     let args: Vec<string> = Vec.new();
     args.push("-0");
     args.push(pid);
-    process.run_argv("kill", args).exit_code
+    match process.run_argv("kill", args) {
+        .Ok(output) => output.exit_code,
+        .Err(error) => panic(to_string(error)),
+    }
 }
 
 fn read_pid_with_retry(pid_path: string) -> string {
     var attempts = 0;
     while attempts < 50 {
         if fs.exists(pid_path) {
-            return string.trim(fs.read(pid_path));
+            match fs.read(pid_path) {
+                .Ok(contents) => return string.trim(contents),
+                .Err(_) => {},
+            }
         }
         sleep(100ms);
         attempts = attempts + 1;
@@ -37,14 +43,17 @@ fn read_pid_with_retry(pid_path: string) -> string {
 }
 
 fn spawn_child_for_implicit_drop(pid_path: string) -> string {
-    let child = process.start(f"echo $$ > {pid_path}; sleep 60");
+    let child = match process.start(f"echo $$ > {pid_path}; sleep 60") {
+        .Ok(child) => child,
+        .Err(error) => panic(to_string(error)),
+    };
     let pid = read_pid_with_retry(pid_path);
     testing.assert_true(kill_zero_exit_code(pid) == 0);
     pid
 }
 
 #[test]
-fn test_try_run_argv_preserves_spaced_and_empty_arguments() {
+fn test_run_argv_preserves_spaced_and_empty_arguments() {
     let args: Vec<string> = Vec.new();
     args.push("<%s>|<%s>|<%s>");
     args.push("hello world");
@@ -61,7 +70,7 @@ fn test_try_run_argv_preserves_spaced_and_empty_arguments() {
 }
 
 #[test]
-fn test_try_run_args_rejects_mismatched_arg_count_with_guidance() {
+fn test_run_args_rejects_mismatched_arg_count_with_guidance() {
     match process.run_args("printf", "one two", 1) {
         .Ok(_) => panic("expected arg_count mismatch"),
         .Err(err) => match err {
@@ -80,14 +89,17 @@ fn test_run_argv_replaces_legacy_run_args_usage() {
     args.push("<%s>|<%s>");
     args.push("alpha");
     args.push("beta");
-    let output = process.run_argv("printf", args);
+    let output = match process.run_argv("printf", args) {
+        .Ok(output) => output,
+        .Err(error) => panic(to_string(error)),
+    };
     testing.assert_true(output.exit_code == 0);
     testing.assert_eq_str(output.stdout, "<alpha>|<beta>");
     testing.assert_eq_str(output.stderr, "");
 }
 
 #[test]
-fn test_try_run_argv_missing_command_returns_launch_failed() {
+fn test_run_argv_missing_command_returns_launch_failed() {
     let args: Vec<string> = Vec.new();
     match process.run_argv("hew-process-command-that-does-not-exist", args) {
         .Ok(_) => panic("expected missing command error"),
@@ -111,7 +123,7 @@ fn test_launch_classification_does_not_trust_attacker_controlled_command_text() 
 }
 
 #[test]
-fn test_try_run_argv_missing_command_preserves_real_error() {
+fn test_run_argv_missing_command_preserves_real_error() {
     // Regression for #2506: the cooperative-yield checkpoint at
     // last_process_error's function entry must not clobber the real
     // launch-failure text with the "execution context not installed"
@@ -157,7 +169,7 @@ fn test_child_drop_reaps_running_process() {
 // killing it reported -1 forever with no way to tell that apart from a real
 // child that failed.
 #[test]
-fn test_try_start_argv_reports_a_missing_executable_as_launch_failed() {
+fn test_start_argv_reports_a_missing_executable_as_launch_failed() {
     let args: Vec<string> = Vec.new();
     args.push("--version");
     match process.start_argv("hew-process-executable-that-does-not-exist", args) {
@@ -176,7 +188,7 @@ fn test_try_start_argv_reports_a_missing_executable_as_launch_failed() {
 }
 
 #[test]
-fn test_try_start_argv_returns_a_live_child_for_a_real_executable() {
+fn test_start_argv_returns_a_live_child_for_a_real_executable() {
     let args: Vec<string> = Vec.new();
     args.push("hew-process-start-argv-live");
     match process.start_argv("echo", args) {
@@ -186,7 +198,7 @@ fn test_try_start_argv_returns_a_live_child_for_a_real_executable() {
 }
 
 #[test]
-fn test_try_start_returns_a_live_child_for_a_shell_command() {
+fn test_start_returns_a_live_child_for_a_shell_command() {
     match process.start("exit 7") {
         .Ok(child) => testing.assert_true(child.wait() == 7),
         .Err(_) => panic("expected the shell command to launch"),

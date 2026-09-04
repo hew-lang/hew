@@ -40,7 +40,7 @@ actor Handler {{
     let addr: string;
 
     receive fn run(unused: i64) {{
-        let listener = net.listen(addr);
+        let listener = match net.listen(addr) {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
         println("READY");
         let conn = listener.accept();
         listener.close();

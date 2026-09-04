@@ -291,7 +291,7 @@ import std.net;
 
 actor EchoServer {{
     receive fn connect_send_and_read(unused: i64) {{
-        let conn = net.connect("{addr}");
+        let conn = match net.connect("{addr}") {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
         conn.write_string("client-ping:r319");
         let reply = conn.read_string();
         println(f"client-read={{reply}}");
@@ -300,7 +300,7 @@ actor EchoServer {{
 }}
 
 fn main() {{
-    let listener = net.listen("{addr}");
+    let listener = match net.listen("{addr}") {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
     let client = spawn EchoServer;
     client.connect_send_and_read(0);
 
@@ -4315,7 +4315,7 @@ fn run_imports_json_fluent_builders_round_trip() {
          \x20       .with_int(\"version\", 1);\n\
          \x20   let s = obj.stringify();\n\
          \x20   println(s);\n\
-         \x20   let parsed = json.parse(s);\n\
+         \x20   let parsed = match json.parse(s) { .Ok(value) => value, .Err(_) => return 1, };\n\
          \x20   let field = parsed.get_field(\"version\");\n\
          \x20   println(f\"version={field.get_int()}\");\n\
          \x20   field.free();\n\
@@ -4371,7 +4371,7 @@ fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
         "import std.stream.{ Sink, Stream };\n\
          \n\
          fn make_pair() -> (Sink<string>, Stream<string>) {\n\
-         \x20   stream.pipe(8)\n\
+         \x20   match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), }\n\
          }\n\
          \n\
          fn main() {\n\
@@ -4411,7 +4411,7 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
         "import std.stream.{ Sink, Stream };\n\
          \n\
          fn main() {\n\
-         \x20   let pair = stream.pipe(8);\n\
+         \x20   let pair = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   println(\"whole-ok\");\n\
          }\n",
     )
@@ -4562,7 +4562,7 @@ fn returned_let_bound_tuple_callee_does_not_drop_members() {
     let closes = callee_handle_close_drops(
         "import std.stream.{ Sink, Stream };\n\
          fn make_pair() -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let pair = (s, r);\n\
          \x20   pair\n\
          }\n\
@@ -4588,7 +4588,7 @@ fn returned_if_tail_tuple_callee_does_not_drop_members() {
     let closes = callee_handle_close_drops(
         "import std.stream.{ Sink, Stream };\n\
          fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
          }\n\
          fn main() {\n\
@@ -4612,7 +4612,7 @@ fn returned_match_tail_tuple_callee_does_not_drop_members() {
     let closes = callee_handle_close_drops(
         "import std.stream.{ Sink, Stream };\n\
          fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   match c {\n\
          \x20       true => (s, r),\n\
          \x20       false => (s, r),\n\
@@ -4717,7 +4717,7 @@ fn suspending_listener_accept_flip_in_execution_context() {
          actor Acceptor {\n\
          \x20   let addr: string;\n\
          \x20   receive fn go(unused: i64) {\n\
-         \x20       let listener = net.listen(addr);\n\
+         \x20       let listener = match net.listen(addr) { .Ok(value) => value, .Err(_) => panic(\"network setup failed\"), };\n\
          \x20       let conn = await listener.accept();\n\
          \x20       let _ = conn.close();\n\
          \x20       let _ = listener.close();\n\
@@ -4746,7 +4746,7 @@ fn blocking_listener_accept_in_main_keeps_blocking_call() {
     let dump = mir_checked_dump(
         "import std.net;\n\
          fn main() {\n\
-         \x20   let listener = net.listen(\"127.0.0.1:0\");\n\
+         \x20   let listener = match net.listen(\"127.0.0.1:0\") { .Ok(value) => value, .Err(_) => panic(\"network setup failed\"), };\n\
          \x20   let conn = await listener.accept();\n\
          \x20   let _ = conn.close();\n\
          \x20   let _ = listener.close();\n\
@@ -4837,7 +4837,7 @@ fn returned_nested_tuple_callee_does_not_drop_members() {
     let closes = callee_handle_close_drops(
         "import std.stream.{ Sink, Stream };\n\
          fn make_nested() -> ((Sink<string>,), Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let inner = (s,);\n\
          \x20   let pair = (inner, r);\n\
          \x20   pair\n\
@@ -4866,7 +4866,7 @@ fn returned_record_of_handles_callee_does_not_drop_fields() {
         "import std.stream.{ Sink, Stream };\n\
          type Pipe { sink: Sink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let p = Pipe { sink: s, input: r };\n\
          \x20   p\n\
          }\n\
@@ -4988,7 +4988,7 @@ fn run_let_bound_tuple_return_no_double_free() {
         &hew_src,
         "import std.stream.{ Sink, Stream };\n\
          fn make_pair() -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let pair = (s, r);\n\
          \x20   pair\n\
          }\n\
@@ -5022,7 +5022,7 @@ fn run_if_tail_tuple_return_no_double_free() {
         &hew_src,
         "import std.stream.{ Sink, Stream };\n\
          fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
          }\n\
          fn main() {\n\
@@ -5059,7 +5059,7 @@ fn run_record_of_handles_return_drops_each_field_once() {
         "import std.stream.{ Sink, Stream };\n\
          type Pipe { sink: Sink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let p = Pipe { sink: s, input: r };\n\
          \x20   p\n\
          }\n\
@@ -5100,7 +5100,7 @@ fn run_record_of_handles_return_without_explicit_close_exits_clean() {
         "import std.stream.{ Sink, Stream };\n\
          type Pipe { sink: Sink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let p = Pipe { sink: s, input: r };\n\
          \x20   p\n\
          }\n\
@@ -5144,7 +5144,7 @@ fn run_bound_tuple_field_close_drops_each_handle_once() {
         &hew_src,
         "import std.stream.{ Sink, Stream };\n\
          fn make_pipe() -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   (s, r)\n\
          }\n\
          fn main() {\n\

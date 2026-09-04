@@ -111,7 +111,7 @@ let counter = spawn Counter(count: 0);
 counter.increment(1);
 counter.increment(2);
 let total = await counter.total();
-let _barrier = observe.barrier();
+let _barrier = observe.barrier().unwrap();
 
 println(total);
 println(observe.read("actors.turns_total").unwrap_or(0));
@@ -216,7 +216,7 @@ Use this pattern in examples and tests that need deterministic scrape output:
 let actor = spawn Counter(count: 0);
 actor.increment(1);
 let value = await actor.total();
-let _barrier = observe.barrier();
+let _barrier = observe.barrier().unwrap();
 println(observe.scrape());
 ```
 

@@ -2040,7 +2040,7 @@ mod tests {
         // (NEW-2): receiver type is the imported `net.Listener`.
         let source = "import std.net;\n\
                       fn probe(addr: string) {\n\
-                      \x20   let ln = net.listen(addr);\n\
+                      \x20   let ln = match net.listen(addr) { .Ok(value) => value, .Err(_) => panic(\"network setup failed\"), };\n\
                       \x20   let conn = ln.accept();\n\
                       }\n";
         let doc = analyze_repo_rooted("lsp_cov_net", source);
@@ -2188,7 +2188,7 @@ mod tests {
         let source = "import std.channel.channel;\n\
                       actor Worker {\n\
                       \x20   receive fn run(unused: i64) {\n\
-                      \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
+                      \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
                       \x20       tx.send(\"ping\");\n\
                       \x20       tx.close();\n\
                       \x20       let item = await rx.recv();\n\

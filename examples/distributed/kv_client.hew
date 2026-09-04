@@ -44,11 +44,22 @@ impl ActorMsg for KeyValue {
 fn main() -> i64 {
     var port: string = "9100";
     var server_addr: string = "127.0.0.1";
-    if os.args().len() > 1 {
-        server_addr = os.args().get(1);
+    let arguments = os.args();
+    if arguments.len() > 1 {
+        match arguments.get(1) {
+            .Some(value) => {
+                server_addr = value;
+            },
+            .None => {},
+        }
     }
-    if os.args().len() > 2 {
-        port = os.args().get(2);
+    if arguments.len() > 2 {
+        match arguments.get(2) {
+            .Some(value) => {
+                port = value;
+            },
+            .None => {},
+        }
     }
     let remote_addr = f"{server_addr}:{port}";
     println(f"[kv-client] starting node, will connect to {remote_addr}");

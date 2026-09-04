@@ -12,6 +12,6 @@ fn helper(ln: Listener) {
 }
 
 fn main() {
-    let ln = net.listen("127.0.0.1:0");
+    let ln = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     helper(ln);
 }

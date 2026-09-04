@@ -2602,9 +2602,13 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
                 args: vec![Ty::String],
                 builtin: Some(BuiltinType::Stream),
             },
-            Ty::String
+            Ty::Named {
+                name: "std.fs.IoError".to_string(),
+                args: vec![],
+                builtin: None,
+            }
         ),
-        "std::stream import should keep from_file() typed as Result<std.stream.Stream<string>, string>"
+        "std::stream import should keep from_file() typed as Result<std.stream.Stream<string>, std.fs.IoError>"
     );
 }
 

@@ -185,7 +185,7 @@ pub fn connect(host: string, port: i64) -> TlsStream {
     let checked = match net.port_arg("tls.connect", port) {
         .Ok(value) => value,
         .Err(err) => {
-            panic(f"tls.connect failed: {err}");
+            panic(f"tls.connect failed");
             0
         },
     };

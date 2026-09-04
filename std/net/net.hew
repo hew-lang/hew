@@ -38,7 +38,7 @@
 //! import std.net;
 //!
 //! fn main() {
-//!     let listener = net.listen(":9000");
+//!     let listener = match net.listen(":9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
 //!     let conn = listener.accept();
 //!     let data = conn.read();
 //!     // write() returns Result<(), WriteError>; an Err signals downstream
@@ -590,7 +590,7 @@ trait ConnectionMethods {
 /// }
 ///
 /// fn main() {
-///     let conn = net.connect("localhost:9000");
+///     let conn = match net.connect("localhost:9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
 ///     let handler: LocalPid<InboundLogger> = spawn InboundLogger;
 ///     match conn.attach(handler) {
 ///         .Ok(()) => {},

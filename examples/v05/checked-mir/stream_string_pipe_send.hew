@@ -10,7 +10,10 @@ import std.stream;
 
 actor Echo {
     receive fn run(unused: i64) {
-        let (sink, input) = stream.pipe(2);
+        let (sink, input) = match stream.pipe(2) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
         sink.send("hi");
         sink.close();
         input.close();

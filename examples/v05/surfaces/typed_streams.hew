@@ -45,7 +45,10 @@ actor Drainer {
 }
 
 fn main() {
-    let (sink, input) = stream.bytes_pipe(8);
+    let (sink, input) = match stream.bytes_pipe(8) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     // The Stream half moves into the actor's state; the Sink half stays local.
     let d = spawn Drainer(input: input);
     d.run();

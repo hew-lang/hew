@@ -100,7 +100,7 @@ const GENERATOR_THREAD_FENCE_SOURCE: &str = r#"
 import std.fs;
 
 fn threads() -> i64 {
-    let names = fs.list_dir("/proc/self/task");
+    let names = fs.list_dir("/proc/self/task").unwrap();
     names.len()
 }
 
@@ -276,7 +276,7 @@ fn run_fork_thread_probe(n: i64) -> (i64, i64) {
 import std.fs;
 
 fn threads() -> i64 {{
-    let names = fs.list_dir("/proc/self/task");
+    let names = fs.list_dir("/proc/self/task").unwrap();
     names.len()
 }}
 

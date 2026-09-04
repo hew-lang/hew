@@ -26,7 +26,10 @@ import std.stream;
 
 actor TryRecvStrings {
     receive fn run(unused: i64) {
-        let (sink, input) = stream.pipe(8);
+        let (sink, input) = match stream.pipe(8) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
         sink.send("frame-0");
         sink.send("");
         sink.send("frame-1");

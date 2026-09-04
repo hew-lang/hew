@@ -16,8 +16,6 @@ import std.os;
 
 import std.net.mime;
 
-import std.net;
-
 fn resolve_path(root: string, url_path: string) -> string {
     let path = root + url_path;
     if url_path.ends_with("/") {
@@ -44,15 +42,27 @@ fn serve_forever(root: string, server: Server) {
 fn serve_request(root: string, req: Request) {
     let request_path = req.path();
     if request_path.contains("..") {
-        req.respond_text(403, "403 Forbidden");
+        match req.respond_text(403, "403 Forbidden") {
+            .Ok(_) => {},
+            .Err(_) => panic("failed to send forbidden response"),
+        }
     } else {
         let file_path = resolve_path(root, request_path);
         if fs.exists(file_path) {
-            let body = fs.read(file_path);
+            let body = match fs.read(file_path) {
+                .Ok(body) => body,
+                .Err(_) => panic("failed to read requested file"),
+            };
             let content_type = mime.from_path(file_path);
-            req.respond(200, content_type, body);
+            match req.respond(200, content_type, body) {
+                .Ok(_) => {},
+                .Err(_) => panic("failed to send file response"),
+            }
         } else {
-            req.respond_text(404, "404 Not Found");
+            match req.respond_text(404, "404 Not Found") {
+                .Ok(_) => {},
+                .Err(_) => panic("failed to send not-found response"),
+            }
         }
     }
     req.close();
@@ -61,12 +71,17 @@ fn serve_request(root: string, req: Request) {
 fn main() {
     var port = "8080";
     var root = ".";
-    let argc = os.args().len();
+    let arguments = os.args();
+    let argc = arguments.len();
     if argc > 1 {
-        port = os.args().get(1);
+        if let .Some(value) = arguments.get(1) {
+            port = value;
+        }
     }
     if argc > 2 {
-        root = os.args().get(2);
+        if let .Some(value) = arguments.get(2) {
+            root = value;
+        }
     }
     let addr = f"0.0.0.0:{port}";
     println(f"Serving {root} on http://{addr}");
@@ -74,10 +89,9 @@ fn main() {
         .Ok(server) => {
             serve_forever(root, server);
         },
-        .Err(err) => {
-            let reason = to_string(err);
+        .Err(_) => {
             let detail = http.listen_error();
-            println(f"cannot listen on {addr}: {reason} - {detail}");
+            println(f"cannot listen on {addr}: {detail}");
         },
     }
 }

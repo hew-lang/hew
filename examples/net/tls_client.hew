@@ -19,7 +19,7 @@ fn main() {
     let request = f"GET / HTTP/1.1{nl}Host: {host}{nl}Connection: close{nl}{nl}";
     let payload = request.to_bytes();
     let want = payload.len();
-    let sent = tls.write(stream, payload);
+    let sent = tls.write(stream, payload).unwrap();
     println(f"sent {sent}/{want} request bytes to {host}");
 
     // Fail closed on a short write rather than block on a read that will not

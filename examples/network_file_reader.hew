@@ -23,8 +23,8 @@ import std.os;
 
 fn main() {
     println("=== File Reader + Actor Pipeline ===");
-    let path = if os.args_count() > 1 {
-        os.args(1)
+    let path = if os.args().len() > 1 {
+        os.args().get(1)
     } else {
         "examples/test_input.txt"
     };

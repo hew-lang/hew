@@ -54,12 +54,12 @@ fn serve_request(root: string, req: Request) {
 fn main() {
     var port: string = "8080";
     var root: string = ".";
-    let argc = os.args_count();
+    let argc = os.args().len();
     if argc > 1 {
-        port = os.args(1);
+        port = os.args().get(1);
     }
     if argc > 2 {
-        root = os.args(2);
+        root = os.args().get(2);
     }
     let addr = f"0.0.0.0:{port}";
     println("=== Hew HTTP Static File Server ===");

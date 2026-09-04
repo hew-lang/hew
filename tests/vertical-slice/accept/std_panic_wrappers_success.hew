@@ -18,7 +18,7 @@ fn main() -> i64 {
     if contents.len() == 0 {
         return 2;
     }
-    let arg0 = os.args(0);
+    let arg0 = os.args().get(0);
     if arg0.len() == 0 {
         return 3;
     }

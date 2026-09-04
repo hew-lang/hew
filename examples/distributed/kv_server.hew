@@ -57,8 +57,8 @@ impl ActorMsg for KeyValue {
 
 fn main() {
     var port: string = "9100";
-    if os.args_count() > 1 {
-        port = os.args(1);
+    if os.args().len() > 1 {
+        port = os.args().get(1);
     }
     let addr = f"0.0.0.0:{port}";
     println(f"[kv-server] starting on {addr}");

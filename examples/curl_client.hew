@@ -79,12 +79,12 @@ fn main() {
     // Parse arguments
     var url = "http://example.com";
     var outfile = "";
-    let argc = os.args_count();
+    let argc = os.args().len();
     if argc > 1 {
-        url = os.args(1);
+        url = os.args().get(1);
     }
     if argc > 2 {
-        outfile = os.args(2);
+        outfile = os.args().get(2);
     }
     let host = parse_host(url);
     let port = parse_port(url);

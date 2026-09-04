@@ -15,7 +15,14 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
 #[test]
 fn simple_function_lowers_with_stable_sites() {
     let output = lower("fn main() -> i64 { let x = 1 + 2; return x; }");
-    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(
+        !output.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { .. }
+        )),
+        "unexpected checker boundary diagnostics: {:?}",
+        output.diagnostics
+    );
     let verify = verify_hir(&output.module);
     assert!(verify.is_empty(), "{verify:?}");
 
@@ -180,6 +187,47 @@ fn channel_recv_deadline_preserves_await_and_method_occurrences() {
     let parents = hew_hir::verify::collect_site_parents(&output.module);
     assert_eq!(parents.get(&await_site), Some(&Some(timeout_site)));
     assert_eq!(parents.get(&method_site), Some(&Some(await_site)));
+}
+
+#[test]
+fn channel_result_sites_are_affine_in_hir() {
+    let output = support::checker_pipeline::lower_through_checker_with_modules(
+        r"
+        import std.channel.channel;
+
+        fn main() {
+            let result: Result<(channel.Sender<i64>, channel.Receiver<i64>), string> =
+                channel.new(1);
+            match result {
+                .Ok((_sender, _receiver)) => (),
+                .Err(error) => panic(error),
+            }
+        }
+        ",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let main = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function");
+    let HirStmtKind::Let(_, Some(call)) = &main.body.statements[0].kind else {
+        panic!("expected channel result binding");
+    };
+    let Some(match_expr) = main.body.tail.as_deref() else {
+        panic!("expected match tail");
+    };
+    let HirExprKind::Match { scrutinee, .. } = &match_expr.kind else {
+        panic!("expected Result match");
+    };
+
+    assert_eq!(call.value_class, hew_hir::ValueClass::AffineResource);
+    assert_eq!(scrutinee.value_class, hew_hir::ValueClass::AffineResource);
 }
 
 #[test]

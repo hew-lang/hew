@@ -6178,12 +6178,10 @@ fn validate_opaque_resource_close(
                 candidate.release_param_index,
                 receiver,
             );
-            exact_wrapper
-                .then(|| close.name.clone())
-                .ok_or_else(|| {
-                    "canonical close must be one unconditional straight-line exact release call"
-                        .to_string()
-                })
+            exact_wrapper.then(|| close.name.clone()).ok_or_else(|| {
+                "canonical close must be one unconditional straight-line exact release call"
+                    .to_string()
+            })
         }
         (closes, releases) => Err(format!(
             "expected one unit close and one owner-module release declaration; found {} close(s), {} release declaration(s)",
@@ -7625,6 +7623,10 @@ struct LowerCtx {
     /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
+    /// Checker-authoritative closed ownership classification for each concrete
+    /// type instance. HIR projects this fact but does not derive a second
+    /// ownership answer from type shape.
+    type_facts: std::collections::BTreeMap<hew_types::TypeInstanceKey, hew_types::TypeFacts>,
     interpolation_display_types: HashMap<SpanKey, Ty>,
     /// `==`/`!=`/`<`/`<=`/`>`/`>=` binary expressions dispatching to a user
     /// trait impl instead of the structural default (D340). Consulted at
@@ -8666,6 +8668,7 @@ impl LowerCtx {
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
+            type_facts: tc_output.type_facts.clone(),
             interpolation_display_types: tc_output.interpolation_display_types.clone(),
             user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
             produced_value_ownership: tc_output.produced_value_ownership.clone(),
@@ -18256,10 +18259,18 @@ impl LowerCtx {
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         let mut lowered = self.lower_expr_without_root_fact(expr, intent);
         let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
-        if normalized_ty != lowered.ty {
-            lowered.value_class = ValueClass::of_ty(&normalized_ty, &self.type_classes);
-            lowered.ty = normalized_ty;
-        }
+        lowered.value_class = self
+            .type_facts
+            .get(&hew_types::TypeInstanceKey(normalized_ty.clone()))
+            .map_or(ValueClass::Unknown, |facts| match facts.class {
+                hew_types::ValueClass::BitCopy => ValueClass::BitCopy,
+                hew_types::ValueClass::View => ValueClass::View,
+                hew_types::ValueClass::CowValue => ValueClass::CowValue,
+                hew_types::ValueClass::PersistentShare => ValueClass::PersistentShare,
+                hew_types::ValueClass::AffineResource => ValueClass::AffineResource,
+                hew_types::ValueClass::Linear => ValueClass::Linear,
+            });
+        lowered.ty = normalized_ty;
         if !self
             .generated_produced_value_facts
             .contains_key(&lowered.site)

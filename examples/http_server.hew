@@ -15,8 +15,6 @@ import std.os;
 
 import std.net.mime;
 
-import std.net;
-
 fn serve_forever(root: string, srv: Server) {
     loop {
         let req = srv.accept();
@@ -34,15 +32,27 @@ fn serve_request(root: string, req: Request) {
             file_path = file_path + "index.html";
         }
         if fs.exists(file_path) {
-            let body = fs.read(file_path);
-            let content_type = mime.from_path(file_path);
-            req.respond(200, content_type, body);
+            match fs.read(file_path) {
+                .Ok(body) => {
+                    let content_type = mime.from_path(file_path);
+                    req.respond(200, content_type, body);
+                },
+                .Err(_) => {
+                    req.respond_text(500, "500 Internal Server Error");
+                },
+            }
         } else {
             let index_path = file_path + "/index.html";
             if fs.exists(index_path) {
-                let body = fs.read(index_path);
-                let content_type = mime.from_path(index_path);
-                req.respond(200, content_type, body);
+                match fs.read(index_path) {
+                    .Ok(body) => {
+                        let content_type = mime.from_path(index_path);
+                        req.respond(200, content_type, body);
+                    },
+                    .Err(_) => {
+                        req.respond_text(500, "500 Internal Server Error");
+                    },
+                }
             } else {
                 req.respond_text(404, "404 Not Found");
             }
@@ -56,10 +66,20 @@ fn main() {
     var root: string = ".";
     let argc = os.args().len();
     if argc > 1 {
-        port = os.args().get(1);
+        match os.args().get(1) {
+            .Some(value) => {
+                port = value;
+            },
+            .None => {},
+        }
     }
     if argc > 2 {
-        root = os.args().get(2);
+        match os.args().get(2) {
+            .Some(value) => {
+                root = value;
+            },
+            .None => {},
+        }
     }
     let addr = f"0.0.0.0:{port}";
     println("=== Hew HTTP Static File Server ===");

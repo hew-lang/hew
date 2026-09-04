@@ -13,7 +13,10 @@ import std.stream;
 
 actor Pipeline {
     receive fn run() -> i64 {
-        let (sink, input) = stream.pipe(8);
+        let (sink, input) = match stream.pipe(8) {
+            .Ok(pair) => pair,
+            .Err(_) => return -2,
+        };
         sink.send("hello");
         let frame: Result<Option<string>, TimeoutError> = await input.recv() | after 5000ms;
         sink.close();

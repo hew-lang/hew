@@ -298,7 +298,7 @@ thread_local! {
 // `#[cfg(not(target_arch = "wasm32"))]` — the native crash-drain path taken
 // after the scheduler catches a language unwind. This module is ungated, so wasm32 is
 // the only build where the drain has no entry point. Deleting it reopens the
-// same-drain ABA / tcache double-free closed by PR #2865 (LESSONS.md
+// same-drain ABA / tcache double-free closed by the ownership guard
 // `crash-recovery-frame-owner-is-single-authority`).
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn quarantine_reclaimed_frame(frame: *mut c_void) {

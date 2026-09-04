@@ -224,7 +224,7 @@ When you ship a release, ask:
 
 1. Does the CHANGELOG entry tell a coherent story, or is it a list of
    unrelated bullets? If the latter, the next release should be smaller.
-2. Did this release introduce a new invariant worth adding to `LESSONS.md`?
+2. Did this release introduce a durable invariant worth adding to [`engineering-invariants.md`](engineering-invariants.md)?
 3. Is `Cargo.toml` now on the next `-pre`?
 4. Is the release notes file (`docs/releases/vX.Y.Z.md`) in place if the
    release warranted one?

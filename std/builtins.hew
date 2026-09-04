@@ -451,7 +451,7 @@ impl<T: ActorMsg> Pid for RemotePid<T> {
 /// `Some → None` boundary, not a lifetime boundary. Iterator implementations
 /// that own non-shared resources (heap-owning buffers, channel readers)
 /// inherit the "exhaustion ≠ drop" invariant — see the `lifecycle-symmetry`
-/// invariant in `LESSONS.md`.
+/// invariant in `docs/internal/engineering-invariants.md`.
 #[lang_item("iterator")]
 pub trait Iterator {
     type Item;

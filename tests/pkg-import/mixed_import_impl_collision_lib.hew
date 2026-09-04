@@ -4,7 +4,7 @@
 // `impl TestResultMethods for TestResult` whose BARE names collide exactly with the
 // distinct `TestResult` / `TestResultMethods` / `impl` the `hew.testffi` PACKAGE
 // declares. Hew's per-module-type-identity model makes these two genuinely
-// different types that merely share a bare name (see LESSONS.md). The earlier
+// different types that merely share a bare name. The earlier
 // bare-name dedup key (`"TestResult:TestResultMethods"`) collapsed both, silently
 // dropping the package-import impl; the provenance-based skip keeps both.
 type TestResult {

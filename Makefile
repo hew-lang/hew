@@ -690,7 +690,7 @@ ci-preflight-smoke:
 # host over ssh — the faithful, fast local parity. Docker on Apple Silicon is a
 # dead end here (qemu segfaults rustc; arm64 containers diverge from CI on the
 # ppv-lite86 SIMD path and the ARM64 LLVM tarball). See scripts/ci-local-linux.sh
-# and LESSONS.md `ci-local-parity-needs-native-x86_64`.
+# and the parity principle in docs/internal/engineering-invariants.md.
 #
 #   make ci-local-linux CI_LINUX_HOST=user@host                   # full Linux job
 #   make ci-local-linux CI_LINUX_HOST=user@host STEP=vertical-slice

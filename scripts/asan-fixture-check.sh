@@ -686,7 +686,7 @@ fi
 # explicit close. The current lowerer double-frees on the record-field shape's
 # first iteration, so this is registered as an EXPECTED finding until #3070 is
 # fixed. When it is, this must flip to `run_asan_fixture ... 0` and the
-# ledger note above and in LESSONS.md must be removed.
+# ledger note above must be removed.
 if run_asan_fixture_expect_leak "composite resource close-exactly-once (#3070)" "${COMPOSITE_RESOURCE_CLOSE_BIN}"; then
     pass=$((pass + 1))
 else

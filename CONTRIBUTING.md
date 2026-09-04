@@ -24,9 +24,12 @@ the installed interpreter with `make PYTHON=/path/to/python3.12 <target>` if nec
 PR titles, PR bodies, and commit messages are part of the permanent project history after squash merge.
 Keep them free of model names, orchestration jargon, and internal-only path references such as `.claude/`.
 
-### Using LESSONS.md
+### Engineering invariants
 
-[`LESSONS.md`](LESSONS.md) is a structured decision aid for contributors. Before merging a change, match it against the **trigger** column in LESSONS.md and apply every matching row's **apply** checklist. Start with **P0** rows (correctness and boundary safety), then **P1** (parity, tests, diagnostics), then **P2** (architecture and cleanup). When two rules conflict, keep the stricter fail-closed, ownership-preserving, or parity-preserving rule.
+[`docs/internal/engineering-invariants.md`](docs/internal/engineering-invariants.md)
+records durable principles for design and review. Language and runtime
+semantics belong in the specifications; contribution process belongs here and
+in the applicable skills.
 
 Key boundary checks most contributors encounter:
 
@@ -121,12 +124,12 @@ When adding new language features, add an end-to-end test:
 
 1. Create a `.hew` source file under `tests/hew/`.
 2. Run it via `make test-hew-ratchet` (`hew test tests/hew/`, compared against the tracked expected-failure set).
-3. **WASM parity** (see `native-wasm-parity` in LESSONS.md): run the same `.hew` behavior through native and `wasi_run_e2e` coverage wherever the target supports it. If a capability is intentionally unavailable on WASM, classify it in `wasm-capability-manifest.toml` and add a focused test proving the compiler rejects or diagnoses it before link/runtime failure.
+3. **WASM parity** (see the parity principle in [`docs/internal/engineering-invariants.md`](docs/internal/engineering-invariants.md)): run the same `.hew` behaviour through native and `wasi_run_e2e` coverage wherever the target supports it. If a capability is intentionally unavailable on WASM, classify it in `wasm-capability-manifest.toml` and add a focused test proving the compiler rejects or diagnoses it before link/runtime failure.
 4. Add type-checker tests in `hew-types/src/check/tests.rs` for any new type rules.
 
 ### WASM / native parity
 
-New runtime behaviour — channels, ask/reply, timers, schedulers, bounded execution — must ship with native and WASM behavior coverage wherever the target supports it. Per LESSONS.md `native-wasm-parity` (P1):
+New runtime behaviour — channels, ask/reply, timers, schedulers, bounded execution — must ship with native and WASM behaviour coverage wherever the target supports it. Apply the parity principle in [`docs/internal/engineering-invariants.md`](docs/internal/engineering-invariants.md):
 
 - Exercise supported behavior through shared source corpora and WASI E2E tests. For an intentional platform limitation, add or update the typed feature disposition in `wasm-capability-manifest.toml` and prove its diagnostic with a focused negative test.
 - New `hew_*` runtime exports must be classified `jit: stable` or `jit: internal` in `scripts/jit-symbol-classification.toml` alongside their WASM disposition declaration; `scripts/verify-ffi-symbols.py --classify stable --validate` rejects unclassified exports.

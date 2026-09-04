@@ -2324,21 +2324,17 @@ impl Checker {
             Ty::Named {
                 name,
                 args,
-                builtin: Some(BuiltinType::Sender),
-            } if args.is_empty() => Ty::Named {
-                name: name.clone(),
-                args: vec![element.clone()],
-                builtin: Some(BuiltinType::Sender),
-            },
-            Ty::Named {
-                name,
-                args,
-                builtin: Some(BuiltinType::Receiver),
-            } if args.is_empty() => Ty::Named {
-                name: name.clone(),
-                args: vec![element.clone()],
-                builtin: Some(BuiltinType::Receiver),
-            },
+                builtin,
+            } if args.is_empty() => {
+                match (*builtin).or_else(|| crate::builtin_type::lookup_builtin_type(name)) {
+                    Some(kind @ (BuiltinType::Sender | BuiltinType::Receiver)) => Ty::Named {
+                        name: name.clone(),
+                        args: vec![element.clone()],
+                        builtin: Some(kind),
+                    },
+                    _ => return_type.clone(),
+                }
+            }
             _ => return_type.map_children_pub(&|child| {
                 Self::instantiate_channel_constructor_return(child, element)
             }),

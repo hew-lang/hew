@@ -6,22 +6,43 @@ pub(super) use super::*;
 
 #[test]
 fn channel_new_result_preserves_endpoint_type_parameter() {
-    let output = check_source(
-        r"
-        import std.channel.channel;
+    for (element_source, element_type) in [("i64", Ty::I64), ("string", Ty::String)] {
+        let source = format!(
+            r"
+            import std.channel.channel;
 
-        fn main() {
-            let _result: Result<(channel.Sender<i64>, channel.Receiver<i64>), string> =
-                channel.new(1);
-        }
-        ",
-    );
+            fn main() {{
+                let _result: Result<(channel.Sender<{element_source}>, channel.Receiver<{element_source}>), string> =
+                    channel.new(1);
+            }}
+            "
+        );
+        let output = check_source(&source);
+        assert!(
+            output.errors.is_empty(),
+            "channel.new should preserve Result while inferring {element_source} endpoints: {:#?}",
+            output.errors
+        );
 
-    assert!(
-        output.errors.is_empty(),
-        "channel.new should preserve Result while inferring matching endpoint types: {:#?}",
-        output.errors
-    );
+        let call = "channel.new(1)";
+        let call_start = source
+            .find(call)
+            .expect("channel constructor call in source");
+        let call_span = call_start..call_start + call.len();
+        let expected = Ty::result(
+            Ty::Tuple(vec![
+                Ty::sender(element_type.clone()),
+                Ty::receiver(element_type),
+            ]),
+            Ty::String,
+        );
+        assert_eq!(
+            output.expr_types.get(&SpanKey::from(&call_span)),
+            Some(&expected),
+            "channel.new should record the complete resolved {element_source} Result type: {:?}",
+            output.expr_types
+        );
+    }
 }
 
 #[test]

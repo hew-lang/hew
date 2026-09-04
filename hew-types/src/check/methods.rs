@@ -17,8 +17,8 @@ use crate::lowering_facts::{
     CollectionMethodDispatch, HashMapValueType,
 };
 use crate::method_resolution::{
-    collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
-    lookup_named_method_sig as shared_lookup_named_method_sig,
+    builtin_type_def, collect_method_sigs_for_receiver, instantiate_stdlib_method_sig,
+    lookup_builtin_method_sig, lookup_named_method_sig as shared_lookup_named_method_sig,
 };
 use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
@@ -3035,9 +3035,15 @@ impl Checker {
         let sig = self
             .builtin_result_option_method_sigs
             .get(&(builtin, method.to_string()))?;
+        let builtin_type_name = match builtin {
+            BuiltinType::Result => "Result",
+            BuiltinType::Option => "Option",
+            _ => return None,
+        };
+        let receiver_type_params = builtin_type_def(builtin_type_name)?.type_params;
         Some(instantiate_stdlib_method_sig(
             sig,
-            &sig.type_params,
+            &receiver_type_params,
             type_args,
         ))
     }

@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::ownership::TypeFactTable;
 use crate::OpId;
 use crate::{
-    BlockId, CallableId, CallableInstance, GenericTemplateId, SemCallConv, SemCallable,
-    SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemTerminator, SirInstanceKey, UseSite, ValueId,
+    BindingTarget, BlockId, CallableId, CallableInstance, GenericTemplateId, SemCallConv,
+    SemCallable, SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind,
+    SemParamPassing, SemSignature, SemTerminator, SirInstanceKey, UseSite, ValueId,
 };
 use hew_hir::{monomorph::function_monomorph_symbol, substitute_type_params};
 use hew_types::ResolvedTy;
@@ -110,12 +110,12 @@ pub enum SirDiagnosticKind {
         value: ValueId,
         reason: String,
     },
-    /// A source binding naming a value this body never defines. §1.6 reads the
-    /// table to tell a user-facing wall from an internal error, so a row it
-    /// cannot resolve would silently drop the user's name.
+    /// A source binding naming a value or place this body never defines. §1.6
+    /// reads the table to tell a user-facing wall from an internal error, so a
+    /// row it cannot resolve would silently drop the user's name.
     UnknownBinding {
         name: String,
-        value: ValueId,
+        target: BindingTarget,
     },
     /// A terminator kind this relation table states no rule for. The
     /// counterpart of [`SirDiagnosticKind::InvalidOperation`]'s
@@ -501,15 +501,19 @@ pub(crate) fn verify_function_with_context(
         }
     }
     // §1.6's binding table is read by every user-facing wall, so a row naming
-    // a value this body never defines is refused rather than silently dropped
+    // a target this body never defines is refused rather than silently dropped
     // when the wall goes looking for the user's name.
     for binding in &function.bindings {
-        if !values.contains(&binding.value) {
+        let known = match binding.target {
+            BindingTarget::Value(value) => values.contains(&value),
+            BindingTarget::Place(place) => function.places.iter().any(|decl| decl.id == place),
+        };
+        if !known {
             diagnostics.push(diag(
                 function,
                 SirDiagnosticKind::UnknownBinding {
                     name: binding.name.clone(),
-                    value: binding.value,
+                    target: binding.target,
                 },
             ));
         }
@@ -1978,7 +1982,7 @@ mod parameter_own_kind_tests {
 #[cfg(test)]
 mod binding_table_tests {
     use super::{verify_function, SirDiagnosticKind};
-    use crate::ownership::Binding;
+    use crate::ownership::{Binding, BindingId, BindingTarget};
     use crate::{
         BlockId, CallableId, FunctionSourceOrigin, SemBlock, SemFunction, SemTerminator, ValueId,
     };
@@ -2009,10 +2013,11 @@ mod binding_table_tests {
 
     fn binding(name: &str, value: u32) -> Binding {
         Binding {
+            id: BindingId(0),
             name: name.to_string(),
             span: 0..0,
             mutable: false,
-            value: ValueId(value),
+            target: BindingTarget::Value(ValueId(value)),
         }
     }
 
@@ -2026,8 +2031,8 @@ mod binding_table_tests {
         assert!(
             diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
-                SirDiagnosticKind::UnknownBinding { name, value }
-                    if name == "ghost" && *value == ValueId(7)
+                SirDiagnosticKind::UnknownBinding { name, target }
+                    if name == "ghost" && *target == BindingTarget::Value(ValueId(7))
             )),
             "{diagnostics:#?}"
         );

@@ -5,8 +5,8 @@ use hew_parser::ast::Span;
 use hew_types::{DefId, ResolvedTy, TypeFacts, TypeInstanceKey};
 
 use crate::ownership::{
-    Binding, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, StringLiteralId, SuspendInputMode,
-    SuspendKind, TrapKind,
+    Binding, BindingTarget, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, StringLiteralId,
+    SuspendInputMode, SuspendKind, TrapKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -238,7 +238,19 @@ impl SemFunction {
         self.bindings
             .iter()
             .rev()
-            .find(|binding| binding.value == value)
+            .find(|binding| binding.target == BindingTarget::Value(value))
+    }
+
+    /// The source binding whose storage root is `place`.
+    ///
+    /// Rule 6a reads the binding's name, span, and mutability through this
+    /// relation. The provenance remains in the ordered binding table; neither
+    /// [`PlaceDecl`] nor `store.assign` duplicates it.
+    #[must_use]
+    pub fn binding_rooting(&self, place: PlaceId) -> Option<&Binding> {
+        self.bindings
+            .iter()
+            .find(|binding| binding.target == BindingTarget::Place(place))
     }
 }
 

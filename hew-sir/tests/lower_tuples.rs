@@ -318,12 +318,17 @@ fn every_binding_is_recorded_with_the_value_it_names() {
     );
 
     let value_of = |name: &str| {
-        twice
+        let binding = twice
             .bindings
             .iter()
             .find(|binding| binding.name == name)
-            .unwrap_or_else(|| panic!("`{name}` must be recorded"))
-            .value
+            .unwrap_or_else(|| panic!("`{name}` must be recorded"));
+        match binding.target {
+            hew_sir::BindingTarget::Value(value) => value,
+            hew_sir::BindingTarget::Place(place) => {
+                panic!("`{name}` unexpectedly targets place {place:?}")
+            }
+        }
     };
     assert_eq!(
         value_of("seed"),
@@ -349,8 +354,14 @@ fn every_binding_is_recorded_with_the_value_it_names() {
         twice.bindings
     );
 
-    let bound_values: std::collections::BTreeSet<_> =
-        twice.bindings.iter().map(|binding| binding.value).collect();
+    let bound_values: std::collections::BTreeSet<_> = twice
+        .bindings
+        .iter()
+        .filter_map(|binding| match binding.target {
+            hew_sir::BindingTarget::Value(value) => Some(value),
+            hew_sir::BindingTarget::Place(_) => None,
+        })
+        .collect();
     let anonymous = twice
         .blocks
         .iter()

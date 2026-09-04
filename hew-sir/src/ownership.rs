@@ -205,7 +205,25 @@ pub enum SuspendInputMode {
     Move,
 }
 
-/// One source binding, and the SSA value it names.
+/// Function-local identity of one source binding.
+///
+/// This is distinct from HIR's binding identity: SIR assigns it from the
+/// deterministic [`crate::SemFunction::bindings`] order after specialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BindingId(pub u32);
+
+/// The semantic storage a source binding names.
+///
+/// A closed target keeps value aliases and materialized place roots in the one
+/// ordered binding table, rather than copying source provenance onto places or
+/// stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BindingTarget {
+    Value(ValueId),
+    Place(PlaceId),
+}
+
+/// One source binding, and the value or place it names.
 ///
 /// §1.6 separates a user-facing wall from an internal error by asking whether
 /// the offending value is named by a source binding, and rule 6a needs the
@@ -219,11 +237,11 @@ pub enum SuspendInputMode {
 /// ([`crate::SemFunction::binding_naming`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
+    pub id: BindingId,
     pub name: String,
     pub span: Span,
     pub mutable: bool,
-    /// The SSA value this binding names.
-    pub value: ValueId,
+    pub target: BindingTarget,
 }
 
 #[cfg(test)]

@@ -1200,10 +1200,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 Ok((
                     BlockArg { value, ty, own },
                     Binding {
+                        id: crate::BindingId(u32::try_from(index).map_err(|_| {
+                            "SIR source binding count exceeds u32".to_string()
+                        })?),
                         name: param.name.clone(),
                         span: param.span.clone(),
                         mutable: param.mutable,
-                        value,
+                        target: crate::BindingTarget::Value(value),
                     },
                 ))
             })
@@ -1327,10 +1330,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     // has none, because `let y = x` must not rename the
                     // parameter `x` already named.
                     self.source_bindings.push(Binding {
+                        id: crate::BindingId(
+                            u32::try_from(self.source_bindings.len())
+                                .map_err(|_| "SIR source binding count exceeds u32".to_string())?,
+                        ),
                         name: binding.name.clone(),
                         span: binding.span.clone(),
                         mutable: binding.mutable,
-                        value,
+                        target: crate::BindingTarget::Value(value),
                     });
                     self.bindings.insert(binding.id, value);
                 }

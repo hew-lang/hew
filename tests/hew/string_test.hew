@@ -115,20 +115,20 @@ fn test_to_int_returns_none_for_invalid_and_partial_inputs() {
 
 #[test]
 fn test_try_to_int_accepts_i64_bounds() {
-    assert_int_result_eq(string.try_to_int("9223372036854775807"), 9223372036854775807);
-    assert_int_result_string_eq(string.try_to_int("-9223372036854775808"), "-9223372036854775808");
+    assert_int_result_eq(string.to_int("9223372036854775807"), 9223372036854775807);
+    assert_int_result_string_eq(string.to_int("-9223372036854775808"), "-9223372036854775808");
 }
 
 #[test]
 fn test_try_to_int_rejects_overflow() {
-    assert_int_result_err(string.try_to_int("9223372036854775808"), "string.try_to_int: integer out of range");
-    assert_int_result_err(string.try_to_int("-9223372036854775809"), "string.try_to_int: integer out of range");
+    assert_int_result_err(string.to_int("9223372036854775808"), "string.to_int: integer out of range");
+    assert_int_result_err(string.to_int("-9223372036854775809"), "string.to_int: integer out of range");
 }
 
 #[test]
 fn test_try_to_int_rejects_sign_only_and_partial_parse_inputs() {
-    assert_int_result_err(string.try_to_int("-"), "string.try_to_int: invalid integer literal");
-    assert_int_result_err(string.try_to_int("12x"), "string.try_to_int: invalid integer literal");
+    assert_int_result_err(string.to_int("-"), "string.to_int: invalid integer literal");
+    assert_int_result_err(string.to_int("12x"), "string.to_int: invalid integer literal");
 }
 
 #[test]
@@ -153,24 +153,24 @@ fn test_to_float_returns_zero_for_invalid_literals() {
 
 #[test]
 fn test_try_to_float_accepts_decimal_and_scientific_literals() {
-    assert_float_result_eq(string.try_to_float("0.5"), 0.5);
-    assert_float_result_eq(string.try_to_float("6e2"), 600.0);
-    assert_float_result_eq(string.try_to_float("7E-1"), 0.7);
+    assert_float_result_eq(string.to_float("0.5"), 0.5);
+    assert_float_result_eq(string.to_float("6e2"), 600.0);
+    assert_float_result_eq(string.to_float("7E-1"), 0.7);
 }
 
 #[test]
 fn test_try_to_float_round_trips_from_float_output() {
     let positive = string.from_float(3.5);
     let negative = string.from_float(-0.25);
-    assert_float_result_eq(string.try_to_float(positive), 3.5);
-    assert_float_result_eq(string.try_to_float(negative), -0.25);
+    assert_float_result_eq(string.to_float(positive), 3.5);
+    assert_float_result_eq(string.to_float(negative), -0.25);
 }
 
 #[test]
 fn test_try_to_float_rejects_invalid_literals() {
-    assert_float_result_err(string.try_to_float("1.2.3"), "string.try_to_float: invalid float literal");
-    assert_float_result_err(string.try_to_float("9e2ms"), "string.try_to_float: invalid float literal");
-    assert_float_result_err(string.try_to_float("-"), "string.try_to_float: invalid float literal");
+    assert_float_result_err(string.to_float("1.2.3"), "string.to_float: invalid float literal");
+    assert_float_result_err(string.to_float("9e2ms"), "string.to_float: invalid float literal");
+    assert_float_result_err(string.to_float("-"), "string.to_float: invalid float literal");
 }
 
 #[test]

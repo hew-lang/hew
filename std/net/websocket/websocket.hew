@@ -51,7 +51,7 @@ fn checked_recv_deadline(deadline_ms: i64) -> Result<i64, net.NetError> {
     if deadline_ms <= 0 {
         Ok(0)
     } else {
-        net.try_duration_ms("websocket.Conn.recv_timeout", deadline_ms)
+        net.duration_ms("websocket.Conn.recv_timeout", deadline_ms)
     }
 }
 

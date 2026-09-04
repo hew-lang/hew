@@ -72,36 +72,11 @@ pub fn from_char(code: i64) -> string {
 ///
 /// Unlike C's `atoi`, this function does **not** stop at the first non-digit
 /// character — any non-digit anywhere in the string (after an optional leading
-/// `+`/`-`) causes the whole parse to fail and return `None`.
-/// For example, `"42abc"` returns `None`, not `Some(42)`.
-///
-/// A real zero parses as `Some(0)` — absence is `None`, never a sentinel.
-/// Use `try_to_int` when the failure reason matters.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     let n = string.to_int("42");     // Some(42)
-///     let z = string.to_int("0");      // Some(0)
-///     let m = string.to_int("42abc");  // None — partial numbers do not parse
-///     let e = string.to_int("");       // None
-/// }
-/// ```
-pub fn to_int(s: string) -> Option<i64> {
-    match try_to_int(s) {
-        .Ok(value) => Some(value),
-        .Err(_) => None,
-    }
-}
-
 /// Parse a string as an integer, returning a structured error on failure.
-pub fn try_to_int(s: string) -> Result<i64, string> {
+pub fn to_int(s: string) -> Result<i64, string> {
     let slen = s.len();
     if slen == 0 {
-        return Err("string.try_to_int: invalid integer literal");
+        return Err("string.to_int: invalid integer literal");
     }
     var start = 0;
     var negative = false;
@@ -113,7 +88,7 @@ pub fn try_to_int(s: string) -> Result<i64, string> {
         start = 1;
     }
     if start >= slen {
-        return Err("string.try_to_int: invalid integer literal");
+        return Err("string.to_int: invalid integer literal");
     }
     // i64::MIN / 10 truncated toward zero (-9223372036854775808 / 10 = -922337203685477580).
     // If the accumulator goes below this cutoff, the next digit would overflow i64.
@@ -133,10 +108,10 @@ pub fn try_to_int(s: string) -> Result<i64, string> {
             hew_string_drop(digit)
         };
         if d < 0 {
-            return Err("string.try_to_int: invalid integer literal");
+            return Err("string.to_int: invalid integer literal");
         }
         if result < cutoff || result == cutoff && d > max_last_digit {
-            return Err("string.try_to_int: integer out of range");
+            return Err("string.to_int: integer out of range");
         }
         result = result * 10 - d;
     }
@@ -147,39 +122,12 @@ pub fn try_to_int(s: string) -> Result<i64, string> {
     }
 }
 
-/// Parse a string as a float. Returns `0.0` if parsing fails.
-///
-/// The parser accepts:
-/// - an optional leading `+` or `-`
-/// - digits with an optional decimal point
-/// - an optional scientific-notation exponent (`e` or `E`)
-///
-/// The entire string must be a valid float literal; partial parses fail.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     let pi = string.to_float("3.14");   // 3.14
-///     let n = string.to_float("-2e3");    // -2000.0
-///     let z = string.to_float("3.14x");   // 0.0
-/// }
-/// ```
-pub fn to_float(s: string) -> f64 {
-    match try_to_float(s) {
-        .Ok(value) => value,
-        .Err(_) => 0.0,
-    }
-}
-
 /// Parse a string as a float, returning a structured error on failure.
-pub fn try_to_float(s: string) -> Result<f64, string> {
+pub fn to_float(s: string) -> Result<f64, string> {
     if is_valid_float_literal(s) {
         Ok(parse_valid_float_literal(s))
     } else {
-        Err("string.try_to_float: invalid float literal")
+        Err("string.to_float: invalid float literal")
     }
 }
 

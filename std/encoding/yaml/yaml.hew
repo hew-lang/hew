@@ -21,7 +21,7 @@ import std.encoding.wire.value_trait;
 
 /// Structured error type for YAML parsing failures.
 ///
-/// Use `Result<Value, ParseError>` with `try_parse` for structured error
+/// Use `Result<Value, ParseError>` with `parse` for structured error
 /// handling. Import `std.encoding.yaml` when matching on the returned error
 /// value so you can use the existing unqualified
 /// `ParseError.Invalid(message)` constructor/pattern style.
@@ -297,23 +297,12 @@ fn parse_error_message() -> string {
         hew_yaml_last_error()
     }
 }
-
-/// Parse a YAML string into a `Value`.
-///
-/// Preserves the legacy behavior: invalid YAML returns an invalid handle
-/// (`type_of() == -1`). Use `try_parse` for a structured error result.
-pub fn parse(s: string) -> Value {
-    unsafe {
-        hew_yaml_parse(s)
-    }
-}
-
 /// Parse a YAML string into a `Value`.
 ///
 /// Returns `Err(ParseError.Invalid(message))` with the native parser message
 /// when parsing fails. Match on `ParseError.Invalid(message)` to recover the
 /// original parser message.
-pub fn try_parse(s: string) -> Result<Value, ParseError> {
+pub fn parse(s: string) -> Result<Value, ParseError> {
     let val = parse(s);
     if val.type_of() >= 0 {
         Ok(val)
@@ -327,7 +316,7 @@ pub fn try_parse(s: string) -> Result<Value, ParseError> {
 /// A YAML integer above `i64::MAX` is still an integer, so reading it as `0`
 /// would be the document's value replaced by a fabricated one. Returns
 /// `Err(reason)` for such a value and for a non-integer value.
-pub fn try_get_int(val: Value) -> Result<i64, string> {
+pub fn get_int(val: Value) -> Result<i64, string> {
     let status = unsafe {
         hew_yaml_int_status(val)
     };

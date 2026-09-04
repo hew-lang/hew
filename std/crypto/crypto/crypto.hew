@@ -50,22 +50,6 @@ pub fn hmac_sha256(key: bytes, data: bytes) -> bytes {
         hew_hmac_sha256_hew(key, data)
     }
 }
-
-/// Generate `len` cryptographically random bytes.
-///
-/// Panics when the request cannot be served. `len == 0` is a valid empty
-/// draw. A single request is bounded to `max_random_bytes_len()` (16 MiB).
-/// Use `try_random_bytes` to handle the failure instead.
-pub fn random_bytes(len: i64) -> bytes {
-    match try_random_bytes(len) {
-        .Ok(drawn) => drawn,
-        .Err(message) => {
-            panic(message);
-            "".to_bytes()
-        },
-    }
-}
-
 /// Generate `len` cryptographically random bytes, reporting a request that
 /// could not be served.
 ///
@@ -73,7 +57,7 @@ pub fn random_bytes(len: i64) -> bytes {
 /// above `max_random_bytes_len()`, and an entropy-source failure are reported as
 /// `Err` rather than returned as an empty buffer or answered by terminating
 /// the process.
-pub fn try_random_bytes(len: i64) -> Result<bytes, string> {
+pub fn random_bytes(len: i64) -> Result<bytes, string> {
     let drawn = unsafe {
         hew_random_bytes_hew(len)
     };
@@ -89,7 +73,7 @@ pub fn try_random_bytes(len: i64) -> Result<bytes, string> {
     }
 }
 
-/// Largest random-byte request accepted by `try_random_bytes` (16 MiB).
+/// Largest random-byte request accepted by `random_bytes` (16 MiB).
 pub fn max_random_bytes_len() -> i64 {
     16777216
 }

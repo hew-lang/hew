@@ -196,24 +196,10 @@ pub fn request_string(method: string, url: string, body: string, headers: Vec<(s
     };
     Some(result)
 }
-
-/// Set the global timeout applied to subsequent outbound HTTP requests.
-///
-/// Pass `0` to disable the timeout.
-///
-/// Panics on a timeout the C ABI cannot represent. Use `try_set_timeout` to
-/// observe that rejection instead.
-pub fn set_timeout(timeout_ms: i64) {
-    match try_set_timeout(timeout_ms) {
-        .Ok(_) => {},
-        .Err(err) => panic(f"http_client.set_timeout failed: {err}"),
-    }
-}
-
 /// Set the global outbound-request timeout, rejecting a value the C ABI
 /// cannot represent rather than narrowing it into a different deadline.
-pub fn try_set_timeout(timeout_ms: i64) -> Result<(), net.NetError> {
-    let checked = net.try_duration_ms("http_client.set_timeout", timeout_ms)?;
+pub fn set_timeout(timeout_ms: i64) -> Result<(), net.NetError> {
+    let checked = net.duration_ms("http_client.set_timeout", timeout_ms)?;
     unsafe {
         hew_http_set_timeout(checked as i32) // INTERNAL-ABI: range-checked above
     };

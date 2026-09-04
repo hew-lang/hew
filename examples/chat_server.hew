@@ -102,7 +102,7 @@ fn main() {
         port = os.args().get(1);
     }
     let addr = f"0.0.0.0:{port}";
-    let listener = match net.try_listen(addr) {
+    let listener = match net.listen(addr) {
         .Ok(listener) => listener,
         .Err(err) => panic(f"[server] listen on {addr} failed: {err}"),
     };

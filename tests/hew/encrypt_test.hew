@@ -33,7 +33,7 @@ fn test_try_open_roundtrip_succeeds() {
     let seal_key = test_key();
     let open_key = test_key();
     let ciphertext = encrypt.seal(seal_key, "hew survives");
-    match encrypt.try_open(open_key, ciphertext) {
+    match encrypt.open(open_key, ciphertext) {
         .Ok(plaintext) => testing.assert_eq_str(plaintext, "hew survives"),
         .Err(err) => panic(f"try_open unexpectedly failed: {err}"),
     }
@@ -46,7 +46,7 @@ fn test_try_open_tampered_ciphertext_returns_err_and_survives() {
     let ciphertext = encrypt.seal(seal_key, "hew survives tamper");
     let tampered = tamper_last_byte(ciphertext);
     var survived = false;
-    match encrypt.try_open(open_key, tampered) {
+    match encrypt.open(open_key, tampered) {
         .Ok(_) => panic("try_open accepted tampered ciphertext"),
         .Err(err) => {
             match err {
@@ -64,7 +64,7 @@ fn test_try_open_tampered_ciphertext_returns_err_and_survives() {
 // ── #37: an unusable key is reported, not fatal at the FFI boundary ───
 #[test]
 fn test_try_seal_rejects_a_short_key() {
-    match encrypt.try_seal("too-short".to_bytes(), "hew") {
+    match encrypt.seal("too-short".to_bytes(), "hew") {
         .Ok(ciphertext) => panic(f"expected a short key to be rejected, got {ciphertext.len()} bytes"),
         .Err(err) => testing.assert_eq_str(to_string(err), "encrypt key must be 32 bytes"),
     }
@@ -72,7 +72,7 @@ fn test_try_seal_rejects_a_short_key() {
 
 #[test]
 fn test_try_seal_rejects_an_empty_key() {
-    match encrypt.try_seal("".to_bytes(), "hew") {
+    match encrypt.seal("".to_bytes(), "hew") {
         .Ok(ciphertext) => panic(f"expected an empty key to be rejected, got {ciphertext.len()} bytes"),
         .Err(err) => testing.assert_eq_str(to_string(err), "encrypt key must be 32 bytes"),
     }
@@ -81,7 +81,7 @@ fn test_try_seal_rejects_an_empty_key() {
 #[test]
 fn test_try_seal_rejects_an_oversized_key() {
     let long_key = "an oversized key of forty-eight ascii bytes!!!!!".to_bytes();
-    match encrypt.try_seal(long_key, "hew") {
+    match encrypt.seal(long_key, "hew") {
         .Ok(ciphertext) => panic(f"expected a 48-byte key to be rejected, got {ciphertext.len()} bytes"),
         .Err(err) => testing.assert_eq_str(to_string(err), "encrypt key must be 32 bytes"),
     }
@@ -89,9 +89,9 @@ fn test_try_seal_rejects_an_oversized_key() {
 
 #[test]
 fn test_try_seal_preserves_a_valid_roundtrip() {
-    match encrypt.try_seal(test_key(), "hew round trip") {
+    match encrypt.seal(test_key(), "hew round trip") {
         .Ok(ciphertext) => {
-            match encrypt.try_open(test_key(), ciphertext) {
+            match encrypt.open(test_key(), ciphertext) {
                 .Ok(plaintext) => testing.assert_eq_str(plaintext, "hew round trip"),
                 .Err(err) => panic(f"try_open unexpectedly failed: {err}"),
             }
@@ -104,10 +104,10 @@ fn test_try_seal_preserves_a_valid_roundtrip() {
 fn test_try_seal_of_empty_plaintext_is_not_an_empty_ciphertext() {
     // An empty plaintext still seals to a nonce plus a GCM tag, so an empty
     // result would be a fabricated success rather than a valid empty value.
-    match encrypt.try_seal(test_key(), "") {
+    match encrypt.seal(test_key(), "") {
         .Ok(ciphertext) => {
             testing.assert_eq(ciphertext.len(), 28);
-            match encrypt.try_open(test_key(), ciphertext) {
+            match encrypt.open(test_key(), ciphertext) {
                 .Ok(plaintext) => testing.assert_eq_str(plaintext, ""),
                 .Err(err) => panic(f"try_open of an empty plaintext failed: {err}"),
             }
@@ -118,11 +118,11 @@ fn test_try_seal_of_empty_plaintext_is_not_an_empty_ciphertext() {
 
 #[test]
 fn test_try_seal_status_does_not_leak_into_the_next_seal() {
-    match encrypt.try_seal("short".to_bytes(), "hew") {
+    match encrypt.seal("short".to_bytes(), "hew") {
         .Ok(_) => panic("expected a short key to be rejected"),
         .Err(_) => {},
     }
-    match encrypt.try_seal(test_key(), "hew") {
+    match encrypt.seal(test_key(), "hew") {
         .Ok(ciphertext) => testing.assert_gt(ciphertext.len(), 0),
         .Err(err) => panic(f"a later valid seal must not inherit the earlier failure: {err}"),
     }

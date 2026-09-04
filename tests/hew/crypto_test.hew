@@ -51,7 +51,7 @@ fn test_random_bytes_returns_requested_length() {
 // ── #38: a random-byte request that cannot be served is reported ──────
 #[test]
 fn test_try_random_bytes_rejects_a_negative_length() {
-    match crypto.try_random_bytes(-1) {
+    match crypto.random_bytes(-1) {
         .Ok(drawn) => panic(f"expected a negative length to be rejected, got {drawn.len()} bytes"),
         .Err(err) => testing.assert_eq_str(err, "crypto.random_bytes: invalid length -1 (must be >= 0)"),
     }
@@ -60,7 +60,7 @@ fn test_try_random_bytes_rejects_a_negative_length() {
 #[test]
 fn test_try_random_bytes_rejects_a_length_no_bytes_value_can_hold() {
     let too_large = crypto.max_random_bytes_len() + 1;
-    match crypto.try_random_bytes(too_large) {
+    match crypto.random_bytes(too_large) {
         .Ok(drawn) => panic(f"expected an oversized length to be rejected, got {drawn.len()} bytes"),
         .Err(err) => testing.assert_eq_str(err, f"crypto.random_bytes: length {too_large} exceeds the public maximum {crypto.max_random_bytes_len()}"),
     }
@@ -68,15 +68,15 @@ fn test_try_random_bytes_rejects_a_length_no_bytes_value_can_hold() {
 
 #[test]
 fn test_try_random_bytes_preserves_valid_lengths_including_zero() {
-    match crypto.try_random_bytes(0) {
+    match crypto.random_bytes(0) {
         .Ok(drawn) => testing.assert_eq(drawn.len(), 0),
         .Err(err) => panic(f"expected a zero-length draw to succeed: {err}"),
     }
-    match crypto.try_random_bytes(1) {
+    match crypto.random_bytes(1) {
         .Ok(drawn) => testing.assert_eq(drawn.len(), 1),
         .Err(err) => panic(f"expected a 1-byte draw to succeed: {err}"),
     }
-    match crypto.try_random_bytes(32) {
+    match crypto.random_bytes(32) {
         .Ok(drawn) => testing.assert_eq(drawn.len(), 32),
         .Err(err) => panic(f"expected a 32-byte draw to succeed: {err}"),
     }
@@ -85,7 +85,7 @@ fn test_try_random_bytes_preserves_valid_lengths_including_zero() {
 #[test]
 fn test_try_random_bytes_accepts_the_documented_public_maximum() {
     let maximum = crypto.max_random_bytes_len();
-    match crypto.try_random_bytes(maximum) {
+    match crypto.random_bytes(maximum) {
         .Ok(drawn) => testing.assert_eq(drawn.len(), maximum),
         .Err(err) => panic(f"the documented maximum must remain valid: {err}"),
     }
@@ -93,11 +93,11 @@ fn test_try_random_bytes_accepts_the_documented_public_maximum() {
 
 #[test]
 fn test_try_random_bytes_status_does_not_leak_into_the_next_draw() {
-    match crypto.try_random_bytes(-1) {
+    match crypto.random_bytes(-1) {
         .Ok(_) => panic("expected a negative length to be rejected"),
         .Err(_) => {},
     }
-    match crypto.try_random_bytes(8) {
+    match crypto.random_bytes(8) {
         .Ok(drawn) => testing.assert_eq(drawn.len(), 8),
         .Err(err) => panic(f"a later valid draw must not inherit the earlier failure: {err}"),
     }

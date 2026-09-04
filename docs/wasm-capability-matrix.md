@@ -229,7 +229,7 @@ would otherwise end in a trap or linker failure:
 - **`std::crypto::crypto.random_bytes`**: Secure randomness is backed by
   `ring::SystemRandom`, which is native-only and absent from the wasm32 link set.
   The checker rejects `crypto.random_bytes` and its fallible twin
-  `crypto.try_random_bytes` on wasm32 so key material generation fails closed
+  `crypto.random_bytes` on wasm32 so key material generation fails closed
   instead of compiling to a non-cryptographic fallback or host
   import. `WASM-TODO(crypto-random):` plumb a secure host entropy capability such as WASI
   `random_get`.

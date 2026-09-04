@@ -11,7 +11,7 @@
 //! fn main() {
 //!     let key = crypto.random_bytes(32);
 //!     let ciphertext = encrypt.seal(key, "hello world");
-//!     match encrypt.try_open(key, ciphertext) {
+//!     match encrypt.open(key, ciphertext) {
 //!         .Ok(plaintext) => println(plaintext),
 //!         .Err(err) => println(err),
 //!     }
@@ -20,7 +20,7 @@
 
 import std.encoding.base64;
 
-/// Structured errors returned by `try_open`.
+/// Structured errors returned by `open`.
 pub enum CryptoError {
     /// No error was observed.
     None;
@@ -65,14 +65,14 @@ impl Display for CryptoError {
     }
 }
 
-/// Return the last `try_open` error observed on this thread.
+/// Return the last `open` error observed on this thread.
 pub fn last_open_error() -> CryptoError {
     crypto_error_from_i32(unsafe {
         hew_encrypt_last_open_error_code()
     })
 }
 
-/// Return the last `try_seal` error observed on this thread.
+/// Return the last `seal` error observed on this thread.
 ///
 /// Reading consumes the status, so a later successful seal is never read as
 /// this failure.
@@ -81,23 +81,6 @@ pub fn last_seal_error() -> CryptoError {
         hew_encrypt_last_seal_error_code()
     })
 }
-
-/// Encrypt plaintext using AES-256-GCM with the given key.
-///
-/// Returns the ciphertext (nonce + encrypted data) as bytes. Panics when the
-/// key is not a valid AES-256 key or the ciphertext cannot be produced; use
-/// `try_seal` to handle that instead.
-pub fn seal(key: bytes, plaintext: string) -> bytes {
-    let result = try_seal(key, plaintext);
-    match result {
-        .Ok(ciphertext) => ciphertext,
-        .Err(err) => {
-            panic(f"encrypt.seal failed: {err}");
-            "".to_bytes()
-        },
-    }
-}
-
 /// Encrypt plaintext using AES-256-GCM, reporting an unusable key instead of
 /// failing out of the FFI boundary.
 ///
@@ -105,7 +88,7 @@ pub fn seal(key: bytes, plaintext: string) -> bytes {
 /// entropy failure, and an allocation failure are all returned as
 /// `Err(CryptoError)`. No path returns an empty ciphertext as success: an
 /// empty plaintext still seals to a nonce plus a GCM tag.
-pub fn try_seal(key: bytes, plaintext: string) -> Result<bytes, CryptoError> {
+pub fn seal(key: bytes, plaintext: string) -> Result<bytes, CryptoError> {
     let encoded = unsafe {
         hew_encrypt_try_seal_base64_hew(key, plaintext)
     };
@@ -119,7 +102,7 @@ pub fn try_seal(key: bytes, plaintext: string) -> Result<bytes, CryptoError> {
 ///
 /// Returns `Err(CryptoError)` when the key or ciphertext is invalid, AES-GCM
 /// authentication fails, or the decrypted bytes are not valid UTF-8.
-pub fn try_open(key: bytes, ciphertext: bytes) -> Result<string, CryptoError> {
+pub fn open(key: bytes, ciphertext: bytes) -> Result<string, CryptoError> {
     let plaintext = unsafe {
         hew_encrypt_try_open_hew(key, ciphertext)
     };
@@ -128,21 +111,6 @@ pub fn try_open(key: bytes, ciphertext: bytes) -> Result<string, CryptoError> {
         err => Err(err),
     }
 }
-
-/// Decrypt ciphertext using AES-256-GCM with the given key.
-///
-/// Panics on invalid input or authentication failure. Use `try_open` for
-/// structured error handling of attacker-controlled ciphertext.
-pub fn open(key: bytes, ciphertext: bytes) -> string {
-    match try_open(key, ciphertext) {
-        .Ok(plaintext) => plaintext,
-        .Err(err) => {
-            panic(f"encrypt.open failed: {err}");
-            ""
-        },
-    }
-}
-
 /// Decrypt ciphertext and panic on failure.
 ///
 /// Alias for `open`, provided for callers that prefer an explicit must-style

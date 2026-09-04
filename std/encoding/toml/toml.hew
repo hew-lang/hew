@@ -23,7 +23,7 @@ import std.encoding.wire.value_trait;
 
 /// Structured error type for TOML parsing failures.
 ///
-/// Use `Result<Value, ParseError>` with `try_parse` for structured error
+/// Use `Result<Value, ParseError>` with `parse` for structured error
 /// handling. Import `std.encoding.toml` when matching on the returned error
 /// value so you can use the existing unqualified
 /// `ParseError.Invalid(message)` constructor/pattern style.
@@ -85,7 +85,7 @@ trait ValueMethods: CanonicalValueMethods {
     ///
     /// Panics if the value cannot be a TOML document root. Only a table can:
     /// an integer, string, or array root serializes to no text at all, which
-    /// is exactly what an empty table serializes to. Use `try_stringify()`
+    /// is exactly what an empty table serializes to. Use `stringify()`
     /// when that failure should be returned as an error.
     fn stringify(self) -> string;
 
@@ -286,23 +286,12 @@ fn parse_error_message() -> string {
         hew_toml_last_error()
     }
 }
-
-/// Parse a TOML string into a `Value`.
-///
-/// Preserves the legacy behavior: invalid TOML returns an invalid handle
-/// (`type_of() == -1`). Use `try_parse` for a structured error result.
-pub fn parse(s: string) -> Value {
-    unsafe {
-        hew_toml_parse(s)
-    }
-}
-
 /// Parse a TOML string into a `Value`.
 ///
 /// Returns `Err(ParseError.Invalid(message))` with the native parser message
 /// when parsing fails. Match on `ParseError.Invalid(message)` to recover the
 /// original parser message.
-pub fn try_parse(s: string) -> Result<Value, ParseError> {
+pub fn parse(s: string) -> Result<Value, ParseError> {
     let val = parse(s);
     if val.type_of() >= 0 {
         Ok(val)
@@ -316,7 +305,7 @@ pub fn try_parse(s: string) -> Result<Value, ParseError> {
 /// A TOML document root must be a table. An integer, string, or array root
 /// serializes to no text at all, which is exactly what an empty table
 /// serializes to, so the two are only distinguishable through this result.
-pub fn try_stringify(val: Value) -> Result<string, string> {
+pub fn stringify(val: Value) -> Result<string, string> {
     let text = unsafe {
         hew_toml_stringify(val)
     };

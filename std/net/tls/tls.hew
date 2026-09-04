@@ -13,7 +13,7 @@
 //! fn main() {
 //!     let stream = tls.connect("example.com", 443);
 //!     let request = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
-//!     match tls.try_write(stream, request.to_bytes()) {
+//!     match tls.write(stream, request.to_bytes()) {
 //!         .Ok(_) => {},
 //!         .Err(err) => panic(to_string(err)),
 //!     }
@@ -93,7 +93,7 @@ fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // IN
 /// actor TlsEcho {
 ///     let stream: tls.TlsStream;
 ///     receive fn on_data(data: bytes) {
-///         stream.try_write(data);
+///         stream.write(data);
 ///     }
 ///     receive fn on_close() {
 ///         println("tls connection closed");
@@ -119,7 +119,7 @@ trait TlsStreamMethods {
     /// Write raw bytes to the TLS stream.
     ///
     /// Returns the number of bytes written, or `Err(net.NetError)` on failure.
-    fn try_write(self, data: bytes) -> Result<i64, net.NetError>;
+    fn write(self, data: bytes) -> Result<i64, net.NetError>;
 
     /// Read up to `size` bytes from the TLS stream.
     ///
@@ -135,7 +135,7 @@ trait TlsStreamMethods {
     /// chunk as an `on_data` actor message. When the connection closes or
     /// errors, a single `on_close` message is sent. After attach, calling
     /// `read()` produces undefined behaviour — the runtime owns the read side.
-    /// Outbound `write()` / `try_write()` remain valid.
+    /// Outbound `write()` / `write()` remain valid.
     ///
     /// `handler` is the actor that will receive `on_data` and `on_close`.
     /// The compiler synthesises both protocol message IDs from the concrete
@@ -154,13 +154,13 @@ impl TlsStreamMethods for TlsStream {
             -1
         }
     }
-    fn try_write(stream: TlsStream, data: bytes) -> Result<i64, net.NetError> {
+    fn write(stream: TlsStream, data: bytes) -> Result<i64, net.NetError> {
         tls_write_result(unsafe {
             hew_tls_write_result(stream, data)
         })
     }
     fn read(stream: TlsStream, size: i64) -> Result<bytes, net.NetError> {
-        let checked = net.try_size_arg("tls.TlsStream.read", size)?;
+        let checked = net.size_arg("tls.TlsStream.read", size)?;
         tls_read_result(unsafe {
             hew_tls_read_result(stream, checked as i32) // INTERNAL-ABI: range-checked above
         })
@@ -197,7 +197,7 @@ impl TlsStream {
 /// }
 /// ```
 pub fn connect(host: string, port: i64) -> TlsStream {
-    let checked = match net.try_port_arg("tls.connect", port) {
+    let checked = match net.port_arg("tls.connect", port) {
         .Ok(value) => value,
         .Err(err) => {
             panic(f"tls.connect failed: {err}");
@@ -217,19 +217,11 @@ pub fn last_error() -> string {
         hew_tls_last_error()
     }
 }
-
-/// Write raw bytes to a TLS stream.
-///
-/// Returns the number of bytes written, or −1 on error.
-pub fn write(stream: TlsStream, data: bytes) -> i64 {
-    stream.write(data)
-}
-
 /// Write raw bytes to a TLS stream.
 ///
 /// Returns the number of bytes written, or `Err(net.NetError)` on failure.
-pub fn try_write(stream: TlsStream, data: bytes) -> Result<i64, net.NetError> {
-    stream.try_write(data)
+pub fn write(stream: TlsStream, data: bytes) -> Result<i64, net.NetError> {
+    stream.write(data)
 }
 
 /// Read up to `size` bytes from a TLS stream.

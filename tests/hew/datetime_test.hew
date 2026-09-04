@@ -16,13 +16,13 @@ fn assert_parse_ok(actual: Result<i64, string>) -> i64 {
 
 #[test]
 fn test_try_parse_full_timestamp_formats_back_to_date() {
-    let parsed = assert_parse_ok(datetime.try_parse("2025-07-10T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"));
+    let parsed = assert_parse_ok(datetime.parse("2025-07-10T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"));
     testing.assert_eq_str(datetime.format(parsed, "%Y-%m-%d"), "2025-07-10");
 }
 
 #[test]
 fn test_try_parse_invalid_timestamp_returns_err() {
-    match datetime.try_parse("not-a-date", "%Y-%m-%dT%H:%M:%SZ") {
+    match datetime.parse("not-a-date", "%Y-%m-%dT%H:%M:%SZ") {
         .Ok(value) => {
             panic(f"expected invalid parse to fail, got {value}");
             testing.assert_eq(value, 0);
@@ -33,7 +33,7 @@ fn test_try_parse_invalid_timestamp_returns_err() {
 
 #[test]
 fn test_try_format_rejects_invalid_directive_with_error() {
-    match datetime.try_format(0, "%Q") {
+    match datetime.format(0, "%Q") {
         .Ok(_) => testing.assert_true(false),
         .Err(message) => testing.assert_eq_str(message, "invalid datetime format directive"),
     }
@@ -47,7 +47,7 @@ fn test_year_rejects_out_of_range_epoch() {
 
 #[test]
 fn test_add_days_and_add_hours_shift_fixed_timestamp() {
-    let base = assert_parse_ok(datetime.try_parse("2025-07-10T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"));
+    let base = assert_parse_ok(datetime.parse("2025-07-10T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"));
     let plus_two_days = datetime.add_days(base, 2);
     let plus_six_hours = datetime.add_hours(base, 6);
     testing.assert_eq_str(datetime.to_iso8601(plus_two_days), "2025-07-12T00:00:00Z");
@@ -56,8 +56,8 @@ fn test_add_days_and_add_hours_shift_fixed_timestamp() {
 
 #[test]
 fn test_diff_secs_matches_fixed_interval() {
-    let start = assert_parse_ok(datetime.try_parse("2025-07-10T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"));
-    let end = assert_parse_ok(datetime.try_parse("2025-07-10T03:30:00Z", "%Y-%m-%dT%H:%M:%SZ"));
+    let start = assert_parse_ok(datetime.parse("2025-07-10T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"));
+    let end = assert_parse_ok(datetime.parse("2025-07-10T03:30:00Z", "%Y-%m-%dT%H:%M:%SZ"));
     testing.assert_eq(datetime.diff_secs(end, start), 12600);
 }
 

@@ -52,7 +52,7 @@ fn main() {
     println(f"Fetching {url}...");
     match fetch(url) {
         .Some(body) => {
-            match json.try_parse(body) {
+            match json.parse(body) {
                 .Ok(root) => {
                     // httpbin /json returns a "slideshow" object at the root.
                     // `get_field` returns a new owned clone — caller must free.

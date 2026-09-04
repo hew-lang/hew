@@ -113,10 +113,6 @@ impl Child {
     }
 }
 
-fn empty_output() -> CommandOutput {
-    CommandOutput { exit_code: -1, stdout: "", stderr: "" }
-}
-
 impl Display for ProcessError {
     fn fmt(err: ProcessError) -> string {
         match err {
@@ -150,7 +146,7 @@ fn take_command_output(result: ProcessResultHandle) -> CommandOutput {
 }
 
 fn legacy_packed_args_note() -> string {
-    "legacy packed-string API; prefer process.try_run_argv(command, Vec<string>)"
+    "legacy packed-string API; prefer process.run_argv(command, Vec<string>)"
 }
 
 fn split_legacy_packed_args(args: string) -> Vec<string> {
@@ -167,60 +163,32 @@ fn split_legacy_packed_args(args: string) -> Vec<string> {
 
 // ── Module-level functions ────────────────────────────────────────────
 /// Run a shell command synchronously and capture its exit code and output.
-pub fn try_run(command: string) -> Result<CommandOutput, ProcessError> {
+pub fn run(command: string) -> Result<CommandOutput, ProcessError> {
     unsafe {
         hew_clear_error();
         let result = hew_process_run(command);
         if hew_process_result_is_valid(result) {
             Ok(take_command_output(result))
         } else {
-            let error = last_process_error("process.try_run: command execution failed");
+            let error = last_process_error("process.run: command execution failed");
             hew_process_result_free(result);
             Err(error)
         }
     }
 }
 
-/// Run a shell command synchronously and return its stdout as a string.
-///
-/// Blocks until the command completes. The command is executed via
-/// the system shell.
-pub fn run(command: string) -> string {
-    match try_run(command) {
-        .Ok(output) => output.stdout,
-        .Err(err) => {
-            panic(f"process.run failed: {err}");
-            ""
-        },
-    }
-}
-
 /// Run a command without the shell using a `Vec<string>` argv surface.
-pub fn try_run_argv(command: string, args: Vec<string>) -> Result<CommandOutput, ProcessError> {
+pub fn run_argv(command: string, args: Vec<string>) -> Result<CommandOutput, ProcessError> {
     unsafe {
         hew_clear_error();
         let result = hew_process_run_argv(command, args);
         if hew_process_result_is_valid(result) {
             Ok(take_command_output(result))
         } else {
-            let error = last_process_error("process.try_run_argv: command execution failed");
+            let error = last_process_error("process.run_argv: command execution failed");
             hew_process_result_free(result);
             Err(error)
         }
-    }
-}
-
-/// Run a command without the shell using a `Vec<string>` argv surface.
-///
-/// Panics on launch or argument errors. Use `try_run_argv` for `Result`-based
-/// error handling.
-pub fn run_argv(command: string, args: Vec<string>) -> CommandOutput {
-    match try_run_argv(command, args) {
-        .Ok(output) => output,
-        .Err(err) => {
-            panic(f"process.run_argv failed: {err}");
-            empty_output()
-        },
     }
 }
 
@@ -228,63 +196,30 @@ pub fn run_argv(command: string, args: Vec<string>) -> CommandOutput {
 ///
 /// This packed-string surface cannot represent empty arguments, quoted
 /// segments, or arguments containing spaces. Prefer
-/// `try_run_argv(command, Vec<string>)`.
-pub fn try_run_args(command: string, args: string, arg_count: i64) -> Result<CommandOutput, ProcessError> {
+/// `run_argv(command, Vec<string>)`.
+pub fn run_args(command: string, args: string, arg_count: i64) -> Result<CommandOutput, ProcessError> {
     if arg_count < 0 {
-        return Err(ProcessError.InvalidArguments(f"process.try_run_args: arg_count must be non-negative ({legacy_packed_args_note()})"));
+        return Err(ProcessError.InvalidArguments(f"process.run_args: arg_count must be non-negative ({legacy_packed_args_note()})"));
     }
     let argv = split_legacy_packed_args(args);
     if argv.len() != arg_count {
-        return Err(ProcessError.InvalidArguments(f"process.try_run_args: arg_count {arg_count} does not match parsed argument length {argv.len()} ({legacy_packed_args_note()})"));
+        return Err(ProcessError.InvalidArguments(f"process.run_args: arg_count {arg_count} does not match parsed argument length {argv.len()} ({legacy_packed_args_note()})"));
     }
-    try_run_argv(command, argv)
-}
-
-/// Legacy compatibility wrapper for `run_args(command, args, arg_count)`.
-///
-/// Prefer `run_argv(command, Vec<string>)` for safe argument passing.
-pub fn run_args(command: string, args: string, arg_count: i64) -> string {
-    match try_run_args(command, args, arg_count) {
-        .Ok(output) => output.stdout,
-        .Err(err) => {
-            panic(f"process.run_args failed: {err}");
-            ""
-        },
-    }
-}
-
-/// Start a child process through the system shell without blocking.
-///
-/// Returns a `Child` handle that can be waited on or killed. Panics when the
-/// child cannot be launched; use `try_start` to observe the failure instead.
-///
-/// Note: This function is called `start` rather than `spawn` because
-/// `spawn` is a reserved keyword in Hew (used for spawning actors).
-pub fn start(command: string) -> Child {
-    unsafe {
-        hew_clear_error();
-        let handle = hew_process_spawn(command);
-        if !hew_process_is_valid(handle) {
-            let error = last_process_error("process.start: command launch failed");
-            hew_process_drop(handle);
-            panic(f"process.start failed: {error}");
-        }
-        Child { handle: handle }
-    }
+    run_argv(command, argv)
 }
 
 /// Start a child process through the system shell without blocking.
 ///
 /// Returns `Err(ProcessError.LaunchFailed)` when the child could not be
 /// launched, rather than a handle that is not backed by a running process.
-pub fn try_start(command: string) -> Result<Child, ProcessError> {
+pub fn start(command: string) -> Result<Child, ProcessError> {
     unsafe {
         hew_clear_error();
         let handle = hew_process_spawn(command);
         if hew_process_is_valid(handle) {
             Ok(Child { handle: handle })
         } else {
-            let error = last_process_error("process.try_start: command launch failed");
+            let error = last_process_error("process.start: command launch failed");
             hew_process_drop(handle);
             Err(error)
         }
@@ -296,14 +231,14 @@ pub fn try_start(command: string) -> Result<Child, ProcessError> {
 /// Returns `Err(ProcessError.LaunchFailed)` when the executable cannot be
 /// launched — a missing command is reported here rather than surfacing as a
 /// handle that never referred to a process.
-pub fn try_start_argv(command: string, args: Vec<string>) -> Result<Child, ProcessError> {
+pub fn start_argv(command: string, args: Vec<string>) -> Result<Child, ProcessError> {
     unsafe {
         hew_clear_error();
         let handle = hew_process_spawn_argv(command, args);
         if hew_process_is_valid(handle) {
             Ok(Child { handle: handle })
         } else {
-            let error = last_process_error("process.try_start_argv: command launch failed");
+            let error = last_process_error("process.start_argv: command launch failed");
             hew_process_drop(handle);
             Err(error)
         }

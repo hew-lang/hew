@@ -10,7 +10,7 @@ extern "C" {
 // coerced-int carrier is proven on a real call, not dead code.
 fn try_write_probe() -> i64 {
     let stream = tls.connect("127.0.0.1", 1);
-    match tls.try_write(stream, unsafe {
+    match tls.write(stream, unsafe {
         hew_bytes_from_str("ping")
     }) {
         .Ok(n) => n,

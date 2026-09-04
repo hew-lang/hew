@@ -244,14 +244,14 @@ fn test_parse_panics_on_missing_second_dot() {
 
 // ── SemVer 2.0 grammar is exact ───────────────────────────────────────
 fn expect_rejected(s: string) {
-    match semver.try_parse(s) {
+    match semver.parse(s) {
         .Ok(v) => panic(f"expected `{s}` to be rejected, got {v.to_string()}"),
         .Err(_) => {},
     }
 }
 
 fn expect_accepted(s: string) {
-    match semver.try_parse(s) {
+    match semver.parse(s) {
         .Ok(_) => {},
         .Err(reason) => panic(f"expected `{s}` to parse: {reason}"),
     }

@@ -33,7 +33,7 @@ fn closed_loopback_port() -> i64 {
 
 #[test]
 fn test_module_try_send_bad_port_surfaces_reason() {
-    let result = smtp.try_send("localhost", 999999, "u", "p", "a@example.com", "b@example.com", "s", "b");
+    let result = smtp.send("localhost", 999999, "u", "p", "a@example.com", "b@example.com", "s", "b");
     match result {
         .Ok(_) => panic("expected an out-of-range port to fail"),
         .Err(msg) => testing.assert_true(msg.contains("out of range")),
@@ -78,7 +78,7 @@ fn test_connect_tls_to_a_closed_port_is_a_failure_not_a_live_conn() {
 // attempt on port 587 (or any other wrapped value).
 #[test]
 fn test_module_try_send_oversized_i64_port_does_not_wrap() {
-    let result = smtp.try_send("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "b");
+    let result = smtp.send("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "b");
     match result {
         .Ok(_) => panic("expected an oversized i64 port to fail, not wrap into a valid port"),
         .Err(msg) => testing.assert_true(msg.contains("out of range")),
@@ -87,7 +87,7 @@ fn test_module_try_send_oversized_i64_port_does_not_wrap() {
 
 #[test]
 fn test_module_try_send_html_oversized_i64_port_does_not_wrap() {
-    let result = smtp.try_send_html("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "<b>b</b>");
+    let result = smtp.send_html("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "<b>b</b>");
     match result {
         .Ok(_) => panic("expected an oversized i64 port to fail, not wrap into a valid port"),
         .Err(msg) => testing.assert_true(msg.contains("out of range")),

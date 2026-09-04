@@ -29,39 +29,11 @@ pub fn now_ms() -> i64 {
 pub fn now_secs() -> i64 {
     now_ms() / 1000
 }
-
-/// Format an epoch-millisecond timestamp using a strftime-style format string.
-///
-/// Panics when the epoch or format string is invalid. Use `try_format` to
-/// recover the native error as a `Result`.
-///
-/// # Examples
-///
-/// ```
-/// import std.time.datetime;
-///
-/// fn main() {
-///     let now = datetime.now_ms();
-///     let s = datetime.format(now, "%Y-%m-%d");
-/// }
-/// ```
-pub fn format(epoch_ms: i64, fmt: string) -> string {
-    match try_format(epoch_ms, fmt) {
-        .Ok(value) => value,
-        .Err(err) => {
-            panic(f"datetime.format failed: {err}");
-            ""
-        },
-    }
-}
-
 /// Format an epoch-millisecond timestamp using a strftime-style format string.
 ///
 /// Returns `Err(string)` when the epoch or format string is invalid.
-pub fn try_format(epoch_ms: i64, fmt: string) -> Result<string, string> {
-    let formatted = unsafe {
-        hew_datetime_format(epoch_ms as i64, fmt)
-    };
+pub fn format(epoch_ms: i64, fmt: string) -> Result<string, string> {
+    let formatted = format_raw(epoch_ms, fmt);
     let err = datetime_error_message();
     if err.len() == 0 {
         Ok(formatted)
@@ -76,6 +48,12 @@ fn datetime_error_message() -> string {
     }
 }
 
+fn format_raw(epoch_ms: i64, fmt: string) -> string {
+    unsafe {
+        hew_datetime_format(epoch_ms as i64, fmt)
+    }
+}
+
 fn component_or_panic(value: i64) -> i64 {
     let err = datetime_error_message();
     if err.len() != 0 {
@@ -83,27 +61,11 @@ fn component_or_panic(value: i64) -> i64 {
     }
     value
 }
-
-/// Parse a datetime string using the given format and return epoch milliseconds.
-///
-/// Panics if the input does not match the format. Use `try_parse` for a
-/// structured `Result<i64, string>` failure surface.
-///
-pub fn parse(s: string, fmt: string) -> i64 {
-    match try_parse(s, fmt) {
-        .Ok(epoch_ms) => epoch_ms,
-        .Err(err) => {
-            panic(f"datetime.parse failed: {err}");
-            0
-        },
-    }
-}
-
 /// Parse a datetime string using the given format and return epoch
 /// milliseconds.
 ///
 /// Returns `Err(string)` with the native parser message when parsing fails.
-pub fn try_parse(s: string, fmt: string) -> Result<i64, string> {
+pub fn parse(s: string, fmt: string) -> Result<i64, string> {
     let epoch_ms = unsafe {
         hew_datetime_parse(s, fmt) as i64
     };
@@ -192,7 +154,7 @@ pub fn diff_secs(a: i64, b: i64) -> i64 {
 /// }
 /// ```
 pub fn to_iso8601(epoch_ms: i64) -> string {
-    format(epoch_ms, "%Y-%m-%dT%H:%M:%SZ")
+    format_raw(epoch_ms, "%Y-%m-%dT%H:%M:%SZ")
 }
 
 /// Return the current monotonic clock time in nanoseconds.

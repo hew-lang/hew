@@ -91,7 +91,7 @@ fn test_is_wellformed_false_for_malformed_xml() {
 // ── XML documents must be structurally well-formed to parse ───────────
 #[test]
 fn test_try_parse_rejects_multiple_root_elements() {
-    match xml.try_parse("<a/><b/>") {
+    match xml.parse("<a/><b/>") {
         .Ok(node) => {
             node.close();
             panic("expected a document with two roots to be rejected");
@@ -102,7 +102,7 @@ fn test_try_parse_rejects_multiple_root_elements() {
 
 #[test]
 fn test_try_parse_rejects_a_close_tag_that_does_not_match() {
-    match xml.try_parse("<a><b></c></a>") {
+    match xml.parse("<a><b></c></a>") {
         .Ok(node) => {
             node.close();
             panic("expected a mismatched close tag to be rejected");
@@ -113,7 +113,7 @@ fn test_try_parse_rejects_a_close_tag_that_does_not_match() {
 
 #[test]
 fn test_try_parse_rejects_a_malformed_attribute() {
-    match xml.try_parse("<a b>text</a>") {
+    match xml.parse("<a b>text</a>") {
         .Ok(node) => {
             node.close();
             panic("expected a malformed attribute to be rejected");
@@ -124,7 +124,7 @@ fn test_try_parse_rejects_a_malformed_attribute() {
 
 #[test]
 fn test_try_parse_rejects_an_unknown_entity_reference() {
-    match xml.try_parse("<root>&nope;</root>") {
+    match xml.parse("<root>&nope;</root>") {
         .Ok(node) => {
             node.close();
             panic("expected an unknown entity reference to be rejected");
@@ -135,7 +135,7 @@ fn test_try_parse_rejects_an_unknown_entity_reference() {
 
 #[test]
 fn test_try_parse_rejects_a_document_with_no_root_element() {
-    match xml.try_parse("just text") {
+    match xml.parse("just text") {
         .Ok(node) => {
             node.close();
             panic("expected a document with no root element to be rejected");
@@ -146,7 +146,7 @@ fn test_try_parse_rejects_a_document_with_no_root_element() {
 
 #[test]
 fn test_try_parse_preserves_a_well_formed_document() {
-    match xml.try_parse("<root a=\"1\"><kid>hi</kid></root>") {
+    match xml.parse("<root a=\"1\"><kid>hi</kid></root>") {
         .Ok(node) => {
             testing.assert_eq_str(node.get_tag(), "root");
             testing.assert_eq_str(node.get_attribute("a"), "1");
@@ -160,7 +160,7 @@ fn test_try_parse_preserves_a_well_formed_document() {
 
 #[test]
 fn test_try_parse_preserves_predefined_entities() {
-    match xml.try_parse("<root>a &lt; b &amp; c</root>") {
+    match xml.parse("<root>a &lt; b &amp; c</root>") {
         .Ok(node) => {
             testing.assert_eq_str(node.get_text(), "a < b & c");
             node.close();
@@ -171,7 +171,7 @@ fn test_try_parse_preserves_predefined_entities() {
 
 #[test]
 fn test_try_parse_decodes_entities_in_attributes() {
-    match xml.try_parse("<root label=\"a &lt; b &amp; &quot;q&quot;\"/>") {
+    match xml.parse("<root label=\"a &lt; b &amp; &quot;q&quot;\"/>") {
         .Ok(node) => {
             testing.assert_eq_str(node.get_attribute("label"), "a < b & \"q\"");
             node.close();
@@ -182,14 +182,14 @@ fn test_try_parse_decodes_entities_in_attributes() {
 
 #[test]
 fn test_try_parse_rejects_non_whitespace_outside_the_root() {
-    match xml.try_parse("before<root/>") {
+    match xml.parse("before<root/>") {
         .Ok(node) => {
             node.close();
             panic("text before the root must be rejected");
         },
         .Err(reason) => testing.assert_true(reason.contains("outside the root")),
     }
-    match xml.try_parse("<root/>after") {
+    match xml.parse("<root/>after") {
         .Ok(node) => {
             node.close();
             panic("text after the root must be rejected");
@@ -200,7 +200,7 @@ fn test_try_parse_rejects_non_whitespace_outside_the_root() {
 
 #[test]
 fn test_try_parse_allows_xml_whitespace_around_the_root() {
-    match xml.try_parse(" \t\n<root/>\r\n") {
+    match xml.parse(" \t\n<root/>\r\n") {
         .Ok(node) => node.close(),
         .Err(reason) => panic(f"XML whitespace around the root is valid: {reason}"),
     }

@@ -1,6 +1,6 @@
 //! Go-style text/template rendering.
 //!
-//! Parse a template string with `parse` / `try_parse`, then render the compiled
+//! Parse a template string with `parse` / `parse`, then render the compiled
 //! `Template` against a `Ctx` value. Directives inside `{{...}}` are
 //! substituted; all other text passes through verbatim.
 //!
@@ -16,7 +16,7 @@
 //!
 //! # Errors
 //!
-//! `try_parse` and `render_try` return `TemplateError`:
+//! `parse` and `render_try` return `TemplateError`:
 //! `UnclosedDirective`, `UnclosedBlock`, `UnexpectedTag`, `DotOutsideRange`,
 //! or `UnknownDirective`. `parse` and `render_template` panic with the same
 //! human-readable message.
@@ -514,27 +514,12 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
 
 // ── Public API ────────────────────────────────────────────────────────
 /// Parse and validate a template string.
-pub fn try_parse(src: string) -> Result<Template, TemplateError> {
+pub fn parse(src: string) -> Result<Template, TemplateError> {
     match validate(src) {
         .Ok(_) => Ok(Template { src: src }),
         .Err(err) => Err(err),
     }
 }
-
-/// Parse and validate a template string, panicking if it is malformed.
-pub fn parse(src: string) -> Template {
-    // Bound before the match: `try_parse` forwards its parameter into the
-    // result, so matching the call directly would alias `src` (caller-owned).
-    let parsed = try_parse(src);
-    match parsed {
-        .Ok(t) => t,
-        .Err(err) => {
-            panic(f"{err}");
-            Template { src: "" }
-        },
-    }
-}
-
 /// Render a compiled template, returning a structured error on failure.
 pub fn render_try(t: Template, ctx: Ctx) -> Result<string, TemplateError> {
     render_segment(t.src, ctx, "", false)
@@ -676,9 +661,9 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
 /// }
 /// ```
 pub fn render(tmpl: string, ctx: Ctx) -> Result<string, string> {
-    // Bound before the match: `try_parse` forwards its parameter into the
+    // Bound before the match: `parse` forwards its parameter into the
     // result, so matching the call directly would alias `tmpl` (caller-owned).
-    let parsed = try_parse(tmpl);
+    let parsed = parse(tmpl);
     match parsed {
         .Ok(t) => {
             let rendered = render_segment(t.src, ctx, "", false);

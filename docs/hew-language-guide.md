@@ -2472,7 +2472,7 @@ fn main() {
 }
 ```
 
-Import `std.string` and call via the module name. `from_int`/`to_float` for conversions; `to_int` returns `Option<i64>` (`None` on parse failure) — consume it with `match` or `.unwrap_or(default)`; `join(Vec<string>, sep)` for assembly; `pad_left`/`pad_right` for fixed width. Use `string.try_to_int`/`try_to_float` for a `Result` when you need the failure reason.
+Import `std.string` and call via the module name. `from_int`/`to_float` for conversions; `to_int` returns `Option<i64>` (`None` on parse failure) — consume it with `match` or `.unwrap_or(default)`; `join(Vec<string>, sep)` for assembly; `pad_left`/`pad_right` for fixed width. Use `string.to_int`/`try_to_float` for a `Result` when you need the failure reason.
 
 ### Concatenation, char round-trip, escapes
 
@@ -2748,7 +2748,7 @@ fn main() {
     let diff = datetime.diff_secs(tomorrow, now);
     println(diff);                  // 86400
 
-    match datetime.try_parse("2026-01-01T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ") {
+    match datetime.parse("2026-01-01T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ") {
         .Ok(ts) => println(datetime.year(ts)),   // 2026
         .Err(e) => println(f"parse error: {e}"),
     }
@@ -2854,14 +2854,14 @@ fn main() {
 import std.encoding.json;
 
 fn main() {
-    match json.try_parse("{\"ok\": true}") {
+    match json.parse("{\"ok\": true}") {
         .Ok(v) => {
             println("parsed ok");
             v.free();
         },
         .Err(ParseError.Invalid(msg)) => println(f"parse failed: {msg}"),
     }
-    match json.try_parse("not valid json {") {
+    match json.parse("not valid json {") {
         .Ok(v) => { v.free(); },
         .Err(ParseError.Invalid(msg)) => println(f"bad json rejected: {msg}"),
     }
@@ -3836,7 +3836,7 @@ fn main() {
 
 `process.run(command: string)` hands `command` to the system shell (`sh -c`
 on POSIX) and returns captured stdout as a `string`; it panics on launch
-failure (`process.try_run` returns a `Result` instead). Because it goes
+failure (`process.run` returns a `Result` instead). Because it goes
 through a shell, `command` is subject to shell quoting, globbing, and
 injection the same way a hand-built shell string always is — building
 `command` by concatenating untrusted input is a shell-injection bug in Hew

@@ -15,7 +15,7 @@ fn test_from_json_to_json_round_trip_int_field() {
     testing.assert_true(packed.len() > 0);
     let recovered = msgpack.to_json(packed);
     // The recovered JSON must re-parse successfully and contain the field
-    let r = json.try_parse(recovered);
+    let r = json.parse(recovered);
     match r {
         .Ok(val) => {
             let field = val.get_field("n");
@@ -51,7 +51,7 @@ fn test_from_json_panics_at_legacy_boundary_on_invalid_json() {
 
 #[test]
 fn test_try_from_json_invalid_surfaces_reason() {
-    let result = msgpack.try_from_json("{not valid json!!!");
+    let result = msgpack.from_json("{not valid json!!!");
     match result {
         .Ok(_) => panic("expected invalid JSON to fail"),
         .Err(msg) => {
@@ -65,7 +65,7 @@ fn test_try_from_json_invalid_surfaces_reason() {
 fn test_try_to_json_empty_surfaces_reason() {
     // An empty buffer holds no MessagePack value at all; decoding it must
     // surface the specific reason rather than an empty JSON string.
-    let result = msgpack.try_to_json(bytes []);
+    let result = msgpack.to_json(bytes []);
     match result {
         .Ok(_) => panic("expected empty input to fail"),
         .Err(msg) => testing.assert_true(msg.contains("invalid input buffer")),
@@ -74,7 +74,7 @@ fn test_try_to_json_empty_surfaces_reason() {
 
 #[test]
 fn test_try_from_json_valid_ok() {
-    let result = msgpack.try_from_json("{\"n\": 42}");
+    let result = msgpack.from_json("{\"n\": 42}");
     match result {
         .Ok(data) => testing.assert_true(data.len() > 0),
         .Err(_) => panic("expected valid JSON to succeed"),
@@ -84,10 +84,10 @@ fn test_try_from_json_valid_ok() {
 #[test]
 fn test_try_to_json_valid_ok() {
     let packed = msgpack.from_json("{\"n\": 42}");
-    let result = msgpack.try_to_json(packed);
+    let result = msgpack.to_json(packed);
     match result {
         .Ok(recovered) => {
-            let r = json.try_parse(recovered);
+            let r = json.parse(recovered);
             match r {
                 .Ok(val) => {
                     let field = val.get_field("n");
@@ -110,7 +110,7 @@ fn test_string_root_round_trip() {
     let packed = msgpack.from_json("\"hello\"");
     testing.assert_true(packed.len() > 0);
     let recovered = msgpack.to_json(packed);
-    let r = json.try_parse(recovered);
+    let r = json.parse(recovered);
     match r {
         .Ok(val) => {
             testing.assert_eq_str(val.get_string(), "hello");
@@ -127,7 +127,7 @@ fn test_array_round_trip_length() {
     let packed = msgpack.from_json("[1, 2, 3]");
     testing.assert_true(packed.len() > 0);
     let recovered = msgpack.to_json(packed);
-    let r = json.try_parse(recovered);
+    let r = json.parse(recovered);
     match r {
         .Ok(val) => {
             testing.assert_eq(val.array_len(), 3);
@@ -142,7 +142,7 @@ fn test_array_round_trip_elements() {
     // Verify individual array element values survive the round-trip.
     let packed = msgpack.from_json("[10, 20, 30]");
     let recovered = msgpack.to_json(packed);
-    let r = json.try_parse(recovered);
+    let r = json.parse(recovered);
     match r {
         .Ok(val) => {
             let e0 = val.array_get(0);
@@ -165,7 +165,7 @@ fn test_nested_object_round_trip() {
     let packed = msgpack.from_json("{\"a\": {\"b\": 7}}");
     testing.assert_true(packed.len() > 0);
     let recovered = msgpack.to_json(packed);
-    let r = json.try_parse(recovered);
+    let r = json.parse(recovered);
     match r {
         .Ok(val) => {
             let a_val = val.get_field("a");
@@ -199,7 +199,7 @@ fn test_unicode_string_field_round_trip() {
     let packed = msgpack.from_json("{\"k\": \"h\\u00e9llo\"}");
     testing.assert_true(packed.len() > 0);
     let recovered = msgpack.to_json(packed);
-    let r = json.try_parse(recovered);
+    let r = json.parse(recovered);
     match r {
         .Ok(val) => {
             let field = val.get_field("k");
@@ -243,7 +243,7 @@ fn test_encode_int_zero_round_trip() {
     let packed = msgpack.from_json("0");
     testing.assert_true(packed.len() > 0);
     let recovered = msgpack.to_json(packed);
-    let r = json.try_parse(recovered);
+    let r = json.parse(recovered);
     match r {
         .Ok(val) => {
             testing.assert_eq(val.get_int(), 0);
@@ -302,7 +302,7 @@ fn test_encode_bytes_frames_bin16_past_the_bin8_boundary() {
 
 #[test]
 fn test_try_encode_bytes_of_an_empty_value_is_an_empty_bin_not_a_failure() {
-    match msgpack.try_encode_bytes(bytes []) {
+    match msgpack.encode_bytes(bytes []) {
         .Ok(encoded) => {
             testing.assert_eq(encoded.len(), 2);
             testing.assert_eq_u8(encoded[0], 196); // 0xc4 bin8
@@ -314,11 +314,11 @@ fn test_try_encode_bytes_of_an_empty_value_is_an_empty_bin_not_a_failure() {
 
 #[test]
 fn test_codec_failure_does_not_leak_into_the_next_call() {
-    match msgpack.try_from_json("{not json}") {
+    match msgpack.from_json("{not json}") {
         .Ok(_) => panic("expected invalid JSON to fail"),
         .Err(_) => {},
     }
-    match msgpack.try_encode_int(7) {
+    match msgpack.encode_int(7) {
         .Ok(encoded) => testing.assert_gt(encoded.len(), 0),
         .Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
     }
@@ -329,7 +329,7 @@ fn test_try_to_json_rejects_a_truncated_buffer() {
     // 0x92 opens a 2-element array whose elements never arrive.
     let truncated: bytes = bytes.new();
     truncated.push(146);
-    match msgpack.try_to_json(truncated) {
+    match msgpack.to_json(truncated) {
         .Ok(json) => panic(f"expected a truncated buffer to fail, got {json}"),
         .Err(reason) => testing.assert_true(reason.contains("msgpack:")),
     }

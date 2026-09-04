@@ -190,7 +190,7 @@ fn dotted_identifiers_are_valid(s: string, numeric_rules: bool) -> bool {
 
 // Strip leading zeros so two numeric identifiers of unequal written length
 // still compare by magnitude. The grammar forbids leading zeros, but versions
-// can also be constructed without going through `try_parse`.
+// can also be constructed without going through `parse`.
 fn strip_leading_zeros(s: string) -> string {
     let n = s.len();
     var i = 0;
@@ -230,7 +230,7 @@ fn compare_decimal_strings(a: string, b: string) -> i64 {
 /// Parse a semantic version string.
 ///
 /// Returns `Err(string)` if the string is not a valid semantic version.
-pub fn try_parse(s: string) -> Result<Version, string> {
+pub fn parse(s: string) -> Result<Version, string> {
     // Split off build metadata (+...)
     // Clone s so it remains available for error messages and further searches.
     var main_part = clone s;
@@ -283,21 +283,6 @@ pub fn try_parse(s: string) -> Result<Version, string> {
     }
     Ok(Version { pre_release: pre, build_meta: build, maj: major_str, min: minor_str, pat: patch_str })
 }
-
-/// Parse a semantic version string.
-///
-/// Panics if the string is not a valid semantic version.
-/// Use `try_parse` for a structured `Result<Version, string>` failure surface.
-pub fn parse(s: string) -> Version {
-    match try_parse(s) {
-        .Ok(v) => v,
-        .Err(err) => {
-            panic(err);
-            Version { pre_release: "", build_meta: "", maj: "0", min: "0", pat: "0" }
-        },
-    }
-}
-
 /// Format a `Version` as its canonical string representation.
 fn version_to_string(v: Version) -> string {
     let maj = v.maj;

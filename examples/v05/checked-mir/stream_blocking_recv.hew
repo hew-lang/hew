@@ -8,7 +8,10 @@
 import std.stream;
 
 fn main() {
-    let (sink, input) = match stream.bytes_pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (sink, input) = match stream.bytes_pipe(2) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     sink.close();
     match input.recv() {
         .Some(b) => println(b.to_string()),

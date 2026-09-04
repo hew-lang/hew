@@ -67,7 +67,9 @@ fn main() -> i32 {
     for fi in 2 .. argc {
         let filename = match arguments.get(fi) {
             .Some(value) => value,
-            .None => continue,
+            .None => {
+                continue;
+            },
         };
         let count = search_file(filename, pattern, nl);
         total_matches = total_matches + count;

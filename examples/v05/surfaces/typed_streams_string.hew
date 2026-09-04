@@ -21,7 +21,10 @@ import std.stream;
 
 actor StringPipeline {
     receive fn run(unused: i64) {
-        let (sink, input) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        let (sink, input) = match stream.pipe(8) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
         // Send three normal frames, one empty frame between them, then EOF.
         await sink.send("frame-0");
         await sink.send("");

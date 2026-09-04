@@ -47,15 +47,15 @@ fn serve_request(root: string, req: Request) {
         } else {
             let index_path = file_path + "/index.html";
             if fs.exists(index_path) {
-               let body = match fs.read(index_path) {
-                   .Ok(body) => body,
-                   .Err(_) => panic("failed to read index file"),
+                let body = match fs.read(index_path) {
+                    .Ok(body) => body,
+                    .Err(_) => panic("failed to read index file"),
                 };
                 let content_type = mime.from_path(index_path);
-               match req.respond(200, content_type, body) {
-                   .Ok(_) => {},
-                   .Err(_) => panic("failed to send index response"),
-               }
+                match req.respond(200, content_type, body) {
+                    .Ok(_) => {},
+                    .Err(_) => panic("failed to send index response"),
+                }
             } else {
                 match req.respond_text(404, "404 Not Found") {
                     .Ok(_) => {},

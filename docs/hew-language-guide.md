@@ -826,11 +826,12 @@ import std.os;
 
 // Pattern 2: check args, exit non-zero on error
 fn main() -> i32 {
-    if os.args_count() < 2 {
+    let arguments = os.args();
+    if arguments.len() < 2 {
         println("usage: prog <arg>");
         return 1;
     }
-    println(f"arg: {os.args(1)}");
+    println(f"arg: {arguments.get(1)}");
     0
 }
 ```

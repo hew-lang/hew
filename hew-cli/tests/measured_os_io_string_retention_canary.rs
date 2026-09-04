@@ -23,8 +23,8 @@ import std.path;
 import std.process;
 
 fn all_measured_wrappers() -> i64 {
-    let arg = os.args(0);
-    let env = os.env("PATH");
+    let arg = os.args().get(0);
+    let env = os.env("PATH").unwrap_or("");
     let cwd = os.cwd();
     let home = os.home_dir();
     let host = os.hostname();
@@ -32,12 +32,12 @@ fn all_measured_wrappers() -> i64 {
     let line = io.read_line();
     let all = io.read_all();
     let direct_file = fs.read("/tmp/hew-os-io-retention-input.txt");
-    let streamed_file = match fs.try_read("/tmp/hew-os-io-retention-input.txt") {
+    let streamed_file = match fs.read("/tmp/hew-os-io-retention-input.txt") {
         .Ok(text) => text,
         .Err(error) => to_string(error),
     };
     let absolute = path.absolute(".");
-    let glob_len = match path.try_glob("/tmp/hew-os-io-retention-*.txt") {
+    let glob_len = match path.glob("/tmp/hew-os-io-retention-*.txt") {
         .Ok(matches) => {
             let entry = matches.try_get(0);
             matches.close();
@@ -90,12 +90,12 @@ const SYMBOLS: &[&str] = &[
 /// later calls. The CFG oracle below proves that every path from each mint to
 /// a terminating block passes through its matching `hew_string_drop`.
 ///
-/// The `fs.try_read` result binds through the owned-carrier release funnel,
+/// The `fs.read` result binds through the owned-carrier release funnel,
 /// which moves the selected `Ok(text)` / `Err(...)` payload into a fresh local
 /// and neutralizes the carrier slot before releasing it on every exit.
 const STRING_OWNER_SLOTS: &[&str] = &[
     // os.args, os.env, cwd, home_dir, hostname, temp_dir, stdin line/all,
-    // fs.read, fs.try_read, path.absolute, the path-error Display dispatch,
+    // fs.read, fs.read, path.absolute, the path-error Display dispatch,
     // dns direct / timed, and the two process-output field clones. These are
     // every slot the witness releases through `hew_string_drop` — the compress `Err(reason)`
     // and process `output.stdout`/`stderr` ORIGINALS are freed by their

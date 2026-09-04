@@ -1,0 +1,13 @@
+// Removed core Result-only names must fail at the public API boundary.
+import std.fs;
+import std.net.http;
+import std.os;
+import std.path;
+
+fn main() {
+    let _ = fs.try_read;
+    let _ = fs.try_write;
+    let _ = path.try_glob;
+    let _ = http.try_respond;
+    let _ = os.args_count;
+}

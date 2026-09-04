@@ -1,4 +1,5 @@
 import std.encoding.wire.value_trait.{CanonicalValueMethods};
+
 import std.encoding.json;
 
 fn canonical_int<T: CanonicalValueMethods>(value: T) -> i64 {
@@ -8,7 +9,10 @@ fn canonical_int<T: CanonicalValueMethods>(value: T) -> i64 {
 }
 
 fn main() {
-    let value = json.parse("42");
+    let value = match json.parse("42") {
+        .Ok(parsed) => parsed,
+        .Err(_) => panic("json parse failed"),
+    };
     let result = canonical_int(value);
     println(f"canonical-value:{result}");
 }

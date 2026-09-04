@@ -387,9 +387,9 @@ RATCHET_NOWPASS_HELP=""
 RATCHET_DIAGNOSTIC_FN=""
 RATCHET_EXTRA_FAIL_FN=""
 RATCHET_TAIL_FN=""
-# A listed `hew check` refusal is valid only through the compiler's ordinary
-# structured-diagnostic exit. Set membership must never bless a panic, signal,
-# timeout, or harness failure under the same fixture identity.
+# A listed `hew check` refusal is valid only through a structured compiler
+# diagnostic channel. Set membership must never bless a panic, signal, timeout,
+# or harness failure under the same fixture identity.
 RATCHET_REFUSAL_DRIFT_STR=""
 # Filled by RATCHET_EXTRA_FAIL_FN with the count of its own failure class, so a
 # corpus with a third mutation to detect (doc-fences' stale checksums) reports
@@ -397,10 +397,24 @@ RATCHET_REFUSAL_DRIFT_STR=""
 RATCHET_EXTRA_FAIL_COUNT=0
 
 record_expected_refusal_status() {
-    local identity="$1" status="$2"
-    if ((status != 1)) && line_set_contains "$EXPECTED_STR" "$identity"; then
+    local identity="$1" status="$2" log="$3" diagnostic_codes
+    if ! line_set_contains "$EXPECTED_STR" "$identity"; then
+        return 0
+    fi
+
+    case "$status" in
+    1 | 3 | 4)
+        diagnostic_codes="$(diagnostic_code_set "$log")"
+        if [[ -n "$diagnostic_codes" ]]; then
+            return 0
+        fi
+        ;;
+    esac
+
+    if line_set_contains "$EXPECTED_STR" "$identity"; then
         RATCHET_REFUSAL_DRIFT_STR="${RATCHET_REFUSAL_DRIFT_STR}${identity}"$'\t'"${status}"$'\n'
     fi
+    return 1
 }
 
 # Compare EXPECTED_STR against ACTUAL_STR and exit with the gate's verdict.
@@ -517,7 +531,7 @@ ratchet_verdict() {
         echo "$RATCHET_FAIL_PREFIX: $count_refusal_drift expected refusal(s) changed process outcome:"
         while IFS=$'\t' read -r entry status; do
             [[ -z "$entry" ]] && continue
-            echo "  OUTCOME DRIFT: $entry (exit $status, expected structured diagnostic exit 1)"
+            echo "  OUTCOME DRIFT: $entry (exit $status, expected structured compiler diagnostic)"
         done <<<"$RATCHET_REFUSAL_DRIFT_STR"
         echo ""
         echo "  A listed compiler refusal cannot cover a panic, signal, timeout, or harness failure."
@@ -830,21 +844,18 @@ run_hew_corpus() {
         "$HEW_BIN" check "$REPO_ROOT/$f" >"$check_log" 2>&1 || status=$?
         if ((status != 0)); then
             ACTUAL_STR="${ACTUAL_STR}${f}"$'\n'
-            record_expected_refusal_status "$f" "$status"
-            # Set membership alone is not enough for a known compiler refusal:
-            # every tracked failure must remain the normal diagnostic exit (1),
-            # never a panic, signal, or harness failure. Rows that pin a stable
-            # code additionally require that exact unique code set, so a second
-            # diagnostic class cannot hitchhike on the expected one.
-            if line_set_contains "$EXPECTED_STR" "$f"; then
+            if record_expected_refusal_status "$f" "$status" "$check_log" &&
+                line_set_contains "$EXPECTED_STR" "$f"; then
+                # Set membership alone is not enough for a known compiler refusal:
                 expected_code="<none pinned>"
                 if find_expected_diagnostic "$f"; then
                     expected_code="$EXPECTED_DIAGNOSTIC_CODE"
                 fi
 
-                if ((status == 1)) &&
-                    { [[ "$expected_code" != "<none pinned>" ]] &&
-                        ! diagnostic_log_has_exact_code "$check_log" "$expected_code"; }; then
+                # A pinned row must retain its exact unique diagnostic code set
+                # after the outcome classifier has accepted its channel.
+                if [[ "$expected_code" != "<none pinned>" ]] &&
+                    ! diagnostic_log_has_exact_code "$check_log" "$expected_code"; then
                     actual_codes="$(diagnostic_code_set "$check_log" | paste -sd, -)"
                     [[ -n "$actual_codes" ]] || actual_codes="<none>"
                     HEW_CORPUS_DIAGNOSTIC_DRIFT="${HEW_CORPUS_DIAGNOSTIC_DRIFT}${f}"$'\t'"${status}"$'\t'"${expected_code}"$'\t'"${actual_codes}"$'\n'

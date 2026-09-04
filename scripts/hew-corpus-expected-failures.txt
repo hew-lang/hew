@@ -163,6 +163,12 @@ repros/03_hashmap_string_vec_value.hew
 repros/p0a_hashmap_string_vec_value.hew
 repros/p0c_method_value_failclosed.hew
 
+# V060 front-door/std dependency: std.net.http.server is not yet available.
+repros/journeys/week-one-local/main.hew
+
+# V060-FD-6 / D17 dependency: peer module Item is unavailable.
+repros/journeys/week-one-local/main_test.hew
+
 # repro-wip (#3094): fluent consumed-resource transfer ends the child's owner
 # generation before the carried handoff
 

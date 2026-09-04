@@ -1665,6 +1665,7 @@ hew-fmt-property: hew
 # compiler but fixture files across crates/tests/examples are silently missed.
 # See scripts/corpus-ratchet.sh for the allowlist format and classification guide.
 hew-check-all: hew-native
+	@scripts/tests/test_hew_corpus_diagnostic_channels.sh
 	@echo "==> hew-check-all: compiling full .hew corpus"
 	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus
 

@@ -18,8 +18,8 @@ import std.os;
 import std.process;
 
 fn one_frame() -> i64 {
-    let arg = os.args(0);
-    let env = os.env("PATH");
+    let arg = os.args().get(0);
+    let env = os.env("PATH").unwrap_or("");
     let cwd = os.cwd();
     let home = os.home_dir();
     let host = os.hostname();

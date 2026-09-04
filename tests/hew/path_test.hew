@@ -249,7 +249,7 @@ fn chmod_dir(mode: string, dir: string) -> i64 {
 
 #[test]
 fn test_try_glob_reports_matches_for_a_completed_walk() {
-    match path.try_glob("std/*.hew") {
+    match path.glob("std/*.hew") {
         .Ok(matches) => {
             testing.assert_true(matches.len() > 0);
             match matches.try_get(0) {
@@ -263,7 +263,7 @@ fn test_try_glob_reports_matches_for_a_completed_walk() {
 
 #[test]
 fn test_try_glob_reports_no_match_as_an_empty_success() {
-    match path.try_glob("std/hew-no-such-glob-subject-*.hew") {
+    match path.glob("std/hew-no-such-glob-subject-*.hew") {
         .Ok(matches) => testing.assert_true(matches.len() == 0),
         .Err(_) => panic("a completed walk that matched nothing is not a failure"),
     }
@@ -277,7 +277,7 @@ fn test_try_glob_reports_an_unreadable_directory_as_a_failure() {
     fs.mkdir_all(inner);
     fs.write(f"{inner}/present.txt", "x");
     testing.assert_true(chmod_dir("000", inner) == 0);
-    let observed = match path.try_glob(f"{inner}/*") {
+    let observed = match path.glob(f"{inner}/*") {
         .Ok(_) => "fabricated-empty-success",
         .Err(err) => to_string(err),
     };

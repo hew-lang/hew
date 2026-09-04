@@ -14,7 +14,7 @@ There are three primary metric APIs in `std::observe`:
 ```hew
 import std.observe;
 
-observe.read("heap.live_bytes"); // i64
+observe.read("heap.live_bytes"); // Option<i64>
 observe.series();                 // string
 observe.scrape();                 // string
 ```
@@ -28,20 +28,20 @@ HEW_OBSERVE=hot hew eval --timeout 30 -f observe_demo.hew
 
 ## Hew API
 
-### `observe.read(name: string) -> i64`
+### `observe.read(name: string) -> Option<i64>`
 
 Reads one scalar metric by its canonical dotted name and returns its current
-value as an `i64`.
+value as `Option<i64>`.
 
 ```hew
 import std.observe;
 
-println(observe.read("heap.live_bytes"));
-println(observe.read("actors.turns_total"));
-println(observe.read("does.not.exist")); // -1
+println(observe.read("heap.live_bytes").unwrap_or(0));
+println(observe.read("actors.turns_total").unwrap_or(0));
+println(observe.read("does.not.exist")); // None
 ```
 
-Unknown names return `-1`. Runtime `u64` values are converted to `i64`; values
+Unknown names return `None`. Runtime `u64` values are converted to `i64`; values
 larger than `i64::MAX` saturate at `i64::MAX`.
 
 `read` only addresses scalar metrics. Labelled actor-attribution series are
@@ -114,7 +114,7 @@ let total = await counter.total();
 let _barrier = observe.barrier();
 
 println(total);
-println(observe.read("actors.turns_total"));
+println(observe.read("actors.turns_total").unwrap_or(0));
 println(observe.series());
 observe.scrape()
 ```
@@ -135,10 +135,11 @@ Expected useful output includes:
 
 `observe.barrier()` is a current synchronization helper, not a metric API. It
 waits until actor dispatches that started before the call have reached their
-observe-attribution point. It returns `0` on success, `-1` when called from
-inside an actor dispatch, and `-2` if the native runtime's bounded 30-second wait
-expires. In WASM it is currently a no-op success because the WASM scheduler does
-not have the native attribution probe path.
+observe-attribution point and returns `Result<(), ObserveError>`. It returns
+`ObserveError.ActorTurn` inside an actor dispatch and `ObserveError.TimedOut`
+when the native runtime's bounded 30-second wait expires. In WASM it is
+currently a no-op success because the WASM scheduler does not have the native
+attribution probe path.
 
 ## Metrics surface
 

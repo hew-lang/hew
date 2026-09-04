@@ -9,15 +9,15 @@
 //! # Error Handling
 //!
 //! `IoError` is the stable user-facing error enum for file-system failures.
-//! Use the `try_*` wrappers in this module—such as `try_read`,
-//! `try_write`, `try_rename`, and `try_copy`—with `Result<T, IoError>`
+//! Use the Result-returning operations in this module—such as `read`,
+//! `write`, `rename`, and `copy`—with `Result<T, IoError>`
 //! and the `?` operator for clean error propagation:
 //!
 //! ```
 //! import std.fs;
 //!
 //! fn load_config(path: string) -> Result<string, fs.IoError> {
-//!     fs.try_read(path)
+//!     fs.read(path)
 //! }
 //!
 //! fn main() {
@@ -69,8 +69,8 @@ pub enum IoError {
 /// Windows Win32 codes that do not collide with a POSIX errno (only
 /// `ERROR_ALREADY_EXISTS` = 183 today). Codes that mean *different* things on
 /// each platform — for example 5 (`EIO` on POSIX, `ERROR_ACCESS_DENIED` on
-/// Windows) — cannot be disambiguated from the integer alone; the `try_*`
-/// wrappers classify those correctly through the runtime's canonical error-kind
+/// Windows) — cannot be disambiguated from the integer alone; the
+/// Result-returning operations classify those correctly through the runtime's canonical error-kind
 /// channel (`hew_stream_last_error_kind`) and only fall back to this function
 /// for kinds without a canonical tag.
 ///
@@ -109,8 +109,8 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
 /// (e.g. `EISDIR`/`ENOTDIR` -> `Other(raw)`). Keep the tag values in sync with
 /// the `IO_ERROR_KIND_*` constants in `hew-runtime/src/stream_error.rs`.
 ///
-/// Public so sibling wrappers that read the same runtime error channel — e.g.
-/// `std.stream`'s `try_from_file` / `try_to_file` — classify failures through
+/// Public so sibling operations that read the same runtime error channel
+/// classify failures through
 /// this one authority rather than re-deriving it from the raw errno.
 pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
     if kind == 1 {
@@ -134,7 +134,7 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
 /// import std.fs;
 ///
 /// fn main() {
-///     let result: Result<i64, fs.IoError> = fs.try_delete("/tmp/scratch-file");
+///     let result: Result<(), fs.IoError> = fs.delete("/tmp/scratch-file");
 ///     match result {
 ///         .Err(e) => panic(f"operation failed: {e}"),
 ///         .Ok(_) => {},
@@ -186,8 +186,7 @@ fn last_io_error() -> IoError {
 
 /// Read the entire contents of a file as a UTF-8 string.
 ///
-/// Panics if the file does not exist or cannot be read.
-/// Use `try_read` for a structured `Result<string, IoError>` surface.
+/// Returns a structured error if the file does not exist or cannot be read.
 ///
 /// # Examples
 ///
@@ -198,26 +197,7 @@ fn last_io_error() -> IoError {
 ///     let src = fs.read("main.hew");
 /// }
 /// ```
-pub fn read(path: string) -> string {
-    unsafe {
-        let contents = hew_file_read(path);
-        let errno = hew_stream_last_errno();
-        if errno != 0 {
-            let detail = hew_stream_last_error();
-            if detail.len() == 0 {
-                panic(f"fs.read failed for `{path}`: {io_error_from_errno(errno as i64)}");
-            } else {
-                panic(f"fs.read failed for `{path}`: {detail}");
-            }
-        }
-        contents
-    }
-}
-
-/// Read the entire contents of a file as a UTF-8 string.
-///
-/// Returns `Err(IoError)` instead of panicking on open failures.
-pub fn try_read(file_path: string) -> Result<string, IoError> {
+pub fn read(file_path: string) -> Result<string, IoError> {
     unsafe {
         let file = hew_file_read_stream_open(file_path);
         if hew_file_read_stream_is_valid(file) {
@@ -238,44 +218,24 @@ pub fn try_read(file_path: string) -> Result<string, IoError> {
 
 /// Write a string to a file, creating or overwriting it.
 ///
-/// Returns 0 on success, non-zero on error.
-/// Use `try_write` for a structured `Result<i64, IoError>` surface.
-pub fn write(path: string, content: string) -> i64 {
-    unsafe {
-        hew_file_write(path, content) as i64
-    }
-}
-
-/// Write a string to a file, creating or overwriting it.
-///
-/// Lifts the native status code into `Result<i64, IoError>`.
-pub fn try_write(file_path: string, content: string) -> Result<i64, IoError> {
+/// Returns `Ok(())` on success.
+pub fn write(file_path: string, content: string) -> Result<(), IoError> {
     match unsafe {
         hew_file_write(file_path, content)
     } {
-        0 => Ok(0),
+        0 => Ok(()),
         _ => Err(last_io_error()),
     }
 }
 
 /// Append a string to the end of a file.
 ///
-/// Creates the file if it does not exist. Returns 0 on success.
-/// Use `try_append` for a structured `Result<i64, IoError>` surface.
-pub fn append(path: string, content: string) -> i64 {
-    unsafe {
-        hew_file_append(path, content) as i64
-    }
-}
-
-/// Append a string to the end of a file.
-///
-/// Lifts the native status code into `Result<i64, IoError>`.
-pub fn try_append(file_path: string, content: string) -> Result<i64, IoError> {
+/// Creates the file if it does not exist.
+pub fn append(file_path: string, content: string) -> Result<(), IoError> {
     match unsafe {
         hew_file_append(file_path, content)
     } {
-        0 => Ok(0),
+        0 => Ok(()),
         _ => Err(last_io_error()),
     }
 }
@@ -298,21 +258,14 @@ pub fn exists(path: string) -> bool {
     }
 }
 
-/// Delete a file. Returns 0 on success.
-pub fn delete(path: string) -> i64 {
-    unsafe {
-        hew_file_delete(path) as i64
-    }
-}
-
 /// Delete a file.
 ///
 /// Returns `Err(IoError.NotFound(_))` when the path is missing.
-pub fn try_delete(file_path: string) -> Result<i64, IoError> {
+pub fn delete(file_path: string) -> Result<(), IoError> {
     match unsafe {
         hew_file_delete(file_path)
     } {
-        0 => Ok(0),
+        0 => Ok(()),
         _ => Err(last_io_error()),
     }
 }
@@ -326,8 +279,7 @@ pub fn size(path: string) -> i64 {
 
 /// Read the raw bytes of a file into a `bytes` value.
 ///
-/// Returns an empty `bytes` buffer on error.
-/// Use `try_read_bytes` for a structured `Result<bytes, IoError>` surface.
+/// Returns a structured error on failure.
 ///
 /// # Examples
 ///
@@ -339,23 +291,14 @@ pub fn size(path: string) -> i64 {
 ///     println(data.len());
 /// }
 /// ```
-pub fn read_bytes(path: string) -> bytes {
-    unsafe {
-        hew_file_read_bytes(path)
-    }
-}
-
-/// Read the raw bytes of a file into a `bytes` value.
-///
-/// Returns `Err(IoError)` instead of an ambiguous empty buffer on failure.
-pub fn try_read_bytes(file_path: string) -> Result<bytes, IoError> {
+pub fn read_bytes(file_path: string) -> Result<bytes, IoError> {
     unsafe {
         let data = hew_file_read_bytes(file_path);
         let kind = hew_stream_last_error_kind() as i64;
         let errno = hew_stream_last_errno();
         if errno != 0 {
             // Drain the thread-local error message on the failure path,
-            // mirroring `try_read` above, so a stale
+            // mirroring `read` above, so a stale
             // `hew_file_read_bytes: ...` message can't leak into a later,
             // unrelated `hew_last_error()` / `hew_stream_last_error()` read.
             let _ = hew_stream_last_error();
@@ -371,72 +314,45 @@ pub fn try_read_bytes(file_path: string) -> Result<bytes, IoError> {
 
 /// Write a `bytes` value to a file, creating or overwriting it.
 ///
-/// Returns 0 on success, non-zero on error.
-/// Use `try_write_bytes` for a structured `Result<i64, IoError>` surface.
-pub fn write_bytes(path: string, data: bytes) -> i64 {
-    unsafe {
-        hew_file_write_bytes(path, data) as i64
-    }
-}
-
 /// Write a `bytes` value to a file, creating or overwriting it.
-///
-/// Lifts the native status code into `Result<i64, IoError>`.
-pub fn try_write_bytes(file_path: string, data: bytes) -> Result<i64, IoError> {
+pub fn write_bytes(file_path: string, data: bytes) -> Result<(), IoError> {
     match unsafe {
         hew_file_write_bytes(file_path, data)
     } {
-        0 => Ok(0),
+        0 => Ok(()),
         _ => Err(last_io_error()),
     }
 }
 
 // ── Directory operations ──────────────────────────────────────────────
-/// Create a directory. Returns 0 on success, -1 on error.
+/// Create a directory.
 ///
 /// Fails if any parent directory does not exist. Use `mkdir_all` to create
 /// parent directories automatically.
-pub fn mkdir(path: string) -> i64 {
-    unsafe {
-        hew_fs_mkdir(path) as i64
-    }
-}
-
-/// Create a directory with structured `IoError` results.
-pub fn try_mkdir(dir_path: string) -> Result<i64, IoError> {
+pub fn mkdir(dir_path: string) -> Result<(), IoError> {
     match unsafe {
         hew_fs_mkdir(dir_path)
     } {
-        0 => Ok(0),
+        0 => Ok(()),
         _ => Err(last_io_error()),
     }
 }
 
 /// Create a directory and all its parent components.
 ///
-/// Returns 0 on success, -1 on error.
-pub fn mkdir_all(path: string) -> i64 {
-    unsafe {
-        hew_fs_mkdir_all(path) as i64
-    }
-}
-
 /// Create a directory and all its parent components.
-///
-/// Lifts the native status code into `Result<i64, IoError>`.
-pub fn try_mkdir_all(dir_path: string) -> Result<i64, IoError> {
+pub fn mkdir_all(dir_path: string) -> Result<(), IoError> {
     match unsafe {
         hew_fs_mkdir_all(dir_path)
     } {
-        0 => Ok(0),
+        0 => Ok(()),
         _ => Err(last_io_error()),
     }
 }
 
 /// List the entries in a directory.
 ///
-/// Returns a list of entry names (not full paths). Returns an empty list on
-/// error. Use `try_list_dir` when missing-path handling matters.
+/// Returns a list of entry names (not full paths).
 ///
 /// # Examples
 ///
@@ -450,16 +366,7 @@ pub fn try_mkdir_all(dir_path: string) -> Result<i64, IoError> {
 ///     }
 /// }
 /// ```
-pub fn list_dir(path: string) -> Vec<string> {
-    unsafe {
-        hew_fs_list_dir(path)
-    }
-}
-
-/// List the entries in a directory.
-///
-/// Returns an error for every directory-read failure.
-pub fn try_list_dir(dir_path: string) -> Result<Vec<string>, IoError> {
+pub fn list_dir(dir_path: string) -> Result<Vec<string>, IoError> {
     unsafe {
         let entries = hew_fs_list_dir(dir_path);
         let kind = hew_stream_last_error_kind() as i64;
@@ -475,42 +382,22 @@ pub fn try_list_dir(dir_path: string) -> Result<Vec<string>, IoError> {
 
 /// Rename or move a file or directory.
 ///
-/// Returns 0 on success, -1 on error.
-pub fn rename(from: string, to: string) -> i64 {
-    unsafe {
-        hew_fs_rename(from, to) as i64
-    }
-}
-
-/// Rename or move a file or directory.
-///
-/// Lifts the native status code into `Result<i64, IoError>`.
-pub fn try_rename(from: string, to: string) -> Result<i64, IoError> {
+pub fn rename(from: string, to: string) -> Result<(), IoError> {
     match unsafe {
         hew_fs_rename(from, to)
     } {
-        0 => Ok(0),
+        0 => Ok(()),
         _ => Err(last_io_error()),
     }
 }
 
 /// Copy a file.
 ///
-/// Returns 0 on success, -1 on error.
-pub fn copy(from: string, to: string) -> i64 {
-    unsafe {
-        hew_fs_copy(from, to) as i64
-    }
-}
-
-/// Copy a file.
-///
-/// Lifts the native status code into `Result<i64, IoError>`.
-pub fn try_copy(from: string, to: string) -> Result<i64, IoError> {
+pub fn copy(from: string, to: string) -> Result<(), IoError> {
     match unsafe {
         hew_fs_copy(from, to)
     } {
-        0 => Ok(0),
+        0 => Ok(()),
         _ => Err(last_io_error()),
     }
 }

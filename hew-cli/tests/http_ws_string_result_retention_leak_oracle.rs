@@ -55,7 +55,7 @@ fn main() {{
                     + request.body("utf-8").len();
                 println(checksum);
             }}
-            match request.try_respond_text(200, "ok") {{
+            match request.respond_text(200, "ok") {{
                 Ok(_) => {{}},
                 Err(_) => panic("HTTP retention response failed"),
             }}
@@ -117,7 +117,7 @@ fn main() {{
             );
             client.fetch(0);
             let request = server.accept();
-            match request.try_respond(
+            match request.respond(
                 200,
                 "application/retention",
                 "response-owner",

@@ -34,7 +34,7 @@ type Dq {{}}
 impl Dq {{
     fn close(self) {{
         unsafe {{ hew_deque_free(self) }};
-        match fs.try_append("{marker_literal}", "closed\n") {{
+        match fs.append("{marker_literal}", "closed\n") {{
             .Ok(_) => {{}},
             .Err(_) => panic("append close marker"),
         }}
@@ -111,7 +111,7 @@ type {type_name} {{}}
 impl {type_name} {{
     fn close(self) {{
         unsafe {{ hew_deque_free(self) }};
-        match fs.try_append("{marker_literal}", "closed\n") {{
+        match fs.append("{marker_literal}", "closed\n") {{
             .Ok(_) => {{}},
             .Err(_) => panic("append close marker"),
         }}
@@ -186,7 +186,7 @@ pub type UserReceiver {{}}
 impl UserReceiver {{
     fn close(self) {{
         unsafe {{ hew_deque_free(self) }};
-        match fs.try_append("{marker_literal}", "closed\n") {{
+        match fs.append("{marker_literal}", "closed\n") {{
             .Ok(_) => {{}},
             .Err(_) => panic("append close marker"),
         }}

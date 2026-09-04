@@ -30,7 +30,7 @@ fn cleanup_file(file_path: string) {
 fn test_try_read_missing_returns_not_found() {
     let file_path = "tests/hew/_fs_stream_missing.txt";
     cleanup_file(file_path);
-    match fs.try_read(file_path) {
+    match fs.read(file_path) {
         .Ok(_) => panic("expected missing file error"),
         .Err(err) => match err {
             IoError.NotFound(_) => {},
@@ -41,7 +41,7 @@ fn test_try_read_missing_returns_not_found() {
 
 #[test]
 fn test_try_read_directory_returns_eisdir() {
-    match fs.try_read("/") {
+    match fs.read("/") {
         .Ok(_) => panic("expected directory read error"),
         .Err(err) => match err {
             IoError.Other(errno) => testing.assert_eq(errno, 21),
@@ -55,7 +55,7 @@ fn test_try_read_directory_returns_eisdir() {
 fn test_try_read_bytes_missing_returns_not_found() {
     let file_path = "tests/hew/_fs_stream_bytes_missing.bin";
     cleanup_file(file_path);
-    match fs.try_read_bytes(file_path) {
+    match fs.read_bytes(file_path) {
         .Ok(_) => panic("expected missing file error"),
         .Err(err) => match err {
             IoError.NotFound(_) => {},
@@ -76,7 +76,7 @@ fn test_try_read_bytes_failure_drains_stale_error_message() {
     // where it can leak into a later, unrelated hew_stream_last_error() read.
     let file_path = "tests/hew/_fs_stream_drain_missing.bin";
     cleanup_file(file_path);
-    match fs.try_read_bytes(file_path) {
+    match fs.read_bytes(file_path) {
         .Ok(_) => panic("expected missing file error"),
         .Err(err) => match err {
             IoError.NotFound(_) => {},
@@ -112,16 +112,16 @@ fn test_try_read_bytes_failure_drains_stale_error_message() {
 fn test_try_write_read_size_and_delete_roundtrip() {
     let file_path = "tests/hew/_fs_stream_roundtrip.txt";
     cleanup_file(file_path);
-    match fs.try_write(file_path, "hello") {
+    match fs.write(file_path, "hello") {
         .Ok(_) => {},
         .Err(_) => panic("expected try_write to succeed"),
     }
-    match fs.try_read(file_path) {
+    match fs.read(file_path) {
         .Ok(data) => testing.assert_eq_str(data, "hello"),
         .Err(_) => panic("expected try_read to succeed"),
     }
     testing.assert_true(fs.size(file_path) == 5);
-    match fs.try_delete(file_path) {
+    match fs.delete(file_path) {
         .Ok(_) => {},
         .Err(_) => panic("expected try_delete to succeed"),
     }
@@ -134,7 +134,7 @@ fn test_try_rename_missing_source_returns_not_found() {
     let target_path = "tests/hew/_fs_stream_rename_missing_target.txt";
     cleanup_file(source_path);
     cleanup_file(target_path);
-    match fs.try_rename(source_path, target_path) {
+    match fs.rename(source_path, target_path) {
         .Ok(_) => panic("expected missing source error"),
         .Err(err) => match err {
             IoError.NotFound(_) => {},
@@ -150,16 +150,16 @@ fn test_try_rename_success() {
     let target_path = "tests/hew/_fs_stream_rename_dst.txt";
     cleanup_file(source_path);
     cleanup_file(target_path);
-    match fs.try_write(source_path, "renamed") {
+    match fs.write(source_path, "renamed") {
         .Ok(_) => {},
         .Err(_) => panic("expected source write to succeed"),
     }
-    match fs.try_rename(source_path, target_path) {
+    match fs.rename(source_path, target_path) {
         .Ok(_) => {},
         .Err(_) => panic("expected try_rename to succeed"),
     }
     testing.assert_true(fs.exists(source_path) == false);
-    match fs.try_read(target_path) {
+    match fs.read(target_path) {
         .Ok(data) => testing.assert_eq_str(data, "renamed"),
         .Err(_) => panic("expected renamed file to be readable"),
     }
@@ -173,7 +173,7 @@ fn test_try_copy_missing_source_returns_not_found() {
     let target_path = "tests/hew/_fs_stream_copy_missing_target.txt";
     cleanup_file(source_path);
     cleanup_file(target_path);
-    match fs.try_copy(source_path, target_path) {
+    match fs.copy(source_path, target_path) {
         .Ok(_) => panic("expected missing source error"),
         .Err(err) => match err {
             IoError.NotFound(_) => {},
@@ -189,16 +189,16 @@ fn test_try_copy_success() {
     let target_path = "tests/hew/_fs_stream_copy_dst.txt";
     cleanup_file(source_path);
     cleanup_file(target_path);
-    match fs.try_write(source_path, "copied") {
+    match fs.write(source_path, "copied") {
         .Ok(_) => {},
         .Err(_) => panic("expected source write to succeed"),
     }
-    match fs.try_copy(source_path, target_path) {
+    match fs.copy(source_path, target_path) {
         .Ok(_) => {},
         .Err(_) => panic("expected try_copy to succeed"),
     }
     testing.assert_true(fs.exists(source_path));
-    match fs.try_read(target_path) {
+    match fs.read(target_path) {
         .Ok(data) => testing.assert_eq_str(data, "copied"),
         .Err(_) => panic("expected copied file to be readable"),
     }
@@ -211,15 +211,15 @@ fn test_try_copy_success() {
 fn test_try_append_and_try_read_bytes() {
     let file_path = "tests/hew/_fs_stream_bytes.txt";
     cleanup_file(file_path);
-    match fs.try_write(file_path, "hello") {
+    match fs.write(file_path, "hello") {
         .Ok(_) => {},
         .Err(_) => panic("expected initial write to succeed"),
     }
-    match fs.try_append(file_path, " world") {
+    match fs.append(file_path, " world") {
         .Ok(_) => {},
         .Err(_) => panic("expected try_append to succeed"),
     }
-    match fs.try_read_bytes(file_path) {
+    match fs.read_bytes(file_path) {
         .Ok(data) => testing.assert_true(data.len() == 11),
         .Err(_) => panic("expected try_read_bytes to succeed"),
     }
@@ -244,11 +244,11 @@ fn test_try_write_and_try_read_bytes_binary_roundtrip() {
     let b2: u8 = 108;
     let b3: u8 = 108;
     let b4: u8 = 111;
-    match fs.try_write_bytes(file_path, "hello".to_bytes()) {
+    match fs.write_bytes(file_path, "hello".to_bytes()) {
         .Ok(_) => {},
         .Err(_) => panic("expected try_write_bytes to succeed"),
     }
-    match fs.try_read_bytes(file_path) {
+    match fs.read_bytes(file_path) {
         .Ok(data) => {
             testing.assert_eq(data.len(), expected_len);
             testing.assert_eq_u8(data[0], b0);
@@ -264,11 +264,11 @@ fn test_try_write_and_try_read_bytes_binary_roundtrip() {
 
 #[test]
 fn test_try_list_dir_handles_success_and_missing_paths() {
-    match fs.try_list_dir("tests/hew") {
+    match fs.list_dir("tests/hew") {
         .Ok(entries) => testing.assert_true(entries.len() > 0),
         .Err(_) => panic("expected tests/hew listing to succeed"),
     }
-    match fs.try_list_dir("tests/hew/_fs_stream_missing_dir") {
+    match fs.list_dir("tests/hew/_fs_stream_missing_dir") {
         .Ok(_) => panic("expected missing directory error"),
         .Err(err) => match err {
             IoError.NotFound(_) => {},
@@ -283,7 +283,7 @@ fn test_try_list_dir_regular_file_returns_enotdir() {
     let file_path = "tests/hew/_fs_stream_not_directory.txt";
     cleanup_file(file_path);
     let _ = fs.write(file_path, "not a directory");
-    match fs.try_list_dir(file_path) {
+    match fs.list_dir(file_path) {
         .Ok(_) => panic("expected regular-file listing error"),
         .Err(err) => match err {
             IoError.Other(errno) => testing.assert_eq(errno, 20),
@@ -299,7 +299,7 @@ fn test_try_write_reports_enotdir_errno() {
     let file_path = "tests/hew/_fs_stream_write_parent.txt";
     cleanup_file(file_path);
     let _ = fs.write(file_path, "not a directory");
-    match fs.try_write(file_path + "/child", "content") {
+    match fs.write(file_path + "/child", "content") {
         .Ok(_) => panic("expected write through regular file to fail"),
         .Err(err) => match err {
             IoError.Other(errno) => testing.assert_eq(errno, 20),
@@ -482,7 +482,7 @@ fn test_try_mkdir_existing_returns_already_exists() {
     // "tests/hew" always exists (it holds this test), so no fixture/cleanup is
     // needed and the test cannot leak state. The payload is the platform errno,
     // which we do not pin here.
-    let result = fs.try_mkdir("tests/hew");
+    let result = fs.mkdir("tests/hew");
     match result {
         .Ok(_) => panic("expected mkdir on an existing directory to fail"),
         .Err(err) => match err {

@@ -97,9 +97,9 @@ actor ClientHandler {
 
 fn main() {
     var port: string = "9000";
-    let argc = os.args_count();
+    let argc = os.args().len();
     if argc > 1 {
-        port = os.args(1);
+        port = os.args().get(1);
     }
     let addr = f"0.0.0.0:{port}";
     let listener = match net.try_listen(addr) {

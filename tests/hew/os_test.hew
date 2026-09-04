@@ -2,6 +2,8 @@
 
 import std.os;
 
+import std.observe;
+
 import std.testing;
 
 #[test]
@@ -28,4 +30,26 @@ fn test_remove_env_rejects_equals_in_name() {
 fn test_env_error_display_names_the_rejected_name() {
     let err = EnvError.InvalidName("HEW=INVALID");
     testing.assert_eq_str(to_string(err), "invalid environment variable name: `HEW=INVALID`");
+}
+
+#[test]
+#[serial]
+fn test_env_distinguishes_unset_from_empty_values() {
+    let name = "HEW_RESULT_ONLY_ST2A";
+    let _ = os.remove_env(name);
+    testing.assert_true(os.env(name).is_none());
+    match os.set_env(name, "") {
+        .Ok(()) => {},
+        .Err(_) => panic("expected environment variable to be set"),
+    }
+    match os.env(name) {
+        .Some(value) => testing.assert_eq_str(value, ""),
+        .None => panic("expected an explicitly empty environment value"),
+    }
+    let _ = os.remove_env(name);
+}
+
+#[test]
+fn test_observe_read_reports_unknown_metrics_as_none() {
+    testing.assert_true(observe.read("hew.result_only_st2a.unknown").is_none());
 }

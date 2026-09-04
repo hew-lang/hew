@@ -46,16 +46,16 @@ fn search_file(filename: string, pattern: string, nl: string) -> i32 {
 }
 
 fn main() -> i32 {
-    let argc = os.args_count();
+    let argc = os.args().len();
     if argc < 3 {
         println("Usage: hew_grep <pattern> <file1> [file2...]");
         return 1;
     }
     let nl = string.from_char(10);
-    let pattern = os.args(1);
+    let pattern = os.args().get(1);
     var total_matches = 0;
     for fi in 2 .. argc {
-        let filename = os.args(fi);
+        let filename = os.args().get(fi);
         let count = search_file(filename, pattern, nl);
         total_matches = total_matches + count;
     }

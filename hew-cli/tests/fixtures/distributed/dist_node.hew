@@ -893,7 +893,7 @@ fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_r
     let me = Node.identity_key();
     publish_atomic(kx, f"{my_role}.pub", me);
     let peer_key = wait_for_file(f"{kx}/{peer_role}.pub");
-    let configured_peer_key = if os.env("HEW_DIST_BAD_PEER_PIN") == "1" {
+    let configured_peer_key = if os.env("HEW_DIST_BAD_PEER_PIN").unwrap_or("") == "1" {
         "0000000000000000000000000000000000000000000000000000000000000000"
     } else {
         peer_key
@@ -910,7 +910,7 @@ fn wait_for_server_listening(kx: string) {
 }
 
 fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
-    let selected_scenario = os.env("HEW_DIST_SCENARIO");
+    let selected_scenario = os.env("HEW_DIST_SCENARIO").unwrap_or("");
     let max_attempts: i64 = if selected_scenario == "monitor_leak_low" || selected_scenario == "monitor_leak_high" {
         300
     } else {
@@ -974,7 +974,7 @@ fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, 
 
 fn run_server(port: string, scenario: string) {
     let addr = f"127.0.0.1:{port}";
-    let kx = os.env("HEW_DIST_KX_DIR");
+    let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
     Node.set_transport("tcp");
     stage_peer_credentials(kx, "server", "client", 2);
     Node.start(addr);
@@ -996,7 +996,7 @@ fn run_server(port: string, scenario: string) {
         stopper.run();
     }
     signal_server_listening(kx);
-    if os.env("HEW_DIST_RESTARTED") == "1" {
+    if os.env("HEW_DIST_RESTARTED").unwrap_or("") == "1" {
         publish_atomic(kx, "server.restarted", "1");
     }
     println(f"READY {port}");
@@ -2041,7 +2041,7 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
 }
 
 fn run_client(port: string, scenario: string) -> i64 {
-    let kx = os.env("HEW_DIST_KX_DIR");
+    let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
     Node.set_transport("tcp");
     stage_peer_credentials(kx, "client", "server", 1);
     Node.start("127.0.0.1:0");
@@ -2184,9 +2184,9 @@ fn run_client(port: string, scenario: string) -> i64 {
 }
 
 fn main() -> i64 {
-    let role = os.env("HEW_DIST_ROLE");
-    let port = os.env("HEW_DIST_PORT");
-    var scenario = os.env("HEW_DIST_SCENARIO");
+    let role = os.env("HEW_DIST_ROLE").unwrap_or("");
+    let port = os.env("HEW_DIST_PORT").unwrap_or("");
+    var scenario = os.env("HEW_DIST_SCENARIO").unwrap_or("");
     if scenario == "" {
         scenario = "remote_ask";
     }

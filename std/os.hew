@@ -9,23 +9,14 @@
 //! import std.os;
 //!
 //! fn main() {
-//!     let n = os.args_count();
-//!     let first = os.args(0);
+//!     let arguments = os.args();
+//!     let first = arguments.get(0);
 //!     let home = os.home_dir();
 //!     println(home);
 //! }
 //! ```
 
-/// Returns the number of command-line arguments.
-pub fn args_count() -> i64 {
-    unsafe {
-        hew_args_count() as i64
-    }
-}
-
-/// Returns the command-line argument at the given index.
-///
-/// Index 0 is the program name. Panics if `index` is out of range.
+/// Return all command-line arguments, including the program name.
 ///
 /// # Examples
 ///
@@ -33,23 +24,27 @@ pub fn args_count() -> i64 {
 /// import std.os;
 ///
 /// fn main() {
-///     let program = os.args(0);
-///     let first_arg = os.args(1);
+///     let arguments = os.args();
+///     let program = arguments.get(0);
 /// }
 /// ```
-pub fn args(index: i64) -> string {
-    let count = args_count();
-    if index < 0 || index >= count {
-        panic(f"os.args: index {index} out of range for {count} argument(s)");
+pub fn args() -> Vec<string> {
+    let count = unsafe {
+        hew_args_count() as i64
+    };
+    var values: Vec<string> = Vec::new();
+    for index in 0..count {
+        let value = unsafe {
+            hew_args_get(index as i32)
+        };
+        values.push(value);
     }
-    unsafe {
-        hew_args_get(index as i32)
-    }
+    values
 }
 
 /// Get the value of an environment variable.
 ///
-/// Returns an empty string if the variable is not set.
+/// Returns `None` if the variable is not set.
 ///
 /// # Examples
 ///
@@ -60,9 +55,13 @@ pub fn args(index: i64) -> string {
 ///     let path = os.env("PATH");
 /// }
 /// ```
-pub fn env(name: string) -> string {
+pub fn env(name: string) -> Option<string> {
     unsafe {
-        hew_env_get(name)
+        if hew_env_has(name) {
+            Some(hew_env_get(name))
+        } else {
+            None
+        }
     }
 }
 
@@ -82,13 +81,13 @@ impl Display for EnvError {
 /// Set an environment variable for the current process.
 ///
 /// Environment names must be non-empty and cannot contain `=`.
-pub fn set_env(name: string, value: string) -> Result<i64, EnvError> {
+pub fn set_env(name: string, value: string) -> Result<(), EnvError> {
     if name == "" || name.contains("=") {
         return Err(EnvError.InvalidName(name));
     }
     unsafe {
         if hew_env_set(name, value) == 0 {
-            Ok(0)
+            Ok(())
         } else {
             Err(EnvError.InvalidName(name))
         }
@@ -98,13 +97,13 @@ pub fn set_env(name: string, value: string) -> Result<i64, EnvError> {
 /// Remove an environment variable.
 ///
 /// Environment names must be non-empty and cannot contain `=`.
-pub fn remove_env(name: string) -> Result<i64, EnvError> {
+pub fn remove_env(name: string) -> Result<(), EnvError> {
     if name == "" || name.contains("=") {
         return Err(EnvError.InvalidName(name));
     }
     unsafe {
         if hew_env_remove(name) == 0 {
-            Ok(0)
+            Ok(())
         } else {
             Err(EnvError.InvalidName(name))
         }

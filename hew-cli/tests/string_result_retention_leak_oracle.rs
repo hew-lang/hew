@@ -177,7 +177,7 @@ actor Reader {
 }
 
 fn main() {
-    let frame_baseline = observe.read("coroutines.frame_bytes_live");
+    let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let listener = net.listen("127.0.0.1:0");
     let port = listener.local_port();
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
@@ -190,7 +190,7 @@ fn main() {
         .Err(_) => println("crash-fallback"),
     }
     println("main-done");
-    println(observe.read("coroutines.frame_bytes_live") - frame_baseline);
+    println(observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline);
 }
 "#;
 
@@ -493,7 +493,7 @@ actor Runner {
 }
 
 fn main() {
-    let frame_baseline = observe.read("coroutines.frame_bytes_live");
+    let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let gate = spawn Gate;
     let runner = spawn Runner(gate: gate);
     let r = await runner.go(0);
@@ -502,7 +502,7 @@ fn main() {
         .Err(_) => println("crash-fallback"),
     }
     println("main-done");
-    println(observe.read("coroutines.frame_bytes_live") - frame_baseline);
+    println(observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline);
 }
 "#;
 
@@ -732,12 +732,12 @@ actor Crasher {
 }
 
 fn main() {
-    let frame_baseline = observe.read("coroutines.frame_bytes_live");
+    let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let gate = spawn Gate;
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
         let result = await crasher.run();
-        if observe.read("coroutines.frame_bytes_live") != frame_baseline {
+        if observe.read("coroutines.frame_bytes_live").unwrap_or(0) != frame_baseline {
             panic("nested crash left coroutine-frame bytes live");
         }
         match result {

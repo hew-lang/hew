@@ -39,7 +39,7 @@ actor Server {
 fn main() {
     let server = spawn Server;
     server.go();
-    while observe.read("reactor.registrations_live") == 0 {}
+    while observe.read("reactor.registrations_live").unwrap_or(0) == 0 {}
     while unsafe {
         hew_sched_metrics_active_workers()
     } != 0 {}

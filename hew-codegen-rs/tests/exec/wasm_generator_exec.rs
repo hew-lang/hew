@@ -146,8 +146,8 @@ fn main() {
     complete(Capture { label: "complete", values: [1, 2] });
     suspended(Capture { label: "suspended", values: [3, 4] });
     never_resumed(Capture { label: "never", values: [5, 6] });
-    println(observe.read("coroutines.frame_bytes_live"));
-    println(observe.read("heap.live_bytes"));
+    println(observe.read("coroutines.frame_bytes_live").unwrap_or(0));
+    println(observe.read("heap.live_bytes").unwrap_or(0));
 }
 "#,
     )

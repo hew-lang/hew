@@ -111,8 +111,8 @@ impl GlobResult {
 // ── Module-level functions ────────────────────────────────────────────
 /// Expand a glob pattern and return all matching paths.
 ///
-/// Panics when the expansion cannot complete (for example a matching directory
-/// that cannot be read). Use `try_glob` to handle that without terminating.
+/// Returns an error when the expansion cannot complete (for example a matching
+/// directory that cannot be read).
 ///
 /// # Examples
 ///
@@ -123,22 +123,6 @@ impl GlobResult {
 ///     let files = path.glob("src/**/*.hew");
 /// }
 /// ```
-pub fn glob(pattern: string) -> GlobResult {
-    unsafe {
-        let handle = hew_glob(pattern);
-        if !hew_glob_is_valid(handle) {
-            // `hew_glob` always transfers one heap-owned result handle, even
-            // when expansion fails.  Copy its error before releasing that
-            // handle: `hew_glob_error` borrows the result while constructing
-            // the Hew-owned string it returns.
-            let detail = hew_glob_error(handle);
-            hew_glob_free(handle);
-            panic(f"path.glob: {detail}");
-        }
-        GlobResult { handle: handle }
-    }
-}
-
 /// Expand a glob pattern, reporting expansion failure separately from a
 /// completed walk that matched nothing.
 ///
@@ -148,13 +132,13 @@ pub fn glob(pattern: string) -> GlobResult {
 /// import std.path;
 ///
 /// fn main() {
-///     match path.try_glob("src/**/*.hew") {
+///     match path.glob("src/**/*.hew") {
 ///         .Ok(files) => println(f"{files.len()} match(es)"),
 ///         .Err(err) => println(f"{err}"),
 ///     }
 /// }
 /// ```
-pub fn try_glob(pattern: string) -> Result<GlobResult, PathError> {
+pub fn glob(pattern: string) -> Result<GlobResult, PathError> {
     unsafe {
         let handle = hew_glob(pattern);
         if hew_glob_is_valid(handle) {

@@ -652,8 +652,8 @@ actor Acceptor {
 
 fn main() {
     var port = "1883";
-    if os.args_count() > 1 {
-        port = os.args(1);
+    if os.args().len() > 1 {
+        port = os.args().get(1);
     }
     let addr = f"127.0.0.1:{port}";
     let empty_sessions: Vec<string> = Vec.new();

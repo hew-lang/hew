@@ -111,7 +111,7 @@ pub fn try_parse_no_headers(data: string) -> Result<Table, string> {
 /// Returns `Err(string)` if the file cannot be read or the input is not
 /// well-formed CSV.
 pub fn try_parse_file(path: string) -> Result<Table, string> {
-    match fs.try_read(path) {
+    match fs.read(path) {
         .Ok(content) => parse_impl(content, true),
         .Err(reason) => Err(to_string(reason)),
     }

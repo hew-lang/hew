@@ -128,8 +128,8 @@ fn ingest_file(path: string, index: HashMap<string, i32>) {
 // main
 //
 // CLI surface: `hew run examples/hew-orch/main.hew -- <dir>`.
-// `os.args(i)` returns `string` (dialect authority §1 stdlib survey),
-// `os.args_count() -> i64`. A247 #11's preferred `os.args() -> Vec<string>`
+// `os.args().get(i)` returns `string` (dialect authority §1 stdlib survey),
+// `os.args().len() -> i64`. A247 #11's preferred `os.args() -> Vec<string>`
 // surface does not exist today; rather than fabricate it, we accept the
 // current surface and default to `.tmp/orchestration` when no arg is given.
 fn main() {

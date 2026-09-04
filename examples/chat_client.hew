@@ -54,12 +54,12 @@ actor ChatReader {
 fn main() {
     var port: string = "9000";
     var name: string = "guest";
-    let argc = os.args_count();
+    let argc = os.args().len();
     if argc > 1 {
-        port = os.args(1);
+        port = os.args().get(1);
     }
     if argc > 2 {
-        name = os.args(2);
+        name = os.args().get(2);
     }
     let addr = f"127.0.0.1:{port}";
     let connect_timeout_sec: i64 = 5;

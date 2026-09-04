@@ -49,7 +49,7 @@ fn print_positional(positional: Vec<string>) {
 }
 
 fn main() {
-    let argc = os.args_count();
+    let argc = os.args().len();
     // No arguments: print usage
     if argc <= 1 {
         println("No arguments provided.");
@@ -63,7 +63,7 @@ fn main() {
     var show_help = 0;
     // Parse arguments (skip argv[0] which is the program name)
     for i in 1 .. argc {
-        let arg = os.args(i);
+        let arg = os.args().get(i);
         if arg.starts_with("--") {
             // Long option: check for "=" to distinguish flag from key=value
             let eq_pos = arg.find("=");

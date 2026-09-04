@@ -49,7 +49,7 @@ type MatchState {
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 fn parse_args() -> Result<Config, string> {
-    let argc = os.args_count();
+    let argc = os.args().len();
     if argc < 2 {
         return Result.Err("usage: grep [FLAGS] PATTERN [FILE...]");
     }
@@ -63,7 +63,7 @@ fn parse_args() -> Result<Config, string> {
     let files: Vec<string> = Vec.new();
     var i = 1;
     while i < argc {
-        let arg = os.args(i);
+        let arg = os.args().get(i);
         if !pattern_set && arg.starts_with("-") && arg.len() > 1 {
             // Treat each character after '-' as an individual flag.
             // "--" ends flag parsing (next arg is the pattern).
@@ -72,7 +72,7 @@ fn parse_args() -> Result<Config, string> {
                 if i >= argc {
                     return Result.Err("grep: missing pattern after --");
                 }
-                pattern = os.args(i);
+                pattern = os.args().get(i);
                 pattern_set = true;
                 i = i + 1;
                 continue;
@@ -166,7 +166,7 @@ fn grep_file(file_path: string, pat: regex.Pattern, cfg: Config, show_label: boo
     } else {
         ""
     };
-    let result = fs.try_read(file_path);
+    let result = fs.read(file_path);
     match result {
         .Err(e) => {
             let msg = to_string(e);
@@ -193,7 +193,7 @@ fn grep_file(file_path: string, pat: regex.Pattern, cfg: Config, show_label: boo
 // GAP: no fs.walk_dir; we implement recursive descent via fs.list_dir + fs.is_dir.
 // Returns updated MatchState (structs are value-semantic; callers must reassign).
 fn grep_dir(dir_path: string, pat: regex.Pattern, cfg: Config, state: MatchState) -> MatchState {
-    let entries_result = fs.try_list_dir(dir_path);
+    let entries_result = fs.list_dir(dir_path);
     match entries_result {
         .Err(e) => {
             let msg = to_string(e);

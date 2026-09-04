@@ -19,7 +19,7 @@ const SOURCE: &str = r#"
 import std.path;
 
 fn main() {
-    match path.try_glob("std/*.hew") {
+    match path.glob("std/*.hew") {
         .Ok(matches) => matches.close(),
         .Err(_) => (),
     }

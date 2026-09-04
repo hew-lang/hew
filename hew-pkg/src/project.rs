@@ -32,12 +32,16 @@ impl ResolvedPackage {
         self.root.join(self.manifest.package.main_source())
     }
 
-    /// Path of the binary `hew build` writes by default: the package's binary
-    /// name, in the package root. `suffix` is the target's executable suffix
-    /// (`""`, `.exe`, `.wasm`).
+    /// Path of the build artefact `hew build` writes by default, cargo-style:
+    /// `<root>/target/<profile>/<name><suffix>`. `profile` is `"debug"` or
+    /// `"release"`; `suffix` is the target's executable suffix (`""`, `.exe`,
+    /// `.wasm`) for a linked binary, or its object suffix (`.o`, `.obj`) for
+    /// `--emit-obj`.
     #[must_use]
-    pub fn default_binary_path(&self, suffix: &str) -> PathBuf {
+    pub fn default_binary_path(&self, profile: &str, suffix: &str) -> PathBuf {
         self.root
+            .join("target")
+            .join(profile)
             .join(format!("{}{suffix}", self.manifest.package.binary_name()))
     }
 
@@ -237,7 +241,27 @@ mod tests {
         let pkg = resolve_package(dir.path()).expect("resolve");
 
         assert_eq!(pkg.entry_path(), dir.path().join("main.hew"));
-        assert_eq!(pkg.default_binary_path(""), dir.path().join("myproj"));
+        assert_eq!(
+            pkg.default_binary_path("debug", ""),
+            dir.path().join("target/debug/myproj")
+        );
+    }
+
+    #[test]
+    fn default_binary_path_separates_debug_and_release_profiles() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_package(dir.path(), BASIC, Some("main.hew"));
+
+        let pkg = resolve_package(dir.path()).expect("resolve");
+
+        assert_eq!(
+            pkg.default_binary_path("release", ""),
+            dir.path().join("target/release/myproj")
+        );
+        assert_ne!(
+            pkg.default_binary_path("debug", ""),
+            pkg.default_binary_path("release", "")
+        );
     }
 
     #[test]
@@ -278,8 +302,8 @@ mod tests {
         let pkg = resolve_package(dir.path()).expect("resolve");
 
         assert_eq!(
-            pkg.default_binary_path(".exe"),
-            dir.path().join("sqlite.exe")
+            pkg.default_binary_path("debug", ".exe"),
+            dir.path().join("target/debug/sqlite.exe")
         );
     }
 

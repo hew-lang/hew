@@ -3,9 +3,10 @@
 //! With no argument, or with a directory argument, all three resolve the
 //! enclosing package through `hew.toml`: `[package] main` names the entry
 //! point, `[native]` is built first as a prerequisite, and the binary is named
-//! after the package and written to the package root. The explicit-file form is
-//! unchanged. A directory is resolved before any path reaches the compiler, so
-//! no raw OS error can escape.
+//! after the package and written to `<root>/target/<profile>/`, cargo-style.
+//! The explicit-file form is unchanged: no package root means no `target/` to
+//! own, so the binary lands beside the source. A directory is resolved before
+//! any path reaches the compiler, so no raw OS error can escape.
 
 mod support;
 
@@ -47,6 +48,13 @@ fn binary_in(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
+/// Where a package build writes its binary by default: `<root>/target/<profile>/<name>`.
+fn package_binary_in(root: &Path, profile: &str, name: &str) -> PathBuf {
+    root.join("target")
+        .join(profile)
+        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+}
+
 fn assert_prints_greeting(binary: &Path) {
     let run = run_bounded_command(Command::new(binary), format!("run {}", binary.display()));
     assert!(
@@ -81,7 +89,7 @@ fn build_no_argument_produces_the_package_named_binary() {
         "package build failed\n{}",
         describe_output(&output),
     );
-    assert_prints_greeting(&binary_in(dir.path(), "greeter"));
+    assert_prints_greeting(&package_binary_in(dir.path(), "debug", "greeter"));
 }
 
 /// `hew build .` names the current directory's package explicitly and behaves
@@ -103,7 +111,7 @@ fn build_dot_builds_the_current_package() {
         "`hew build .` failed\n{}",
         describe_output(&output),
     );
-    assert_prints_greeting(&binary_in(dir.path(), "dotpkg"));
+    assert_prints_greeting(&package_binary_in(dir.path(), "debug", "dotpkg"));
 }
 
 /// `hew build <dir>` builds that package and writes its binary into the package
@@ -131,7 +139,7 @@ fn build_directory_argument_writes_into_that_package_root() {
         !binary_in(dir.path(), "nested").is_file(),
         "binary should live in the package root, not the invoking directory",
     );
-    assert_prints_greeting(&binary_in(&pkg, "nested"));
+    assert_prints_greeting(&package_binary_in(&pkg, "debug", "nested"));
 }
 
 /// `hew run` with no argument compiles and runs the package's entry point.
@@ -181,7 +189,7 @@ fn package_main_field_selects_the_entry_point() {
         "build with a declared entry point failed\n{}",
         describe_output(&output),
     );
-    assert_prints_greeting(&binary_in(dir.path(), "custom"));
+    assert_prints_greeting(&package_binary_in(dir.path(), "debug", "custom"));
 }
 
 /// Resolution walks up from the working directory, so a subdirectory of a
@@ -205,7 +213,7 @@ fn build_from_a_subdirectory_resolves_the_enclosing_package() {
         "build from a subdirectory failed\n{}",
         describe_output(&output),
     );
-    assert_prints_greeting(&binary_in(dir.path(), "walkup"));
+    assert_prints_greeting(&package_binary_in(dir.path(), "debug", "walkup"));
 }
 
 /// A relative directory argument resolves from the invocation directory, then
@@ -230,7 +238,7 @@ fn build_relative_directory_from_a_subdirectory_resolves_the_enclosing_package()
         "relative directory build failed\n{}",
         describe_output(&output),
     );
-    assert_prints_greeting(&binary_in(dir.path(), "relativewalkup"));
+    assert_prints_greeting(&package_binary_in(dir.path(), "debug", "relativewalkup"));
 }
 
 /// The package's `[native]` crate is a prerequisite: when it cannot build, the
@@ -266,7 +274,7 @@ fn native_prerequisite_failure_stops_the_build() {
         describe_output(&output),
     );
     assert!(
-        !binary_in(dir.path(), "withnative").exists(),
+        !package_binary_in(dir.path(), "debug", "withnative").exists(),
         "no binary may be produced when the native prerequisite fails",
     );
 }
@@ -351,6 +359,150 @@ fn explicit_file_form_still_builds_to_the_stem() {
         describe_output(&output),
     );
     assert_prints_greeting(&binary_in(dir.path(), "main"));
+}
+
+/// `hew build` with no `--release` writes into `target/debug/` by default, and
+/// the status line names the artefact path.
+#[test]
+fn build_writes_target_debug_by_default() {
+    require_codegen();
+    let dir = workspace();
+    write_package(dir.path(), "debugpkg", "main.hew", "");
+
+    let output = Command::new(hew_binary())
+        .arg("build")
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew build");
+
+    assert!(
+        output.status.success(),
+        "debug build failed\n{}",
+        describe_output(&output),
+    );
+    assert_prints_greeting(&package_binary_in(dir.path(), "debug", "debugpkg"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Built target/debug/debugpkg"),
+        "status line should name the debug artefact path:\n{}",
+        describe_output(&output),
+    );
+}
+
+/// `hew build --release` writes into `target/release/`, not `target/debug/`,
+/// and the status line names the release artefact path.
+#[test]
+fn build_release_writes_target_release() {
+    require_codegen();
+    let dir = workspace();
+    write_package(dir.path(), "relpkg", "main.hew", "");
+
+    let output = Command::new(hew_binary())
+        .args(["build", "--release"])
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew build --release");
+
+    assert!(
+        output.status.success(),
+        "release build failed\n{}",
+        describe_output(&output),
+    );
+    assert_prints_greeting(&package_binary_in(dir.path(), "release", "relpkg"));
+    assert!(
+        !package_binary_in(dir.path(), "debug", "relpkg").exists(),
+        "a --release build must not also write target/debug/",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Built target/release/relpkg"),
+        "status line should name the release artefact path:\n{}",
+        describe_output(&output),
+    );
+}
+
+/// `-o` names the linked binary explicitly and wins over the
+/// `target/<profile>/` default, even inside a package.
+#[test]
+fn dash_o_wins_in_package_mode() {
+    require_codegen();
+    let dir = workspace();
+    write_package(dir.path(), "customout", "main.hew", "");
+
+    let output = Command::new(hew_binary())
+        .args(["build", "-o", "bin/renamed"])
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew build -o bin/renamed");
+
+    assert!(
+        output.status.success(),
+        "-o build failed\n{}",
+        describe_output(&output),
+    );
+    assert_prints_greeting(&dir.path().join("bin/renamed"));
+    assert!(
+        !dir.path().join("target").exists(),
+        "-o must skip the target/ default entirely",
+    );
+}
+
+/// `--emit-obj -o` names the object explicitly in file mode, replacing the
+/// default stem-named object entirely.
+#[test]
+fn emit_obj_honours_dash_o_in_file_mode() {
+    require_codegen();
+    let dir = support::tempdir();
+    std::fs::write(dir.path().join("obj.hew"), "fn main() {}\n").expect("write obj.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["build", "obj.hew", "--emit-obj", "-o", "custom.o"])
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew build obj.hew --emit-obj -o custom.o");
+
+    assert!(
+        output.status.success(),
+        "--emit-obj -o (file mode) failed\n{}",
+        describe_output(&output),
+    );
+    assert!(
+        dir.path().join("custom.o").is_file(),
+        "named object not written"
+    );
+    assert!(
+        !dir.path().join("obj.o").exists(),
+        "the default stem-named object must not also be written",
+    );
+}
+
+/// `--emit-obj -o` names the object explicitly in package mode too, winning
+/// over the `target/<profile>/` default.
+#[test]
+fn emit_obj_honours_dash_o_in_package_mode() {
+    require_codegen();
+    let dir = workspace();
+    write_package(dir.path(), "objpkg", "main.hew", "");
+
+    let output = Command::new(hew_binary())
+        .args(["build", "--emit-obj", "-o", "custom.o"])
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew build --emit-obj -o custom.o");
+
+    assert!(
+        output.status.success(),
+        "--emit-obj -o (package mode) failed\n{}",
+        describe_output(&output),
+    );
+    assert!(
+        dir.path().join("custom.o").is_file(),
+        "named object not written"
+    );
+    assert!(
+        !dir.path().join("target").exists(),
+        "-o must skip the target/ default entirely",
+    );
 }
 
 /// `hew check` with no argument type-checks the package's entry point.

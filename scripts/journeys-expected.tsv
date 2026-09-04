@@ -43,7 +43,7 @@ day-one.24	V060-FD-3	HEW_CC unimplemented (see day-one.22): no error output nami
 #
 # day-two: trap symbolization (V060-FD-7) is unimplemented; hew new
 # (V060-FD-5) cascades through the whole dependency/build/deploy chain
-# once app/ is never created; two -o-in-file-mode bugs are V060-FD-2.
+# once app/ is never created.
 day-two.3	V060-FD-7	trap message has no crash.hew:2 file:line
 day-two.4	V060-FD-7	trap message does not name the function (boom)
 day-two.5	V060-FD-7	HEW_BACKTRACE=1 output has no caller frame line
@@ -64,8 +64,6 @@ day-two.23	V060-FD-5	cascades from day-two.8: build has no [package] table
 day-two.25	V060-FD-5	cascades from day-two.8: cross-object emission has no [package] table
 day-two.26	V060-FD-5	cascades from day-two.8: app-aarch64.o never written
 day-two.28	V060-FD-5	cascades from day-two.8: app-aarch64.o never written
-day-two.30	V060-FD-2	file-mode --emit-obj -o obj-aarch64.o did not write the named file
-day-two.31	V060-FD-2	file-mode --emit-obj wrote obj.o instead of honouring -o
 #
 # week-one-local: the decided-dialect program does not run today by design
 # (hew-platform-program.md §0.1: it is fable4/probes/local_svc.hew rewritten

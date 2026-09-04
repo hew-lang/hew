@@ -25,7 +25,8 @@ fn instantiate_named_method_sig(mut sig: FnSig, type_params: &[String], type_arg
     }
     sig.return_type = sig.return_type.substitute_named_params_parallel(&subst_map);
 
-    let substituted_params: HashSet<_> = type_params.iter().cloned().collect();
+    let substituted_params: HashSet<_> =
+        type_params.iter().take(type_args.len()).cloned().collect();
     sig.type_params
         .retain(|type_param| !substituted_params.contains(type_param));
     sig.type_param_bounds

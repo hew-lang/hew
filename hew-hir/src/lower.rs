@@ -8831,6 +8831,7 @@ impl LowerCtx {
             std::mem::take(&mut self.dyn_trait_method_calls),
             std::mem::replace(&mut self.resolved_calls, tc_output.resolved_calls.clone()),
             std::mem::replace(&mut self.expr_types, tc_output.expr_types.clone()),
+            std::mem::replace(&mut self.type_facts, tc_output.type_facts.clone()),
             std::mem::replace(
                 &mut self.produced_value_ownership,
                 tc_output.produced_value_ownership.clone(),
@@ -8863,6 +8864,7 @@ impl LowerCtx {
             self.dyn_trait_method_calls,
             self.resolved_calls,
             self.expr_types,
+            self.type_facts,
             self.produced_value_ownership,
             self.produced_value_dependencies,
             self.resolved_expr_types,

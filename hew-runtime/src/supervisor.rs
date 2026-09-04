@@ -264,7 +264,7 @@ fn append_restart_rows(rows: &mut Vec<(String, String, u64)>, sup: *mut HewSuper
 /// Snapshot the lifetime restart total of every child across every registered
 /// supervisor tree, as `(supervisor_label, child_label, restarts)` rows.
 ///
-/// Backs the `supervisor.restarts_by_child` observe series
+/// Backs the `supervisor.restarts_by_child_total` observe series
 /// ([`crate::observe::scrape_text`]); mirrors [`snapshot_tree_json`]'s walk,
 /// but reads through the non-panicking
 /// [`crate::shutdown::registered_supervisors_snapshot_opt`] rather than

@@ -776,10 +776,10 @@ const ATTRIBUTED_TURN_SERIES_CANONICAL: [&str; 2] = [
 /// `{supervisor,child}` series. A user metric whose rendered name equals this
 /// would emit a duplicate `# TYPE` block and shadow the runtime's per-child
 /// restart telemetry, so the registry rejects it.
-const SUPERVISOR_RESTART_SERIES_NAMES: [&str; 1] = ["supervisor_restarts_by_child"];
+const SUPERVISOR_RESTART_SERIES_NAMES: [&str; 1] = ["supervisor_restarts_by_child_total"];
 
 /// Canonical (dotted) name of the supervisor restart series, for `series_text`.
-const SUPERVISOR_RESTART_SERIES_CANONICAL: [&str; 1] = ["supervisor.restarts_by_child"];
+const SUPERVISOR_RESTART_SERIES_CANONICAL: [&str; 1] = ["supervisor.restarts_by_child_total"];
 
 /// Rendered Prometheus series names of the user-metric registry self-metrics
 /// the scrape emits from [`push_user_metric_self_series`]. Already in rendered

@@ -136,7 +136,7 @@ fn profiler_endpoint_captures_fixture_observability_data() {
     }
 }
 
-/// `supervisor.restarts_by_child` reports each child's lifetime restart total
+/// `supervisor.restarts_by_child_total` reports each child's lifetime restart total
 /// separately: a supervisor with two children restarted a different number of
 /// times must emit two distinct series values, not a shared or collapsed one.
 #[test]
@@ -540,12 +540,12 @@ fn expect_handler_turns(scrape: &str, handler: &str, expected: u64) -> Result<()
     }
 }
 
-/// Read the `supervisor_restarts_by_child{...,child="<child>"}` value off a
-/// scrape, regardless of which `supervisor="..."` label carries it — the
-/// restarts-fixture registers exactly one supervisor, so the child label
+/// Read the `supervisor_restarts_by_child_total{...,child="<child>"}` value
+/// off a scrape, regardless of which `supervisor="..."` label carries it —
+/// the restarts-fixture registers exactly one supervisor, so the child label
 /// alone disambiguates the row.
 fn restart_count(scrape: &str, child: &str) -> Option<u64> {
-    let prefix = "supervisor_restarts_by_child{";
+    let prefix = "supervisor_restarts_by_child_total{";
     let needle = format!("child=\"{child}\"");
     scrape
         .lines()

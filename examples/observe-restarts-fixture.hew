@@ -21,13 +21,16 @@ fn main() {
 
     let a = sup.a;
     a.break_it();
-    sleep(300ms);
+    sleep(1s);
 
+    // Child B's restart backoff doubles each crash (100ms, 200ms, 400ms);
+    // 1s per iteration keeps a >2x margin over the widest window so a slow
+    // CI runner cannot observe a still-restarting slot before the next crash.
     var b = sup.b;
     var i = 0;
     while i < 3 {
         b.break_it();
-        sleep(300ms);
+        sleep(1s);
         b = sup.b;
         i = i + 1;
     }

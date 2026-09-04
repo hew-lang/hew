@@ -1804,8 +1804,6 @@ impl Checker {
                                     None => Ty::Error,
                                 }
                             }
-                        } else if let Some(inner) = inner_opt {
-                            inner
                         } else {
                             self.report_error_with_suggestions(
                                 TypeErrorKind::InvalidOperation,

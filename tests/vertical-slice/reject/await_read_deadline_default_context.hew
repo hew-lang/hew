@@ -11,7 +11,7 @@ fn helper(conn: Connection) -> Result<bytes, net.NetError> {
 }
 
 fn main() {
-    let conn = net.connect("127.0.0.1:9").expect("network setup failed");
+    let conn = net.connect("127.0.0.1:9").unwrap();
     let got = helper(conn);
     let _ = got;
 }

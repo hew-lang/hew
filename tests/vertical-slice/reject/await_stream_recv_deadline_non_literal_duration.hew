@@ -9,7 +9,7 @@ import std.stream;
 
 actor Pipeline {
     receive fn run() -> i64 {
-        let (sink, input) = stream.pipe(8).expect("stream allocation failed");
+        let (sink, input) = stream.pipe(8).unwrap();
         let d = 50ms;
         let frame: Result<Option<string>, TimeoutError> = await input.recv() | after d;
         sink.close();

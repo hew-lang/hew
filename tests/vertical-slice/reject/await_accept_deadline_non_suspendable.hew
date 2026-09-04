@@ -12,6 +12,6 @@ fn helper(ln: Listener) {
 }
 
 fn main() {
-    let ln = net.listen("127.0.0.1:0").expect("network setup failed");
+    let ln = net.listen("127.0.0.1:0").unwrap();
     helper(ln);
 }

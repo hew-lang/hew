@@ -26,7 +26,7 @@ import std.stream;
 
 actor TryRecvStrings {
     receive fn run(unused: i64) {
-        let (sink, input) = stream.pipe(8).expect("stream allocation failed");
+        let (sink, input) = stream.pipe(8).unwrap();
         sink.send("frame-0");
         sink.send("");
         sink.send("frame-1");

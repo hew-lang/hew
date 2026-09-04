@@ -18,7 +18,7 @@
 //!         "to@example.com",
 //!         "Subject",
 //!         "Body",
-//!     ).expect("SMTP send failed");
+//!     ).unwrap();
 //! }
 //! ```
 

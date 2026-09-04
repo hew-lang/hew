@@ -11,7 +11,7 @@ fn helper(input: stream.Stream<string>) -> Result<Option<string>, TimeoutError> 
 }
 
 fn main() -> i64 {
-    let (sink, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(8).expect("stream allocation failed");
+    let (sink, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(8).unwrap();
     let frame = helper(input);
     let _ = sink;
     match frame {

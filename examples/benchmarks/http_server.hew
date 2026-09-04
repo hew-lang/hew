@@ -8,13 +8,13 @@ fn serve_forever(server: Server) {
         let path = req.path();
         match path {
             "/" => {
-                req.respond_text(200, "Hello from Hew!").expect("failed to send HTTP response");
+                req.respond_text(200, "Hello from Hew!").unwrap();
             },
             "/health" => {
-                req.respond_text(200, "OK").expect("failed to send HTTP response");
+                req.respond_text(200, "OK").unwrap();
             },
             _ => {
-                req.respond_text(404, "Not Found").expect("failed to send HTTP response");
+                req.respond_text(404, "Not Found").unwrap();
             },
         }
     }

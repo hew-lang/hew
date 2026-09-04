@@ -5,7 +5,7 @@
 import std.channel.channel;
 
 fn main() -> i64 {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).expect("channel allocation failed");
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).unwrap();
     let _ = tx;
     let _ = rx;
     0

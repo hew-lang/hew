@@ -21,7 +21,7 @@ import std.stream;
 
 actor StringPipeline {
     receive fn run(unused: i64) {
-        let (sink, input) = stream.pipe(8).expect("stream allocation failed");
+        let (sink, input) = stream.pipe(8).unwrap();
         // Send three normal frames, one empty frame between them, then EOF.
         await sink.send("frame-0");
         await sink.send("");

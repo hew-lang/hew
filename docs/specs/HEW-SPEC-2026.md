@@ -1078,7 +1078,7 @@ match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
     },
     .Err(_err) => println(f"listen failed: {http.listen_error()}"),
 }
-let content = fs.read("config.toml").expect("failed to read config.toml");
+let content = fs.read("config.toml").unwrap();
 let exists = fs.exists("output.txt");       // Returns bool
 let line = io.read_line();                  // Preferred stdin surface
 let re = regex.new("[a-z]+");
@@ -4693,10 +4693,10 @@ Both handle types are `Send` (safe to pass to other actors), opaque (backed by a
 import std.stream;
 
 // Canonical in-memory bounded bytes pipe
-let (bytes_sink, bytes_stream) = stream.bytes_pipe(16).expect("stream allocation failed");
+let (bytes_sink, bytes_stream) = stream.bytes_pipe(16).unwrap();
 
 // Convenience text pipe
-let (text_sink, text_stream) = stream.pipe(16).expect("stream allocation failed");
+let (text_sink, text_stream) = stream.pipe(16).unwrap();
 
 // Current file helpers remain text-only in this slice
 let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<string>, string>

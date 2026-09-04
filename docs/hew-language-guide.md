@@ -1720,7 +1720,7 @@ actor Server {
     let addr: string;
 
     receive fn serve() {
-        let listener = net.listen(addr).expect("network setup failed");
+        let listener = net.listen(addr).unwrap();
         loop {
             let conn = await listener.accept();
             let _data = await conn.read();
@@ -3354,7 +3354,7 @@ import std.stream;
 actor Echo {
     let n: i64;
     receive fn run(unused: i64) {
-        let (sink, input) = stream.bytes_pipe(4).expect("stream allocation failed");
+        let (sink, input) = stream.bytes_pipe(4).unwrap();
         for i in 0..n {
             await sink.send(f"x{i}".to_bytes());
         }
@@ -3396,7 +3396,7 @@ import std.channel.channel;
 
 actor Inbox {
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4).expect("channel allocation failed");
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4).unwrap();
         tx.send("ready");
         tx.close();
 
@@ -3794,7 +3794,7 @@ fn main() {
     let stream = tls.connect("example.com", 443);
     let req = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
     let payload = req.to_bytes();
-    let sent = tls.write(stream, payload).expect("TLS write failed");
+    let sent = tls.write(stream, payload).unwrap();
     println(f"sent {sent}/{payload.len()} bytes");
     // match tls.read(stream, 256) { .Ok(data) => ..., .Err(_) => ... }
     tls.close(stream);
@@ -3824,12 +3824,12 @@ Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
 import std.process;
 
 fn main() {
-    let out = process.run("echo shell-form").expect("shell command failed");
+    let out = process.run("echo shell-form").unwrap();
     println(out.stdout.trim());
 
     let args: Vec<string> = Vec.new();
     args.push("no-shell-form");
-    let result = process.run_argv("echo", args).expect("echo failed");
+    let result = process.run_argv("echo", args).unwrap();
     println(result.stdout.trim());
 }
 ```

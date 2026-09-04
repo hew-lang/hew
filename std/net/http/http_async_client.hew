@@ -26,8 +26,8 @@
 //!     let path: string;   // "/hello"
 //!     let host: string;   // "127.0.0.1"
 //!     receive fn go(unused: i64) {
-//!         let conn = net.connect(addr).expect("network setup failed");
-//!         conn.write_string(http_async_client.build_get(host, path)).expect("request write failed");
+//!         let conn = net.connect(addr).unwrap();
+//!         conn.write_string(http_async_client.build_get(host, path)).unwrap();
 //!         var raw = "";
 //!         var reads = 0;
 //!         var done = false;

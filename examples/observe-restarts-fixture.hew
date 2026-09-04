@@ -33,7 +33,7 @@ fn main() {
         b = sup.b;
         i = i + 1;
     }
-    let _barrier = observe.barrier().expect("observation barrier failed");
+    let _barrier = observe.barrier().unwrap();
     println("restarts fixture ready");
     sleep(15s);
 }

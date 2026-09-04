@@ -12,17 +12,17 @@
 //! import std.process;
 //!
 //! fn main() {
-//!     let shell_output = process.run("echo hello").expect("shell command failed");
+//!     let shell_output = process.run("echo hello").unwrap();
 //!     println(shell_output.stdout);
 //!
 //!     let args: Vec<string> = Vec.new();
 //!     args.push("<%s>|<%s>");
 //!     args.push("hello world");
 //!     args.push("hew");
-//!     let output = process.run_argv("printf", args).expect("printf failed");
+//!     let output = process.run_argv("printf", args).unwrap();
 //!     println(output.stdout);
 //!
-//!     let child = process.start("sleep 10").expect("failed to start child");
+//!     let child = process.start("sleep 10").unwrap();
 //!     println(child.wait());
 //! }
 //! ```

@@ -45,7 +45,7 @@ actor Drainer {
 }
 
 fn main() {
-    let (sink, input) = stream.bytes_pipe(8).expect("stream allocation failed");
+    let (sink, input) = stream.bytes_pipe(8).unwrap();
     // The Stream half moves into the actor's state; the Sink half stays local.
     let d = spawn Drainer(input: input);
     d.run();

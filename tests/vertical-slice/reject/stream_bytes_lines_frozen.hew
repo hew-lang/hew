@@ -8,6 +8,6 @@
 import std.stream;
 
 fn main() {
-    let (_sink, source) = stream.bytes_pipe(16).expect("stream allocation failed");
+    let (_sink, source) = stream.bytes_pipe(16).unwrap();
     let _lined = source.lines();
 }

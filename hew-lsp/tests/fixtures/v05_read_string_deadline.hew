@@ -8,7 +8,7 @@ import std.net;
 actor StringReader {
     let port: i32;
     receive fn go() {
-        let conn = net.connect(f"127.0.0.1:{port}").expect("network setup failed");
+        let conn = net.connect(f"127.0.0.1:{port}").unwrap();
         let _result = match await conn.read_string() | after 60ms {
             .Ok(_body) => 42,
             .Err(_e) => 7,

@@ -244,7 +244,7 @@ fn chmod_dir(mode: string, dir: string) -> i64 {
     let args: Vec<string> = Vec.new();
     args.push(mode);
     args.push(dir);
-    process.run_argv("chmod", args).expect("failed to run chmod").exit_code
+    process.run_argv("chmod", args).unwrap().exit_code
 }
 
 #[test]
@@ -272,10 +272,10 @@ fn test_try_glob_reports_no_match_as_an_empty_success() {
 #[test]
 fn test_try_glob_reports_an_unreadable_directory_as_a_failure() {
     let dir = glob_scratch_dir("denied");
-    fs.mkdir_all(dir).expect("failed to create glob scratch directory");
+    fs.mkdir_all(dir).unwrap();
     let inner = f"{dir}/sub";
-    fs.mkdir_all(inner).expect("failed to create unreadable directory fixture");
-    fs.write(f"{inner}/present.txt", "x").expect("failed to create glob fixture");
+    fs.mkdir_all(inner).unwrap();
+    fs.write(f"{inner}/present.txt", "x").unwrap();
     testing.assert_true(chmod_dir("000", inner) == 0);
     let observed = match path.glob(f"{inner}/*") {
         .Ok(_) => "fabricated-empty-success",
@@ -283,7 +283,7 @@ fn test_try_glob_reports_an_unreadable_directory_as_a_failure() {
     };
     chmod_dir("755", inner);
     let _ = fs.delete(f"{inner}/present.txt");
-    process.run_argv("rm", rm_rf_args(dir)).expect("failed to remove glob fixture");
+    process.run_argv("rm", rm_rf_args(dir)).unwrap();
     testing.assert_true(observed.contains("aborted"));
 }
 
@@ -296,7 +296,7 @@ fn rm_rf_args(dir: string) -> Vec<string> {
 
 #[test]
 fn test_glob_try_get_rejects_a_wrapped_index() {
-    let matches = path.glob("std/*.hew").expect("failed to expand stdlib glob");
+    let matches = path.glob("std/*.hew").unwrap();
     testing.assert_true(matches.len() > 0);
     // 2^32 narrows to 0 under `index as i32`.
     testing.assert_true(match matches.try_get(4294967296) {

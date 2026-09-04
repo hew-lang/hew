@@ -403,7 +403,10 @@ record_expected_refusal_status() {
     fi
 
     case "$status" in
-    1 | 3 | 4)
+    1)
+        return 0
+        ;;
+    3 | 4)
         diagnostic_codes="$(diagnostic_code_set "$log")"
         if [[ -n "$diagnostic_codes" ]]; then
             return 0

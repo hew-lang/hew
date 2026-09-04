@@ -1,0 +1,10 @@
+import "imported_hash_impl_honoured_lib.hew";
+
+fn main() {
+    let values: HashMap<ImportedHashKey, i64> = HashMap.new();
+    values.insert(ImportedHashKey { id: 1 }, 42);
+    println(match values.get(ImportedHashKey { id: 11 }) {
+        .Some(value) => value,
+        .None => -1,
+    });
+}

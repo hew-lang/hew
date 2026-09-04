@@ -1,0 +1,7 @@
+import "imported_eq_impl_honoured_lib.hew";
+
+fn main() {
+    let left = ImportedEqKey { primary: 7, ignored: 1 };
+    let right = ImportedEqKey { primary: 7, ignored: 99 };
+    println(left == right);
+}

@@ -5590,6 +5590,12 @@ grep -q 'UseAfterConsume' "${reject_output}"
 # or weak linkage!".
 run_check_run_expect_stdout file_import_trait_impl
 
+# Imported derived-trait implementations remain the selected behavioural
+# authority after module discovery. Both fixtures deliberately disagree with
+# their structural defaults.
+run_check_run_expect_stdout imported_eq_impl_honoured
+run_check_run_expect_stdout imported_hash_impl_honoured
+
 # Regression: a file-imported pub FREE function used both as a direct call and
 # as a first-class value must resolve to ONE body. The fourth-pass module-graph
 # walk used to re-lower it under the module-qualified spelling as well, so the

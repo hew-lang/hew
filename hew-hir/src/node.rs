@@ -483,6 +483,13 @@ pub struct HirActorDecl {
     /// derives the dotted registry key; root actors qualify to their bare
     /// name, so single-module programs see byte-identical symbols.
     pub defining_module: Option<String>,
+    /// Generic type parameters declared on the actor (`actor Worker<T>`).
+    ///
+    /// Names only, threaded verbatim from `ActorDecl::type_params`. MIR reads
+    /// it to tell a generic ORIGIN from a monomorphic actor: an origin's member
+    /// signatures may name a type parameter that has no `ValueClass` at the MIR
+    /// boundary, so nothing that would have to type one may be emitted for it.
+    pub type_params: Vec<String>,
     /// `let <name>: <ty>;` state fields declared in the actor body. Field
     /// ordering is source order; the runtime layout follows the same order.
     pub state_fields: Vec<HirField>,

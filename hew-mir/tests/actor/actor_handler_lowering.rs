@@ -198,6 +198,7 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
         declaration: hew_types::DefId::for_test(name),
         name: name.to_string(),
         defining_module: None,
+        type_params: vec![],
         state_fields: vec![HirField {
             name: "count".to_string(),
             ty: ResolvedTy::I64,

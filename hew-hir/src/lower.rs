@@ -15431,6 +15431,11 @@ impl LowerCtx {
             // genuine root actor still carries `None`. Package-module actors
             // use the same identity through `lower_imported_actor`.
             defining_module: decl_module.map(str::to_string),
+            type_params: decl
+                .type_params
+                .iter()
+                .map(|param| param.name.clone())
+                .collect(),
             state_fields,
             init,
             receive_handlers,

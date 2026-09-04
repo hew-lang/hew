@@ -335,6 +335,9 @@ pub(crate) fn actor_method_symbols(items: &[hew_hir::HirItem]) -> Vec<(hew_types
         let hew_hir::HirItem::Actor(actor) = item else {
             continue;
         };
+        if !actor.type_params.is_empty() {
+            continue;
+        }
         let base = actor_symbol_base(actor);
         for method in &actor.methods {
             symbols.push((
@@ -382,6 +385,18 @@ fn lower_actor_methods(
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Vec<LoweredFunction> {
     let mut lowered = Vec::new();
+    // A generic actor's ORIGIN declaration is not a body MIR can type: a method
+    // signature naming the actor's `<T>` has no `ValueClass` at the MIR
+    // boundary, the same way a generic origin `receive fn` does not. Emit
+    // nothing for it, so its declaration reaches no symbol map and a call fails
+    // closed at the MIR boundary rather than lowering an untypeable body.
+    // WHEN OBSOLETE: when a generic actor is monomorphised per instantiation
+    // the way a generic function is, and its members lower under the
+    // substitution. WHAT: an actor monomorphisation pass feeding this loop the
+    // instantiated declaration instead of the origin.
+    if !actor.type_params.is_empty() {
+        return lowered;
+    }
     for method in &actor.methods {
         let emit_name = mangle_actor_method(&actor_symbol_base(actor), &method.name);
         let duplicate_label = format!("actor `{}` fn `{}`", actor.name, method.name);

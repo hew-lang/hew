@@ -763,6 +763,47 @@ impl Builder {
                 if !copy_in {
                     self.transfer_typed_produced_value_owner(value.site, src, record_place);
                 }
+                // #3266 — a projection whose object IS an actor state field
+                // (`origin.y = v`, or the `self.origin.y = v` spelling) named
+                // the actor's own storage in the source, but `lower_value`
+                // above materialised that field through `ActorStateFieldLoad`,
+                // which byte-copies the field out of the state record into a
+                // frame local. The `RecordFieldStore` therefore landed on a
+                // copy and the handler's write was discarded at return, while
+                // whole-field replacement (`origin = …`, the depth-0
+                // `actor_state_field_for_target` hit at the top of `assign`)
+                // was unaffected. Publish the mutated value back through the
+                // same store authority the depth-0 path uses, so the one place
+                // that writes actor state stays the one place that writes
+                // actor state.
+                //
+                // The load's own/borrow classifier
+                // (`classify_actor_state_load_modes`) sees `record_place`
+                // escape as a whole value into this store and so leaves the
+                // load `Owned`: codegen clones the field on load, the field
+                // store mutates the clone, and the store-back releases the
+                // original. No aliasing of the released payload.
+                //
+                // SHORTCUT. WHY: actor state is an owning sink outside the MIR
+                // `Place` domain, so no place addresses `state.origin.y` and
+                // the write cannot be a GEP chain today; load-modify-store is
+                // the faithful write analog of the load-copy-then-project read
+                // path. WHEN: obsolete once a store carries a projection path
+                // into state (or a `Place` form resolves actor-state
+                // interiors), or once the COW spine makes the `Owned` load a
+                // refcount bump rather than a deep clone — the same horizon
+                // `ActorStateLoadMode`'s doc names. WHAT: one GEP-chain store
+                // that overwrites the leaf and releases only the leaf's old
+                // owner, with no whole-field clone.
+                if let Some((state_field_offset, _)) =
+                    self.actor_state_field_for_target(object.as_ref())
+                {
+                    self.push_instr(Instr::ActorStateFieldStore {
+                        field_offset: state_field_offset,
+                        src: record_place,
+                        handoff: ActorStateStoreHandoff::ConsumeSource,
+                    });
+                }
             }
             // `xs[i] = v` over a `Vec<T>` lowers to the same runtime call that
             // `xs.set(i, v)` emits.

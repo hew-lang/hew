@@ -1,0 +1,92 @@
+// #3266 — a write through a record-typed actor state field names the actor's
+// own storage, so it must survive the handler. Lowering materialises the state
+// field into a frame local before projecting into it, so the mutated value has
+// to be published back through the actor-state store; before that write-back
+// the handler mutated a copy and the assignment was silently discarded.
+//
+// Covers the three spellings that reach the same projection: the bare field
+// name, the `self.` receiver form (#3075), and compound assignment. The heap
+// leaf (`label`) is the counterweight to the scalar one: the store-back
+// releases the field's previous owner, so a mishandled write-back shows up as a
+// corrupted or freed string rather than a stale integer.
+type Named {
+    label: string,
+    n: i64,
+}
+
+actor Holder {
+    var cur: Named;
+
+    receive fn bump_bare() {
+        cur.n = cur.n + 1;
+    }
+
+    receive fn bump_self() {
+        self.cur.n = self.cur.n + 1;
+    }
+
+    receive fn bump_compound() {
+        cur.n += 1;
+    }
+
+    receive fn relabel(v: string) {
+        self.cur.label = v;
+    }
+
+    // Whole-field replacement never went through the projection path; it is
+    // here as the control that the write-back did not disturb it.
+    receive fn replace() {
+        cur = Named { label: "replaced", n: 100 };
+    }
+
+    receive fn get_n() -> i64 {
+        cur.n
+    }
+
+    receive fn get_label() -> string {
+        cur.label
+    }
+}
+
+fn main() {
+    let h = spawn Holder(cur: Named { label: "initial", n: 0 });
+
+    h.bump_bare();
+    h.bump_self();
+    h.bump_compound();
+    match await h.get_n() {
+        .Ok(v) => println(f"n={v}"),
+        .Err(_) => println("ask failed"),
+    }
+
+    h.relabel("relabelled");
+    match await h.get_label() {
+        .Ok(v) => println(f"label={v}"),
+        .Err(_) => println("ask failed"),
+    }
+
+    // Repeat the heap-leaf write so a leaked or double-released owner has more
+    // than one chance to surface.
+    for i in 0..16 {
+        h.relabel("churned");
+        h.bump_bare();
+    }
+    match await h.get_n() {
+        .Ok(v) => println(f"churned_n={v}"),
+        .Err(_) => println("ask failed"),
+    }
+    match await h.get_label() {
+        .Ok(v) => println(f"churned_label={v}"),
+        .Err(_) => println("ask failed"),
+    }
+
+    h.replace();
+    match await h.get_n() {
+        .Ok(v) => println(f"replaced_n={v}"),
+        .Err(_) => println("ask failed"),
+    }
+    match await h.get_label() {
+        .Ok(v) => println(f"replaced_label={v}"),
+        .Err(_) => println("ask failed"),
+    }
+}

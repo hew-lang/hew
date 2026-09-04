@@ -59,8 +59,8 @@ fn main() {
     let label = classify("alpha", "fallback");
     ledger.add(label.len());
     match string.to_int("7") {
-        .Some(amount) => ledger.add(amount),
-        .None => {},
+        .Ok(amount) => ledger.add(amount),
+        .Err(_) => {},
     }
     match await ledger.read() {
         .Ok(total) => println(total),

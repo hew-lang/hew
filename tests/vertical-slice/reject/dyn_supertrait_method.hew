@@ -1,0 +1,23 @@
+trait Base {
+    fn name(val: Self) -> string;
+}
+
+trait Derived: Base {}
+
+type Value {}
+
+impl Base for Value {
+    fn name(val: Value) -> string {
+        "value"
+    }
+}
+
+impl Derived for Value {}
+
+fn show(value: dyn Derived) {
+    println(value.name());
+}
+
+fn main() {
+    show(Value {});
+}

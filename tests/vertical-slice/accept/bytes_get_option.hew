@@ -1,0 +1,7 @@
+fn main() {
+    let data = bytes.new();
+    data.push(65);
+    let first = match data.get(0) { .Some(value) => value as i64, .None => -1, };
+    let missing = match data.get(1) { .Some(value) => value as i64, .None => -1, };
+    println(f"{first} {missing}");
+}

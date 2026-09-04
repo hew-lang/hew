@@ -5709,6 +5709,21 @@ run_accept_expect_stdout record_clone_independence
 # A returned dyn value must outlive the callee frame and dispatch correctly.
 run_check_run_expect_stdout dyn_trait_return
 
+# Error values retain exact `?` propagation while concrete implementations can
+# erase through the ordinary dyn-trait coercion path. The generic Result and
+# Option methods use non-legacy payload types.
+run_check_run_expect_stdout error_prelude_and_generic_methods
+run_check_run_expect_stdout bytes_get_option
+run_check_run_expect_stdout fixed_array_len
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/postfix_try_mismatched_error.hew" \
+    "error type mismatch" \
+    "postfix try keeps the existing exact-error mismatch"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/dyn_supertrait_method.hew" \
+    "E_DYN_SUPERTRAIT" \
+    "inherited dyn-trait methods are rejected before HIR lowering"
+
 # User-defined record `.clone()` on a record containing an opaque handle must be rejected.
 if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/record_clone_unclonable_field.hew" \

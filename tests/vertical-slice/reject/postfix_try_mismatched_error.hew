@@ -1,0 +1,9 @@
+type SourceError {}
+type TargetError {}
+
+fn mismatch() -> Result<i64, TargetError> {
+    let value: Result<i64, SourceError> = Err(SourceError {});
+    value?
+}
+
+fn main() {}

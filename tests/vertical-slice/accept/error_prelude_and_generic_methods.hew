@@ -1,0 +1,33 @@
+type Fault {
+    code: i64;
+}
+
+impl Display for Fault {
+    fn fmt(fault: Fault) -> string {
+        f"fault {fault.code}"
+    }
+}
+
+impl Error for Fault {}
+
+fn propagate_same_error() -> Result<string, Fault> {
+    let value: Result<string, Fault> = Ok("ready");
+    value?
+}
+
+fn erase_fault() -> dyn Error {
+    Fault { code: 9 }
+}
+
+fn main() {
+    let failed: Result<string, i64> = Err(7);
+    let remapped: Result<string, bool> = failed.map_err(|code: i64| code == 7);
+    let remapped_value = match remapped { .Err(value) => value, .Ok(_) => false, };
+    let present: Result<char, string> = Ok('q');
+    let expected_char = present.expect("char should be present");
+    let converted_char = Some('x').ok_or("missing char").expect("option should contain a char");
+    let expected_bool = Some(false).expect("bool should be present");
+    let propagated = propagate_same_error().expect("same error should propagate");
+    let boxed = erase_fault();
+    println(f"{propagated} {remapped_value} {expected_char} {converted_char} {expected_bool}");
+}

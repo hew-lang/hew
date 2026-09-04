@@ -1,0 +1,4 @@
+fn main() {
+    let values: [i64; 3] = [10, 20, 30];
+    println(values.len());
+}

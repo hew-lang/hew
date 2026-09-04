@@ -1340,8 +1340,8 @@ hew-suite)
     run_hew_suite
     ;;
 stdlib)
-    EXPECTED_FAILURES_FILE="${EXPECTED_FAILURES_FILE:-$REPO_ROOT/scripts/stdlib-expected-failures.txt}"
-    RATCHET_ALL_PASS_TEXT="All stdlib files pass type-check. Remove entries from expected-failures file."
+    EXPECTED_FAILURES_FILE="${EXPECTED_FAILURES_FILE:-/dev/null}"
+    RATCHET_ALL_PASS_TEXT="All stdlib files pass type-check."
     RATCHET_LIST_TRACKED=1
     RATCHET_DIAGNOSTIC_FN=stdlib_diagnostic
     RATCHET_UNEXPECTED_HELP="  To accept these as known failures, add them to:

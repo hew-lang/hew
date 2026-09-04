@@ -87,7 +87,7 @@ directly and does not define a competing build graph. See the
 | Suite             | Command                       | Scope                                                                                                                             | Speed  |
 | ----------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------ |
 | Full (default)    | `make test`                   | Rust workspace (via nextest)                                                                                                      | medium |
-| Stdlib type-check | `make test-stdlib-ratchet`    | `std/` type-check sweep, ratcheted against `scripts/stdlib-expected-failures.txt`                                                 | medium |
+| Stdlib type-check | `make test-stdlib-ratchet`    | `std/` type-check sweep; unexpected failures are fatal                                                                            | medium |
 | Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers                                                                                           | medium |
 | Runtime (no-net)  | `make test-runtime-unit`      | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile)                                      | fast   |
 | Hew test files    | `make test-hew-ratchet`       | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt`                                          | medium |

@@ -370,14 +370,6 @@ jobs:
           report_paths: "${{ runner.temp }}/compiled-hew-published/*.xml"
           check_name: Compiled Hew Test Results
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # Size ratchet — per-crate wc -l against scripts/size-ratchet.tsv
-  # ceilings (#3296). Informational, not a branch-protection job: unlike
-  # `lint`, a red crate here (hew-pkg is, pending V060-FD-5's index.rs
-  # deletion) must stay visible without blocking every PR on main. wc -l
-  # over tracked source needs no build, so this runs standalone rather
-  # than depending on compiled-hew-linux like the journeys jobs above.
-  # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Linux gates (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04

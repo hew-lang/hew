@@ -250,6 +250,7 @@ pub enum EntryExitAction {
     Unit,
     Integer(EntryIntegerType),
     Result {
+        result_ty: ResolvedTy,
         error_ty: ResolvedTy,
         display: EntryDisplayTarget,
     },

@@ -7021,6 +7021,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         emit_wasm_runtime_exit: false,
         emit_lambda_drain_epilogue: false,
         emit_process_exit_status_epilogue: false,
+        process_entry_action: None,
         target_data: &harness.target_data,
         builder,
         representation_loan_params: &harness.representation_loan_params,
@@ -13299,9 +13300,8 @@ fn crash_abi_fourth_parameter_is_source_origin_gated() {
         kind: ActorHandlerKind::Crash,
         actor_layout_key: "CrashStateActor".to_string(),
     });
-    let exact_symbol =
-        declare_function(&ctx, &llvm_mod, &target_data, &exact, &layouts, &[], false)
-            .expect("declare proven crash handler");
+    let exact_symbol = declare_function(&ctx, &llvm_mod, &target_data, &exact, &layouts, &[], None)
+        .expect("declare proven crash handler");
     let (exact_fn, _, _) = exact_symbol
         .real(&exact.name, "crash source-origin test")
         .expect("real exact crash symbol");
@@ -13313,9 +13313,8 @@ fn crash_abi_fourth_parameter_is_source_origin_gated() {
 
     let mut spoof = crash_state_probe_fn(SourceOrigin::Unknown);
     spoof.name = "NameOnly__on_crash".to_string();
-    let spoof_symbol =
-        declare_function(&ctx, &llvm_mod, &target_data, &spoof, &layouts, &[], false)
-            .expect("declare name-only actor handler");
+    let spoof_symbol = declare_function(&ctx, &llvm_mod, &target_data, &spoof, &layouts, &[], None)
+        .expect("declare name-only actor handler");
     let (spoof_fn, _, _) = spoof_symbol
         .real(&spoof.name, "crash source-origin test")
         .expect("real spoof symbol");
@@ -16538,7 +16537,7 @@ fn dispatch_trampoline_fails_closed_on_uncarried_predicate() {
         &handler_fn,
         &record_layouts,
         &[],
-        false,
+        None,
     )
     .expect("declare synthetic handler");
     fn_symbols.insert(symbol.to_string(), sym);
@@ -16629,7 +16628,7 @@ fn actor_dispatch_channels_are_split_and_the_system_payloads_are_bounds_checked(
         &handler_fn,
         &record_layouts,
         &[],
-        false,
+        None,
     )
     .expect("declare synthetic handler");
     fn_symbols.insert(symbol.to_string(), sym);

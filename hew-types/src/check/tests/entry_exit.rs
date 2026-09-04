@@ -68,9 +68,21 @@ fn result_main_carries_resolved_display_declaration() {
         .entry_exit_plan
         .as_ref()
         .expect("Result main must publish an exit plan");
-    let EntryExitAction::Result { error_ty, display } = &plan.action else {
+    let EntryExitAction::Result {
+        result_ty,
+        error_ty,
+        display,
+    } = &plan.action
+    else {
         panic!("expected Result exit plan, got {:?}", plan.action);
     };
+    assert!(matches!(
+        result_ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Result),
+            ..
+        }
+    ));
     assert_eq!(error_ty.user_facing().to_string(), "AppError");
     assert!(
         output

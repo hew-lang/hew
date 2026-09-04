@@ -942,7 +942,7 @@ fn coro_substrate_round_trips_value_wasm32() {
     let main = module
         .get_function("main")
         .expect("coroutine substrate defines main");
-    emit_wasi_entry_adapter(&ctx, &module, main, false)
+    emit_wasi_entry_adapter(&ctx, &module, main)
         .expect("emit canonical WASI runtime entry adapter");
     module.set_triple(&machine.get_triple());
     module.set_data_layout(&machine.get_target_data().get_data_layout());

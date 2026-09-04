@@ -1284,6 +1284,7 @@ impl Checker {
             return None;
         };
 
+        let resolved_return_type = ResolvedTy::from_ty(&return_type).ok();
         let action = match return_type {
             Ty::Unit => EntryExitAction::Unit,
             integer if EntryIntegerType::from_ty(&integer).is_some() => {
@@ -1325,6 +1326,7 @@ impl Checker {
                     _ => Vec::new(),
                 };
                 EntryExitAction::Result {
+                    result_ty: resolved_return_type?,
                     error_ty: resolved_error_ty,
                     display: EntryDisplayTarget {
                         declaration: display_declaration,

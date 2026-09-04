@@ -5556,4 +5556,28 @@ machine Socket {
         );
         assert_eq!(roundtrip(&formatted), formatted);
     }
+
+    #[test]
+    fn impl_block_doc_comment_is_preserved() {
+        let src = "\
+enum Foo {
+    A;
+}
+
+/// Doc comment for Foo Display.
+impl Display for Foo {
+    fn fmt(f: Foo) -> string {
+        match f {
+            .A => \"a\",
+        }
+    }
+}
+";
+        let formatted = roundtrip(src);
+        assert!(
+            formatted.contains("/// Doc comment for Foo Display."),
+            "doc comment on an impl block must survive formatting; got:\n{formatted}"
+        );
+        assert_eq!(roundtrip(&formatted), formatted);
+    }
 }

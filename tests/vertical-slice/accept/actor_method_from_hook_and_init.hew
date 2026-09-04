@@ -1,6 +1,5 @@
 // `init` and an `#[on(start)]` hook reach the same actor method a handler
-// does, and a method that WRITES state works from all three: the caller's
-// state-cleanup phase, not the method's, decides the store transaction (#3285).
+// does, including when the method writes the actor's state (#3285).
 actor Greeter {
     var greeting: string = "";
     var greeted: i64 = 0;

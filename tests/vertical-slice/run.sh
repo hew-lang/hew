@@ -1001,11 +1001,11 @@ run_accept_expect_stdout "init_suspension_resumes"
 
 # An actor-body plain `fn` is a callable (#3285): reachable by bare name from a
 # handler with the handler's own state access, from a sibling method, and from
-# `init` and an `#[on(start)]` hook — including when it WRITES state, where the
-# caller's dispatch phase decides the store transaction. The qualified
-# `Actor.method` spelling inside the actor resolves to the same declaration.
-# Exact-stdout oracles: the counterfactual (no MIR body, or the method's own
-# static transaction) is a compile refusal or a runtime trap, never wrong output.
+# `init` and an `#[on(start)]` hook — including when it writes state. The
+# qualified `Actor.method` spelling inside the actor resolves to the same
+# declaration.
+# Exact-stdout oracles: the counterfactual (no MIR body or no explicit state
+# parameter) is a compile refusal or a runtime trap, never wrong output.
 run_accept_expect_stdout "actor_method_bare_call"
 run_accept_expect_stdout "actor_method_calls_sibling_and_reads_state"
 run_accept_expect_stdout "actor_method_from_hook_and_init"

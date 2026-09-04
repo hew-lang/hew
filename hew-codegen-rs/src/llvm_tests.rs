@@ -86,6 +86,66 @@ fn actor_state_transaction_classifier_is_explicit_for_every_handler_phase() {
 }
 
 #[test]
+fn actor_method_llvm_header_matches_declared_params() {
+    let source = r"
+actor Counter {
+    var count: i64 = 0;
+    fn helper(step: i64) -> i64 { count + step }
+    receive fn bump() { count = helper(1); }
+}
+fn main() { let counter = spawn Counter(count: 0); counter.bump(); }
+";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    assert!(
+        checked.errors.is_empty(),
+        "type errors: {:#?}",
+        checked.errors
+    );
+    let hir = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        hir.diagnostics
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&hir.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let ctx = Context::create();
+    let module = build_module(&ctx, &pipeline, "actor_method_header")
+        .expect("actor method module must build");
+    let method = module
+        .get_function("Counter__fn__helper")
+        .expect("actor method LLVM function");
+    let params = method.get_type().get_param_types();
+    assert_eq!(
+        params.len(),
+        3,
+        "actor method ABI must be exactly (ctx, state, <user params>): {}",
+        method.print_to_string()
+    );
+    assert!(params[0].is_pointer_type() && params[1].is_pointer_type());
+    assert!(params[2].is_int_type());
+}
+
+#[test]
 fn owned_config_field_collections_are_fail_closed_backstop() {
     // #2238 item 1: collection kinds must take the same typed error path
     // used by the init thunk, rather than reaching clone_helper_for_kind's
@@ -6983,7 +7043,6 @@ fn make_test_fn_ctx<'a, 'ctx>(
         // Composite-helper unit tests never exercise the P5-RX receive
         // borrow path; carry the inert defaults.
         borrow_mode: None,
-        actor_state_transaction_gate: None,
         borrow_tainted: HashSet::new(),
         borrow_drop_tainted: HashSet::new(),
         // Composite-helper unit tests never lower a `Terminator::Suspend`;

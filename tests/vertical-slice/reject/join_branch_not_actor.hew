@@ -3,10 +3,10 @@
 //
 // `rx.recv()` is a channel receive — valid as a `select` arm source, but NOT a
 // valid `join` branch (a channel is not an actor). The branch carries no
-// actor-ask dispatch, so the join-specific branch validator rejects it at CHECK
-// time with `JoinBranchNotActorAsk` — never a silent `Unit` lowering and never
-// a late MIR error. This is the CONSUMED form (`let v = join { ... }`); the
-// discarded form is rejected identically.
+// actor-ask dispatch, so the checker rejects it at CHECK time with the exact
+// message `join expression element must be actor.method(args)` — never a
+// silent `Unit` lowering and never a late MIR error. This is the CONSUMED form
+// (`let v = join { ... }`); the discarded form is rejected identically.
 import std.channel.channel;
 
 fn main() -> i64 {

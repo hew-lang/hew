@@ -39431,13 +39431,14 @@ impl Widget {
 
     #[test]
     fn missing_checker_type_fact_is_a_typed_boundary_error() {
-        let parsed = hew_parser::parse(
-            r#"
+        let source = r#"
             fn main() {
                 let value = "owned";
             }
-            "#,
-        );
+            "#;
+        let literal_start = source.find("\"owned\"").expect("string literal");
+        let literal_span = literal_start..literal_start + "\"owned\"".len();
+        let parsed = hew_parser::parse(source);
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:#?}",
@@ -39469,11 +39470,19 @@ impl Widget {
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
                 HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
-                    if name == "expression value class"
+                    if diagnostic.span == literal_span
+                        && name == "expression value class"
                         && reason == "type_facts has no row for checker-resolved expression type"
             )),
             "missing checker type fact must emit a typed boundary diagnostic: {:#?}",
             lowered.diagnostics
+        );
+        assert!(
+            matches!(
+                first_let_value(function_named(&lowered, "main")).kind,
+                HirExprKind::Unsupported(_)
+            ),
+            "expression without checker type facts must not enter downstream lowering"
         );
         assert!(
             lowered.into_result().is_err(),
@@ -39483,13 +39492,14 @@ impl Widget {
 
     #[test]
     fn published_checker_type_fact_allows_hir_lowering() {
-        let parsed = hew_parser::parse(
-            r#"
+        let source = r#"
             fn main() {
                 let value = "owned";
             }
-            "#,
-        );
+            "#;
+        let literal_start = source.find("\"owned\"").expect("string literal");
+        let literal_span = literal_start..literal_start + "\"owned\"".len();
+        let parsed = hew_parser::parse(source);
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:#?}",
@@ -39520,13 +39530,15 @@ impl Widget {
             !lowered.diagnostics.iter().any(|diagnostic| matches!(
                 diagnostic.kind,
                 HirDiagnosticKind::CheckerBoundaryViolation { .. }
+                    if diagnostic.span == literal_span
             )),
             "published checker type fact must cross into HIR: {:#?}",
             lowered.diagnostics
         );
-        assert!(
-            lowered.into_result().is_ok(),
-            "published checker type fact must allow HIR lowering"
+        assert_eq!(
+            first_let_value(function_named(&lowered, "main")).value_class,
+            ValueClass::CowValue,
+            "published checker type fact must classify the authored expression"
         );
     }
 

@@ -43,9 +43,13 @@ fn main() {
     value.close();
     println(child.get_int());
 
-    // An invalid parent still consumes the child transfer.
-    let invalid = yaml.parse("[");
-    invalid.with("child", yaml.from_int(1));
-    invalid.free();
+    // A parse failure returns no parent owner to mutate or free.
+    match yaml.parse("[") {
+        .Ok(value) => {
+            value.free();
+            panic("malformed YAML unexpectedly parsed");
+        },
+        .Err(_) => {},
+    }
     early_exit(true);
 }

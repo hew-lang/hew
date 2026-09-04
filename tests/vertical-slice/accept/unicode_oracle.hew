@@ -12,12 +12,44 @@ fn main() {
     println(f"punct_pi={unicode.is_punct(0x2018)} punct_pf={unicode.is_punct(0x2019)} punct_po={unicode.is_punct(0x589)} punct_astral={unicode.is_punct(0x10100)}");
     println(f"punct_sm={unicode.is_punct(0x2B)} punct_sc={unicode.is_punct(0x24)} punct_surrogate={unicode.is_punct(0xD800)} punct_wrapped={unicode.is_punct(4294967329)}");
     println(f"title_a={unicode.to_title(97)} title_eacute={unicode.to_title(233)} title_digit={unicode.to_title(49)}");
-    println(f"rune_len={unicode.rune_len(65)},{unicode.rune_len(233)},{unicode.rune_len(26085)},{unicode.rune_len(128578)}");
+    let ascii_width = match unicode.rune_len(65) {
+        .Ok(width) => width,
+        .Err(reason) => panic(reason),
+    };
+    let latin_width = match unicode.rune_len(233) {
+        .Ok(width) => width,
+        .Err(reason) => panic(reason),
+    };
+    let cjk_width = match unicode.rune_len(26085) {
+        .Ok(width) => width,
+        .Err(reason) => panic(reason),
+    };
+    let emoji_width = match unicode.rune_len(128578) {
+        .Ok(width) => width,
+        .Err(reason) => panic(reason),
+    };
+    println(f"rune_len={ascii_width},{latin_width},{cjk_width},{emoji_width}");
     let text = "Aé日🙂";
     let rs = unicode.runes(text);
     println(f"rune_count={unicode.rune_count(text)} runes_len={rs.len()}");
     println(f"runes={rs[0]},{rs[1]},{rs[2]},{rs[3]}");
-    println(f"codepoint_at={unicode.codepoint_at(text, 0).unwrap_or(-1)},{unicode.codepoint_at(text, 1).unwrap_or(-1)},{unicode.codepoint_at(text, 2).unwrap_or(-1)},{unicode.codepoint_at(text, 3).unwrap_or(-1)}");
+    let first = match unicode.codepoint_at(text, 0) {
+        .Ok(codepoint) => codepoint,
+        .Err(reason) => panic(reason),
+    };
+    let second = match unicode.codepoint_at(text, 1) {
+        .Ok(codepoint) => codepoint,
+        .Err(reason) => panic(reason),
+    };
+    let third = match unicode.codepoint_at(text, 2) {
+        .Ok(codepoint) => codepoint,
+        .Err(reason) => panic(reason),
+    };
+    let fourth = match unicode.codepoint_at(text, 3) {
+        .Ok(codepoint) => codepoint,
+        .Err(reason) => panic(reason),
+    };
+    println(f"codepoint_at={first},{second},{third},{fourth}");
     let empty_text = "";
     let empty = unicode.runes(empty_text);
     println(f"empty_rune_count={unicode.rune_count(empty_text)} empty_runes_len={empty.len()}");

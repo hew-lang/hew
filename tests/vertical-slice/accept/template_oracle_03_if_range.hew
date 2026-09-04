@@ -8,6 +8,9 @@ fn main() {
     colours.push("blue");
     template.ctx_set_list(ctx, "colours", colours);
 
-    let t = template.parse("{{if .show}}{{range .colours}}[{{.}}]{{end}}{{else}}hidden{{end}}");
+    let t = match template.parse("{{if .show}}{{range .colours}}[{{.}}]{{end}}{{else}}hidden{{end}}") {
+        .Ok(template) => template,
+        .Err(_) => panic("valid template failed to parse"),
+    };
     println(template.render_template(t, ctx));
 }

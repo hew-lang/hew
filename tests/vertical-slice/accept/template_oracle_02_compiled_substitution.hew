@@ -5,6 +5,9 @@ fn main() {
     template.ctx_set_str(ctx, "name", "Grace");
     template.ctx_set_int(ctx, "count", 3);
 
-    let t = template.parse("{{.name}} has {{.count}} jobs");
+    let t = match template.parse("{{.name}} has {{.count}} jobs") {
+        .Ok(template) => template,
+        .Err(_) => panic("valid template failed to parse"),
+    };
     println(template.render_template(t, ctx));
 }

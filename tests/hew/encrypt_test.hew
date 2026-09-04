@@ -29,10 +29,13 @@ fn tamper_last_byte(ciphertext: bytes) -> bytes {
 }
 
 #[test]
-fn test_try_open_roundtrip_succeeds() {
+fn test_open_roundtrip_succeeds() {
     let seal_key = test_key();
     let open_key = test_key();
-    let ciphertext = encrypt.seal(seal_key, "hew survives");
+    let ciphertext = match encrypt.seal(seal_key, "hew survives") {
+        .Ok(ciphertext) => ciphertext,
+        .Err(error) => panic(to_string(error)),
+    };
     match encrypt.open(open_key, ciphertext) {
         .Ok(plaintext) => testing.assert_eq_str(plaintext, "hew survives"),
         .Err(err) => panic(f"try_open unexpectedly failed: {err}"),
@@ -40,10 +43,13 @@ fn test_try_open_roundtrip_succeeds() {
 }
 
 #[test]
-fn test_try_open_tampered_ciphertext_returns_err_and_survives() {
+fn test_open_tampered_ciphertext_returns_err_and_survives() {
     let seal_key = test_key();
     let open_key = test_key();
-    let ciphertext = encrypt.seal(seal_key, "hew survives tamper");
+    let ciphertext = match encrypt.seal(seal_key, "hew survives tamper") {
+        .Ok(ciphertext) => ciphertext,
+        .Err(error) => panic(to_string(error)),
+    };
     let tampered = tamper_last_byte(ciphertext);
     var survived = false;
     match encrypt.open(open_key, tampered) {
@@ -63,7 +69,7 @@ fn test_try_open_tampered_ciphertext_returns_err_and_survives() {
 
 // ── #37: an unusable key is reported, not fatal at the FFI boundary ───
 #[test]
-fn test_try_seal_rejects_a_short_key() {
+fn test_seal_rejects_a_short_key() {
     match encrypt.seal("too-short".to_bytes(), "hew") {
         .Ok(ciphertext) => panic(f"expected a short key to be rejected, got {ciphertext.len()} bytes"),
         .Err(err) => testing.assert_eq_str(to_string(err), "encrypt key must be 32 bytes"),
@@ -71,7 +77,7 @@ fn test_try_seal_rejects_a_short_key() {
 }
 
 #[test]
-fn test_try_seal_rejects_an_empty_key() {
+fn test_seal_rejects_an_empty_key() {
     match encrypt.seal("".to_bytes(), "hew") {
         .Ok(ciphertext) => panic(f"expected an empty key to be rejected, got {ciphertext.len()} bytes"),
         .Err(err) => testing.assert_eq_str(to_string(err), "encrypt key must be 32 bytes"),
@@ -79,7 +85,7 @@ fn test_try_seal_rejects_an_empty_key() {
 }
 
 #[test]
-fn test_try_seal_rejects_an_oversized_key() {
+fn test_seal_rejects_an_oversized_key() {
     let long_key = "an oversized key of forty-eight ascii bytes!!!!!".to_bytes();
     match encrypt.seal(long_key, "hew") {
         .Ok(ciphertext) => panic(f"expected a 48-byte key to be rejected, got {ciphertext.len()} bytes"),
@@ -88,7 +94,7 @@ fn test_try_seal_rejects_an_oversized_key() {
 }
 
 #[test]
-fn test_try_seal_preserves_a_valid_roundtrip() {
+fn test_seal_preserves_a_valid_roundtrip() {
     match encrypt.seal(test_key(), "hew round trip") {
         .Ok(ciphertext) => {
             match encrypt.open(test_key(), ciphertext) {
@@ -101,7 +107,7 @@ fn test_try_seal_preserves_a_valid_roundtrip() {
 }
 
 #[test]
-fn test_try_seal_of_empty_plaintext_is_not_an_empty_ciphertext() {
+fn test_seal_of_empty_plaintext_is_not_an_empty_ciphertext() {
     // An empty plaintext still seals to a nonce plus a GCM tag, so an empty
     // result would be a fabricated success rather than a valid empty value.
     match encrypt.seal(test_key(), "") {
@@ -117,7 +123,7 @@ fn test_try_seal_of_empty_plaintext_is_not_an_empty_ciphertext() {
 }
 
 #[test]
-fn test_try_seal_status_does_not_leak_into_the_next_seal() {
+fn test_seal_status_does_not_leak_into_the_next_seal() {
     match encrypt.seal("short".to_bytes(), "hew") {
         .Ok(_) => panic("expected a short key to be rejected"),
         .Err(_) => {},
@@ -129,9 +135,11 @@ fn test_try_seal_status_does_not_leak_into_the_next_seal() {
 }
 
 #[test]
-#[should_panic]
-fn test_seal_panics_at_legacy_boundary_on_a_short_key() {
-    let _ = encrypt.seal("short".to_bytes(), "hew");
+fn test_seal_returns_err_for_a_short_key() {
+    match encrypt.seal("short".to_bytes(), "hew") {
+        .Ok(_) => panic("short key unexpectedly succeeded"),
+        .Err(error) => testing.assert_eq_str(to_string(error), "encrypt key must be 32 bytes"),
+    }
 }
 
 #[test]

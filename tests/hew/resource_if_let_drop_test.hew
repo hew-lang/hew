@@ -18,7 +18,11 @@ fn test_if_let_resource_can_close_explicitly() {
         sink.write("rc1");
         sink.close();
     }
-    testing.assert_eq_str(fs.read(path), "rc1");
+    let contents = match fs.read(path) {
+        .Ok(contents) => contents,
+        .Err(_) => panic("expected resource output"),
+    };
+    testing.assert_eq_str(contents, "rc1");
     cleanup(path);
 }
 
@@ -27,7 +31,11 @@ fn test_if_let_resource_empty_body_drops_at_scope_exit() {
     let path = "tests/hew/_resource_if_let_drop.txt";
     cleanup(path);
     if let .Ok(sink) = stream.to_file(path) {}
-    testing.assert_eq_str(fs.read(path), "");
+    let contents = match fs.read(path) {
+        .Ok(contents) => contents,
+        .Err(_) => panic("expected resource output"),
+    };
+    testing.assert_eq_str(contents, "");
     cleanup(path);
 }
 
@@ -42,7 +50,11 @@ fn test_match_resource_can_close_explicitly() {
         },
         .Err(_) => panic("expected file sink"),
     }
-    testing.assert_eq_str(fs.read(path), "match");
+    let contents = match fs.read(path) {
+        .Ok(contents) => contents,
+        .Err(_) => panic("expected resource output"),
+    };
+    testing.assert_eq_str(contents, "match");
     cleanup(path);
 }
 
@@ -55,7 +67,11 @@ fn test_while_let_resource_can_close_explicitly() {
         sink.close();
         break;
     }
-    testing.assert_eq_str(fs.read(path), "while");
+    let contents = match fs.read(path) {
+        .Ok(contents) => contents,
+        .Err(_) => panic("expected resource output"),
+    };
+    testing.assert_eq_str(contents, "while");
     cleanup(path);
 }
 
@@ -116,6 +132,10 @@ fn test_if_let_resource_can_be_returned() {
         },
         .Err(_) => panic("expected file sink"),
     }
-    testing.assert_eq_str(fs.read(path), "returned");
+    let contents = match fs.read(path) {
+        .Ok(contents) => contents,
+        .Err(_) => panic("expected resource output"),
+    };
+    testing.assert_eq_str(contents, "returned");
     cleanup(path);
 }

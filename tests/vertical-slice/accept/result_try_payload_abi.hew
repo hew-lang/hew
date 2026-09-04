@@ -26,7 +26,10 @@ fn _boxed_chain() -> Result<Box<string>, string> {
 }
 
 fn _json_source(text: string) -> Result<json.Value, string> {
-    Ok(json.parse(text))
+    match json.parse(text) {
+        .Ok(value) => Ok(value),
+        .Err(_) => Err("JSON parse failed"),
+    }
 }
 
 fn _json_chain(text: string) -> Result<json.Value, string> {
@@ -35,7 +38,10 @@ fn _json_chain(text: string) -> Result<json.Value, string> {
 }
 
 fn _option_source(text: string) -> Option<json.Value> {
-    Some(json.parse(text))
+    match json.parse(text) {
+        .Ok(value) => Some(value),
+        .Err(_) => None,
+    }
 }
 
 fn _option_chain(text: string) -> Option<json.Value> {

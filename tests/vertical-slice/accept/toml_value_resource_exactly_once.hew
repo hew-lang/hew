@@ -43,9 +43,13 @@ fn main() {
     value.close();
     println(child.get_int());
 
-    // An invalid parent still consumes the child transfer.
-    let invalid = toml.parse("=");
-    invalid.with("child", toml.from_int(1));
-    invalid.free();
+    // A parse failure returns no parent owner to mutate or free.
+    match toml.parse("=") {
+        .Ok(value) => {
+            value.free();
+            panic("malformed TOML unexpectedly parsed");
+        },
+        .Err(_) => {},
+    }
     early_exit(true);
 }

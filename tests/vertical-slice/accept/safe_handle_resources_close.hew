@@ -36,7 +36,10 @@ fn main() -> i64 {
     schedule.close();
     let parsed_url = url.parse("https://example.com");
     parsed_url.close();
-    let node = xml.parse("<root/>");
+    let node = match xml.parse("<root/>") {
+        .Ok(node) => node,
+        .Err(reason) => panic(reason),
+    };
     node.close();
     0
 }

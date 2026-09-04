@@ -362,7 +362,7 @@ def wasm_public_programs(
                 (
                     "internal-wrapper",
                     "import std.channel;\n"
-                    f'fn main() {{ let (sender, receiver): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1); println("{witness}"); }}\n',
+                    f'fn main() {{ let result: Result<(channel.Sender<i64>, channel.Receiver<i64>), string> = channel.new(1); match result {{ .Ok((sender, receiver)) => println("{witness}"), .Err(error) => panic(error), }} }}\n',
                 ),
             ),
         ),
@@ -417,7 +417,7 @@ def wasm_public_programs(
                 (
                     "boundary",
                     "import std.fs;\n"
-                    f'fn main() {{ let result = fs.try_read("/dev/null"); println("{witness}"); }}\n',
+                    f'fn main() {{ let result = fs.read("/dev/null"); match result {{ .Ok(_) => println("{witness}"), .Err(error) => panic(f"{{error}}"), }} }}\n',
                 ),
             ),
         ),
@@ -527,7 +527,7 @@ def wasm_public_programs(
                 (
                     "boundary",
                     "import std.process;\n"
-                    f'fn main() {{ let result = process.try_run("true"); println("{witness}"); }}\n',
+                    f'fn main() {{ let result = process.run("true"); match result {{ .Ok(_) => println("{witness}"), .Err(error) => panic(f"{{error}}"), }} }}\n',
                 ),
             ),
         ),

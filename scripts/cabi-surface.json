@@ -1296,6 +1296,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_ask_error_translate_for_public_result( i32) -> i32",
+        "wasm32-wasip1": "fn hew_ask_error_translate_for_public_result( i32) -> i32"
+      },
+      "symbol": "hew_ask_error_translate_for_public_result"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",

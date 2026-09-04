@@ -306,13 +306,19 @@ fn parse_error_message() -> string {
         hew_json_last_error()
     }
 }
+
+fn parse_value(s: string) -> Value {
+    unsafe {
+        hew_json_parse(s)
+    }
+}
 /// Parse a JSON string into a `Value`.
 ///
 /// Returns `Err(ParseError.Invalid(message))` with the native parser message
 /// when parsing fails. Match on `ParseError.Invalid(message)` to recover the
 /// original parser message.
 pub fn parse(s: string) -> Result<Value, ParseError> {
-    let val = parse(s);
+    let val = parse_value(s);
     if val.type_of() >= 0 {
         Ok(val)
     } else {

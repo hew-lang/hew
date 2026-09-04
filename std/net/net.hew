@@ -234,8 +234,8 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
         return Err(endpoint_reject(context, addr, "empty port"));
     }
     match string.to_int(text) {
-        .Some(port) => port_arg(context, port),
-        .None => Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
+        .Ok(port) => port_arg(context, port),
+        .Err(_) => Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
     }
 }
 

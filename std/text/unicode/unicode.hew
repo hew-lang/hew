@@ -313,6 +313,10 @@ pub fn to_lower(cp: i64) -> i64 {
 pub fn to_title(cp: i64) -> i64 {
     to_upper(cp)
 }
+fn codepoint_at_option(s: string, i: i64) -> Option<i64> {
+    s.codepoint_at_utf8(i)
+}
+
 /// Return the Unicode codepoint at codepoint-index `i`, or an error.
 ///
 /// # Examples
@@ -326,7 +330,7 @@ pub fn to_title(cp: i64) -> i64 {
 /// }
 /// ```
 pub fn codepoint_at(s: string, i: i64) -> Result<i64, string> {
-    match codepoint_at(s, i) {
+    match codepoint_at_option(s, i) {
         .Some(cp) => Ok(cp),
         .None => Err("unicode.codepoint_at: index out of bounds"),
     }

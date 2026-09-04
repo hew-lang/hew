@@ -33,9 +33,7 @@ pub fn now_secs() -> i64 {
 ///
 /// Returns `Err(string)` when the epoch or format string is invalid.
 pub fn format(epoch_ms: i64, fmt: string) -> Result<string, string> {
-    let formatted = unsafe {
-        hew_datetime_format(epoch_ms as i64, fmt)
-    };
+    let formatted = format_raw(epoch_ms, fmt);
     let err = datetime_error_message();
     if err.len() == 0 {
         Ok(formatted)
@@ -47,6 +45,12 @@ pub fn format(epoch_ms: i64, fmt: string) -> Result<string, string> {
 fn datetime_error_message() -> string {
     unsafe {
         hew_datetime_last_error()
+    }
+}
+
+fn format_raw(epoch_ms: i64, fmt: string) -> string {
+    unsafe {
+        hew_datetime_format(epoch_ms as i64, fmt)
     }
 }
 
@@ -150,7 +154,7 @@ pub fn diff_secs(a: i64, b: i64) -> i64 {
 /// }
 /// ```
 pub fn to_iso8601(epoch_ms: i64) -> string {
-    format(epoch_ms, "%Y-%m-%dT%H:%M:%SZ")
+    format_raw(epoch_ms, "%Y-%m-%dT%H:%M:%SZ")
 }
 
 /// Return the current monotonic clock time in nanoseconds.

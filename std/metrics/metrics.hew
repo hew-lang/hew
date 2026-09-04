@@ -191,16 +191,6 @@ impl HistogramMethods for Histogram {
 ///     hits.inc();
 /// }
 /// ```
-pub fn counter(name: string) -> Counter {
-    let id = unsafe {
-        hew_metric_counter_register(name)
-    };
-    if id < 0 {
-        panic(f"metrics.counter: registration rejected for `{name}`");
-    }
-    Counter { id: id }
-}
-
 /// Register (or get) a counter named `name`, returning a structured error if
 /// the registry rejects the name.
 pub fn counter(name: string) -> Result<Counter, MetricsError> {
@@ -218,16 +208,6 @@ pub fn counter(name: string) -> Result<Counter, MetricsError> {
 ///
 /// Panics if the name is rejected by the registry. Use [`gauge`] for a
 /// recoverable result.
-pub fn gauge(name: string) -> Gauge {
-    let id = unsafe {
-        hew_metric_gauge_register(name)
-    };
-    if id < 0 {
-        panic(f"metrics.gauge: registration rejected for `{name}`");
-    }
-    Gauge { id: id }
-}
-
 /// Register (or get) a gauge named `name`, returning a structured error if the
 /// registry rejects the name.
 pub fn gauge(name: string) -> Result<Gauge, MetricsError> {
@@ -249,16 +229,6 @@ pub fn gauge(name: string) -> Result<Gauge, MetricsError> {
 /// The histogram records observations; the scrape exposes the running count
 /// and sum as `name_count` / `name_sum`. Custom bucket upper bounds (the
 /// `name_bucket` lines) arrive in a later release.
-pub fn histogram(name: string) -> Histogram {
-    let id = unsafe {
-        hew_metric_histogram_register_simple(name)
-    };
-    if id < 0 {
-        panic(f"metrics.histogram: registration rejected for `{name}`");
-    }
-    Histogram { id: id }
-}
-
 /// Register (or get) a histogram named `name`, returning a structured error if
 /// the registry rejects the name.
 pub fn histogram(name: string) -> Result<Histogram, MetricsError> {

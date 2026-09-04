@@ -10,7 +10,10 @@ import std.stream;
 
 actor Pipeline {
     receive fn run() -> i64 {
-        let (sink, input) = stream.pipe(8);
+        let (sink, input) = match stream.pipe(8) {
+            .Ok(pair) => pair,
+            .Err(_) => return -2,
+        };
         // `sink` stays in scope (never written / closed) so stream recv parks until
         // the deadline fires. Explicitly close after the await to satisfy drop
         // analysis (auto-drop would also close, but this makes the intent clear).

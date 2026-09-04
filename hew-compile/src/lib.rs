@@ -1178,8 +1178,8 @@ fn build_module_graph_with_diagnostics(
     }
 
     // The prelude is loaded out of band, so expose only its Display impls to
-    // the ordinary imported-impl lowering path. Its other declarations keep
-    // their existing compiler-owned registration.
+    // the ordinary imported-impl path. Its other declarations retain their
+    // existing compiler-owned registration.
     let parsed_builtins = hew_parser::parse(include_str!("../../std/builtins.hew"));
     assert!(
         parsed_builtins.errors.is_empty(),
@@ -1211,6 +1211,7 @@ fn build_module_graph_with_diagnostics(
             .expect("std.builtins module absence was checked");
         graph.topo_order.push(builtins_id);
     }
+
     rewrite_direct_stdlib_module_root(&mut graph, items, &input_canonical)?;
 
     // Canonical module IDs may share a final component. Reject only when two

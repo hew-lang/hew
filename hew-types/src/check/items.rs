@@ -2441,8 +2441,6 @@ impl Checker {
             let target_is_struct = self
                 .lookup_type_def(type_name)
                 .is_some_and(|td| td.kind == TypeDefKind::Struct);
-            // The injected std.builtins graph node carries only Display impls;
-            // its separately registered type and trait declarations are local.
             if let Some(tb) = &id.trait_bound {
                 let type_is_local = self.local_type_defs.contains(type_name)
                     || self.intrinsic_type_is_local_to_builtin_surface(type_name);
@@ -2452,10 +2450,12 @@ impl Checker {
                 // on the same authoritative identity every other trait-reference
                 // site does — never the bare spelling in isolation.
                 let trait_is_local = self.trait_ref_is_local(&tb.name);
-                if !type_is_local
-                    && !trait_is_local
-                    && self.current_module.as_deref() != Some("std.builtins")
-                {
+                // hew-compile injects one source-less std.builtins node that
+                // contains only the embedded prelude's Display impls. A user
+                // module retains a source path and cannot claim this authority.
+                let is_embedded_builtins_impl = self.current_item_source.is_none()
+                    && self.checking_canonical_stdlib_source("std.builtins");
+                if !type_is_local && !trait_is_local && !is_embedded_builtins_impl {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::OrphanImpl,

@@ -142,6 +142,14 @@ impl Checker {
                 is_pub,
             ));
         }
+        // `fn_def_spans` is a `HashMap`, so its iteration order is
+        // unspecified and varies run to run. Sort findings by (span,
+        // fn_name) so diagnostic emission order — and therefore the
+        // rendered warning order a user sees — is deterministic (#3169).
+        findings.sort_by(|(a_span, a_name, ..), (b_span, b_name, ..)| {
+            (a_span.start, a_span.end, a_name).cmp(&(b_span.start, b_span.end, b_name))
+        });
+
         // A root module with no `fn main` cannot link as a binary, so it is
         // a library unit: every `pub fn` in it is public API for another
         // crate/module to call, not dead code from this compilation unit's

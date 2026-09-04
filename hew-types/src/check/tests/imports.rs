@@ -3825,6 +3825,99 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     })
 }
 
+/// Harness for the selective-imported-machine rule (#3175): a module `m`
+/// exporting `machine Light`, checked from a root that reaches `Light` only
+/// by referencing one of its states as a bare dotted literal (`Light.On`),
+/// never by calling `.step(...)` or constructing a payload.
+fn check_qualified_machine_state_root(root_source: &str) -> (Checker, TypeCheckOutput) {
+    let module = hew_parser::parse(
+        "machine Light {\n    events {\n        Flip;\n    }\n\n    state On;\n    state Off;\n\n    on Flip: On => Off {\n        .Off\n    }\n    on Flip: Off => On {\n        .On\n    }\n}\n",
+    );
+    assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
+    let mut root = hew_parser::parse(root_source);
+    assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
+    for (item, _) in &mut root.program.items {
+        if let Item::Import(import) = item {
+            if import.path.as_slice() == ["m"] {
+                import.resolved_items = Some(module.program.items.clone());
+            }
+        }
+    }
+    let root_id = ModuleId::root();
+    let m_id = ModuleId::new(vec!["m".to_string()]);
+    let mut module_graph = ModuleGraph::new(root_id.clone());
+    module_graph
+        .add_module(Module {
+            id: m_id.clone(),
+            items: module.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add module m");
+    module_graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root.program.items.clone(),
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add root");
+    module_graph.topo_order = vec![m_id, root_id];
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(module_graph),
+        module_doc: None,
+    });
+    (checker, output)
+}
+
+/// A selective import of a machine, referenced only as a bare dotted state
+/// literal (`Light.On`, never `.step(...)` or a constructed payload), must
+/// credit the import binding exactly as the Call-path dispatch does — the
+/// Reference-path dispatch was the one caller of `dispatch_dotted_type_member`
+/// that never called `mark_resolved_nominal_owner_used` (#3175).
+#[test]
+fn selective_import_used_only_as_bare_state_literal_is_not_unused() {
+    let (_, output) = check_qualified_machine_state_root(
+        "import m.{ Light };\n\nfn main() {\n    var s = Light.On;\n    s = Light.Off;\n    print(\"ok\");\n}\n",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "bare state literal must resolve canonically: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
+        "a selective machine import used only as a bare state literal must not be \
+         reported unused: {:?}",
+        output.warnings
+    );
+}
+
+/// Negative control: a selective import that is never referenced at all must
+/// still be reported unused. This proves the assertion above is not merely
+/// vacuous (every selective import always passing).
+#[test]
+fn selective_import_never_referenced_is_still_unused() {
+    let (_, output) = check_qualified_machine_state_root(
+        "import m.{ Light };\n\nfn main() {\n    print(\"ok\");\n}\n",
+    );
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
+        "a genuinely unreferenced selective import must still warn: {:?}",
+        output.warnings
+    );
+}
+
 /// A selected import publishes a bare type spelling while its declaration is
 /// retained only under the module-owned key. Dotted construction must follow
 /// that exact binding to the canonical enum rather than probing a retired leaf

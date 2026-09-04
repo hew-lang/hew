@@ -1009,6 +1009,20 @@ pub fn hir_diagnostics_to_frontend(
         .collect()
 }
 
+/// Resolve the checker's module search paths for one type-checking pass.
+///
+/// Anchors Tier 2 in-worktree discovery on the source file being checked
+/// (`input`), exactly as the HIR import-resolution path does (see the
+/// `build_module_search_paths_for(Some(source_file))` call in this crate's
+/// import candidate search). `options.project_dir` is `None` for a bare
+/// `hew check <file>` invocation with no project manifest — using it here
+/// silently dropped Tier 2 and fell through to worse search tiers (#3245).
+fn checker_search_paths(options: &FrontendOptions, input: &str) -> Vec<PathBuf> {
+    options.module_search_paths.clone().unwrap_or_else(|| {
+        hew_types::module_registry::build_module_search_paths_for(Some(Path::new(input)))
+    })
+}
+
 fn typecheck_program_with_diagnostics(
     program: &Program,
     source: &str,
@@ -1016,9 +1030,7 @@ fn typecheck_program_with_diagnostics(
     options: &FrontendOptions,
     mode: FrontendParseMode,
 ) -> Result<(TypeCheckResult, Vec<FrontendDiagnostic>), FrontendFailure> {
-    let search_paths = options.module_search_paths.clone().unwrap_or_else(|| {
-        hew_types::module_registry::build_module_search_paths_for(options.project_dir.as_deref())
-    });
+    let search_paths = checker_search_paths(options, input);
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
 
     if options.no_typecheck {
@@ -2502,9 +2514,9 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 #[cfg(test)]
 mod tests {
     use super::{
-        check_file, check_file_with_state, check_program, hir_diagnostics_to_frontend,
-        load_dependencies, load_lockfile, load_package_name, parse_source,
-        retain_user_facing_diagnostics, run_file_frontend_to_typecheck,
+        check_file, check_file_with_state, check_program, checker_search_paths,
+        hir_diagnostics_to_frontend, load_dependencies, load_lockfile, load_package_name,
+        parse_source, retain_user_facing_diagnostics, run_file_frontend_to_typecheck,
         run_file_frontend_to_typecheck_for_migration, FrontendDiagnostic, FrontendDiagnosticKind,
         FrontendOptions,
     };
@@ -2529,6 +2541,63 @@ mod tests {
         file.write_all(content.as_bytes())
             .expect("write source file");
         path.display().to_string()
+    }
+
+    /// The checker's module search paths must anchor Tier 2 in-worktree
+    /// discovery on the file being checked, not on `options.project_dir`
+    /// (`None` for a bare `hew check <file>`), matching the HIR
+    /// import-resolution path (#3245). Proof: a source file physically
+    /// inside a fake checkout root (marked by `std/builtins.hew`) resolves
+    /// that root as the sole search path, even though nothing in
+    /// `FrontendOptions` names it.
+    #[test]
+    fn checker_search_paths_anchors_on_source_file_not_project_dir() {
+        let root = tempfile::tempdir().expect("create fake checkout root");
+        fs::create_dir_all(root.path().join("std")).expect("create std dir");
+        fs::write(root.path().join("std/builtins.hew"), "// marker\n")
+            .expect("write builtins marker");
+        let input = write_source(root.path(), "main.hew", "fn main() {}\n");
+
+        let paths = checker_search_paths(&FrontendOptions::default(), &input);
+
+        assert_eq!(
+            paths,
+            vec![root.path().to_path_buf()],
+            "a source file inside a checkout root must resolve that root as \
+             the sole search path"
+        );
+    }
+
+    /// Negative control: `project_dir` must NOT be able to substitute for
+    /// the source file as the Tier 2 anchor. A source file outside any
+    /// checkout, paired with `project_dir` pointing at a real checkout
+    /// root, must not pick up that unrelated root — proving the anchor is
+    /// genuinely the file being checked, not merely "some path in
+    /// `FrontendOptions`".
+    #[test]
+    fn checker_search_paths_ignores_project_dir_as_tier2_anchor() {
+        let unrelated_root = tempfile::tempdir().expect("create unrelated checkout root");
+        fs::create_dir_all(unrelated_root.path().join("std")).expect("create std dir");
+        fs::write(
+            unrelated_root.path().join("std/builtins.hew"),
+            "// marker\n",
+        )
+        .expect("write builtins marker");
+
+        let outside = tempfile::tempdir().expect("create dir outside any checkout");
+        let input = write_source(outside.path(), "main.hew", "fn main() {}\n");
+
+        let options = FrontendOptions {
+            project_dir: Some(unrelated_root.path().to_path_buf()),
+            ..FrontendOptions::default()
+        };
+        let paths = checker_search_paths(&options, &input);
+
+        assert!(
+            !paths.contains(&unrelated_root.path().to_path_buf()),
+            "project_dir must not stand in for the source file as the \
+             Tier 2 anchor: {paths:?}"
+        );
     }
 
     /// A diamond of module imports (`main` -> `left`, `right` -> `base`)

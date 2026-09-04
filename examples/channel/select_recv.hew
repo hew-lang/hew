@@ -8,8 +8,14 @@ import std.channel.channel;
 
 actor Worker {
     receive fn run() {
-        let (txa, rxa): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
-        let (txb, rxb): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);
+        let (txa, rxa): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"channel.new failed: {err}"),
+        };
+        let (txb, rxb): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"channel.new failed: {err}"),
+        };
         txb.send(7);
         select {
             a from rxa.recv() => {

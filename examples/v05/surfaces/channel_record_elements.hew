@@ -26,7 +26,10 @@ actor DrainRecords {
         0
     }
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<Tagged>, channel.Receiver<Tagged>) = channel.new(4);
+        let (tx, rx): (channel.Sender<Tagged>, channel.Receiver<Tagged>) = match channel.new(4) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"channel.new failed: {err}"),
+        };
         tx.send(Tagged { label: "first", value: 1 });
         tx.send(Tagged { label: "second", value: 2 });
         tx.send(Tagged { label: "third", value: 3 });
@@ -49,7 +52,10 @@ fn main() {
     }
     // Non-blocking sibling: try_recv moves one queued record out; the match
     // owns the payload and drops it at arm scope exit.
-    let (tx, rx): (channel.Sender<Tagged>, channel.Receiver<Tagged>) = channel.new(2);
+    let (tx, rx): (channel.Sender<Tagged>, channel.Receiver<Tagged>) = match channel.new(2) {
+        .Ok(pair) => pair,
+        .Err(err) => panic(f"channel.new failed: {err}"),
+    };
     tx.send(Tagged { label: "polled", value: 9 });
     tx.close();
     match rx.try_recv() {

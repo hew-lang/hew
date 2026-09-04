@@ -14,7 +14,10 @@ actor Reader {
 
         // Nothing listens here: the connect fails or the read errors. Either
         // way the await must resume with an empty result, not hang.
-        let conn = net.connect("127.0.0.1:9");
+        let conn = match net.connect("127.0.0.1:9") {
+            .Ok(conn) => conn,
+            .Err(err) => panic(f"network setup failed: {err}"),
+        };
         let body = await conn.read();
         println(f"read {body.len()} bytes");
         let _ = conn.close();

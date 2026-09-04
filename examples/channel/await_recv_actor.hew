@@ -11,7 +11,10 @@ import std.channel.channel;
 
 actor Worker {
     receive fn run() {
-        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"channel.new failed: {err}"),
+        };
         tx.send("ping");
         tx.close();
         match await rx.recv() {

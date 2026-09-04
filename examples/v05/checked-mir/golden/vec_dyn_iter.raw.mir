@@ -1178,7 +1178,7 @@ fn std$string$try_to_int(string) -> Result<i64, string> [conv=default]
     ownership EdgeCarry { owner: OwnerId { binding: BindingId(30), generation: 0 }, place: Local(16), target: 50 }
     goto bb50
 
-fn std$string$to_float(string) -> f64 [conv=default]
+fn std$string$to_float(string) -> Result<f64, string> [conv=default]
   key: std.string.to_float [mono]
   locals:
     _0: string

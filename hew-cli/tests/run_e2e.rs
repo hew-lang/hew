@@ -291,7 +291,7 @@ import std.net;
 
 actor EchoServer {{
     receive fn connect_send_and_read(unused: i64) {{
-        let conn = net.connect("{addr}").unwrap();
+        let conn = match net.connect("{addr}") {{ .Ok(value) => value, .Err(error) => panic(to_string(error)), }};
         conn.write_string("client-ping:r319");
         let reply = conn.read_string();
         println(f"client-read={{reply}}");
@@ -300,7 +300,7 @@ actor EchoServer {{
 }}
 
 fn main() {{
-    let listener = net.listen("{addr}").unwrap();
+    let listener = match net.listen("{addr}") {{ .Ok(value) => value, .Err(error) => panic(to_string(error)), }};
     let client = spawn EchoServer;
     client.connect_send_and_read(0);
 
@@ -4371,7 +4371,7 @@ fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
         "import std.stream.{ Sink, Stream };\n\
          \n\
          fn make_pair() -> (Sink<string>, Stream<string>) {\n\
-         \x20   stream.pipe(8)\n\
+         \x20   match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), }\n\
          }\n\
          \n\
          fn main() {\n\

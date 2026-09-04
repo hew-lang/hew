@@ -25,8 +25,8 @@ actor RefusedHandler {
 
 #[test]
 fn test_tcp_attach_returns_ok_and_transfers_close_authority() {
-    let listener = net.listen("127.0.0.1:0").unwrap();
-    let client = net.connect(f"127.0.0.1:{listener.local_port()}").unwrap();
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
+    let client = match net.connect(f"127.0.0.1:{listener.local_port()}") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
     let server = listener.accept();
     let handler: LocalPid<AttachedHandler> = spawn AttachedHandler;
     match server.attach(handler) {
@@ -40,8 +40,8 @@ fn test_tcp_attach_returns_ok_and_transfers_close_authority() {
 
 #[test]
 fn test_tcp_attach_returns_err_after_closing_refused_connection() {
-    let listener = net.listen("127.0.0.1:0").unwrap();
-    let client = net.connect(f"127.0.0.1:{listener.local_port()}").unwrap();
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
+    let client = match net.connect(f"127.0.0.1:{listener.local_port()}") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
     let server = listener.accept();
     let handler: LocalPid<RefusedHandler> = spawn RefusedHandler;
     match server.attach(handler) {

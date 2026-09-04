@@ -37,7 +37,10 @@ fn read_pid_with_retry(pid_path: string) -> string {
 }
 
 fn spawn_child_for_implicit_drop(pid_path: string) -> string {
-    let child = process.start(f"echo $$ > {pid_path}; sleep 60").unwrap();
+    let child = match process.start(f"echo $$ > {pid_path}; sleep 60") {
+        .Ok(child) => child,
+        .Err(error) => panic(to_string(error)),
+    };
     let pid = read_pid_with_retry(pid_path);
     testing.assert_true(kill_zero_exit_code(pid) == 0);
     pid

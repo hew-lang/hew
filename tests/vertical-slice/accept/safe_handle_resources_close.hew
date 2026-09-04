@@ -23,7 +23,10 @@ fn close_event(value: quic.QUICEvent) {
 }
 
 fn main() -> i64 {
-    let glob = path.glob("tests/vertical-slice/accept/*.hew").unwrap();
+    let glob = match path.glob("tests/vertical-slice/accept/*.hew") {
+        .Ok(glob) => glob,
+        .Err(error) => panic(to_string(error)),
+    };
     glob.close();
     let sem = semaphore.new(1);
     sem.close();

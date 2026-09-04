@@ -1720,7 +1720,7 @@ actor Server {
     let addr: string;
 
     receive fn serve() {
-        let listener = net.listen(addr).unwrap();
+        let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
         loop {
             let conn = await listener.accept();
             let _data = await conn.read();
@@ -3354,7 +3354,7 @@ import std.stream;
 actor Echo {
     let n: i64;
     receive fn run(unused: i64) {
-        let (sink, input) = stream.bytes_pipe(4).unwrap();
+        let (sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
         for i in 0..n {
             await sink.send(f"x{i}".to_bytes());
         }
@@ -3396,7 +3396,7 @@ import std.channel.channel;
 
 actor Inbox {
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4).unwrap();
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
         tx.send("ready");
         tx.close();
 

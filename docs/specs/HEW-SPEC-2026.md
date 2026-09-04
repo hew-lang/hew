@@ -4693,10 +4693,10 @@ Both handle types are `Send` (safe to pass to other actors), opaque (backed by a
 import std.stream;
 
 // Canonical in-memory bounded bytes pipe
-let (bytes_sink, bytes_stream) = stream.bytes_pipe(16).unwrap();
+let (bytes_sink, bytes_stream) = match stream.bytes_pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
 
 // Convenience text pipe
-let (text_sink, text_stream) = stream.pipe(16).unwrap();
+let (text_sink, text_stream) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
 
 // Current file helpers remain text-only in this slice
 let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<string>, string>

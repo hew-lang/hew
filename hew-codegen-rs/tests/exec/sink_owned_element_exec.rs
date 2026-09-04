@@ -607,7 +607,7 @@ actor Producer {
     let n: i64;
 
     receive fn run(unused: i64) {
-        let (sink, input) = stream.pipe(8).unwrap();
+        let (sink, input) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
         for i in 0 .. n {
             await sink.send(f"item-{i}");
         }
@@ -647,7 +647,7 @@ actor Producer {
     let n: i64;
 
     receive fn run(unused: i64) {
-        let (sink, input) = stream.pipe(8).unwrap();
+        let (sink, input) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
         for i in 0 .. n {
             await sink.send(f"item-{i}");
         }
@@ -741,7 +741,7 @@ fn try_send_on_string_sink_stays_refused() {
     let source = r#"import std.stream;
 
 fn main() {
-    let (sink, input) = stream.pipe(4).unwrap();
+    let (sink, input) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let _r = sink.try_send("hi");
     match input.recv() {
         .Some(s) => println(s),
@@ -775,7 +775,7 @@ actor Writer {
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(4).unwrap();
+    let (sink, input) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let w = spawn Writer(sink: sink);
     w.put("hello");
     match input.recv() {
@@ -824,7 +824,7 @@ actor Consumer {
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(2).unwrap();
+    let (sink, input) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let c = spawn Consumer(input: input);
     c.drain();
     for i in 0 .. 4 {
@@ -884,7 +884,7 @@ actor Consumer {
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(4).unwrap();
+    let (sink, input) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let c = spawn Consumer(input: input);
     c.drain();
     for i in 0 .. 6 {
@@ -923,7 +923,7 @@ actor Producer {
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(1).unwrap();
+    let (sink, input) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let p = spawn Producer(sink: sink);
     p.run();
     sleep(200ms);
@@ -962,7 +962,7 @@ actor Consumer {
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(2).unwrap();
+    let (sink, input) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let c = spawn Consumer(input: input);
     c.drain();
     sleep(150ms);
@@ -1003,7 +1003,7 @@ actor Consumer {
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(1).unwrap();
+    let (sink, input) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let c = spawn Consumer(input: input);
     c.drain();
     for i in 0 .. 5 {
@@ -1049,7 +1049,7 @@ actor Producer {
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(2).unwrap();
+    let (sink, input) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let p = spawn Producer(sink: sink);
     p.go();
     sleep(100ms);
@@ -1084,13 +1084,13 @@ actor Producer {
     receive fn go() {
         sink.send("x");
         sink.close();
-        let (fresh, _unused) = stream.pipe(2).unwrap();
+        let (fresh, _unused) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
         sink = fresh;
     }
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(2).unwrap();
+    let (sink, input) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let p = spawn Producer(sink: sink);
     p.go();
     sleep(100ms);
@@ -1118,13 +1118,13 @@ actor Writer {
     var sink: stream.Sink<string>;
 
     receive fn reset() {
-        let (s, _i) = stream.pipe(4).unwrap();
+        let (s, _i) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
         sink = s;
     }
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(4).unwrap();
+    let (sink, input) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let w = spawn Writer(sink: sink);
     w.reset();
     match input.recv() {
@@ -1152,7 +1152,7 @@ actor Writer {
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(4).unwrap();
+    let (sink, input) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let w = spawn Writer(sink: sink);
     sink.send("after-move");
     match input.recv() {

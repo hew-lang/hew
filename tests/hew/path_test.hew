@@ -296,7 +296,10 @@ fn rm_rf_args(dir: string) -> Vec<string> {
 
 #[test]
 fn test_glob_try_get_rejects_a_wrapped_index() {
-    let matches = path.glob("std/*.hew").unwrap();
+    let matches = match path.glob("std/*.hew") {
+        .Ok(matches) => matches,
+        .Err(error) => panic(to_string(error)),
+    };
     testing.assert_true(matches.len() > 0);
     // 2^32 narrows to 0 under `index as i32`.
     testing.assert_true(match matches.try_get(4294967296) {

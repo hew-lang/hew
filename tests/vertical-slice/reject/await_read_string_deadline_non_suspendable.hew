@@ -12,6 +12,6 @@ fn helper(conn: Connection) {
 }
 
 fn main() {
-    let conn = net.connect("127.0.0.1:9").unwrap();
+    let conn = match net.connect("127.0.0.1:9") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
     helper(conn);
 }

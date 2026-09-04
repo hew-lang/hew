@@ -9,7 +9,7 @@ import std.stream;
 
 actor Pipeline {
     receive fn run() -> i64 {
-        let (sink, input) = stream.pipe(8).unwrap();
+        let (sink, input) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
         let d = 50ms;
         let frame: Result<Option<string>, TimeoutError> = await input.recv() | after d;
         sink.close();

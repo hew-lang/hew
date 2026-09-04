@@ -131,7 +131,7 @@ fn channel_recv_deadline_preserves_await_and_method_occurrences() {
 
         actor Worker {
             receive fn run() {
-                let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1).unwrap();
+                let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
                 let _got: Result<Option<i64>, TimeoutError> =
                     await rx.recv() | after 1ms;
                 let _ = tx;

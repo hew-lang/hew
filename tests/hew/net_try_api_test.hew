@@ -60,7 +60,7 @@ fn test_try_listen_address_in_use_returns_address_in_use() {
 
 #[test]
 fn test_listener_close_surface_returns_unit() {
-    let listener = net.listen(":0").unwrap();
+    let listener = match net.listen(":0") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
     listener.close();
 }
 
@@ -138,11 +138,11 @@ extern "C" {
 
 #[test]
 fn test_try_read_reports_an_orderly_eof_as_an_empty_success() {
-    let listener = net.listen("127.0.0.1:0").unwrap();
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
     };
-    let client = net.connect(f"127.0.0.1:{port as i64}").unwrap();
+    let client = match net.connect(f"127.0.0.1:{port as i64}") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
     let server = listener.accept();
     // Seed a failure in the shared status slot: an orderly EOF must not
     // report an earlier operation's errno as this read's error.
@@ -176,11 +176,11 @@ fn test_try_read_reports_an_orderly_eof_as_an_empty_success() {
 // belongs to the runtime's own test surface rather than a `.hew` test.
 #[test]
 fn test_try_read_delivers_payload_bytes_unchanged() {
-    let listener = net.listen("127.0.0.1:0").unwrap();
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
     };
-    let client = net.connect(f"127.0.0.1:{port as i64}").unwrap();
+    let client = match net.connect(f"127.0.0.1:{port as i64}") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
     let server = listener.accept();
     let _ = client.write_string("ping");
     match server.try_read_string() {
@@ -194,11 +194,11 @@ fn test_try_read_delivers_payload_bytes_unchanged() {
 
 #[test]
 fn test_connection_timeouts_accept_every_negative_clear_sentinel_without_narrowing() {
-    let listener = net.listen("127.0.0.1:0").unwrap();
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
     };
-    let client = net.connect(f"127.0.0.1:{port as i64}").unwrap();
+    let client = match net.connect(f"127.0.0.1:{port as i64}") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
     let server = listener.accept();
     match client.set_read_timeout(-9223372036854775807) {
         .Ok(()) => {},

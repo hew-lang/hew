@@ -401,7 +401,7 @@ fn wasm_channel_send_full_traps_instead_of_dropping() {
         r#"import std.channel.channel;
 
 fn main() {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(2).unwrap();
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
 
     tx.send("msg-1");
     tx.send("msg-2");
@@ -827,7 +827,7 @@ actor Pulse {
 }
 
 fn main() {
-    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1).unwrap();
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let _p = spawn Pulse(ready: ready_tx, count: 0);
     println("spawned");
     let _ = ready_rx.recv();

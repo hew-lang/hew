@@ -11,7 +11,7 @@ fn helper(input: stream.Stream<string>) -> Result<Option<string>, TimeoutError> 
 }
 
 fn main() -> i64 {
-    let (sink, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(8).unwrap();
+    let (sink, input): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let frame = helper(input);
     let _ = sink;
     match frame {

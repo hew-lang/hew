@@ -22,7 +22,10 @@
 //!     let output = process.run_argv("printf", args).unwrap();
 //!     println(output.stdout);
 //!
-//!     let child = process.start("sleep 10").unwrap();
+//!     let child = match process.start("sleep 10") {
+//!         .Ok(child) => child,
+//!         .Err(error) => panic(to_string(error)),
+//!     };
 //!     println(child.wait());
 //! }
 //! ```

@@ -10,7 +10,7 @@
 import std.stream;
 
 fn main() {
-    let (sink, input) = stream.pipe(2).unwrap();
+    let (sink, input) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
     sink.send("hi");
     sink.close();
     input.close();

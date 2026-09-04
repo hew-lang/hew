@@ -26,7 +26,7 @@
 //!     let path: string;   // "/hello"
 //!     let host: string;   // "127.0.0.1"
 //!     receive fn go(unused: i64) {
-//!         let conn = net.connect(addr).unwrap();
+//!         let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
 //!         conn.write_string(http_async_client.build_get(host, path)).unwrap();
 //!         var raw = "";
 //!         var reads = 0;

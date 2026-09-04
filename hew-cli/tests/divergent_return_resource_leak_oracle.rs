@@ -32,8 +32,8 @@ const DIVERGENT_TUPLE_TEMPLATE: &str = r#"
 import std.stream;
 
 fn choose(c: bool) -> (Sink<string>, Stream<string>) {
-    let (s1, r1) = stream.pipe(8).unwrap();
-    let (s2, r2) = stream.pipe(8).unwrap();
+    let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     if c { (s1, r1) } else { (s2, r2) }
 }
 
@@ -56,8 +56,8 @@ type Pipe {
 }
 
 fn choose(c: bool) -> Pipe {
-    let (s1, r1) = stream.pipe(8).unwrap();
-    let (s2, r2) = stream.pipe(8).unwrap();
+    let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     if c {
         Pipe { sink: s1, input: r1 }
     } else {
@@ -84,8 +84,8 @@ type Pipe {
 }
 
 fn choose_or_error(bail: bool, c: bool) -> Result<Pipe, string> {
-    let (s1, r1) = stream.pipe(8).unwrap();
-    let (s2, r2) = stream.pipe(8).unwrap();
+    let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     if bail {
         return Err("bailed");
     }
@@ -119,14 +119,14 @@ type Pipe {
 }
 
 fn divergent_tuple(c: bool) -> (Sink<string>, Stream<string>) {
-    let (s1, r1) = stream.pipe(8).unwrap();
-    let (s2, r2) = stream.pipe(8).unwrap();
+    let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     if c { (s1, r1) } else { (s2, r2) }
 }
 
 fn divergent_record(c: bool) -> Pipe {
-    let (s1, r1) = stream.pipe(8).unwrap();
-    let (s2, r2) = stream.pipe(8).unwrap();
+    let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     if c {
         Pipe { sink: s1, input: r1 }
     } else {
@@ -135,14 +135,14 @@ fn divergent_record(c: bool) -> Pipe {
 }
 
 fn same_tuple(c: bool) -> (Sink<string>, Stream<string>) {
-    let (s1, r1) = stream.pipe(8).unwrap();
-    let (s2, r2) = stream.pipe(8).unwrap();
+    let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     if c { (s1, r1) } else { (s1, r1) }
 }
 
 fn error_before_transfer(bail: bool, c: bool) -> Result<Pipe, string> {
-    let (s1, r1) = stream.pipe(8).unwrap();
-    let (s2, r2) = stream.pipe(8).unwrap();
+    let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     if bail {
         return Err("bailed");
     }
@@ -154,8 +154,8 @@ fn error_before_transfer(bail: bool, c: bool) -> Result<Pipe, string> {
 }
 
 fn cancel_before_transfer(c: bool) -> (Sink<string>, Stream<string>) {
-    let (s1, r1) = stream.pipe(8).unwrap();
-    let (s2, r2) = stream.pipe(8).unwrap();
+    let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     var i = 0;
     while i < 1 {
         i = i + 1;

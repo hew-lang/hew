@@ -18217,7 +18217,10 @@ impl LowerCtx {
                 "expression has no checker-published resolved type",
             );
         };
-        let Some(facts) = self.type_facts.get(&hew_types::TypeInstanceKey(checked_ty)) else {
+        let Some(facts) = self
+            .type_facts
+            .get(&hew_types::TypeInstanceKey(checked_ty.clone()))
+        else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: "expression value class".to_string(),
@@ -18225,7 +18228,7 @@ impl LowerCtx {
                         .to_string(),
                 },
                 expr.1.clone(),
-                "checker did not publish ownership facts for this expression type",
+                format!("checker did not publish ownership facts for `{checked_ty:?}`"),
             ));
             return self.unsupported_expr(
                 expr.1.clone(),

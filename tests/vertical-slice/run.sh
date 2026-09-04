@@ -529,6 +529,24 @@ expect_check_fail_contains \
     "machine_context_variant_unknown"
 echo "PASS machine_context_variant_unknown (reject)"
 
+# Accept: regression for #3264. A body-less transition (`on E: Src => Tgt;`)
+# whose target is a bare (non-`.`-prefixed) state name must resolve against
+# the machine's own `state` declarations, not the general bare-variant
+# fallback that flags real enum variants.
+run_accept_expect_stdout "machine_bare_transition_target"
+
+# Reject: negative control for #3264. A body-less transition whose target
+# names no declared state is still refused, with a machine "unknown state"
+# diagnostic — never E_BARE_VARIANT_EXPR, which would mean the fix silenced
+# the checker for every bare identifier in transition-target position.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+expect_check_fail_contains_without \
+    "${ROOT}/tests/vertical-slice/reject/machine_bare_transition_target_unknown.hew" \
+    'machine `Light`: transition references unknown state `Bogus`' \
+    'E_BARE_VARIANT_EXPR' \
+    "machine_bare_transition_target_unknown"
+echo "PASS machine_bare_transition_target_unknown (reject)"
+
 # #2434 split coverage: the generic-record owned-field path is clean on its own
 # (`string.repeat` single fresh producer), while the real leak root is the
 # record-free nested concat temp in `first + " " + last`.

@@ -13,6 +13,6 @@ actor Listener {
 
 fn main() {
     let listener = net.listen("127.0.0.1:0");
-    listener.close();
+    listener.unwrap().close();
     println("opaque-listener-ok");
 }

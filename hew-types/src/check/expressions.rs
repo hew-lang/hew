@@ -5369,24 +5369,6 @@ impl Checker {
         );
     }
 
-    /// Whether `type_name` has a registered `impl <trait_name> for
-    /// <type_name>` block (D340: a user impl of a derived marker trait
-    /// overrides the compiler's structural default for that type).
-    ///
-    /// Reads the same `trait_impls_set` table `record_trait_impl` populates
-    /// for every `impl <Trait> for <Type>` block — including an impl of a
-    /// bare marker-trait name with no `trait_defs` entry, which is exactly
-    /// the shape `Eq`/`Ord`/`PartialOrd`/`Hash` take (see [`MarkerTrait`]):
-    /// `check_impl_method_set_against_trait` finds no trait declaration for
-    /// them and returns early without validating a method set, but
-    /// `record_trait_impl`/`record_trait_impl_methods` still run
-    /// unconditionally for any `impl` with a trait bound, so the fact is
-    /// there to read.
-    pub(super) fn has_user_trait_impl(&self, type_name: &str, trait_name: &str) -> bool {
-        self.trait_impls_set
-            .contains(&(type_name.to_string(), trait_name.to_string()))
-    }
-
     /// Return the exact implementation method selected for a nominal marker
     /// trait override. The registration key preserves trait identity, so an
     /// `Ord::lt` implementation cannot be confused with `PartialOrd::lt`.

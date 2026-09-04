@@ -79,10 +79,10 @@ pub use lang_items::{
 pub use lowering_facts::{
     assert_lowering_facts_consistent, hashmap_layout_key_fact,
     hashmap_layout_key_layout_value_fact, hashset_layout_element_admissible, hashset_layout_fact,
-    DropKind, HashMapAbi, HashMapKeyType, HashMapLoweringFact, HashMapLoweringFactError,
-    HashMapLoweringFactState, HashMapValueType, HashSetAbi, HashSetElementType,
-    HashSetLoweringFact, HashSetLoweringFactError, LoweringFact, LoweringFactConsistencyError,
-    LoweringFactError, LoweringKind,
+    CollectionMethodDispatch, DropKind, HashMapAbi, HashMapKeyType, HashMapLoweringFact,
+    HashMapLoweringFactError, HashMapLoweringFactState, HashMapValueType, HashSetAbi,
+    HashSetElementType, HashSetLoweringFact, HashSetLoweringFactError, LoweringFact,
+    LoweringFactConsistencyError, LoweringFactError, LoweringKind,
 };
 pub use resolved_ty::{
     default_impl_method_declaration, BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy,

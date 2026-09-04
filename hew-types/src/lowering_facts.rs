@@ -195,6 +195,17 @@ pub enum HashMapLoweringFactState {
     Finalized,
 }
 
+/// Checker-selected implementation for one collection key operation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionMethodDispatch {
+    /// Use the compiler's structural implementation.
+    #[default]
+    Derived,
+    /// Call the exact user implementation selected by type checking.
+    User { method: crate::DefId },
+}
+
 /// A checker-authored lowering fact for a `HashMap` call site.
 ///
 /// `key_size`/`key_align` are `Some` for `LayoutKey` ABI and `None` for scalar
@@ -205,14 +216,12 @@ pub enum HashMapLoweringFactState {
 pub struct HashMapLoweringFact {
     pub abi: HashMapAbi,
     pub state: HashMapLoweringFactState,
-    /// User `Hash::hash` symbol selected by the checker, when it overrides the
-    /// structural default for this key type.
+    /// Exact `Hash::hash` implementation selected by the checker.
     #[serde(default)]
-    pub user_hash_impl: Option<std::string::String>,
-    /// User `Eq::eq` symbol selected by the checker, when it overrides the
-    /// structural default for this key type.
+    pub hash_dispatch: CollectionMethodDispatch,
+    /// Exact `Eq::eq` implementation selected by the checker.
     #[serde(default)]
-    pub user_eq_impl: Option<std::string::String>,
+    pub eq_dispatch: CollectionMethodDispatch,
     /// Key blob size in bytes; `None` for scalar key ABIs, `Some` for `LayoutKey`.
     pub key_size: Option<usize>,
     /// Key blob alignment in bytes; `None` for scalar key ABIs.
@@ -228,14 +237,12 @@ pub struct HashMapLoweringFact {
 pub struct HashSetLoweringFact {
     pub abi: HashSetAbi,
     pub state: HashMapLoweringFactState,
-    /// User `Hash::hash` symbol selected by the checker, when it overrides the
-    /// structural default for this element type.
+    /// Exact `Hash::hash` implementation selected by the checker.
     #[serde(default)]
-    pub user_hash_impl: Option<std::string::String>,
-    /// User `Eq::eq` symbol selected by the checker, when it overrides the
-    /// structural default for this element type.
+    pub hash_dispatch: CollectionMethodDispatch,
+    /// Exact `Eq::eq` implementation selected by the checker.
     #[serde(default)]
-    pub user_eq_impl: Option<std::string::String>,
+    pub eq_dispatch: CollectionMethodDispatch,
     /// Element blob size in bytes; `Some` for `HashSetAbi::Layout`, `None` otherwise.
     pub elem_size: Option<usize>,
     /// Element blob alignment in bytes; `Some` for `HashSetAbi::Layout`, `None` otherwise.
@@ -428,8 +435,8 @@ pub fn hashmap_layout_key_fact(
             val: val_type,
         },
         state: HashMapLoweringFactState::Pending,
-        user_hash_impl: None,
-        user_eq_impl: None,
+        hash_dispatch: CollectionMethodDispatch::Derived,
+        eq_dispatch: CollectionMethodDispatch::Derived,
         key_size: Some(key_size),
         key_align: Some(key_align),
         val_size: None,
@@ -463,8 +470,8 @@ pub fn hashmap_layout_key_layout_value_fact(
             val: HashMapValueType::Layout,
         },
         state: HashMapLoweringFactState::Pending,
-        user_hash_impl: None,
-        user_eq_impl: None,
+        hash_dispatch: CollectionMethodDispatch::Derived,
+        eq_dispatch: CollectionMethodDispatch::Derived,
         key_size: Some(key_size),
         key_align: Some(key_align),
         val_size: Some(val_size),
@@ -483,8 +490,8 @@ pub fn hashset_layout_fact(
     HashSetLoweringFact {
         abi: HashSetAbi::Layout { elem_record_name },
         state: HashMapLoweringFactState::Pending,
-        user_hash_impl: None,
-        user_eq_impl: None,
+        hash_dispatch: CollectionMethodDispatch::Derived,
+        eq_dispatch: CollectionMethodDispatch::Derived,
         elem_size: Some(elem_size),
         elem_align: Some(elem_align),
     }

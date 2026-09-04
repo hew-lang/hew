@@ -2194,11 +2194,12 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// is shared (read-only) — no new declarations are added during body
     /// lowering.
     pub(crate) fn_symbols: &'a FnSymbolMap<'ctx>,
-    /// Checker-selected Hash overrides carried by the existing collection
-    /// lowering facts. Codegen consumes the symbol and does not rediscover
-    /// trait implementations from emitted function names.
-    pub(crate) hashmap_lowering_facts: &'a [hew_types::HashMapLoweringFact],
-    pub(crate) hashset_lowering_facts: &'a [hew_types::HashSetLoweringFact],
+    /// Emitted callable indexed by resolver-minted declaration identity.
+    /// `None` marks a declaration with multiple emitted instances.
+    pub(crate) fn_symbols_by_declaration: &'a HashMap<hew_types::DefId, Option<FnSymbol<'ctx>>>,
+    /// Checker-authored collection method selections indexed once at module
+    /// setup. Thunk emission consumes these exact identities directly.
+    pub(crate) collection_method_dispatches: &'a HashMap<String, CollectionMethodDispatches>,
     /// Exact module-scoped cache for generated typed frame-cleanup thunks.
     /// Every function borrows the same cache; generated names are allocation
     /// details and must never be used as a descriptor identity.
@@ -2461,6 +2462,12 @@ struct HelperCrashCleanupOwner<'ctx> {
 /// LLVM function value plus its return type so `Terminator::Call` can
 /// resolve forward without re-deriving anything from the MIR shape.
 pub(crate) type FnSymbolMap<'ctx> = HashMap<String, FnSymbol<'ctx>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CollectionMethodDispatches {
+    pub(crate) hash: hew_types::CollectionMethodDispatch,
+    pub(crate) eq: hew_types::CollectionMethodDispatch,
+}
 
 pub(crate) type ConstGlobalMap<'ctx> = HashMap<ItemId, ConstGlobal<'ctx>>;
 
@@ -14106,8 +14113,12 @@ fn lower_instruction_with_cancel_drops(
                         ));
                     }
                 };
-                let callee =
-                    crate::thunks::get_or_emit_eq_thunk(fn_ctx, lhs_ty, Some(lhs_resolved_ty))?;
+                let callee = crate::thunks::get_or_emit_eq_thunk(
+                    fn_ctx,
+                    lhs_ty,
+                    Some(lhs_resolved_ty),
+                    None,
+                )?;
                 let eq_i32 = fn_ctx
                     .builder
                     .build_call(
@@ -14184,8 +14195,12 @@ fn lower_instruction_with_cancel_drops(
                         &lhs_args[0],
                         fn_ctx.record_layouts,
                     )?;
-                    let elem_eq =
-                        crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(&lhs_args[0]))?;
+                    let elem_eq = crate::thunks::get_or_emit_eq_thunk(
+                        fn_ctx,
+                        elem_ty,
+                        Some(&lhs_args[0]),
+                        None,
+                    )?;
                     let elem_eq_ptr = elem_eq.as_global_value().as_pointer_value();
                     let lhs_v = fn_ctx
                         .builder
@@ -35877,10 +35892,10 @@ fn lower_function<'ctx>(
     target_data: &TargetData,
     func: &RawMirFunction,
     fn_symbols: &FnSymbolMap<'ctx>,
+    fn_symbols_by_declaration: &HashMap<hew_types::DefId, Option<FnSymbol<'ctx>>>,
     representation_loan_params_by_function: &HashMap<String, Vec<u32>>,
     param_boundary_modes_by_function: &HashMap<String, Vec<Option<ParamBoundaryMode>>>,
-    hashmap_lowering_facts: &[hew_types::HashMapLoweringFact],
-    hashset_lowering_facts: &[hew_types::HashSetLoweringFact],
+    collection_method_dispatches: &HashMap<String, CollectionMethodDispatches>,
     machine_step_symbols: &HashSet<String>,
     actor_method_symbols: &HashSet<String>,
     elab: &ElaboratedMirFunction,
@@ -36932,8 +36947,8 @@ fn lower_function<'ctx>(
         runtime_unwind_block: std::cell::Cell::new(None),
         record_layouts,
         fn_symbols,
-        hashmap_lowering_facts,
-        hashset_lowering_facts,
+        fn_symbols_by_declaration,
+        collection_method_dispatches,
         frame_cleanup_thunks,
         machine_step_symbols,
         actor_method_symbols,
@@ -38023,6 +38038,8 @@ fn build_module_for_target<'ctx>(
         }
     }
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
+    let mut fn_symbols_by_declaration: HashMap<hew_types::DefId, Option<FnSymbol<'ctx>>> =
+        HashMap::new();
     predeclare_stdlib_catalog(
         ctx,
         &llvm_mod,
@@ -38092,6 +38109,43 @@ fn build_module_for_target<'ctx>(
             }
         })?;
         fn_symbols.insert(func.name.clone(), sym);
+        fn_symbols_by_declaration
+            .entry(func.key.declaration.clone())
+            .and_modify(|entry| *entry = None)
+            .or_insert(Some(sym));
+    }
+    let mut collection_method_dispatches = HashMap::new();
+    let mut register_collection_dispatch = |name: &str,
+                                            hash: &hew_types::CollectionMethodDispatch,
+                                            eq: &hew_types::CollectionMethodDispatch|
+     -> CodegenResult<()> {
+        let selected = CollectionMethodDispatches {
+            hash: hash.clone(),
+            eq: eq.clone(),
+        };
+        if let Some(previous) = collection_method_dispatches.get(name) {
+            if previous != &selected {
+                return Err(CodegenError::FailClosed(format!(
+                    "checker emitted conflicting collection method dispatch for `{name}`"
+                )));
+            }
+        } else {
+            collection_method_dispatches.insert(name.to_string(), selected);
+        }
+        Ok(())
+    };
+    for fact in &pipeline.hashmap_lowering_facts {
+        if let hew_types::HashMapAbi::LayoutKey {
+            key_record_name, ..
+        } = &fact.abi
+        {
+            register_collection_dispatch(key_record_name, &fact.hash_dispatch, &fact.eq_dispatch)?;
+        }
+    }
+    for fact in &pipeline.hashset_lowering_facts {
+        if let hew_types::HashSetAbi::Layout { elem_record_name } = &fact.abi {
+            register_collection_dispatch(elem_record_name, &fact.hash_dispatch, &fact.eq_dispatch)?;
+        }
     }
     let representation_loan_params_by_function = pipeline
         .raw_mir
@@ -38360,10 +38414,10 @@ fn build_module_for_target<'ctx>(
             &target_data,
             func,
             &fn_symbols,
+            &fn_symbols_by_declaration,
             &representation_loan_params_by_function,
             &param_boundary_modes_by_function,
-            &pipeline.hashmap_lowering_facts,
-            &pipeline.hashset_lowering_facts,
+            &collection_method_dispatches,
             &machine_step_symbols,
             &actor_method_symbols,
             elab,

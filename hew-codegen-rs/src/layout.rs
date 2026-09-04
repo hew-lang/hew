@@ -2317,7 +2317,7 @@ pub(crate) fn lower_owned_vec_direct_call(
             let (val_ptr, elem_ty) = place_pointer(fn_ctx, args[1])?;
             let elem_resolved_ty = place_resolved_ty(fn_ctx, args[1])?;
             let thunk_fn =
-                crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(elem_resolved_ty))?;
+                crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(elem_resolved_ty), None)?;
             let thunk_ptr = thunk_fn.as_global_value().as_pointer_value();
             let call = fn_ctx
                 .builder
@@ -2796,8 +2796,28 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
 
     // Emit/dedup the per-record thunks BEFORE constructing the initializer
     // so the function pointers exist when the global references them.
-    let hash_fn = crate::thunks::get_or_emit_hash_thunk(fn_ctx, elem_ty, resolved_ty)?;
-    let eq_fn = crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, resolved_ty)?;
+    let resolved_name = resolved_ty
+        .and_then(|ty| match ty {
+            ResolvedTy::Named { name, .. } => Some(name),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            CodegenError::FailClosed(
+                "layout collection key has no resolved nominal identity".to_string(),
+            )
+        })?;
+    let dispatch = fn_ctx
+        .collection_method_dispatches
+        .get(resolved_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "layout collection key `{resolved_name}` has no checker-selected method dispatch"
+            ))
+        })?;
+    let hash_fn =
+        crate::thunks::get_or_emit_hash_thunk(fn_ctx, elem_ty, resolved_ty, &dispatch.hash)?;
+    let eq_fn =
+        crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, resolved_ty, Some(&dispatch.eq))?;
 
     // ownership_kind: Plain (0) for Copy keys, LayoutManaged (2) for keys with
     // an owned (string) leaf. The drop_fn slot carries the per-record drop
@@ -3249,8 +3269,8 @@ pub(crate) fn verify_hashmap_lowering_facts_consistent(pipeline: &IrPipeline) ->
                 val: HashMapValueType::Char,
             },
             state: set_fact.state,
-            user_hash_impl: set_fact.user_hash_impl.clone(),
-            user_eq_impl: set_fact.user_eq_impl.clone(),
+            hash_dispatch: set_fact.hash_dispatch.clone(),
+            eq_dispatch: set_fact.eq_dispatch.clone(),
             key_size: set_fact.elem_size,
             key_align: set_fact.elem_align,
             val_size: None,
@@ -4550,7 +4570,7 @@ pub(crate) fn lower_layout_vec_direct_call(
             let (val_ptr, elem_ty) = place_pointer(fn_ctx, args[1])?;
             let val_resolved_ty = place_resolved_ty(fn_ctx, args[1])?;
             let thunk_fn =
-                crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(val_resolved_ty))?;
+                crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(val_resolved_ty), None)?;
             let thunk_ptr = thunk_fn.as_global_value().as_pointer_value();
             let call = fn_ctx
                 .builder

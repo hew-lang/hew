@@ -14,7 +14,7 @@ use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission};
 use crate::hash_eligibility::{ty_is_hash_eligible_with_resources, HashEligibility};
 use crate::lowering_facts::{
     hashmap_layout_key_fact, hashmap_layout_key_layout_value_fact, hashset_layout_fact,
-    HashMapValueType,
+    CollectionMethodDispatch, HashMapValueType,
 };
 use crate::method_resolution::{
     collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
@@ -509,17 +509,23 @@ impl Checker {
                     // (Eligible) or a diagnostic (ineligible).
                     if let Ty::Named { name, .. } = &resolved_ty {
                         let type_defs_snapshot = self.type_defs.clone();
-                        let user_hash_impl = self
-                            .has_user_trait_impl(name, "Hash")
-                            .then(|| format!("{name}::hash"));
-                        let user_eq_impl = self
-                            .has_user_trait_impl(name, "Eq")
-                            .then(|| format!("{name}::eq"));
-                        let has_eq = user_eq_impl.is_some()
+                        let hash_dispatch = self
+                            .user_trait_impl_method(name, "Hash", "hash")
+                            .map_or(CollectionMethodDispatch::Derived, |method| {
+                                CollectionMethodDispatch::User { method }
+                            });
+                        let eq_dispatch = self
+                            .user_trait_impl_method(name, "Eq", "eq")
+                            .map_or(CollectionMethodDispatch::Derived, |method| {
+                                CollectionMethodDispatch::User { method }
+                            });
+                        let has_user_hash =
+                            matches!(hash_dispatch, CollectionMethodDispatch::User { .. });
+                        let has_eq = matches!(eq_dispatch, CollectionMethodDispatch::User { .. })
                             || self
                                 .registry
                                 .implements_marker(&resolved_ty, MarkerTrait::Eq);
-                        let eligibility = if user_hash_impl.is_some() && has_eq {
+                        let eligibility = if has_user_hash && has_eq {
                             HashEligibility::Eligible
                         } else {
                             ty_is_hash_eligible_with_resources(
@@ -540,8 +546,8 @@ impl Checker {
                                 if let Some((elem_size, elem_align)) = layout {
                                     let mut fact =
                                         hashset_layout_fact(name.clone(), elem_size, elem_align);
-                                    fact.user_hash_impl = user_hash_impl;
-                                    fact.user_eq_impl = user_eq_impl;
+                                    fact.hash_dispatch = hash_dispatch;
+                                    fact.eq_dispatch = eq_dispatch;
                                     self.hashset_layout_facts.insert(span_key, fact);
                                     // Fact inserted into hashset_layout_facts;
                                     // NOT inserted into lowering_facts result.
@@ -745,17 +751,22 @@ impl Checker {
                 // Collect the type_defs snapshot before borrowing self mutably below.
                 let type_defs_snapshot = self.type_defs.clone();
 
-                let user_hash_impl = self
-                    .has_user_trait_impl(key_name, "Hash")
-                    .then(|| format!("{key_name}::hash"));
-                let user_eq_impl = self
-                    .has_user_trait_impl(key_name, "Eq")
-                    .then(|| format!("{key_name}::eq"));
-                let has_eq = user_eq_impl.is_some()
+                let hash_dispatch = self
+                    .user_trait_impl_method(key_name, "Hash", "hash")
+                    .map_or(CollectionMethodDispatch::Derived, |method| {
+                        CollectionMethodDispatch::User { method }
+                    });
+                let eq_dispatch = self
+                    .user_trait_impl_method(key_name, "Eq", "eq")
+                    .map_or(CollectionMethodDispatch::Derived, |method| {
+                        CollectionMethodDispatch::User { method }
+                    });
+                let has_user_hash = matches!(hash_dispatch, CollectionMethodDispatch::User { .. });
+                let has_eq = matches!(eq_dispatch, CollectionMethodDispatch::User { .. })
                     || self
                         .registry
                         .implements_marker(&resolved_key, MarkerTrait::Eq);
-                let eligibility = if user_hash_impl.is_some() && has_eq {
+                let eligibility = if has_user_hash && has_eq {
                     HashEligibility::Eligible
                 } else {
                     ty_is_hash_eligible_with_resources(
@@ -797,10 +808,10 @@ impl Checker {
                                                                             val_size,
                                                                             val_align,
                                                                         );
-                                                            fact.user_hash_impl
-                                                                .clone_from(&user_hash_impl);
-                                                            fact.user_eq_impl
-                                                                .clone_from(&user_eq_impl);
+                                                            fact.hash_dispatch
+                                                                .clone_from(&hash_dispatch);
+                                                            fact.eq_dispatch
+                                                                .clone_from(&eq_dispatch);
                                                             new_layout_facts.push((span_key, fact));
                                                         }
                                                         None => {
@@ -851,8 +862,8 @@ impl Checker {
                                             key_align,
                                             val_type,
                                         );
-                                        fact.user_hash_impl.clone_from(&user_hash_impl);
-                                        fact.user_eq_impl.clone_from(&user_eq_impl);
+                                        fact.hash_dispatch.clone_from(&hash_dispatch);
+                                        fact.eq_dispatch.clone_from(&eq_dispatch);
                                         new_layout_facts.push((span_key, fact));
                                     }
                                     Err(e) => {

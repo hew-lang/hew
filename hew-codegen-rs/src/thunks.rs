@@ -2007,8 +2007,8 @@ pub(crate) fn get_or_emit_eq_thunk<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     elem_ty: BasicTypeEnum<'ctx>,
     resolved_ty: Option<&ResolvedTy>,
+    dispatch: Option<&hew_types::CollectionMethodDispatch>,
 ) -> CodegenResult<FunctionValue<'ctx>> {
-    let (user_eq_impl, _) = selected_collection_impls(fn_ctx, resolved_ty);
     let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
     let key = eq_thunk_struct_key(elem_ty);
     let resolved_key = eq_thunk_resolved_key(resolved_ty);
@@ -2046,21 +2046,20 @@ pub(crate) fn get_or_emit_eq_thunk<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("eq_thunk: missing rhs param".into()))?
         .into_pointer_value();
 
-    if let Some(symbol) = user_eq_impl {
-        let selected = *fn_ctx.fn_symbols.get(symbol).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "checker selected user Eq implementation `{symbol}`, but codegen has no function symbol"
-            ))
-        })?;
-        let (callee, return_ty, returns_unit) = selected.real(symbol, "user Eq thunk")?;
+    if let Some(hew_types::CollectionMethodDispatch::User { method }) = dispatch {
+        let selected = selected_impl_symbol(fn_ctx, method, "Eq")?;
+        let (callee, return_ty, returns_unit) =
+            selected.real(method.full_path(), "user Eq thunk")?;
         let BasicTypeEnum::IntType(return_ty) = return_ty else {
             return Err(CodegenError::FailClosed(format!(
-                "user Eq implementation `{symbol}` does not return bool"
+                "user Eq implementation `{}` does not return bool",
+                method.full_path()
             )));
         };
         if returns_unit {
             return Err(CodegenError::FailClosed(format!(
-                "user Eq implementation `{symbol}` does not return bool"
+                "user Eq implementation `{}` does not return bool",
+                method.full_path()
             )));
         }
         let lhs_value = fn_ctx
@@ -2083,7 +2082,10 @@ pub(crate) fn get_or_emit_eq_thunk<'ctx>(
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| {
-                CodegenError::FailClosed(format!("user Eq implementation `{symbol}` returned void"))
+                CodegenError::FailClosed(format!(
+                    "user Eq implementation `{}` returned void",
+                    method.full_path()
+                ))
             })?
             .into_int_value();
         let result = if return_ty.get_bit_width() < 32 {
@@ -2428,7 +2430,7 @@ fn emit_eq_thunk_field_check<'ctx>(
         }
         BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
             // Nested aggregate: recurse via a separate thunk function.
-            let nested = get_or_emit_eq_thunk(fn_ctx, field_ty, resolved_ty)?;
+            let nested = get_or_emit_eq_thunk(fn_ctx, field_ty, resolved_ty, None)?;
             let call = fn_ctx
                 .builder
                 .build_call(
@@ -2513,7 +2515,7 @@ fn emit_eq_thunk_field_check<'ctx>(
                     elem_resolved_ty,
                     fn_ctx.record_layouts,
                 )?;
-                let elem_eq = get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(elem_resolved_ty))?;
+                let elem_eq = get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(elem_resolved_ty), None)?;
                 let elem_eq_ptr = elem_eq.as_global_value().as_pointer_value();
                 let lhs_v = fn_ctx
                     .builder
@@ -2808,7 +2810,12 @@ fn emit_hash_thunk_body<'ctx>(
                         // Recurse via a separate dedup'd nested thunk so the
                         // emitted IR is compact and any nested record sharing
                         // produces one hash thunk per type per module.
-                        let nested = get_or_emit_hash_thunk(fn_ctx, field_ty, field_resolved)?;
+                        let nested = get_or_emit_hash_thunk(
+                            fn_ctx,
+                            field_ty,
+                            field_resolved,
+                            &hew_types::CollectionMethodDispatch::Derived,
+                        )?;
                         let call = fn_ctx
                             .builder
                             .build_call(nested, &[field_ptr.into()], "hash_nested_call")
@@ -2939,43 +2946,30 @@ fn emit_hash_thunk_body<'ctx>(
 /// is preserved: the dedup key embeds the LLVM struct identity (which
 /// includes the Hew type name), so two records with identical (size,
 /// align) but different shapes emit two distinct thunks.
-fn selected_collection_impls<'a>(
-    fn_ctx: &'a FnCtx<'_, '_>,
-    resolved_ty: Option<&ResolvedTy>,
-) -> (Option<&'a str>, Option<&'a str>) {
-    let Some(ResolvedTy::Named { name, .. }) = resolved_ty else {
-        return (None, None);
-    };
-    if let Some(fact) = fn_ctx.hashmap_lowering_facts.iter().find(|fact| {
-        matches!(
-            &fact.abi,
-            hew_types::HashMapAbi::LayoutKey { key_record_name, .. }
-                if key_record_name == name
-        )
-    }) {
-        return (fact.user_eq_impl.as_deref(), fact.user_hash_impl.as_deref());
+fn selected_impl_symbol<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    method: &hew_types::DefId,
+    trait_name: &str,
+) -> CodegenResult<FnSymbol<'ctx>> {
+    match fn_ctx.fn_symbols_by_declaration.get(method) {
+        Some(Some(symbol)) => Ok(*symbol),
+        Some(None) => Err(CodegenError::FailClosed(format!(
+            "checker selected user {trait_name} implementation `{}`, but its declaration has multiple emitted instances",
+            method.full_path()
+        ))),
+        None => Err(CodegenError::FailClosed(format!(
+            "checker selected user {trait_name} implementation `{}`, but codegen has no callable with that identity",
+            method.full_path()
+        ))),
     }
-    fn_ctx
-        .hashset_lowering_facts
-        .iter()
-        .find(|fact| {
-            matches!(
-                &fact.abi,
-                hew_types::HashSetAbi::Layout { elem_record_name }
-                    if elem_record_name == name
-            )
-        })
-        .map_or((None, None), |fact| {
-            (fact.user_eq_impl.as_deref(), fact.user_hash_impl.as_deref())
-        })
 }
 
 pub(crate) fn get_or_emit_hash_thunk<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     elem_ty: BasicTypeEnum<'ctx>,
     resolved_ty: Option<&ResolvedTy>,
+    dispatch: &hew_types::CollectionMethodDispatch,
 ) -> CodegenResult<FunctionValue<'ctx>> {
-    let (_, user_hash_impl) = selected_collection_impls(fn_ctx, resolved_ty);
     let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
     let key = eq_thunk_struct_key(elem_ty);
     let name = format!("__hew_hash_thunk_{size}_{align}_{key}");
@@ -3001,21 +2995,20 @@ pub(crate) fn get_or_emit_hash_thunk<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hash_thunk: missing key param".into()))?
         .into_pointer_value();
 
-    if let Some(symbol) = user_hash_impl {
-        let selected = *fn_ctx.fn_symbols.get(symbol).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "checker selected user Hash implementation `{symbol}`, but codegen has no function symbol"
-            ))
-        })?;
-        let (callee, return_ty, returns_unit) = selected.real(symbol, "user Hash thunk")?;
+    if let hew_types::CollectionMethodDispatch::User { method } = dispatch {
+        let selected = selected_impl_symbol(fn_ctx, method, "Hash")?;
+        let (callee, return_ty, returns_unit) =
+            selected.real(method.full_path(), "user Hash thunk")?;
         let BasicTypeEnum::IntType(return_ty) = return_ty else {
             return Err(CodegenError::FailClosed(format!(
-                "user Hash implementation `{symbol}` does not return i64"
+                "user Hash implementation `{}` does not return i64",
+                method.full_path()
             )));
         };
         if returns_unit || return_ty.get_bit_width() != 64 {
             return Err(CodegenError::FailClosed(format!(
-                "user Hash implementation `{symbol}` does not return i64"
+                "user Hash implementation `{}` does not return i64",
+                method.full_path()
             )));
         }
         let key = fn_ctx
@@ -3031,7 +3024,8 @@ pub(crate) fn get_or_emit_hash_thunk<'ctx>(
             .basic()
             .ok_or_else(|| {
                 CodegenError::FailClosed(format!(
-                    "user Hash implementation `{symbol}` returned void"
+                    "user Hash implementation `{}` returned void",
+                    method.full_path()
                 ))
             })?
             .into_int_value();

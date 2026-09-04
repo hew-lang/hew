@@ -1128,70 +1128,6 @@ fn rewrite_direct_stdlib_module_root(
     Ok(())
 }
 
-/// Add `std.builtins` to the module graph, carrying only its
-/// `impl Display for <X>` blocks, so `hew-hir`'s `plan_imported_impl_bodies`
-/// discovers and lowers them exactly as it does any imported std module's
-/// impls — the one impl-discovery path `SendError`/`LookupError`/
-/// `AskError`/`TimeoutError`/`LinkError` (declared in the `std.builtins`
-/// prelude, invisible to a normal compile's module graph) and the primitive
-/// `Display` impls (`i8..f64`, `bool`, `char`, `string`, `duration`, plus
-/// `NodeId`/`Location`/`RemotePid`) now share, replacing the old
-/// primitive-only allowlist and its throwaway checker (#3224).
-///
-/// Restricted to `Item::Impl(.. Display ..)` blocks, not the whole file:
-/// `std/builtins.hew` also declares every builtin free function (`println`,
-/// `assert`, …) and opaque compiler-carrier types (`LocalPid<T>`, `NodeId`,
-/// …) that already have their own dedicated registration/dispatch — folding
-/// those into the generic module-graph walk too would have HIR's fourth pass
-/// (`lower_program_with_mono_cap`, the `for mod_id in &mg.topo_order` walk
-/// starting around the "Fourth pass: lower pub fn bodies" comment) emit a
-/// redundant `builtins$println` for every one of them and a `HirTypeDecl`
-/// for every opaque handle type, colliding with their existing catalog/
-/// `BuiltinType` handling. `Display` is the only builtins.hew trait impl
-/// family with no such existing path.
-fn insert_builtins_display_module(graph: &mut hew_parser::module::ModuleGraph) {
-    use hew_parser::module::{Module, ModuleId};
-    const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
-    let parsed = hew_parser::parse(BUILTINS_HEW_SOURCE);
-    // The compiled-in source is part of the build; a parse failure is a
-    // compiler bug, not a user-facing error (mirrors the same fail-closed
-    // pattern the checker's own `register_builtins_hew_impls` uses for this
-    // exact source). Surface it loudly in debug builds; in release, skip
-    // rather than panic — `Display` on the five prelude enums falls back to
-    // the checker's existing not-yet-implemented diagnostic.
-    debug_assert!(
-        parsed.errors.is_empty(),
-        "std/builtins.hew failed to parse: {:?}",
-        parsed.errors
-    );
-    if !parsed.errors.is_empty() {
-        return;
-    }
-    let items: Vec<Spanned<Item>> = parsed
-        .program
-        .items
-        .into_iter()
-        .filter(|(item, _)| {
-            matches!(
-                item,
-                Item::Impl(impl_decl)
-                    if impl_decl.trait_bound.as_ref().is_some_and(|b| b.name == "Display")
-            )
-        })
-        .collect();
-    let id = ModuleId::new(vec!["std".to_string(), "builtins".to_string()]);
-    let module = Module {
-        id: id.clone(),
-        items,
-        imports: Vec::new(),
-        source_paths: Vec::new(),
-        doc: None,
-    };
-    if graph.add_module(module).is_ok() {
-        graph.topo_order.push(id);
-    }
-}
-
 fn build_module_graph_with_diagnostics(
     source_file: &Path,
     items: &mut Vec<Spanned<Item>>,
@@ -1240,7 +1176,41 @@ fn build_module_graph_with_diagnostics(
     if let Err(cycle_err) = graph.compute_topo_order() {
         return Err(FrontendFailure::message_only(cycle_err.to_string()));
     }
-    insert_builtins_display_module(&mut graph);
+
+    // The prelude is loaded out of band, so expose only its Display impls to
+    // the ordinary imported-impl lowering path. Its other declarations keep
+    // their existing compiler-owned registration.
+    let parsed_builtins = hew_parser::parse(include_str!("../../std/builtins.hew"));
+    assert!(
+        parsed_builtins.errors.is_empty(),
+        "embedded std/builtins.hew must parse: {:?}",
+        parsed_builtins.errors
+    );
+    let builtins_id = ModuleId::new(vec!["std".to_string(), "builtins".to_string()]);
+    if !graph.modules.contains_key(&builtins_id) {
+        let display_impls = parsed_builtins
+            .program
+            .items
+            .into_iter()
+            .filter(|(item, _)| {
+                matches!(
+                    item,
+                    Item::Impl(impl_decl)
+                        if impl_decl.trait_bound.as_ref().is_some_and(|bound| bound.name == "Display")
+                )
+            })
+            .collect();
+        graph
+            .add_module(Module {
+                id: builtins_id.clone(),
+                items: display_impls,
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .expect("std.builtins module absence was checked");
+        graph.topo_order.push(builtins_id);
+    }
     rewrite_direct_stdlib_module_root(&mut graph, items, &input_canonical)?;
 
     // Canonical module IDs may share a final component. Reject only when two

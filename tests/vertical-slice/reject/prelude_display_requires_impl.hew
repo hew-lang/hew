@@ -1,0 +1,8 @@
+type PlainValue {
+    value: i64;
+}
+
+fn main() {
+    let value = PlainValue { value: 7 };
+    println(f"{value}");
+}

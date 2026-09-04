@@ -2420,22 +2420,6 @@ impl Checker {
         self.record_root_value_binding(&cd.name);
     }
 
-    /// Whether `check_impl`'s body-check is currently walking the
-    /// compiler-injected `std.builtins` module graph node (see
-    /// `insert_builtins_display_module`, `hew-compile`), which carries ONLY
-    /// its `impl Display for <X>` blocks — never the enum or `Display` trait
-    /// declarations that same source also has, since those are registered
-    /// separately, earlier, by `register_builtins_hew_impls`. Exempts the
-    /// orphan-rule check below: without this, the compiler's own
-    /// `impl Display for TimeoutError` (or the pre-existing
-    /// `impl Display for NodeId`/primitives) would warn as an orphan on
-    /// every single compile, since this pass's own `local_type_defs` /
-    /// `trait_ref_is_local` never see those separately-registered
-    /// declarations.
-    fn is_builtins_prelude_module(&self) -> bool {
-        self.current_module.as_deref() == Some("std.builtins")
-    }
-
     #[expect(
         clippy::too_many_lines,
         reason = "one body-check pass over an impl block: drop-impl gate, orphan-rule check, \
@@ -2457,10 +2441,8 @@ impl Checker {
             let target_is_struct = self
                 .lookup_type_def(type_name)
                 .is_some_and(|td| td.kind == TypeDefKind::Struct);
-            // Orphan rule check: if implementing a trait, either the type or the
-            // trait must be defined in the current compilation unit. `std.builtins`
-            // is exempt — see `is_builtins_prelude_module`.
-            let is_builtins_prelude_module = self.is_builtins_prelude_module();
+            // The injected std.builtins graph node carries only Display impls;
+            // its separately registered type and trait declarations are local.
             if let Some(tb) = &id.trait_bound {
                 let type_is_local = self.local_type_defs.contains(type_name)
                     || self.intrinsic_type_is_local_to_builtin_surface(type_name);
@@ -2470,7 +2452,10 @@ impl Checker {
                 // on the same authoritative identity every other trait-reference
                 // site does — never the bare spelling in isolation.
                 let trait_is_local = self.trait_ref_is_local(&tb.name);
-                if !type_is_local && !trait_is_local && !is_builtins_prelude_module {
+                if !type_is_local
+                    && !trait_is_local
+                    && self.current_module.as_deref() != Some("std.builtins")
+                {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::OrphanImpl,

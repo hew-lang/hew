@@ -703,7 +703,9 @@ fn classify(
                 collection_facts(&classify_all(args, decls, walk)?)
             }
             // Aggregate rule over the std declaration's fields.
-            BuiltinType::CrashInfo | BuiltinType::CrashNotification => {
+            BuiltinType::CrashInfo
+            | BuiltinType::CrashNotification
+            | BuiltinType::NodeConfig => {
                 classify_declaration(name, args, decls, walk)?
             }
             BuiltinType::Rc | BuiltinType::Weak | BuiltinType::LambdaPid => affine_retain,

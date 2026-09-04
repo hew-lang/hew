@@ -40,6 +40,7 @@ pub enum BuiltinType {
     NodeId,
     Location,
     RemotePid,
+    NodeConfig,
     HewActor,
     HewDuplex,
     HewSendHalf,
@@ -223,6 +224,7 @@ builtin_types! {
     NodeId => "NodeId",
     Location => "Location",
     RemotePid => "RemotePid",
+    NodeConfig => "NodeConfig",
     HewActor => "HewActor",
     HewDuplex => "HewDuplex",
     HewSendHalf => "HewSendHalf",
@@ -544,7 +546,8 @@ impl BuiltinType {
             | Self::Instant
             | Self::Trap
             | Self::CancellationToken
-            | Self::TimeoutError => 0,
+            | Self::TimeoutError
+            | Self::NodeConfig => 0,
         }
     }
 
@@ -686,6 +689,9 @@ pub const fn builtin_types() -> &'static [BuiltinTypeInfo] {
 #[must_use]
 pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
     match name {
+        "NodeConfig" | "std.builtins.NodeConfig" => {
+            return Some(BuiltinType::NodeConfig);
+        }
         "channel.Sender" | "std.channel.Sender" => {
             return Some(BuiltinType::Sender);
         }

@@ -5110,9 +5110,22 @@ pub unsafe extern "C" fn hew_node_api_start(
         return 1;
     }
     for (index, credential) in peer_credentials.iter().enumerate() {
-        let Ok(route_slot) = u16::try_from(index + 1) else {
-            set_last_error("Node::start: too many peer credentials");
-            return 1;
+        let (route_slot, credential) = if let Some((slot, value)) = credential.split_once('@') {
+            let Ok(slot) = slot.parse::<u16>() else {
+                set_last_error("Node::start: peer route slot must be a non-zero u16");
+                return 1;
+            };
+            if slot == 0 {
+                set_last_error("Node::start: peer route slot must be a non-zero u16");
+                return 1;
+            }
+            (slot, value)
+        } else {
+            let Ok(slot) = u16::try_from(index + 1) else {
+                set_last_error("Node::start: too many peer credentials");
+                return 1;
+            };
+            (slot, credential.as_str())
         };
         let Ok(credential) = CString::new(credential.as_bytes()) else {
             set_last_error("Node::start: a peer credential contains a NUL byte");

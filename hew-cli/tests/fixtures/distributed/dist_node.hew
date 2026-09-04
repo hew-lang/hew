@@ -34,13 +34,9 @@ import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorError,
 // the Stopped terminal state from within its own handler. `stop(self)` is not a
 // working surface yet, so the actor calls the runtime self-stop directly.
 //
-// hew_node_api_unregister: the repoint_preserves_ref scenario re-points a
-// registered name to a DIFFERENT actor. `Node::unregister` is not yet a Hew
-// surface, so the server calls the runtime api directly.
 extern "C" {
     fn hew_actor_self_stop();
     fn hew_actor_self_id() -> i64;
-    fn hew_node_api_unregister(name: string) -> i32;
     fn hew_dist_setup_race_kind() -> i64;
 }
 
@@ -875,9 +871,13 @@ fn wait_for_file(path: string) -> string {
     var attempts: i64 = 0;
     loop {
         if fs.exists(path) {
-            let contents = fs.read(path);
-            if !contents.is_empty() {
-                return contents;
+            match fs.read(path) {
+                .Ok(contents) => {
+                    if !contents.is_empty() {
+                        return contents;
+                    }
+                },
+                .Err(_) => {},
             }
         }
         attempts = attempts + 1;
@@ -888,17 +888,14 @@ fn wait_for_file(path: string) -> string {
     }
 }
 
-fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_route_slot: u16) {
-    Node.load_keys(f"{kx}/{my_role}.key");
-    let me = Node.identity_key();
-    publish_atomic(kx, f"{my_role}.pub", me);
-    let peer_key = wait_for_file(f"{kx}/{peer_role}.pub");
+fn configured_peer(peer_route_slot: u16) -> string {
+    let peer_key = os.env("HEW_DIST_PEER_KEY").unwrap_or("");
     let configured_peer_key = if os.env("HEW_DIST_BAD_PEER_PIN").unwrap_or("") == "1" {
         "0000000000000000000000000000000000000000000000000000000000000000"
     } else {
         peer_key
     };
-    Node.allow_peer(peer_route_slot, configured_peer_key);
+    f"{peer_route_slot}@{configured_peer_key}"
 }
 
 fn signal_server_listening(kx: string) {
@@ -975,9 +972,16 @@ fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, 
 fn run_server(port: string, scenario: string) {
     let addr = f"127.0.0.1:{port}";
     let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
-    Node.set_transport("tcp");
-    stage_peer_credentials(kx, "server", "client", 2);
-    Node.start(addr);
+    let peers: Vec<string> = Vec.new();
+    peers.push(configured_peer(2));
+    let config = NodeConfig { bind: addr, transport: "tcp", key: os.env("HEW_DIST_KEY_PATH").unwrap_or(""), trust: "pinned", peers: peers, seeds: Vec.new() };
+    match Node.start(config) {
+        .Err(err) => {
+            println(f"FAIL {scenario} server-start={err}");
+            return;
+        },
+        .Ok(_) => {},
+    }
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue(store: s);
     Node.register("kv", kv);
@@ -1012,9 +1016,7 @@ fn run_server(port: string, scenario: string) {
         } else {
             if scenario == "repoint_preserves_ref" {
                 sleep(1s);
-                let _ = unsafe {
-                    hew_node_api_unregister("kv")
-                };
+                let _ = Node.unregister("kv");
                 let s2: HashMap<string, string> = HashMap.new();
                 let kv2 = spawn KeyValue(store: s2);
                 Node.register("kv", kv2);
@@ -2071,12 +2073,26 @@ fn scenario_type_mismatch_lookup() -> i64 {
 
 fn run_client(port: string, scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
-    Node.set_transport("tcp");
-    stage_peer_credentials(kx, "client", "server", 1);
-    Node.start("127.0.0.1:0");
+    let peers: Vec<string> = Vec.new();
+    peers.push(configured_peer(1));
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: os.env("HEW_DIST_KEY_PATH").unwrap_or(""), trust: "pinned", peers: peers, seeds: Vec.new() };
+    match Node.start(config) {
+        .Err(err) => {
+            println(f"FAIL {scenario} client-start={err}");
+            return 1;
+        },
+        .Ok(_) => {},
+    }
     wait_for_server_listening(kx);
     let remote_addr = f"1@127.0.0.1:{port}";
-    Node.connect(remote_addr);
+    match Node.connect(remote_addr) {
+        .Err(err) => {
+            println(f"FAIL {scenario} client-connect={err}");
+            Node.shutdown();
+            return 1;
+        },
+        .Ok(_) => {},
+    }
     let status = if scenario == "handshake_reject" {
         scenario_handshake_reject()
     } else if scenario == "type_mismatch_lookup" {

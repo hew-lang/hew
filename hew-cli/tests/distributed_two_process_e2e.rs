@@ -202,13 +202,28 @@ impl Drop for ManagedChild {
 struct SecureScenario {
     kx_dir: tempfile::TempDir,
     port: u16,
+    server_key: PathBuf,
+    client_key: PathBuf,
+    server_public: String,
+    client_public: String,
 }
 
 impl SecureScenario {
     fn new() -> Self {
+        let kx_dir = tempfile::tempdir().expect("create key-exchange dir for scenario");
+        let server_key = kx_dir.path().join("server.key");
+        let client_key = kx_dir.path().join("client.key");
+        let server_identity = hew_runtime::encryption::noise_identity_load_or_create(&server_key)
+            .expect("create server Noise identity");
+        let client_identity = hew_runtime::encryption::noise_identity_load_or_create(&client_key)
+            .expect("create client Noise identity");
         Self {
-            kx_dir: tempfile::tempdir().expect("create key-exchange dir for scenario"),
+            kx_dir,
             port: allocate_loopback_port(),
+            server_key,
+            client_key,
+            server_public: hew_runtime::peer_binding::hex_lower(&server_identity.public()),
+            client_public: hew_runtime::peer_binding::hex_lower(&client_identity.public()),
         }
     }
 
@@ -216,6 +231,11 @@ impl SecureScenario {
     /// key-exchange directory, and fixture role/port/scenario.
     fn spawn(&self, role: &str, scenario: &str, extra_env: &[(&str, &str)]) -> ManagedChild {
         let binary = compiled_node_binary();
+        let (key_path, peer_key) = match role {
+            "server" => (&self.server_key, &self.client_public),
+            "client" => (&self.client_key, &self.server_public),
+            other => panic!("unknown distributed fixture role {other}"),
+        };
         let mut command = Command::new(binary);
         command
             .env("HEW_TRANSPORT", "tcp")
@@ -223,6 +243,8 @@ impl SecureScenario {
             .env("HEW_DIST_PORT", self.port.to_string())
             .env("HEW_DIST_SCENARIO", scenario)
             .env("HEW_DIST_KX_DIR", self.kx_dir.path())
+            .env("HEW_DIST_KEY_PATH", key_path)
+            .env("HEW_DIST_PEER_KEY", peer_key)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (key, value) in extra_env {

@@ -8,10 +8,10 @@ use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeInstanceKey}
 
 use crate::ownership::{Binding, OwnKind, TypeFactTable};
 use crate::{
-    BlockArg, BlockId, CallableId, CallableInstance, Edge, FunctionSourceOrigin, GenericTemplateId,
-    OpId, Operand, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind,
-    SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature,
-    SemTerminator, SirInstanceKey, ValueDef, ValueId,
+    BlockArg, BlockId, CallResult, CallUnwind, CallableId, CallableInstance, Edge,
+    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, Provenance, SemAbiParam, SemBlock,
+    SemCallConv, SemCallable, SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp,
+    SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirInstanceKey, ValueDef, ValueId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1264,7 +1264,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         let result = self.lower_block(&self.function.body)?;
         if self.is_open() {
-            self.set_terminator(SemTerminator::Return { value: result })?;
+            self.set_terminator(SemTerminator::Return {
+                value: result.map(|operand| crate::BoundaryOperand {
+                    operand,
+                    decision: crate::BoundaryDecision::Move,
+                }),
+            })?;
         }
         let blocks = std::mem::take(&mut self.blocks)
             .into_iter()
@@ -1350,8 +1355,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                             lower_initial_unit_return(self, expr)?;
                             None
                         }
-                        Some(expr) => Some(Operand {
-                            value: lower_initial_value_transfer(self, expr, "return value")?,
+                        Some(expr) => Some(crate::BoundaryOperand {
+                            operand: Operand {
+                                value: lower_initial_value_transfer(self, expr, "return value")?,
+                            },
+                            decision: crate::BoundaryDecision::Move,
                         }),
                         None => None,
                     };
@@ -1675,10 +1683,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 decision: crate::BoundaryDecision::Copy,
             });
         }
-        let kind = SemOpKind::Call {
-            callee: callee_id,
-            args: lowered_args,
-        };
         if return_ty == ResolvedTy::Unit {
             if value_required {
                 return Err(format!(
@@ -1686,10 +1690,62 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     callee_declaration.full_path()
                 ));
             }
-            self.emit_without_result(expr, kind)?;
+            let normal = self.new_block(Vec::new());
+            let unwind = self.new_block(Vec::new());
+            let id = OpId(self.ops);
+            self.ops += 1;
+            self.set_terminator(SemTerminator::Call {
+                id,
+                callee: callee_id,
+                args: lowered_args,
+                result: CallResult::Unit,
+                normal: Edge {
+                    target: normal,
+                    args: Vec::new(),
+                },
+                unwind: CallUnwind::Cleanup(Edge {
+                    target: unwind,
+                    args: Vec::new(),
+                }),
+            })?;
+            self.current = unwind;
+            self.set_terminator(SemTerminator::ResumeUnwind)?;
+            self.current = normal;
             Ok(None)
         } else {
-            Ok(Some(self.emit(expr, kind)?))
+            let result = self.fresh_value();
+            let continuation = self.fresh_value();
+            let own = OwnKind::of_ty(&return_ty, self.service.checked_facts)?;
+            let normal = self.new_block(vec![BlockArg {
+                value: continuation,
+                own,
+                ty: return_ty.clone(),
+            }]);
+            let unwind = self.new_block(Vec::new());
+            let id = OpId(self.ops);
+            self.ops += 1;
+            self.set_terminator(SemTerminator::Call {
+                id,
+                callee: callee_id,
+                args: lowered_args,
+                result: CallResult::Value(ValueDef {
+                    id: result,
+                    own,
+                    ty: return_ty,
+                }),
+                normal: Edge {
+                    target: normal,
+                    args: vec![Operand { value: result }],
+                },
+                unwind: CallUnwind::Cleanup(Edge {
+                    target: unwind,
+                    args: Vec::new(),
+                }),
+            })?;
+            self.current = unwind;
+            self.set_terminator(SemTerminator::ResumeUnwind)?;
+            self.current = normal;
+            Ok(Some(continuation))
         }
     }
 
@@ -1844,18 +1900,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.current_block_mut().append_op(op)?;
         self.ops += 1;
         Ok(value)
-    }
-
-    fn emit_without_result(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<(), String> {
-        let op = SemOp {
-            id: OpId(self.ops),
-            results: Vec::new(),
-            kind,
-            provenance: Provenance::Site(expr.site),
-        };
-        self.current_block_mut().append_op(op)?;
-        self.ops += 1;
-        Ok(())
     }
 
     fn fresh_value(&mut self) -> ValueId {

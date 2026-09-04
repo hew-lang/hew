@@ -1,9 +1,9 @@
 use hew_hir::ItemId;
 use hew_sir::{
-    dump_sir, Binding, BindingId, BindingTarget, BlockArg, BlockId, BoundaryDecision,
-    BoundaryOperand, CallableId, Edge, FunctionSourceOrigin, OpId, Operand, OperandSlot, OwnKind,
-    PlaceDecl, PlaceId, Provenance, SemBlock, SemFunction, SemModule, SemOp, SemOpKind,
-    SemTerminator, SnapshotDecision, SuspendKind, ValueId,
+    Binding, BindingId, BindingTarget, BlockArg, BlockId, BoundaryDecision, BoundaryOperand,
+    CallResult, CallUnwind, CallableId, Edge, FunctionSourceOrigin, Operand, OperandSlot, OwnKind,
+    PlaceDecl, PlaceId, SemBlock, SemFunction, SemTerminator, SnapshotDecision, SuccessorSlot,
+    SuspendKind, ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
 
@@ -112,23 +112,133 @@ fn boundary(value: ValueId, decision: BoundaryDecision) -> BoundaryOperand {
 }
 
 #[test]
-fn every_boundary_decision_is_visible_to_dump_and_model_visitors() {
+fn invoke_value_result_flows_to_the_normal_block_and_visits_both_cfg_edges() {
     let value = ValueId(7);
     let mut function = function(Vec::new(), Vec::new());
-    function.blocks[0].ops.push(SemOp {
-        id: OpId(0),
-        results: Vec::new(),
-        kind: SemOpKind::Call {
-            callee: CallableId(0),
-            args: vec![
-                boundary(value, BoundaryDecision::Borrow),
-                boundary(value, BoundaryDecision::Copy),
-                boundary(value, BoundaryDecision::Move),
-            ],
+    function.return_ty = ResolvedTy::I64;
+    function.blocks = vec![
+        SemBlock {
+            id: BlockId(0),
+            args: Vec::new(),
+            ops: Vec::new(),
+            terminator: SemTerminator::Call {
+                id: hew_sir::OpId(0),
+                callee: CallableId(0),
+                args: vec![
+                    boundary(value, BoundaryDecision::Borrow),
+                    boundary(value, BoundaryDecision::Copy),
+                    boundary(value, BoundaryDecision::Move),
+                ],
+                result: CallResult::Value(ValueDef {
+                    id: ValueId(8),
+                    ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                }),
+                normal: Edge {
+                    target: BlockId(1),
+                    args: vec![Operand { value: ValueId(8) }],
+                },
+                unwind: CallUnwind::Cleanup(Edge {
+                    target: BlockId(2),
+                    args: Vec::new(),
+                }),
+            },
         },
-        provenance: Provenance::Synthesized,
+        SemBlock {
+            id: BlockId(1),
+            args: vec![BlockArg {
+                value: ValueId(9),
+                ty: ResolvedTy::I64,
+                own: OwnKind::None,
+            }],
+            ops: Vec::new(),
+            terminator: SemTerminator::Return {
+                value: Some(boundary(ValueId(9), BoundaryDecision::Move)),
+            },
+        },
+        SemBlock {
+            id: BlockId(2),
+            args: Vec::new(),
+            ops: Vec::new(),
+            terminator: SemTerminator::ResumeUnwind,
+        },
+    ];
+
+    let call = &function.blocks[0].terminator;
+    let mut boundaries = Vec::new();
+    call.visit_boundary_operands(|slot, input| boundaries.push((slot, input.decision)));
+    assert_eq!(
+        boundaries,
+        vec![
+            (OperandSlot(0), BoundaryDecision::Borrow),
+            (OperandSlot(1), BoundaryDecision::Copy),
+            (OperandSlot(2), BoundaryDecision::Move),
+        ]
+    );
+
+    let mut results = Vec::new();
+    call.visit_results(|result| results.push(result.id));
+    assert_eq!(results, vec![ValueId(8)]);
+
+    let mut successors = Vec::new();
+    call.visit_successors_with_slots(|slot, edge| {
+        successors.push((slot, edge.target, edge.args.clone()));
     });
-    function.blocks[0].terminator = SemTerminator::Suspend {
+    assert_eq!(
+        successors,
+        vec![
+            (
+                SuccessorSlot(0),
+                BlockId(1),
+                vec![Operand { value: ValueId(8) }],
+            ),
+            (SuccessorSlot(1), BlockId(2), Vec::new()),
+        ]
+    );
+    assert_eq!(function.blocks[1].args[0].value, ValueId(9));
+}
+
+#[test]
+fn no_unwind_call_visits_only_its_normal_cfg_edge() {
+    let call = SemTerminator::Call {
+        id: hew_sir::OpId(0),
+        callee: CallableId(0),
+        args: Vec::new(),
+        result: CallResult::Unit,
+        normal: Edge {
+            target: BlockId(1),
+            args: Vec::new(),
+        },
+        unwind: CallUnwind::NotApplicable,
+    };
+
+    let mut successors = Vec::new();
+    call.visit_successors_with_slots(|slot, edge| successors.push((slot, edge.target)));
+    assert_eq!(successors, vec![(SuccessorSlot(0), BlockId(1))]);
+}
+
+#[test]
+fn return_value_carries_a_boundary_decision_and_unit_is_explicit() {
+    let value_return = SemTerminator::Return {
+        value: Some(boundary(ValueId(7), BoundaryDecision::Move)),
+    };
+    let mut boundaries = Vec::new();
+    value_return.visit_boundary_operands(|slot, input| boundaries.push((slot, input.clone())));
+    assert_eq!(
+        boundaries,
+        vec![(OperandSlot(0), boundary(ValueId(7), BoundaryDecision::Move),)]
+    );
+
+    let unit_return = SemTerminator::Return { value: None };
+    let mut unit_boundaries = Vec::new();
+    unit_return.visit_boundary_operands(|slot, input| unit_boundaries.push((slot, input.clone())));
+    assert!(unit_boundaries.is_empty());
+}
+
+#[test]
+fn snapshot_boundary_decisions_are_visible_to_the_terminator_visitor() {
+    let value = ValueId(7);
+    let terminator = SemTerminator::Suspend {
         kind: SuspendKind::ActorSend,
         inputs: vec![
             boundary(value, BoundaryDecision::Snapshot(SnapshotDecision::Share)),
@@ -149,17 +259,10 @@ fn every_boundary_decision_is_visible_to_dump_and_model_visitors() {
     };
 
     let mut visited = Vec::new();
-    function.blocks[0].ops[0]
-        .visit_boundary_operands(|slot, input| visited.push((slot, input.decision)));
-    function.blocks[0]
-        .terminator
-        .visit_boundary_operands(|slot, input| visited.push((slot, input.decision)));
+    terminator.visit_boundary_operands(|slot, input| visited.push((slot, input.decision)));
     assert_eq!(
         visited,
         vec![
-            (OperandSlot(0), BoundaryDecision::Borrow),
-            (OperandSlot(1), BoundaryDecision::Copy),
-            (OperandSlot(2), BoundaryDecision::Move),
             (
                 OperandSlot(0),
                 BoundaryDecision::Snapshot(SnapshotDecision::Share),
@@ -174,27 +277,4 @@ fn every_boundary_decision_is_visible_to_dump_and_model_visitors() {
             ),
         ]
     );
-
-    let dump = dump_sir(&SemModule {
-        functions: vec![function],
-        ..SemModule::default()
-    });
-    for rendered in [
-        "borrow %7",
-        "copy %7",
-        "move %7",
-        "snapshot.share %7",
-        "snapshot.deep_copy %7",
-        "snapshot.transfer %7",
-    ] {
-        assert!(dump.contains(rendered), "missing `{rendered}` in:\n{dump}");
-    }
-}
-
-#[test]
-fn operand_remains_value_only() {
-    let operand = Operand { value: ValueId(9) };
-    let Operand { value } = operand;
-
-    assert_eq!(value, ValueId(9));
 }

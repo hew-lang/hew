@@ -1,6 +1,9 @@
 use std::fmt::Write as _;
 
-use crate::{LoweredModule, OwnKind, SemModule, SemOpKind, SemTerminator, SirLoweringStatus};
+use crate::{
+    CallResult, CallUnwind, LoweredModule, OwnKind, SemModule, SemOpKind, SemTerminator,
+    SirLoweringStatus,
+};
 
 /// Deterministic printer for a whole HIR→SIR lowering result.
 ///
@@ -84,9 +87,9 @@ pub fn dump_sir(module: &SemModule) -> String {
             }
             writeln!(out, ":").expect("write to String");
             for op in &block.ops {
-                dump_op(&mut out, module, op);
+                dump_op(&mut out, op);
             }
-            dump_term(&mut out, &block.terminator);
+            dump_term(&mut out, module, &block.terminator);
         }
         writeln!(out, "}}").expect("write to String");
     }
@@ -112,7 +115,7 @@ const fn own_suffix(own: OwnKind) -> &'static str {
     clippy::too_many_lines,
     reason = "one arm per operation kind is the point of a closed textual rendering"
 )]
-fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
+fn dump_op(out: &mut String, op: &crate::SemOp) {
     write!(out, "    ").expect("write to String");
     match op.results.as_slice() {
         [] => {}
@@ -157,20 +160,6 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
             writeln!(out, "cast {} to {}", operand(value), to.user_facing())
                 .expect("write to String");
         }
-        SemOpKind::Call { callee, args } => {
-            let target = module.callable(*callee).map_or_else(
-                || format!("<invalid-callable:{}>", callee.0),
-                |callable| callable.symbol.clone(),
-            );
-            write!(out, "call @{target}(").expect("write to String");
-            for (index, arg) in args.iter().enumerate() {
-                if index != 0 {
-                    write!(out, ", ").expect("write to String");
-                }
-                write!(out, "{}", boundary_operand(arg)).expect("write to String");
-            }
-            writeln!(out, ")").expect("write to String");
-        }
         SemOpKind::ConstF64(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstChar(value) => writeln!(out, "const {value:?}").expect("write to String"),
         SemOpKind::ConstUnit => writeln!(out, "const ()").expect("write to String"),
@@ -188,16 +177,6 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
         }
         SemOpKind::BytesEq { lhs, rhs } => {
             writeln!(out, "bytes.eq {}, {}", operand(lhs), operand(rhs)).expect("write to String");
-        }
-        SemOpKind::RtCall { family, args } => {
-            write!(out, "rt.call{{{family:?}}}(").expect("write to String");
-            for (index, arg) in args.iter().enumerate() {
-                if index != 0 {
-                    write!(out, ", ").expect("write to String");
-                }
-                write!(out, "{}", boundary_operand(arg)).expect("write to String");
-            }
-            writeln!(out, ")").expect("write to String");
         }
         SemOpKind::CopyValue { source } => {
             writeln!(out, "copy_value {}", operand(source)).expect("write to String");
@@ -242,10 +221,10 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
     }
 }
 
-fn dump_term(out: &mut String, term: &SemTerminator) {
+fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
     match term {
         SemTerminator::Return { value: Some(value) } => {
-            writeln!(out, "    return {}", operand(value)).expect("write to String");
+            writeln!(out, "    return {}", boundary_operand(value)).expect("write to String");
         }
         SemTerminator::Return { value: None } => {
             writeln!(out, "    return").expect("write to String");
@@ -268,6 +247,42 @@ fn dump_term(out: &mut String, term: &SemTerminator) {
             edge_args(else_target)
         )
         .expect("write to String"),
+        SemTerminator::Call {
+            callee,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => {
+            let target = module.callable(*callee).map_or_else(
+                || format!("<invalid-callable:{}>", callee.0),
+                |callable| callable.symbol.clone(),
+            );
+            dump_call(
+                out,
+                &format!("call @{target}"),
+                args,
+                result,
+                normal,
+                unwind,
+            );
+        }
+        SemTerminator::RtCall {
+            family,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => dump_call(
+            out,
+            &format!("rt.call{{{family:?}}}"),
+            args,
+            result,
+            normal,
+            unwind,
+        ),
         SemTerminator::Trap { kind } => {
             writeln!(out, "    trap{{{kind:?}}}").expect("write to String");
         }
@@ -294,8 +309,47 @@ fn dump_term(out: &mut String, term: &SemTerminator) {
             writeln!(out, "] cancel bb{}{}", cancel.target.0, edge_args(cancel))
                 .expect("write to String");
         }
+        SemTerminator::ResumeUnwind => {
+            writeln!(out, "    resume_unwind").expect("write to String");
+        }
         SemTerminator::Unreachable => writeln!(out, "    unreachable").expect("write to String"),
     }
+}
+
+fn dump_call(
+    out: &mut String,
+    name: &str,
+    args: &[crate::BoundaryOperand],
+    result: &CallResult,
+    normal: &crate::Edge,
+    unwind: &CallUnwind,
+) {
+    write!(out, "    {name}(").expect("write to String");
+    for (index, arg) in args.iter().enumerate() {
+        if index != 0 {
+            write!(out, ", ").expect("write to String");
+        }
+        write!(out, "{}", boundary_operand(arg)).expect("write to String");
+    }
+    match result {
+        CallResult::Unit => write!(out, ")"),
+        CallResult::Value(value) => write!(
+            out,
+            ") -> %{}: {} [{:?}]",
+            value.id.0,
+            value.ty.user_facing(),
+            value.own
+        ),
+    }
+    .expect("write to String");
+    write!(out, " normal bb{}{}", normal.target.0, edge_args(normal)).expect("write to String");
+    match unwind {
+        CallUnwind::NotApplicable => writeln!(out, " unwind none"),
+        CallUnwind::Cleanup(edge) => {
+            writeln!(out, " unwind bb{}{}", edge.target.0, edge_args(edge))
+        }
+    }
+    .expect("write to String");
 }
 
 fn edge_args(edge: &crate::Edge) -> String {

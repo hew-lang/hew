@@ -24,11 +24,11 @@ pub use lower::{
     SirSourceStatus,
 };
 pub use model::{
-    BlockArg, BlockId, BoundaryOperand, CallableId, CallableInstance, Edge, EffectSet,
-    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, SemAbiParam,
-    SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemFunctionIndex,
-    SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
-    SirInstanceKey, SuccessorSlot, UseSite, ValueDef, ValueId,
+    BlockArg, BlockId, BoundaryOperand, CallResult, CallUnwind, CallableId, CallableInstance, Edge,
+    EffectSet, FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance,
+    SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
+    SemFunctionIndex, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
+    SemSignature, SemTerminator, SirInstanceKey, SuccessorSlot, UseSite, ValueDef, ValueId,
 };
 pub use optimize::{
     canonicalize_module_constant_cfg, CfgCanonicalizationReport, SirOptimizationError,

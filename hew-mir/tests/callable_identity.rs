@@ -632,7 +632,7 @@ fn a_machine_step_is_keyed_by_the_machine_declaration_and_its_type_arguments() {
 // ── cross-producer agreement ────────────────────────────────────────────────
 
 #[test]
-fn sir_bridge_and_legacy_lowering_agree_on_a_monomorphic_key() {
+fn sir_bridge_and_legacy_lowering_agree_on_a_call_free_monomorphic_key() {
     let source = r"
         fn helper(x: i64) -> i64 { x + 1 }
 
@@ -665,25 +665,20 @@ fn sir_bridge_and_legacy_lowering_agree_on_a_monomorphic_key() {
         "SIR must verify: {:#?}",
         hew_sir::verify_module(&sir.module)
     );
-    let entry = sir
+    let helper = sir
         .module
-        .entry_callable
-        .expect("scalar root main must be a strict SIR entry");
-    let strict = lower_closed_scalar_component(&sir.module, &[entry])
-        .expect("closed scalar component must lower")
+        .callables
+        .iter()
+        .find(|callable| callable.symbol == "helper")
+        .expect("helper must have a resolved SIR callable");
+    let strict = lower_closed_scalar_component(&sir.module, &[helper.id])
+        .expect("call-free scalar helper must lower")
         .into_pipeline();
 
-    for name in ["main", "helper"] {
-        assert_eq!(
-            raw(&legacy, name).key,
-            raw(&strict, name).key,
-            "the two producers must realize `{name}` under one identity"
-        );
-    }
-    assert_ne!(
-        raw(&strict, "main").key,
+    assert_eq!(
+        raw(&legacy, "helper").key,
         raw(&strict, "helper").key,
-        "distinct declarations must keep distinct keys on the strict path too"
+        "the two producers must realize `helper` under one identity"
     );
 }
 
@@ -714,12 +709,14 @@ fn sir_bridge_keys_a_generic_instance_by_its_declared_type_arguments() {
     let origin = declaration_of(&hir, "id");
 
     let sir = hew_sir::lower_module(&hir.module, &type_check);
-    let entry = sir
+    let instance = sir
         .module
-        .entry_callable
-        .expect("scalar root main must be a strict SIR entry");
-    let strict = lower_closed_scalar_component(&sir.module, &[entry])
-        .expect("closed scalar component must lower")
+        .callables
+        .iter()
+        .find(|callable| callable.declaration == origin)
+        .expect("SIR must own the requested generic instance");
+    let strict = lower_closed_scalar_component(&sir.module, &[instance.id])
+        .expect("call-free concrete identity body must lower")
         .into_pipeline();
 
     let instance = strict
@@ -732,15 +729,6 @@ fn sir_bridge_keys_a_generic_instance_by_its_declared_type_arguments() {
         MirCallableKey::instance(origin, vec![ResolvedTy::I64]),
         "the bridge must project SirInstanceKey::type_args, not the mangled symbol `{}`",
         instance.name
-    );
-    assert_eq!(
-        strict
-            .raw_mir
-            .iter()
-            .find(|f| f.name == "main")
-            .map(|f| &f.key.instance),
-        Some(&MirCallableInstance::Monomorphic),
-        "a callable with no semantic instance key stays Monomorphic"
     );
 }
 

@@ -187,7 +187,7 @@ pub enum SnapshotDecision {
 
 /// The total ownership decision for one semantic boundary operand.
 ///
-/// This is carried only by call and suspension boundary shapes. Plain
+/// This is carried only by call, return, and suspension boundary shapes. Plain
 /// [`crate::Operand`] remains a value use with no generic mode field, and
 /// construction has no absent, default, or undecided state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

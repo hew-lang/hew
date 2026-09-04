@@ -1,8 +1,9 @@
 use hew_hir::{lower_program_host_target, ItemId, ResolutionCtx};
 use hew_sir::{
-    build_def_use, dump_sir, lower_module, verify_function, verify_module, BlockId, CallableId,
-    CallableInstance, EffectSet, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance,
-    SemBlock, SemFunction, SemOp, SemOpKind, SemTerminator, ValueDef, ValueId,
+    build_def_use, dump_sir, lower_module, verify_function, verify_module, BlockId,
+    BoundaryDecision, BoundaryOperand, CallableId, CallableInstance, EffectSet,
+    FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance, SemBlock, SemFunction, SemOp,
+    SemOpKind, SemTerminator, ValueDef, ValueId,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, DefId, ResolvedTy};
 
@@ -90,7 +91,7 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
             "    %1 = const 42\n",
             "    %2 = tuple.make(%0, %1)\n",
             "    %3 = tuple.get %2, 0\n",
-            "    return %3\n",
+            "    return move %3\n",
             "}\n"
         )
     );
@@ -239,7 +240,10 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
                 },
             ],
             terminator: SemTerminator::Return {
-                value: Some(Operand { value: ValueId(2) }),
+                value: Some(BoundaryOperand {
+                    operand: Operand { value: ValueId(2) },
+                    decision: BoundaryDecision::Move,
+                }),
             },
         }],
         places: Vec::new(),

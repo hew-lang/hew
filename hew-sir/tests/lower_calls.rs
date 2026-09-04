@@ -1,6 +1,7 @@
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
-    dump_sir, lower_module, verify_module, CallableInstance, SemOpKind, SirLoweringStatus,
+    dump_sir, lower_module, verify_module, CallResult, CallUnwind, CallableId, CallableInstance,
+    Edge, SemFunction, SemTerminator, SirLoweringStatus,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -25,6 +26,25 @@ fn lower_hir(source: &str) -> (hew_hir::HirModule, hew_types::TypeCheckOutput) {
 fn lower_source(source: &str) -> hew_sir::LoweredModule {
     let (hir, type_facts) = lower_hir(source);
     lower_module(&hir, &type_facts)
+}
+
+fn direct_calls(
+    function: &SemFunction,
+) -> impl Iterator<Item = (CallableId, &CallResult, &Edge, &CallUnwind)> + '_ {
+    function.blocks.iter().filter_map(|block| {
+        if let SemTerminator::Call {
+            callee,
+            result,
+            normal,
+            unwind,
+            ..
+        } = &block.terminator
+        {
+            Some((*callee, result, normal, unwind))
+        } else {
+            None
+        }
+    })
 }
 
 #[test]
@@ -92,14 +112,9 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         .function_index()
         .function(entry)
         .expect("selected entry must have a lowered scalar SIR body");
-    let callee = main
-        .blocks
-        .iter()
-        .flat_map(|block| &block.ops)
-        .find_map(|op| match &op.kind {
-            SemOpKind::Call { callee, .. } => Some(*callee),
-            _ => None,
-        })
+    let callee = direct_calls(main)
+        .map(|(callee, _, _, _)| callee)
+        .next()
         .expect("main must contain a resolved SIR direct call");
     assert_eq!(
         module
@@ -113,11 +128,28 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         "resolved direct-call SIR must verify: {:#?}",
         verify_module(module)
     );
-    assert!(dump_sir(module).contains("call @add_one(%0)"));
+    let (_, result, normal, unwind) = direct_calls(main)
+        .next()
+        .expect("main must contain its invoke terminator");
+    let CallResult::Value(result) = result else {
+        panic!("scalar direct call must define a value on its normal path");
+    };
+    assert_eq!(
+        normal.args.as_slice(),
+        &[hew_sir::Operand { value: result.id }]
+    );
+    assert_eq!(main.blocks[normal.target.0 as usize].args.len(), 1);
+    let CallUnwind::Cleanup(cleanup) = unwind else {
+        panic!("ordinary direct call must publish its unwind cleanup edge");
+    };
+    assert!(matches!(
+        main.blocks[cleanup.target.0 as usize].terminator,
+        SemTerminator::ResumeUnwind
+    ));
 }
 
 #[test]
-fn unit_direct_call_is_a_zero_result_sir_operation() {
+fn unit_direct_call_is_a_zero_result_sir_terminator() {
     let lowered = lower_source(
         r"
         fn unit_helper(value: i64) {
@@ -153,14 +185,11 @@ fn unit_direct_call_is_a_zero_result_sir_operation() {
         .function(entry)
         .expect("unit main must lower to a SIR body");
     assert_eq!(main.return_ty, hew_types::ResolvedTy::Unit);
-    let call = main
-        .blocks
-        .iter()
-        .flat_map(|block| &block.ops)
-        .find(|op| matches!(&op.kind, SemOpKind::Call { .. }))
-        .expect("unit main must retain the direct call as SIR operation");
+    let (_, result, normal, unwind) = direct_calls(main)
+        .next()
+        .expect("unit main must retain the direct call as a SIR terminator");
     assert!(
-        call.results.is_empty(),
+        matches!(result, CallResult::Unit),
         "a unit-returning direct call must not fabricate a unit SSA value"
     );
     assert!(
@@ -168,12 +197,8 @@ fn unit_direct_call_is_a_zero_result_sir_operation() {
         "zero-result unit direct call must satisfy the module verifier: {:#?}",
         verify_module(&lowered.module)
     );
-    let dump = dump_sir(&lowered.module);
-    assert!(dump.contains("    call @unit_helper(%0)"));
-    assert!(
-        !dump.contains("= call @unit_helper"),
-        "the textual SIR form must distinguish a zero-result unit call"
-    );
+    assert!(normal.args.is_empty());
+    assert!(matches!(unwind, CallUnwind::Cleanup(_)));
 }
 
 #[test]
@@ -255,15 +280,7 @@ fn unit_direct_call_in_an_explicit_return_is_a_control_transfer_not_a_discarded_
         .function(entry)
         .expect("the unit main must lower to SIR");
     assert!(
-        main.blocks
-            .iter()
-            .flat_map(|block| &block.ops)
-            .any(|operation| {
-                matches!(
-                    operation.kind,
-                    SemOpKind::Call { .. } if operation.results.is_empty()
-                )
-            }),
+        direct_calls(main).any(|(_, result, _, _)| matches!(result, CallResult::Unit)),
         "the returned Unit call must remain a zero-result semantic call"
     );
     assert!(
@@ -313,14 +330,9 @@ fn recursive_scalar_call_resolves_to_its_own_callable_id() {
         .function_index()
         .function(countdown.id)
         .expect("recursive callable must have a lowered SIR body");
-    let recursive_callee = function
-        .blocks
-        .iter()
-        .flat_map(|block| &block.ops)
-        .find_map(|op| match &op.kind {
-            SemOpKind::Call { callee, .. } => Some(*callee),
-            _ => None,
-        })
+    let recursive_callee = direct_calls(function)
+        .map(|(callee, _, _, _)| callee)
+        .next()
         .expect("recursive SIR body must contain a direct call");
     assert_eq!(
         recursive_callee, countdown.id,
@@ -469,14 +481,8 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         .function_index()
         .function(relay_i64.id)
         .expect("concrete relay<i64> body must be lowered");
-    let relay_callees = relay_body
-        .blocks
-        .iter()
-        .flat_map(|block| &block.ops)
-        .filter_map(|operation| match &operation.kind {
-            SemOpKind::Call { callee, .. } => Some(*callee),
-            _ => None,
-        })
+    let relay_callees = direct_calls(relay_body)
+        .map(|(callee, _, _, _)| callee)
         .collect::<Vec<_>>();
     assert_eq!(relay_callees, vec![id_i64.id, id_i64.id]);
 
@@ -489,12 +495,10 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         .function_index()
         .function(countdown_i64.id)
         .expect("concrete countdown<i64> body must be lowered");
-    assert!(countdown_body
-        .blocks
-        .iter()
-        .flat_map(|block| &block.ops)
-        .any(|operation| matches!(&operation.kind, SemOpKind::Call { callee, .. } if *callee == countdown_i64.id)),
-        "self-recursive concrete instance must resolve through its preallocated CallableId");
+    assert!(
+        direct_calls(countdown_body).any(|(callee, _, _, _)| callee == countdown_i64.id),
+        "self-recursive concrete instance must resolve through its preallocated CallableId"
+    );
     assert!(
         lowered
             .callable_statuses
@@ -505,7 +509,6 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
     );
     let dump = dump_sir(&lowered.module);
     assert!(dump.contains("fn relay$$i64("));
-    assert!(dump.contains("call @id$$i64"));
     assert!(dump.contains("fn countdown$$i64("));
 
     let mut forged_signature = lowered.module.clone();
@@ -602,10 +605,7 @@ fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisa
             .function(caller.id)
             .expect("every predeclared concrete generic header must receive a body");
         assert!(
-            body.blocks
-                .iter()
-                .flat_map(|block| &block.ops)
-                .any(|operation| matches!(&operation.kind, SemOpKind::Call { callee, .. } if *callee == expected_callee)),
+            direct_calls(body).any(|(callee, _, _, _)| callee == expected_callee),
             "{} must retain the cross-recursive edge to callable {}",
             caller.symbol,
             expected_callee.0

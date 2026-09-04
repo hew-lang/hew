@@ -520,10 +520,7 @@ impl<'m> SemFunctionIndex<'m> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemOp {
     pub id: OpId,
-    /// SSA values defined by this operation.  Ordinary value operations and
-    /// non-unit calls define exactly one value in the initial SIR slice.
-    /// A direct call whose resolved callable returns `Unit` defines no value:
-    /// its control/effect still remains explicit as a zero-result `Call`.
+    /// SSA values defined by this operation, in operation-defined order.
     pub results: Vec<ValueDef>,
     pub kind: SemOpKind,
     pub provenance: Provenance,
@@ -540,12 +537,6 @@ impl SemOp {
     /// Mutable counterpart to [`Self::visit_operands`].
     pub fn visit_operands_mut(&mut self, visit: impl FnMut(OperandSlot, &mut Operand)) {
         self.kind.visit_operands_mut(visit);
-    }
-
-    /// Visit only operands whose semantic boundary carries a physical
-    /// ownership decision.
-    pub fn visit_boundary_operands(&self, visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
-        self.kind.visit_boundary_operands(visit);
     }
 
     /// Replace the value at one concrete operand slot when the slot still
@@ -576,9 +567,7 @@ impl SemOp {
 /// can clone or synthesize operations without maintaining a second source of
 /// truth.  The initial bit set is intentionally small; it gives early
 /// canonicalization passes a sound motion/CSE barrier without committing SIR
-/// to memory SSA or effect tokens.  Isolated operations conservatively report
-/// [`Self::UNKNOWN_CALL`] for calls; a module-aware consumer resolves the
-/// callee itself.
+/// to memory SSA or effect tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct EffectSet(u8);
 
@@ -587,11 +576,8 @@ impl EffectSet {
     pub const PURE: Self = Self(0);
     /// The operation can transfer control to a language-visible trap.
     pub const MAY_TRAP: Self = Self(1 << 0);
-    /// The callee has no resolved SIR effect summary yet; treat it as a full
-    /// optimization barrier. It includes [`Self::MAY_TRAP`] so both the
-    /// semantic predicate and ordinary bit-set containment remain sound for
-    /// early optimizer clients.
-    pub const UNKNOWN_CALL: Self = Self(Self::MAY_TRAP.0 | (1 << 1));
+    /// An observable operation that is also a full optimization barrier.
+    pub const IMPURE: Self = Self(Self::MAY_TRAP.0 | (1 << 1));
 
     #[must_use]
     pub const fn contains(self, effect: Self) -> bool {
@@ -607,6 +593,27 @@ impl EffectSet {
     pub const fn may_trap(self) -> bool {
         self.contains(Self::MAY_TRAP)
     }
+}
+
+/// The value, if any, produced by an invoke-style call terminator.
+///
+/// A value result is defined at the call and must be forwarded on its normal
+/// edge to a continuation block argument. It is never available for another
+/// operation in the terminated block.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CallResult {
+    Unit,
+    Value(ValueDef),
+}
+
+/// Whether an invoke-style call has an unwind CFG successor.
+///
+/// Applicability is decided by the producer. Later passes inspect this closed
+/// value instead of deriving unwind behaviour from a callee or symbol.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CallUnwind {
+    NotApplicable,
+    Cleanup(Edge),
 }
 
 /// Value-producing, non-suspending operations in the first SIR slice.
@@ -648,17 +655,6 @@ pub enum SemOpKind {
         value: Operand,
         to: ResolvedTy,
     },
-    /// A resolved ordinary Hew direct call.
-    ///
-    /// The callable table determines result arity: a non-unit callee produces
-    /// one SSA value, while a unit callee is an explicit zero-result operation.
-    /// This avoids inventing a unit SSA carrier solely to model a call with
-    /// observable control/effect behavior.
-    Call {
-        callee: CallableId,
-        args: Vec<BoundaryOperand>,
-    },
-
     // --- P1 literal producers (matrix Legend `const.{f,char,unit,duration,str,bytes}`)
     ConstF64(f64),
     ConstChar(char),
@@ -681,14 +677,6 @@ pub enum SemOpKind {
     BytesEq {
         lhs: Operand,
         rhs: Operand,
-    },
-
-    // --- P1 runtime call (matrix Legend `rt.call{Family}`)
-    /// A call to a runtime symbol family. Per-operand ownership comes from the
-    /// family's FFI ownership row, never from the symbol spelling.
-    RtCall {
-        family: hew_types::RuntimeCallFamily,
-        args: Vec<BoundaryOperand>,
     },
 
     // --- §1.3 ownership operations
@@ -810,16 +798,6 @@ impl SemOpKind {
             | Self::Destructure { aggregate: value }
             | Self::StoreInit { value, .. }
             | Self::StoreAssign { value, .. } => visit(OperandSlot(0), value),
-            Self::Call { args, .. } | Self::RtCall { args, .. } => {
-                for (index, argument) in args.iter().enumerate() {
-                    visit(
-                        OperandSlot(
-                            u32::try_from(index).expect("SIR operation operand count exceeds u32"),
-                        ),
-                        &argument.operand,
-                    );
-                }
-            }
         }
     }
 
@@ -872,46 +850,13 @@ impl SemOpKind {
             | Self::Destructure { aggregate: value }
             | Self::StoreInit { value, .. }
             | Self::StoreAssign { value, .. } => visit(OperandSlot(0), value),
-            Self::Call { args, .. } | Self::RtCall { args, .. } => {
-                for (index, argument) in args.iter_mut().enumerate() {
-                    visit(
-                        OperandSlot(
-                            u32::try_from(index).expect("SIR operation operand count exceeds u32"),
-                        ),
-                        &mut argument.operand,
-                    );
-                }
-            }
-        }
-    }
-
-    /// Visit boundary operands together with their decided ownership action.
-    ///
-    /// # Panics
-    ///
-    /// Panics only when a boundary carries more operands than the module-local
-    /// `u32` operand-slot range can represent.
-    pub fn visit_boundary_operands(&self, mut visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
-        let (Self::Call { args, .. } | Self::RtCall { args, .. }) = self else {
-            return;
-        };
-        for (index, argument) in args.iter().enumerate() {
-            visit(
-                OperandSlot(u32::try_from(index).expect("SIR boundary operand count exceeds u32")),
-                argument,
-            );
         }
     }
 
     /// Return the operation's conservative semantic effect classification.
     #[must_use]
-    #[expect(
-        clippy::match_same_arms,
-        reason = "an unresolved call and an ownership operation are distinct barriers that happen to share a bit set"
-    )]
     pub const fn effects(&self) -> EffectSet {
         match self {
-            Self::Call { .. } => EffectSet::UNKNOWN_CALL,
             Self::Unary {
                 op: hew_parser::ast::UnaryOp::Negate | hew_parser::ast::UnaryOp::RawDeref,
                 ..
@@ -930,8 +875,7 @@ impl SemOpKind {
             // Ownership operations are optimization barriers, not pure
             // values: two `copy_value`s of one value are two retains and must
             // never be common-subexpression-eliminated into one, and a
-            // `destroy_value` or a place write is observable. A runtime call is
-            // opaque for the same reason a Hew call is.
+            // `destroy_value` or a place write is observable.
             Self::CopyValue { .. }
             | Self::DestroyValue { .. }
             | Self::BeginBorrow { .. }
@@ -944,8 +888,7 @@ impl SemOpKind {
             | Self::LoadTake { .. }
             | Self::StoreInit { .. }
             | Self::StoreAssign { .. }
-            | Self::EndLifetime { .. }
-            | Self::RtCall { .. } => EffectSet::UNKNOWN_CALL,
+            | Self::EndLifetime { .. } => EffectSet::IMPURE,
             Self::ConstI64(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
@@ -995,13 +938,33 @@ impl SemOpKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemTerminator {
     Return {
-        value: Option<Operand>,
+        value: Option<BoundaryOperand>,
     },
     Goto(Edge),
     Branch {
         condition: Operand,
         then_target: Edge,
         else_target: Edge,
+    },
+    /// A resolved ordinary Hew direct call with explicit normal and unwind
+    /// control flow.
+    Call {
+        id: OpId,
+        callee: CallableId,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
+    },
+    /// A call to a runtime symbol family. Per-operand ownership comes from the
+    /// family's FFI ownership row, never from the symbol spelling.
+    RtCall {
+        id: OpId,
+        family: hew_types::RuntimeCallFamily,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
     },
     /// A language-visible trap (§1.6). Unlike [`Self::Unreachable`] this is a
     /// reachable endpoint the program can take.
@@ -1023,6 +986,9 @@ pub enum SemTerminator {
         /// Always present; its first op is the kind's abandon op.
         cancel: Edge,
     },
+    /// Continue unwinding after an invoke cleanup block has discharged its
+    /// obligations.
+    ResumeUnwind,
     /// A semantically unreachable CFG endpoint.
     ///
     /// Raw MIR preserves this as its own semantic endpoint, and LLVM lowers it
@@ -1032,21 +998,71 @@ pub enum SemTerminator {
 }
 
 impl SemTerminator {
-    /// Visit suspension inputs together with their total boundary decisions.
+    /// Visit call, return and suspension values together with their total
+    /// boundary decisions.
     ///
     /// # Panics
     ///
     /// Panics only when a suspension carries more inputs than the module-local
     /// `u32` operand-slot range can represent.
     pub fn visit_boundary_operands(&self, mut visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
-        let Self::Suspend { inputs, .. } = self else {
-            return;
-        };
-        for (index, input) in inputs.iter().enumerate() {
-            visit(
-                OperandSlot(u32::try_from(index).expect("SIR boundary operand count exceeds u32")),
-                input,
-            );
+        match self {
+            Self::Return { value: Some(value) } => visit(OperandSlot(0), value),
+            Self::Call { args, .. } | Self::RtCall { args, .. } => {
+                for (index, argument) in args.iter().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR boundary operand count exceeds u32"),
+                        ),
+                        argument,
+                    );
+                }
+            }
+            Self::Suspend { inputs, .. } => {
+                for (index, input) in inputs.iter().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR boundary operand count exceeds u32"),
+                        ),
+                        input,
+                    );
+                }
+            }
+            Self::Return { value: None }
+            | Self::Goto(_)
+            | Self::Branch { .. }
+            | Self::Trap { .. }
+            | Self::ResumeUnwind
+            | Self::Unreachable => {}
+        }
+    }
+
+    /// Visit SSA values defined by this terminator.
+    pub fn visit_results(&self, mut visit: impl FnMut(&ValueDef)) {
+        match self {
+            Self::Call {
+                result: CallResult::Value(result),
+                ..
+            }
+            | Self::RtCall {
+                result: CallResult::Value(result),
+                ..
+            } => visit(result),
+            Self::Return { .. }
+            | Self::Goto(_)
+            | Self::Branch { .. }
+            | Self::Call {
+                result: CallResult::Unit,
+                ..
+            }
+            | Self::RtCall {
+                result: CallResult::Unit,
+                ..
+            }
+            | Self::Trap { .. }
+            | Self::Suspend { .. }
+            | Self::ResumeUnwind
+            | Self::Unreachable => {}
         }
     }
 
@@ -1062,11 +1078,7 @@ impl SemTerminator {
     /// `u32` operand-slot range can represent.
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         match self {
-            Self::Return { value } => {
-                if let Some(value) = value {
-                    visit(OperandSlot(0), value);
-                }
-            }
+            Self::Return { value: Some(value) } => visit(OperandSlot(0), &value.operand),
             Self::Goto(edge) => edge.visit_operands(visit),
             Self::Branch {
                 condition,
@@ -1086,6 +1098,40 @@ impl SemTerminator {
                     next = next
                         .checked_add(1)
                         .expect("SIR branch operand count exceeds u32");
+                }
+            }
+            Self::Call {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::RtCall {
+                args,
+                normal,
+                unwind,
+                ..
+            } => {
+                let mut next = 0_u32;
+                for argument in args {
+                    visit(OperandSlot(next), &argument.operand);
+                    next = next
+                        .checked_add(1)
+                        .expect("SIR call operand count exceeds u32");
+                }
+                for operand in &normal.args {
+                    visit(OperandSlot(next), operand);
+                    next = next
+                        .checked_add(1)
+                        .expect("SIR call operand count exceeds u32");
+                }
+                if let CallUnwind::Cleanup(edge) = unwind {
+                    for operand in &edge.args {
+                        visit(OperandSlot(next), operand);
+                        next = next
+                            .checked_add(1)
+                            .expect("SIR call operand count exceeds u32");
+                    }
                 }
             }
             Self::Suspend {
@@ -1110,7 +1156,10 @@ impl SemTerminator {
                     }
                 }
             }
-            Self::Trap { .. } | Self::Unreachable => {}
+            Self::Return { value: None }
+            | Self::Trap { .. }
+            | Self::ResumeUnwind
+            | Self::Unreachable => {}
         }
     }
 
@@ -1122,11 +1171,7 @@ impl SemTerminator {
     /// `u32` operand-slot range can represent.
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         match self {
-            Self::Return { value } => {
-                if let Some(value) = value {
-                    visit(OperandSlot(0), value);
-                }
-            }
+            Self::Return { value: Some(value) } => visit(OperandSlot(0), &mut value.operand),
             Self::Goto(edge) => edge.visit_operands_mut(visit),
             Self::Branch {
                 condition,
@@ -1146,6 +1191,40 @@ impl SemTerminator {
                     next = next
                         .checked_add(1)
                         .expect("SIR branch operand count exceeds u32");
+                }
+            }
+            Self::Call {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::RtCall {
+                args,
+                normal,
+                unwind,
+                ..
+            } => {
+                let mut next = 0_u32;
+                for argument in args {
+                    visit(OperandSlot(next), &mut argument.operand);
+                    next = next
+                        .checked_add(1)
+                        .expect("SIR call operand count exceeds u32");
+                }
+                for operand in &mut normal.args {
+                    visit(OperandSlot(next), operand);
+                    next = next
+                        .checked_add(1)
+                        .expect("SIR call operand count exceeds u32");
+                }
+                if let CallUnwind::Cleanup(edge) = unwind {
+                    for operand in &mut edge.args {
+                        visit(OperandSlot(next), operand);
+                        next = next
+                            .checked_add(1)
+                            .expect("SIR call operand count exceeds u32");
+                    }
                 }
             }
             Self::Suspend {
@@ -1170,7 +1249,10 @@ impl SemTerminator {
                     }
                 }
             }
-            Self::Trap { .. } | Self::Unreachable => {}
+            Self::Return { value: None }
+            | Self::Trap { .. }
+            | Self::ResumeUnwind
+            | Self::Unreachable => {}
         }
     }
 
@@ -1187,7 +1269,7 @@ impl SemTerminator {
     /// `u32` successor-slot range can represent.
     pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
-            Self::Return { .. } | Self::Trap { .. } | Self::Unreachable => {}
+            Self::Return { .. } | Self::Trap { .. } | Self::ResumeUnwind | Self::Unreachable => {}
             Self::Goto(edge) => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
@@ -1196,6 +1278,12 @@ impl SemTerminator {
             } => {
                 visit(SuccessorSlot(0), then_target);
                 visit(SuccessorSlot(1), else_target);
+            }
+            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
+                visit(SuccessorSlot(0), normal);
+                if let CallUnwind::Cleanup(edge) = unwind {
+                    visit(SuccessorSlot(1), edge);
+                }
             }
             Self::Suspend {
                 resumes, cancel, ..
@@ -1223,7 +1311,7 @@ impl SemTerminator {
         mut visit: impl FnMut(SuccessorSlot, &mut Edge),
     ) {
         match self {
-            Self::Return { .. } | Self::Trap { .. } | Self::Unreachable => {}
+            Self::Return { .. } | Self::Trap { .. } | Self::ResumeUnwind | Self::Unreachable => {}
             Self::Goto(edge) => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
@@ -1232,6 +1320,12 @@ impl SemTerminator {
             } => {
                 visit(SuccessorSlot(0), then_target);
                 visit(SuccessorSlot(1), else_target);
+            }
+            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
+                visit(SuccessorSlot(0), normal);
+                if let CallUnwind::Cleanup(edge) = unwind {
+                    visit(SuccessorSlot(1), edge);
+                }
             }
             Self::Suspend {
                 resumes, cancel, ..
@@ -1270,13 +1364,27 @@ impl SemTerminator {
                 1 => Some(else_target),
                 _ => None,
             },
+            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
+                match slot.0 {
+                    0 => Some(normal),
+                    1 => match unwind {
+                        CallUnwind::NotApplicable => None,
+                        CallUnwind::Cleanup(edge) => Some(edge),
+                    },
+                    _ => None,
+                }
+            }
             Self::Suspend {
                 resumes, cancel, ..
             } => resumes
                 .iter()
                 .chain(std::iter::once(cancel))
                 .nth(usize::try_from(slot.0).ok()?),
-            Self::Return { .. } | Self::Goto(_) | Self::Trap { .. } | Self::Unreachable => None,
+            Self::Return { .. }
+            | Self::Goto(_)
+            | Self::Trap { .. }
+            | Self::ResumeUnwind
+            | Self::Unreachable => None,
         }
     }
 
@@ -1294,13 +1402,27 @@ impl SemTerminator {
                 1 => Some(else_target),
                 _ => None,
             },
+            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
+                match slot.0 {
+                    0 => Some(normal),
+                    1 => match unwind {
+                        CallUnwind::NotApplicable => None,
+                        CallUnwind::Cleanup(edge) => Some(edge),
+                    },
+                    _ => None,
+                }
+            }
             Self::Suspend {
                 resumes, cancel, ..
             } => resumes
                 .iter_mut()
                 .chain(std::iter::once(cancel))
                 .nth(usize::try_from(slot.0).ok()?),
-            Self::Return { .. } | Self::Goto(_) | Self::Trap { .. } | Self::Unreachable => None,
+            Self::Return { .. }
+            | Self::Goto(_)
+            | Self::Trap { .. }
+            | Self::ResumeUnwind
+            | Self::Unreachable => None,
         }
     }
 
@@ -1336,6 +1458,18 @@ impl SemTerminator {
                 "branch then-edge argument"
             }
             Self::Branch { .. } => "branch else-edge argument",
+            Self::Call { args, normal, .. } | Self::RtCall { args, normal, .. }
+                if usize::try_from(slot.0).is_ok_and(|slot| slot < args.len()) =>
+            {
+                "call argument"
+            }
+            Self::Call { args, normal, .. } | Self::RtCall { args, normal, .. }
+                if usize::try_from(slot.0)
+                    .is_ok_and(|slot| slot < args.len() + normal.args.len()) =>
+            {
+                "call normal-edge argument"
+            }
+            Self::Call { .. } | Self::RtCall { .. } => "call unwind-edge argument",
             Self::Suspend { inputs, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < inputs.len()) =>
             {
@@ -1343,6 +1477,7 @@ impl SemTerminator {
             }
             Self::Suspend { .. } => "suspend edge argument",
             Self::Trap { .. } => "trap terminator operand",
+            Self::ResumeUnwind => "resume-unwind terminator operand",
             Self::Unreachable => "unreachable terminator operand",
         }
     }

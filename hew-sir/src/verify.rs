@@ -499,6 +499,25 @@ pub(crate) fn verify_function_with_context(
                 definitions.insert(result.id, (block.id, Some(op_index)));
             }
         }
+        if let SemTerminator::Call { id, .. } | SemTerminator::RtCall { id, .. } = &block.terminator
+        {
+            if !operations.insert(*id) {
+                diagnostics.push(diag(function, SirDiagnosticKind::DuplicateOp(*id)));
+            }
+        }
+        block.terminator.visit_results(|result| {
+            record_value(function, result.id, &mut values, &mut diagnostics);
+            verify_own_kind(
+                function,
+                result.id,
+                &result.ty,
+                result.own,
+                crate::OwnKind::of_ty(&result.ty, facts),
+                &mut diagnostics,
+            );
+            types.insert(result.id, result.ty.clone());
+            definitions.insert(result.id, (block.id, None));
+        });
     }
     // §1.6's binding table is read by every user-facing wall, so a row naming
     // a target this body never defines is refused rather than silently dropped
@@ -523,7 +542,7 @@ pub(crate) fn verify_function_with_context(
     // defined in a later block rather than silently skipping its type check.
     for block in &function.blocks {
         for op in &block.ops {
-            verify_operation_shape(function, op, &types, callable_context, &mut diagnostics);
+            verify_operation_shape(function, op, &types, &mut diagnostics);
         }
         block.terminator.visit_successors(|edge| {
             let Some(target) = blocks.get(&edge.target) else {
@@ -559,7 +578,13 @@ pub(crate) fn verify_function_with_context(
                 }
             }
         });
-        verify_terminator_shape(function, &block.terminator, &types, &mut diagnostics);
+        verify_terminator_shape(
+            function,
+            &block.terminator,
+            &types,
+            callable_context,
+            &mut diagnostics,
+        );
     }
     if blocks.contains_key(&function.entry) {
         let dominators = crate::compute_dominators(function);
@@ -1040,21 +1065,8 @@ fn verify_operation_shape(
     function: &SemFunction,
     operation: &SemOp,
     types: &HashMap<ValueId, ResolvedTy>,
-    callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    if let SemOpKind::Call { callee, args } = &operation.kind {
-        verify_direct_call_operation(
-            function,
-            operation,
-            *callee,
-            args,
-            types,
-            callable_context,
-            diagnostics,
-        );
-        return;
-    }
     if operation.results.len() != 1 {
         diagnostics.push(diag(
             function,
@@ -1301,7 +1313,6 @@ fn verify_operation_shape(
                 invalid_operation(function, operation.id, reason, diagnostics);
             }
         }
-        SemOpKind::Call { .. } => unreachable!("calls return before value-result validation"),
         SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => {}
         // The §1.3 ownership operations, the P1 literal producers, the
         // structural-equality ops and `rt.call` have no producer on this route
@@ -1316,7 +1327,6 @@ fn verify_operation_shape(
         | SemOpKind::ConstBytes(_)
         | SemOpKind::StrEq { .. }
         | SemOpKind::BytesEq { .. }
-        | SemOpKind::RtCall { .. }
         | SemOpKind::CopyValue { .. }
         | SemOpKind::DestroyValue { .. }
         | SemOpKind::BeginBorrow { .. }
@@ -1343,25 +1353,16 @@ fn verify_operation_shape(
     clippy::too_many_lines,
     reason = "direct-call verification keeps callable ABI, result arity, and operand rules together at the SIR boundary"
 )]
-fn verify_direct_call_operation(
+fn verify_direct_call_terminator(
     function: &SemFunction,
-    operation: &SemOp,
+    id: OpId,
     callee: CallableId,
     args: &[crate::BoundaryOperand],
+    result: &crate::CallResult,
     types: &HashMap<ValueId, ResolvedTy>,
     callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    if operation.results.len() > 1 {
-        diagnostics.push(diag(
-            function,
-            SirDiagnosticKind::InvalidResultArity {
-                op: operation.id,
-                actual: operation.results.len(),
-            },
-        ));
-        return;
-    }
     let Some(callable_context) = callable_context else {
         // A context-free verifier cannot know whether a legal direct call is
         // unit-returning, but it can still enforce the initial 0-or-1 result
@@ -1371,37 +1372,35 @@ fn verify_direct_call_operation(
     let Some(target) = callable_context.callable(callee) else {
         diagnostics.push(diag(
             function,
-            SirDiagnosticKind::UnknownCallable {
-                op: operation.id,
-                callee,
-            },
+            SirDiagnosticKind::UnknownCallable { op: id, callee },
         ));
         return;
     };
     if target.call_conv != SemCallConv::Default || target.kind != SemCallableKind::HewDirect {
         invalid_operation(
             function,
-            operation.id,
+            id,
             "direct call targets a callable outside SIR's default HewDirect ABI domain".to_string(),
             diagnostics,
         );
     }
     let expected_results = usize::from(target.signature.return_ty != ResolvedTy::Unit);
-    if operation.results.len() != expected_results {
+    let actual_results = usize::from(matches!(result, crate::CallResult::Value(_)));
+    if actual_results != expected_results {
         diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidCallResultArity {
-                op: operation.id,
+                op: id,
                 callee,
                 expected: expected_results,
-                actual: operation.results.len(),
+                actual: actual_results,
             },
         ));
-    } else if let [result] = operation.results.as_slice() {
+    } else if let crate::CallResult::Value(result) = result {
         if result.ty != target.signature.return_ty {
             invalid_operation(
                 function,
-                operation.id,
+                id,
                 format!(
                     "direct call result has `{}`, callee `{}` returns `{}`",
                     result.ty.user_facing(),
@@ -1415,7 +1414,7 @@ fn verify_direct_call_operation(
     if args.len() != target.signature.params.len() {
         invalid_operation(
             function,
-            operation.id,
+            id,
             format!(
                 "direct call to `{}` has {} argument(s), expected {}",
                 target.declaration.full_path(),
@@ -1429,7 +1428,7 @@ fn verify_direct_call_operation(
         if parameter.passing != SemParamPassing::ReadOnly {
             invalid_operation(
                 function,
-                operation.id,
+                id,
                 format!(
                     "direct call target `{}` parameter {index} has non-ReadOnly ABI passing",
                     target.declaration.full_path()
@@ -1441,7 +1440,7 @@ fn verify_direct_call_operation(
             if actual != &parameter.ty {
                 invalid_operation(
                     function,
-                    operation.id,
+                    id,
                     format!(
                         "direct call argument {index} to `{}` has `{}`, expected `{}`",
                         target.declaration.full_path(),
@@ -1471,17 +1470,20 @@ fn verify_terminator_shape(
     function: &SemFunction,
     terminator: &SemTerminator,
     types: &HashMap<ValueId, ResolvedTy>,
+    callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
     match terminator {
         SemTerminator::Return { value: Some(value) } if function.return_ty == ResolvedTy::Unit => {
             diagnostics.push(diag(
                 function,
-                SirDiagnosticKind::UnitReturnValue { value: value.value },
+                SirDiagnosticKind::UnitReturnValue {
+                    value: value.operand.value,
+                },
             ));
         }
         SemTerminator::Return { value: Some(value) } => {
-            if let Some(actual) = types.get(&value.value) {
+            if let Some(actual) = types.get(&value.operand.value) {
                 if actual != &function.return_ty {
                     diagnostics.push(diag(
                         function,
@@ -1515,7 +1517,26 @@ fn verify_terminator_shape(
                 }
             }
         }
-        SemTerminator::Return { .. } | SemTerminator::Goto(_) | SemTerminator::Unreachable => {}
+        SemTerminator::Call {
+            id,
+            callee,
+            args,
+            result,
+            ..
+        } => verify_direct_call_terminator(
+            function,
+            *id,
+            *callee,
+            args,
+            result,
+            types,
+            callable_context,
+            diagnostics,
+        ),
+        SemTerminator::Return { .. }
+        | SemTerminator::Goto(_)
+        | SemTerminator::ResumeUnwind
+        | SemTerminator::Unreachable => {}
         // `Trap`'s kind table and `Suspend`'s shape rules - §1.5's kind/arity/
         // mode agreement and the cancel-edge and resume-edge orderings -
         // belong to the phase that emits one, and neither has a producer on
@@ -1523,7 +1544,9 @@ fn verify_terminator_shape(
         // an unverified operation is: admitting it would let a shape nothing
         // checks reach MIR. This is the operation arm's refusal, not a new
         // ownership rule.
-        SemTerminator::Trap { .. } | SemTerminator::Suspend { .. } => {
+        SemTerminator::RtCall { .. }
+        | SemTerminator::Trap { .. }
+        | SemTerminator::Suspend { .. } => {
             diagnostics.push(diag(
                 function,
                 SirDiagnosticKind::InvalidTerminator {
@@ -1686,6 +1709,13 @@ mod cfg_discard_safety_tests {
         }
     }
 
+    fn returned(value: u32) -> crate::BoundaryOperand {
+        crate::BoundaryOperand {
+            operand: operand(value),
+            decision: crate::BoundaryDecision::Move,
+        }
+    }
+
     fn param(value: u32, ty: ResolvedTy) -> BlockArg {
         BlockArg {
             value: ValueId(value),
@@ -1734,7 +1764,7 @@ mod cfg_discard_safety_tests {
                     args: Vec::new(),
                     ops: Vec::new(),
                     terminator: SemTerminator::Return {
-                        value: Some(operand(1)),
+                        value: Some(returned(1)),
                     },
                 },
                 SemBlock {
@@ -1747,7 +1777,7 @@ mod cfg_discard_safety_tests {
                         provenance: Provenance::Synthesized,
                     }],
                     terminator: SemTerminator::Return {
-                        value: Some(operand(1)),
+                        value: Some(returned(1)),
                     },
                 },
             ],
@@ -1808,7 +1838,7 @@ mod cfg_discard_safety_tests {
                     args: Vec::new(),
                     ops: Vec::new(),
                     terminator: SemTerminator::Return {
-                        value: Some(operand(1)),
+                        value: Some(returned(1)),
                     },
                 },
                 SemBlock {
@@ -1825,7 +1855,7 @@ mod cfg_discard_safety_tests {
                         provenance: Provenance::Synthesized,
                     }],
                     terminator: SemTerminator::Return {
-                        value: Some(operand(2)),
+                        value: Some(returned(2)),
                     },
                 },
             ],

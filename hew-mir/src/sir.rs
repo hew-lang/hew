@@ -291,7 +291,7 @@ fn lower_verified_sir_function(
         VirtualRawLowerer::new(function)?.finish()
     } else {
         let collected = CollectedValues::from_function(function)?;
-        let mut lowerer = RawLowerer::new(function, collected, module)?;
+        let mut lowerer = RawLowerer::new(function, collected)?;
         for block in &function.blocks {
             lowerer.lower_block(block)?;
         }
@@ -1064,14 +1064,12 @@ fn sir_parameter_decisions(
 }
 
 fn direct_callees(function: &SemFunction) -> impl Iterator<Item = CallableId> + '_ {
-    function.blocks.iter().flat_map(|block| {
-        block
-            .ops
-            .iter()
-            .filter_map(|operation| match &operation.kind {
-                SemOpKind::Call { callee, .. } => Some(*callee),
-                _ => None,
-            })
+    function.blocks.iter().filter_map(|block| {
+        if let SemTerminator::Call { callee, .. } = &block.terminator {
+            Some(*callee)
+        } else {
+            None
+        }
     })
 }
 
@@ -1492,7 +1490,6 @@ impl<'a> VirtualRawLowerer<'a> {
             | SemOpKind::ConstBytes(_)
             | SemOpKind::StrEq { .. }
             | SemOpKind::BytesEq { .. }
-            | SemOpKind::RtCall { .. }
             | SemOpKind::CopyValue { .. }
             | SemOpKind::DestroyValue { .. }
             | SemOpKind::BeginBorrow { .. }
@@ -1510,10 +1507,7 @@ impl<'a> VirtualRawLowerer<'a> {
                     "ownership-aware SIR operations have no realization on this bridge",
                 ));
             }
-            SemOpKind::Unary { .. }
-            | SemOpKind::Binary { .. }
-            | SemOpKind::Cast { .. }
-            | SemOpKind::Call { .. } => {
+            SemOpKind::Unary { .. } | SemOpKind::Binary { .. } | SemOpKind::Cast { .. } => {
                 return Err(SirMirLoweringError::unsupported(
                     "the raw virtual-value slice admits only constants and semantic tuple make/get operations",
                 ));
@@ -1526,7 +1520,7 @@ impl<'a> VirtualRawLowerer<'a> {
     fn lower_terminator(&mut self, terminator: &SemTerminator) -> Result<(), SirMirLoweringError> {
         match terminator {
             SemTerminator::Return { value: Some(value) } => {
-                if self.value_type(value.value)? != &self.function.return_ty {
+                if self.value_type(value.operand.value)? != &self.function.return_ty {
                     return Err(SirMirLoweringError::unsupported(
                         "SIR virtual return value type does not match the function return type",
                     ));
@@ -1538,7 +1532,7 @@ impl<'a> VirtualRawLowerer<'a> {
                 }
                 self.instructions.push(Instr::MaterializeValue {
                     dest: Place::ReturnSlot,
-                    value: Self::raw_value_id(value.value),
+                    value: Self::raw_value_id(value.operand.value),
                     reason: ValueMaterializationReason::ReturnAbi,
                 });
                 Ok(())
@@ -1551,11 +1545,13 @@ impl<'a> VirtualRawLowerer<'a> {
             SemTerminator::Return { value: None } => Err(SirMirLoweringError::unsupported(
                 "non-unit SIR function has a value-less virtual return",
             )),
-            SemTerminator::Trap { .. } | SemTerminator::Suspend { .. } => {
-                Err(SirMirLoweringError::unsupported(
-                    "SIR trap and suspend terminators have no realization on this bridge",
-                ))
-            }
+            SemTerminator::Call { .. }
+            | SemTerminator::RtCall { .. }
+            | SemTerminator::Trap { .. }
+            | SemTerminator::Suspend { .. }
+            | SemTerminator::ResumeUnwind => Err(SirMirLoweringError::unsupported(
+                    "SIR invoke, trap, suspend, and unwind terminators have no realization on this bridge",
+            )),
             SemTerminator::Goto(_) | SemTerminator::Branch { .. } | SemTerminator::Unreachable => {
                 Err(SirMirLoweringError::unsupported(
                     "the raw virtual-value slice admits only an ordinary Return terminator",
@@ -1680,7 +1676,6 @@ struct PendingBlock {
 
 struct RawLowerer<'a> {
     function: &'a SemFunction,
-    module: &'a SemModule,
     value_types: BTreeMap<ValueId, ResolvedTy>,
     block_args: BTreeMap<BlockId, Vec<BlockArg>>,
     value_places: BTreeMap<ValueId, Place>,
@@ -1693,7 +1688,6 @@ impl<'a> RawLowerer<'a> {
     fn new(
         function: &'a SemFunction,
         collected: CollectedValues,
-        module: &'a SemModule,
     ) -> Result<Self, SirMirLoweringError> {
         let mut locals = Vec::new();
         let mut value_places = BTreeMap::new();
@@ -1723,7 +1717,6 @@ impl<'a> RawLowerer<'a> {
             .collect();
         Ok(Self {
             function,
-            module,
             value_types: collected.types,
             block_args: collected.block_args,
             value_places,
@@ -1742,9 +1735,6 @@ impl<'a> RawLowerer<'a> {
     }
 
     fn lower_op(&mut self, operation: &SemOp) -> Result<(), SirMirLoweringError> {
-        if let SemOpKind::Call { callee, args } = &operation.kind {
-            return self.lower_call(*callee, args, &operation.results);
-        }
         let (result, result_ty) = Self::single_result(operation)?;
         let dest = self.value_place(result)?;
         match &operation.kind {
@@ -1797,7 +1787,6 @@ impl<'a> RawLowerer<'a> {
                     "SIR tuple values require the raw virtual-value lowering path",
                 ));
             }
-            SemOpKind::Call { .. } => unreachable!("calls return before value-result lowering"),
             // The §1.3 ownership operations, the P1 literal producers, the
             // structural-equality ops and `rt.call` have no realization on this
             // bridge. The refusal that the operand mode used to carry lives
@@ -1810,7 +1799,6 @@ impl<'a> RawLowerer<'a> {
             | SemOpKind::ConstBytes(_)
             | SemOpKind::StrEq { .. }
             | SemOpKind::BytesEq { .. }
-            | SemOpKind::RtCall { .. }
             | SemOpKind::CopyValue { .. }
             | SemOpKind::DestroyValue { .. }
             | SemOpKind::BeginBorrow { .. }
@@ -1829,86 +1817,6 @@ impl<'a> RawLowerer<'a> {
                 ));
             }
         }
-        Ok(())
-    }
-
-    /// Legalize a semantic direct call into raw MIR's CFG-splitting call
-    /// terminator. The callable signature determines whether the operation
-    /// has one destination value or no destination at all. The current SIR
-    /// block continues at the newly-created raw continuation, so subsequent
-    /// operations and its source terminator stay in program order without
-    /// manufacturing a second SIR CFG form.
-    fn lower_call(
-        &mut self,
-        callee: CallableId,
-        args: &[hew_sir::BoundaryOperand],
-        results: &[ValueDef],
-    ) -> Result<(), SirMirLoweringError> {
-        let module = self.module;
-        let callable = module.callable(callee).ok_or_else(|| {
-            SirMirLoweringError::unsupported(format!(
-                "SIR call targets unknown callable {}",
-                callee.0
-            ))
-        })?;
-        validate_direct_callable(callable)?;
-        let destination = match (callable.signature.return_ty == ResolvedTy::Unit, results) {
-            (true, []) => None,
-            (true, _) => {
-                return Err(SirMirLoweringError::unsupported(format!(
-                    "unit-returning SIR call to `{}` must have zero results",
-                    callable.symbol
-                )));
-            }
-            (false, [ValueDef { id, ty, .. }]) if ty == &callable.signature.return_ty => {
-                Some(self.value_place(*id)?)
-            }
-            (false, [ValueDef { ty, .. }]) => {
-                return Err(SirMirLoweringError::unsupported(format!(
-                    "SIR call result `{}` does not match callable `{}` return `{}`",
-                    ty.user_facing(),
-                    callable.symbol,
-                    callable.signature.return_ty.user_facing()
-                )));
-            }
-            (false, _) => {
-                return Err(SirMirLoweringError::unsupported(format!(
-                    "non-unit SIR call to `{}` requires exactly one result",
-                    callable.symbol
-                )));
-            }
-        };
-        if args.len() != callable.signature.params.len() {
-            return Err(SirMirLoweringError::unsupported(format!(
-                "SIR call to `{}` has {} argument(s), expected {}",
-                callable.symbol,
-                args.len(),
-                callable.signature.params.len()
-            )));
-        }
-        let mut raw_args = Vec::with_capacity(args.len());
-        for (index, (argument, parameter)) in
-            args.iter().zip(&callable.signature.params).enumerate()
-        {
-            let actual = self.value_type(argument.operand.value)?;
-            if actual != &parameter.ty || parameter.passing != SemParamPassing::ReadOnly {
-                return Err(SirMirLoweringError::unsupported(format!(
-                    "SIR call argument {index} does not satisfy `{}` scalar ReadOnly ABI",
-                    callable.symbol
-                )));
-            }
-            raw_args.push(self.value_place(argument.operand.value)?);
-        }
-
-        let continuation = self.fresh_block()?;
-        self.terminate(Terminator::Call {
-            callee: callable.symbol.clone(),
-            authority: crate::CallAuthority::Direct,
-            args: raw_args,
-            dest: destination,
-            next: continuation,
-        })?;
-        self.current = continuation;
         Ok(())
     }
 
@@ -2095,14 +2003,14 @@ impl<'a> RawLowerer<'a> {
     fn lower_terminator(&mut self, terminator: &SemTerminator) -> Result<(), SirMirLoweringError> {
         match terminator {
             SemTerminator::Return { value: Some(value) } => {
-                if self.value_type(value.value)? != &self.function.return_ty {
+                if self.value_type(value.operand.value)? != &self.function.return_ty {
                     return Err(SirMirLoweringError::unsupported(
                         "SIR return value type does not match function return type",
                     ));
                 }
                 self.push(Instr::Move {
                     dest: Place::ReturnSlot,
-                    src: self.value_place(value.value)?,
+                    src: self.value_place(value.operand.value)?,
                 });
                 self.terminate(Terminator::Return)
             }
@@ -2141,11 +2049,13 @@ impl<'a> RawLowerer<'a> {
                 })
             }
             SemTerminator::Unreachable => self.terminate(Terminator::Unreachable),
-            SemTerminator::Trap { .. } | SemTerminator::Suspend { .. } => {
-                Err(SirMirLoweringError::unsupported(
-                    "SIR trap and suspend terminators have no realization on this bridge",
-                ))
-            }
+            SemTerminator::Call { .. }
+            | SemTerminator::RtCall { .. }
+            | SemTerminator::Trap { .. }
+            | SemTerminator::Suspend { .. }
+            | SemTerminator::ResumeUnwind => Err(SirMirLoweringError::unsupported(
+                    "SIR invoke, trap, suspend, and unwind terminators have no realization on this bridge",
+            )),
         }
     }
 
@@ -2389,10 +2299,10 @@ mod tests {
         Operand { value: ValueId(id) }
     }
 
-    fn copy_argument(id: u32) -> hew_sir::BoundaryOperand {
+    fn returned(id: u32) -> hew_sir::BoundaryOperand {
         hew_sir::BoundaryOperand {
             operand: operand(id),
-            decision: hew_sir::BoundaryDecision::Copy,
+            decision: hew_sir::BoundaryDecision::Move,
         }
     }
 
@@ -2400,15 +2310,6 @@ mod tests {
         SemOp {
             id: OpId(id),
             results: vec![result],
-            kind,
-            provenance: Provenance::Synthesized,
-        }
-    }
-
-    fn zero_result_op(id: u32, kind: SemOpKind) -> SemOp {
-        SemOp {
-            id: OpId(id),
-            results: Vec::new(),
             kind,
             provenance: Provenance::Synthesized,
         }
@@ -2434,7 +2335,7 @@ mod tests {
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(operand(0)),
+                    value: Some(returned(0)),
                 },
             }],
             places: Vec::new(),
@@ -2499,7 +2400,7 @@ mod tests {
                     },
                 )],
                 terminator: SemTerminator::Return {
-                    value: Some(operand(2)),
+                    value: Some(returned(2)),
                 },
             }],
             places: Vec::new(),
@@ -2546,7 +2447,7 @@ mod tests {
                     ),
                 ],
                 terminator: SemTerminator::Return {
-                    value: Some(operand(3)),
+                    value: Some(returned(3)),
                 },
             }],
             places: Vec::new(),
@@ -2602,7 +2503,7 @@ mod tests {
                     ),
                 ],
                 terminator: SemTerminator::Return {
-                    value: Some(operand(3)),
+                    value: Some(returned(3)),
                 },
             }],
             places: Vec::new(),
@@ -3039,7 +2940,7 @@ mod tests {
                         ),
                     ],
                     terminator: SemTerminator::Return {
-                        value: Some(operand(12)),
+                        value: Some(returned(12)),
                     },
                 },
             ],
@@ -3173,7 +3074,7 @@ mod tests {
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(operand(0)),
+                    value: Some(returned(0)),
                 },
             }],
             places: Vec::new(),
@@ -3220,7 +3121,7 @@ mod tests {
                         SemOpKind::ConstI64(1),
                     )],
                     terminator: SemTerminator::Return {
-                        value: Some(operand(0)),
+                        value: Some(returned(0)),
                     },
                 },
             ],
@@ -3302,7 +3203,7 @@ mod tests {
                     ],
                     ops: Vec::new(),
                     terminator: SemTerminator::Return {
-                        value: Some(operand(3)),
+                        value: Some(returned(3)),
                     },
                 },
             ],
@@ -3353,333 +3254,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::similar_names,
-        clippy::too_many_lines,
-        reason = "the complete direct-call component fixture keeps caller/callee ABI and continuation assertions together"
-    )]
-    fn realizes_a_closed_direct_call_component_without_a_raw_template() {
-        let callee = SemFunction {
-            id: ItemId(1),
-            callable: CallableId(0),
-            declaration: DefId::for_test("add_one"),
-            name: "add_one".to_string(),
-            span: 20..60,
-            source_origin: FunctionSourceOrigin::RootUnit,
-            params: vec![BlockArg {
-                value: ValueId(0),
-                ty: ResolvedTy::I64,
-                own: OwnKind::None,
-            }],
-            return_ty: ResolvedTy::I64,
-            entry: BlockId(0),
-            blocks: vec![SemBlock {
-                id: BlockId(0),
-                args: Vec::new(),
-                ops: vec![
-                    op(0, definition(1, ResolvedTy::I64), SemOpKind::ConstI64(1)),
-                    op(
-                        1,
-                        definition(2, ResolvedTy::I64),
-                        SemOpKind::Binary {
-                            op: BinaryOp::Add,
-                            lhs: operand(0),
-                            rhs: operand(1),
-                        },
-                    ),
-                ],
-                terminator: SemTerminator::Return {
-                    value: Some(operand(2)),
-                },
-            }],
-            places: Vec::new(),
-            bindings: Vec::new(),
-        };
-        let caller = SemFunction {
-            id: ItemId(0),
-            callable: CallableId(1),
-            declaration: DefId::for_test("main"),
-            name: "main".to_string(),
-            span: 0..80,
-            source_origin: FunctionSourceOrigin::RootUnit,
-            params: Vec::new(),
-            return_ty: ResolvedTy::I64,
-            entry: BlockId(0),
-            blocks: vec![SemBlock {
-                id: BlockId(0),
-                args: Vec::new(),
-                ops: vec![
-                    op(0, definition(0, ResolvedTy::I64), SemOpKind::ConstI64(40)),
-                    op(
-                        1,
-                        definition(1, ResolvedTy::I64),
-                        SemOpKind::Call {
-                            callee: CallableId(0),
-                            args: vec![copy_argument(0)],
-                        },
-                    ),
-                    // This operation must land in the Call continuation; it
-                    // proves raw-MIR's terminator call did not truncate the
-                    // semantic source block.
-                    op(2, definition(2, ResolvedTy::I64), SemOpKind::ConstI64(1)),
-                    op(
-                        3,
-                        definition(3, ResolvedTy::I64),
-                        SemOpKind::Binary {
-                            op: BinaryOp::Add,
-                            lhs: operand(1),
-                            rhs: operand(2),
-                        },
-                    ),
-                ],
-                terminator: SemTerminator::Return {
-                    value: Some(operand(3)),
-                },
-            }],
-            places: Vec::new(),
-            bindings: Vec::new(),
-        };
-        let module = test_module(vec![caller, callee]);
-        let component = lower_closed_scalar_component(&module, &[CallableId(1)])
-            .expect("a closed scalar SIR direct-call graph should lower independently");
-
-        assert_eq!(component.callables(), &[CallableId(0), CallableId(1)]);
-        let caller_raw = component
-            .raw_mir
-            .iter()
-            .find(|raw| raw.name == "main")
-            .expect("selected caller must have a fresh raw body");
-        let (destination, continuation) = match &caller_raw.blocks[0].terminator {
-            Terminator::Call {
-                callee,
-                authority,
-                dest: Some(destination),
-                next,
-                ..
-            } => {
-                assert_eq!(callee, "add_one");
-                assert_eq!(*authority, crate::CallAuthority::Direct);
-                (*destination, *next)
-            }
-            other => panic!("expected SIR call to lower as raw terminator, got {other:?}"),
-        };
-        assert!(matches!(destination, Place::Local(_)));
-        let call_next = continuation;
-        let continuation = caller_raw
-            .blocks
-            .iter()
-            .find(|block| block.id == call_next)
-            .expect("raw call continuation must exist");
-        assert!(continuation
-            .instructions
-            .iter()
-            .any(|instruction| { matches!(instruction, Instr::ConstI64 { value: 1, .. }) }));
-        assert!(continuation.instructions.iter().any(|instruction| {
-            matches!(
-                instruction,
-                Instr::IntArithChecked {
-                    op: IntArithOp::Add,
-                    ..
-                }
-            )
-        }));
-        let callee_checked = component
-            .checked_mir
-            .iter()
-            .find(|checked| checked.name == "add_one")
-            .expect("callee must receive freshly-derived checked MIR");
-        assert!(matches!(
-            callee_checked.decisions.as_slice(),
-            [crate::DecisionFact {
-                strategy: Strategy::ParamBoundary(ParamBoundaryFact {
-                    param_index: 0,
-                    param_count: 1,
-                    caller_visible_projection: false,
-                    mode: ParamBoundaryMode::BorrowReadOnly,
-                }),
-                ..
-            }]
-        ));
-        let main_cooperate_blocks = component
-            .checked_mir
-            .iter()
-            .find(|checked| checked.name == "main")
-            .expect("caller must receive freshly-derived checked MIR")
-            .cooperate_sites
-            .iter()
-            .map(|site| site.bb_id)
-            .collect::<BTreeSet<_>>();
-        assert!(
-            !main_cooperate_blocks.is_empty(),
-            "the direct caller must retain a scheduler cooperation site"
-        );
-        let pipeline = component.into_pipeline();
-        assert_eq!(pipeline.raw_mir.len(), 2);
-        assert_eq!(pipeline.checked_mir.len(), 2);
-        assert_eq!(pipeline.elaborated_mir.len(), 2);
-        let main_elaborated = pipeline
-            .elaborated_mir
-            .iter()
-            .find(|elaborated| elaborated.name == "main")
-            .expect("selected caller must retain explicit elaboration");
-        assert!(main_elaborated.drop_plans.iter().any(|(exit, plan)| {
-            matches!(
-                exit,
-                ExitPath::Call {
-                    block: 0,
-                    callee,
-                    next,
-                } if callee == "add_one" && *next == call_next
-            ) && plan.drops.is_empty()
-        }));
-        for block in main_cooperate_blocks {
-            assert!(main_elaborated.drop_plans.iter().any(|(exit, plan)| {
-                matches!(exit, ExitPath::Cancel { block: cancel_block } if *cancel_block == block)
-                    && plan.drops.is_empty()
-            }));
-        }
-        for raw in &pipeline.raw_mir {
-            let checked = pipeline
-                .checked_mir
-                .iter()
-                .find(|checked| checked.key == raw.key)
-                .expect("strict SIR pipeline must retain key-matched Checked MIR");
-            let elaborated = pipeline
-                .elaborated_mir
-                .iter()
-                .find(|elaborated| elaborated.key == raw.key)
-                .expect("strict SIR pipeline must retain key-matched Elaborated MIR");
-            let cancellation_blocks = checked
-                .cooperate_sites
-                .iter()
-                .filter_map(|site| {
-                    raw.blocks
-                        .iter()
-                        .find(|block| block.id == site.bb_id)
-                        .filter(|block| !matches!(block.terminator, Terminator::Unreachable))
-                        .map(|_| site.bb_id)
-                })
-                .collect::<BTreeSet<_>>();
-            assert_eq!(
-                elaborated.drop_plans.len(),
-                raw.blocks
-                    .iter()
-                    .filter(|block| !matches!(block.terminator, Terminator::Unreachable))
-                    .count()
-                    + cancellation_blocks.len(),
-                "every strict SIR runtime or injected cancellation exit must retain its zero-drop elaboration plan"
-            );
-            assert!(elaborated
-                .drop_plans
-                .iter()
-                .all(|(_, plan)| plan.drops.is_empty()));
-            for block in cancellation_blocks {
-                assert!(elaborated.drop_plans.iter().any(|(exit, plan)| {
-                    matches!(exit, ExitPath::Cancel { block: cancel_block } if *cancel_block == block)
-                        && plan.drops.is_empty()
-                }));
-            }
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::similar_names,
-        reason = "the focused unit-call component fixture intentionally contrasts callee and caller raw-MIR realization"
-    )]
-    fn realizes_a_zero_result_unit_direct_call_without_a_raw_template() {
-        let callee = SemFunction {
-            id: ItemId(1),
-            callable: CallableId(0),
-            declaration: DefId::for_test("record"),
-            name: "record".to_string(),
-            span: 20..40,
-            source_origin: FunctionSourceOrigin::RootUnit,
-            params: vec![BlockArg {
-                value: ValueId(0),
-                ty: ResolvedTy::I64,
-                own: OwnKind::None,
-            }],
-            return_ty: ResolvedTy::Unit,
-            entry: BlockId(0),
-            blocks: vec![SemBlock {
-                id: BlockId(0),
-                args: Vec::new(),
-                ops: Vec::new(),
-                terminator: SemTerminator::Return { value: None },
-            }],
-            places: Vec::new(),
-            bindings: Vec::new(),
-        };
-        let caller = SemFunction {
-            id: ItemId(0),
-            callable: CallableId(1),
-            declaration: DefId::for_test("main"),
-            name: "main".to_string(),
-            span: 0..60,
-            source_origin: FunctionSourceOrigin::RootUnit,
-            params: Vec::new(),
-            return_ty: ResolvedTy::Unit,
-            entry: BlockId(0),
-            blocks: vec![SemBlock {
-                id: BlockId(0),
-                args: Vec::new(),
-                ops: vec![
-                    op(0, definition(0, ResolvedTy::I64), SemOpKind::ConstI64(7)),
-                    zero_result_op(
-                        1,
-                        SemOpKind::Call {
-                            callee: CallableId(0),
-                            args: vec![copy_argument(0)],
-                        },
-                    ),
-                ],
-                terminator: SemTerminator::Return { value: None },
-            }],
-            places: Vec::new(),
-            bindings: Vec::new(),
-        };
-        let component =
-            lower_closed_scalar_component(&test_module(vec![caller, callee]), &[CallableId(1)])
-                .expect("a closed unit direct-call graph should lower independently");
-
-        let caller_raw = component
-            .raw_mir
-            .iter()
-            .find(|raw| raw.name == "main")
-            .expect("selected unit caller must have a fresh raw body");
-        let continuation = match &caller_raw.blocks[0].terminator {
-            Terminator::Call {
-                callee,
-                authority,
-                args,
-                dest: None,
-                next,
-            } => {
-                assert_eq!(callee, "record");
-                assert_eq!(*authority, crate::CallAuthority::Direct);
-                assert_eq!(args.len(), 1);
-                *next
-            }
-            other => panic!("expected zero-result SIR call to lower as raw call, got {other:?}"),
-        };
-        assert_eq!(
-            caller_raw.locals.len(),
-            1,
-            "the unit call must not allocate a raw-MIR destination local"
-        );
-        assert!(matches!(
-            caller_raw
-                .blocks
-                .iter()
-                .find(|block| block.id == continuation)
-                .expect("raw unit-call continuation must exist")
-                .terminator,
-            Terminator::Return
-        ));
-    }
-
-    #[test]
     fn rejects_a_reachable_callable_without_a_sir_body_atomically() {
         let caller = SemFunction {
             id: ItemId(0),
@@ -3694,16 +3268,17 @@ mod tests {
             blocks: vec![SemBlock {
                 id: BlockId(0),
                 args: Vec::new(),
-                ops: vec![op(
-                    0,
-                    definition(0, ResolvedTy::I64),
-                    SemOpKind::Call {
-                        callee: CallableId(1),
+                ops: Vec::new(),
+                terminator: SemTerminator::Call {
+                    id: OpId(0),
+                    callee: CallableId(1),
+                    args: Vec::new(),
+                    result: hew_sir::CallResult::Value(definition(0, ResolvedTy::I64)),
+                    normal: Edge {
+                        target: BlockId(0),
                         args: Vec::new(),
                     },
-                )],
-                terminator: SemTerminator::Return {
-                    value: Some(operand(0)),
+                    unwind: hew_sir::CallUnwind::NotApplicable,
                 },
             }],
             places: Vec::new(),
@@ -3754,7 +3329,7 @@ mod tests {
                     SemOpKind::ConstI64(42),
                 )],
                 terminator: SemTerminator::Return {
-                    value: Some(operand(0)),
+                    value: Some(returned(0)),
                 },
             }],
             places: Vec::new(),
@@ -3803,7 +3378,7 @@ mod tests {
                     SemOpKind::ConstI64(42),
                 )],
                 terminator: SemTerminator::Return {
-                    value: Some(operand(0)),
+                    value: Some(returned(0)),
                 },
             }],
             places: Vec::new(),

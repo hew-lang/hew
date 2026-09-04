@@ -33,9 +33,12 @@ fn read_probe() -> i64 {
 
 fn main() {
     let stream = tls.connect("127.0.0.1", 1);
-    let n = tls.write(stream, unsafe {
+    let n = match tls.write(stream, unsafe {
         hew_bytes_from_str("ping")
-    });
+    }) {
+        .Ok(n) => n,
+        .Err(_) => -1,
+    };
     println(f"write={n}");
     let w = try_write_probe();
     println(f"try_write={w}");

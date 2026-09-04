@@ -42,7 +42,7 @@ const UNFILED_HEADING: &str = "Other";
 const COMMAND_GROUPS: &[(&str, &[&str])] = &[
     (
         "Build and run",
-        &["run", "build", "debug", "watch", "eval", "init"],
+        &["run", "build", "debug", "watch", "eval", "init", "new"],
     ),
     (
         "Code quality",

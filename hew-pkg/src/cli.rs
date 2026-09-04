@@ -612,11 +612,11 @@ fn cmd_add(
         match manifest::parse_manifest(&dependency_manifest) {
             Ok(dependency) if dependency.package.name == pkg => {
                 if dry_run {
-                    println!("Would add {pkg} from {} to hew.toml", resolved.display());
+                    println!("Would add {pkg} from {} to hew.toml", path.display());
                     return;
                 }
                 match manifest::add_path_dependency(&manifest_path, pkg, version, path) {
-                    Ok(()) => println!("Added {pkg} from {} to hew.toml", resolved.display()),
+                    Ok(()) => println!("Added {pkg} from {} to hew.toml", path.display()),
                     Err(e) => {
                         eprintln!("hew add: {e}");
                         std::process::exit(1);

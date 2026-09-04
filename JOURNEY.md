@@ -57,6 +57,18 @@
 - The integrated native acceptance cases pass at O0 and O2; these exercise
   the existing native route, not a completed ownership cutover or sanitizers.
 
+## Borrowed-input boundary
+
+- Guaranteed inputs may be read or copied explicitly, but cannot be consumed,
+  transferred into an owned block argument or returned without a copy.
+  A call's borrow operand remains permitted; its operation contract must
+  independently establish synchronous, non-retaining use.
+- The consumption and return negatives failed before the check. Focused SIR
+  verification also covers an owned copy and normal/unwind call borrowing.
+- This does not admit local borrow regions, suspension or new ownership
+  operations. Their operation contracts and executable lowering remain work
+  for the first native owned-value slice.
+
 ## Result consumer intake
 
 - Restacked the complete 19-commit Result consumer migration from PR #3349

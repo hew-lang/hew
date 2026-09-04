@@ -1,8 +1,8 @@
 //! Path-sensitive availability of owned SSA obligations.
 //!
-//! This is the owned-value component of verification, not borrow-region or
-//! place-initialization verification. The operation relation table keeps those
-//! operations closed until their corresponding checks and lowering exist.
+//! Guaranteed inputs can be read or explicitly copied, never consumed or
+//! escaped. This is not local borrow-region or place-initialization verification;
+//! those producers remain closed until their checks and lowering exist.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -28,7 +28,9 @@ type State = Vec<u8>;
 
 pub(crate) fn verify(function: &SemFunction) -> Vec<Violation> {
     let flow = Flow::new(function);
-    if flow.values.is_empty() || !flow.blocks.contains_key(&function.entry) {
+    if (flow.values.is_empty() && flow.guaranteed.is_empty())
+        || !flow.blocks.contains_key(&function.entry)
+    {
         return Vec::new();
     }
     let mut initial = vec![DEAD; flow.values.len()];
@@ -72,14 +74,18 @@ struct Flow<'a> {
     blocks: BTreeMap<BlockId, &'a crate::SemBlock>,
     indices: BTreeMap<ValueId, usize>,
     values: Vec<ValueId>,
+    guaranteed: BTreeSet<ValueId>,
 }
 
 impl<'a> Flow<'a> {
     fn new(function: &'a SemFunction) -> Self {
         let mut values = BTreeSet::new();
+        let mut guaranteed = BTreeSet::new();
         let mut record = |value, own| {
             if own == OwnKind::Owned {
                 values.insert(value);
+            } else if own == OwnKind::Guaranteed {
+                guaranteed.insert(value);
             }
         };
         for param in &function.params {
@@ -111,6 +117,7 @@ impl<'a> Flow<'a> {
                 .map(|(index, &value)| (value, index))
                 .collect(),
             values,
+            guaranteed,
         }
     }
 
@@ -122,6 +129,14 @@ impl<'a> Flow<'a> {
         state: &mut State,
         emit: &mut impl FnMut(Violation),
     ) {
+        if consume && self.guaranteed.contains(&value) {
+            emit(Violation {
+                block,
+                value,
+                reason: "guaranteed input cannot be consumed; copy it into an owned value first",
+            });
+            return;
+        }
         let Some(&index) = self.indices.get(&value) else {
             return;
         };
@@ -221,13 +236,7 @@ impl<'a> Flow<'a> {
                 self.define(id, result.id, &mut state, emit);
             }
         }
-        block.terminator.visit_boundary_operands(|_, operand| {
-            let consumes = matches!(
-                operand.decision,
-                BoundaryDecision::Move | BoundaryDecision::Snapshot(SnapshotDecision::Transfer)
-            );
-            self.access(id, operand.operand.value, consumes, &mut state, emit);
-        });
+        self.boundary_inputs(id, &block.terminator, &mut state, emit);
         let mut successors = Vec::new();
         match &block.terminator {
             SemTerminator::Call { normal, unwind, .. }
@@ -274,6 +283,40 @@ impl<'a> Flow<'a> {
             }
         }
         successors
+    }
+
+    fn boundary_inputs(
+        &self,
+        id: BlockId,
+        terminator: &SemTerminator,
+        state: &mut State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        terminator.visit_boundary_operands(|_, operand| {
+            let value = operand.operand.value;
+            if self.guaranteed.contains(&value) {
+                // The call contract must separately prove a synchronous,
+                // non-retaining borrow. Other boundaries require an explicit
+                // owned copy so their lifetime never depends on this input.
+                let scoped_call_borrow = matches!(
+                    terminator,
+                    SemTerminator::Call { .. } | SemTerminator::RtCall { .. }
+                ) && operand.decision == BoundaryDecision::Borrow;
+                if !scoped_call_borrow {
+                    emit(Violation {
+                        block: id,
+                        value,
+                        reason: "guaranteed input requires an explicit owned copy at this boundary",
+                    });
+                }
+                return;
+            }
+            let consumes = matches!(
+                operand.decision,
+                BoundaryDecision::Move | BoundaryDecision::Snapshot(SnapshotDecision::Transfer)
+            );
+            self.access(id, value, consumes, state, emit);
+        });
     }
 }
 
@@ -377,6 +420,97 @@ mod tests {
     #[test]
     fn consumed_parameter_has_no_remaining_obligation() {
         assert!(verify(&function(vec![block(0, vec![destroy(0, 0)], done())])).is_empty());
+    }
+
+    #[test]
+    fn borrowed_parameter_cannot_be_consumed() {
+        let mut f = function(vec![block(0, vec![destroy(0, 0)], done())]);
+        f.params[0].own = OwnKind::Guaranteed;
+        assert!(verify(&f).iter().any(|v| v.value == ValueId(0)));
+    }
+
+    #[test]
+    fn borrowed_parameter_requires_explicit_copy_before_return() {
+        for decision in [
+            BoundaryDecision::Move,
+            BoundaryDecision::Borrow,
+            BoundaryDecision::Copy,
+        ] {
+            let mut f = function(vec![block(
+                0,
+                Vec::new(),
+                SemTerminator::Return {
+                    value: Some(BoundaryOperand {
+                        operand: operand(0),
+                        decision,
+                    }),
+                },
+            )]);
+            f.params[0].own = OwnKind::Guaranteed;
+            assert!(
+                verify(&f).iter().any(|v| v.value == ValueId(0)),
+                "{decision:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn borrowed_parameter_can_create_an_owned_copy() {
+        let mut f = function(vec![block(
+            0,
+            vec![
+                op(
+                    0,
+                    SemOpKind::CopyValue { source: operand(0) },
+                    vec![owned(1)],
+                ),
+                destroy(1, 1),
+            ],
+            done(),
+        )]);
+        f.params[0].own = OwnKind::Guaranteed;
+        assert!(verify(&f).is_empty());
+    }
+
+    #[test]
+    fn borrowed_parameter_can_be_borrowed_by_a_call() {
+        let mut f = function(vec![
+            block(
+                0,
+                Vec::new(),
+                SemTerminator::Call {
+                    id: OpId(0),
+                    callee: CallableId(1),
+                    args: vec![BoundaryOperand {
+                        operand: operand(0),
+                        decision: BoundaryDecision::Borrow,
+                    }],
+                    result: CallResult::Unit,
+                    normal: edge(1, &[]),
+                    unwind: CallUnwind::Cleanup(edge(2, &[])),
+                },
+            ),
+            block(1, Vec::new(), done()),
+            block(2, Vec::new(), SemTerminator::ResumeUnwind),
+        ]);
+        f.params[0].own = OwnKind::Guaranteed;
+        assert!(verify(&f).is_empty());
+    }
+
+    #[test]
+    fn borrowed_parameter_cannot_be_transferred_into_an_owned_block_argument() {
+        let mut continuation = block(1, vec![destroy(1, 1)], done());
+        continuation.args.push(BlockArg {
+            value: ValueId(1),
+            ty: ResolvedTy::String,
+            own: OwnKind::Owned,
+        });
+        let mut f = function(vec![
+            block(0, Vec::new(), SemTerminator::Goto(edge(1, &[0]))),
+            continuation,
+        ]);
+        f.params[0].own = OwnKind::Guaranteed;
+        assert!(verify(&f).iter().any(|v| v.value == ValueId(0)));
     }
 
     #[test]

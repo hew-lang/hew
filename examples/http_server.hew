@@ -64,9 +64,10 @@ fn serve_request(root: string, req: Request) {
 fn main() {
     var port: string = "8080";
     var root: string = ".";
-    let argc = os.args().len();
+    let arguments = os.args();
+    let argc = arguments.len();
     if argc > 1 {
-        match os.args().get(1) {
+        match arguments.get(1) {
             .Some(value) => {
                 port = value;
             },
@@ -74,7 +75,7 @@ fn main() {
         }
     }
     if argc > 2 {
-        match os.args().get(2) {
+        match arguments.get(2) {
             .Some(value) => {
                 root = value;
             },

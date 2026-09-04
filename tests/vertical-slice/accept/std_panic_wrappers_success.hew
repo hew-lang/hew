@@ -19,7 +19,10 @@ fn main() -> i64 {
     if contents.len() == 0 {
         return 2;
     }
-    let arg0 = os.args().get(0);
+    let arg0 = match os.args().get(0) {
+        .Some(value) => value,
+        .None => return 3,
+    };
     if arg0.len() == 0 {
         return 3;
     }

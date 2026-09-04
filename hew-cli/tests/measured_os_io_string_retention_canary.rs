@@ -23,7 +23,10 @@ import std.path;
 import std.process;
 
 fn all_measured_wrappers() -> i64 {
-    let arg = os.args().get(0);
+    let arg = match os.args().get(0) {
+        .Some(value) => value,
+        .None => return 1,
+    };
     let env = os.env("PATH").unwrap_or("");
     let cwd = os.cwd();
     let home = os.home_dir();
@@ -31,7 +34,10 @@ fn all_measured_wrappers() -> i64 {
     let temp = os.temp_dir();
     let line = io.read_line();
     let all = io.read_all();
-    let direct_file = fs.read("/tmp/hew-os-io-retention-input.txt");
+    let direct_file = match fs.read("/tmp/hew-os-io-retention-input.txt") {
+        .Ok(text) => text,
+        .Err(error) => to_string(error),
+    };
     let streamed_file = match fs.read("/tmp/hew-os-io-retention-input.txt") {
         .Ok(text) => text,
         .Err(error) => to_string(error),
@@ -54,7 +60,7 @@ fn all_measured_wrappers() -> i64 {
         .Ok(data) => data.len(),
         .Err(reason) => reason.len(),
     };
-    let process_len = match process.try_run("printf stdout; printf stderr >&2") {
+    let process_len = match process.run("printf stdout; printf stderr >&2") {
         .Ok(output) => output.stdout.len() + output.stderr.len(),
         .Err(_) => 0,
     };

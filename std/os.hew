@@ -10,7 +10,10 @@
 //!
 //! fn main() {
 //!     let arguments = os.args();
-//!     let first = arguments.get(0);
+//!     match arguments.get(0) {
+//!         .Some(first) => println(first),
+//!         .None => println("no program argument"),
+//!     }
 //!     let home = os.home_dir();
 //!     println(home);
 //! }
@@ -25,7 +28,10 @@
 ///
 /// fn main() {
 ///     let arguments = os.args();
-///     let program = arguments.get(0);
+///     match arguments.get(0) {
+///         .Some(program) => println(program),
+///         .None => println("no program argument"),
+///     }
 /// }
 /// ```
 pub fn args() -> Vec<string> {

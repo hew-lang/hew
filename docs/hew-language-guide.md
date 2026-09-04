@@ -831,7 +831,10 @@ fn main() -> i32 {
         println("usage: prog <arg>");
         return 1;
     }
-    println(f"arg: {arguments.get(1)}");
+    match arguments.get(1) {
+        .Some(argument) => println(f"arg: {argument}"),
+        .None => return 1,
+    }
     0
 }
 ```

@@ -3471,32 +3471,10 @@ fn rc_param_explicit_return_errors_borrowed_rc() {
     );
 }
 
-/// `break <rc_param>` inside a loop must trigger the error — the broken value
-/// escapes to the enclosing scope with the same aliasing hazard as `return`.
-#[test]
-fn rc_param_break_value_errors_borrowed_rc() {
-    let output = typecheck_inline(
-        r"
-        fn escape(r: Rc<i64>) -> Rc<i64> {
-            loop {
-                break r;
-            }
-        }
-        fn main() {}
-        ",
-    );
-    // Note: the type checker currently types `loop { break v; }` as Unit,
-    // so this also gets a ReturnTypeMismatch.  The BorrowedParamReturn error
-    // must still fire independently of that.
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
-        "break-with-value of Rc param should emit BorrowedParamReturn error, got errors: {:#?}",
-        output.errors
-    );
-}
+// `break <rc_param>` is gone from the language: `break` carries no operand
+// (`E_BREAK_VALUE`, HEW-SPEC-2026 §12.4), so the escape route this checker
+// rule once had to cover cannot be written. The remaining escapes — an
+// explicit `return`, a block tail, a match arm — are covered above and below.
 
 /// Block-wrapped return `{ r }` must be caught — `Expr::Block` descent.
 #[test]

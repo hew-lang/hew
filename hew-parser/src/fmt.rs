@@ -4896,9 +4896,11 @@ extern \"C\" {
 
     #[test]
     fn scope_block_roundtrips() {
+        // `scope { .. }` is a statement, so the formatted form is a
+        // statement-expression, not a `let` initialiser (HEW-SPEC-2026 §4.2).
         let src = "\
 fn main() {
-    let value = scope {
+    scope {
         1
     };
 }
@@ -4921,7 +4923,7 @@ fn main() {
     fn nested_scope_roundtrips() {
         let src = "\
 fn main() {
-    let value = scope {
+    scope {
         fork worker = run();
         fork audit();
         worker

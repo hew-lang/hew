@@ -6,6 +6,12 @@
 //! position compiled. The parser now desugars the expression-position
 //! spelling to the same one-statement-block AST the working `{ break; }`
 //! form already produces, mirroring how `return` was made expression-capable.
+//!
+//! Where `break` may be *written* is separate from what it may *carry*: a
+//! `break` carries no operand in either position (`E_BREAK_VALUE`), and
+//! `scope { .. }` is a statement rather than a `Primary`
+//! (`E_SCOPE_IS_STATEMENT`), so the block-opening arm-body set below covers
+//! only the openers that actually produce a value.
 
 use hew_parser::ast::{Block, Expr, Item, MatchArm, Stmt};
 use hew_parser::{parse, ParseDiagnosticKind};
@@ -80,34 +86,38 @@ fn bare_break_in_match_arm_parses() {
     );
 }
 
-#[test]
-fn break_with_value_in_match_arm_parses() {
-    let body = parse_fn_body("loop { let x = match 1 { 1 => break 42, _ => 0 }; }");
-    let Stmt::Loop { body, .. } = &body.stmts[0].0 else {
-        panic!("expected Stmt::Loop, got {:?}", body.stmts[0].0);
-    };
-    let Stmt::Let { value, .. } = &body.stmts[0].0 else {
-        panic!("expected Stmt::Let, got {:?}", body.stmts[0].0);
-    };
-    let value = value.as_ref().expect("expected let initialiser");
-    let Expr::Match { arms, .. } = &value.0 else {
-        panic!("expected Expr::Match, got {:?}", value.0);
-    };
-    let Expr::Block(Block { stmts, .. }) = &arms[0].body.0 else {
-        panic!("expected Expr::Block, got {:?}", arms[0].body.0);
-    };
-    let Stmt::Break { label, value } = &stmts[0].0 else {
-        panic!("expected Stmt::Break, got {:?}", stmts[0].0);
-    };
-    assert!(label.is_none());
-    let Some(value) = value else {
-        panic!("expected Stmt::Break value, got None");
-    };
+/// Parse a full source string and assert `E_BREAK_VALUE` is among the errors,
+/// so a test that means "the operand is refused" cannot pass on an unrelated
+/// syntax error.
+fn parse_err_break_value(src: &str) {
+    let result = parse(src);
     assert!(
-        matches!(value.0, Expr::Literal(_)),
-        "expected an integer literal operand, got {:?}",
-        value.0
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_BREAK_VALUE")),
+        "expected E_BREAK_VALUE for `{src}`, got: {:#?}",
+        result.errors
     );
+}
+
+#[test]
+fn break_with_operand_in_expression_position_is_refused() {
+    // A loop produces no value, so an operand on `break` has nowhere to go
+    // (HEW-SPEC-2026 §12.4). Before this refusal the operand was parsed,
+    // evaluated for its side effects and discarded, which taught a
+    // loop-as-expression model the language does not have.
+    parse_err_break_value("fn f() { loop { let x = match 1 { 1 => break 42, _ => 0 }; } }");
+}
+
+#[test]
+fn break_with_operand_in_statement_position_is_refused() {
+    parse_err_break_value("fn f() { var total: i64 = 0; loop { total = 1; break total; } }");
+}
+
+#[test]
+fn labelled_break_with_operand_is_refused() {
+    parse_err_break_value("fn f() { @outer: loop { break @outer 42; } }");
 }
 
 #[test]
@@ -259,8 +269,6 @@ fn comma_less_block_opening_arms_parse() {
     parse_ok("fn f() { match 1 { 1 => unsafe { 1 } _ => 0 } }");
     // Expr::Select
     parse_ok("fn f() { match 1 { 1 => select { m from ch => m, } _ => 0 } }");
-    // Expr::Scope
-    parse_ok("fn f() { match 1 { 1 => scope { 1 } _ => 0 } }");
     // Expr::ForkBlock — a brace must follow `fork`, and `fork`/`after` blocks
     // are only legal inside a `scope`.
     parse_ok("fn f() { scope { let v = match 1 { 1 => fork { 1 } _ => 0 }; } }");
@@ -277,4 +285,44 @@ fn comma_less_non_block_arms_still_error() {
     parse_err_missing_comma("fn f() { match 1 { 1 => {\"a\": 1} _ => 0 } }");
     parse_err_missing_comma("fn f() { match 1 { 1 => gen { yield 1; } _ => 0 } }");
     parse_err_missing_comma("fn f() { scope { let v = match 1 { 1 => fork g() _ => 0 }; } }");
+}
+
+#[test]
+fn scope_as_match_arm_body_is_refused() {
+    // A match-arm body is a value position, so `scope` leaving `Primary`
+    // closes it. This is why `Token::Scope` had to leave
+    // `arm_body_opens_block` in the same change: the token-side predicate must
+    // not promise a block-bodied arm the expression grammar no longer parses.
+    let result = parse("fn f() { match 1 { 1 => scope { 1 } _ => 0 } }");
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SCOPE_IS_STATEMENT")),
+        "expected E_SCOPE_IS_STATEMENT for a scope arm body, got: {:#?}",
+        result.errors
+    );
+}
+
+#[test]
+fn scope_as_bare_statement_and_block_tail_parses() {
+    // The accept twin: the statement spelling is untouched, with or without the
+    // trailing `;`, and a scope in tail position is not promoted to the
+    // block's trailing expression — it produces no value to promote.
+    parse_ok("fn f() { scope { fork g(); }; }");
+
+    let body = parse_fn_body("scope { fork g(); }");
+    assert!(
+        body.trailing_expr.is_none(),
+        "an unterminated tail `scope` must stay a statement, got trailing expr {:?}",
+        body.trailing_expr
+    );
+    assert!(
+        matches!(
+            &body.stmts[..],
+            [(Stmt::Expression((Expr::Scope { .. }, _)), _)]
+        ),
+        "expected a single scope statement, got {:?}",
+        body.stmts
+    );
 }

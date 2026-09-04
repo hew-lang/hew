@@ -6407,3 +6407,39 @@ fi
 # consume of the same binding elsewhere in the loop body neither hides nor
 # duplicates it.
 reject_check_use_after_consume "vec_index_assign_reuse_after_rebind"
+
+# ---------------------------------------------------------------------------
+# `break` carries no operand and `scope` is not a value (#3263).
+#
+# Both surfaces used to accept a value where none can go: `break expr;` parsed
+# the operand and discarded it, and `let r = scope { .. }` bound `()`. The
+# refusals are parser-level, so each reject also asserts its hint — the code
+# alone would pass on a message that names the wrong replacement.
+# ---------------------------------------------------------------------------
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/break_value_operand.hew" \
+    1 "break_value_operand"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/break_value_operand.hew" \
+    "E_BREAK_VALUE" \
+    "break_value_operand_code"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/break_value_operand.hew" \
+    "assign to a \`var\` before \`break\`" \
+    "break_value_operand_hint"
+
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/scope_in_value_position.hew" \
+    "E_SCOPE_IS_STATEMENT" \
+    "scope_in_value_position_code"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/scope_in_value_position.hew" \
+    "use \`join { .. }\` for a value-producing fan-out" \
+    "scope_in_value_position_hint"
+
+# Accept twins: refusing the operand and the value position must not narrow
+# where `break` may be written or how a `scope` statement may end. The scope
+# fixture's tail `scope { .. }` carries no `;` and must stay a statement, so
+# the handler's value is still its explicit `return`.
+run_accept_expect_stdout "break_control_flow_only"
+run_accept_expect_stdout "scope_statement_tail"

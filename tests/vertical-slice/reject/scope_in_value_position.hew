@@ -1,0 +1,15 @@
+// Reject fixture: `scope` in a value position is E_SCOPE_IS_STATEMENT (User).
+//
+// `scope { .. }` brackets structured concurrency and produces nothing, so it
+// is a statement rather than a `Primary` (HEW-SPEC-2026 §4.2). Binding it used
+// to succeed and silently give the binding `()`; the value-producing fan-out
+// is `join { .. }`.
+//
+// The accept twin is accept/scope_statement_tail.hew: the statement spelling,
+// with and without its trailing `;`, stays legal.
+
+fn main() {
+    let r = scope {
+    };
+    println(f"{r}");
+}

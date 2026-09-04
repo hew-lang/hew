@@ -2598,12 +2598,10 @@ impl Checker {
                         fact: ProducedValueFact {
                             ownership: if non_owning {
                                 crate::runtime_call::ProducedValueOwnership::NoOwner
-                            } else if matches!(&resolved_result_ty, Ty::String) {
+                            } else {
                                 crate::runtime_call::ProducedValueOwnership::owned(
                                     crate::runtime_call::ProducedValueAcquisition::Delivery,
                                 )
-                            } else {
-                                crate::runtime_call::ProducedValueOwnership::Unknown
                             },
                             receiver_span: None,
                             receiver_boundary: None,

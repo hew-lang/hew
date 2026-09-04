@@ -15,7 +15,19 @@ fn rendered_count() -> string {
     rendered
 }
 
+fn rendered_without_reassignment() -> string {
+    let values = json.array();
+    let rendered = values.stringify();
+    values.close();
+    rendered
+}
+
 #[test]
 fn reassigns_json_resource_builder_in_loop() {
     testing.assert_eq_str(rendered_count(), "[0,1,2]");
+}
+
+#[test]
+fn nonreassigned_json_resource_builder_preserves_payload() {
+    testing.assert_eq_str(rendered_without_reassignment(), "[]");
 }

@@ -2,8 +2,8 @@
 // be rejected at HIR-lower time when compiling for wasm32, exercising the
 // Item::Machine arm of `check_wasm_blocking_recv_gate` added in this change.
 //
-// The .recv() call is on a real `Receiver<i64>` obtained from
-// `channel.new(capacity)` so the type checker accepts the program; the
+// The .recv() call is on a real `Receiver<i64>` obtained from the successful
+// `channel.new(capacity)` result so the type checker accepts the program; the
 // wasm32 gate then rejects the blocking `.recv()` at HIR-lower time.
 import std.channel.channel;
 
@@ -16,9 +16,13 @@ machine M {
     state Done;
 
     on Tick: Idle => Done {
-        let (_tx, rx): (Sender<i64>, Receiver<i64>) = channel.new(8);
-        let _ = rx.recv();
-        .Done
+        match channel.new(8) {
+            .Ok((_tx, rx)) => {
+                let _received: Option<i64> = rx.recv();
+                .Done
+            },
+            .Err(_) => .Done,
+        }
     }
 
     default { state }

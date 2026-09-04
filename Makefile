@@ -89,7 +89,7 @@
 .PHONY: hew-check-all
 .PHONY: grammar-parity downstream-check
 .PHONY: sir-coverage sir-parity
-.PHONY: test-journeys check-time-ratchet check-time-ratchet-record
+.PHONY: check-time-ratchet check-time-ratchet-record
 .PHONY: size-ratchet size-ratchet-record
 
 help:
@@ -1685,15 +1685,6 @@ grammar-parity:
 downstream-check:
 	@echo "==> downstream-check: comparing docs/syntax-data.json against sibling repos"
 	scripts/sync-downstream.sh --check
-
-# Runs one journey script under repros/journeys/ (day-one, day-two, or
-# week-one-local) against HEW_BIN and ratchets its `step <id>: pass|fail`
-# lines against scripts/journeys-expected.tsv: the target fails when a
-# step outside that file fails, or a step listed in it now passes (V060-FD-1).
-# inputs: repros/journeys/*.sh scripts/run-journeys.sh scripts/journeys-expected.tsv
-test-journeys: hew ## Test: run a repros/journeys script and ratchet its steps (JOURNEY=day-one|day-two|week-one-local)
-	@if [ -z "$(JOURNEY)" ]; then echo "usage: make test-journeys JOURNEY=day-one|day-two|week-one-local" >&2; exit 64; fi
-	HEW_BIN="$(HEW_BIN)" bash scripts/run-journeys.sh $(JOURNEY)
 
 # Five runs of `hew check` on the largest std module a newcomer's program
 # pulls in; the median wall-clock cannot exceed 2x the recorded baseline

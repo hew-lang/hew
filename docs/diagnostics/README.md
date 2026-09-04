@@ -51,14 +51,15 @@ same change that lands the mechanism.
 These refuse a program the language does not accept, so no release removes
 them.
 
-| Code                                           | Refuses                                                                                                                     |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `E_RANGE_VALUE`                                | A range in value position. Ranges are `for` iterables, by design.                                                           |
-| `E_DYN_SUPERTRAIT`                             | A supertrait method reached through a trait object in a shape the checker cannot resolve (HEW-SPEC-2026 §2.2.1).            |
-| `E_BARE_VARIANT_PATTERN`                       | A bare variant in pattern position (`Ok(v)`). Write `.Ok(v)` when the scrutinee selects the enum, `Result.Ok(v)` otherwise. |
-| `E_BARE_VARIANT_EXPR`                          | A bare variant in expression position, under the same rule.                                                                 |
-| `E_VISIBILITY_PRIVATE`, `E_VISIBILITY_PACKAGE` | A cross-module reference to a private or package item.                                                                      |
-| `E_MODULE_NOT_FOUND`                           | An `import` no search path resolves.                                                                                        |
+| Code                                           | Refuses                                                                                                                       |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `E_RANGE_VALUE`                                | A range in value position. Ranges are `for` iterables, by design.                                                             |
+| `E_DYN_SUPERTRAIT`                             | A supertrait method reached through a trait object in a shape the checker cannot resolve (HEW-SPEC-2026 §2.2.1).              |
+| `E_BARE_VARIANT_PATTERN`                       | A bare variant in pattern position (`Ok(v)`). Write `.Ok(v)` when the scrutinee selects the enum, `Result.Ok(v)` otherwise.   |
+| `E_BARE_VARIANT_EXPR`                          | A bare variant in expression position, under the same rule.                                                                   |
+| `E_VISIBILITY_PRIVATE`, `E_VISIBILITY_PACKAGE` | A cross-module reference to a private or package item.                                                                        |
+| `E_MODULE_NOT_FOUND`                           | An `import` no search path resolves.                                                                                          |
+| `E_GEN_RETURN_SPELLING`                        | A `gen fn` return type spelling the generator handle (`Generator<Y, R>`) instead of the yield type `Y` (HEW-SPEC-2026 §4.12). |
 
 The remaining v0.6.0 surface codes are named by the decision that introduces
 them, and their rule lives in the spec section that decision writes — not
@@ -66,7 +67,7 @@ here. Each row is added by the lane that lands the refusal:
 `E_IS_VALUE_TYPE`, `E_OPAQUE_MESSAGE_PAYLOAD`, `E_CALLABLE_MESSAGE_PAYLOAD`,
 `E_USE_AFTER_SEND`, `E_UNKNOWN_ATTRIBUTE`, `E_RESERVED_HANDLER_NAME`,
 `E_ACTOR_CONTEXT_REQUIRED`, `E_BREAK_VALUE`, `E_SCOPE_IS_STATEMENT`,
-`E_GEN_RETURN_SPELLING`, `E_NO_ASYNC_FN`, `E_NO_ASYNC_GEN`,
+`E_NO_ASYNC_FN`, `E_NO_ASYNC_GEN`,
 `E_FOR_STREAM_NEEDS_AWAIT`, `E_AWAIT_NOT_STREAM`.
 
 ## Refusals with no code yet

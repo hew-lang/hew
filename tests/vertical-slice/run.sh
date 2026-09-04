@@ -3416,6 +3416,26 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/yield_outside_gen.hew" >"
 fi
 grep -q 'outside of generator' "${reject_output}"
 
+# Reject: a `gen fn` return type that spells the generator handle
+# `Generator<Y, R>` instead of the yield type `Y` (HEW-SPEC-2026 §4.12).
+# #3265 — this used to fall through to a generic type mismatch on the first
+# `yield`; it must now surface as a dedicated, annotation-sited diagnostic.
+# Error count pinned at exactly 1: the recovered `Y` must let the body check
+# cleanly, so no downstream `yield` mismatch cascades alongside the new code.
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/gen_fn_return_type_spells_handle.hew" \
+    1 \
+    "gen_fn_return_type_spells_handle"
+grep -q 'E_GEN_RETURN_SPELLING' "${reject_output}"
+
+# Accept: negative control — naming the yield type directly is the accepted
+# spelling and must not trip E_GEN_RETURN_SPELLING.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_fn_return_type_yield_spelling.hew" >"${reject_output}" 2>&1; then
+    echo "expected gen-fn-return-type-yield-spelling fixture to pass; got:" >&2
+    cat "${reject_output}" >&2
+    exit 1
+fi
+
 # Accept + run: generator bodies that read FREE VARIABLES — a `gen fn`'s formal
 # parameter and a `gen { }` block's captured outer locals. Both travel through
 # the runtime env channel (`hew_gen_ctx_create` deep-copies the env into the

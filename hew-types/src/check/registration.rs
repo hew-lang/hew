@@ -7412,14 +7412,9 @@ impl Checker {
         if pushed_bounds {
             self.current_type_param_bounds.pop();
         }
-        // Wrap return type for generator functions
-        let return_type = if fd.is_generator && fd.is_async {
-            Ty::async_generator(declared_return)
-        } else if fd.is_generator {
-            Ty::generator(declared_return, Ty::Unit)
-        } else {
-            declared_return
-        };
+        // E_GEN_RETURN_SPELLING recovery + generator/async-generator wrap.
+        let return_type =
+            self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
 
         let fn_assoc_bindings = fn_scope.assoc_bindings;
         let sig = FnSig {
@@ -13417,13 +13412,9 @@ impl Checker {
         let type_params = fd.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
-        let return_type = if fd.is_generator && fd.is_async {
-            Ty::async_generator(declared_return)
-        } else if fd.is_generator {
-            Ty::generator(declared_return, Ty::Unit)
-        } else {
-            declared_return
-        };
+        // E_GEN_RETURN_SPELLING recovery + generator/async-generator wrap.
+        let return_type =
+            self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
         let assoc_bindings = scope.assoc_bindings;
         let sig = FnSig {
             type_params,

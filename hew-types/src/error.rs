@@ -806,6 +806,11 @@ pub enum TypeErrorKind {
     UseAfterConsume,
     /// Yield used outside a generator function
     YieldOutsideGenerator,
+    /// A `gen fn` return-type annotation spells the generator handle
+    /// (`Generator<Y, R>`) instead of the yield type `Y` (HEW-SPEC-2026
+    /// §4.12). The compiler synthesizes the handle wrapper itself; naming it
+    /// in the annotation says the body yields handles, not `Y` values.
+    GenReturnSpelling,
     /// Actor types form a reference cycle via `LocalPid` fields
     ActorRefCycle,
     /// A value-typed enum/record/struct contains itself by value, directly or
@@ -1506,6 +1511,7 @@ impl TypeErrorKind {
             Self::UseAfterMove => "UseAfterMove",
             Self::UseAfterConsume => "UseAfterConsume",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
+            Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",
             Self::UnusedVariable => "UnusedVariable",

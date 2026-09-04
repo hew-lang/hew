@@ -3194,6 +3194,12 @@ pub struct Checker {
     pub(super) reported_undefined_named_types: HashSet<(String, SpanKey)>,
     /// Borrow-type spans already rejected during ordinary annotation resolution.
     pub(super) reported_borrow_types_outside_extern: HashSet<SpanKey>,
+    /// `gen fn` return-type spans already rejected as
+    /// `E_GEN_RETURN_SPELLING`, so the mis-spelling is reported exactly once
+    /// even though a function's signature is rebuilt by more than one
+    /// registration pass (own-module registration and import registration
+    /// both visit the same return-type annotation).
+    pub(super) reported_gen_return_spellings: HashSet<SpanKey>,
     /// `false` until `collect_types` has registered every type declaration.
     /// The undefined-named-type guard in `resolve_type_expr_tracking_holes`
     /// only fires once this is `true`: type-declaration member resolution runs
@@ -3930,6 +3936,7 @@ impl Checker {
             reported_type_visibility_violations: HashSet::new(),
             reported_undefined_named_types: HashSet::new(),
             reported_borrow_types_outside_extern: HashSet::new(),
+            reported_gen_return_spellings: HashSet::new(),
             type_decls_registered: false,
             suppress_undefined_type_report: false,
             declared_type_param_names: HashSet::new(),

@@ -1,0 +1,92 @@
+import std.os;
+
+actor Alpha {
+    receive fn ping() -> i64 {
+        1
+    }
+}
+
+actor Beta {
+    receive fn ping() -> i64 {
+        2
+    }
+}
+
+fn main() -> i64 {
+    let alpha = spawn Alpha;
+
+    match Node.register("local-alpha", alpha) {
+        .Err(err) => {
+            println(f"FAIL prestart-register {err}");
+            return 1;
+        },
+        .Ok(_) => println("PASS prestart-register"),
+    }
+
+    let found: Result<RemotePid<Alpha>, LookupError> = Node.lookup("local-alpha");
+    match found {
+        .Err(err) => {
+            println(f"FAIL prestart-lookup {err}");
+            return 2;
+        },
+        .Ok(_) => println("PASS prestart-lookup"),
+    }
+
+    let wrong: Result<RemotePid<Beta>, LookupError> = Node.lookup("local-alpha");
+    match wrong {
+        .Err(err) => {
+            match err {
+                LookupError.TypeMismatch => println("PASS prestart-type-mismatch"),
+                _ => {
+                    println(f"FAIL prestart-type-mismatch {err}");
+                    return 3;
+                },
+            }
+        },
+        .Ok(_) => {
+            println("FAIL prestart-type-mismatch unchecked-cast");
+            return 3;
+        },
+    }
+
+    var refused = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: "", trust: "pinned", peers: Vec.new(), seeds: Vec.new() };
+    refused.trust = "open";
+    match Node.start(refused) {
+        .Err(err) => {
+            match err {
+                NodeError.Config => println("PASS start-refusal-result"),
+                _ => {
+                    println(f"FAIL start-refusal-result {err}");
+                    return 4;
+                },
+            }
+        },
+        .Ok(_) => {
+            println("FAIL start-refusal-result accepted-invalid-trust");
+            return 4;
+        },
+    }
+
+    var config = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: "", trust: "pinned", peers: Vec.new(), seeds: Vec.new() };
+    config.key = os.env("HEW_NODE_TEST_KEY").unwrap_or("");
+    match Node.start(config) {
+        .Err(err) => {
+            println(f"FAIL start-success-result {err}");
+            return 5;
+        },
+        .Ok(_) => println("PASS start-success-result"),
+    }
+
+    let promoted: Result<RemotePid<Alpha>, LookupError> = Node.lookup("local-alpha");
+    match promoted {
+        .Err(err) => {
+            println(f"FAIL poststart-lookup {err}");
+            Node.shutdown();
+            return 6;
+        },
+        .Ok(_) => println("PASS poststart-lookup"),
+    }
+
+    Node.shutdown();
+    0
+}

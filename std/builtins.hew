@@ -45,6 +45,48 @@ pub type Location {
 pub type RemotePid<T> {
 }
 
+/// Complete configuration for starting a distributed node.
+pub type NodeConfig {
+    bind: string;
+    transport: string;
+    key: string;
+    trust: string;
+    peers: Vec<string>;
+    seeds: Vec<string>;
+}
+
+/// Error returned when a node cannot be started or connected.
+pub enum NodeError {
+    Config;
+    Start;
+    Connect;
+}
+
+impl Display for NodeError {
+    fn fmt(err: NodeError) -> string {
+        match err {
+            NodeError.Config => "the node configuration is invalid",
+            NodeError.Start => "the node could not be started",
+            NodeError.Connect => "a configured seed could not be connected",
+        }
+    }
+}
+
+/// Error returned when a registry mutation is rejected.
+pub enum RegisterError {
+    InvalidName;
+    InvalidPid;
+}
+
+impl Display for RegisterError {
+    fn fmt(err: RegisterError) -> string {
+        match err {
+            RegisterError.InvalidName => "the registry name is invalid",
+            RegisterError.InvalidPid => "the actor pid is invalid or no longer live",
+        }
+    }
+}
+
 /// Error returned when a pid send cannot be completed.
 pub enum SendError {
     /// The destination mailbox is full.
@@ -101,6 +143,8 @@ impl Display for SendError {
 pub enum LookupError {
     /// No actor is registered under the requested name.
     NotFound;
+    /// The registered actor declaration does not match the requested type.
+    TypeMismatch;
     /// The lookup route is unavailable or the peer is suspected dead.
     Partition;
     /// The caller's lookup deadline elapsed before a result arrived.
@@ -121,6 +165,7 @@ impl Display for LookupError {
     fn fmt(err: LookupError) -> string {
         match err {
             LookupError.NotFound => "no actor is registered under the requested name",
+            LookupError.TypeMismatch => "the registered actor type does not match the requested type",
             LookupError.Partition => "the lookup route is unavailable or the peer is suspected dead",
             LookupError.Timeout => "the caller's lookup deadline elapsed before a result arrived",
             LookupError.StaleRef => "the name resolved to an old session or actor incarnation",

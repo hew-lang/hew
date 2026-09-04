@@ -2040,6 +2040,35 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
     }
 }
 
+fn scenario_type_mismatch_lookup() -> i64 {
+    var attempts: i64 = 0;
+    loop {
+        let found: Result<RemotePid<WireProbe>, LookupError> = Node.lookup("kv");
+        match found {
+            .Err(err) => {
+                match err {
+                    LookupError.TypeMismatch => {
+                        println("PASS type_mismatch_lookup error=TypeMismatch");
+                        return 0;
+                    },
+                    _ => {
+                        attempts = attempts + 1;
+                        if attempts >= 50 {
+                            println("FAIL type_mismatch_lookup unresolved");
+                            return 1;
+                        }
+                        sleep(100ms);
+                    },
+                }
+            },
+            .Ok(_) => {
+                println("FAIL type_mismatch_lookup unchecked-cast");
+                return 2;
+            },
+        }
+    }
+}
+
 fn run_client(port: string, scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
     Node.set_transport("tcp");
@@ -2050,6 +2079,8 @@ fn run_client(port: string, scenario: string) -> i64 {
     Node.connect(remote_addr);
     let status = if scenario == "handshake_reject" {
         scenario_handshake_reject()
+    } else if scenario == "type_mismatch_lookup" {
+        scenario_type_mismatch_lookup()
     } else if scenario == "quarantine_rejoin" {
         scenario_quarantine_rejoin()
     } else if scenario == "identity_location" || scenario == "identity_display_low" || scenario == "identity_display_high" {

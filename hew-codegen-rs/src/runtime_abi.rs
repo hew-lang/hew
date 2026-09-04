@@ -4001,16 +4001,14 @@ pub(crate) fn lower_call_runtime_abi(
         | F::MetricHistogramRegister
         | F::MetricVecRegister
         | F::MetricVecWith
-        | F::NodeAllowPeer
         | F::NodeConnect
         | F::NodeId
         | F::NodeIdentityKey
-        | F::NodeLoadKeys
         | F::NodeLookup
         | F::NodeRegister
-        | F::NodeSetTransport
         | F::NodeShutdown
         | F::NodeStart
+        | F::NodeUnregister
         | F::RcClone
         | F::RcDowngrade
         | F::RcDrop
@@ -4802,7 +4800,21 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             false,
         ),
         "hew_node_api_lookup_location" => {
-            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
+        }
+        "hew_node_api_start" => i32_ty.fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
+        "hew_node_api_connect" | "hew_node_api_unregister" => {
+            i32_ty.fn_type(&[ptr_ty.into()], false)
         }
         "hew_node_api_id" => i32_ty.fn_type(&[ptr_ty.into()], false),
         "hew_node_id_format" | "hew_location_format" => {
@@ -6434,8 +6446,9 @@ pub(crate) fn predeclare_stdlib_catalog<'ctx>(
                     llvm_mod.add_function(pid_accessor, pid_fn_ty, Some(Linkage::External))
                 });
 
-                // hew_node_api_register_by_pid(name: *const c_char, pid: u64) -> c_int
-                let reg_fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
+                // hew_node_api_register_by_pid(name, pid, actor_type) -> c_int
+                let reg_fn_ty =
+                    i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
                 let register_fn = llvm_mod.get_function(register_symbol).unwrap_or_else(|| {
                     llvm_mod.add_function(register_symbol, reg_fn_ty, Some(Linkage::External))
                 });

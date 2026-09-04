@@ -133,6 +133,8 @@ pub struct RegistryEvent {
     pub name: String,
     /// Exact owner-issued actor location for this add or remove.
     pub location: Location,
+    /// Canonical compiler-minted actor declaration identity.
+    pub actor_type: String,
     /// Whether this is an add (`true`) or remove (`false`) event.
     pub is_add: bool,
     /// How many times this event has been piggybacked.
@@ -272,9 +274,9 @@ struct PendingMemberTransitions {
 
 /// Callback for registry gossip notifications.
 ///
-/// Signature: `fn(name, location, is_add, user_data)`.
+/// Signature: `fn(name, location, actor_type, is_add, user_data)`.
 pub type HewRegistryGossipCallback =
-    extern "C" fn(*const c_char, *const HewLocation, bool, *mut c_void);
+    extern "C" fn(*const c_char, *const HewLocation, *const c_char, bool, *mut c_void);
 
 /// Cluster configuration.
 #[repr(C)]
@@ -2082,7 +2084,7 @@ impl HewCluster {
     // ── Registry gossip ────────────────────────────────────────────────
 
     /// Queue a registry add event for gossip dissemination.
-    pub fn emit_registry_add(&self, name: &str, location: Location) {
+    pub fn emit_registry_add(&self, name: &str, location: Location, actor_type: &str) {
         let mut events = self.registry_events.lock_or_recover();
         // Deduplicate: remove prior event for the same name.
         events.retain(|e| e.name != name);
@@ -2092,13 +2094,14 @@ impl HewCluster {
         events.push_back(RegistryEvent {
             name: name.to_owned(),
             location,
+            actor_type: actor_type.to_owned(),
             is_add: true,
             dissemination_count: 0,
         });
     }
 
     /// Queue a registry remove event for gossip dissemination.
-    pub fn emit_registry_remove(&self, name: &str, location: Location) {
+    pub fn emit_registry_remove(&self, name: &str, location: Location, actor_type: &str) {
         let mut events = self.registry_events.lock_or_recover();
         events.retain(|e| e.name != name);
         if events.len() >= MAX_GOSSIP_EVENTS {
@@ -2107,6 +2110,7 @@ impl HewCluster {
         events.push_back(RegistryEvent {
             name: name.to_owned(),
             location,
+            actor_type: actor_type.to_owned(),
             is_add: false,
             dissemination_count: 0,
         });
@@ -2135,17 +2139,27 @@ impl HewCluster {
     }
 
     /// Process an inbound registry gossip event received from a peer.
-    pub fn apply_registry_event(&self, name: &str, location: Location, is_add: bool) {
+    pub fn apply_registry_event(
+        &self,
+        name: &str,
+        location: Location,
+        actor_type: &str,
+        is_add: bool,
+    ) {
         let Some(cb) = self.registry_callback else {
             return;
         };
         let Ok(c_name) = std::ffi::CString::new(name) else {
             return;
         };
+        let Ok(c_actor_type) = std::ffi::CString::new(actor_type) else {
+            return;
+        };
         let location = HewLocation::from(location);
         cb(
             c_name.as_ptr(),
             &raw const location,
+            c_actor_type.as_ptr(),
             is_add,
             self.registry_callback_user_data,
         );
@@ -2659,8 +2673,9 @@ pub unsafe extern "C" fn hew_cluster_registry_add(
     cluster: *mut HewCluster,
     name: *const c_char,
     location: *const HewLocation,
+    actor_type: *const c_char,
 ) {
-    if cluster.is_null() || name.is_null() || location.is_null() {
+    if cluster.is_null() || name.is_null() || location.is_null() || actor_type.is_null() {
         return;
     }
     // SAFETY: caller guarantees `cluster` is valid.
@@ -2671,7 +2686,9 @@ pub unsafe extern "C" fn hew_cluster_registry_add(
     };
     // SAFETY: caller guarantees `name` is a valid null-terminated C string.
     let name_str = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-    cluster.emit_registry_add(&name_str, location);
+    // SAFETY: caller guarantees `actor_type` is a valid null-terminated C string.
+    let actor_type = unsafe { CStr::from_ptr(actor_type) }.to_string_lossy();
+    cluster.emit_registry_add(&name_str, location, &actor_type);
 }
 
 /// Queue a registry-remove gossip event for dissemination.
@@ -2685,8 +2702,9 @@ pub unsafe extern "C" fn hew_cluster_registry_remove(
     cluster: *mut HewCluster,
     name: *const c_char,
     location: *const HewLocation,
+    actor_type: *const c_char,
 ) {
-    if cluster.is_null() || name.is_null() || location.is_null() {
+    if cluster.is_null() || name.is_null() || location.is_null() || actor_type.is_null() {
         return;
     }
     // SAFETY: caller guarantees `cluster` is valid.
@@ -2697,7 +2715,9 @@ pub unsafe extern "C" fn hew_cluster_registry_remove(
     };
     // SAFETY: caller guarantees `name` is a valid null-terminated C string.
     let name_str = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-    cluster.emit_registry_remove(&name_str, location);
+    // SAFETY: caller guarantees `actor_type` is a valid null-terminated C string.
+    let actor_type = unsafe { CStr::from_ptr(actor_type) }.to_string_lossy();
+    cluster.emit_registry_remove(&name_str, location, &actor_type);
 }
 
 /// Get the number of pending registry gossip events.

@@ -1951,7 +1951,12 @@ unsafe fn encode_envelope(
     }
 }
 
-fn encode_registry_gossip_control(name: &str, location: Location, is_add: bool) -> Option<Vec<u8>> {
+fn encode_registry_gossip_control(
+    name: &str,
+    location: Location,
+    actor_type: &str,
+    is_add: bool,
+) -> Option<Vec<u8>> {
     let op = if is_add {
         crate::cluster::GOSSIP_REGISTRY_ADD
     } else {
@@ -1961,6 +1966,7 @@ fn encode_registry_gossip_control(name: &str, location: Location, is_add: bool) 
         op,
         name: name.to_owned(),
         location,
+        actor_type: actor_type.to_owned(),
     };
     let payload = match encode_registry_gossip_payload(&payload) {
         Ok(payload) => payload,
@@ -1995,22 +2001,20 @@ fn handle_control_frame(
     control: &ControlFrame,
 ) {
     match control.ctrl_kind {
-        CTRL_REGISTRY_GOSSIP => {}
+        CTRL_REGISTRY_GOSSIP => {
+            handle_registry_gossip_frame(mgr, peer_feature_flags, conn_id, claim_token, control);
+        }
         CTRL_SWIM => {
             handle_swim_control_frame(mgr, peer_feature_flags, conn_id, claim_token, control);
-            return;
         }
         CTRL_MONITOR_REQ => {
             handle_monitor_req_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_DEMONITOR => {
             handle_demonitor_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_MONITOR_DOWN => {
             handle_monitor_down_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_MONITOR_SETUP_RESULT => {
             handle_setup_result_frame(
@@ -2020,19 +2024,15 @@ fn handle_control_frame(
                 control,
                 crate::hew_node::RemoteSetupKind::Monitor,
             );
-            return;
         }
         CTRL_LINK_REQ => {
             handle_link_req_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_UNLINK => {
             handle_unlink_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_LINK_DOWN => {
             handle_link_down_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_LINK_SETUP_RESULT => {
             handle_setup_result_frame(
@@ -2042,15 +2042,22 @@ fn handle_control_frame(
                 control,
                 crate::hew_node::RemoteSetupKind::Link,
             );
-            return;
         }
         other => {
             set_last_error(format!(
                 "connection reader unknown control frame kind {other}"
             ));
-            return;
         }
     }
+}
+
+fn handle_registry_gossip_frame(
+    mgr: *mut HewConnMgr,
+    peer_feature_flags: u32,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     if !supports_gossip(peer_feature_flags) {
         set_last_error("connection reader rejected registry gossip from non-gossip peer");
         return;
@@ -2099,7 +2106,12 @@ fn handle_control_frame(
     // SAFETY: cluster pointer is owned by the live node/manager and remains
     // valid while the reader thread is running.
     unsafe {
-        (&*mgr_ref.cluster).apply_registry_event(&payload.name, payload.location, is_add);
+        (&*mgr_ref.cluster).apply_registry_event(
+            &payload.name,
+            payload.location,
+            &payload.actor_type,
+            is_add,
+        );
     }
 }
 
@@ -2621,7 +2633,12 @@ fn flush_registry_gossip_to_connection(
     let frames: Vec<Vec<u8>> = events
         .into_iter()
         .filter_map(|event| {
-            encode_registry_gossip_control(&event.name, event.location, event.is_add)
+            encode_registry_gossip_control(
+                &event.name,
+                event.location,
+                &event.actor_type,
+                event.is_add,
+            )
         })
         .collect();
     send_registry_flush_frames(mgr, conn_id, publication_token, frames, 0);
@@ -5200,6 +5217,7 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
     mgr: *mut HewConnMgr,
     name: &str,
     location: Location,
+    actor_type: &str,
     is_add: bool,
 ) -> c_int {
     if mgr.is_null() {
@@ -5207,7 +5225,7 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
     }
     // SAFETY: caller guarantees manager pointer validity.
     let mgr_ref = unsafe { &*mgr };
-    let Some(bytes) = encode_registry_gossip_control(name, location, is_add) else {
+    let Some(bytes) = encode_registry_gossip_control(name, location, actor_type, is_add) else {
         return 0;
     };
 

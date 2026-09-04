@@ -1012,6 +1012,63 @@ fn authenticated_v2_handshake_rejects_wrong_credential_pin() {
     );
 }
 
+#[test]
+fn node_api_two_process_wrong_actor_type_returns_type_mismatch() {
+    let stdout = run_two_process_scenario("type_mismatch_lookup");
+    assert!(
+        stdout.contains("PASS type_mismatch_lookup error=TypeMismatch"),
+        "a registry lookup under the wrong actor type must return TypeMismatch; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on typed registry lookup; client stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn node_api_results_cover_prestart_registry_and_start_outcomes() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("hew-cli")
+        .join("tests")
+        .join("fixtures")
+        .join("distributed")
+        .join("node_api_results.hew");
+    let key_dir = tempfile::tempdir().expect("create Node API key directory");
+    let key_path = key_dir.path().join("node.key");
+    let mut command = Command::new(hew_binary());
+    command
+        .arg("run")
+        .arg(&source)
+        .current_dir(repo_root())
+        .env("HEW_NODE_TEST_KEY", key_path);
+    let output = support::run_bounded_command(command, "run node_api_results.hew");
+    assert!(
+        output.status.success(),
+        "Node API result fixture failed\n{}",
+        support::describe_output(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "PASS prestart-register",
+        "PASS prestart-lookup",
+        "PASS prestart-type-mismatch",
+        "PASS start-refusal-result",
+        "PASS start-success-result",
+        "PASS poststart-lookup",
+    ] {
+        assert!(
+            stdout.lines().any(|line| line == expected),
+            "missing `{expected}` in Node API fixture stdout:\n{stdout}"
+        );
+    }
+    assert!(
+        !stdout.contains("FAIL "),
+        "Node API fixture reported a behavioural failure:\n{stdout}"
+    );
+}
+
 /// Node identity/location proof across two OS processes. The remote actor's
 /// key-backed node id, slot, and session incarnation must match the registry
 /// lookup exactly, and its node id must differ from the client's.

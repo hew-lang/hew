@@ -35,9 +35,23 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "LookupError",
-        variant_count: 8,
-        order_fingerprint: 0x7ab9_6324_a0dd_7d1f,
+        variant_count: 9,
+        order_fingerprint: 0xafd5_b234_3d03_6548,
         suppress_from_sandbox_emit: true,
+    },
+    BuiltinEnumAbi {
+        module: "std.builtins",
+        name: "NodeError",
+        variant_count: 3,
+        order_fingerprint: 0x1399_304b_ba53_42ae,
+        suppress_from_sandbox_emit: false,
+    },
+    BuiltinEnumAbi {
+        module: "std.builtins",
+        name: "RegisterError",
+        variant_count: 2,
+        order_fingerprint: 0xb7cc_2d0d_82d9_ffbd,
+        suppress_from_sandbox_emit: false,
     },
     BuiltinEnumAbi {
         module: "std.builtins",

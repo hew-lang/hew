@@ -39,6 +39,8 @@ pub enum BuiltinFieldTy {
     /// `BitCopy` aggregate — it routes through the owned-aggregate record
     /// clone/drop synthesis (`__hew_record_{clone,drop}_inplace_<R>`).
     String,
+    /// An owned `Vec<string>` field.
+    VecString,
 }
 
 impl BuiltinFieldTy {
@@ -54,6 +56,9 @@ impl BuiltinFieldTy {
                 Vec::new(),
             ),
             Self::String => ResolvedTy::String,
+            Self::VecString => {
+                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String])
+            }
         }
     }
 }
@@ -162,6 +167,33 @@ const LOCATION_FIELDS: &[BuiltinTypeField] = &[
     },
 ];
 
+const NODE_CONFIG_FIELDS: &[BuiltinTypeField] = &[
+    BuiltinTypeField {
+        name: "bind",
+        ty: BuiltinFieldTy::String,
+    },
+    BuiltinTypeField {
+        name: "transport",
+        ty: BuiltinFieldTy::String,
+    },
+    BuiltinTypeField {
+        name: "key",
+        ty: BuiltinFieldTy::String,
+    },
+    BuiltinTypeField {
+        name: "trust",
+        ty: BuiltinFieldTy::String,
+    },
+    BuiltinTypeField {
+        name: "peers",
+        ty: BuiltinFieldTy::VecString,
+    },
+    BuiltinTypeField {
+        name: "seeds",
+        ty: BuiltinFieldTy::VecString,
+    },
+];
+
 const CRASH_ACTION_VARIANTS: &[&str] = &["Restart", "Escalate", "Kill"];
 
 const fn marker(marker: BuiltinTypeMarker) -> ResourceMarker {
@@ -211,6 +243,7 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(NodeId, BuiltinTypeShape::Struct(NODE_ID_FIELDS)),
     registration!(Location, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
     registration!(RemotePid, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
+    registration!(NodeConfig, BuiltinTypeShape::Struct(NODE_CONFIG_FIELDS)),
     registration!(HewActor, BuiltinTypeShape::Opaque),
     registration!(HewDuplex, BuiltinTypeShape::Opaque),
     registration!(HewSendHalf, BuiltinTypeShape::Opaque),

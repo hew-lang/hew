@@ -108,6 +108,8 @@
   `module_registry` nextest selection and package-scoped `lint-rust` pass.
 - An exploratory full `hew-types` run with `test-artifacts` deliberately omitted
   stopped on the existing `std.channel` import setup in two channel tests; the
-  failures occur before the changed registry APIs and are not used as evidence.
+  failures occur before the changed registry APIs. The two import-bearing tests
+  now use the existing repo-root test registry locally, preserving the default
+  import-free helper policy while exercising the real `std.channel` module.
 - Checker, HIR and compile-session consumers remain untouched for the combined
   S10 continuation after the entry-identity work integrates.

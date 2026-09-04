@@ -4,6 +4,17 @@
 )]
 pub(super) use super::*;
 
+fn check_source_with_stdlib(source: &str) -> TypeCheckOutput {
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "stdlib-backed source should parse cleanly, got: {:#?}",
+        parse_result.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    checker.check_program(&parse_result.program)
+}
+
 #[test]
 fn channel_new_result_preserves_endpoint_type_parameter() {
     for (element_source, element_type) in [("i64", Ty::I64), ("string", Ty::String)] {
@@ -17,7 +28,7 @@ fn channel_new_result_preserves_endpoint_type_parameter() {
             }}
             "
         );
-        let output = check_source(&source);
+        let output = check_source_with_stdlib(&source);
         assert!(
             output.errors.is_empty(),
             "channel.new should preserve Result while inferring {element_source} endpoints: {:#?}",
@@ -31,8 +42,16 @@ fn channel_new_result_preserves_endpoint_type_parameter() {
         let call_span = call_start..call_start + call.len();
         let expected = Ty::result(
             Ty::Tuple(vec![
-                Ty::sender(element_type.clone()),
-                Ty::receiver(element_type),
+                Ty::Named {
+                    name: "std.channel.Sender".to_string(),
+                    args: vec![element_type.clone()],
+                    builtin: Some(BuiltinType::Sender),
+                },
+                Ty::Named {
+                    name: "std.channel.Receiver".to_string(),
+                    args: vec![element_type],
+                    builtin: Some(BuiltinType::Receiver),
+                },
             ]),
             Ty::String,
         );
@@ -47,7 +66,7 @@ fn channel_new_result_preserves_endpoint_type_parameter() {
 
 #[test]
 fn channel_new_result_does_not_coerce_to_endpoint_tuple() {
-    let output = check_source(
+    let output = check_source_with_stdlib(
         r"
         import std.channel;
 

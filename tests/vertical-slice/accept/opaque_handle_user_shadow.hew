@@ -12,7 +12,9 @@ actor Listener {
 }
 
 fn main() {
-    let listener = net.listen("127.0.0.1:0");
-    listener.unwrap().close();
+    match net.listen("127.0.0.1:0") {
+        .Ok(listener) => listener.close(),
+        .Err(_) => panic("listener bind failed"),
+    }
     println("opaque-listener-ok");
 }

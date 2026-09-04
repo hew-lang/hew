@@ -7,7 +7,7 @@
 //!    layout map, collapsing every accessor to slot index 0.
 //! 2. SWALLOW — a refused stable-role ask must classify as a real
 //!    `AskError` kind. The refusal paths previously returned their error code
-//!    without writing the ask-error slot, surfacing `Err(AskError::NoError)`.
+//!    without writing the ask-error slot, surfacing an invalid public error.
 
 import std.testing;
 
@@ -58,8 +58,7 @@ actor Dispatcher {
     }
 
     // Ask a slot whose supervisor has been stopped. The refusal must carry a
-    // real error kind: 1 = ActorStopped (expected), 0 = the NoError sentinel
-    // (the swallow defect), -1 = other kind.
+    // real error kind: 1 = ActorStopped (expected), -1 = other kind.
     //
     // The precondition is a GRACEFUL `supervisor_stop`, not a crash loop past
     // the restart intensity. Both reach the same refusal path, but exhausting a
@@ -74,7 +73,6 @@ actor Dispatcher {
         let refused = await sup.w1.whoami();
         match refused {
             .Ok(_) => -2,
-            .Err(AskError.NoError) => 0,
             .Err(AskError.ActorStopped) => 1,
             .Err(_) => -1,
         }

@@ -10,6 +10,8 @@ mod ir_assertions;
 
 #[path = "structural/actor_send_status_check.rs"]
 mod actor_send_status_check;
+#[path = "structural/ask_error_translation.rs"]
+mod ask_error_translation;
 #[path = "structural/bytes_extern_fail_closed.rs"]
 mod bytes_extern_fail_closed;
 #[path = "structural/closure_env_drop_manifest.rs"]
@@ -20,8 +22,6 @@ mod composite_return;
 mod d65_vec_release_truth_table;
 #[path = "structural/emit_duplex_pair.rs"]
 mod emit_duplex_pair;
-#[path = "structural/error_enum_cross_crate_parity.rs"]
-mod error_enum_cross_crate_parity;
 #[path = "structural/extern_borrow_abi.rs"]
 mod extern_borrow_abi;
 #[path = "structural/extern_malloc_string_adoption.rs"]

@@ -33,6 +33,42 @@ use crate::layout::{
 #[allow(unused_imports)]
 use crate::llvm::*;
 
+/// Cross the runtime ask-tag ABI boundary before materializing a public
+/// `Result<T, AskError>`. The runtime owns its `AskError::None` sentinel and
+/// rejects unknown tags; codegen receives only the public Result tag domain.
+pub(crate) fn translate_runtime_ask_error_tag<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    runtime_tag: IntValue<'ctx>,
+    label: &str,
+) -> CodegenResult<IntValue<'ctx>> {
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let runtime_tag = reconcile_int_width_signed(
+        fn_ctx,
+        runtime_tag.into(),
+        i32_ty.into(),
+        "runtime AskError tag",
+    )?
+    .into_int_value();
+    let translate = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_ask_error_translate_for_public_result",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(translate, &[runtime_tag.into()], label)
+        .llvm_ctx("translate runtime AskError tag")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(
+                "hew_ask_error_translate_for_public_result returned void".into(),
+            )
+        })
+        .map(|value| value.into_int_value())
+}
+
 fn stamped_vec_element_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
     let ResolvedTy::Named { args, .. } = ty else {
         return None;
@@ -1219,6 +1255,11 @@ pub(crate) fn lower_call_runtime_abi(
                     )
                     .llvm_ctx("lambda ask err select orphaned")?
                     .into_int_value();
+                let askerr_tag = translate_runtime_ask_error_tag(
+                    fn_ctx,
+                    askerr_tag,
+                    "translate_lambda_ask_error_tag",
+                )?;
                 // Store the AskError tag into the error_dest local's
                 // MachineTag slot, then bind Result::Err(error_dest)
                 // into the user's `dest`. The AskError type is a pure
@@ -4870,6 +4911,10 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             false,
         ),
         "hew_node_ask_take_last_error" => i32_ty.fn_type(&[], false),
+        // hew_ask_error_translate_for_public_result(runtime_tag) -> i32.
+        // Maps the runtime-only `AskError::None` sentinel to the public Ok
+        // marker and every runtime failure tag to its public AskError tag.
+        "hew_ask_error_translate_for_public_result" => i32_ty.fn_type(&[i32_ty.into()], false),
         // hew_node_api_ask_async(pid, dispatch, msg_type, data, size,
         //                        timeout_ms, caller_actor) -> *mut c_void
         // (`hew-runtime/src/hew_node.rs`). NEW-5 suspendable submit: parks the

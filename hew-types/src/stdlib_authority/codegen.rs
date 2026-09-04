@@ -49,8 +49,8 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "AskError",
-        variant_count: 22,
-        order_fingerprint: 0xb130_e184_57d4_ff62,
+        variant_count: 21,
+        order_fingerprint: 0x53ef_8aef_92ec_a49e,
         suppress_from_sandbox_emit: false,
     },
     BuiltinEnumAbi {

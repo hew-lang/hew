@@ -492,6 +492,72 @@ pub enum AskError {
     MonitorLost = 21,
 }
 
+/// The only runtime-to-public translation for ask result tags.
+///
+/// The runtime keeps [`AskError::None`] as its zero-valued success sentinel,
+/// while the public `AskError` enum contains errors only. Codegen crosses this
+/// ABI seam before materializing a public `Result`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublicAskResultTag {
+    Ok,
+    Err(i32),
+}
+
+/// Translate a runtime ask tag into the public `Result<T, AskError>` domain.
+///
+/// An unknown tag is returned unchanged as an error so callers must refuse it
+/// rather than defaulting it to a public error variant.
+///
+/// # Errors
+///
+/// Returns the unmapped runtime tag when it has no public `AskError` mapping.
+pub fn translate_ask_error_tag_for_public_result(
+    runtime_tag: i32,
+) -> Result<PublicAskResultTag, i32> {
+    match runtime_tag {
+        tag if tag == AskError::None as i32 => Ok(PublicAskResultTag::Ok),
+        tag if tag == AskError::NodeNotRunning as i32 => Ok(PublicAskResultTag::Err(0)),
+        tag if tag == AskError::RoutingFailed as i32 => Ok(PublicAskResultTag::Err(1)),
+        tag if tag == AskError::EncodeFailed as i32 => Ok(PublicAskResultTag::Err(2)),
+        tag if tag == AskError::SendFailed as i32 => Ok(PublicAskResultTag::Err(3)),
+        tag if tag == AskError::Timeout as i32 => Ok(PublicAskResultTag::Err(4)),
+        tag if tag == AskError::ConnectionDropped as i32 => Ok(PublicAskResultTag::Err(5)),
+        tag if tag == AskError::PayloadSizeMismatch as i32 => Ok(PublicAskResultTag::Err(6)),
+        tag if tag == AskError::WorkerAtCapacity as i32 => Ok(PublicAskResultTag::Err(7)),
+        tag if tag == AskError::ActorStopped as i32 => Ok(PublicAskResultTag::Err(8)),
+        tag if tag == AskError::MailboxFull as i32 => Ok(PublicAskResultTag::Err(9)),
+        tag if tag == AskError::OrphanedAsk as i32 => Ok(PublicAskResultTag::Err(10)),
+        tag if tag == AskError::NoRunnableWork as i32 => Ok(PublicAskResultTag::Err(11)),
+        tag if tag == AskError::DecodeFailure as i32 => Ok(PublicAskResultTag::Err(12)),
+        tag if tag == AskError::Partition as i32 => Ok(PublicAskResultTag::Err(13)),
+        tag if tag == AskError::StaleRef as i32 => Ok(PublicAskResultTag::Err(14)),
+        tag if tag == AskError::Cancelled as i32 => Ok(PublicAskResultTag::Err(15)),
+        tag if tag == AskError::LocalShutdown as i32 => Ok(PublicAskResultTag::Err(16)),
+        tag if tag == AskError::VersionMismatch as i32 => Ok(PublicAskResultTag::Err(17)),
+        tag if tag == AskError::Unauthorized as i32 => Ok(PublicAskResultTag::Err(18)),
+        tag if tag == AskError::Backpressure as i32 => Ok(PublicAskResultTag::Err(19)),
+        tag if tag == AskError::MonitorLost as i32 => Ok(PublicAskResultTag::Err(20)),
+        tag => Err(tag),
+    }
+}
+
+/// ABI marker for an internal success sentinel translated to public `Ok`.
+pub const HEW_ASK_RESULT_OK_TAG: i32 = -1;
+
+/// Translate a runtime ask tag for public Result materialization.
+///
+/// Unknown tags abort rather than becoming an arbitrary public error. The
+/// checked Rust helper above exists for parity tests and internal callers that
+/// need to report the offending tag without crossing an aborting FFI boundary.
+#[no_mangle]
+pub extern "C" fn hew_ask_error_translate_for_public_result(runtime_tag: i32) -> i32 {
+    match translate_ask_error_tag_for_public_result(runtime_tag) {
+        Ok(PublicAskResultTag::Ok) => HEW_ASK_RESULT_OK_TAG,
+        Ok(PublicAskResultTag::Err(public_tag)) => public_tag,
+        Err(_) => std::process::abort(),
+    }
+}
+
 // ── Trap error codes ─────────────────────────────────────────────────────
 //
 // Codes stored in `actor.error_code` to distinguish named exit kinds from

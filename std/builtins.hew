@@ -134,11 +134,9 @@ impl Display for LookupError {
 
 /// Error returned when a remote actor ask cannot complete.
 ///
-/// Variant order matches the native runtime ask ABI so codegen can project
-/// the runtime error discriminant directly into this public enum.
+/// The runtime ask ABI translates its internal success sentinel before
+/// materializing this public error-only enum.
 pub enum AskError {
-    /// Internal no-error sentinel; should not be returned as `Err`.
-    NoError;
     /// The local node is not running.
     NodeNotRunning;
     /// The destination node or actor could not be routed.
@@ -187,7 +185,6 @@ pub enum AskError {
 impl Display for AskError {
     fn fmt(err: AskError) -> string {
         match err {
-            AskError.NoError => "no error",
             AskError.NodeNotRunning => "the local node is not running",
             AskError.RoutingFailed => "the destination node or actor could not be routed",
             AskError.EncodeFailed => "the request payload could not be encoded",

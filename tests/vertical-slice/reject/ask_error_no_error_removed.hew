@@ -1,0 +1,12 @@
+//! Reject: AskError.NoError was a runtime-only success sentinel and is not a
+//! public Hew error variant.
+
+fn stale_variant_pattern(err: AskError) -> i64 {
+    match err {
+        AskError.NoError => 0,
+        _ => 1,
+    }
+}
+
+fn main() {
+}

@@ -5993,6 +5993,12 @@ expect_check_fail_contains \
 # broken.
 run_check_run_expect_stdout dotted_variant_pattern
 
+# Reject: the runtime-only AskError::None sentinel has no public alias.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/ask_error_no_error_removed.hew" \
+    "NoError" \
+    "ask_error_no_error_removed"
+
 # .wrapping_as_<W> and .saturating_as_<W> width-conversion methods.
 # Tests exact values: wrapping narrowing/widening/sign-change and
 # saturating clamp to [W.MIN, W.MAX].

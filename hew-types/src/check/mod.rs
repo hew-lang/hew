@@ -66,16 +66,16 @@ pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
     AssignTargetShape, CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
     ClosureCaptureMode, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
-    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader,
-    ExternMethodCallIdentity, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
-    MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
-    NumericSignedness, NumericWidth, OpaqueResourceCandidateGraph,
-    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
-    OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
-    PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
-    ProducedValueDependency, ProducedValueFact, RcIntrinsicOp, SpanKey, StackHint,
-    TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind,
-    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
+    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, EntryDisplayTarget, EntryExitAction,
+    EntryExitPlan, EntryIntegerType, ExecutionContextReader, ExternMethodCallIdentity, FnSig,
+    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
+    NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
+    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, OptionResultMethod,
+    PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField, PlanSub,
+    PoolAccessor, PoolAccessorKind, ProducedValueDependency, ProducedValueFact, RcIntrinsicOp,
+    SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef,
+    TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
     WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
     WireLayoutTable, WireTextFormat,
 };
@@ -1242,6 +1242,112 @@ impl Checker {
         None
     }
 
+    fn classify_entry_exit_plan(
+        &mut self,
+        program: &Program,
+        resolved_fn_sigs: &HashMap<String, FnSig>,
+    ) -> Option<EntryExitPlan> {
+        let (item_index, span) =
+            program
+                .items
+                .iter()
+                .enumerate()
+                .find_map(|(item_index, (item, span))| match item {
+                    Item::Function(declaration)
+                        if declaration.name == "main"
+                            && declaration.type_params.as_ref().is_none_or(Vec::is_empty) =>
+                    {
+                        Some((item_index, span))
+                    }
+                    _ => None,
+                })?;
+        let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+            self.identity.root_module(),
+            span,
+            item_index,
+            crate::DeclarationKind::Function,
+            0,
+        );
+        let entry = self.identity.declaration(occurrence)?.clone();
+        let Some(return_type) = resolved_fn_sigs
+            .get(entry.full_path())
+            .map(|signature| signature.return_type.clone())
+        else {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "checker has no resolved signature for process entry `{}`",
+                    entry.display_name()
+                ),
+            ));
+            return None;
+        };
+
+        let action = match return_type {
+            Ty::Unit => EntryExitAction::Unit,
+            integer if EntryIntegerType::from_ty(&integer).is_some() => {
+                EntryExitAction::Integer(EntryIntegerType::from_ty(&integer)?)
+            }
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Result),
+                args,
+                ..
+            } if matches!(args.as_slice(), [Ty::Unit, _]) => {
+                let error_ty = args[1].clone();
+                if !self.type_satisfies_trait_bound(&error_ty, "Error") {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::BoundsNotSatisfied,
+                        span.clone(),
+                        format!(
+                            "process entry error type `{}` does not satisfy the bound `Error`",
+                            error_ty.user_facing()
+                        ),
+                    ));
+                    return None;
+                }
+                let Some(display_declaration) =
+                    self.trait_impl_method_declaration(&error_ty, "Display", "fmt")
+                else {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::BoundsNotSatisfied,
+                        span.clone(),
+                        format!(
+                            "process entry error type `{}` has no resolved `Display::fmt` target",
+                            error_ty.user_facing()
+                        ),
+                    ));
+                    return None;
+                };
+                let resolved_error_ty = ResolvedTy::from_ty(&error_ty).ok()?;
+                let type_args = match &resolved_error_ty {
+                    ResolvedTy::Named { args, .. } => args.clone(),
+                    _ => Vec::new(),
+                };
+                EntryExitAction::Result {
+                    error_ty: resolved_error_ty,
+                    display: EntryDisplayTarget {
+                        declaration: display_declaration,
+                        type_args,
+                    },
+                }
+            }
+            unsupported => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    format!(
+                        "process entry must return `()`, an integer, or `Result<(), E>`; found `{}`",
+                        unsupported.user_facing()
+                    ),
+                ));
+                return None;
+            }
+        };
+
+        Some(EntryExitPlan { entry, action })
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one exhaustive source-declaration inventory keeps the identity boundary closed"
@@ -2039,6 +2145,7 @@ impl Checker {
         for sig in resolved_fn_sigs.values_mut() {
             *sig = self.resolve_fn_sig(sig);
         }
+        let entry_exit_plan = self.classify_entry_exit_plan(program, &resolved_fn_sigs);
         for type_def in resolved_type_defs.values_mut() {
             *type_def = self.resolve_type_def(type_def);
         }
@@ -2481,6 +2588,7 @@ impl Checker {
             type_defs: resolved_type_defs,
             internal_builtin_enum_names,
             identity: std::mem::take(&mut self.identity).freeze(),
+            entry_exit_plan,
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),

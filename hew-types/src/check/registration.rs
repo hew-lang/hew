@@ -9510,6 +9510,22 @@ impl Checker {
             })
     }
 
+    pub(super) fn trait_impl_method_declaration(
+        &self,
+        ty: &Ty,
+        trait_name: &str,
+        method_name: &str,
+    ) -> Option<crate::DefId> {
+        let Ty::Named { name, .. } = ty else {
+            return None;
+        };
+        let type_identity = self.trait_impl_type_identity(name);
+        let trait_identity = self.trait_defs_key_for_bound(trait_name);
+        self.trait_impl_method_declaration_ids
+            .get(&(type_identity, trait_identity, method_name.to_string()))
+            .cloned()
+    }
+
     pub(super) fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {
         let type_identity = self.trait_impl_type_identity(type_name);
         let trait_identity = self.trait_defs_key_for_bound(trait_name);

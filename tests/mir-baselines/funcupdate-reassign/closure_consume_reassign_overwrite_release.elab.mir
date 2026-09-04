@@ -1581,4 +1581,3 @@ fn duration::from_secs -> duration
       (none)
     return[bb2] ->
       (none)
-

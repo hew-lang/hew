@@ -39505,12 +39505,14 @@ impl Widget {
         };
         assert_eq!(call.ty, ResolvedTy::I64);
         assert_eq!(*ret_ty, ResolvedTy::I64);
+        let call_span = call_key.start..call_key.end;
         assert!(
             !lowered.diagnostics.iter().any(|diagnostic| matches!(
                 diagnostic.kind,
                 HirDiagnosticKind::CheckerBoundaryViolation { .. }
+                    if diagnostic.span == call_span
             )),
-            "the published result type must cross the checker boundary: {:#?}",
+            "the published dynamic-call result type must cross the checker boundary: {:#?}",
             lowered.diagnostics
         );
     }

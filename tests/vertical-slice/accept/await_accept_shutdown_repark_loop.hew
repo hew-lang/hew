@@ -16,7 +16,10 @@ extern "C" {
 
 actor Server {
     receive fn go() {
-        let ln = net.listen("127.0.0.1:0");
+        let ln = match net.listen("127.0.0.1:0") {
+            .Ok(listener) => listener,
+            .Err(_) => return,
+        };
         var cancellations: i64 = 0;
         loop {
             match await ln.accept() | after 10s {

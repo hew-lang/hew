@@ -15,8 +15,10 @@ import std.net.{Listener};
 actor Connector {
     receive fn go(port: i32) {
         sleep(100ms);
-        let _c = net.connect(f"127.0.0.1:{port}");
-        sleep(300ms);
+        match net.connect(f"127.0.0.1:{port}") {
+            .Ok(_) => sleep(300ms),
+            .Err(_) => return,
+        }
     }
 }
 

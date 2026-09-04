@@ -46,18 +46,6 @@ pub type RemotePid<T> {
 }
 
 /// Error returned when a pid send cannot be completed.
-///
-/// WHY no `impl Display`: this enum is registered through the prelude's
-/// synthetic-item path (`std/builtins.hew` is loaded out-of-band and never
-/// appears in a normal compile's `module_graph`), which the checker accepts
-/// but which `plan_imported_impl_bodies` and `is_builtin_display_impl` do not
-/// reach — `hew run` fails closed with `E_NOT_YET_IMPLEMENTED: display
-/// dispatch: missing std.builtins.SendError::fmt`. Tracked in #3224.
-/// WHEN obsolete: once the checker/HIR registration for prelude types is
-/// unified so all three paths agree on one `Display` dispatch mechanism.
-/// WHAT the real fix looks like: `hew-hir`/`hew-types` change (not
-/// stdlib-only) per #3224 — this comment is removed and `impl Display for
-/// SendError` added alongside the other public `std` error enums.
 pub enum SendError {
     /// The destination mailbox is full.
     Full;
@@ -84,6 +72,24 @@ pub enum SendError {
     MessageLost;
 }
 
+impl Display for SendError {
+    fn fmt(err: SendError) -> string {
+        match err {
+            SendError.Full => "the destination mailbox is full",
+            SendError.Closed => "the destination is closed or no longer alive",
+            SendError.NodeRoutingNotWired => "cross-node routing has not been wired for this runtime path yet",
+            SendError.Partition => "the route to the peer is unavailable or the peer is suspected dead",
+            SendError.StaleRef => "the pid refers to an old session or actor incarnation",
+            SendError.LocalShutdown => "the local node is shutting down before the send could complete",
+            SendError.Cancelled => "the caller cancelled the send before it completed",
+            SendError.VersionMismatch => "the peer rejected the send because protocol or schema versions differ",
+            SendError.Unauthorized => "the peer rejected the send because the caller lacks authority",
+            SendError.Backpressure => "the destination or route is applying flow control",
+            SendError.MessageLost => "the declared mailbox policy discarded, replaced, or coalesced this send",
+        }
+    }
+}
+
 /// Error returned when `Node.lookup<T>(name)` cannot resolve `name`.
 ///
 /// Returned as `Err(LookupError.NotFound)` when no actor is registered
@@ -92,9 +98,6 @@ pub enum SendError {
 /// deferred to follow-on polish; today the runtime collapses every failure
 /// into `NotFound` since the underlying registry surface is fail-closed
 /// per `set_last_error` for the diagnostic detail.
-/// WHY no `impl Display`: same prelude synthetic-item registration gap as
-/// `SendError` above — tracked in #3224.
-/// WHEN obsolete / WHAT the real fix: see the `SendError` comment above.
 pub enum LookupError {
     /// No actor is registered under the requested name.
     NotFound;
@@ -114,13 +117,25 @@ pub enum LookupError {
     Unauthorized;
 }
 
+impl Display for LookupError {
+    fn fmt(err: LookupError) -> string {
+        match err {
+            LookupError.NotFound => "no actor is registered under the requested name",
+            LookupError.Partition => "the lookup route is unavailable or the peer is suspected dead",
+            LookupError.Timeout => "the caller's lookup deadline elapsed before a result arrived",
+            LookupError.StaleRef => "the name resolved to an old session or actor incarnation",
+            LookupError.Cancelled => "the caller cancelled the lookup before it completed",
+            LookupError.LocalShutdown => "the local node is shutting down before the lookup could complete",
+            LookupError.VersionMismatch => "the peer rejected the lookup because protocol or schema versions differ",
+            LookupError.Unauthorized => "the peer rejected the lookup because the caller lacks authority",
+        }
+    }
+}
+
 /// Error returned when a remote actor ask cannot complete.
 ///
 /// Variant order matches the native runtime ask ABI so codegen can project
 /// the runtime error discriminant directly into this public enum.
-/// WHY no `impl Display`: same prelude synthetic-item registration gap as
-/// `SendError` above — tracked in #3224.
-/// WHEN obsolete / WHAT the real fix: see the `SendError` comment above.
 pub enum AskError {
     /// Internal no-error sentinel; should not be returned as `Err`.
     NoError;
@@ -169,6 +184,35 @@ pub enum AskError {
     MonitorLost;
 }
 
+impl Display for AskError {
+    fn fmt(err: AskError) -> string {
+        match err {
+            AskError.NoError => "no error",
+            AskError.NodeNotRunning => "the local node is not running",
+            AskError.RoutingFailed => "the destination node or actor could not be routed",
+            AskError.EncodeFailed => "the request payload could not be encoded",
+            AskError.SendFailed => "the request could not be sent",
+            AskError.Timeout => "the caller-supplied timeout elapsed before a reply arrived",
+            AskError.ConnectionDropped => "the remote connection closed before the reply arrived",
+            AskError.PayloadSizeMismatch => "the reply payload did not match the expected reply size",
+            AskError.WorkerAtCapacity => "the remote ask worker is at capacity",
+            AskError.ActorStopped => "the destination actor is stopped",
+            AskError.MailboxFull => "the destination actor mailbox is full",
+            AskError.OrphanedAsk => "a reply arrived after its waiter was gone",
+            AskError.NoRunnableWork => "the runtime had no runnable work while waiting for the reply",
+            AskError.DecodeFailure => "the inbound request payload could not be decoded; the handler was never dispatched",
+            AskError.Partition => "the route to the peer is unavailable or the peer is suspected dead",
+            AskError.StaleRef => "the pid refers to an old session or actor incarnation",
+            AskError.Cancelled => "the caller cancelled the ask before it completed",
+            AskError.LocalShutdown => "the local node is shutting down before the ask could complete",
+            AskError.VersionMismatch => "the peer rejected the ask because protocol or schema versions differ",
+            AskError.Unauthorized => "the peer rejected the ask because the caller lacks authority",
+            AskError.Backpressure => "the destination or route is applying flow control",
+            AskError.MonitorLost => "a monitor required to resolve the ask was lost before completion",
+        }
+    }
+}
+
 /// Error arm of `await rx.recv() | after d` and `await stream.recv() | after d`.
 ///
 /// Returned as `Err(TimeoutError.Timeout)` when the deadline fires before an
@@ -185,12 +229,17 @@ pub enum AskError {
 ///     .Err(_)      => -2,      // deadline fired
 /// }
 /// ```
-/// WHY no `impl Display`: same prelude synthetic-item registration gap as
-/// `SendError` above — tracked in #3224.
-/// WHEN obsolete / WHAT the real fix: see the `SendError` comment above.
 pub enum TimeoutError {
     /// The deadline fired before the recv completed.
     Timeout;
+}
+
+impl Display for TimeoutError {
+    fn fmt(err: TimeoutError) -> string {
+        match err {
+            TimeoutError.Timeout => "the deadline fired before the recv completed",
+        }
+    }
 }
 
 /// Error returned by the `link(handle)` builtin in value position
@@ -204,9 +253,6 @@ pub enum TimeoutError {
 /// `AlreadyLinked` is an idempotent non-fatal condition — callers may treat it
 /// as `Ok(())`. `TargetDead` is returned when the target actor has already
 /// exited; the caller's exit handler will fire immediately.
-/// WHY no `impl Display`: same prelude synthetic-item registration gap as
-/// `SendError` above — tracked in #3224.
-/// WHEN obsolete / WHAT the real fix: see the `SendError` comment above.
 pub enum LinkError {
     AlreadyLinked;
     TargetDead;
@@ -218,6 +264,23 @@ pub enum LinkError {
     EncodeFailure;
     LocalShutdown;
     ResourceExhausted;
+}
+
+impl Display for LinkError {
+    fn fmt(err: LinkError) -> string {
+        match err {
+            LinkError.AlreadyLinked => "the target is already linked",
+            LinkError.TargetDead => "the target actor has already exited",
+            LinkError.NodeNotRunning => "the local node is not running",
+            LinkError.NoCurrentActor => "link() was called outside an actor context",
+            LinkError.InvalidTarget => "the target is not a linkable handle",
+            LinkError.Partition => "the route to the peer is unavailable or the peer is suspected dead",
+            LinkError.StaleRef => "the target refers to an old session or actor incarnation",
+            LinkError.EncodeFailure => "the link request payload could not be encoded",
+            LinkError.LocalShutdown => "the local node is shutting down before the link could complete",
+            LinkError.ResourceExhausted => "the runtime has no capacity left to track this link",
+        }
+    }
 }
 
 /// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.

@@ -3361,18 +3361,751 @@ fn std$testing$assert_lt -> ()
     cancel[bb9] ->
       (none)
 
-fn i8::fmt -> string
+fn std.builtins.SendError::fmt -> string
   statements:
-    use BindingId(71) val site=SiteId(804) ty=i8 intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(802) ty=string
-    use BindingId(4294967231) __hew_produced_value site=SiteId(802) ty=string intent=Consume
-    return site=Some(SiteId(802)) ty=string
+    use BindingId(63) err site=SiteId(735) ty=std.builtins.SendError intent=Read
+    return site=Some(SiteId(734)) ty=string
+  decisions:
+    site=s0 ty=std.builtins.SendError value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s734 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s735 ty=std.builtins.SendError value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s736 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s737 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s738 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s739 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s740 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s741 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s742 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s743 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s744 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s745 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s746 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+    id=2 kind=normal
+      successor: none
+    id=3 kind=normal
+      successor: none
+    id=4 kind=normal
+      successor: none
+    id=5 kind=normal
+      successor: none
+    id=6 kind=normal
+      successor: none
+    id=7 kind=normal
+      successor: none
+    id=8 kind=normal
+      successor: none
+    id=9 kind=normal
+      successor: none
+    id=10 kind=normal
+      successor: none
+    id=11 kind=normal
+      successor: none
+    id=12 kind=normal
+      successor: none
+    id=13 kind=normal
+      successor: none
+    id=14 kind=normal
+      successor: none
+    id=15 kind=normal
+      successor: none
+    id=16 kind=normal
+      successor: none
+    id=17 kind=normal
+      successor: none
+    id=18 kind=normal
+      successor: none
+    id=19 kind=normal
+      successor: none
+    id=20 kind=normal
+      successor: none
+    id=21 kind=normal
+      successor: none
+    id=22 kind=normal
+      successor: none
+    id=23 kind=normal
+      successor: none
+    id=24 kind=cleanup
+      successor: none
+  drop_plans:
+    branch[bb0: bb2/bb14] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+    goto[bb2->bb1] ->
+      (none)
+    cancel[bb2] ->
+      (none)
+    goto[bb3->bb1] ->
+      (none)
+    cancel[bb3] ->
+      (none)
+    goto[bb4->bb1] ->
+      (none)
+    cancel[bb4] ->
+      (none)
+    goto[bb5->bb1] ->
+      (none)
+    cancel[bb5] ->
+      (none)
+    goto[bb6->bb1] ->
+      (none)
+    cancel[bb6] ->
+      (none)
+    goto[bb7->bb1] ->
+      (none)
+    cancel[bb7] ->
+      (none)
+    goto[bb8->bb1] ->
+      (none)
+    cancel[bb8] ->
+      (none)
+    goto[bb9->bb1] ->
+      (none)
+    cancel[bb9] ->
+      (none)
+    goto[bb10->bb1] ->
+      (none)
+    cancel[bb10] ->
+      (none)
+    goto[bb11->bb1] ->
+      (none)
+    cancel[bb11] ->
+      (none)
+    goto[bb12->bb1] ->
+      (none)
+    cancel[bb12] ->
+      (none)
+    panic[bb13] ->
+      (none)
+    branch[bb14: bb3/bb15] ->
+      (none)
+    branch[bb15: bb4/bb16] ->
+      (none)
+    branch[bb16: bb5/bb17] ->
+      (none)
+    branch[bb17: bb6/bb18] ->
+      (none)
+    branch[bb18: bb7/bb19] ->
+      (none)
+    branch[bb19: bb8/bb20] ->
+      (none)
+    branch[bb20: bb9/bb21] ->
+      (none)
+    branch[bb21: bb10/bb22] ->
+      (none)
+    branch[bb22: bb11/bb23] ->
+      (none)
+    branch[bb23: bb12/bb13] ->
+      (none)
+
+fn std.builtins.LookupError::fmt -> string
+  statements:
+    use BindingId(64) err site=SiteId(748) ty=std.builtins.LookupError intent=Read
+    return site=Some(SiteId(747)) ty=string
+  decisions:
+    site=s0 ty=std.builtins.LookupError value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s747 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s748 ty=std.builtins.LookupError value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s749 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s750 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s751 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s752 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s753 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s754 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s755 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s756 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+    id=2 kind=normal
+      successor: none
+    id=3 kind=normal
+      successor: none
+    id=4 kind=normal
+      successor: none
+    id=5 kind=normal
+      successor: none
+    id=6 kind=normal
+      successor: none
+    id=7 kind=normal
+      successor: none
+    id=8 kind=normal
+      successor: none
+    id=9 kind=normal
+      successor: none
+    id=10 kind=normal
+      successor: none
+    id=11 kind=normal
+      successor: none
+    id=12 kind=normal
+      successor: none
+    id=13 kind=normal
+      successor: none
+    id=14 kind=normal
+      successor: none
+    id=15 kind=normal
+      successor: none
+    id=16 kind=normal
+      successor: none
+    id=17 kind=normal
+      successor: none
+    id=18 kind=cleanup
+      successor: none
+  drop_plans:
+    branch[bb0: bb2/bb11] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+    goto[bb2->bb1] ->
+      (none)
+    cancel[bb2] ->
+      (none)
+    goto[bb3->bb1] ->
+      (none)
+    cancel[bb3] ->
+      (none)
+    goto[bb4->bb1] ->
+      (none)
+    cancel[bb4] ->
+      (none)
+    goto[bb5->bb1] ->
+      (none)
+    cancel[bb5] ->
+      (none)
+    goto[bb6->bb1] ->
+      (none)
+    cancel[bb6] ->
+      (none)
+    goto[bb7->bb1] ->
+      (none)
+    cancel[bb7] ->
+      (none)
+    goto[bb8->bb1] ->
+      (none)
+    cancel[bb8] ->
+      (none)
+    goto[bb9->bb1] ->
+      (none)
+    cancel[bb9] ->
+      (none)
+    panic[bb10] ->
+      (none)
+    branch[bb11: bb3/bb12] ->
+      (none)
+    branch[bb12: bb4/bb13] ->
+      (none)
+    branch[bb13: bb5/bb14] ->
+      (none)
+    branch[bb14: bb6/bb15] ->
+      (none)
+    branch[bb15: bb7/bb16] ->
+      (none)
+    branch[bb16: bb8/bb17] ->
+      (none)
+    branch[bb17: bb9/bb10] ->
+      (none)
+
+fn std.builtins.AskError::fmt -> string
+  statements:
+    use BindingId(65) err site=SiteId(758) ty=std.builtins.AskError intent=Read
+    return site=Some(SiteId(757)) ty=string
+  decisions:
+    site=s0 ty=std.builtins.AskError value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s757 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s758 ty=std.builtins.AskError value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s759 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s760 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s761 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s762 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s763 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s764 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s765 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s766 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s767 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s768 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s769 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s770 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s771 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s772 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s773 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s774 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s775 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s776 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s777 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s778 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s779 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s780 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+    id=2 kind=normal
+      successor: none
+    id=3 kind=normal
+      successor: none
+    id=4 kind=normal
+      successor: none
+    id=5 kind=normal
+      successor: none
+    id=6 kind=normal
+      successor: none
+    id=7 kind=normal
+      successor: none
+    id=8 kind=normal
+      successor: none
+    id=9 kind=normal
+      successor: none
+    id=10 kind=normal
+      successor: none
+    id=11 kind=normal
+      successor: none
+    id=12 kind=normal
+      successor: none
+    id=13 kind=normal
+      successor: none
+    id=14 kind=normal
+      successor: none
+    id=15 kind=normal
+      successor: none
+    id=16 kind=normal
+      successor: none
+    id=17 kind=normal
+      successor: none
+    id=18 kind=normal
+      successor: none
+    id=19 kind=normal
+      successor: none
+    id=20 kind=normal
+      successor: none
+    id=21 kind=normal
+      successor: none
+    id=22 kind=normal
+      successor: none
+    id=23 kind=normal
+      successor: none
+    id=24 kind=normal
+      successor: none
+    id=25 kind=normal
+      successor: none
+    id=26 kind=normal
+      successor: none
+    id=27 kind=normal
+      successor: none
+    id=28 kind=normal
+      successor: none
+    id=29 kind=normal
+      successor: none
+    id=30 kind=normal
+      successor: none
+    id=31 kind=normal
+      successor: none
+    id=32 kind=normal
+      successor: none
+    id=33 kind=normal
+      successor: none
+    id=34 kind=normal
+      successor: none
+    id=35 kind=normal
+      successor: none
+    id=36 kind=normal
+      successor: none
+    id=37 kind=normal
+      successor: none
+    id=38 kind=normal
+      successor: none
+    id=39 kind=normal
+      successor: none
+    id=40 kind=normal
+      successor: none
+    id=41 kind=normal
+      successor: none
+    id=42 kind=normal
+      successor: none
+    id=43 kind=normal
+      successor: none
+    id=44 kind=normal
+      successor: none
+    id=45 kind=normal
+      successor: none
+    id=46 kind=cleanup
+      successor: none
+  drop_plans:
+    branch[bb0: bb2/bb25] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+    goto[bb2->bb1] ->
+      (none)
+    cancel[bb2] ->
+      (none)
+    goto[bb3->bb1] ->
+      (none)
+    cancel[bb3] ->
+      (none)
+    goto[bb4->bb1] ->
+      (none)
+    cancel[bb4] ->
+      (none)
+    goto[bb5->bb1] ->
+      (none)
+    cancel[bb5] ->
+      (none)
+    goto[bb6->bb1] ->
+      (none)
+    cancel[bb6] ->
+      (none)
+    goto[bb7->bb1] ->
+      (none)
+    cancel[bb7] ->
+      (none)
+    goto[bb8->bb1] ->
+      (none)
+    cancel[bb8] ->
+      (none)
+    goto[bb9->bb1] ->
+      (none)
+    cancel[bb9] ->
+      (none)
+    goto[bb10->bb1] ->
+      (none)
+    cancel[bb10] ->
+      (none)
+    goto[bb11->bb1] ->
+      (none)
+    cancel[bb11] ->
+      (none)
+    goto[bb12->bb1] ->
+      (none)
+    cancel[bb12] ->
+      (none)
+    goto[bb13->bb1] ->
+      (none)
+    cancel[bb13] ->
+      (none)
+    goto[bb14->bb1] ->
+      (none)
+    cancel[bb14] ->
+      (none)
+    goto[bb15->bb1] ->
+      (none)
+    cancel[bb15] ->
+      (none)
+    goto[bb16->bb1] ->
+      (none)
+    cancel[bb16] ->
+      (none)
+    goto[bb17->bb1] ->
+      (none)
+    cancel[bb17] ->
+      (none)
+    goto[bb18->bb1] ->
+      (none)
+    cancel[bb18] ->
+      (none)
+    goto[bb19->bb1] ->
+      (none)
+    cancel[bb19] ->
+      (none)
+    goto[bb20->bb1] ->
+      (none)
+    cancel[bb20] ->
+      (none)
+    goto[bb21->bb1] ->
+      (none)
+    cancel[bb21] ->
+      (none)
+    goto[bb22->bb1] ->
+      (none)
+    cancel[bb22] ->
+      (none)
+    goto[bb23->bb1] ->
+      (none)
+    cancel[bb23] ->
+      (none)
+    panic[bb24] ->
+      (none)
+    branch[bb25: bb3/bb26] ->
+      (none)
+    branch[bb26: bb4/bb27] ->
+      (none)
+    branch[bb27: bb5/bb28] ->
+      (none)
+    branch[bb28: bb6/bb29] ->
+      (none)
+    branch[bb29: bb7/bb30] ->
+      (none)
+    branch[bb30: bb8/bb31] ->
+      (none)
+    branch[bb31: bb9/bb32] ->
+      (none)
+    branch[bb32: bb10/bb33] ->
+      (none)
+    branch[bb33: bb11/bb34] ->
+      (none)
+    branch[bb34: bb12/bb35] ->
+      (none)
+    branch[bb35: bb13/bb36] ->
+      (none)
+    branch[bb36: bb14/bb37] ->
+      (none)
+    branch[bb37: bb15/bb38] ->
+      (none)
+    branch[bb38: bb16/bb39] ->
+      (none)
+    branch[bb39: bb17/bb40] ->
+      (none)
+    branch[bb40: bb18/bb41] ->
+      (none)
+    branch[bb41: bb19/bb42] ->
+      (none)
+    branch[bb42: bb20/bb43] ->
+      (none)
+    branch[bb43: bb21/bb44] ->
+      (none)
+    branch[bb44: bb22/bb45] ->
+      (none)
+    branch[bb45: bb23/bb24] ->
+      (none)
+
+fn std.builtins.TimeoutError::fmt -> string
+  statements:
+    use BindingId(66) err site=SiteId(782) ty=std.builtins.TimeoutError intent=Read
+    return site=Some(SiteId(781)) ty=string
+  decisions:
+    site=s0 ty=std.builtins.TimeoutError value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s781 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s782 ty=std.builtins.TimeoutError value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s783 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+    id=2 kind=normal
+      successor: none
+    id=3 kind=normal
+      successor: none
+    id=4 kind=cleanup
+      successor: none
+  drop_plans:
+    branch[bb0: bb2/bb3] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+    goto[bb2->bb1] ->
+      (none)
+    cancel[bb2] ->
+      (none)
+    panic[bb3] ->
+      (none)
+
+fn std.builtins.LinkError::fmt -> string
+  statements:
+    use BindingId(67) err site=SiteId(785) ty=std.builtins.LinkError intent=Read
+    return site=Some(SiteId(784)) ty=string
+  decisions:
+    site=s0 ty=std.builtins.LinkError value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s784 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s785 ty=std.builtins.LinkError value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s786 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s787 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s788 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s789 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s790 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s791 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s792 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s793 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s794 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s795 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+    id=2 kind=normal
+      successor: none
+    id=3 kind=normal
+      successor: none
+    id=4 kind=normal
+      successor: none
+    id=5 kind=normal
+      successor: none
+    id=6 kind=normal
+      successor: none
+    id=7 kind=normal
+      successor: none
+    id=8 kind=normal
+      successor: none
+    id=9 kind=normal
+      successor: none
+    id=10 kind=normal
+      successor: none
+    id=11 kind=normal
+      successor: none
+    id=12 kind=normal
+      successor: none
+    id=13 kind=normal
+      successor: none
+    id=14 kind=normal
+      successor: none
+    id=15 kind=normal
+      successor: none
+    id=16 kind=normal
+      successor: none
+    id=17 kind=normal
+      successor: none
+    id=18 kind=normal
+      successor: none
+    id=19 kind=normal
+      successor: none
+    id=20 kind=normal
+      successor: none
+    id=21 kind=normal
+      successor: none
+    id=22 kind=cleanup
+      successor: none
+  drop_plans:
+    branch[bb0: bb2/bb13] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+    goto[bb2->bb1] ->
+      (none)
+    cancel[bb2] ->
+      (none)
+    goto[bb3->bb1] ->
+      (none)
+    cancel[bb3] ->
+      (none)
+    goto[bb4->bb1] ->
+      (none)
+    cancel[bb4] ->
+      (none)
+    goto[bb5->bb1] ->
+      (none)
+    cancel[bb5] ->
+      (none)
+    goto[bb6->bb1] ->
+      (none)
+    cancel[bb6] ->
+      (none)
+    goto[bb7->bb1] ->
+      (none)
+    cancel[bb7] ->
+      (none)
+    goto[bb8->bb1] ->
+      (none)
+    cancel[bb8] ->
+      (none)
+    goto[bb9->bb1] ->
+      (none)
+    cancel[bb9] ->
+      (none)
+    goto[bb10->bb1] ->
+      (none)
+    cancel[bb10] ->
+      (none)
+    goto[bb11->bb1] ->
+      (none)
+    cancel[bb11] ->
+      (none)
+    panic[bb12] ->
+      (none)
+    branch[bb13: bb3/bb14] ->
+      (none)
+    branch[bb14: bb4/bb15] ->
+      (none)
+    branch[bb15: bb5/bb16] ->
+      (none)
+    branch[bb16: bb6/bb17] ->
+      (none)
+    branch[bb17: bb7/bb18] ->
+      (none)
+    branch[bb18: bb8/bb19] ->
+      (none)
+    branch[bb19: bb9/bb20] ->
+      (none)
+    branch[bb20: bb10/bb21] ->
+      (none)
+    branch[bb21: bb11/bb12] ->
+      (none)
+
+fn std.builtins.NodeId::fmt -> string
+  statements:
+    use BindingId(68) val site=SiteId(797) ty=NodeId intent=Read
+    return site=Some(SiteId(796)) ty=string
+  decisions:
+    site=s0 ty=NodeId value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s796 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s797 ty=NodeId value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+  drop_plans:
+    call[bb0 hew_node_id_display -> bb1] ->
+      (none)
+    unwind[bb0 hew_node_id_display] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn std.builtins.Location::fmt -> string
+  statements:
+    use BindingId(69) val site=SiteId(800) ty=Location intent=Read
+    return site=Some(SiteId(799)) ty=string
+  decisions:
+    site=s0 ty=Location value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s799 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s800 ty=Location value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+  drop_plans:
+    call[bb0 hew_location_display -> bb1] ->
+      (none)
+    unwind[bb0 hew_location_display] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn std.builtins.i8::fmt -> string
+  statements:
+    use BindingId(71) val site=SiteId(807) ty=i8 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(805) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(805) ty=string intent=Consume
+    return site=Some(SiteId(805)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
     site=s0 ty=i8 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s802 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s803 ty=i32 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s804 ty=i8 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s805 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s806 ty=i32 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s807 ty=i8 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3388,18 +4121,18 @@ fn i8::fmt -> string
     return[bb1] ->
       (none)
 
-fn i16::fmt -> string
+fn std.builtins.i16::fmt -> string
   statements:
-    use BindingId(72) val site=SiteId(808) ty=i16 intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(806) ty=string
-    use BindingId(4294967231) __hew_produced_value site=SiteId(806) ty=string intent=Consume
-    return site=Some(SiteId(806)) ty=string
+    use BindingId(72) val site=SiteId(811) ty=i16 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(809) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(809) ty=string intent=Consume
+    return site=Some(SiteId(809)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
     site=s0 ty=i16 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s806 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s807 ty=i32 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s808 ty=i16 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s809 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s810 ty=i32 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s811 ty=i16 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3415,43 +4148,43 @@ fn i16::fmt -> string
     return[bb1] ->
       (none)
 
-fn i32::fmt -> string
+fn std.builtins.i32::fmt -> string
   statements:
-    use BindingId(73) val site=SiteId(811) ty=i32 intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(810) ty=string
-    use BindingId(4294967231) __hew_produced_value site=SiteId(810) ty=string intent=Consume
-    return site=Some(SiteId(810)) ty=string
-    drop BindingId(4294967231) __hew_produced_value ty=string
-  decisions:
-    site=s0 ty=i32 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s810 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s811 ty=i32 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-  blocks:
-    id=0 kind=normal
-      successor: none
-    id=1 kind=normal
-      successor: none
-  drop_plans:
-    call[bb0 hew_int_to_string -> bb1] ->
-      (none)
-    unwind[bb0 hew_int_to_string] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    return[bb1] ->
-      (none)
-
-fn i64::fmt -> string
-  statements:
-    use BindingId(74) val site=SiteId(814) ty=i64 intent=Read
+    use BindingId(73) val site=SiteId(814) ty=i32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(813) ty=string
     use BindingId(4294967231) __hew_produced_value site=SiteId(813) ty=string intent=Consume
     return site=Some(SiteId(813)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
-    site=s0 ty=i64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s0 ty=i32 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
     site=s813 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s814 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s814 ty=i32 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+  drop_plans:
+    call[bb0 hew_int_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_int_to_string] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn std.builtins.i64::fmt -> string
+  statements:
+    use BindingId(74) val site=SiteId(817) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(816) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(816) ty=string intent=Consume
+    return site=Some(SiteId(816)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
+  decisions:
+    site=s0 ty=i64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s816 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s817 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3467,17 +4200,17 @@ fn i64::fmt -> string
     return[bb1] ->
       (none)
 
-fn u8::fmt -> string
+fn std.builtins.u8::fmt -> string
   statements:
-    use BindingId(75) val site=SiteId(817) ty=u8 intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(816) ty=string
-    use BindingId(4294967231) __hew_produced_value site=SiteId(816) ty=string intent=Consume
-    return site=Some(SiteId(816)) ty=string
+    use BindingId(75) val site=SiteId(820) ty=u8 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(819) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(819) ty=string intent=Consume
+    return site=Some(SiteId(819)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
     site=s0 ty=u8 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s816 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s817 ty=u8 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s819 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s820 ty=u8 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3493,43 +4226,17 @@ fn u8::fmt -> string
     return[bb1] ->
       (none)
 
-fn u16::fmt -> string
+fn std.builtins.u16::fmt -> string
   statements:
-    use BindingId(76) val site=SiteId(820) ty=u16 intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(819) ty=string
-    use BindingId(4294967231) __hew_produced_value site=SiteId(819) ty=string intent=Consume
-    return site=Some(SiteId(819)) ty=string
-    drop BindingId(4294967231) __hew_produced_value ty=string
-  decisions:
-    site=s0 ty=u16 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s819 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s820 ty=u16 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-  blocks:
-    id=0 kind=normal
-      successor: none
-    id=1 kind=normal
-      successor: none
-  drop_plans:
-    call[bb0 hew_uint_to_string -> bb1] ->
-      (none)
-    unwind[bb0 hew_uint_to_string] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    return[bb1] ->
-      (none)
-
-fn u32::fmt -> string
-  statements:
-    use BindingId(77) val site=SiteId(823) ty=u32 intent=Read
+    use BindingId(76) val site=SiteId(823) ty=u16 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(822) ty=string
     use BindingId(4294967231) __hew_produced_value site=SiteId(822) ty=string intent=Consume
     return site=Some(SiteId(822)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
-    site=s0 ty=u32 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s0 ty=u16 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
     site=s822 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s823 ty=u32 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s823 ty=u16 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3545,17 +4252,43 @@ fn u32::fmt -> string
     return[bb1] ->
       (none)
 
-fn u64::fmt -> string
+fn std.builtins.u32::fmt -> string
   statements:
-    use BindingId(78) val site=SiteId(826) ty=u64 intent=Read
+    use BindingId(77) val site=SiteId(826) ty=u32 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(825) ty=string
     use BindingId(4294967231) __hew_produced_value site=SiteId(825) ty=string intent=Consume
     return site=Some(SiteId(825)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
-    site=s0 ty=u64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s0 ty=u32 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
     site=s825 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s826 ty=u64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s826 ty=u32 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+  drop_plans:
+    call[bb0 hew_uint_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_uint_to_string] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn std.builtins.u64::fmt -> string
+  statements:
+    use BindingId(78) val site=SiteId(829) ty=u64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(828) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(828) ty=string intent=Consume
+    return site=Some(SiteId(828)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
+  decisions:
+    site=s0 ty=u64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s828 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s829 ty=u64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3571,18 +4304,18 @@ fn u64::fmt -> string
     return[bb1] ->
       (none)
 
-fn isize::fmt -> string
+fn std.builtins.isize::fmt -> string
   statements:
-    use BindingId(79) val site=SiteId(830) ty=isize intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(828) ty=string
-    use BindingId(4294967231) __hew_produced_value site=SiteId(828) ty=string intent=Consume
-    return site=Some(SiteId(828)) ty=string
+    use BindingId(79) val site=SiteId(833) ty=isize intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(831) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(831) ty=string intent=Consume
+    return site=Some(SiteId(831)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
     site=s0 ty=isize value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s828 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s829 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s830 ty=isize value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s831 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s832 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s833 ty=isize value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3598,18 +4331,18 @@ fn isize::fmt -> string
     return[bb1] ->
       (none)
 
-fn usize::fmt -> string
+fn std.builtins.usize::fmt -> string
   statements:
-    use BindingId(80) val site=SiteId(834) ty=usize intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(832) ty=string
-    use BindingId(4294967231) __hew_produced_value site=SiteId(832) ty=string intent=Consume
-    return site=Some(SiteId(832)) ty=string
+    use BindingId(80) val site=SiteId(837) ty=usize intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(835) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(835) ty=string intent=Consume
+    return site=Some(SiteId(835)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
     site=s0 ty=usize value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s832 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s833 ty=u64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s834 ty=usize value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s835 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s836 ty=u64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s837 ty=usize value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3625,17 +4358,17 @@ fn usize::fmt -> string
     return[bb1] ->
       (none)
 
-fn bool::fmt -> string
+fn std.builtins.bool::fmt -> string
   statements:
-    use BindingId(81) val site=SiteId(837) ty=bool intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(836) ty=string
-    use BindingId(4294967231) __hew_produced_value site=SiteId(836) ty=string intent=Consume
-    return site=Some(SiteId(836)) ty=string
+    use BindingId(81) val site=SiteId(840) ty=bool intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(839) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(839) ty=string intent=Consume
+    return site=Some(SiteId(839)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
     site=s0 ty=bool value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s836 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s837 ty=bool value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s839 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s840 ty=bool value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3651,17 +4384,17 @@ fn bool::fmt -> string
     return[bb1] ->
       (none)
 
-fn char::fmt -> string
+fn std.builtins.char::fmt -> string
   statements:
-    use BindingId(82) val site=SiteId(840) ty=char intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(839) ty=string
-    use BindingId(4294967231) __hew_produced_value site=SiteId(839) ty=string intent=Consume
-    return site=Some(SiteId(839)) ty=string
+    use BindingId(82) val site=SiteId(843) ty=char intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(842) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(842) ty=string intent=Consume
+    return site=Some(SiteId(842)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
     site=s0 ty=char value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s839 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s840 ty=char value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s842 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s843 ty=char value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3677,44 +4410,17 @@ fn char::fmt -> string
     return[bb1] ->
       (none)
 
-fn f64::fmt -> string
+fn std.builtins.f64::fmt -> string
   statements:
-    use BindingId(83) val site=SiteId(843) ty=f64 intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(842) ty=string
-    use BindingId(4294967231) __hew_produced_value site=SiteId(842) ty=string intent=Consume
-    return site=Some(SiteId(842)) ty=string
-    drop BindingId(4294967231) __hew_produced_value ty=string
-  decisions:
-    site=s0 ty=f64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s842 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s843 ty=f64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-  blocks:
-    id=0 kind=normal
-      successor: none
-    id=1 kind=normal
-      successor: none
-  drop_plans:
-    call[bb0 hew_float_to_string -> bb1] ->
-      (none)
-    unwind[bb0 hew_float_to_string] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    return[bb1] ->
-      (none)
-
-fn f32::fmt -> string
-  statements:
-    use BindingId(84) val site=SiteId(847) ty=f32 intent=Read
+    use BindingId(83) val site=SiteId(846) ty=f64 intent=Read
     bind BindingId(4294967231) __hew_produced_value site=SiteId(845) ty=string
     use BindingId(4294967231) __hew_produced_value site=SiteId(845) ty=string intent=Consume
     return site=Some(SiteId(845)) ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
-    site=s0 ty=f32 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s0 ty=f64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
     site=s845 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
     site=s846 ty=f64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s847 ty=f32 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3730,13 +4436,40 @@ fn f32::fmt -> string
     return[bb1] ->
       (none)
 
-fn string::fmt -> string
+fn std.builtins.f32::fmt -> string
   statements:
-    use BindingId(85) val site=SiteId(849) ty=string intent=Read
-    return site=Some(SiteId(849)) ty=string
+    use BindingId(84) val site=SiteId(850) ty=f32 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(848) ty=string
+    use BindingId(4294967231) __hew_produced_value site=SiteId(848) ty=string intent=Consume
+    return site=Some(SiteId(848)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
+  decisions:
+    site=s0 ty=f32 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s848 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s849 ty=f64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s850 ty=f32 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+  drop_plans:
+    call[bb0 hew_float_to_string -> bb1] ->
+      (none)
+    unwind[bb0 hew_float_to_string] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn std.builtins.string::fmt -> string
+  statements:
+    use BindingId(85) val site=SiteId(852) ty=string intent=Read
+    return site=Some(SiteId(852)) ty=string
   decisions:
     site=s0 ty=string value_class=CowValue intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s849 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s852 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3744,126 +4477,22 @@ fn string::fmt -> string
     return[bb0] ->
       (none)
 
-fn duration::from_nanos -> duration
+fn std.builtins.duration::fmt -> string
   statements:
-    use BindingId(86) n site=SiteId(851) ty=i64 intent=Read
-    return site=Some(SiteId(850)) ty=duration
-  decisions:
-    site=s0 ty=i64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s850 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s851 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s852 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-  blocks:
-    id=0 kind=normal
-      successor: none
-    id=1 kind=normal
-      successor: none
-    id=2 kind=normal
-      successor: none
-    id=3 kind=cleanup
-      successor: none
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    panic[bb1] ->
-      (none)
-    return[bb2] ->
-      (none)
-
-fn duration::from_micros -> duration
-  statements:
-    use BindingId(87) n site=SiteId(854) ty=i64 intent=Read
-    return site=Some(SiteId(853)) ty=duration
-  decisions:
-    site=s0 ty=i64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s853 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s854 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s855 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-  blocks:
-    id=0 kind=normal
-      successor: none
-    id=1 kind=normal
-      successor: none
-    id=2 kind=normal
-      successor: none
-    id=3 kind=cleanup
-      successor: none
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    panic[bb1] ->
-      (none)
-    return[bb2] ->
-      (none)
-
-fn duration::from_millis -> duration
-  statements:
-    use BindingId(88) n site=SiteId(857) ty=i64 intent=Read
-    return site=Some(SiteId(856)) ty=duration
-  decisions:
-    site=s0 ty=i64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s856 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s857 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s858 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-  blocks:
-    id=0 kind=normal
-      successor: none
-    id=1 kind=normal
-      successor: none
-    id=2 kind=normal
-      successor: none
-    id=3 kind=cleanup
-      successor: none
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    panic[bb1] ->
-      (none)
-    return[bb2] ->
-      (none)
-
-fn duration::from_secs -> duration
-  statements:
-    use BindingId(89) n site=SiteId(860) ty=i64 intent=Read
-    return site=Some(SiteId(859)) ty=duration
-  decisions:
-    site=s0 ty=i64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s859 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s860 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s861 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-  blocks:
-    id=0 kind=normal
-      successor: none
-    id=1 kind=normal
-      successor: none
-    id=2 kind=normal
-      successor: none
-    id=3 kind=cleanup
-      successor: none
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    panic[bb1] ->
-      (none)
-    return[bb2] ->
-      (none)
-
-fn duration::fmt -> string
-  statements:
-    use BindingId(90) val site=SiteId(865) ty=duration intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(863) ty=string
-    bind BindingId(4294967230) __hew_produced_value site=SiteId(862) ty=string
-    use BindingId(4294967230) __hew_produced_value site=SiteId(862) ty=string intent=Consume
-    return site=Some(SiteId(862)) ty=string
+    use BindingId(86) val site=SiteId(856) ty=duration intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(854) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(853) ty=string
+    use BindingId(4294967230) __hew_produced_value site=SiteId(853) ty=string intent=Consume
+    return site=Some(SiteId(853)) ty=string
     drop BindingId(4294967230) __hew_produced_value ty=string
     drop BindingId(4294967231) __hew_produced_value ty=string
   decisions:
     site=s0 ty=duration value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
-    site=s862 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s863 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
-    site=s864 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s865 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
-    site=s868 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s853 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s854 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
+    site=s855 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s856 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s859 ty=string value_class=CowValue intent=Read strategy=CowShare why="first vertical-slice classifier"
   blocks:
     id=0 kind=normal
       successor: none
@@ -3889,4 +4518,108 @@ fn duration::fmt -> string
     unwind[bb2 hew_string_concat] ->
       drop _2 ty=string kind=cow_heap(hew_string_drop)
     return[bb3] ->
+      (none)
+
+fn duration::from_nanos -> duration
+  statements:
+    use BindingId(95) n site=SiteId(929) ty=i64 intent=Read
+    return site=Some(SiteId(928)) ty=duration
+  decisions:
+    site=s0 ty=i64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s928 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s929 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s930 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+    id=2 kind=normal
+      successor: none
+    id=3 kind=cleanup
+      successor: none
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    panic[bb1] ->
+      (none)
+    return[bb2] ->
+      (none)
+
+fn duration::from_micros -> duration
+  statements:
+    use BindingId(96) n site=SiteId(932) ty=i64 intent=Read
+    return site=Some(SiteId(931)) ty=duration
+  decisions:
+    site=s0 ty=i64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s931 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s932 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s933 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+    id=2 kind=normal
+      successor: none
+    id=3 kind=cleanup
+      successor: none
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    panic[bb1] ->
+      (none)
+    return[bb2] ->
+      (none)
+
+fn duration::from_millis -> duration
+  statements:
+    use BindingId(97) n site=SiteId(935) ty=i64 intent=Read
+    return site=Some(SiteId(934)) ty=duration
+  decisions:
+    site=s0 ty=i64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s934 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s935 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s936 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+    id=2 kind=normal
+      successor: none
+    id=3 kind=cleanup
+      successor: none
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    panic[bb1] ->
+      (none)
+    return[bb2] ->
+      (none)
+
+fn duration::from_secs -> duration
+  statements:
+    use BindingId(98) n site=SiteId(938) ty=i64 intent=Read
+    return site=Some(SiteId(937)) ty=duration
+  decisions:
+    site=s0 ty=i64 value_class=BitCopy intent=Unknown strategy=ParamBoundary(ParamBoundaryFact { param_index: 0, param_count: 1, caller_visible_projection: false, mode: BorrowReadOnly }) why="checker-authoritative parameter boundary classification"
+    site=s937 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s938 ty=i64 value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+    site=s939 ty=duration value_class=BitCopy intent=Read strategy=BorrowRead why="first vertical-slice classifier"
+  blocks:
+    id=0 kind=normal
+      successor: none
+    id=1 kind=normal
+      successor: none
+    id=2 kind=normal
+      successor: none
+    id=3 kind=cleanup
+      successor: none
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    panic[bb1] ->
+      (none)
+    return[bb2] ->
       (none)

@@ -2346,6 +2346,11 @@ grep -q 'LocalPid' "${reject_output}"
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"
+run_accept_expect_stdout "prelude_error_display"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/prelude_display_requires_impl.hew" \
+    "type \`PlainValue\` does not implement \`Display\`" \
+    "prelude_display_requires_impl"
 run_accept_expect_stdout "signed_const_arithmetic"
 run_accept_expect_stdout "top_level_type_aliases"
 run_accept_expect_stdout "type_alias_resource_close"

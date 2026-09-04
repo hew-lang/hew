@@ -2388,6 +2388,12 @@ impl Checker {
         self.record_root_value_binding(&cd.name);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one body-check pass over an impl block: drop-impl gate, orphan-rule check, \
+                  generic-param binding, then per-method receiver-mutability/signature checks — \
+                  each step is a few lines and splitting them would only add indirection"
+    )]
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {
         if Self::impl_decl_is_drop_impl(id) {
             // The registration pass already emitted the fail-closed diagnostic.
@@ -2403,8 +2409,6 @@ impl Checker {
             let target_is_struct = self
                 .lookup_type_def(type_name)
                 .is_some_and(|td| td.kind == TypeDefKind::Struct);
-            // Orphan rule check: if implementing a trait, either the type or the
-            // trait must be defined in the current compilation unit.
             if let Some(tb) = &id.trait_bound {
                 let type_is_local = self.local_type_defs.contains(type_name)
                     || self.intrinsic_type_is_local_to_builtin_surface(type_name);
@@ -2414,7 +2418,12 @@ impl Checker {
                 // on the same authoritative identity every other trait-reference
                 // site does — never the bare spelling in isolation.
                 let trait_is_local = self.trait_ref_is_local(&tb.name);
-                if !type_is_local && !trait_is_local {
+                // hew-compile injects one source-less std.builtins node that
+                // contains only the embedded prelude's Display impls. A user
+                // module retains a source path and cannot claim this authority.
+                let is_embedded_builtins_impl = self.current_item_source.is_none()
+                    && self.checking_canonical_stdlib_source("std.builtins");
+                if !type_is_local && !trait_is_local && !is_embedded_builtins_impl {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::OrphanImpl,

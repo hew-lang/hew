@@ -1323,6 +1323,42 @@ fn build_module_graph_with_diagnostics(
     if let Err(cycle_err) = graph.compute_topo_order() {
         return Err(FrontendFailure::message_only(cycle_err.to_string()));
     }
+
+    // The prelude is loaded out of band, so expose only its Display impls to
+    // the ordinary imported-impl path. Its other declarations retain their
+    // existing compiler-owned registration.
+    let parsed_builtins = hew_parser::parse(include_str!("../../std/builtins.hew"));
+    assert!(
+        parsed_builtins.errors.is_empty(),
+        "embedded std/builtins.hew must parse: {:?}",
+        parsed_builtins.errors
+    );
+    let builtins_id = ModuleId::new(vec!["std".to_string(), "builtins".to_string()]);
+    if !graph.modules.contains_key(&builtins_id) {
+        let display_impls = parsed_builtins
+            .program
+            .items
+            .into_iter()
+            .filter(|(item, _)| {
+                matches!(
+                    item,
+                    Item::Impl(impl_decl)
+                        if impl_decl.trait_bound.as_ref().is_some_and(|bound| bound.name == "Display")
+                )
+            })
+            .collect();
+        graph
+            .add_module(Module {
+                id: builtins_id.clone(),
+                items: display_impls,
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .expect("std.builtins module absence was checked");
+        graph.topo_order.push(builtins_id);
+    }
+
     rewrite_direct_stdlib_module_root(&mut graph, items, &input_canonical)?;
 
     // Canonical module IDs may share a final component. Reject only when two

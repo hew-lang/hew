@@ -100,6 +100,16 @@
 #   arithmetic similarly leaves no cursor owner for the later panic, unwind,
 #   or return edges. Only stale drop-plan entries were removed; the CFG,
 #   statements, and values are unchanged.
+#   Refreshed at 3bdee2dd4 (#3224, prelude Display): `funcupdate_owned_field_
+#   drop_test.elab.mir` regenerated only. std.builtins' `impl Display for <X>`
+#   blocks now join the module graph and lower like any imported module's
+#   impls (V060-ST-1), so every builtins.hew Display fn's symbol carries the
+#   `std.builtins.` prefix (`bool::fmt` -> `std.builtins.bool::fmt`) and the
+#   previously-undiscovered NodeId/Location/SendError/LookupError/AskError/
+#   TimeoutError/LinkError impls are now emitted too (they were dead code
+#   before this change, never lowered). Purely additive/renaming to the
+#   builtins-impl catalog this dump enumerates; the fixture's own funcupdate/
+#   reassign statements, CFG, and drop plan are byte-identical.
 #   Whole-output refresh for the #3205 elaborated-MIR decision/topology surface:
 #   all four files were re-dumped wholesale from the same current compiler,
 #   rather than appending current `decisions`/`blocks` sections to historical

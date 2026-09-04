@@ -2,10 +2,15 @@
 
 /// Read one canonical metric by name.
 ///
-/// Returns -1 when the metric name is unknown.
-pub fn read(name: string) -> i64 {
-    unsafe {
+/// Returns `None` when the metric name is unknown.
+pub fn read(name: string) -> Option<i64> {
+    let value = unsafe {
         hew_observe_read_u64(name)
+    };
+    if value == -1 {
+        None
+    } else {
+        Some(value)
     }
 }
 
@@ -25,11 +30,32 @@ pub fn series() -> string {
 
 /// Wait for actor-turn observe attribution visible to `series`/`scrape`.
 ///
-/// Returns 0 on success, -1 when called from inside an actor turn, and -2 if
-/// the native runtime's bounded 30-second internal wait expires.
-pub fn barrier() -> i64 {
-    unsafe {
+pub enum ObserveError {
+    ActorTurn;
+    TimedOut;
+}
+
+impl Display for ObserveError {
+    fn fmt(error: ObserveError) -> string {
+        match error {
+            ObserveError.ActorTurn => "observe.barrier cannot wait from an actor turn",
+            ObserveError.TimedOut => "observe.barrier timed out",
+        }
+    }
+}
+
+/// Returns an error when called from an actor turn or when the native runtime's
+/// bounded 30-second internal wait expires.
+pub fn barrier() -> Result<(), ObserveError> {
+    let status = unsafe {
         hew_observe_barrier()
+    };
+    if status == 0 {
+        Ok(())
+    } else if status == -1 {
+        Err(ObserveError.ActorTurn)
+    } else {
+        Err(ObserveError.TimedOut)
     }
 }
 

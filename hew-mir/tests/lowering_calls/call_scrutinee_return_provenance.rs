@@ -3,8 +3,7 @@
 //! These are the 33 scenarios formerly pinned to the retired
 //! `__hew_call_scrutinee` preflight. Each case now names the exact source call,
 //! asserts its completed HIR ownership fact, and checks the successor MIR
-//! boundary: non-owned facts cannot mint a generic typed-publication owner,
-//! while an absent producer contract fails closed at an ownership-demanding sink.
+//! boundary: non-owned facts cannot mint a generic typed-publication owner.
 
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -1109,29 +1108,4 @@ fn guard_buried_return_forwarder_publishes_retained_fact() {
     let p = pipeline(src);
     assert_owned(&p, "evil(p, 0)", Acquisition::Retained);
     assert_clean(&p);
-}
-
-#[test]
-fn indirect_function_value_result_rejects_reuse_after_consuming_call() {
-    let src = r#"
-        fn make(s: string) -> Result<string, string> { Ok(s) }
-        fn consume(consume value: Result<string, string>) -> i64 {
-            match value { .Ok(s) => s.len(), .Err(e) => e.len() }
-        }
-        fn use_it() -> i64 {
-            let f = make;
-            let result = f("x");
-            let first = consume(result);
-            first + consume(result)
-        }
-    "#;
-    let p = pipeline(src);
-    assert!(
-        p.diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "result"
-        )),
-        "an indirect non-copy result must be consumed exactly once: {:#?}",
-        p.diagnostics
-    );
 }

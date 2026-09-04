@@ -2317,6 +2317,34 @@ impl Checker {
         }
     }
 
+    /// Attach the shared inferred element type to channel endpoints without
+    /// reconstructing the declaration's surrounding return type.
+    fn instantiate_channel_constructor_return(return_type: &Ty, element: &Ty) -> Ty {
+        match return_type {
+            Ty::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::Sender),
+            } if args.is_empty() => Ty::Named {
+                name: name.clone(),
+                args: vec![element.clone()],
+                builtin: Some(BuiltinType::Sender),
+            },
+            Ty::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::Receiver),
+            } if args.is_empty() => Ty::Named {
+                name: name.clone(),
+                args: vec![element.clone()],
+                builtin: Some(BuiltinType::Receiver),
+            },
+            _ => return_type.map_children_pub(&|child| {
+                Self::instantiate_channel_constructor_return(child, element)
+            }),
+        }
+    }
+
     /// Apply exact function policy after a named import has resolved its
     /// declaration owner.  Unlike a bare surface spelling this carries the
     /// source identity (`std.fs.read`) and cannot be captured by a user
@@ -8520,21 +8548,14 @@ impl Checker {
                     }
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
-                    // linked through unification.
+                    // linked through unification, while preserving the resolved
+                    // declaration's outer return shape.
                     if canonical_owner == "std.channel" && method == "new" {
                         let t = Ty::Var(TypeVar::fresh());
-                        return Ty::Tuple(vec![
-                            Ty::Named {
-                                name: "std.channel.Sender".to_string(),
-                                args: vec![t.clone()],
-                                builtin: Some(BuiltinType::Sender),
-                            },
-                            Ty::Named {
-                                name: "std.channel.Receiver".to_string(),
-                                args: vec![t],
-                                builtin: Some(BuiltinType::Receiver),
-                            },
-                        ]);
+                        return Self::instantiate_channel_constructor_return(
+                            &applied_sig.return_type,
+                            &t,
+                        );
                     }
                     if let Some(op) = self.intrinsic_math_generic_op_for_signature(&key) {
                         self.record_method_call_rewrite(

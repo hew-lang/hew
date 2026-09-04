@@ -5,6 +5,48 @@
 pub(super) use super::*;
 
 #[test]
+fn channel_new_result_preserves_endpoint_type_parameter() {
+    let output = check_source(
+        r"
+        import std.channel.channel;
+
+        fn main() {
+            let _result: Result<(channel.Sender<i64>, channel.Receiver<i64>), string> =
+                channel.new(1);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "channel.new should preserve Result while inferring matching endpoint types: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn channel_new_result_does_not_coerce_to_endpoint_tuple() {
+    let output = check_source(
+        r"
+        import std.channel.channel;
+
+        fn main() {
+            let _pair: (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "channel.new must retain its Result wrapper instead of coercing to a tuple: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn literal_coercion_array_literal_to_fixed_array() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let span = 0..6;

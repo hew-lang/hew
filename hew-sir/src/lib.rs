@@ -8,6 +8,7 @@
 
 mod analysis;
 mod dump;
+mod lifetime;
 mod lower;
 mod model;
 mod optimize;

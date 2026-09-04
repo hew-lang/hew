@@ -110,6 +110,13 @@ pub enum SirDiagnosticKind {
         value: ValueId,
         reason: String,
     },
+    /// An owned SSA obligation is unavailable at a use, overwritten by a new
+    /// dynamic definition, or left live at an exit.
+    OwnershipLifetime {
+        block: BlockId,
+        value: ValueId,
+        reason: &'static str,
+    },
     /// A source binding naming a value or place this body never defines. §1.6
     /// reads the table to tell a user-facing wall from an internal error, so a
     /// row it cannot resolve would silently drop the user's name.
@@ -611,6 +618,20 @@ pub(crate) fn verify_function_with_context(
             );
         }
     }
+    diagnostics.extend(
+        crate::lifetime::verify(function)
+            .into_iter()
+            .map(|violation| {
+                diag(
+                    function,
+                    SirDiagnosticKind::OwnershipLifetime {
+                        block: violation.block,
+                        value: violation.value,
+                        reason: violation.reason,
+                    },
+                )
+            }),
+    );
     diagnostics
 }
 

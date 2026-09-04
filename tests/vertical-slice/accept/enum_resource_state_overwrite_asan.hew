@@ -10,7 +10,7 @@ actor DocHolder {
     var doc: DocState;
 
     receive fn load(s: string) -> i64 {
-        match xml.try_parse(s) {
+        match xml.parse(s) {
             .Ok(node) => {
                 doc = DocState.Loaded(node);
             },

@@ -93,7 +93,7 @@ impl TableMethods for Table {
 /// quote state is a failure, not a repairable shape: an unterminated quoted
 /// field otherwise parses as a complete table, which is exactly what a
 /// truncated file must not look like.
-pub fn try_parse(data: string) -> Result<Table, string> {
+pub fn parse(data: string) -> Result<Table, string> {
     let parsed = parse_impl(data, true);
     parsed
 }
@@ -101,7 +101,7 @@ pub fn try_parse(data: string) -> Result<Table, string> {
 /// Parse CSV data from a string without treating the first row as headers.
 ///
 /// Returns `Err(string)` if the input is not well-formed CSV.
-pub fn try_parse_no_headers(data: string) -> Result<Table, string> {
+pub fn parse_no_headers(data: string) -> Result<Table, string> {
     let parsed = parse_impl(data, false);
     parsed
 }
@@ -110,57 +110,12 @@ pub fn try_parse_no_headers(data: string) -> Result<Table, string> {
 ///
 /// Returns `Err(string)` if the file cannot be read or the input is not
 /// well-formed CSV.
-pub fn try_parse_file(path: string) -> Result<Table, string> {
+pub fn parse_file(path: string) -> Result<Table, string> {
     match fs.read(path) {
         .Ok(content) => parse_impl(content, true),
         .Err(reason) => Err(to_string(reason)),
     }
 }
-
-/// Parse CSV data from a string (first row is treated as headers).
-///
-/// Panics if the input is not well-formed CSV. Use `try_parse` for a
-/// structured `Result<Table, string>` failure surface.
-pub fn parse(data: string) -> Table {
-    let parsed = parse_impl(data, true);
-    match parsed {
-        .Ok(tbl) => tbl,
-        .Err(reason) => {
-            panic(reason);
-            Table { hdrs: Vec.new(), data: Vec.new() }
-        },
-    }
-}
-
-/// Parse CSV data from a string without treating the first row as headers.
-///
-/// Panics if the input is not well-formed CSV.
-pub fn parse_no_headers(data: string) -> Table {
-    let parsed = parse_impl(data, false);
-    match parsed {
-        .Ok(tbl) => tbl,
-        .Err(reason) => {
-            panic(reason);
-            Table { hdrs: Vec.new(), data: Vec.new() }
-        },
-    }
-}
-
-/// Parse CSV data from a file path (first row is treated as headers).
-///
-/// Panics if the file cannot be read or the input is not well-formed CSV.
-pub fn parse_file(path: string) -> Table {
-    let content = fs.read(path);
-    let parsed = parse_impl(content, true);
-    match parsed {
-        .Ok(tbl) => tbl,
-        .Err(reason) => {
-            panic(reason);
-            Table { hdrs: Vec.new(), data: Vec.new() }
-        },
-    }
-}
-
 // ── Internal parsing ──────────────────────────────────────────────────
 /// Parse CSV data with optional header row handling.
 ///

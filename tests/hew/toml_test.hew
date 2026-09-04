@@ -7,7 +7,7 @@ import std.testing;
 // ── try_parse ─────────────────────────────────────────────────────────
 #[test]
 fn test_try_parse_valid_returns_ok() {
-    let r = toml.try_parse("[package]\nname = \"hew\"\nversion = 1");
+    let r = toml.parse("[package]\nname = \"hew\"\nversion = 1");
     match r {
         .Ok(val) => {
             val.free();
@@ -18,7 +18,7 @@ fn test_try_parse_valid_returns_ok() {
 
 #[test]
 fn test_try_parse_invalid_returns_err() {
-    let r = toml.try_parse("[[not valid toml");
+    let r = toml.parse("[[not valid toml");
     match r {
         .Ok(val) => {
             val.free();
@@ -60,7 +60,7 @@ fn test_table_builder_int_field() {
 fn test_stringify_produces_valid_toml() {
     let tbl = toml.table().with_int("x", 5);
     let s = tbl.stringify();
-    let r = toml.try_parse(s);
+    let r = toml.parse(s);
     match r {
         .Ok(reparsed) => {
             let field = reparsed.get_field("x");
@@ -78,7 +78,7 @@ fn test_stringify_produces_valid_toml() {
 fn test_try_parse_empty_string_is_empty_table() {
     // "" is valid TOML (empty document → empty table).
     // get_field on any key returns a null handle (array_len == -1).
-    let r = toml.try_parse("");
+    let r = toml.parse("");
     match r {
         .Ok(val) => {
             let missing = val.get_field("x");
@@ -93,7 +93,7 @@ fn test_try_parse_empty_string_is_empty_table() {
 #[test]
 fn test_try_parse_simple_key_value() {
     // "x = 1" → table with integer field x.
-    let r = toml.try_parse("x = 1");
+    let r = toml.parse("x = 1");
     match r {
         .Ok(val) => {
             let f = val.get_field("x");
@@ -109,7 +109,7 @@ fn test_try_parse_simple_key_value() {
 #[test]
 fn test_parse_array_of_integers() {
     // "a = [1, 2, 3]" → root table; get_field("a") → array of 3 ints.
-    let r = toml.try_parse("a = [1, 2, 3]");
+    let r = toml.parse("a = [1, 2, 3]");
     match r {
         .Ok(root) => {
             let a = root.get_field("a");
@@ -134,7 +134,7 @@ fn test_parse_array_of_integers() {
 #[test]
 fn test_nested_table_dotted_key() {
     // [outer] x=1 [outer.inner] y=2 → walk outer → inner → y; free leaf-first.
-    let r = toml.try_parse("[outer]\nx = 1\n[outer.inner]\ny = 2");
+    let r = toml.parse("[outer]\nx = 1\n[outer.inner]\ny = 2");
     match r {
         .Ok(root) => {
             let outer = root.get_field("outer");
@@ -155,7 +155,7 @@ fn test_nested_table_dotted_key() {
 #[test]
 fn test_array_of_tables_walk() {
     // [[items]] k=1 [[items]] k=2 → root.get_field("items") is an array.
-    let r = toml.try_parse("[[items]]\nk = 1\n[[items]]\nk = 2");
+    let r = toml.parse("[[items]]\nk = 1\n[[items]]\nk = 2");
     match r {
         .Ok(root) => {
             let items = root.get_field("items");
@@ -182,7 +182,7 @@ fn test_array_of_tables_walk() {
 fn test_missing_field_handle_is_invalid() {
     // get_field on absent key: Rust returns null_ptr. array_len on null
     // handle returns -1. free() is null-safe.
-    let r = toml.try_parse("a = 1");
+    let r = toml.parse("a = 1");
     match r {
         .Ok(root) => {
             let missing = root.get_field("nope");
@@ -225,7 +225,7 @@ fn test_from_float_round_trip_via_table_field() {
     // Round-trip: with_float → stringify → reparse → get_field → get_float.
     let tbl = toml.table().with_float("ratio", 1.5);
     let s = tbl.stringify();
-    let r = toml.try_parse(s);
+    let r = toml.parse(s);
     match r {
         .Ok(reparsed) => {
             let f = reparsed.get_field("ratio");
@@ -245,7 +245,7 @@ fn test_try_stringify_rejects_a_root_toml_cannot_represent() {
     // text at all, which is exactly what an empty table produces, so an empty
     // string here would be a fabricated success.
     let val = toml.from_float(1.5);
-    match toml.try_stringify(val) {
+    match toml.stringify(val) {
         .Ok(text) => panic(f"expected a bare float root to be rejected, got {text.len()} bytes"),
         .Err(reason) => testing.assert_true(reason.contains("unsupported")),
     }
@@ -255,7 +255,7 @@ fn test_try_stringify_rejects_a_root_toml_cannot_represent() {
 #[test]
 fn test_try_stringify_rejects_a_bare_integer_root() {
     let val = toml.from_int(7);
-    match toml.try_stringify(val) {
+    match toml.stringify(val) {
         .Ok(text) => panic(f"expected a bare integer root to be rejected, got {text.len()} bytes"),
         .Err(reason) => testing.assert_gt(reason.len(), 0),
     }
@@ -266,7 +266,7 @@ fn test_try_stringify_rejects_a_bare_integer_root() {
 fn test_try_stringify_rejects_a_bare_array_root() {
     let val = toml.array();
     val.push_int(1);
-    match toml.try_stringify(val) {
+    match toml.stringify(val) {
         .Ok(text) => panic(f"expected a bare array root to be rejected, got {text.len()} bytes"),
         .Err(reason) => testing.assert_gt(reason.len(), 0),
     }
@@ -278,7 +278,7 @@ fn test_try_stringify_of_an_empty_table_is_a_valid_empty_document() {
     // The same zero-length answer a rejected root produces, but this one is
     // real: an empty table is a well-formed, empty TOML document.
     let tbl = toml.table();
-    match toml.try_stringify(tbl) {
+    match toml.stringify(tbl) {
         .Ok(text) => testing.assert_eq(text.len(), 0),
         .Err(reason) => panic(f"an empty table is a valid TOML document: {reason}"),
     }
@@ -289,7 +289,7 @@ fn test_try_stringify_of_an_empty_table_is_a_valid_empty_document() {
 fn test_try_stringify_preserves_a_populated_table() {
     let tbl = toml.table();
     tbl.with_int("n", 42);
-    match toml.try_stringify(tbl) {
+    match toml.stringify(tbl) {
         .Ok(text) => testing.assert_eq_str(text, "n = 42\n"),
         .Err(reason) => panic(f"a populated table must serialize: {reason}"),
     }
@@ -299,13 +299,13 @@ fn test_try_stringify_preserves_a_populated_table() {
 #[test]
 fn test_stringify_failure_does_not_leak_into_the_next_call() {
     let bad = toml.from_float(1.5);
-    match toml.try_stringify(bad) {
+    match toml.stringify(bad) {
         .Ok(_) => panic("expected a bare float root to be rejected"),
         .Err(_) => {},
     }
     bad.free();
     let tbl = toml.table();
-    match toml.try_stringify(tbl) {
+    match toml.stringify(tbl) {
         .Ok(text) => testing.assert_eq(text.len(), 0),
         .Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
     }
@@ -342,7 +342,7 @@ fn test_nested_builder_stringify_reparse() {
     let inner = toml.table().with_int("v", 9);
     let outer = toml.table().with("inner", inner); // inner consumed here
     let s = outer.stringify();
-    let r = toml.try_parse(s);
+    let r = toml.parse(s);
     match r {
         .Ok(reparsed) => {
             let inner_f = reparsed.get_field("inner");
@@ -361,7 +361,7 @@ fn test_nested_builder_stringify_reparse() {
 #[test]
 fn test_try_parse_duplicate_key_returns_err() {
     // TOML forbids duplicate keys in the same table.
-    let r = toml.try_parse("a = 1\na = 2");
+    let r = toml.parse("a = 1\na = 2");
     match r {
         .Ok(val) => {
             val.free();

@@ -17,27 +17,12 @@
 //!     println(json);
 //! }
 //! ```
-
-/// Encode a JSON string to MessagePack binary.
-///
-/// Panics with the codec's reason on invalid JSON. Use `try_from_json(json)`
-/// when failure should be returned as an error.
-pub fn from_json(json: string) -> bytes {
-    match try_from_json(json) {
-        .Ok(data) => data,
-        .Err(reason) => {
-            panic(f"msgpack.from_json: {reason}");
-            "".to_bytes()
-        },
-    }
-}
-
 /// Encode a JSON string to MessagePack binary.
 ///
 /// Returns `Err(reason)` on invalid JSON or serialization failure. The codec's
 /// own reason slot decides success, not the length of the result, so a
 /// legitimately short encoding is never mistaken for a failure.
-pub fn try_from_json(json: string) -> Result<bytes, string> {
+pub fn from_json(json: string) -> Result<bytes, string> {
     let data = unsafe {
         hew_msgpack_from_json_hew(json)
     };
@@ -50,25 +35,10 @@ pub fn try_from_json(json: string) -> Result<bytes, string> {
         Ok(data)
     }
 }
-
-/// Decode a MessagePack `bytes` buffer to a JSON string.
-///
-/// Panics with the codec's reason on malformed input. Use `try_to_json(data)`
-/// when failure should be returned as an error.
-pub fn to_json(data: bytes) -> string {
-    match try_to_json(data) {
-        .Ok(json) => json,
-        .Err(reason) => {
-            panic(f"msgpack.to_json: {reason}");
-            ""
-        },
-    }
-}
-
 /// Decode a MessagePack `bytes` buffer to a JSON string.
 ///
 /// Returns `Err(reason)` on invalid input or deserialization failure.
-pub fn try_to_json(data: bytes) -> Result<string, string> {
+pub fn to_json(data: bytes) -> Result<string, string> {
     let json = unsafe {
         hew_msgpack_to_json_hew(data)
     };
@@ -81,22 +51,8 @@ pub fn try_to_json(data: bytes) -> Result<string, string> {
         Ok(json)
     }
 }
-
-/// Encode an integer as a MessagePack varint.
-///
-/// Panics with the codec's reason if the encoding cannot be produced.
-pub fn encode_int(val: i64) -> bytes {
-    match try_encode_int(val) {
-        .Ok(data) => data,
-        .Err(reason) => {
-            panic(f"msgpack.encode_int: {reason}");
-            "".to_bytes()
-        },
-    }
-}
-
 /// Encode an integer as a MessagePack varint without panicking.
-pub fn try_encode_int(val: i64) -> Result<bytes, string> {
+pub fn encode_int(val: i64) -> Result<bytes, string> {
     let data = unsafe {
         hew_msgpack_encode_int_hew(val)
     };
@@ -109,22 +65,8 @@ pub fn try_encode_int(val: i64) -> Result<bytes, string> {
         Ok(data)
     }
 }
-
-/// Encode a string as MessagePack str.
-///
-/// Panics with the codec's reason if the encoding cannot be produced.
-pub fn encode_string(s: string) -> bytes {
-    match try_encode_string(s) {
-        .Ok(data) => data,
-        .Err(reason) => {
-            panic(f"msgpack.encode_string: {reason}");
-            "".to_bytes()
-        },
-    }
-}
-
 /// Encode a string as MessagePack str without panicking.
-pub fn try_encode_string(s: string) -> Result<bytes, string> {
+pub fn encode_string(s: string) -> Result<bytes, string> {
     let data = unsafe {
         hew_msgpack_encode_string_hew(s)
     };
@@ -137,25 +79,11 @@ pub fn try_encode_string(s: string) -> Result<bytes, string> {
         Ok(data)
     }
 }
-
-/// Encode binary data as a MessagePack bin (bin8, bin16, or bin32).
-///
-/// Panics with the codec's reason if the encoding cannot be produced.
-pub fn encode_bytes(data: bytes) -> bytes {
-    match try_encode_bytes(data) {
-        .Ok(encoded) => encoded,
-        .Err(reason) => {
-            panic(f"msgpack.encode_bytes: {reason}");
-            "".to_bytes()
-        },
-    }
-}
-
 /// Encode binary data as a MessagePack bin without panicking.
 ///
 /// An empty input is a value, not a missing argument: it encodes to an empty
 /// bin8 rather than to an empty result that reads as a failure.
-pub fn try_encode_bytes(data: bytes) -> Result<bytes, string> {
+pub fn encode_bytes(data: bytes) -> Result<bytes, string> {
     let encoded = unsafe {
         hew_msgpack_encode_bytes_hew(data)
     };

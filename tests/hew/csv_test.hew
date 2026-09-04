@@ -67,7 +67,7 @@ fn test_parse_get_by_name_missing_column_returns_empty() {
 fn test_try_parse_file_missing_path_returns_err() {
     let path = "tests/hew/_csv_try_parse_missing.csv";
     let _ = fs.delete(path);
-    match csv.try_parse_file(path) {
+    match csv.parse_file(path) {
         .Ok(tbl) => {
             tbl.free();
             panic("expected missing CSV path to return Err");
@@ -284,7 +284,7 @@ fn test_parse_trailing_crlf_yields_correct_row_count() {
 // ── Malformed quote states are refused, not silently repaired ─────────
 #[test]
 fn test_try_parse_rejects_an_unterminated_quoted_field() {
-    match csv.try_parse("name,note\nAlice,\"never closed") {
+    match csv.parse("name,note\nAlice,\"never closed") {
         .Ok(tbl) => panic(f"expected an unterminated quote to be rejected, got {tbl.rows()} rows"),
         .Err(reason) => testing.assert_eq_str(reason, "csv: unterminated quoted field"),
     }
@@ -292,7 +292,7 @@ fn test_try_parse_rejects_an_unterminated_quoted_field() {
 
 #[test]
 fn test_try_parse_rejects_text_after_a_closing_quote() {
-    match csv.try_parse("a,b\n\"x\"junk,y") {
+    match csv.parse("a,b\n\"x\"junk,y") {
         .Ok(tbl) => panic(f"expected junk after a closing quote to be rejected, got {tbl.get(0, 0)}"),
         .Err(reason) => testing.assert_eq_str(reason, "csv: unexpected text after a closing quote"),
     }
@@ -300,7 +300,7 @@ fn test_try_parse_rejects_text_after_a_closing_quote() {
 
 #[test]
 fn test_try_parse_rejects_a_quote_inside_an_unquoted_field() {
-    match csv.try_parse("a,b\nx\"y,z") {
+    match csv.parse("a,b\nx\"y,z") {
         .Ok(tbl) => panic(f"expected a bare quote to be rejected, got {tbl.get(0, 0)}"),
         .Err(reason) => testing.assert_eq_str(reason, "csv: unescaped quote inside an unquoted field"),
     }
@@ -308,7 +308,7 @@ fn test_try_parse_rejects_a_quote_inside_an_unquoted_field() {
 
 #[test]
 fn test_try_parse_preserves_a_multiline_quoted_field() {
-    match csv.try_parse("a,b\n\"line1\nline2\",z") {
+    match csv.parse("a,b\n\"line1\nline2\",z") {
         .Ok(tbl) => {
             testing.assert_eq(tbl.rows(), 1);
             testing.assert_eq_str(tbl.get(0, 0), "line1\nline2");
@@ -320,7 +320,7 @@ fn test_try_parse_preserves_a_multiline_quoted_field() {
 
 #[test]
 fn test_try_parse_preserves_an_escaped_quote() {
-    match csv.try_parse("a,b\n\"say \"\"hi\"\"\",z") {
+    match csv.parse("a,b\n\"say \"\"hi\"\"\",z") {
         .Ok(tbl) => {
             testing.assert_eq_str(tbl.get(0, 0), "say \"hi\"");
             testing.assert_eq_str(tbl.get(0, 1), "z");
@@ -331,7 +331,7 @@ fn test_try_parse_preserves_an_escaped_quote() {
 
 #[test]
 fn test_try_parse_accepts_an_empty_quoted_field_as_an_empty_value() {
-    match csv.try_parse("a,b\n\"\",z") {
+    match csv.parse("a,b\n\"\",z") {
         .Ok(tbl) => {
             testing.assert_eq(tbl.rows(), 1);
             testing.assert_eq_str(tbl.get(0, 0), "");
@@ -343,7 +343,7 @@ fn test_try_parse_accepts_an_empty_quoted_field_as_an_empty_value() {
 
 #[test]
 fn test_try_parse_accepts_an_empty_document_as_an_empty_table() {
-    match csv.try_parse("") {
+    match csv.parse("") {
         .Ok(tbl) => {
             testing.assert_eq(tbl.rows(), 0);
             testing.assert_eq(tbl.cols(), 0);

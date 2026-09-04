@@ -22,7 +22,7 @@ fn classify(s: string) -> ParseOutcome {
     if s == "" {
         ParseOutcome.Skipped("empty".to_upper())
     } else {
-        match xml.try_parse(s) {
+        match xml.parse(s) {
             .Ok(node) => ParseOutcome.Parsed(node),
             .Err(message) => ParseOutcome.Failed(ParseError { message: message, offset: 0 }),
         }
@@ -31,11 +31,11 @@ fn classify(s: string) -> ParseOutcome {
 
 #[test]
 fn result_resource_and_string_variants() {
-    match xml.try_parse("<a/>") {
+    match xml.parse("<a/>") {
         .Ok(node) => testing.assert_eq_str(node.get_tag(), "a"),
         .Err(_) => testing.assert_true(false),
     }
-    match xml.try_parse("<a>") {
+    match xml.parse("<a>") {
         .Ok(node) => {
             node.close();
             testing.assert_true(false);

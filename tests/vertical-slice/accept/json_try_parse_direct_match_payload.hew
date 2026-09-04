@@ -1,4 +1,4 @@
-//! Local `json.try_parse` matches own their fresh Result payloads.
+//! Local `json.parse` matches own their fresh Result payloads.
 //!
 //! Both arms bind heap-owning payloads: `Ok(doc)` is an opaque JSON resource and
 //! `Err(ParseError.Invalid(message))` carries the parser's native string detail.
@@ -8,7 +8,7 @@
 import std.encoding.json;
 
 fn report_line(line: string) -> string {
-    let parsed = json.try_parse(line);
+    let parsed = json.parse(line);
     match parsed {
         .Ok(doc) => {
             let owned_doc = doc;

@@ -26,6 +26,7 @@ const FOREIGN_KEYWORD_IDENTS: &[&str] = &[
     "interface",
     "protocol",
     "wire",
+    "foreign",
 ];
 
 impl Parser<'_> {
@@ -228,8 +229,9 @@ impl Parser<'_> {
         }
     }
 
-    /// Parse a function declaration with optional `async`/`gen` modifiers.
-    /// The current token must be `fn`, `async`, or `gen`.
+    /// Parse a function declaration with an optional `gen` modifier.
+    /// The current token must be `fn`, `gen`, or the deprecated identifier
+    /// prefix `async` followed by one of those forms.
     #[expect(clippy::ref_option, reason = "avoids cloning option contents")]
     pub(crate) fn parse_fn_with_modifiers(
         &mut self,
@@ -243,7 +245,8 @@ impl Parser<'_> {
                 self.advance();
                 (fn_start, false, false)
             }
-            Some(Token::Async) => {
+            Some(Token::Identifier("async")) => {
+                let async_span = self.peek_span();
                 self.advance();
                 if self.eat(&Token::Gen) {
                     let fn_start = self.peek_span().start;
@@ -251,10 +254,24 @@ impl Parser<'_> {
                         self.error("expected 'fn' after 'async gen'".to_string());
                         return None;
                     }
-                    (fn_start, true, true)
+                    self.error_at_with_hint(
+                        "E_NO_ASYNC_GEN: `async gen fn` is no longer supported".to_string(),
+                        async_span,
+                        "remove `async`",
+                    );
+                    (fn_start, false, true)
                 } else {
-                    self.error("expected 'gen fn' after 'async'".to_string());
-                    return None;
+                    let fn_start = self.peek_span().start;
+                    if !self.eat(&Token::Fn) {
+                        self.error("expected 'fn' after 'async'".to_string());
+                        return None;
+                    }
+                    self.error_at_with_hint(
+                        "E_NO_ASYNC_FN: `async fn` is no longer supported".to_string(),
+                        async_span,
+                        "remove `async`",
+                    );
+                    (fn_start, false, false)
                 }
             }
             Some(Token::Gen) => {
@@ -327,8 +344,36 @@ impl Parser<'_> {
                 );
                 true
             }
+            "foreign" => {
+                self.error_with_hint(
+                    "unexpected 'foreign'".to_string(),
+                    "use 'extern' instead of 'foreign'",
+                );
+                true
+            }
             _ => false,
         }
+    }
+
+    fn starts_function_item_at(&self, pos: usize) -> bool {
+        matches!(self.peek_at(pos), Some(Token::Fn | Token::Gen))
+            || matches!(
+                (
+                    self.peek_at(pos),
+                    self.peek_at(pos + 1),
+                    self.peek_at(pos + 2)
+                ),
+                (Some(Token::Identifier("async")), Some(Token::Fn), _)
+                    | (
+                        Some(Token::Identifier("async")),
+                        Some(Token::Gen),
+                        Some(Token::Fn)
+                    )
+            )
+    }
+
+    fn starts_function_item(&self) -> bool {
+        self.starts_function_item_at(self.pos)
     }
 
     /// Determine which [`AttrPosition`] the leading attributes just parsed by
@@ -344,8 +389,8 @@ impl Parser<'_> {
     /// table lists no attribute for.
     ///
     /// Returns `None` when the upcoming token is one [`Self::foreign_keyword_redirect`]
-    /// recognises (`struct`, `class`, `func`, bare `wire`, and friends) or the
-    /// reserved `foreign` keyword: these paths never construct an item — they
+    /// recognises (`struct`, `class`, `func`, bare `wire`, `foreign`, and
+    /// friends): these paths never construct an item — they
     /// emit their own targeted diagnostic (e.g. "write `#[wire] type Name {
     /// .. }` instead") and return `None` from [`Self::parse_item`] — so the
     /// closed table stays silent rather than layering `E_UNKNOWN_ATTRIBUTE`
@@ -358,7 +403,7 @@ impl Parser<'_> {
         };
 
         match self.peek_at(target_pos) {
-            Some(Token::Fn | Token::Async | Token::Gen) => Some(AttrPosition::FreeFn),
+            _ if self.starts_function_item_at(target_pos) => Some(AttrPosition::FreeFn),
             Some(Token::Enum | Token::Indirect) => Some(AttrPosition::TypeDecl),
             Some(Token::Type)
                 if !self.is_type_alias_lookahead_at(target_pos)
@@ -368,7 +413,6 @@ impl Parser<'_> {
             }
             Some(Token::Trait) => Some(AttrPosition::TraitDecl),
             Some(Token::Actor) => Some(AttrPosition::ActorDecl),
-            Some(Token::Foreign) => None,
             Some(Token::Identifier(id)) if FOREIGN_KEYWORD_IDENTS.contains(id) => None,
             // `type` alias/tuple-record forms, `const`, `import`,
             // `supervisor`, `machine`, `impl`, `extern`, and anything else:
@@ -416,7 +460,7 @@ impl Parser<'_> {
             Some(Token::Pub | Token::Package) => {
                 let vis = self.parse_visibility();
                 match self.peek() {
-                    Some(Token::Fn | Token::Async | Token::Gen) => {
+                    _ if self.starts_function_item() => {
                         self.parse_fn_with_modifiers(vis, attrs, &doc_comment)?
                     }
                     Some(Token::Indirect) => {
@@ -489,7 +533,7 @@ impl Parser<'_> {
                     }
                 }
             }
-            Some(Token::Fn | Token::Async | Token::Gen) => {
+            _ if self.starts_function_item() => {
                 self.parse_fn_with_modifiers(Visibility::Private, attrs, &doc_comment)?
             }
             Some(Token::Indirect) => {
@@ -553,13 +597,6 @@ impl Parser<'_> {
             Some(Token::Extern) => {
                 self.advance();
                 Item::ExternBlock(self.parse_extern_block()?)
-            }
-            Some(Token::Foreign) => {
-                self.error_with_hint(
-                    "unexpected 'foreign'".to_string(),
-                    "use 'extern' instead of 'foreign'",
-                );
-                return None;
             }
             _ => {
                 let found = match self.peek() {

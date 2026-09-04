@@ -4849,6 +4849,33 @@ q004_check_reject "q004_trait_impl_sig_wrong_arity" \
 q004_check_reject "q004_trait_impl_sig_wrong_param" \
     'parameter `key` has type `string` but trait `Indexer` requires `i32`'
 
+run_accept_expect_stdout "keyword_diet_identifiers"
+
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/async_fn.hew" \
+    "E_NO_ASYNC_FN" "async_fn_code"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/async_fn.hew" \
+    "remove \`async\`" "async_fn_fix"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/async_gen_fn.hew" \
+    "E_NO_ASYNC_GEN" "async_gen_fn_code"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/async_gen_fn.hew" \
+    "remove \`async\`" "async_gen_fn_fix"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/for_over_stream.hew" \
+    "E_FOR_STREAM_NEEDS_AWAIT" "for_over_stream_code"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/for_over_stream.hew" \
+    "change \`for\` to \`for await\`" "for_over_stream_fix"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/for_await_over_vec.hew" \
+    "E_AWAIT_NOT_STREAM" "for_await_over_vec_code"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/for_await_over_vec.hew" \
+    "remove \`await\`" "for_await_over_vec_fix"
+
 # ---------------------------------------------------------------------------
 # W3.020 — #[opaque] runtime handles
 # ---------------------------------------------------------------------------

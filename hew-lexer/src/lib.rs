@@ -200,8 +200,6 @@ pub enum Token<'src> {
     Pub,
     #[token("package")]
     Package,
-    #[token("super")]
-    Super,
     #[token("indirect")]
     Indirect,
     #[token("enum")]
@@ -218,8 +216,6 @@ pub enum Token<'src> {
     Child,
     #[token("restart")]
     Restart,
-    #[token("budget")]
-    Budget,
     #[token("strategy")]
     Strategy,
     #[token("permanent")]
@@ -236,8 +232,6 @@ pub enum Token<'src> {
     RestForOne,
     #[token("simple_one_for_one")]
     SimpleOneForOne,
-    #[token("pool")]
-    Pool,
     /// `brutal_kill` shutdown directive on a supervisor child: skip the
     /// graceful-stop deadline and terminate the child immediately.
     #[token("brutal_kill")]
@@ -248,8 +242,6 @@ pub enum Token<'src> {
     Fork,
     #[token("spawn")]
     Spawn,
-    #[token("async")]
-    Async,
     #[token("await")]
     Await,
     #[token("await_restart")]
@@ -266,8 +258,6 @@ pub enum Token<'src> {
     Dyn,
     #[token("move")]
     Move,
-    #[token("try")]
-    Try,
     #[token("true")]
     True,
     #[token("false")]
@@ -278,20 +268,14 @@ pub enum Token<'src> {
     Optional,
     #[token("deprecated")]
     Deprecated,
-    #[token("default")]
-    Default,
     #[token("unsafe")]
     Unsafe,
     #[token("extern")]
     Extern,
-    #[token("foreign")]
-    Foreign,
     #[token("in")]
     In,
     #[token("select")]
     Select,
-    #[token("race")]
-    Race,
     #[token("join")]
     Join,
     #[token("from")]
@@ -304,10 +288,6 @@ pub enum Token<'src> {
     Yield,
     #[token("where")]
     Where,
-    #[token("cooperate")]
-    Cooperate,
-    #[token("catch")]
-    Catch,
     #[token("defer")]
     Defer,
     #[token("as")]
@@ -326,8 +306,6 @@ pub enum Token<'src> {
     Entry,
     #[token("exit")]
     Exit,
-    #[token("emit")]
-    Emit,
     #[token("is")]
     Is,
 
@@ -612,9 +590,9 @@ impl std::fmt::Display for Token<'_> {
 // Keyword table — single source of truth
 // ---------------------------------------------------------------------------
 //
-// To add a new keyword: add ONE entry to the `define_keywords!` invocation
-// below. This generates `Token::keyword_str()`, `Token::is_keyword()`, and
-// `ALL_KEYWORDS` automatically.
+// The lexer mirrors the reserved keywords in docs/syntax-data.json. This
+// invocation generates `Token::keyword_str()`, `Token::is_keyword()`, and
+// `ALL_KEYWORDS` for the lexer-side parity check.
 macro_rules! define_keywords {
     ($($variant:ident => $str:literal),* $(,)?) => {
         impl Token<'_> {
@@ -636,9 +614,7 @@ macro_rules! define_keywords {
 
         /// All keyword strings recognised by the lexer, in definition order.
         ///
-        /// This is the single source of truth for the set of Hew keywords —
-        /// downstream consumers (e.g. the LSP) should use this instead of
-        /// maintaining their own keyword list.
+        /// Reserved keyword spellings recognised by this lexer.
         pub const ALL_KEYWORDS: &[&str] = &[$($str),*];
     };
 }
@@ -661,7 +637,6 @@ define_keywords! {
     Import     => "import",
     Pub        => "pub",
     Package    => "package",
-    Super      => "super",
     Indirect   => "indirect",
     Enum       => "enum",
     Trait      => "trait",
@@ -670,7 +645,6 @@ define_keywords! {
     Supervisor => "supervisor",
     Child      => "child",
     Restart    => "restart",
-    Budget     => "budget",
     Strategy   => "strategy",
     Permanent  => "permanent",
     Transient  => "transient",
@@ -679,12 +653,10 @@ define_keywords! {
     OneForAll        => "one_for_all",
     RestForOne       => "rest_for_one",
     SimpleOneForOne  => "simple_one_for_one",
-    Pool             => "pool",
     BrutalKill       => "brutal_kill",
     Scope      => "scope",
     Fork       => "fork",
     Spawn      => "spawn",
-    Async      => "async",
     Await      => "await",
     AwaitRestart => "await_restart",
     Receive    => "receive",
@@ -693,27 +665,21 @@ define_keywords! {
     This       => "this",
     Dyn        => "dyn",
     Move       => "move",
-    Try        => "try",
     True       => "true",
     False      => "false",
     Reserved   => "reserved",
     Optional   => "optional",
     Deprecated => "deprecated",
-    Default    => "default",
     Unsafe     => "unsafe",
     Extern     => "extern",
-    Foreign    => "foreign",
     In         => "in",
     Select     => "select",
-    Race       => "race",
     Join       => "join",
     From       => "from",
     After      => "after",
     Gen        => "gen",
     Yield      => "yield",
     Where      => "where",
-    Cooperate  => "cooperate",
-    Catch      => "catch",
     Defer      => "defer",
     As         => "as",
     Machine    => "machine",
@@ -723,7 +689,6 @@ define_keywords! {
     When       => "when",
     Entry      => "entry",
     Exit       => "exit",
-    Emit       => "emit",
     Is         => "is",
 }
 
@@ -839,24 +804,6 @@ mod tests {
     }
 
     #[test]
-    fn all_keywords() {
-        let src = "let var const mut fn if else match loop for while break continue return \
-                   import pub package super struct enum trait impl actor \
-                   supervisor child restart budget strategy permanent transient temporary \
-                   one_for_one one_for_all rest_for_one simple_one_for_one pool \
-                   scope fork spawn async await receive \
-                   init type this dyn move try true false reserved optional deprecated \
-                   default unsafe extern foreign in select race join from after gen yield \
-                   where cooperate catch defer is";
-        let toks = tokens(src);
-        assert_eq!(toks.len(), 70);
-        // Spot-check first and last
-        assert_eq!(toks[0], Token::Let);
-        assert_eq!(toks[3], Token::Mut);
-        assert_eq!(toks[69], Token::Is);
-    }
-
-    #[test]
     fn fork_keyword() {
         assert_eq!(tokens("fork"), vec![Token::Fork]);
     }
@@ -890,6 +837,26 @@ mod tests {
                 "`{s}` returned by keyword_str() but missing from ALL_KEYWORDS"
             );
         }
+    }
+
+    #[test]
+    fn keyword_diet_words_are_identifiers() {
+        assert_eq!(
+            tokens("try catch race cooperate foreign super async budget default emit pool"),
+            vec![
+                Token::Identifier("try"),
+                Token::Identifier("catch"),
+                Token::Identifier("race"),
+                Token::Identifier("cooperate"),
+                Token::Identifier("foreign"),
+                Token::Identifier("super"),
+                Token::Identifier("async"),
+                Token::Identifier("budget"),
+                Token::Identifier("default"),
+                Token::Identifier("emit"),
+                Token::Identifier("pool"),
+            ]
+        );
     }
 
     #[test]

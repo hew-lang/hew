@@ -1,0 +1,10 @@
+extern "C" {
+    fn fake_stream() -> Stream<i64>;
+}
+
+fn main() {
+    let input = unsafe { fake_stream() };
+    for value in input {
+        println(value);
+    }
+}

@@ -801,6 +801,38 @@ impl Parser<'_> {
                 self.expect(&Token::RightBracket)?;
                 Expr::ByteArrayLiteral(values)
             }
+            Token::Identifier("try" | "catch")
+                if self.peek_at(self.pos + 1) == Some(&Token::LeftBrace) =>
+            {
+                self.error(
+                    "'try'/'catch' blocks have been removed; use the '?' operator instead"
+                        .to_string(),
+                );
+                return None;
+            }
+            Token::Identifier("emit")
+                if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) =>
+            {
+                self.advance();
+                let event_name = self.expect_ident()?;
+                let fields = if self.eat(&Token::LeftBrace) {
+                    let mut fields = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        let field_name = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
+                        let field_val = self.parse_expr()?;
+                        fields.push((field_name, field_val));
+                        if !self.eat(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RightBrace)?;
+                    fields
+                } else {
+                    Vec::new()
+                };
+                Expr::MachineEmit { event_name, fields }
+            }
             Token::Identifier(name) => {
                 let name = name.to_string();
                 self.advance();
@@ -1430,13 +1462,6 @@ impl Parser<'_> {
                     body,
                 }
             }
-            Token::Try => {
-                self.error(
-                    "'try'/'catch' blocks have been removed; use the '?' operator instead"
-                        .to_string(),
-                );
-                return None;
-            }
             Token::Unsafe => {
                 self.advance();
                 if self.peek() != Some(&Token::LeftBrace) {
@@ -1476,10 +1501,6 @@ impl Parser<'_> {
 
                 Expr::Select { arms, timeout }
             }
-            Token::Race => {
-                self.error("'race' blocks have been removed; use 'select' instead".to_string());
-                return None;
-            }
             Token::Join => {
                 self.advance();
                 // Accept either parentheses or braces for join
@@ -1510,37 +1531,9 @@ impl Parser<'_> {
                 };
                 Expr::Yield(value)
             }
-            Token::Cooperate => {
-                self.error(
-                    "'cooperate' is compiler-internal; explicit cooperate expressions are not supported"
-                        .to_string(),
-                );
-                return None;
-            }
             Token::This => {
                 self.advance();
                 Expr::This
-            }
-            Token::Emit => {
-                self.advance();
-                let event_name = self.expect_ident()?;
-                let fields = if self.eat(&Token::LeftBrace) {
-                    let mut fields = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let field_name = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let field_val = self.parse_expr()?;
-                        fields.push((field_name, field_val));
-                        if !self.eat(&Token::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(&Token::RightBrace)?;
-                    fields
-                } else {
-                    Vec::new()
-                };
-                Expr::MachineEmit { event_name, fields }
             }
             // Contextual keywords that can be used as identifiers in expressions
             tok if Self::contextual_keyword_name(tok).is_some() => {

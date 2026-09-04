@@ -40,8 +40,8 @@ color brightwhite "\<(if|else|match|loop|for|while|break|continue|return|in)\>"
 color brightwhite "\<(yield|defer|select|join|after|from|await|scope)\>"
 
 # Declaration keywords
-color green "\<(let|var|const|mut|fn|gen|async|pub|import|package)\>"
-color green "\<(extern|where|type|indirect|enum|trait|impl|as)\>"
+color green "\<(let|var|const|mut|fn|gen|pub|import|package|extern)\>"
+color green "\<(where|type|indirect|enum|trait|impl|as)\>"
 
 # Actor & concurrency
 color brightgreen "\<(actor|supervisor|spawn|receive|init|scope|fork|move|select|join)\>"
@@ -49,19 +49,19 @@ color brightgreen "\<(after|from|await|await_restart|this)\>"
 
 # Supervisor configuration
 color brightgreen "\<(child|restart|strategy|permanent|transient|temporary|brutal_kill|one_for_one|one_for_all|rest_for_one)\>"
-color brightgreen "\<(simple_one_for_one|pool)\>"
+color brightgreen "\<(simple_one_for_one)\>"
 
 # Wire protocol
-color green "\<(reserved|optional|deprecated|default)\>"
+color green "\<(reserved|optional|deprecated)\>"
 
 # Machine keywords
-color green "\<(machine|state|event|on|when|entry|exit|emit)\>"
+color green "\<(machine|state|event|on|when|entry|exit)\>"
 
 # Other keywords
 color green "\<(dyn|unsafe|is)\>"
 
 # Reserved keywords
-color green "\<(try|catch|race|foreign|cooperate|super|budget)\>"
+color green "\<()\>"
 
 # Types — primitives
 color brightblue "\<(i8|i16|i32|i64|u8|u16|u32|u64|isize|usize|f32|f64)\>"

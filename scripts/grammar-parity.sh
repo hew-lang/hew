@@ -91,37 +91,48 @@ trap 'rm -f "$FILE_LIST"' EXIT
 TOTAL=$(wc -l <"$FILE_LIST")
 corpus_nonempty_assert "grammar-parity-files" "$TOTAL" || exit 1
 
-# ── Parse the whole set in one CLI invocation and read the JSON summary.
-# The CLI also prints one plain-text diagnostic line per failing file to
-# stdout ahead of the JSON blob (undocumented, version-specific); the
-# Python reader below skips to the first line that is exactly "{" rather
-# than relying on that text, so it does not depend on CLI-version
-# formatting quirks.
 PARSE_OUT="$(mktemp)"
 PARSE_ERR="$(mktemp)"
 trap 'rm -f "$FILE_LIST" "$PARSE_OUT" "$PARSE_ERR"' EXIT
-(cd "$TS_DIR" && node_modules/.bin/tree-sitter parse --json-summary --paths "$FILE_LIST") \
-    >"$PARSE_OUT" 2>"$PARSE_ERR" || true
+PARSE_STATUS=0
+(cd "$TS_DIR" && node_modules/.bin/tree-sitter parse --json --paths "$FILE_LIST") \
+    >"$PARSE_OUT" 2>"$PARSE_ERR" || PARSE_STATUS=$?
 
 FAILURES="$(
-    python3 - "$PARSE_OUT" "$PARSE_ERR" "$REPO_ROOT" <<'PYEOF'
+    python3 - "$PARSE_OUT" "$PARSE_ERR" "$REPO_ROOT" "$PARSE_STATUS" <<'PYEOF'
 import json
 import sys
 
-out_path, err_path, repo_root = sys.argv[1], sys.argv[2], sys.argv[3].rstrip("/") + "/"
-lines = open(out_path, encoding="utf-8").read().splitlines()
-start = next((i for i, line in enumerate(lines) if line == "{"), None)
-if start is None:
-    print("grammar-parity: tree-sitter parse produced no JSON summary; stderr was:", file=sys.stderr)
+out_path, err_path, repo_root, status = sys.argv[1:]
+try:
+    lines = open(out_path, encoding="utf-8").read().splitlines()
+    start = next((i for i, line in enumerate(lines) if line == "{"), None)
+    if start is None:
+        raise ValueError("no JSON result")
+    data = json.loads("\n".join(lines[start:]))
+    summaries = data.get("parse_summaries")
+    if not isinstance(summaries, list) or not summaries:
+        raise ValueError("invalid parse_summaries")
+except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+    print(f"grammar-parity: invalid JSON result for accepted corpus: {error}", file=sys.stderr)
     print(open(err_path, encoding="utf-8").read(), file=sys.stderr)
     sys.exit(1)
-data = json.loads("\n".join(lines[start:]))
-for summary in data["parse_summaries"]:
-    if not summary["successful"]:
+
+repo_root = repo_root.rstrip("/") + "/"
+for summary in summaries:
+    if not isinstance(summary, dict) or not isinstance(summary.get("file"), str):
+        print("grammar-parity: invalid JSON result for an accepted path", file=sys.stderr)
+        sys.exit(1)
+    if summary.get("successful") is not True:
         path = summary["file"]
         if path.startswith(repo_root):
             path = path[len(repo_root):]
         print(path)
+
+if status != "0" and not any(summary.get("successful") is False for summary in summaries):
+    print(f"grammar-parity: tree-sitter parse failed for accepted corpus (exit {status})", file=sys.stderr)
+    print(open(err_path, encoding="utf-8").read(), file=sys.stderr)
+    sys.exit(1)
 PYEOF
 )"
 

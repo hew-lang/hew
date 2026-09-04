@@ -1944,10 +1944,12 @@ pub enum MethodCallRewrite {
 /// per operator — rather than the structural comparison codegen path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserComparisonDispatch {
-    /// Dispatch `==`/`!=` to `<type_name>::eq`.
-    Eq { type_name: String },
-    /// Dispatch `<`/`<=`/`>`/`>=` to `<type_name>::lt`.
-    Ord { type_name: String },
+    /// Dispatch `==`/`!=` to the selected `Eq::eq` implementation.
+    Eq { method: crate::DefId },
+    /// Dispatch `<`/`<=`/`>`/`>=` to the selected `Ord::lt` implementation.
+    Ord { method: crate::DefId },
+    /// Dispatch `<`/`<=`/`>`/`>=` to the selected `PartialOrd::lt` implementation.
+    PartialOrd { method: crate::DefId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3089,6 +3091,9 @@ pub struct Checker {
     /// provenance that is lost when impl methods are flattened onto the type's
     /// receiver-method table.
     pub(super) trait_impl_method_names: HashMap<(String, String), HashSet<String>>,
+    /// Resolver-minted implementation method identities keyed by the exact
+    /// implemented type, trait, and method selected during type checking.
+    pub(super) trait_impl_method_declaration_ids: HashMap<(String, String, String), crate::DefId>,
     /// Trait impls keyed by canonical receiver kind for primitives and
     /// compiler-builtin generics (e.g. `int`, `bool`, `String`, `Vec`,
     /// `HashMap`, `HashSet`, `Bytes`).  Method dispatch on these receivers
@@ -3928,6 +3933,7 @@ impl Checker {
             trait_impls_set: HashSet::new(),
             conflicting_trait_impl_reported: HashSet::new(),
             trait_impl_method_names: HashMap::new(),
+            trait_impl_method_declaration_ids: HashMap::new(),
             primitive_trait_impls: HashMap::new(),
             primitive_trait_impl_self_args: HashMap::new(),
             supervisor_children: HashMap::new(),

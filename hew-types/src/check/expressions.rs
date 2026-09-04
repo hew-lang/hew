@@ -5125,12 +5125,10 @@ impl Checker {
                 ..
             } = left_resolved
             {
-                if self.has_user_trait_impl(name, "Eq") {
+                if let Some(method) = self.user_trait_impl_method(name, "Eq", "eq") {
                     self.record_user_comparison_dispatch(
                         expr_span,
-                        UserComparisonDispatch::Eq {
-                            type_name: name.clone(),
-                        },
+                        UserComparisonDispatch::Eq { method },
                     );
                     return;
                 }
@@ -5158,14 +5156,17 @@ impl Checker {
                 ..
             } = left_resolved
             {
-                if self.has_user_trait_impl(name, "Ord")
-                    || self.has_user_trait_impl(name, "PartialOrd")
-                {
+                if let Some(method) = self.user_trait_impl_method(name, "Ord", "lt") {
                     self.record_user_comparison_dispatch(
                         expr_span,
-                        UserComparisonDispatch::Ord {
-                            type_name: name.clone(),
-                        },
+                        UserComparisonDispatch::Ord { method },
+                    );
+                    return;
+                }
+                if let Some(method) = self.user_trait_impl_method(name, "PartialOrd", "lt") {
+                    self.record_user_comparison_dispatch(
+                        expr_span,
+                        UserComparisonDispatch::PartialOrd { method },
                     );
                     return;
                 }
@@ -5384,6 +5385,24 @@ impl Checker {
     pub(super) fn has_user_trait_impl(&self, type_name: &str, trait_name: &str) -> bool {
         self.trait_impls_set
             .contains(&(type_name.to_string(), trait_name.to_string()))
+    }
+
+    /// Return the exact implementation method selected for a nominal marker
+    /// trait override. The registration key preserves trait identity, so an
+    /// `Ord::lt` implementation cannot be confused with `PartialOrd::lt`.
+    pub(super) fn user_trait_impl_method(
+        &self,
+        type_name: &str,
+        trait_name: &str,
+        method_name: &str,
+    ) -> Option<crate::DefId> {
+        self.trait_impl_method_declaration_ids
+            .get(&(
+                type_name.to_string(),
+                trait_name.to_string(),
+                method_name.to_string(),
+            ))
+            .cloned()
     }
 
     /// Record that the binary expression at `span` must dispatch to a user

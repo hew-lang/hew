@@ -11818,23 +11818,32 @@ impl LowerCtx {
         right: HirExpr,
         span: Span,
     ) -> HirExpr {
-        let (type_name, method, args, negate): (&str, &str, Vec<HirExpr>, bool) = match dispatch {
-            UserComparisonDispatch::Eq { type_name } => (
-                type_name.as_str(),
-                "eq",
-                vec![left, right],
-                op == BinaryOp::NotEqual,
-            ),
-            UserComparisonDispatch::Ord { type_name } => match op {
-                BinaryOp::Greater => (type_name.as_str(), "lt", vec![right, left], false),
-                BinaryOp::LessEqual => (type_name.as_str(), "lt", vec![right, left], true),
-                BinaryOp::GreaterEqual => (type_name.as_str(), "lt", vec![left, right], true),
+        let (method, args, negate): (&hew_types::DefId, Vec<HirExpr>, bool) = match dispatch {
+            UserComparisonDispatch::Eq { method } => {
+                (method, vec![left, right], op == BinaryOp::NotEqual)
+            }
+            UserComparisonDispatch::Ord { method }
+            | UserComparisonDispatch::PartialOrd { method } => match op {
+                BinaryOp::Greater => (method, vec![right, left], false),
+                BinaryOp::LessEqual => (method, vec![right, left], true),
+                BinaryOp::GreaterEqual => (method, vec![left, right], true),
                 // `Less`, and any op the checker never records `Ord`
                 // dispatch for, share the direct `lt(left, right)` shape.
-                _ => (type_name.as_str(), "lt", vec![left, right], false),
+                _ => (method, vec![left, right], false),
             },
         };
-        let symbol = crate::node::HirImplBlock::method_symbol(type_name, method);
+        let Some(symbol) = self.registered_impl_method_symbol(method) else {
+            let name = method.full_path().to_string();
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.clone(),
+                    reason: "selected comparison impl has no emitted body symbol".to_string(),
+                },
+                span.clone(),
+                "checker selected a comparison implementation but HIR did not emit its body",
+            ));
+            return self.unsupported_expr(span, format!("comparison dispatch: missing {name}"));
+        };
         let Some(call) = self.build_user_fn_call(&symbol, args, span.clone()) else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {

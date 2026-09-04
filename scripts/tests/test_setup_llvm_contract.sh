@@ -10,7 +10,8 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 RESOLVER="$TMP_ROOT/resolver.sh"
 awk '
-  /^        set -euo pipefail$/ { in_run=1 }
+  /^    - name: Resolve LLVM asset metadata$/ { in_layout=1 }
+  in_layout && /^        set -euo pipefail$/ { in_run=1 }
   in_run {
     line = $0
     sub(/^        /, "", line)

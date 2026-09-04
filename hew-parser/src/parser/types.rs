@@ -772,6 +772,12 @@ impl Parser<'_> {
     }
 
     /// Returns true if the expression is a block-like construct that doesn't need a trailing semicolon.
+    ///
+    /// `Expr::Scope` is deliberately absent: `scope { .. }` is a statement, not
+    /// a `Primary` (HEW-SPEC-2026 §4.2), so it never reaches an expression
+    /// position this predicate gates — a block tail or a match-arm body are
+    /// both value positions. `parse_stmt` owns the statement spelling and its
+    /// optional trailing `;`.
     pub(crate) fn is_block_expr(expr: &Expr) -> bool {
         matches!(
             expr,
@@ -779,7 +785,6 @@ impl Parser<'_> {
                 | Expr::If { .. }
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
-                | Expr::Scope { .. }
                 | Expr::ForkBlock { .. }
                 | Expr::ScopeDeadline { .. }
                 | Expr::UnsafeBlock(_)
@@ -799,10 +804,12 @@ impl Parser<'_> {
     pub(crate) fn arm_body_opens_block(&self) -> bool {
         match self.peek() {
             // `if` → Expr::If / Expr::IfLet, `match` → Expr::Match,
-            // `scope` → Expr::Scope, `unsafe` → Expr::UnsafeBlock,
-            // `select` → Expr::Select. Each of these openers has exactly one
-            // expression form, so the token alone settles it.
-            Some(Token::If | Token::Match | Token::Scope | Token::Unsafe | Token::Select) => true,
+            // `unsafe` → Expr::UnsafeBlock, `select` → Expr::Select. Each of
+            // these openers has exactly one expression form, so the token alone
+            // settles it. `scope` is absent for the reason `is_block_expr`
+            // gives: it opens a statement, and every caller of this predicate
+            // is asking about a value position.
+            Some(Token::If | Token::Match | Token::Unsafe | Token::Select) => true,
             // Expr::Block — but a `{` that opens a map literal is not a block,
             // and `parse_primary` splits the two on exactly this lookahead.
             Some(Token::LeftBrace) => {

@@ -1557,12 +1557,15 @@ fn fmt_mutable_parameter() {
 
 #[test]
 fn fmt_function_attribute() {
-    let src = r"#[inline]
+    // `#[test]` (not `#[inline]`, which HEW-SPEC-2026 §12.6's closed
+    // attribute table does not recognise) exercises the formatter's
+    // attribute-printing path on a free function.
+    let src = r"#[test]
 fn fast() -> i32 {
     42
 }";
     let out = roundtrip(src);
-    assert!(out.contains("#[inline]"), "output: {out}");
+    assert!(out.contains("#[test]"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------
@@ -2103,11 +2106,12 @@ fn fmt_supervisor_pool_keyword_roundtrip() {
 
 #[test]
 fn fmt_supervisor_static_pool_count_roundtrip() {
-    // The static-pool `count:` arg (A212) must round-trip exactly — it rides the
-    // same named-arg slot as per-member init args, so the formatter must not drop
-    // or reorder it (the C4/C5 B3 formatter-drops-new-syntax lesson).
+    // The static-pool `count:` clause must round-trip exactly, outside the
+    // init-arg parentheses and beside the other per-child clauses, so the
+    // formatter neither drops it nor folds it back into the parenthesised
+    // field list (the C4/C5 B3 formatter-drops-new-syntax lesson).
     exact_roundtrip(
-        "supervisor Pool {\n    strategy: simple_one_for_one;\n    intensity: 5 within 60s;\n\n    pool workers: Worker(count: 3, value: 7);\n}\n",
+        "supervisor Pool {\n    strategy: simple_one_for_one;\n    intensity: 5 within 60s;\n\n    pool workers: Worker(value: 7) count: 3;\n}\n",
     );
 }
 
@@ -2247,9 +2251,11 @@ fn fmt_channel_half_handle_roundtrip() {
 
 #[test]
 fn fmt_scope_fork_named_binding_roundtrip() {
-    // scope block with a named fork binding — the canonical structured-concurrency form.
+    // scope block with a named fork binding — the canonical
+    // structured-concurrency form. `scope` is a statement, not a `Primary`
+    // (HEW-SPEC-2026 §4.2), so the canonical spelling is a statement-expression.
     exact_roundtrip(
-        "fn main() {\n    let result = scope {\n        fork worker = compute();\n        fork auditor = audit();\n        worker\n    };\n}\n",
+        "fn main() {\n    scope {\n        fork worker = compute();\n        fork auditor = audit();\n        worker\n    };\n}\n",
     );
 }
 

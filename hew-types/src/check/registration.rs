@@ -6321,6 +6321,31 @@ impl Checker {
                 for method in &ad.methods {
                     let method_name = format!("{identity}::{}", method.name);
                     self.register_fn_sig_with_name(&method_name, method);
+                    // An actor-body plain `fn` is a callable declaration, so it
+                    // needs the same declaration row every other source-declared
+                    // callable has: `call_target_for_signature` reads
+                    // `fn_def_spans` to publish `CallTarget::User`, and without a
+                    // row the checker admits `Counter.helper()` and then hands
+                    // HIR an `Unsupported` target (#3285). The key is the same
+                    // `{owner}::{name}` string the identity table mints
+                    // (`Kind::ActorMethod`), so `user_call_target_for_declared_fn`
+                    // resolves it by path under both the bare and the module
+                    // spelling. Widening this table is side-effect free for the
+                    // visibility rung, which only fires for keys containing `.`
+                    // and no `::`.
+                    //
+                    // A `#[on(...)]` lifecycle hook shares the `methods` list
+                    // and the `ActorMethod` identity kind but is not a
+                    // callable: the runtime enters it through its own
+                    // trampoline and MIR emits it under a hook symbol. It gets
+                    // no declaration row, so a call naming one still fails the
+                    // way it does today.
+                    if !method.attributes.iter().any(|a| a.name.as_str() == "on") {
+                        self.fn_def_spans.insert(
+                            method_name,
+                            (method.fn_span.clone(), self.current_module.clone()),
+                        );
+                    }
                 }
                 self.exit_primary_sig_scope(actor_sig_scope);
             }
@@ -7412,14 +7437,9 @@ impl Checker {
         if pushed_bounds {
             self.current_type_param_bounds.pop();
         }
-        // Wrap return type for generator functions
-        let return_type = if fd.is_generator && fd.is_async {
-            Ty::async_generator(declared_return)
-        } else if fd.is_generator {
-            Ty::generator(declared_return, Ty::Unit)
-        } else {
-            declared_return
-        };
+        // E_GEN_RETURN_SPELLING recovery + generator/async-generator wrap.
+        let return_type =
+            self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
 
         let fn_assoc_bindings = fn_scope.assoc_bindings;
         let sig = FnSig {
@@ -8729,17 +8749,7 @@ impl Checker {
             return;
         };
 
-        let type_identity = self
-            .canonical_primitive_or_builtin_key_for_impl_name(type_name)
-            .unwrap_or_else(|| {
-                self.current_module
-                    .as_ref()
-                    .filter(|_| !type_name.contains('.'))
-                    .map_or_else(
-                        || type_name.to_string(),
-                        |module| format!("{module}.{type_name}"),
-                    )
-            });
+        let type_identity = self.trait_impl_type_identity(type_name);
         let mut provided: HashSet<String> = impl_methods.iter().map(|m| m.name.clone()).collect();
         // Split trait surfaces are cumulative on one exact nominal identity.
         // This is how a subtrait that redeclares inherited methods is satisfied
@@ -9444,10 +9454,47 @@ impl Checker {
         }
     }
 
-    pub(super) fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {
-        let type_identity = self
-            .canonical_primitive_or_builtin_key_for_impl_name(type_name)
+    /// The `trait_impls_set` / `trait_impl_method_names` identity for an impl
+    /// target named `type_name`.
+    ///
+    /// Mirrors `canonical_nominal_name`'s "leave it as written" rule
+    /// (`resolution.rs`): a name the compiler's builtin-type catalog
+    /// recognises (`TimeoutError`, `SendError`, `NodeId`, `Location`, …) is
+    /// looked up by that same bare spelling everywhere else the checker
+    /// resolves a `Ty::Named` to it — `type_implements_trait_for_ty`
+    /// (`generics.rs`) never module-qualifies a builtin-catalog name, because
+    /// `canonical_nominal_name` returns `None` for one before any qualifying
+    /// logic runs. Module-qualifying it HERE (the module-registration
+    /// fallback below, meant for ordinary same-named types in different
+    /// stdlib modules) mints a `("std.builtins.TimeoutError", "Display")`
+    /// entry that lookup, keyed by the bare `("TimeoutError", "Display")`,
+    /// can never find — `impl Display for TimeoutError` in `std/builtins.hew`
+    /// registered but never satisfying `require_display_impl`. Every other
+    /// receiver kind (primitives, `Vec`/`HashMap`/generics, the synthetic
+    /// cursors) already has its own dedicated arm in
+    /// `canonical_primitive_or_builtin_key_for_impl_name` and never reaches
+    /// this fallback at all.
+    ///
+    /// `LinkError` / `LookupError` are the one exception:
+    /// `register_builtin_error_prelude_bindings` (above) is the checker's
+    /// OTHER, pre-existing authority publishing THESE two — and only these
+    /// two, of every `std.builtins` error enum — as ordinary
+    /// module-qualified nominals (`known_types` + `published_bare_type`), so
+    /// a bare `LinkError.TargetDead` construction resolves to
+    /// `Ty::Named { name: "std.builtins.LinkError", .. }`, not the bare
+    /// `BuiltinType`-tagged form `TimeoutError`/`AskError`/`SendError` get.
+    /// Their impl identity must match that qualified spelling, so they take
+    /// the qualifying fallback below like any ordinary stdlib nominal.
+    fn trait_impl_type_identity(&self, type_name: &str) -> String {
+        self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
             .unwrap_or_else(|| {
+                let published_as_qualified_nominal =
+                    matches!(type_name, "LinkError" | "LookupError");
+                if !published_as_qualified_nominal
+                    && crate::lookup_builtin_type(type_name).is_some()
+                {
+                    return type_name.to_string();
+                }
                 self.current_module
                     .as_ref()
                     .filter(|_| !type_name.contains('.'))
@@ -9455,7 +9502,11 @@ impl Checker {
                         || type_name.to_string(),
                         |module| format!("{module}.{type_name}"),
                     )
-            });
+            })
+    }
+
+    pub(super) fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {
+        let type_identity = self.trait_impl_type_identity(type_name);
         let trait_identity = self.trait_defs_key_for_bound(trait_name);
         self.trait_impls_set.insert((type_identity, trait_identity));
     }
@@ -9466,17 +9517,7 @@ impl Checker {
         trait_name: &str,
         method_names: impl IntoIterator<Item = String>,
     ) {
-        let type_identity = self
-            .canonical_primitive_or_builtin_key_for_impl_name(type_name)
-            .unwrap_or_else(|| {
-                self.current_module
-                    .as_ref()
-                    .filter(|_| !type_name.contains('.'))
-                    .map_or_else(
-                        || type_name.to_string(),
-                        |module| format!("{module}.{type_name}"),
-                    )
-            });
+        let type_identity = self.trait_impl_type_identity(type_name);
         let trait_identity = self.trait_defs_key_for_bound(trait_name);
         let entry = self
             .trait_impl_method_names
@@ -13417,13 +13458,9 @@ impl Checker {
         let type_params = fd.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
-        let return_type = if fd.is_generator && fd.is_async {
-            Ty::async_generator(declared_return)
-        } else if fd.is_generator {
-            Ty::generator(declared_return, Ty::Unit)
-        } else {
-            declared_return
-        };
+        // E_GEN_RETURN_SPELLING recovery + generator/async-generator wrap.
+        let return_type =
+            self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
         let assoc_bindings = scope.assoc_bindings;
         let sig = FnSig {
             type_params,

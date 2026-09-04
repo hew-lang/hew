@@ -269,7 +269,7 @@ else
     fail "abnormal tracked-refusal outcome was accepted"
 fi
 assert_contains "$HARNESS_OUTPUT" \
-    "OUTCOME DRIFT: $first_failure (exit 139, expected structured diagnostic exit 1)" \
+    "OUTCOME DRIFT: $first_failure (exit 139, expected structured compiler diagnostic)" \
     "abnormal tracked-refusal outcome names the exact fence and status"
 
 # Mutation 1: a listed failure now passes. PR mode reports it without blocking;

@@ -492,7 +492,7 @@ run_counter();
         stdout.contains("actors_attributed_turn_duration_ns_by_handler_total"),
         "stdout: {stdout}"
     );
-    assert!(stdout.contains("Counter::total"), "stdout: {stdout}");
+    assert!(stdout.contains("Counter.total"), "stdout: {stdout}");
     assert!(
         stdout.lines().any(
             |line| line.starts_with("actors_attributed_turns_by_handler_total{")
@@ -505,6 +505,54 @@ run_counter();
             .starts_with("actors_attributed_turn_duration_ns_by_handler_total{")
             && !line.ends_with(" 0")),
         "stdout: {stdout}"
+    );
+}
+
+/// An unsupervised actor crash reports the dotted `Actor.handler` label on
+/// stderr — the same registration the observe series above reads, exercised
+/// here through the crash-reporter funnel (`hew-runtime/src/crash.rs`)
+/// instead of the scrape.
+#[test]
+fn eval_unsupervised_actor_crash_reports_dotted_handler_label() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("crash_label_eval.hew");
+    std::fs::write(
+        &path,
+        r#"actor Boom {
+    receive fn detonate() -> i64 {
+        panic("boom");
+    }
+}
+
+fn crash_boom() {
+    let b = spawn Boom;
+    let _ = await b.detonate();
+}
+crash_boom();
+"#,
+    )
+    .unwrap();
+
+    let mut command = Command::new(hew_binary());
+    command
+        .args(["eval", "--timeout", "30", "-f"])
+        .arg(&path)
+        .current_dir(repo_root());
+
+    let output = support::run_bounded_command(command, format!("hew eval {}", path.display()));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an unsupervised actor crash must fail the process: stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("hew: actor crash in Boom.detonate ("),
+        "expected the dotted `Boom.detonate` handler label in the crash \
+         diagnostic; stderr: {stderr}"
     );
 }
 

@@ -52,10 +52,6 @@
 //! named `count` pools like any other. `count:` is required on a `pool` child
 //! and rejected on a `child` declaration.
 //!
-//! The shipped parser still reads `count` out of the parenthesised list, so
-//! `pool workers: Worker(count: 2, value: 7);` is what compiles today; the
-//! clause form is hew-lang/hew#3253.
-//!
 //! ## Dead children
 //!
 //! A supervised role whose occupant is gone resolves closed. `sup.child` keeps

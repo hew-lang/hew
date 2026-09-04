@@ -510,6 +510,12 @@ compile_accept "machine_fork_args_spawn"
 # type is normalised before the enum-layout probe so the bare-name view is found.
 run_accept_expect_status "machine_generic_record_field" 0
 
+# A struct-variant transition body written with the contextual dotted spelling
+# (#3241). Both the entry transition and the `reenter` self-transition build
+# `.StateB { ... }`, so the lowered bodies must keep the checker's consumed
+# children as source anchors rather than dropping the occurrence.
+run_accept_expect_stdout "machine_dotted_struct_variant_body"
+
 # Reject: negative control for #3149. A machine's own transition body resolves
 # the contextual `.Variant` spelling against the machine while the declaring
 # file is an imported dependency; a variant the machine never declared is still
@@ -522,6 +528,24 @@ expect_check_fail_contains \
     'E_PATH_MEMBER_NOT_FOUND: expected type `lights.Light` has no variant `Nope`' \
     "machine_context_variant_unknown"
 echo "PASS machine_context_variant_unknown (reject)"
+
+# Accept: regression for #3264. A body-less transition (`on E: Src => Tgt;`)
+# whose target is a bare (non-`.`-prefixed) state name must resolve against
+# the machine's own `state` declarations, not the general bare-variant
+# fallback that flags real enum variants.
+run_accept_expect_stdout "machine_bare_transition_target"
+
+# Reject: negative control for #3264. A body-less transition whose target
+# names no declared state is still refused, with a machine "unknown state"
+# diagnostic — never E_BARE_VARIANT_EXPR, which would mean the fix silenced
+# the checker for every bare identifier in transition-target position.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+expect_check_fail_contains_without \
+    "${ROOT}/tests/vertical-slice/reject/machine_bare_transition_target_unknown.hew" \
+    'machine `Light`: transition references unknown state `Bogus`' \
+    'E_BARE_VARIANT_EXPR' \
+    "machine_bare_transition_target_unknown"
+echo "PASS machine_bare_transition_target_unknown (reject)"
 
 # #2434 split coverage: the generic-record owned-field path is clean on its own
 # (`string.repeat` single fresh producer), while the real leak root is the
@@ -895,16 +919,50 @@ run_accept_expect_status "hashmap_iter_user_shadow" 43
 # Ownership markers (#[resource], #[linear]) remain valid on nominal `type`
 # declarations and preserve their affine/linear behaviour. Positive control on
 # `type`, plus both reject boundaries: an alias, which carries no resource
-# semantics, and a callable, which has no ResourceMarker slot at all.
+# semantics, and a callable, which has no ResourceMarker slot at all. Both
+# reject with E_UNKNOWN_ATTRIBUTE (HEW-SPEC-2026 §12.6's closed attribute
+# table) rather than the retired E_RESOURCE_MARKER_TARGET.
 run_accept_expect_status "resource_marker_nominal_type" 0
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/resource_marker_on_fn_reject.hew" \
-    "#[resource] is only valid on \`type\` or \`enum\` declarations" \
+    "unrecognised attribute \`#[resource]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
     "resource_marker_on_fn_reject"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/resource_marker_on_record_reject.hew" \
-    "#[resource] is only valid on \`type\` or \`enum\` declarations" \
+    "unrecognised attribute \`#[resource]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
     "resource_marker_on_type_alias_reject"
+
+# The closed attribute table (HEW-SPEC-2026 §12.6, issue #3261): an
+# unrecognised attribute name, or a recognised name used in a position the
+# table does not list for it, is E_UNKNOWN_ATTRIBUTE everywhere — not just on
+# type declarations. Accept twin exercises every legal attribute in every
+# position the table lists it for; the reject fixtures pin the fn, field,
+# impl-method, and actor-member positions plus the two removed surfaces.
+run_accept_expect_status "attribute_closed_table_positions" 0
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/unknown_attribute_on_fn_reject.hew" \
+    "unrecognised attribute \`#[bogus]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
+    "unknown_attribute_on_fn_reject"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/unknown_attribute_on_field_reject.hew" \
+    "unrecognised attribute \`#[bogus]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
+    "unknown_attribute_on_field_reject"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/unknown_attribute_on_impl_method_reject.hew" \
+    "unrecognised attribute \`#[bogus]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
+    "unknown_attribute_on_impl_method_reject"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/unknown_attribute_on_actor_member_reject.hew" \
+    "unrecognised attribute \`#[bogus]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
+    "unknown_attribute_on_actor_member_reject"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/noncancellable_attribute_removed_reject.hew" \
+    "unrecognised attribute \`#[noncancellable]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
+    "noncancellable_attribute_removed_reject"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/on_upgrade_hook_kind_removed_reject.hew" \
+    "on(upgrade)" \
+    "on_upgrade_hook_kind_removed_reject"
 
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
@@ -958,6 +1016,25 @@ run_accept_expect_status "sleep_until" 0
 run_accept_expect_stdout "on_start_suspension_resumes"
 run_accept_expect_stdout "on_start_multi_suspension_resumes"
 run_accept_expect_stdout "init_suspension_resumes"
+
+# An actor-body plain `fn` is a callable (#3285): reachable by bare name from a
+# handler with the handler's own state access, from a sibling method, and from
+# `init` and an `#[on(start)]` hook — including when it writes state. The
+# qualified `Actor.method` spelling inside the actor resolves to the same
+# declaration.
+# Exact-stdout oracles: the counterfactual (no MIR body or no explicit state
+# parameter) is a compile refusal or a runtime trap, never wrong output.
+run_accept_expect_stdout "actor_method_bare_call"
+run_accept_expect_stdout "actor_method_calls_sibling_and_reads_state"
+run_accept_expect_stdout "actor_method_from_hook_and_init"
+
+# ... and unreachable from outside the actor, as a User-channel refusal rather
+# than the internal-error pair the unresolvable target used to produce.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_method_from_main.hew" \
+    "E_ACTOR_METHOD_OUTSIDE" \
+    "actor_method_from_main"
+echo "PASS actor_method_from_main (reject)"
 
 # A Sink<string> half moved into actor state is accepted: the actor's
 # state_drop_fn is the single free site (closed exactly once at teardown), so
@@ -1954,7 +2031,7 @@ run_accept_expect_status "supervisor_owned_child_init_restart" 10
 # `leaks --atExit` on macOS.
 run_accept_expect_status "supervisor_literal_only_config_param" 0
 
-# v0.6 static supervisor pool (A209/A212): `pool workers: Worker(count: 3)`
+# v0.6 static supervisor pool (A209/A212): `pool workers: Worker count: 3`
 # spawns 3 fungible members into pool_slots[] at bootstrap and the Vec-like
 # accessor reaches them — `sup.workers.len()` is 3 and `sup.workers[i]` round-
 # trips to each Live member. Exit 24 = len(3) + three members × id(7); a wrong
@@ -1965,6 +2042,36 @@ run_accept_expect_status "supervisor_static_pool" 24
 # Safe pool lookup: in-range members produce Some live handles with exact
 # payload values, while the negative and end boundary indices produce None.
 run_accept_expect_stdout "supervisor_pool_get_option"
+
+# Pool arity is a child clause, not an init field (#3253). The pooled actor
+# declares its own field named `count`, set through the parenthesised list,
+# while the clause declares the arity. Exit 20 = len(2) + two members ×
+# count(9); a dropped clause changes the length and a clause read as the field
+# makes each member report 2.
+run_accept_expect_status "supervisor_pool_count_clause" 20
+
+# The retired spelling fails closed with the clause form as its fix-it, instead
+# of passing `count` on as an init field the checker then blames on the actor.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/supervisor_pool_count_init_arg.hew" \
+    "pool arity is a child clause" \
+    "supervisor_pool_count_init_arg"
+echo "PASS supervisor_pool_count_init_arg (reject)"
+
+# The clause is refused on a static child: one actor has no arity.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/supervisor_count_clause_on_static_child.hew" \
+    "\`count:\` is a pool clause" \
+    "supervisor_count_clause_on_static_child"
+echo "PASS supervisor_count_clause_on_static_child (reject)"
+
+# A pool without the clause has no declared size, so the checker fails closed
+# rather than guessing one.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/supervisor_pool_count_clause_missing.hew" \
+    "E_SUPERVISOR_POOL_COUNT_MISSING" \
+    "supervisor_pool_count_clause_missing"
+echo "PASS supervisor_pool_count_clause_missing (reject)"
 
 # Whole-field pool access: bind `let workers = sup.workers`, then route len,
 # trapping index, and safe get through the first-class pool view.
@@ -2276,6 +2383,11 @@ grep -q 'LocalPid' "${reject_output}"
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"
+run_accept_expect_stdout "prelude_error_display"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/prelude_display_requires_impl.hew" \
+    "type \`PlainValue\` does not implement \`Display\`" \
+    "prelude_display_requires_impl"
 run_accept_expect_stdout "signed_const_arithmetic"
 run_accept_expect_stdout "top_level_type_aliases"
 run_accept_expect_stdout "type_alias_resource_close"
@@ -3434,6 +3546,26 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/yield_outside_gen.hew" >"
     exit 1
 fi
 grep -q 'outside of generator' "${reject_output}"
+
+# Reject: a `gen fn` return type that spells the generator handle
+# `Generator<Y, R>` instead of the yield type `Y` (HEW-SPEC-2026 §4.12).
+# #3265 — this used to fall through to a generic type mismatch on the first
+# `yield`; it must now surface as a dedicated, annotation-sited diagnostic.
+# Error count pinned at exactly 1: the recovered `Y` must let the body check
+# cleanly, so no downstream `yield` mismatch cascades alongside the new code.
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/gen_fn_return_type_spells_handle.hew" \
+    1 \
+    "gen_fn_return_type_spells_handle"
+grep -q 'E_GEN_RETURN_SPELLING' "${reject_output}"
+
+# Accept: negative control — naming the yield type directly is the accepted
+# spelling and must not trip E_GEN_RETURN_SPELLING.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/gen_fn_return_type_yield_spelling.hew" >"${reject_output}" 2>&1; then
+    echo "expected gen-fn-return-type-yield-spelling fixture to pass; got:" >&2
+    cat "${reject_output}" >&2
+    exit 1
+fi
 
 # Accept + run: generator bodies that read FREE VARIABLES — a `gen fn`'s formal
 # parameter and a `gen { }` block's captured outer locals. Both travel through
@@ -6162,6 +6294,13 @@ run_accept_expect_stdout "actor_arg_field_projection_sibling_use"
 run_accept_expect_stdout "actor_arg_value_field_projection"
 run_accept_expect_stdout "actor_state_field_reinit"
 
+# #3266: a write through a record-typed state field lands in the actor's own
+# storage rather than in the frame copy lowering makes to project into it, for
+# the bare, `self.`-receiver, and compound-assignment spellings alike, with a
+# heap leaf proving the store-back releases the field's previous owner exactly
+# once and whole-field replacement still behaving as before.
+run_accept_expect_stdout "actor_state_record_projection_write"
+
 # Ownership seams: a `var` record reassigned from a match inside a loop, a
 # payload binder reused after a callee-owned call (a call never consumes a
 # non-resource argument), a `#[returns_receiver]` consuming receiver whose
@@ -6305,3 +6444,39 @@ fi
 # consume of the same binding elsewhere in the loop body neither hides nor
 # duplicates it.
 reject_check_use_after_consume "vec_index_assign_reuse_after_rebind"
+
+# ---------------------------------------------------------------------------
+# `break` carries no operand and `scope` is not a value (#3263).
+#
+# Both surfaces used to accept a value where none can go: `break expr;` parsed
+# the operand and discarded it, and `let r = scope { .. }` bound `()`. The
+# refusals are parser-level, so each reject also asserts its hint — the code
+# alone would pass on a message that names the wrong replacement.
+# ---------------------------------------------------------------------------
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/break_value_operand.hew" \
+    1 "break_value_operand"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/break_value_operand.hew" \
+    "E_BREAK_VALUE" \
+    "break_value_operand_code"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/break_value_operand.hew" \
+    "assign to a \`var\` before \`break\`" \
+    "break_value_operand_hint"
+
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/scope_in_value_position.hew" \
+    "E_SCOPE_IS_STATEMENT" \
+    "scope_in_value_position_code"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/scope_in_value_position.hew" \
+    "use \`join { .. }\` for a value-producing fan-out" \
+    "scope_in_value_position_hint"
+
+# Accept twins: refusing the operand and the value position must not narrow
+# where `break` may be written or how a `scope` statement may end. The scope
+# fixture's tail `scope { .. }` carries no `;` and must stay a statement, so
+# the handler's value is still its explicit `return`.
+run_accept_expect_stdout "break_control_flow_only"
+run_accept_expect_stdout "scope_statement_tail"

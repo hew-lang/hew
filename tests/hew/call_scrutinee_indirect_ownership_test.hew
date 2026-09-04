@@ -15,7 +15,24 @@ fn inspect() -> i64 {
     }
 }
 
+fn identity(value: i64) -> i64 {
+    value
+}
+
+fn inspect_nonowning() -> i64 {
+    let f = identity;
+    match f(7) {
+        7 => 1,
+        _ => 0,
+    }
+}
+
 #[test]
 fn indirect_owned_result_call_scrutinee_preserves_payload() {
     testing.assert_eq(inspect(), 7);
+}
+
+#[test]
+fn indirect_nonowning_result_call_scrutinee_preserves_scalar() {
+    testing.assert_eq(inspect_nonowning(), 1);
 }

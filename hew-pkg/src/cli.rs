@@ -35,6 +35,9 @@ pub enum PkgCommand {
         /// Add a dependency from a local directory
         #[arg(long, value_name = "DIR", conflicts_with = "registry")]
         path: Option<PathBuf>,
+        /// Print the manifest change without writing hew.toml
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Install dependencies into .hew/packages/
     Install {
@@ -57,6 +60,9 @@ pub enum PkgCommand {
         /// remote registry
         #[arg(long, conflicts_with = "registry")]
         local: bool,
+        /// Build and validate the archive without uploading it
+        #[arg(long)]
+        dry_run: bool,
     },
     /// List packages in the local registry
     List,
@@ -226,7 +232,8 @@ pub fn dispatch(cmd: &PkgCommand) {
             version,
             registry: reg,
             path,
-        } => cmd_add(package, version, reg.as_deref(), path.as_deref()),
+            dry_run,
+        } => cmd_add(package, version, reg.as_deref(), path.as_deref(), *dry_run),
         PkgCommand::Install {
             locked,
             registry: reg,
@@ -235,7 +242,8 @@ pub fn dispatch(cmd: &PkgCommand) {
         PkgCommand::Publish {
             registry: reg,
             local,
-        } => cmd_publish(&registry, reg.as_deref(), *local),
+            dry_run,
+        } => cmd_publish(&registry, reg.as_deref(), *local, *dry_run),
         PkgCommand::List => cmd_list(&registry),
         PkgCommand::Search {
             query,
@@ -506,6 +514,34 @@ fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTem
             eprintln!("warning: could not create {filename}: {e}");
         }
     }
+    write_template_test(dir, &filename);
+}
+
+/// Write a starter `<stem>_test.hew` beside the scaffolded source file so
+/// `hew test` is green immediately after `hew new`/`hew init`, skip-if-exists
+/// like every other scaffold file.
+///
+/// Self-contained (asserts an arithmetic fact rather than calling into the
+/// sibling source file): the discovered test file is compiled as its own
+/// isolated program (`compile_test`, `hew-cli/src/test_runner/runner.rs`),
+/// and peer compilation — a test file calling functions declared in
+/// `main.hew` — is D17, tracked separately (V060-FD-6).
+fn write_template_test(dir: &Path, source_filename: &str) {
+    let Some(stem) = Path::new(source_filename)
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+    else {
+        return;
+    };
+    let test_filename = format!("{stem}_test.hew");
+    let test_path = dir.join(&test_filename);
+    if test_path.exists() {
+        return;
+    }
+    let content = "#[test]\nfn scaffold_test() {\n    assert(1 + 1 == 2);\n}\n";
+    if let Err(e) = std::fs::write(&test_path, content) {
+        eprintln!("warning: could not create {test_filename}: {e}");
+    }
 }
 
 /// Write a `.gitignore` with `target/` and `.hew/` entries.
@@ -548,16 +584,18 @@ fn ensure_gitignore_entry(dir: &Path, entry: &str) {
     }
 }
 
-fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>, dependency_path: Option<&Path>) {
+fn cmd_add(
+    pkg: &str,
+    version: &str,
+    registry_name: Option<&str>,
+    dependency_path: Option<&Path>,
+    dry_run: bool,
+) {
     if !is_valid_package_name(pkg) {
         eprintln!("hew add: {}", invalid_package_name_message(pkg));
         std::process::exit(1);
     }
 
-    // Validate the named registry exists (if specified) early.
-    if registry_name.is_some() {
-        let _ = make_client(registry_name);
-    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
@@ -565,12 +603,25 @@ fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>, dependency_pat
         eprintln!("Run `hew init` to create one.");
         std::process::exit(1);
     }
-    let result = if let Some(path) = dependency_path {
+
+    // Local-path dependencies never contact a registry: the target's own
+    // hew.toml is the only source of truth for its package name.
+    if let Some(path) = dependency_path {
         let resolved = cwd.join(path);
         let dependency_manifest = resolved.join("hew.toml");
         match manifest::parse_manifest(&dependency_manifest) {
             Ok(dependency) if dependency.package.name == pkg => {
-                manifest::add_path_dependency(&manifest_path, pkg, version, path)
+                if dry_run {
+                    println!("Would add {pkg} from {} to hew.toml", path.display());
+                    return;
+                }
+                match manifest::add_path_dependency(&manifest_path, pkg, version, path) {
+                    Ok(()) => println!("Added {pkg} from {} to hew.toml", path.display()),
+                    Err(e) => {
+                        eprintln!("hew add: {e}");
+                        std::process::exit(1);
+                    }
+                }
             }
             Ok(dependency) => {
                 eprintln!(
@@ -588,14 +639,31 @@ fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>, dependency_pat
                 std::process::exit(1);
             }
         }
-    } else {
-        manifest::add_dependency(&manifest_path, pkg, version, registry_name)
-    };
-    match result {
-        Ok(()) if dependency_path.is_some() => println!(
-            "Added {pkg} from {} to hew.toml",
-            dependency_path.expect("checked path dependency").display()
-        ),
+        return;
+    }
+
+    // Registry dependency: refuse an unknown package (or an unreachable
+    // registry — fail closed rather than write a dependency nothing can
+    // ever resolve) before touching hew.toml.
+    let api_client = make_client(registry_name);
+    match api_client.get_package(pkg) {
+        Ok(entries) if !entries.is_empty() => {}
+        Ok(_) => {
+            eprintln!("hew add: package `{pkg}` not found in registry");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("hew add: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    if dry_run {
+        println!("Would add {pkg}@{version} to hew.toml");
+        return;
+    }
+
+    match manifest::add_dependency(&manifest_path, pkg, version, registry_name) {
         Ok(()) => println!("Added {pkg}@{version} to hew.toml"),
         Err(e) => {
             eprintln!("hew add: {e}");
@@ -1563,7 +1631,12 @@ fn verify_registry_signature(
     clippy::too_many_lines,
     reason = "CLI command handler requires many steps"
 )]
-fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>, local: bool) {
+fn cmd_publish(
+    registry: &registry::Registry,
+    registry_name: Option<&str>,
+    local: bool,
+    dry_run: bool,
+) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
@@ -1622,9 +1695,9 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>, local
     };
 
     // Resolve the remote token up front, before packing, so a logged-out
-    // publish never packs a tarball it cannot use. `--local` never reads
-    // credentials at all.
-    let token = if local {
+    // publish never packs a tarball it cannot use. `--local` and
+    // `--dry-run` never read credentials: neither ever uploads.
+    let token = if local || dry_run {
         None
     } else {
         // Validate a named registry before touching credentials at all, so
@@ -1670,6 +1743,21 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>, local
     // Sign the checksum.
     let signature = keypair.sign(pack_result.checksum.as_bytes());
     let fingerprint = keypair.fingerprint();
+
+    // `--dry-run`: the archive is built and validated above (manifest
+    // fields, name, version, packing, checksum, signature); stop before
+    // either the `--local` copy or the remote upload — nothing is written.
+    if dry_run {
+        println!(
+            "Would publish {}@{} ({} bytes)",
+            m.package.name,
+            m.package.version,
+            pack_result.data.len()
+        );
+        println!("Checksum: {}", pack_result.checksum);
+        println!("Signature: {signature}");
+        return;
+    }
 
     // Build deps list for the index entry.
     let deps: Vec<index::IndexDep> = m
@@ -1843,11 +1931,46 @@ fn cmd_search(
     }
 }
 
+/// Print info for `package` from a non-empty set of registry index entries,
+/// picking the highest semver version. Shared by `cmd_info`'s named- and
+/// default-registry branches so the two print identically apart from the
+/// `source:` line.
+fn print_remote_package_info(
+    package: &str,
+    entries: Vec<index::IndexEntry>,
+    registry_name: Option<&str>,
+) {
+    let Some(latest) = entries.into_iter().max_by(|left, right| {
+        let left_version =
+            semver::Version::parse(&left.vers).unwrap_or_else(|_| semver::Version::new(0, 0, 0));
+        let right_version =
+            semver::Version::parse(&right.vers).unwrap_or_else(|_| semver::Version::new(0, 0, 0));
+        left_version.cmp(&right_version)
+    }) else {
+        eprintln!("hew info: package `{package}` not found in registry");
+        std::process::exit(1);
+    };
+    println!("{}@{}", latest.name, latest.vers);
+    match registry_name {
+        Some(name) => println!("  source: registry `{name}`"),
+        None => println!("  source: default registry"),
+    }
+    println!("  checksum: {}", latest.cksum);
+    if !latest.deps.is_empty() {
+        println!("  dependencies:");
+        for dep in latest.deps {
+            println!("    {} {}", dep.name, dep.req);
+        }
+    }
+}
+
 fn cmd_info(package: &str, registry: &registry::Registry, registry_name: Option<&str>) {
     if let Some(registry_name) = registry_name {
         let api_client = make_client(Some(registry_name));
-        let entries = match api_client.get_package(package) {
-            Ok(entries) if !entries.is_empty() => entries,
+        match api_client.get_package(package) {
+            Ok(entries) if !entries.is_empty() => {
+                print_remote_package_info(package, entries, Some(registry_name));
+            }
             Ok(_) => {
                 eprintln!("hew info: package `{package}` not found in registry `{registry_name}`");
                 std::process::exit(1);
@@ -1856,27 +1979,28 @@ fn cmd_info(package: &str, registry: &registry::Registry, registry_name: Option<
                 eprintln!("hew info: {e}");
                 std::process::exit(1);
             }
-        };
-        let Some(latest) = entries.into_iter().max_by(|left, right| {
-            let left_version = semver::Version::parse(&left.vers)
-                .unwrap_or_else(|_| semver::Version::new(0, 0, 0));
-            let right_version = semver::Version::parse(&right.vers)
-                .unwrap_or_else(|_| semver::Version::new(0, 0, 0));
-            left_version.cmp(&right_version)
-        }) else {
-            eprintln!("hew info: package `{package}` not found in registry `{registry_name}`");
-            std::process::exit(1);
-        };
-        println!("{}@{}", latest.name, latest.vers);
-        println!("  source: registry `{registry_name}`");
-        println!("  checksum: {}", latest.cksum);
-        if !latest.deps.is_empty() {
-            println!("  dependencies:");
-            for dep in latest.deps {
-                println!("    {} {}", dep.name, dep.req);
-            }
         }
         return;
+    }
+
+    // No `-r`: ask the default registry first, mirroring cmd_search's
+    // client-first shape, and fall back to the local cache only when the
+    // remote lookup itself fails (network, timeout, …) rather than
+    // treating "not found remotely" and "registry unreachable" alike.
+    let api_client = make_client(None);
+    match api_client.get_package(package) {
+        Ok(entries) if !entries.is_empty() => {
+            print_remote_package_info(package, entries, None);
+            return;
+        }
+        Ok(_) => {
+            // Not found on the default registry: fall through to the
+            // local cache below before giving up.
+        }
+        Err(e) => {
+            eprintln!("warning: remote lookup failed: {e}");
+            eprintln!("Falling back to local cache.");
+        }
     }
 
     let packages = registry.list_packages();

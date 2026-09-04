@@ -1264,7 +1264,7 @@ fn linker_local_crash_reports_once() {
     let stdout = run_link_cascade_scenario(
         "linker_local_crash",
         1,
-        StderrExpectation::ExactOneCrashIn("Linker::crash_local"),
+        StderrExpectation::ExactOneCrashIn("Linker.crash_local"),
     );
     assert!(
         !stdout.contains("FAIL "),

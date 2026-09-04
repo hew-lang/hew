@@ -163,9 +163,18 @@ const typeGroups = {
 // entries as "only valid inside an attribute" so this becomes data-driven.
 const ATTRIBUTE_ONLY_CONTEXTUAL = ['resource', 'linear', 'opaque', 'wire'];
 
+// Contextual identifiers common enough as ordinary names that a broad
+// word-boundary match does more harm than the highlight is worth. `count` is
+// the supervisor pool-arity clause, and also a routine field name and the
+// `.count()` method, so a fallback match paints most of its real uses.
+// Same exclusion reason as ATTRIBUTE_ONLY_CONTEXTUAL, different cause: these
+// need the clause position, not an attribute, to be a keyword at all.
+const BROAD_MATCH_UNSAFE_CONTEXTUAL = ['count'];
+
 const contextualNames = Object.keys(syntaxData.contextual_identifiers)
   .filter(name => name !== 'self' && name !== 'description'
-    && !ATTRIBUTE_ONLY_CONTEXTUAL.includes(name));
+    && !ATTRIBUTE_ONLY_CONTEXTUAL.includes(name)
+    && !BROAD_MATCH_UNSAFE_CONTEXTUAL.includes(name));
 
 const contextualGroup = {
   'variable.language.contextual.hew': contextualNames,

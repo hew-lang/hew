@@ -58,7 +58,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1488] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_await_send_by_id",
      "{\"native\": \"fn hew_actor_await_send_by_id( u64, i32, *mut c_void, "
-     "usize, *mut HewActor, *mut HewReadSlot, ) -> c_int\"}",
+     "usize, *mut HewActor, *mut HewReadSlot, *mut u64, ) -> c_int\"}",
      "native", "codegen-stable", "not-applicable", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_cancel_periodic",
@@ -85,9 +85,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1488] = {
      "native", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_detach_await_send_by_id",
-     "{\"native\": \"fn hew_actor_detach_await_send_by_id( u64, *mut "
-     "HewReadSlot, )\"}",
-     "native", "codegen-stable", "not-applicable", "no-in-signature-extent",
+     "{\"native\": \"fn hew_actor_detach_await_send_by_id( u64, "
+     "mailbox::BlockedSenderId, )\"}",
+     "native", "codegen-stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_drain_outcome_free",
      "{\"native\": \"fn hew_actor_drain_outcome_free( *mut "
@@ -5420,8 +5420,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1488] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_role_await_send",
      "{\"native\": \"fn hew_supervisor_role_await_send( HewLocalPidId, u32, "
-     "i32, *mut c_void, usize, *mut HewActor, *mut HewReadSlot, *mut u64, ) -> "
-     "c_int\"}",
+     "i32, *mut c_void, usize, *mut HewActor, *mut HewReadSlot, *mut u64, *mut "
+     "u64, ) -> c_int\"}",
      "native", "codegen-stable", "not-applicable", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_role_send",

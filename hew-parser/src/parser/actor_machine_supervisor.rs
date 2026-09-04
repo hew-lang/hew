@@ -63,27 +63,10 @@ impl Parser<'_> {
             if doc_comment.is_none() {
                 doc_comment = self.collect_doc_comments();
             }
-            self.reject_resource_marker_attributes(&attrs);
-
-            // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
-            // methods — not on actor body members (init, receive fn,
-            // receive gen fn, or inherent methods).
-            for attr in &attrs {
-                if attr.name == "extern_symbol" {
-                    self.error_at(
-                        "`#[extern_symbol]` is only valid on `fn` declarations inside an \
-                         `extern \"C\"` block or an `impl` block; actor members cannot \
-                         bind to a runtime C-ABI symbol"
-                            .to_string(),
-                        attr.span.clone(),
-                    );
-                }
-            }
 
             if self.peek() == Some(&Token::Init) {
-                if !attrs.is_empty() {
-                    self.error("attributes are not supported on init blocks".to_string());
-                }
+                // No attribute is legal on an `init` block.
+                self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
                 self.expect(&Token::LeftParen)?;
                 let params = self.parse_params();
@@ -91,6 +74,7 @@ impl Parser<'_> {
                 let body = self.parse_block()?;
                 init = Some(ActorInit { params, body });
             } else if self.peek() == Some(&Token::Receive) {
+                self.validate_attributes_for(&attrs, AttrPosition::ActorReceiveFn);
                 let recv_start = self.peek_span().start;
                 self.advance();
                 let is_generator = if self.eat(&Token::Gen) {
@@ -140,18 +124,11 @@ impl Parser<'_> {
                 // permitted on plain `fn` declarations inside an actor body.
                 // All other attributes on actor methods are rejected: they
                 // belong on `receive fn` declarations.
-                let mut hook_attrs = Vec::new();
-                let mut other_attrs = Vec::new();
-                for attr in attrs {
-                    if is_lifecycle_hook_attr(&attr.name) {
-                        hook_attrs.push(attr);
-                    } else {
-                        other_attrs.push(attr);
-                    }
-                }
-                if !other_attrs.is_empty() {
-                    self.error("attributes are not supported on actor methods; use them on receive fn declarations".to_string());
-                }
+                self.validate_attributes_for(&attrs, AttrPosition::ActorMemberFn);
+                let hook_attrs: Vec<_> = attrs
+                    .into_iter()
+                    .filter(|attr| is_lifecycle_hook_attr(&attr.name))
+                    .collect();
                 let fn_start = self.peek_span().start;
                 self.advance();
                 if let Some(mut method) =
@@ -165,9 +142,7 @@ impl Parser<'_> {
                     self.skip_to_actor_item_boundary();
                 }
             } else if self.peek() == Some(&Token::Let) {
-                if !attrs.is_empty() {
-                    self.error("attributes are not supported on field declarations".to_string());
-                }
+                self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
@@ -189,6 +164,7 @@ impl Parser<'_> {
                     doc_comment,
                 });
             } else if self.peek() == Some(&Token::Var) {
+                self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
@@ -210,6 +186,7 @@ impl Parser<'_> {
                     doc_comment,
                 });
             } else if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "mailbox") {
+                self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
                 if let Some(Token::Integer(n)) = self.peek() {
                     if let Some(cap) = parse_int_literal(n)
@@ -227,6 +204,7 @@ impl Parser<'_> {
                 }
                 self.eat(&Token::Semicolon);
             } else if self.peek_is_field_decl() {
+                self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
@@ -1371,6 +1349,13 @@ impl Parser<'_> {
                         self.expect(&Token::RightParen)?;
                     }
 
+                    // Pool arity is a clause, not an init field, so a `count:`
+                    // entry in the parenthesised list is the actor's own field.
+                    // On a pool child with no arity clause it is instead the
+                    // retired arity spelling; the decision needs the clause
+                    // loop's result, so remember the position for now.
+                    let paren_count_pos = args.iter().position(|(name, _)| name == "count");
+
                     // A supervisor child accepts restart policy only through the
                     // `restart: <policy>` clause.
                     if matches!(
@@ -1401,7 +1386,9 @@ impl Parser<'_> {
                     //   restart: permanent | transient | temporary
                     //   shutdown: <duration> | brutal_kill | infinity
                     //   wired_to: { param: sibling, bare_sibling }
+                    //   count: <expr>            (pool children only)
                     let mut restart: Option<RestartPolicy> = None;
+                    let mut count: Option<Spanned<Expr>> = None;
                     let mut shutdown: Option<ShutdownDirective> = None;
                     let mut wired_to: Option<std::collections::HashMap<String, String>> = None;
                     loop {
@@ -1502,7 +1489,59 @@ impl Parser<'_> {
                                 self.expect(&Token::RightBrace)?;
                                 wired_to = if map.is_empty() { None } else { Some(map) };
                             }
+                            // `count: <expr>` clause — pool arity. Contextual,
+                            // like `shutdown` and `wired_to`, so `count` stays
+                            // an ordinary identifier everywhere else (including
+                            // as an actor field name inside the init-arg list).
+                            Some(Token::Identifier(s)) if *s == "count" => {
+                                self.advance();
+                                self.expect(&Token::Colon)?;
+                                let count_expr = self.parse_expr()?;
+                                if is_pool {
+                                    count = Some(count_expr);
+                                } else {
+                                    // A static child is one actor, so it has no
+                                    // arity to declare. Refuse rather than
+                                    // accept-and-ignore.
+                                    self.error_with_hint(
+                                        "`count:` is a pool clause; a `child` declaration \
+                                         has no arity"
+                                            .to_string(),
+                                        format!(
+                                            "write `pool {child_name}: {actor_type}(..) \
+                                             count: N;` to declare a pool, or drop `count:`"
+                                        ),
+                                    );
+                                }
+                            }
                             _ => break,
+                        }
+                    }
+
+                    // A pool child that carries `count:` in its parentheses and
+                    // no arity clause is written in the retired spelling. With
+                    // an arity clause present the parenthesised entry is
+                    // unambiguously the actor's own `count` field, which is
+                    // exactly the collision the clause form removes, so it is
+                    // left alone.
+                    if is_pool && count.is_none() {
+                        if let Some(pos) = paren_count_pos {
+                            let (_, count_expr) = args.remove(pos);
+                            self.error_at_with_hint(
+                                "pool arity is a child clause, not an init field: \
+                                 `count:` in the init-arg list is no longer the arity"
+                                    .to_string(),
+                                count_expr.1.clone(),
+                                format!(
+                                    "write `pool {child_name}: {actor_type}(..) count: N;` \
+                                     — the parenthesised list is the actor's own fields"
+                                ),
+                            );
+                            // Carry the expr into the clause slot regardless:
+                            // the refusal above already fails the compile, and a
+                            // well-formed child keeps the checker from stacking
+                            // a missing-arity cascade on top of it.
+                            count = Some(count_expr);
                         }
                     }
 
@@ -1517,6 +1556,7 @@ impl Parser<'_> {
                         wired_to,
                         is_pool,
                         shutdown,
+                        count,
                         span: child_start..self.last_token_end,
                     });
                 }

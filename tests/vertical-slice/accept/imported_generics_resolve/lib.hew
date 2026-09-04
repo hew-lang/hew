@@ -38,7 +38,7 @@ supervisor Pool {
     strategy: simple_one_for_one;
     intensity: 5 within 60s;
 
-    pool workers: Echo(count: 2, n: 7);
+    pool workers: Echo(n: 7) count: 2;
 }
 
 pub fn entry() -> i64 {

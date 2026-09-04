@@ -25,6 +25,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 mod actor_machine_supervisor;
+mod attributes;
 mod core;
 mod expressions;
 mod items;
@@ -46,6 +47,11 @@ pub(crate) use precedence::{
 // `expressions`'s `Token::Break` desugar too, so it is re-exported here like
 // the `precedence` free fns above.
 pub(crate) use statements::BreakValuePosition;
+
+// The closed attribute table (HEW-SPEC-2026 §12.6) — `AttrPosition` and
+// `Parser::validate_attributes_for` are used from every area submodule that
+// consumes `#[...]` attributes.
+pub(crate) use attributes::AttrPosition;
 
 #[cfg(test)]
 mod tests;
@@ -207,9 +213,10 @@ pub(crate) fn unquote_str(s: &str) -> &str {
 ///
 /// The parameterized form `#[on(<event>)]` uses a single attribute name
 /// `on` with the hook kind as a positional argument. Recognised events
-/// are `start`, `stop`, `crash`, `exit`, `down`, and `upgrade`. Validation of
-/// the event identifier and per-event signature shape lives in the
-/// type-checker (`hew-types::check::items`).
+/// are `start`, `stop`, `crash`, `exit`, and `down` (`upgrade` left this
+/// list at HEW-SPEC-2026 §12.6). Validation of the event identifier and
+/// per-event signature shape lives in the type-checker
+/// (`hew-types::check::items`).
 pub(crate) fn is_lifecycle_hook_attr(name: &str) -> bool {
     name == "on"
 }

@@ -2169,41 +2169,6 @@ fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
         })
 }
 
-fn is_builtin_display_impl(item: &Item) -> bool {
-    let Item::Impl(impl_decl) = item else {
-        return false;
-    };
-    let Some(trait_name) = impl_decl
-        .trait_bound
-        .as_ref()
-        .map(|bound| bound.name.as_str())
-    else {
-        return false;
-    };
-    let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
-        return false;
-    };
-    trait_name == "Display"
-        && matches!(
-            name.as_str(),
-            "i8" | "i16"
-                | "i32"
-                | "i64"
-                | "u8"
-                | "u16"
-                | "u32"
-                | "u64"
-                | "isize"
-                | "usize"
-                | "bool"
-                | "char"
-                | "f32"
-                | "f64"
-                | "string"
-                | "duration"
-        )
-}
-
 /// The pure-Hew `duration` constructor block in `std/builtins.hew`
 /// (`from_nanos` / `from_micros` / `from_millis` / `from_secs`).
 ///
@@ -2247,9 +2212,7 @@ fn is_duration_receiver_param(param: &Param) -> bool {
 }
 
 fn is_builtin_receiver_impl(item: &Item) -> bool {
-    is_builtin_vec_iterator_impl(item)
-        || is_builtin_display_impl(item)
-        || is_builtin_duration_ctor_impl(item)
+    is_builtin_vec_iterator_impl(item) || is_builtin_duration_ctor_impl(item)
 }
 
 fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
@@ -12058,20 +12021,31 @@ impl LowerCtx {
         let ty = dispatch_ty;
         match &ty {
             // String: route through a user `impl Display for string` if one
-            // is registered; otherwise pass through identity. The stdlib
+            // is registered in the user's OWN source (a root-level impl,
+            // bare `string::fmt` symbol — see `fstring_string_routes_
+            // through_user_display_impl`); otherwise the stdlib's own
+            // `impl Display for string` in `std/builtins.hew`, discovered
+            // like any imported module's impl (see
+            // `insert_builtins_display_module`), so its symbol carries that
+            // module prefix, exactly like `duration` below. The stdlib
             // identity impl ordinarily makes this a real (no-op) call so a
-            // user impl can transparently replace it.
+            // user impl can transparently replace it; falling through to
+            // raw identity below only happens with neither impl registered
+            // (zero-stdlib unit tests).
             ResolvedTy::String => {
-                let symbol = crate::node::HirImplBlock::method_symbol("string", &method_name);
+                let user_symbol = crate::node::HirImplBlock::method_symbol("string", &method_name);
+                let stdlib_symbol =
+                    crate::node::HirImplBlock::method_symbol("std.builtins.string", &method_name);
                 if let Some(call) =
-                    self.build_user_fn_call(&symbol, vec![value.clone()], span.clone())
+                    self.build_user_fn_call(&user_symbol, vec![value.clone()], span.clone())
+                {
+                    call
+                } else if let Some(call) =
+                    self.build_user_fn_call(&stdlib_symbol, vec![value.clone()], span.clone())
                 {
                     call
                 } else {
-                    // No registered impl (not even the stdlib identity) —
-                    // fall through to identity. This keeps zero-stdlib unit
-                    // tests working while preserving correctness in normal
-                    // builds.
+                    // No registered impl at all — fall through to identity.
                     value
                 }
             }
@@ -12092,14 +12066,19 @@ impl LowerCtx {
                 self.build_catalog_call(builtin, vec![value], span)
             }
             ResolvedTy::F32 => self.lower_f32_display(value, span),
-            // `duration` has a pure-Hew `impl Display for duration` (rendered
-            // through `is_builtin_display_impl`), so dispatch to its fmt symbol
-            // exactly like a user named-type Display impl. The `_` fail-closed
-            // arm below would otherwise reject it (checker–HIR contract
-            // violation) even though the checker admitted it.
-            ResolvedTy::Duration => {
-                self.dispatch_display_to_named_impl("duration", &method_name, value, span)
-            }
+            // `duration` has a pure-Hew `impl Display for duration` in
+            // `std/builtins.hew`, discovered and lowered like any imported
+            // module's impl (see `insert_builtins_display_module`), so
+            // dispatch to its module-qualified fmt symbol exactly like a
+            // user named-type Display impl. The `_` fail-closed arm below
+            // would otherwise reject it (checker–HIR contract violation)
+            // even though the checker admitted it.
+            ResolvedTy::Duration => self.dispatch_display_to_named_impl(
+                "std.builtins.duration",
+                &method_name,
+                value,
+                span,
+            ),
             ResolvedTy::Named {
                 builtin: Some(BuiltinType::Instant),
                 ..
@@ -14532,34 +14511,25 @@ impl LowerCtx {
                     is_pool: child.is_pool,
                     slot_index,
                     // Lower named init args from AST `(field, expr)` pairs.
-                    // These were previously silently dropped at this boundary.
-                    //
-                    // For a pool child the reserved `count:` arg designates the
-                    // pool size, not a per-member init field; split it out into
-                    // `pool_count` so `init_args` carries only the per-member
-                    // init template. `count` is reserved only on pool decls — a
-                    // static child keeps any `count:` arg as an ordinary init
-                    // field (e.g. `spawn Counter(count: 0)` stays a state field).
+                    // The parenthesised list is the actor's own field namespace
+                    // in full — pool arity arrives separately as the `count:`
+                    // clause, so an actor field named `count` lowers here like
+                    // any other.
                     init_args: child
                         .args
                         .iter()
-                        .filter(|(field_name, _)| !(child.is_pool && field_name == "count"))
                         .map(|(field_name, spanned_expr)| {
                             let hir_expr = self.lower_expr(spanned_expr, IntentKind::Read);
                             (field_name.clone(), hir_expr)
                         })
                         .collect(),
-                    pool_count: if child.is_pool {
-                        child
-                            .args
-                            .iter()
-                            .find(|(field_name, _)| field_name == "count")
-                            .map(|(_, spanned_expr)| {
-                                self.lower_expr(spanned_expr, IntentKind::Read)
-                            })
-                    } else {
-                        None
-                    },
+                    // Pool arity comes from the `count:` clause. The parser
+                    // refuses the clause on a static child, so `count` is only
+                    // ever populated on a pool.
+                    pool_count: child
+                        .count
+                        .as_ref()
+                        .map(|spanned_expr| self.lower_expr(spanned_expr, IntentKind::Read)),
                     shutdown: child.shutdown.as_ref().map(|s| match s {
                         ShutdownDirective::Timeout(d) => HirShutdownDirective::Timeout(d.clone()),
                         ShutdownDirective::BrutalKill => HirShutdownDirective::BrutalKill,
@@ -15424,6 +15394,25 @@ impl LowerCtx {
                 self.source_declaration(&span, hew_types::DeclarationKind::ActorMethod, index)
             })
             .collect::<Option<Vec<_>>>()?;
+        // An actor-body plain `fn` is callable from the actor's own handlers,
+        // hooks, `init`, and sibling methods (#3285). The checker files its
+        // signature under `{actor identity}::{name}` and publishes that string
+        // as the call's `c_symbol`, so the direct-call lowering below looks the
+        // callee up under the mangled form of that key. Register the entry
+        // before any of this actor's bodies are lowered — those bodies are the
+        // only call sites the checker admits, so this is the whole visibility
+        // window. `#[on(...)]` hooks are excluded: the runtime enters them.
+        let registry_owner = decl_module.map_or_else(
+            || decl.name.clone(),
+            |module| format!("{module}.{}", decl.name),
+        );
+        for method in &decl.methods {
+            if method.attributes.iter().any(|a| a.name == "on") {
+                continue;
+            }
+            let key = crate::mangle_dotted_name(&format!("{registry_owner}::{}", method.name));
+            self.register_fn_entry(&key, method);
+        }
         let state_fields: Vec<HirField> = decl
             .fields
             .iter()
@@ -15493,6 +15482,11 @@ impl LowerCtx {
             // genuine root actor still carries `None`. Package-module actors
             // use the same identity through `lower_imported_actor`.
             defining_module: decl_module.map(str::to_string),
+            type_params: decl
+                .type_params
+                .iter()
+                .map(|param| param.name.clone())
+                .collect(),
             state_fields,
             init,
             receive_handlers,
@@ -15732,7 +15726,6 @@ impl LowerCtx {
                     "crash" => Some(HirLifecycleHookKind::Crash),
                     "exit" => Some(HirLifecycleHookKind::Exit),
                     "down" => Some(HirLifecycleHookKind::Down),
-                    "upgrade" => Some(HirLifecycleHookKind::Upgrade),
                     _ => None,
                 });
             match hook_kind {
@@ -35277,6 +35270,14 @@ fn build_callable_set(
             }
             HirItem::Impl(block) => {
                 declarations.extend(block.method_ids.iter().flatten().cloned());
+            }
+            HirItem::Actor(actor) => {
+                // An actor-body plain `fn` realizes an emitted body too: MIR's
+                // actor lowering emits `{Actor}__fn__{name}` for it and maps
+                // the declaration to that symbol in `direct_call_symbols`.
+                // Receive handlers and lifecycle hooks stay out — the runtime
+                // trampolines enter those, and no Hew call site may name them.
+                declarations.extend(actor.methods.iter().map(|m| m.declaration.clone()));
             }
             _ => {}
         }

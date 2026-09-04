@@ -5,9 +5,9 @@
 use crate::diagnostic::emit_plain_diagnostic_line;
 use crate::target::TargetSpec;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeCompiler {
-    program: &'static str,
+    program: String,
     accepts_target_flag: bool,
 }
 
@@ -185,7 +185,7 @@ pub(crate) fn link_executable_with_hew_lib(
     // real CLI surface. WHAT real looks like: a typed build option that also
     // drives the libhew instrumentation, not an out-of-band env contract.
     let coverage_instrument = coverage_instrument_enabled(
-        compiler.program,
+        &compiler.program,
         std::env::var_os("HEW_COVERAGE").as_deref() == Some(std::ffi::OsStr::new("1")),
     );
 
@@ -233,7 +233,7 @@ pub(crate) fn link_executable_with_hew_lib(
         )?,
     };
 
-    let mut cmd = std::process::Command::new(compiler.program);
+    let mut cmd = std::process::Command::new(&compiler.program);
 
     // ── lld selection (host-driven) ────────────────────────────────────
     // Use lld when available — ~20x faster than GNU ld for large static libs.
@@ -493,7 +493,7 @@ fn find_darwin_sdk() -> Option<String> {
 }
 
 fn select_native_compiler(target: &TargetSpec) -> Result<NativeCompiler, String> {
-    select_native_compiler_with(target, has_tool)
+    select_native_compiler_with(target, driver_version)
 }
 
 #[cfg_attr(
@@ -527,16 +527,51 @@ fn coverage_instrument_enabled(compiler_program: &str, hew_coverage_env_set: boo
     hew_coverage_env_set && compiler_program == "clang"
 }
 
+/// Whether a C driver's `--version` banner identifies a clang-family driver.
+fn driver_version_is_clang(version: &str) -> bool {
+    version
+        .lines()
+        .next()
+        .is_some_and(|first| first.to_lowercase().contains("clang"))
+}
+
+/// Build the "no C driver found" message: names what was tried and the
+/// packages that provide one, mirroring `windows_missing_clang_error`'s shape
+/// (what was tried, what to install) for the non-Windows probe order.
+fn native_compiler_not_found_error(tried: &str) -> String {
+    format!(
+        "Error: {tried}. Install a C compiler driver: `clang` (https://clang.llvm.org), \
+         `gcc`/`build-essential` on Debian/Ubuntu (`apt install build-essential`) or \
+         Fedora/RHEL (`dnf install gcc`), or the Xcode Command Line Tools on macOS \
+         (`xcode-select --install`)."
+    )
+}
+
 fn select_native_compiler_with<F>(
     target: &TargetSpec,
-    has_tool: F,
+    driver_version: F,
 ) -> Result<NativeCompiler, String>
 where
-    F: Fn(&str) -> bool,
+    F: Fn(&str) -> Option<String>,
 {
-    if has_tool("clang") {
+    // `HEW_CC` overrides probing. Its version banner determines whether the
+    // clang-only `-target` flag is valid.
+    if let Some(hew_cc) = std::env::var_os("HEW_CC") {
+        let hew_cc = hew_cc.to_string_lossy().into_owned();
+        return match driver_version(&hew_cc) {
+            Some(version) => Ok(NativeCompiler {
+                accepts_target_flag: driver_version_is_clang(&version),
+                program: hew_cc,
+            }),
+            None => Err(native_compiler_not_found_error(&format!(
+                "HEW_CC={hew_cc} not found"
+            ))),
+        };
+    }
+
+    if driver_version("clang").is_some() {
         return Ok(NativeCompiler {
-            program: "clang",
+            program: "clang".to_string(),
             accepts_target_flag: true,
         });
     }
@@ -549,16 +584,26 @@ where
 
     #[cfg(not(target_os = "windows"))]
     {
-        if target.can_run_on_host() {
+        if !target.can_run_on_host() {
+            return Err(format!(
+                "Error: clang not found. Install LLVM/Clang to link target {} from this host.",
+                target.normalized_triple()
+            ));
+        }
+
+        // The `cc` fallback must itself be verified to exist — previously this
+        // branch returned `Ok("cc")` unconditionally, so a host with neither
+        // clang nor a working `cc` failed later at raw process spawn instead
+        // of with a named diagnostic.
+        if driver_version("cc").is_some() {
             return Ok(NativeCompiler {
-                program: "cc",
+                program: "cc".to_string(),
                 accepts_target_flag: false,
             });
         }
 
-        Err(format!(
-            "Error: clang not found. Install LLVM/Clang to link target {} from this host.",
-            target.normalized_triple()
+        Err(native_compiler_not_found_error(
+            "no C compiler found (tried clang, cc)",
         ))
     }
 }
@@ -1372,6 +1417,19 @@ fn has_tool(name: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// Probe a C driver and return its version banner.
+fn driver_version(name: &str) -> Option<String> {
+    let output = std::process::Command::new(name)
+        .arg("--version")
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1875,14 +1933,19 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn native_unix_without_clang_falls_back_to_cc_without_target_flag() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
+        unsafe { std::env::remove_var("HEW_CC") };
         let target = TargetSpec::from_requested(None).expect("host target");
-        let compiler =
-            select_native_compiler_with(&target, |tool| tool != "clang").expect("cc fallback");
+        let compiler = select_native_compiler_with(&target, |tool| {
+            (tool != "clang").then(|| "cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0".to_string())
+        })
+        .expect("cc fallback");
 
         assert_eq!(
             compiler,
             NativeCompiler {
-                program: "cc",
+                program: "cc".to_string(),
                 accepts_target_flag: false
             }
         );
@@ -1890,17 +1953,142 @@ mod tests {
 
     #[test]
     fn native_compiler_prefers_clang_with_target_flag() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
+        unsafe { std::env::remove_var("HEW_CC") };
         let target = TargetSpec::from_requested(None).expect("host target");
-        let compiler =
-            select_native_compiler_with(&target, |tool| tool == "clang").expect("clang selected");
+        let compiler = select_native_compiler_with(&target, |tool| {
+            (tool == "clang").then(|| CLANG_BANNER.to_string())
+        })
+        .expect("clang selected");
 
         assert_eq!(
             compiler,
             NativeCompiler {
-                program: "clang",
+                program: "clang".to_string(),
                 accepts_target_flag: true
             }
         );
+    }
+
+    const CLANG_BANNER: &str = "Ubuntu clang version 20.1.8 (++20250918)";
+    const GCC_BANNER: &str = "cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0";
+
+    #[test]
+    fn hew_cc_selects_named_driver_when_present() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
+        unsafe { std::env::set_var("HEW_CC", "/opt/my-cc") };
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let compiler = select_native_compiler_with(&target, |tool| {
+            (tool == "/opt/my-cc").then(|| CLANG_BANNER.to_string())
+        })
+        .expect("HEW_CC driver selected");
+        // SAFETY: same guard as above.
+        unsafe { std::env::remove_var("HEW_CC") };
+
+        assert_eq!(
+            compiler,
+            NativeCompiler {
+                program: "/opt/my-cc".to_string(),
+                accepts_target_flag: true
+            }
+        );
+    }
+
+    #[test]
+    fn hew_cc_missing_tool_names_value_and_package() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
+        unsafe { std::env::set_var("HEW_CC", "/nonexistent/cc") };
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let error = select_native_compiler_with(&target, |_| None).unwrap_err();
+        // SAFETY: same guard as above.
+        unsafe { std::env::remove_var("HEW_CC") };
+
+        assert!(
+            error.contains("/nonexistent/cc"),
+            "must name the literal HEW_CC value: {error}"
+        );
+        assert!(
+            ["clang", "gcc", "build-essential", "xcode"]
+                .iter()
+                .any(|pkg| error.to_lowercase().contains(pkg)),
+            "must name a package that provides a driver: {error}"
+        );
+    }
+
+    #[test]
+    fn hew_cc_unset_leaves_the_existing_probe_order_untouched() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
+        unsafe { std::env::remove_var("HEW_CC") };
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let compiler = select_native_compiler_with(&target, |tool| {
+            (tool == "clang").then(|| CLANG_BANNER.to_string())
+        })
+        .expect("clang selected");
+
+        assert_eq!(compiler.program, "clang");
+    }
+
+    #[test]
+    fn hew_cc_naming_a_gcc_driver_withholds_the_target_flag() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
+        unsafe { std::env::set_var("HEW_CC", "/usr/bin/cc") };
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let compiler = select_native_compiler_with(&target, |tool| {
+            (tool == "/usr/bin/cc").then(|| GCC_BANNER.to_string())
+        })
+        .expect("HEW_CC driver selected");
+        // SAFETY: same guard as above.
+        unsafe { std::env::remove_var("HEW_CC") };
+
+        assert_eq!(
+            compiler,
+            NativeCompiler {
+                program: "/usr/bin/cc".to_string(),
+                accepts_target_flag: false
+            }
+        );
+    }
+
+    #[test]
+    fn driver_version_banner_identifies_the_clang_family() {
+        for clang in [
+            CLANG_BANNER,
+            "clang version 22.1.6",
+            "Apple clang version 17.0.0 (clang-1700.0.13.3)",
+        ] {
+            assert!(
+                driver_version_is_clang(clang),
+                "must read as clang: {clang}"
+            );
+        }
+        for gcc in [
+            GCC_BANNER,
+            "gcc (GCC) 15.2.0",
+            "x86_64-linux-gnu-gcc-15 (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+        ] {
+            assert!(
+                !driver_version_is_clang(gcc),
+                "must not read as clang: {gcc}"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn native_unix_neither_clang_nor_cc_names_both_in_error() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
+        unsafe { std::env::remove_var("HEW_CC") };
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let error = select_native_compiler_with(&target, |_| None).unwrap_err();
+
+        assert!(error.contains("clang"), "must name clang: {error}");
+        assert!(error.contains("cc"), "must name cc: {error}");
     }
 
     #[test]
@@ -1955,13 +2143,16 @@ mod tests {
     ))]
     #[test]
     fn linux_cross_target_without_clang_errors() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
+        unsafe { std::env::remove_var("HEW_CC") };
         let target_triple = if cfg!(target_arch = "aarch64") {
             "x86_64-unknown-linux-gnu"
         } else {
             "aarch64-unknown-linux-gnu"
         };
         let target = TargetSpec::from_requested(Some(target_triple)).expect("cross target");
-        let error = select_native_compiler_with(&target, |_| false).unwrap_err();
+        let error = select_native_compiler_with(&target, |_| None).unwrap_err();
 
         assert!(error.contains("clang not found"));
         assert!(error.contains(target_triple));

@@ -1,6 +1,9 @@
 //! Tests for HIR machine lowering and static checks.
 
-use hew_hir::{HirDiagnosticKind, HirExpr, HirExprKind, HirItem, HirLiteral, HirStmtKind};
+use hew_hir::{
+    HirDiagnosticKind, HirExpr, HirExprKind, HirItem, HirLiteral, HirProducedValueSourceAnchor,
+    HirStmtKind,
+};
 
 use crate::support;
 
@@ -1330,5 +1333,136 @@ fn machine_event_undeclared_field_emits_field_not_found_not_nyi() {
             );
         }
         other => panic!("unexpected diagnostic kind: {other:?}"),
+    }
+}
+
+/// A struct-variant transition body written with the contextual dotted
+/// spelling (hew-lang/hew#3241). The dotted form is the language (A363), so
+/// this body must lower like any other expression position: the target-state
+/// construction survives into the transition's HIR body carrying its payload,
+/// and each payload expression keeps the checker's consumed child as a source
+/// anchor instead of dropping the occurrence.
+const DOTTED_STRUCT_VARIANT_BODY_SRC: &str = r"
+machine Name {
+    events { EventY { payload: i64; } }
+
+    state StateA;
+    state StateB { field: i64; }
+
+    on EventY: StateA => StateB { .StateB { field: event.payload } }
+    on EventY: StateB => StateB reenter { .StateB { field: self.field } }
+}
+";
+
+/// The state index and payload of a lowered machine state constructor.
+type MachineCtor<'e> = (usize, &'e Option<Vec<(String, HirExpr)>>);
+
+/// Finds the machine state constructor a transition body evaluates to.
+fn machine_variant_ctor(expr: &HirExpr) -> Option<MachineCtor<'_>> {
+    match &expr.kind {
+        HirExprKind::MachineVariantCtor {
+            state_idx, payload, ..
+        } => Some((*state_idx, payload)),
+        HirExprKind::Block(block) => block
+            .statements
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                HirStmtKind::Expr(expr)
+                | HirStmtKind::Let(_, Some(expr))
+                | HirStmtKind::Return(Some(expr)) => machine_variant_ctor(expr),
+                HirStmtKind::Assign { value, .. } => machine_variant_ctor(value),
+                _ => None,
+            })
+            .or_else(|| block.tail.as_deref().and_then(machine_variant_ctor)),
+        _ => None,
+    }
+}
+
+/// The source anchor a machine field or event-field read carries, if it is one.
+fn machine_read_anchor(expr: &HirExpr) -> Option<&Option<HirProducedValueSourceAnchor>> {
+    match &expr.kind {
+        HirExprKind::MachineFieldAccess { source_anchor, .. }
+        | HirExprKind::MachineEventFieldAccess { source_anchor, .. } => Some(source_anchor),
+        _ => None,
+    }
+}
+
+#[test]
+fn dotted_struct_variant_transition_body_keeps_its_checker_anchors() {
+    let output = lower(DOTTED_STRUCT_VARIANT_BODY_SRC);
+
+    // The lowerer's produced-value carrier resolution reports a dropped
+    // occurrence as a `CheckerBoundaryViolation` in `LowerOutput::diagnostics`,
+    // not through the verifier, so both surfaces have to be clean.
+    let boundary: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.kind, HirDiagnosticKind::CheckerBoundaryViolation { .. }))
+        .collect();
+    assert!(
+        boundary.is_empty(),
+        "dotted struct-variant transition body must not violate the checker boundary; got: {boundary:?}"
+    );
+    let verify = hew_hir::verify_hir(&output.module);
+    assert!(
+        verify.is_empty(),
+        "verifier must accept the lowered machine; got: {verify:?}"
+    );
+
+    let machine = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Machine(m) if m.name == "Name" => Some(m),
+            _ => None,
+        })
+        .expect("machine `Name` is lowered");
+    assert_eq!(
+        machine.transitions.len(),
+        2,
+        "both transitions are lowered; got: {:?}",
+        machine.transitions
+    );
+
+    // Positive control: the anchor is recorded, not merely un-diagnosed. Each
+    // body builds `StateB` with its payload, and the payload expression — the
+    // checker child a rewrite could drop — still names its source anchor.
+    for transition in &machine.transitions {
+        let (state_idx, payload) = machine_variant_ctor(&transition.body).unwrap_or_else(|| {
+            panic!(
+                "transition {} => {} must lower its `.StateB {{ .. }}` body to a state constructor; got: {:?}",
+                transition.source_state, transition.target_state, transition.body.kind
+            )
+        });
+        assert_eq!(
+            state_idx, 1,
+            "the constructor names `StateB`, the second declared state"
+        );
+        let payload = payload.as_ref().unwrap_or_else(|| {
+            panic!(
+                "transition {} => {} constructs a struct variant, so it carries a payload",
+                transition.source_state, transition.target_state
+            )
+        });
+        let names: Vec<&str> = payload.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["field"],
+            "the state payload field survives lowering"
+        );
+        let (_, value) = &payload[0];
+        let anchor = machine_read_anchor(value).unwrap_or_else(|| {
+            panic!(
+                "transition {} => {} reads a machine field or event field for `field`; got: {:?}",
+                transition.source_state, transition.target_state, value.kind
+            )
+        });
+        assert!(
+            anchor.is_some(),
+            "transition {} => {} must preserve the consumed checker child as a source anchor",
+            transition.source_state,
+            transition.target_state
+        );
     }
 }

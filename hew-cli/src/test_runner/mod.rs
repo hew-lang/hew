@@ -294,7 +294,8 @@ fn detect_and_build_ffi_lib(start_dir: &std::path::Path) -> Result<Option<String
     if !start_dir.join("hew.toml").is_file() {
         return Ok(None);
     }
-    let Some(artifact) = hew_pkg::native::build_native(start_dir)? else {
+    let expected = hew_pkg::native::embedded_rustc_identity();
+    let Some(artifact) = hew_pkg::native::build_native(start_dir, &expected)? else {
         return Ok(None);
     };
     let canonical = artifact

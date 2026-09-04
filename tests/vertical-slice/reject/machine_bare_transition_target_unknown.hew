@@ -1,0 +1,29 @@
+// Reject fixture: negative control for #3264. A body-less transition
+// (`on E: Src => Tgt;`) whose target names no declared state must still be
+// refused — with a machine "unknown state" diagnostic naming the missing
+// state, not E_BARE_VARIANT_EXPR. Proves the fix narrows the machine-state
+// carve-out to actual declared states rather than silencing the checker for
+// every bare identifier in transition-target position.
+//
+// Harness verb: hew check
+// Expected: rejected with `machine \`Light\`: transition references unknown
+// state \`Bogus\``.
+
+machine Light {
+    events {
+        Go;
+    }
+
+    state Idle;
+    state Running;
+
+    on Go: Idle => Bogus;
+
+    default { state }
+}
+
+fn main() {
+    var light: Light = .Idle;
+    light.step(.Go);
+    println(light.state_name());
+}

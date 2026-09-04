@@ -140,6 +140,118 @@ fn parse_supervisor_construction_time_config_params() {
     assert_eq!(sd.children[0].args[0].0, "capacity");
 }
 
+/// Pool arity is the per-child `count:` clause, parsed beside `restart:` and
+/// `shutdown:` and kept out of the parenthesised init-arg list.
+#[test]
+fn parse_pool_count_clause_lands_beside_the_init_args() {
+    let source = "supervisor Farm {\n\
+                      \x20   strategy: simple_one_for_one;\n\
+                      \x20   intensity: 3 within 60s;\n\
+                      \x20   pool workers: Worker(value: 7) count: 2 restart: transient;\n\
+                      }\n";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Supervisor(sd) = &result.program.items[0].0 else {
+        panic!("expected supervisor, got {:?}", result.program.items[0].0);
+    };
+    let child = &sd.children[0];
+    assert!(child.is_pool);
+    assert!(child.count.is_some(), "the arity clause parsed");
+    assert_eq!(
+        child.args.len(),
+        1,
+        "the parenthesised list holds only the actor's own fields"
+    );
+    assert_eq!(child.args[0].0, "value");
+    assert_eq!(child.restart, Some(RestartPolicy::Transient));
+}
+
+/// The clause namespace and the field namespace are separate, so an actor with
+/// a field named `count` pools with its field set like any other. This is the
+/// collision the clause form removes.
+#[test]
+fn parse_pool_child_sets_an_actor_field_named_count() {
+    let source = "supervisor Farm {\n\
+                      \x20   strategy: simple_one_for_one;\n\
+                      \x20   pool tickers: Ticker(count: 9) count: 2;\n\
+                      }\n";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Supervisor(sd) = &result.program.items[0].0 else {
+        panic!("expected supervisor");
+    };
+    let child = &sd.children[0];
+    assert_eq!(child.args.len(), 1, "the `count` field stays an init arg");
+    assert_eq!(child.args[0].0, "count");
+    assert!(child.count.is_some(), "arity comes from the clause");
+}
+
+/// `count:` in a pool child's parentheses with no arity clause is the retired
+/// spelling. It is refused with the new one rather than passed on as an init
+/// field that the checker would then blame on the actor.
+#[test]
+fn parse_pool_count_as_init_arg_is_refused_with_the_clause_spelling() {
+    let source = "supervisor Farm {\n\
+                      \x20   strategy: simple_one_for_one;\n\
+                      \x20   pool workers: Worker(count: 2, value: 7);\n\
+                      }\n";
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("pool arity is a child clause")
+                && e.hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("Worker(..) count: N"))),
+        "expected the migration fix-it, got: {:?}",
+        result.errors
+    );
+}
+
+/// A `child` declaration is one actor, so it has no arity to declare. The
+/// clause is refused there rather than accepted and ignored.
+#[test]
+fn parse_count_clause_on_a_static_child_is_refused() {
+    let source = "supervisor Farm {\n\
+                      \x20   strategy: one_for_one;\n\
+                      \x20   child worker: Worker(value: 7) count: 2;\n\
+                      }\n";
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("`count:` is a pool clause")),
+        "expected the non-pool refusal, got: {:?}",
+        result.errors
+    );
+    let Item::Supervisor(sd) = &result.program.items[0].0 else {
+        panic!("expected supervisor");
+    };
+    assert!(
+        sd.children[0].count.is_none(),
+        "a refused clause carries no arity downstream"
+    );
+}
+
+/// A static child's `count:` init arg is an ordinary field, untouched by the
+/// pool migration.
+#[test]
+fn parse_static_child_count_init_arg_stays_a_field() {
+    let source = "supervisor Farm {\n\
+                      \x20   strategy: one_for_one;\n\
+                      \x20   child ticker: Ticker(count: 9);\n\
+                      }\n";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Supervisor(sd) = &result.program.items[0].0 else {
+        panic!("expected supervisor");
+    };
+    assert_eq!(sd.children[0].args[0].0, "count");
+    assert!(sd.children[0].count.is_none());
+}
+
 /// A supervisor without a `(...)` clause has no params (back-compat).
 #[test]
 fn parse_supervisor_without_params_has_empty_param_list() {
@@ -315,6 +427,60 @@ fn let_binding_reserved_keyword_names_it_as_reserved() {
             .is_some_and(|hint| hint.contains("match")),
         "a reserved word in a binding position must carry a rename hint; got: {:?}",
         diagnostic.hint
+    );
+}
+
+/// `let mut x = …` recovers as `var x = …` behind exactly one diagnostic: the
+/// message names Hew's `var` spelling, the hint spells out the fix-it, and
+/// parsing resumes cleanly — the following statement still parses, which
+/// would not hold if `mut` were left unconsumed (the three-error cascade this
+/// replaces: `mut` fails as a pattern, then as an expression, then triggers
+/// block-level token recovery).
+#[test]
+fn let_mut_reports_one_error_and_recovers() {
+    let result = parse("fn f() { let mut x = 1; x = 2; }");
+    assert_eq!(
+        result.errors.len(),
+        1,
+        "expected exactly one diagnostic, got: {:?}",
+        result.errors
+    );
+    let diagnostic = &result.errors[0];
+    assert!(
+        diagnostic.message.contains("var") && diagnostic.message.contains("let mut"),
+        "message must name Hew's `var` spelling; got: {}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic
+            .hint
+            .as_ref()
+            .is_some_and(|hint| hint.contains("var x")),
+        "a `let mut` diagnostic must carry a fix-it naming the corrected spelling; got: {:?}",
+        diagnostic.hint
+    );
+
+    let func = match &result.program.items[0].0 {
+        Item::Function(f) => f,
+        other => panic!("expected a function item, got {other:?}"),
+    };
+    assert_eq!(
+        func.body.stmts.len(),
+        2,
+        "expected the `let mut` statement plus the following assignment to both parse; got: {:?}",
+        func.body.stmts
+    );
+    assert!(
+        matches!(func.body.stmts[0].0, Stmt::Var { .. }),
+        "let mut recovers as a mutable (`var`) binding so a later reassignment does not raise a \
+         second, unrelated immutability error downstream; got: {:?}",
+        func.body.stmts[0].0
+    );
+    assert!(
+        matches!(func.body.stmts[1].0, Stmt::Assign { .. }),
+        "the statement after the recovered `let mut` must parse normally, proving `mut` was \
+         consumed rather than left for block-level recovery to eat; got: {:?}",
+        func.body.stmts[1].0
     );
 }
 
@@ -1502,8 +1668,10 @@ fn parse_actor_on_crash_hook_attaches_to_method() {
 
 #[test]
 fn parse_actor_on_upgrade_hook_attaches_to_method() {
-    // E1: `#[on(upgrade)]` parses on an actor method. The parser accepts
-    // it; the type-checker rejects it as a reserved, unsupported attribute.
+    // E1: `#[on(upgrade)]` parses on an actor method — the parser is
+    // hook-kind-agnostic, only checking the attribute name is `on`. `upgrade`
+    // left the hook-kind list at the type-checker (HEW-SPEC-2026 §12.6);
+    // it rejects this as an unrecognised lifecycle hook.
     let source = r"actor Worker {
     #[on(upgrade)]
     fn on_upgrade() { }
@@ -1527,7 +1695,10 @@ fn parse_attribute_key_value_missing_value_emits_error_without_empty_fallback() 
 fn demo() {}
 ";
     let result = parse(source);
-    assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+    // `meta` is not a recognised attribute name, so the closed table also
+    // reports `E_UNKNOWN_ATTRIBUTE` in addition to the key-value shape error
+    // this test targets — both diagnostics are expected.
+    assert_eq!(result.errors.len(), 2, "errors: {:?}", result.errors);
     assert_eq!(
         result.errors[0].message,
         "invalid value for attribute `rename`: missing value"
@@ -1535,6 +1706,11 @@ fn demo() {}
     assert_eq!(
         result.errors[0].hint.as_deref(),
         Some("expected identifier, string literal, or integer literal")
+    );
+    assert!(
+        result.errors[1].message.contains("E_UNKNOWN_ATTRIBUTE"),
+        "errors: {:?}",
+        result.errors
     );
 
     let Item::Function(func) = &result.program.items[0].0 else {
@@ -2974,6 +3150,17 @@ fn parse_let_expr(source: &str) -> Expr {
     expr.clone()
 }
 
+/// Parses a statement-position `scope { .. };` inside `fn main` and returns the
+/// scope block's own body. `scope` is not a `Primary`, so a scope body is only
+/// reachable through a statement.
+fn parse_scope_stmt_body(source: &str) -> Block {
+    let body = parse_main_body(source);
+    let Stmt::Expression((Expr::Scope { body: inner }, _)) = &body.stmts[0].0 else {
+        panic!("expected scope statement: {:?}", body.stmts[0]);
+    };
+    inner.clone()
+}
+
 fn parse_main_body(source: &str) -> Block {
     let full = format!("fn main() {{ {source} }}");
     let result = parse(&full);
@@ -3225,8 +3412,13 @@ fn parse_block_still_works() {
 }
 
 #[test]
-fn scope_keyword_emits_scope_ast_variant() {
-    let expr = parse_let_expr("scope { 1 }");
+fn scope_statement_emits_scope_ast_variant() {
+    // `scope { .. }` is a statement, so the AST variant is reached through a
+    // statement-expression, never a `let` initialiser (HEW-SPEC-2026 §4.2).
+    let body = parse_main_body("scope { 1 };");
+    let Stmt::Expression((expr, _)) = &body.stmts[0].0 else {
+        panic!("expected statement-expression: {:?}", body.stmts[0]);
+    };
     assert!(
         matches!(expr, Expr::Scope { .. }),
         "expected Scope, got {expr:?}"
@@ -3234,17 +3426,25 @@ fn scope_keyword_emits_scope_ast_variant() {
 }
 
 #[test]
+fn scope_in_let_initialiser_is_refused() {
+    // Negative control for the test above: `scope` out of `Primary` means the
+    // value position is closed, not that the statement spelling moved.
+    let result = parse("fn main() { let r = scope { 1 }; }");
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SCOPE_IS_STATEMENT")),
+        "expected E_SCOPE_IS_STATEMENT, got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
 fn parser_scope_block_distinct_from_fork_child() {
-    let body = parse_main_body("let block = scope { 1 };\nscope { fork child = run(); };\n");
-    let Stmt::Let {
-        value: Some((Expr::Scope { .. }, _)),
-        ..
-    } = &body.stmts[0].0
-    else {
-        panic!(
-            "expected let binding to use scope block: {:?}",
-            body.stmts[0]
-        );
+    let body = parse_main_body("scope { 1 };\nscope { fork child = run(); };\n");
+    let Stmt::Expression((Expr::Scope { .. }, _)) = &body.stmts[0].0 else {
+        panic!("expected scope statement: {:?}", body.stmts[0]);
     };
     let Stmt::Expression((Expr::Scope { body: inner }, _)) = &body.stmts[1].0 else {
         panic!("expected outer scope block: {:?}", body.stmts[1]);
@@ -3285,10 +3485,7 @@ fn parse_fork_child_bare() {
 
 #[test]
 fn parse_nested_scope_block_and_child() {
-    let expr = parse_let_expr("scope { fork run(); fork child = work(); child }");
-    let Expr::Scope { body } = expr else {
-        panic!("expected scope block");
-    };
+    let body = parse_scope_stmt_body("scope { fork run(); fork child = work(); child };");
     assert_eq!(body.stmts.len(), 2, "expected two child statements");
     assert!(matches!(
         &body.stmts[0].0,
@@ -3312,10 +3509,7 @@ fn parse_nested_scope_block_and_child() {
 
 #[test]
 fn parse_scope_fork_block_after_deadline() {
-    let expr = parse_let_expr("scope { fork { long_op(); } after(5s) { } }");
-    let Expr::Scope { body } = expr else {
-        panic!("expected scope block");
-    };
+    let body = parse_scope_stmt_body("scope { fork { long_op(); } after(5s) { } };");
     assert_eq!(body.stmts.len(), 2, "expected fork block and deadline");
     let Stmt::Expression((Expr::ForkBlock { body: fork_body }, _)) = &body.stmts[0].0 else {
         panic!("expected fork block: {:?}", body.stmts[0]);
@@ -3812,6 +4006,10 @@ fn unmarked_type_has_no_resource_marker() {
 
 #[test]
 fn resource_marker_rejects_tuple_type_without_affecting_supported_targets() {
+    // `#[resource]` is only legal at `type`/`enum` declaration position
+    // (HEW-SPEC-2026 §12.6); a tuple-form `type` never carries `ResourceMarker`,
+    // so this is `E_UNKNOWN_ATTRIBUTE`, superseding the old
+    // `E_RESOURCE_MARKER_TARGET` code.
     let unsupported_source = "#[resource]\ntype Pair(i64);";
     let unsupported = parse(unsupported_source);
     assert_eq!(
@@ -3823,8 +4021,8 @@ fn resource_marker_rejects_tuple_type_without_affecting_supported_targets() {
     assert!(
         unsupported.errors[0]
             .message
-            .contains("E_RESOURCE_MARKER_TARGET"),
-        "tuple-form ownership marker must use the target diagnostic: {:?}",
+            .contains("E_UNKNOWN_ATTRIBUTE"),
+        "tuple-form ownership marker must use the closed-table diagnostic: {:?}",
         unsupported.errors
     );
     assert_eq!(
@@ -3881,7 +4079,7 @@ fn resource_markers_reject_unsupported_top_level_items_in_every_visibility_form(
     let marker_errors: Vec<_> = result
         .errors
         .iter()
-        .filter(|error| error.message.contains("E_RESOURCE_MARKER_TARGET"))
+        .filter(|error| error.message.contains("E_UNKNOWN_ATTRIBUTE"))
         .collect();
 
     assert_eq!(
@@ -3952,7 +4150,7 @@ actor Worker {
     let marker_errors: Vec<_> = result
         .errors
         .iter()
-        .filter(|error| error.message.contains("E_RESOURCE_MARKER_TARGET"))
+        .filter(|error| error.message.contains("E_UNKNOWN_ATTRIBUTE"))
         .collect();
 
     assert_eq!(
@@ -4008,6 +4206,8 @@ fn linear_then_resource_combined_emits_conflict_diagnostic() {
 
 #[test]
 fn unknown_type_marker_emits_diagnostic() {
+    // `E_UNKNOWN_ATTRIBUTE` (the closed-table diagnostic) supersedes the
+    // retired `E_UNKNOWN_TYPE_MARKER` for this position.
     let source = r"
             #[both]
             type Bad { x: int }
@@ -4015,11 +4215,11 @@ fn unknown_type_marker_emits_diagnostic() {
     let result = parse(source);
     assert!(
         !result.errors.is_empty(),
-        "expected E_UNKNOWN_TYPE_MARKER diagnostic but got none"
+        "expected E_UNKNOWN_ATTRIBUTE diagnostic but got none"
     );
     assert!(
-        result.errors[0].message.contains("E_UNKNOWN_TYPE_MARKER"),
-        "expected E_UNKNOWN_TYPE_MARKER in message, got: {:?}",
+        result.errors[0].message.contains("E_UNKNOWN_ATTRIBUTE"),
+        "expected E_UNKNOWN_ATTRIBUTE in message, got: {:?}",
         result.errors[0].message
     );
 }
@@ -4140,36 +4340,41 @@ fn max_heap_attribute_gb_suffix_rejected() {
 
 #[test]
 fn max_heap_attribute_on_fn_rejected() {
+    // `#[max_heap]` is only legal on an actor declaration (HEW-SPEC-2026
+    // §12.6); on a free fn it is `E_UNKNOWN_ATTRIBUTE`, superseding the old
+    // bespoke "only allowed on actor declarations" message.
     let source = "#[max_heap(1024)] fn foo() {}";
     let result = parse(source);
     assert!(
         !result.errors.is_empty(),
-        "expected error: #[max_heap] only allowed on actor declarations"
+        "expected E_UNKNOWN_ATTRIBUTE for #[max_heap] on a free fn"
     );
     assert!(
         result
             .errors
             .iter()
-            .any(|e| e.message.contains("max_heap") && e.message.contains("actor")),
-        "expected error mentioning max_heap and actor, got: {:?}",
+            .any(|e| e.message.contains("max_heap") && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected error mentioning max_heap and E_UNKNOWN_ATTRIBUTE, got: {:?}",
         result.errors
     );
 }
 
 #[test]
 fn max_heap_attribute_on_type_rejected() {
+    // Same closed-table refusal as `max_heap_attribute_on_fn_rejected`, on a
+    // `type` declaration instead of a free fn.
     let source = "#[max_heap(1 kb)] type Bar { x: i32; }";
     let result = parse(source);
     assert!(
         !result.errors.is_empty(),
-        "expected error: #[max_heap] only allowed on actor declarations"
+        "expected E_UNKNOWN_ATTRIBUTE for #[max_heap] on a type declaration"
     );
     assert!(
         result
             .errors
             .iter()
-            .any(|e| e.message.contains("max_heap") && e.message.contains("actor")),
-        "expected error mentioning max_heap and actor, got: {:?}",
+            .any(|e| e.message.contains("max_heap") && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected error mentioning max_heap and E_UNKNOWN_ATTRIBUTE, got: {:?}",
         result.errors
     );
 }
@@ -5186,5 +5391,130 @@ fn record_rest_patterns_round_trip_through_formatter() {
         reparsed.errors.is_empty(),
         "formatted source failed to parse: {:?}\n{formatted}",
         reparsed.errors
+    );
+}
+
+// ── Closed attribute table (HEW-SPEC-2026 §12.6, issue #3261) ─────────
+//
+// These exercise `Parser::validate_attributes_for` directly through `parse`,
+// independent of the vertical-slice harness: an invented attribute name is
+// refused everywhere, a real name in the wrong position is refused too, and
+// the `#[test]`-only trio (`ignore`/`should_panic`/`serial`) is refused
+// without a co-occurring `#[test]`.
+
+#[test]
+fn unrecognised_attribute_name_rejected_on_free_fn() {
+    // The issue's own repro: an invented attribute name on a free function
+    // must fail closed, not disappear silently.
+    let source = "#[bogus]\nfn helper() -> i64 { 1 }\nfn main() { helper(); }";
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("unrecognised attribute `#[bogus]`")
+                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected E_UNKNOWN_ATTRIBUTE for #[bogus], got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn recognised_attribute_name_rejected_in_wrong_position() {
+    // `#[every(..)]` is only legal on an actor `receive fn`; here it targets
+    // a plain actor method, so the name is known but the position is not.
+    let source = r"
+        actor Worker {
+            #[every(1s)]
+            fn tick() {}
+        }
+        fn main() {}
+    ";
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("unrecognised attribute `#[every]`")
+                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected E_UNKNOWN_ATTRIBUTE for #[every] on a plain actor fn, got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn test_trio_attrs_rejected_without_co_occurring_test_attr() {
+    // `#[ignore]`, `#[should_panic]`, and `#[serial]` are only legal on a
+    // function that also carries `#[test]` (§12.6). Without it, each is
+    // E_UNKNOWN_ATTRIBUTE — a misspelled `#[test]` must not leave these
+    // siblings silently accepted either.
+    for attr in ["ignore", "should_panic", "serial"] {
+        let source = format!("#[{attr}]\nfn probe() {{}}\nfn main() {{ probe(); }}");
+        let result = parse(&source);
+        assert!(
+            result.errors.iter().any(|e| e
+                .message
+                .contains(&format!("unrecognised attribute `#[{attr}]`"))
+                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+            "expected E_UNKNOWN_ATTRIBUTE for #[{attr}] without #[test], got: {:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn test_trio_attrs_accepted_with_co_occurring_test_attr() {
+    // The positive control for `test_trio_attrs_rejected_without_co_occurring_test_attr`:
+    // the same three attributes are legal once `#[test]` is present.
+    for attr in ["ignore", "should_panic", "serial"] {
+        let source = format!("#[test]\n#[{attr}]\nfn probe() {{}}\nfn main() {{}}");
+        let result = parse(&source);
+        assert!(
+            result.errors.is_empty(),
+            "expected #[test] + #[{attr}] to parse cleanly, got: {:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn noncancellable_attribute_no_longer_recognised() {
+    // `#[noncancellable]` is removed in edition 2026 (§12.6): it is now an
+    // ordinary unrecognised name, not a special-cased parse.
+    let source = "#[noncancellable]\nfn helper() {}\nfn main() { helper(); }";
+    let result = parse(source);
+    assert!(
+        result.errors.iter().any(|e| e
+            .message
+            .contains("unrecognised attribute `#[noncancellable]`")
+            && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected E_UNKNOWN_ATTRIBUTE for #[noncancellable], got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn wire_attribute_legal_on_type_decl_and_field_only() {
+    // `#[wire]` is legal on a type declaration and, separately, on a field
+    // inside a plain (non-`#[wire]`) type declaration (§12.6) — not on a
+    // free function, which has no field/type-decl position for it to attach
+    // to. (The `@N` field-tag syntax used inside a `#[wire] type` body is a
+    // distinct grammar from the `#[wire]` attribute exercised here.)
+    let legal = parse("#[wire]\ntype Contract { x: i64; }\ntype Point { #[wire] x: i64; }");
+    assert!(
+        legal.errors.is_empty(),
+        "expected #[wire] on type decl and field to parse cleanly, got: {:?}",
+        legal.errors
+    );
+
+    let illegal = parse("#[wire]\nfn helper() {}\nfn main() { helper(); }");
+    assert!(
+        illegal
+            .errors
+            .iter()
+            .any(|e| e.message.contains("unrecognised attribute `#[wire]`")
+                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected E_UNKNOWN_ATTRIBUTE for #[wire] on a free fn, got: {:?}",
+        illegal.errors
     );
 }

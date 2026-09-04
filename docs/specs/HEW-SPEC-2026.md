@@ -1425,10 +1425,20 @@ not how actor state is read.
 `this` is not a keyword and carries no actor meaning; the handle is `self`
 everywhere.
 
-A plain `fn` in an actor body has no receiver. Its body is checked against the
-actor's fields by bare name like a handler's, but no call form reaches it today
-(#3285), so a helper over actor state is a `receive fn`, a lifecycle hook, or a
-free function that takes the state as a parameter.
+A plain `fn` in an actor body is an **actor method**: a helper over the actor's
+own state with no receiver. Its body is checked against the actor's fields by
+bare name like a handler's, and it is callable by bare name from that actor's
+handlers, lifecycle hooks, `init`, and sibling methods. It takes no mailbox
+slot: from outside the actor it is unreachable, and naming it there is
+`E_ACTOR_METHOD_OUTSIDE` — send a message instead.
+
+```hew
+actor Counter {
+    var count: i64 = 0;
+    fn next() -> i64 { count + 1 }
+    receive fn increment() { count = next(); }
+}
+```
 
 **Variable shadowing:**
 
@@ -3085,13 +3095,13 @@ machine Name {
 
     // Transitions: on Event: Source => Target { body }
     on EventZ: StateB => StateA { .StateA } // explicit body returns target value
-    on EventY: StateA => StateB { StateB { field: event.payload } }
+    on EventY: StateA => StateB { .StateB { field: event.payload } }
 
     // Head binding: name payload fields at the rule site
     on EventY(payload): StateB => StateA { Name.StateA }
 
     // Self-transition with reenter (runs exit/entry even when state is unchanged)
-    on EventX: StateB => StateB reenter { StateB { field: self.field } }
+    on EventX: StateB => StateB reenter { .StateB { field: self.field } }
 
     // Wildcard — applies in all unhandled source states for this event
     on EventX: _ => _ { state }           // _ => _ means "stay in current state"
@@ -4301,13 +4311,6 @@ that happens to declare a field named `count` is therefore poolable like any
 other, and its `count` field is set the same way every other field is. The
 two namespaces never collide, so no diagnostic about pool arity can land on a
 user's field.
-
-> **Implementation status.** The shipped parser reads `count` out of the
-> parenthesised list as an init field, so `pool ws: A(count: N, ..)` is what
-> compiles today and the clause form is refused with
-> `unknown supervisor field`. The migration is a fix-it —
-> `pool ws: A(count: N, ..)` becomes `pool ws: A(..) count: N;` — tracked in
-> hew-lang/hew#3253.
 
 ### 5.2 Restart Semantics (normative)
 

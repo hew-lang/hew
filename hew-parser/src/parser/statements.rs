@@ -6,17 +6,17 @@
 )]
 use super::*;
 
-/// Where a `break`/`continue` is being parsed — controls where its optional
-/// operand ends. Shared by the statement parser (`parse_stmt`) and the
-/// expression-position desugar (`parse_primary`'s `Token::Break` arm) so the
-/// two spellings can never drift apart.
+/// Where a `break` is being parsed — controls where a (refused) operand ends.
+/// Shared by the statement parser (`parse_stmt`) and the expression-position
+/// desugar (`parse_primary`'s `Token::Break` arm) so the two spellings can
+/// never drift apart.
 #[derive(Clone, Copy)]
 pub(crate) enum BreakValuePosition {
-    /// `break [expr];` — the operand ends at the mandatory `;`.
+    /// `break;` — an operand would end at the mandatory `;`.
     Statement,
-    /// `break [expr]` in expression position (e.g. a match-arm body) — no
-    /// trailing `;`; the operand ends at whatever ends the surrounding
-    /// expression, mirroring `Token::Return` in `parse_primary`.
+    /// `break` in expression position (e.g. a match-arm body) — no trailing
+    /// `;`; an operand would end at whatever ends the surrounding expression,
+    /// mirroring `Token::Return` in `parse_primary`.
     Expression,
 }
 
@@ -35,12 +35,12 @@ impl Parser<'_> {
         }
     }
 
-    /// True when the next token ends `break`'s optional value operand without
-    /// starting an expression. `position` decides the terminator set: `;` or
-    /// a block-closing `}` (the tail-of-block case, mirroring
-    /// `Token::Return`'s statement-position handling below) in statement
-    /// position, or the same "cannot begin an expression" stop set `return`
-    /// uses in expression position.
+    /// True when the next token ends a `break` without starting an operand
+    /// expression. `position` decides the terminator set: `;` or a
+    /// block-closing `}` (the tail-of-block case, mirroring `Token::Return`'s
+    /// statement-position handling below) in statement position, or the same
+    /// "cannot begin an expression" stop set `return` uses in expression
+    /// position.
     pub(crate) fn break_value_is_absent(&self, position: BreakValuePosition) -> bool {
         match position {
             BreakValuePosition::Statement => {
@@ -58,6 +58,34 @@ impl Parser<'_> {
                 ) | None
             ),
         }
+    }
+
+    /// Refuses an operand on `break` with `E_BREAK_VALUE` (HEW-SPEC-2026
+    /// §12.4). `break` is a pure control-flow statement: a loop never produces
+    /// a value, so an operand has nowhere to go, and accepting it taught a
+    /// loop-as-expression model the language does not have.
+    ///
+    /// The operand is parsed and discarded rather than left on the cursor, so
+    /// a refused `break total;` reports one diagnostic instead of cascading
+    /// token-mismatch errors through the rest of the statement. Both spellings
+    /// of `break` (statement and expression position) route through here, so
+    /// neither can accept what the other refuses.
+    pub(crate) fn refuse_break_operand(&mut self, position: BreakValuePosition) {
+        if self.break_value_is_absent(position) {
+            return;
+        }
+        let operand_start = self.peek_span();
+        let span = match self.parse_expr() {
+            Some((_, operand_span)) => operand_start.start..operand_span.end,
+            // `parse_expr` has already reported why the operand is unparseable;
+            // still name the surface so the reader learns `break` takes none.
+            None => operand_start,
+        };
+        self.error_at_with_hint(
+            "E_BREAK_VALUE: `break` carries no operand; a loop never produces a value".to_string(),
+            span,
+            "assign to a `var` before `break`",
+        );
     }
 
     pub(crate) fn parse_block(&mut self) -> Option<Block> {
@@ -307,6 +335,54 @@ impl Parser<'_> {
         let stmt = match self.peek() {
             Some(Token::Let) => {
                 self.advance();
+
+                // `let mut x = …` is the single most common Rust-shaped typo:
+                // Hew spells mutability `var`, not `mut`. Recognizing it here,
+                // before the pattern parse, lets the whole statement recover
+                // as `var name = …` behind one diagnostic. Left to fall
+                // through to `parse_pattern`, `mut` matches none of the
+                // pattern-start arms — it lands in `error_invalid_pattern`'s
+                // reserved-word branch (which tells the user to rename `mut`
+                // itself, nonsensically), aborts the `let` parse without
+                // consuming `mut`, and the block-statement loop then cascades
+                // two more errors resyncing token-by-token.
+                if self.peek() == Some(&Token::Mut) {
+                    let mut_span = self.peek_span();
+                    self.advance();
+                    let hint = match self.peek() {
+                        Some(Token::Identifier(name)) => {
+                            format!(
+                                "delete `mut` and change `let` to `var`: write `var {name} = …`"
+                            )
+                        }
+                        _ => "delete `mut` and change `let` to `var`".to_string(),
+                    };
+                    self.error_at_with_hint(
+                        "Hew spells mutability `var`, not `let mut`".to_string(),
+                        mut_span,
+                        hint,
+                    );
+
+                    let name = self.expect_ident()?;
+
+                    let ty = if self.eat(&Token::Colon) {
+                        Some(self.parse_type()?)
+                    } else {
+                        None
+                    };
+
+                    let value = if self.eat(&Token::Equal) {
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+
+                    self.expect(&Token::Semicolon)?;
+
+                    let end = self.peek_span().start;
+                    return Some((Stmt::Var { name, ty, value }, start..end));
+                }
+
                 let pattern = self.parse_pattern()?;
 
                 // `let r? = expr;` is syntactic sugar for `let r = expr?;`.
@@ -538,14 +614,43 @@ impl Parser<'_> {
                     body,
                 }
             }
+            // `scope { .. }` is a statement, not a `Primary` (HEW-SPEC-2026
+            // §4.2): it brackets structured concurrency and produces no value,
+            // so it gets a dedicated arm here the way `if`/`while`/`for` do.
+            // `parse_primary` refuses the token outright, which is what closes
+            // every value position — a `let` initialiser, a call argument, a
+            // match-arm body, a block's trailing expression.
+            Some(Token::Scope) => {
+                self.advance();
+                // Reject obsolete surfaces: `scope.method()` and `scope |s| { ... }`.
+                if self.eat(&Token::Dot) {
+                    self.error(
+                        "'scope.method()' syntax has been removed; use 'scope { ... }' with `fork name = expr;` bindings instead"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                if self.peek() == Some(&Token::Pipe) {
+                    self.error(
+                        "'scope |s| { s.launch / s.spawn / s.cancel }' has been removed; use 'scope { fork name = call(...); }' instead"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                self.scope_expr_depth += 1;
+                let body = self.parse_block()?;
+                self.scope_expr_depth -= 1;
+                let expr_span = start..self.peek_span().start;
+                // A trailing `;` after the closing brace is the idiomatic
+                // spelling and is absorbed here, so `parse_block`'s stray-semicolon
+                // warning stays about actually stray semicolons.
+                self.eat(&Token::Semicolon);
+                Stmt::Expression((Expr::Scope { body }, expr_span))
+            }
             Some(Token::Break) => {
                 self.advance();
                 let label = self.parse_control_flow_label();
-                let value = if self.break_value_is_absent(BreakValuePosition::Statement) {
-                    None
-                } else {
-                    Some(self.parse_expr()?)
-                };
+                self.refuse_break_operand(BreakValuePosition::Statement);
                 // Mirrors `Token::Return` below: a statement-position `break`
                 // normally ends with `;`, but not when it is the last item in
                 // a block (`}` follows) — the `else { break }` / `if c {
@@ -553,7 +658,17 @@ impl Parser<'_> {
                 if self.peek() != Some(&Token::RightBrace) {
                     self.expect(&Token::Semicolon)?;
                 }
-                Stmt::Break { label, value }
+                Stmt::Break {
+                    label,
+                    // WHY: `Stmt::Break`'s `value` slot survives the refusal
+                    // above because HIR lowering, the checker, `fmt`, and the
+                    // sandbox emitter all still match on it.
+                    // WHEN OBSOLETE: once those consumers drop the operand
+                    // arm, the parser being its only producer.
+                    // WHAT: delete the field and the lowering that reads it,
+                    // so no layer below the parser can express a break value.
+                    value: None,
+                }
             }
             Some(Token::Continue) => {
                 self.advance();

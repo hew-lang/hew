@@ -193,6 +193,95 @@ pub fn snapshot_tree_json() -> String {
     json
 }
 
+/// Append `(supervisor_label, child_label, restarts)` rows for one supervisor
+/// and, recursively, every nested child supervisor beneath it.
+///
+/// `restarts` reads the same `CrashStats::total_crashes` lifetime counter
+/// `append_supervisor_rows` formats into its debug tree row above (under the
+/// same `roster.lock_or_recover()` discipline), not the bounded
+/// `roster.restart_count` ring used only for the restart-budget window.
+#[cfg(feature = "profiler")]
+fn append_restart_rows(rows: &mut Vec<(String, String, u64)>, sup: *mut HewSupervisor) {
+    if sup.is_null() {
+        return;
+    }
+
+    // SAFETY: copy the self-actor pointer from the live allocation.
+    let self_actor = unsafe { (*sup).self_actor };
+    let self_actor_id = if self_actor.is_null() {
+        0
+    } else {
+        // SAFETY: self_actor belongs to the live supervisor.
+        unsafe { (*self_actor).id }
+    };
+    let supervisor_label = format!("supervisor:{self_actor_id}");
+
+    // Snapshot restart counts and nested pins under this node's roster, then
+    // release it before recursive descent — same discipline as
+    // `append_supervisor_rows` above.
+    let (child_rows, nested) = {
+        // SAFETY: top-level supervisor pointers remain valid while registered;
+        // nested calls carry a stable pin acquired by their parent snapshot.
+        let roster = unsafe { &(*sup).roster }.lock_or_recover();
+        let child_rows = roster
+            .children
+            .iter()
+            .take(roster.child_count)
+            .enumerate()
+            .map(|(index, _child)| {
+                let spec = &roster.child_specs[index];
+                let name = child_name(spec.name, &format!("child[{index}]"));
+                let restarts: u64 = if spec.circuit_breaker.crash_stats.is_null() {
+                    0
+                } else {
+                    // SAFETY: crash stats pointer belongs to the child spec.
+                    u64::from(unsafe { (*spec.circuit_breaker.crash_stats).total_crashes })
+                };
+                (name, restarts)
+            })
+            .collect::<Vec<_>>();
+        let nested = roster
+            .child_supervisors
+            .iter()
+            .copied()
+            .zip(roster.child_supervisor_tokens.iter().copied())
+            .filter_map(|(child, token)| {
+                let pin = crate::lifetime::local_handles::pin_current_supervisor(token)?;
+                (pin.supervisor() == child).then_some((child, pin))
+            })
+            .collect::<Vec<_>>();
+        (child_rows, nested)
+    };
+
+    for (child, restarts) in child_rows {
+        rows.push((supervisor_label.clone(), child, restarts));
+    }
+    for (child_sup, _pin) in nested {
+        append_restart_rows(rows, child_sup);
+    }
+}
+
+/// Snapshot the lifetime restart total of every child across every registered
+/// supervisor tree, as `(supervisor_label, child_label, restarts)` rows.
+///
+/// Backs the `supervisor.restarts_by_child_total` observe series
+/// ([`crate::observe::scrape_text`]); mirrors [`snapshot_tree_json`]'s walk,
+/// but reads through the non-panicking
+/// [`crate::shutdown::registered_supervisors_snapshot_opt`] rather than
+/// [`crate::shutdown::registered_supervisors_snapshot`] — a scrape may run
+/// before `hew_sched_init` installs a runtime or after teardown drops it,
+/// where there is legitimately no supervisor tree yet, not a caller bug.
+#[cfg(feature = "profiler")]
+#[must_use]
+pub fn restarts_by_child_snapshot() -> Vec<(String, String, u64)> {
+    let roots = crate::shutdown::registered_supervisors_snapshot_opt();
+    let mut rows = Vec::new();
+    for root in roots {
+        append_restart_rows(&mut rows, root);
+    }
+    rows
+}
+
 // ---------------------------------------------------------------------------
 // Child lookup result types (shared by static and pool ABI)
 // ---------------------------------------------------------------------------
@@ -329,7 +418,7 @@ struct InternalPoolSpec {
     max_members: usize,
     /// Static-child indices backing this pool's members, in member order.
     ///
-    /// A STATIC pool (`pool name: Type(count: N)`) registers its N members as
+    /// A STATIC pool (`pool name: Type count: N`) registers its N members as
     /// ordinary static children in `HewSupervisor.children[]` and records each
     /// member's static-child index here via
     /// [`hew_supervisor_pool_member_add_static`]. The accessor
@@ -2806,29 +2895,31 @@ unsafe fn restart_child_from_spec_expected(
                 // SAFETY: opts is valid; ownership of `cloned` is transferred.
                 unsafe { actor::hew_actor_spawn_opts_adopt(&raw const opts, cloned) }
             }
+        } else if state_drop_fn.is_some() {
+            // No `state_clone_fn` registered, but `state_drop_fn` IS: the
+            // legacy byte-copy path below is only sound for BitCopy actor
+            // state (plain-old-data fields with no owned heap pointers). A
+            // registered `state_drop_fn` means the actor's state owns heap
+            // fields, so byte-copying the template would alias those owned
+            // pointers between the template and every spawned incarnation —
+            // a double-free on teardown. The checker
+            // (E_SUPERVISOR_INIT_ARG_NON_BITCOPY) rejects this at compile
+            // time for codegen-emitted actors; a C-ABI caller that bypasses
+            // the checker and registers `state_drop_fn` without
+            // `state_clone_fn` gets a refused restart here instead of a
+            // silent alias (#1893).
+            set_last_error(format!(
+                "hew_supervisor_set_child_state_drop: child {index} registered a state-drop \
+                 function without a matching state-clone function; restart refused rather than \
+                 byte-copying owned heap state"
+            ));
+            fail_restart_snapshot(sup, index, spec_identity, spec_revision, &template);
+            return ptr::null_mut();
         } else {
-            // Legacy byte-copy path: no `state_clone_fn` registered.
-            //
-            // SAFETY boundary: this byte-copy is only sound for BitCopy actor state
-            // (plain-old-data fields with no owned heap pointers).  If `state_drop_fn`
-            // is also set, the template and the spawned actor share heap pointer aliases
-            // → double-free on teardown.
-            //
-            // The checker (E_SUPERVISOR_INIT_ARG_NON_BITCOPY) is the primary authority
-            // and rejects owned-handle init args at compile time before this path is
-            // reached.  Out-of-tree / hand-rolled C ABI callers that bypass the checker
-            // and register `state_drop_fn` without `state_clone_fn` receive borrowed
-            // provenance: typed drop is suppressed and the aliased owned fields leak
-            // fail-closed rather than being freed through multiple incarnations.
-            //
-            // WHY this is not a debug_assert: the assert would fire in existing tests
-            // that probe the legacy byte-copy path directly (see
-            // `state_clone_fn_null_falls_back_to_bytecopy`), which are present to
-            // document backward compatibility for out-of-tree consumers.
-            // WHEN obsolete: when the v0.6 init-closure restart model lands and
-            // every supervised actor with owned-heap state registers `state_clone_fn`.
-            // REAL FIX: extend the checker wall to cover all paths, then make
-            // `state_clone_fn` mandatory for any actor with owned-heap fields.
+            // Legacy byte-copy path: neither `state_clone_fn` nor
+            // `state_drop_fn` is registered, so the actor's state is BitCopy
+            // (plain-old-data fields with no owned heap pointers) and a flat
+            // byte-copy of the template is sound.
             //
             // SAFETY: opts is valid.
             unsafe { actor::hew_actor_spawn_opts(&raw const opts) }
@@ -7942,12 +8033,14 @@ mod tests {
     }
 
     #[test]
-    fn state_clone_fn_null_falls_back_to_bytecopy() {
+    fn state_drop_fn_without_state_clone_fn_refuses_restart() {
         let _rt = crate::runtime_test_guard();
-        // No state_clone_fn registered: restart must still succeed via the
-        // legacy `hew_actor_spawn_opts` byte-copy path. This preserves
-        // backward compatibility for children whose codegen has not yet
-        // emitted a clone fn (out-of-tree consumers, hand-rolled actors).
+        // A `state_drop_fn` registered without a `state_clone_fn` means the
+        // actor's state owns heap fields but has no sound way to clone the
+        // spec template for a restart. Byte-copying it would alias those
+        // owned heap pointers between the template and the restarted actor
+        // (double-free at teardown). The restart must refuse rather than
+        // silently fall back to that unsound byte-copy (#1893).
         let _serial = CLONE_TEST_SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -7963,22 +8056,40 @@ mod tests {
 
             let restarted = restart_child_from_spec(sup, 0);
             assert!(
-                !restarted.is_null(),
-                "legacy byte-copy restart must still succeed"
+                restarted.is_null(),
+                "a state_drop_fn registered without state_clone_fn must refuse the restart"
             );
             assert_eq!(
                 CLONE_CALL_COUNT.load(Ordering::SeqCst),
                 0,
-                "legacy byte-copy path must NOT invoke clone_fn"
+                "a refused restart must NOT invoke clone_fn either"
             );
             assert!(
-                !(*restarted).init_state.is_null(),
-                "legacy path must populate actor.init_state via deep_copy_state"
+                locked_roster!(sup).children[0].is_null(),
+                "a refused restart must leave the child slot null"
             );
 
-            // Pin: the spec stayed in legacy mode (no in-place re-clone).
-            // No assertion on spec.init_state value — just that the test
-            // doesn't UAF.
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// Negative control for `state_drop_fn_without_state_clone_fn_refuses_restart`:
+    /// a genuinely `BitCopy` actor (neither `state_drop_fn` nor `state_clone_fn`
+    /// registered — no owned heap fields at all) must still restart via the
+    /// legacy byte-copy path. The refusal above is specific to the dangerous
+    /// drop-without-clone combination, not to "no clone fn" in general.
+    #[test]
+    fn no_state_ops_registered_still_uses_legacy_bytecopy_restart() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: test owns the supervisor tree.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let restarted = restart_child_from_spec(sup, 0);
+            assert!(
+                !restarted.is_null(),
+                "a BitCopy actor with neither state_drop_fn nor state_clone_fn \
+                 registered must still restart via the legacy byte-copy path"
+            );
             hew_supervisor_stop(sup);
         }
     }
@@ -8071,31 +8182,28 @@ mod tests {
     }
 
     unsafe fn run_forced_bytecopy_freed_spec_payload_probe() -> ! {
-        // Install a runtime so spawn/track resolve; this subprocess faults
-        // intentionally (GuardMalloc SIGSEGV) before the guard would drop.
+        // Install a runtime so spawn/track resolve. Before #1893 this
+        // subprocess faulted intentionally (GuardMalloc SIGSEGV) by forcing
+        // the legacy byte-copy path to alias a freed spec payload. That
+        // path is no longer reachable: a `state_drop_fn` registered without
+        // a `state_clone_fn` now refuses the restart outright, so this
+        // probe proves the refusal instead of the fault.
         let _rt = crate::runtime_test_guard();
         let (sup, _template) = make_supervisor_with_heap_child(false);
-        let dangling_payload = free_spec_template_payload(sup);
+        let _dangling_payload = free_spec_template_payload(sup);
 
         let restarted = restart_child_from_spec(sup, 0);
         assert!(
-            !restarted.is_null(),
-            "legacy byte-copy restart must produce an actor"
-        );
-        let restarted_state = &mut *(*restarted).state.cast::<HeapState>();
-        assert_eq!(
-            restarted_state.payload, dangling_payload,
-            "legacy byte-copy restart must preserve the freed payload alias"
+            restarted.is_null(),
+            "a state_drop_fn registered without state_clone_fn must refuse the restart, \
+             not byte-copy a freed spec payload"
         );
 
-        *restarted_state.payload = 0xCC;
         std::process::exit(0);
     }
 
     #[cfg(target_os = "macos")]
     fn assert_forced_bytecopy_freed_spec_faults_under_guard_malloc(test_name: &str) {
-        use std::os::unix::process::ExitStatusExt as _;
-
         if !std::path::Path::new(GUARD_MALLOC_DYLIB).exists() {
             eprintln!("skipping GuardMalloc alias-fault probe: {GUARD_MALLOC_DYLIB} not found");
             return;
@@ -8111,10 +8219,9 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .status()
             .expect("spawn GuardMalloc alias-fault helper");
-        assert_eq!(
-            status.signal(),
-            Some(libc::SIGSEGV),
-            "forced byte-copy of freed spec.init_state payload must SIGSEGV under GuardMalloc; status={status:?}"
+        assert!(
+            status.success(),
+            "the refused restart must exit cleanly under GuardMalloc, never fault; status={status:?}"
         );
     }
 
@@ -9066,12 +9173,19 @@ pub extern "C" fn hew_supervisor_role_send(
 /// Cooperatively submit a bounded `overflow block` tell through a stable
 /// supervisor role. Resolution and mailbox registration occur under one
 /// identity pin; on acceptance, `out_actor_id` receives the exact incarnation
-/// whose mailbox owns the waiter so cancellation can detach from that mailbox.
+/// whose mailbox owns the waiter so cancellation can detach from that
+/// mailbox, and `out_registration_id` receives the
+/// [`crate::mailbox::BlockedSenderId`] minted for a parked waiter (`0` when
+/// admitted immediately). Detach must name the registration id rather than
+/// the read-slot address: slot allocations are recycled, so a detach keyed on
+/// the pointer could remove a different registration that reused the freed
+/// address (#3147).
 ///
 /// # Safety
 ///
 /// `data`, `sender`, and `slot` must satisfy
-/// [`crate::actor::actor_await_send_pinned`]. `out_actor_id` must be writable.
+/// [`crate::actor::actor_await_send_pinned`]. `out_actor_id` and
+/// `out_registration_id` must be writable.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_role_await_send(
@@ -9083,20 +9197,24 @@ pub unsafe extern "C" fn hew_supervisor_role_await_send(
     sender: *mut HewActor,
     slot: *mut crate::read_slot::HewReadSlot,
     out_actor_id: *mut u64,
+    out_registration_id: *mut u64,
 ) -> c_int {
-    if out_actor_id.is_null() {
-        set_last_error("stable-role cooperative tell received a null actor-id output".to_string());
+    if out_actor_id.is_null() || out_registration_id.is_null() {
+        set_last_error("stable-role cooperative tell received a null output".to_string());
         return crate::internal::types::HewError::ErrActorStopped as i32;
     }
-    // SAFETY: the null check above establishes the caller-provided output is
-    // writable. Initialize it even on refusal because codegen loads before
-    // branching on status and only uses the value on the suspend edge.
-    unsafe { out_actor_id.write(0) };
+    // SAFETY: the null check above establishes the caller-provided outputs
+    // are writable. Initialize them even on refusal because codegen loads
+    // before branching on status and only uses the values on the suspend edge.
+    unsafe {
+        out_actor_id.write(0);
+        out_registration_id.write(0);
+    }
     let (child_id, child_serial) = match role_resolve_current_child_id(token, key, false) {
         Ok(ids) => ids,
         Err(code) => return code,
     };
-    let rc = crate::lifetime::live_actors::with_actor_send_by_identity(
+    let (rc, registration_id) = crate::lifetime::live_actors::with_actor_send_by_identity(
         child_id,
         child_serial,
         |pin| {
@@ -9118,11 +9236,14 @@ pub unsafe extern "C" fn hew_supervisor_role_await_send(
         set_last_error(format!(
             "stable-role cooperative tell refused: child slot {key} incarnation retired during submission"
         ));
-        crate::internal::types::HewError::ErrActorStopped as i32
+        (crate::internal::types::HewError::ErrActorStopped as i32, 0)
     });
     if rc >= 0 {
-        // SAFETY: non-null writable output is part of this ABI's contract.
-        unsafe { out_actor_id.write(child_id) };
+        // SAFETY: non-null writable outputs are part of this ABI's contract.
+        unsafe {
+            out_actor_id.write(child_id);
+            out_registration_id.write(registration_id);
+        }
     }
     rc
 }
@@ -9138,6 +9259,7 @@ pub extern "C" fn hew_supervisor_role_await_send(
     _sender: *mut HewActor,
     _slot: *mut crate::read_slot::HewReadSlot,
     _out_actor_id: *mut u64,
+    _out_registration_id: *mut u64,
 ) -> c_int {
     crate::internal::types::HewError::ErrActorStopped as i32
 }
@@ -10532,7 +10654,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_member_add(
 /// Register a STATIC-backed pool member: a pool member whose actor lives in the
 /// supervisor's `children[]` table at `static_idx`.
 ///
-/// A static pool (`pool name: Type(count: N)`) spawns its N members as ordinary
+/// A static pool (`pool name: Type count: N`) spawns its N members as ordinary
 /// static children, then records each member's static-child index here (in
 /// member order). The accessor [`hew_supervisor_pool_child_get`] resolves member
 /// `i` through the LIVE static slot `children[static_idx]`, so a restarted member
@@ -10686,7 +10808,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
         return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
     }
 
-    // ── Static-backed pool path (`pool name: Type(count: N)`) ────────────────
+    // ── Static-backed pool path (`pool name: Type count: N`) ────────────────
     //
     // A static pool resolves member `i` through the LIVE static child slot, NOT
     // a cached PID. This is the restart re-resolution contract: the restart

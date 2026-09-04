@@ -198,6 +198,7 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
         declaration: hew_types::DefId::for_test(name),
         name: name.to_string(),
         defining_module: None,
+        type_params: vec![],
         state_fields: vec![HirField {
             name: "count".to_string(),
             ty: ResolvedTy::I64,
@@ -1671,11 +1672,10 @@ fn generator_handler_call_lowers_to_stream_dispatch() {
 }
 
 #[test]
-fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
+fn actor_lifecycle_start_and_crash_hooks_lower_to_actor_handler_functions() {
     let mut ids = IdGen::default();
     let start_return = return_none_stmt(&mut ids);
     let crash_return = return_none_stmt(&mut ids);
-    let upgrade_return = return_none_stmt(&mut ids);
     let actor = {
         let mut actor = actor(&mut ids, "Counter", vec![]);
         actor.lifecycle_hooks = vec![
@@ -1695,15 +1695,6 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
                 body: block(&mut ids, vec![crash_return], None, ResolvedTy::Unit),
-                span: 0..0,
-            },
-            HirLifecycleHook {
-                kind: HirLifecycleHookKind::Upgrade,
-                name: "upgrade".to_string(),
-                declaration: hew_types::DefId::for_test("upgrade"),
-                params: vec![],
-                return_ty: ResolvedTy::Unit,
-                body: block(&mut ids, vec![upgrade_return], None, ResolvedTy::Unit),
                 span: 0..0,
             },
         ];
@@ -1741,16 +1732,6 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
         .find(|func| func.name == "Counter__on_crash")
         .expect("on(crash) hook must produce a MIR function");
     assert_eq!(crash_fn.call_conv, FunctionCallConv::ActorHandler);
-    // on(upgrade) remains fail-closed — no MIR function, a diagnostic.
-    assert!(
-        pipeline.diagnostics.iter().any(|diag| {
-            matches!(
-                &diag.kind,
-                MirDiagnosticKind::UnsupportedNode { reason } if reason.contains("OnUpgradeNotYetWired")
-            )
-        }),
-        "OnUpgradeNotYetWired must still be fail-closed"
-    );
     // on(stop) is wired — no fail-closed diagnostic for it.
     assert!(
         !pipeline.diagnostics.iter().any(|diag| {
@@ -2339,5 +2320,63 @@ fn forawait_nested_early_return_closes_all_cursors() {
         return_edge, 2,
         "a function return from nested for-await loops must close both active cursors: \
          {drain_fn:#?}"
+    );
+}
+
+/// An actor-body plain `fn` lowers to a `Default`-callconv function whose
+/// header opens with the execution context and the actor-state pointer, carries
+/// the actor-method origin (not a handler kind), and takes no dispatch slot.
+///
+/// The counterfactual for each assertion is a real defect: a missing leading
+/// parameter misaligns every argument at the call edge, an `ActorHandler`
+/// convention would add an implicit context and a `borrow_mode` parameter no
+/// caller passes, and a dispatch-table row would let a message reach a method
+/// the mailbox has no envelope for.
+#[test]
+fn actor_body_fn_lowers_with_context_and_state_leading_params() {
+    let pipeline = source_pipeline(
+        r"
+        actor Counter {
+            var count: i64 = 0;
+            fn helper(step: i64) -> i64 { count + step }
+            receive fn bump() { count = helper(1); }
+        }
+        fn main() { let c = spawn Counter(count: 0); c.bump(); }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    let method = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__fn__helper")
+        .expect("an actor-body plain fn must emit its own MIR function");
+    assert_eq!(method.call_conv, FunctionCallConv::Default);
+    assert_eq!(
+        method.source_origin,
+        SourceOrigin::SynthesizedActorMethod {
+            actor_layout_key: "Counter".to_string(),
+        }
+    );
+    let ptr = ResolvedTy::Pointer {
+        is_mutable: true,
+        pointee: Box::new(ResolvedTy::Unit),
+    };
+    assert_eq!(
+        method.params,
+        vec![ptr.clone(), ptr, ResolvedTy::I64],
+        "header must be (ctx, state, <user params>)"
+    );
+    let layout = &pipeline.actor_layouts[0];
+    assert!(
+        layout
+            .handlers
+            .iter()
+            .all(|handler| handler.symbol != "Counter__fn__helper"),
+        "an actor method takes no dispatch slot: {:#?}",
+        layout.handlers
     );
 }

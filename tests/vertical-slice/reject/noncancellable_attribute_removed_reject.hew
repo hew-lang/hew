@@ -1,0 +1,10 @@
+// `#[noncancellable]` no longer parses (HEW-SPEC-2026 §12.6): cancellation
+// in edition 2026 is scope-structural, and the attribute has no surface to
+// be held for. It is now an ordinary unrecognised attribute name.
+#[noncancellable]
+fn helper() {
+}
+
+fn main() {
+    helper();
+}

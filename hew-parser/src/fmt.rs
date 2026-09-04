@@ -575,9 +575,9 @@ impl<'a> Formatter<'a> {
                 TypeBodyItem::Field {
                     name,
                     ty,
+                    attributes,
                     doc_comment,
                     span,
-                    ..
                 } => {
                     // flush inline comments that appear before this field
                     self.flush_comments_before(span.start);
@@ -586,6 +586,7 @@ impl<'a> Formatter<'a> {
                     // between the field name and any trailing comment
                     self.prev_source_pos = span.start;
                     self.write_outer_doc(doc_comment.as_ref());
+                    self.format_attributes(attributes);
                     self.write_indent();
                     self.write(name);
                     self.write(": ");
@@ -1830,6 +1831,13 @@ impl<'a> Formatter<'a> {
                 f.format_expr(&arg.0);
             });
             self.write(")");
+        }
+        // Pool arity is a clause, so it prints outside the parentheses. It
+        // comes first among the clauses because arity binds to the template the
+        // parentheses just described.
+        if let Some(count) = &spec.count {
+            self.write(" count: ");
+            self.format_expr(&count.0);
         }
         if let Some(restart) = &spec.restart {
             self.write(" restart: ");
@@ -4888,9 +4896,11 @@ extern \"C\" {
 
     #[test]
     fn scope_block_roundtrips() {
+        // `scope { .. }` is a statement, so the formatted form is a
+        // statement-expression, not a `let` initialiser (HEW-SPEC-2026 §4.2).
         let src = "\
 fn main() {
-    let value = scope {
+    scope {
         1
     };
 }
@@ -4913,7 +4923,7 @@ fn main() {
     fn nested_scope_roundtrips() {
         let src = "\
 fn main() {
-    let value = scope {
+    scope {
         fork worker = run();
         fork audit();
         worker
@@ -5553,6 +5563,30 @@ machine Socket {
         assert!(
             formatted.contains("on Connect(fd): Active => Idle;"),
             "implicit transition must remain implicit; got:\n{formatted}"
+        );
+        assert_eq!(roundtrip(&formatted), formatted);
+    }
+
+    #[test]
+    fn impl_block_doc_comment_is_preserved() {
+        let src = "\
+enum Foo {
+    A;
+}
+
+/// Doc comment for Foo Display.
+impl Display for Foo {
+    fn fmt(f: Foo) -> string {
+        match f {
+            .A => \"a\",
+        }
+    }
+}
+";
+        let formatted = roundtrip(src);
+        assert!(
+            formatted.contains("/// Doc comment for Foo Display."),
+            "doc comment on an impl block must survive formatting; got:\n{formatted}"
         );
         assert_eq!(roundtrip(&formatted), formatted);
     }

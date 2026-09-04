@@ -759,9 +759,6 @@ pub enum TypeErrorKind {
     /// A resolved path member exists, but not in the syntactic namespace the
     /// expression requires.
     PathKindMismatch,
-    /// Two owner-qualified generic types collapse to the same bare
-    /// monomorphisation key but require incompatible concrete layouts.
-    GenericLayoutCollision,
     /// Value cannot be sent to another actor
     InvalidSend,
     /// Operation not supported for this type
@@ -797,6 +794,14 @@ pub enum TypeErrorKind {
     },
     /// Execution-context reader used outside an actor handler context
     ContextReaderOutsideHandler,
+    /// An actor-body plain `fn` was named from outside its own actor.
+    ///
+    /// Such a method runs on the actor's own state and is entered from the
+    /// actor's own handlers, hooks, `init`, and sibling methods. From anywhere
+    /// else the only reachable surface is the mailbox.
+    ///
+    /// Envelope code: `E_ACTOR_METHOD_OUTSIDE`.
+    ActorMethodOutsideActor,
     /// Wrong number of arguments
     ArityMismatch,
     /// Generic bounds not satisfied
@@ -819,6 +824,11 @@ pub enum TypeErrorKind {
     UseAfterConsume,
     /// Yield used outside a generator function
     YieldOutsideGenerator,
+    /// A `gen fn` return-type annotation spells the generator handle
+    /// (`Generator<Y, R>`) instead of the yield type `Y` (HEW-SPEC-2026
+    /// §4.12). The compiler synthesizes the handle wrapper itself; naming it
+    /// in the annotation says the body yields handles, not `Y` values.
+    GenReturnSpelling,
     /// Actor types form a reference cycle via `LocalPid` fields
     ActorRefCycle,
     /// A value-typed enum/record/struct contains itself by value, directly or
@@ -849,8 +859,6 @@ pub enum TypeErrorKind {
     OrphanImpl,
     /// Feature is not available on the selected compilation target
     PlatformLimitation,
-    /// `#[on(upgrade)]` is parsed but rejected: it is reserved and not supported.
-    OnUpgradeNotYetWired,
     /// Machine state × event exhaustiveness violation
     MachineExhaustivenessError,
     /// Import cannot be resolved: module not found or failed to parse
@@ -1501,7 +1509,6 @@ impl TypeErrorKind {
             Self::PathMemberNotFound => "E_PATH_MEMBER_NOT_FOUND",
             Self::AssocItemAmbiguous => "E_ASSOC_ITEM_AMBIGUOUS",
             Self::PathKindMismatch => "E_PATH_KIND_MISMATCH",
-            Self::GenericLayoutCollision => "GenericLayoutCollision",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
             Self::DerivedOrdUnavailable { .. } => "E_LIMIT_DERIVED_ORD",
@@ -1509,6 +1516,7 @@ impl TypeErrorKind {
             Self::WireOptionalFieldRequiresOption => "E_WIRE_OPTIONAL_REQUIRES_OPTION",
             Self::SupervisorError { subkind } => subkind.as_kind_str(),
             Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",
+            Self::ActorMethodOutsideActor => "E_ACTOR_METHOD_OUTSIDE",
             Self::ArityMismatch => "ArityMismatch",
             Self::BoundsNotSatisfied => "BoundsNotSatisfied",
             Self::InferenceFailed => "InferenceFailed",
@@ -1520,6 +1528,7 @@ impl TypeErrorKind {
             Self::UseAfterMove => "UseAfterMove",
             Self::UseAfterConsume => "UseAfterConsume",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
+            Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",
             Self::UnusedVariable => "UnusedVariable",
@@ -1531,7 +1540,6 @@ impl TypeErrorKind {
             Self::Shadowing => "Shadowing",
             Self::OrphanImpl => "OrphanImpl",
             Self::PlatformLimitation => "PlatformLimitation",
-            Self::OnUpgradeNotYetWired => "OnUpgradeNotYetWired",
             Self::MachineExhaustivenessError => "MachineExhaustivenessError",
             Self::UnresolvedImport => "UnresolvedImport",
             Self::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",

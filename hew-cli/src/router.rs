@@ -19,10 +19,12 @@ pub(crate) trait CommandDispatcher {
     fn machine(&mut self, args: &args::MachineCommand);
     fn fmt(&mut self, args: &args::FmtArgs);
     fn init(&mut self, args: &args::InitArgs);
+    fn new_project(&mut self, args: &args::NewArgs);
     fn playground_verify(&mut self, args: &args::PlaygroundVerifyArgs);
     fn sir_coverage(&mut self, args: &args::SirCoverageArgs);
     fn completions(&mut self, args: &args::CompletionsArgs);
     fn version(&mut self);
+    fn env(&mut self);
     fn help(&mut self);
     fn observe(&mut self, args: &args::ObserveArgs);
     fn lsp(&mut self, args: &args::LspArgs);
@@ -84,6 +86,10 @@ impl CommandDispatcher for MainCommandDispatcher {
         crate::cmd_init(args);
     }
 
+    fn new_project(&mut self, args: &args::NewArgs) {
+        crate::cmd_new(args);
+    }
+
     fn playground_verify(&mut self, args: &args::PlaygroundVerifyArgs) {
         crate::playground::cmd_playground_verify(args);
     }
@@ -101,6 +107,10 @@ impl CommandDispatcher for MainCommandDispatcher {
 
     fn version(&mut self) {
         crate::cmd_version();
+    }
+
+    fn env(&mut self) {
+        crate::cmd_env();
     }
 
     fn help(&mut self) {
@@ -143,6 +153,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Machine(args)) => dispatcher.machine(args),
         Some(Command::Fmt(args)) => dispatcher.fmt(args),
         Some(Command::Init(args)) => dispatcher.init(args),
+        Some(Command::New(args)) => dispatcher.new_project(args),
         Some(Command::Playground(args)) => match &args.command {
             args::PlaygroundSubcommand::Verify(verify) => dispatcher.playground_verify(verify),
         },
@@ -153,6 +164,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         },
         Some(Command::Completions(args)) => dispatcher.completions(args),
         Some(Command::Version) => dispatcher.version(),
+        Some(Command::Env) => dispatcher.env(),
         Some(Command::Observe(args)) => dispatcher.observe(args),
         Some(Command::Lsp(args)) => dispatcher.lsp(args),
         Some(Command::Pkg(cmd)) => dispatcher.pkg(cmd),
@@ -555,6 +567,10 @@ mod tests {
             self.calls.push("init".to_string());
         }
 
+        fn new_project(&mut self, _args: &crate::args::NewArgs) {
+            self.calls.push("new".to_string());
+        }
+
         fn playground_verify(&mut self, _args: &crate::args::PlaygroundVerifyArgs) {
             self.calls.push("playground-verify".to_string());
         }
@@ -577,6 +593,10 @@ mod tests {
 
         fn version(&mut self) {
             self.calls.push("version".to_string());
+        }
+
+        fn env(&mut self) {
+            self.calls.push("env".to_string());
         }
 
         fn help(&mut self) {

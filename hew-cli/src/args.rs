@@ -100,6 +100,14 @@ pub enum Command {
     Fmt(FmtArgs),
     /// Scaffold a manifest-first project (`hew.toml` + starter source + merged `.gitignore`).
     Init(InitArgs),
+    /// Create a new manifest-first project directory and initialize it as a
+    /// git repository.
+    ///
+    /// Like `cargo new`: creates `<name>/`, scaffolds it exactly as `hew
+    /// init` would, and runs `git init` unless the new directory already
+    /// sits inside a repository. Use `hew init` to scaffold the current
+    /// directory in place without touching git.
+    New(NewArgs),
     /// Curated playground example tools.
     ///
     /// Superseded by `hew tool playground-verify`. Kept as a hidden alias so
@@ -112,6 +120,10 @@ pub enum Command {
     Completions(CompletionsArgs),
     /// Print version info.
     Version,
+    /// Print resolved package-manager environment (`HEW_HOME`,
+    /// `HEW_REGISTRY`, `HEW_CC`), naming which are set and which fall back
+    /// to their default.
+    Env,
     /// Launch the TUI actor observer (`hew-observe`).
     ///
     /// Forwards all arguments to `hew-observe`. Requires the `hew-observe`
@@ -490,9 +502,10 @@ pub struct BuildArgs {
     /// Input .hew file, or a package directory. Omit it to build the package
     /// enclosing the current directory.
     pub input: Option<PathBuf>,
-    /// Output binary path. Default: `<package-root>/<package-name>` for a
-    /// package, `./<stem>` for an explicit file (no extension on Unix targets,
-    /// `.exe` on Windows targets). Ignored with `--emit-obj`.
+    /// Output path, for the linked binary or (with `--emit-obj`) the object
+    /// file. Default: `<package-root>/target/<debug|release>/<package-name>`
+    /// for a package, `./<stem>` for an explicit file (no extension on Unix
+    /// targets, `.exe` on Windows targets; `.o`/`.obj` with `--emit-obj`).
     #[arg(long, short = 'o', value_name = "PATH")]
     pub output: Option<PathBuf>,
     /// Target triple. Omit for host native; e.g. `arm64-apple-darwin`,
@@ -500,9 +513,9 @@ pub struct BuildArgs {
     /// `wasm32-unknown-unknown`.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
-    /// Emit a relocatable object file instead of a linked binary, written to
-    /// `<cwd>/<stem><.o|.obj>`. Required for foreign-OS targets that cannot be
-    /// linked on this host.
+    /// Emit a relocatable object file instead of a linked binary, named the
+    /// same way the linked binary would be (or `-o` verbatim). Required for
+    /// foreign-OS targets that cannot be linked on this host.
     #[arg(long = "emit-obj")]
     pub emit_obj: bool,
     /// Retain the pre-optimization textual LLVM IR beside the output.
@@ -885,6 +898,22 @@ pub struct FmtArgs {
 pub struct InitArgs {
     /// Project name (creates the directory if needed; omit to init the current directory).
     pub name: Option<String>,
+    /// Scaffold a library project (`<final-package-segment>.hew`).
+    #[arg(long, conflicts_with = "actor")]
+    pub lib: bool,
+    /// Scaffold an actor project.
+    #[arg(long)]
+    pub actor: bool,
+}
+
+// ---------------------------------------------------------------------------
+// New
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Args)]
+pub struct NewArgs {
+    /// Project name; the new directory is created with this name.
+    pub name: String,
     /// Scaffold a library project (`<final-package-segment>.hew`).
     #[arg(long, conflicts_with = "actor")]
     pub lib: bool,

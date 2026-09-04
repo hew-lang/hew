@@ -97,3 +97,4 @@ match_nested_aggregate_payload_owner.hew runtime-crash   # #3226: nested aggrega
 projected_tuple_element_owner.hew runtime-crash          # #3226: tuple-element projection segfaults at teardown (SIGSEGV)
 match_param_field_payload_carrier.hew runtime-crash      # #3226: use-after-free read then double-free abort on a by-value parameter's inline enum field (SIGABRT)
 projected_owned_field_transfer_asan.hew runtime-crash    # #3226: same handoff shapes as the three fixtures above, compiled without ASan instrumentation here
+composite_resource_close_once_asan.hew runtime-crash  # #3070 pin (PR 3280): composite #[resource] field closed twice → SIGABRT; row deleted by the lane that fixes #3070

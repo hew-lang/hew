@@ -1,0 +1,19 @@
+// A method inside an `impl { .. }` block carries `#[extern_symbol]`, the
+// substrate set, and `#[returns_receiver]` (HEW-SPEC-2026 §12.6). An
+// unrecognised attribute there is `E_UNKNOWN_ATTRIBUTE`, matching the
+// closed-table refusal at every other attribute-consuming position.
+type Counter {
+    value: i64;
+}
+
+impl Counter {
+    #[bogus]
+    fn get(self) -> i64 {
+        self.value
+    }
+}
+
+fn main() {
+    let c = Counter { value: 5 };
+    println(f"{c.get()}");
+}

@@ -770,6 +770,17 @@ const ATTRIBUTED_TURN_SERIES_CANONICAL: [&str; 2] = [
     "actors.attributed_turn_duration_ns_by_handler_total",
 ];
 
+/// Rendered Prometheus series name of the per-child supervisor restart series
+/// the scrape emits from [`push_restarts_by_child_series`]. Already in
+/// rendered form (`_`, never `.`); the base name of the labelled
+/// `{supervisor,child}` series. A user metric whose rendered name equals this
+/// would emit a duplicate `# TYPE` block and shadow the runtime's per-child
+/// restart telemetry, so the registry rejects it.
+const SUPERVISOR_RESTART_SERIES_NAMES: [&str; 1] = ["supervisor_restarts_by_child_total"];
+
+/// Canonical (dotted) name of the supervisor restart series, for `series_text`.
+const SUPERVISOR_RESTART_SERIES_CANONICAL: [&str; 1] = ["supervisor.restarts_by_child_total"];
+
 /// Rendered Prometheus series names of the user-metric registry self-metrics
 /// the scrape emits from [`push_user_metric_self_series`]. Already in rendered
 /// form. A user metric that shadowed one of these would mask the very
@@ -796,8 +807,8 @@ pub fn render_prometheus_name(name: &str) -> String {
 /// Every rendered Prometheus series name the scrape owns. This is the single
 /// authoritative set the registry's collision check consults so that *no*
 /// scrape-owned name can be shadowed by a user metric — the `observe_series()`
-/// built-ins (rendered), the per-handler attributed-turn series, and the
-/// user-metric registry self-metrics.
+/// built-ins (rendered), the per-handler attributed-turn series, the per-child
+/// supervisor restart series, and the user-metric registry self-metrics.
 ///
 /// Returning rendered names keeps the collision check on the rendered form (see
 /// [`rendered_name_collides_with_builtin`]): the scrape render is non-injective,
@@ -809,6 +820,11 @@ fn reserved_rendered_names() -> impl Iterator<Item = String> {
         .map(|(builtin, _)| render_prometheus_name(builtin))
         .chain(
             ATTRIBUTED_TURN_SERIES_NAMES
+                .iter()
+                .map(|s| (*s).to_string()),
+        )
+        .chain(
+            SUPERVISOR_RESTART_SERIES_NAMES
                 .iter()
                 .map(|s| (*s).to_string()),
         )
@@ -894,6 +910,42 @@ fn push_attributed_turn_series(out: &mut String) {
         out.push_str(&prometheus_label_value(&handler));
         out.push_str("\"} ");
         out.push_str(&turn.duration_ns_total.to_string());
+        out.push('\n');
+    }
+}
+
+/// `(supervisor_label, child_label, restarts)` rows for every child across
+/// every registered supervisor tree, read from the same
+/// `CrashStats::total_crashes` lifetime counter the supervisor debug tree
+/// formats — not the bounded restart-budget ring. Empty on wasm32 and on a
+/// build without the `profiler` feature, same as [`handler_name`] above.
+#[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
+fn restarts_by_child_snapshot() -> Vec<(String, String, u64)> {
+    crate::supervisor::restarts_by_child_snapshot()
+}
+
+#[cfg(any(target_arch = "wasm32", not(feature = "profiler")))]
+fn restarts_by_child_snapshot() -> Vec<(String, String, u64)> {
+    Vec::new()
+}
+
+fn push_restarts_by_child_series(out: &mut String) {
+    let rows = restarts_by_child_snapshot();
+    if rows.is_empty() {
+        return;
+    }
+
+    out.push_str("# TYPE ");
+    out.push_str(SUPERVISOR_RESTART_SERIES_NAMES[0]);
+    out.push_str(" counter\n");
+    for (supervisor, child, restarts) in &rows {
+        out.push_str(SUPERVISOR_RESTART_SERIES_NAMES[0]);
+        out.push_str("{supervisor=\"");
+        out.push_str(&prometheus_label_value(supervisor));
+        out.push_str("\",child=\"");
+        out.push_str(&prometheus_label_value(child));
+        out.push_str("\"} ");
+        out.push_str(&restarts.to_string());
         out.push('\n');
     }
 }
@@ -996,6 +1048,7 @@ pub fn scrape_text() -> String {
         }
     }
     push_attributed_turn_series(&mut out);
+    push_restarts_by_child_series(&mut out);
     push_user_metric_series(&mut out);
     out
 }
@@ -1008,6 +1061,10 @@ pub fn series_text() -> String {
         out.push('\n');
     }
     for name in ATTRIBUTED_TURN_SERIES_CANONICAL {
+        out.push_str(name);
+        out.push('\n');
+    }
+    for name in SUPERVISOR_RESTART_SERIES_CANONICAL {
         out.push_str(name);
         out.push('\n');
     }

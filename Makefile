@@ -87,8 +87,10 @@
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
+.PHONY: grammar-parity downstream-check
 .PHONY: sir-coverage sir-parity
-.PHONY: test-journeys check-time-ratchet check-time-ratchet-record
+
+
 
 help:
 	@$(PYTHON) scripts/make-help.py
@@ -661,7 +663,7 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-asan-fixture-selftest hew-fmt-property stdlib-lint \
 	sir-coverage sir-parity
 
-ci-shard-3: mqtt-broker-e2e sandbox-parity \
+ci-shard-3: grammar-parity downstream-check mqtt-broker-e2e sandbox-parity \
 	fuzz-oracle fuzz-oracle-selftest test-package-install \
 	checked-mir-verify checked-mir-run \
 	test-core-matrix test-stdlib-ratchet \
@@ -1187,12 +1189,12 @@ sir-coverage: hew-native ## Test: fail when the SIR admission count drops below 
 sir-parity: hew-native ## Test: run SIR-route and legacy-route binaries and compare their output
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/sir-parity.sh --ratchet scripts/sir-parity-ratchet.txt hew-cli/tests/fixtures/sir-parity $(SIR_COVERAGE_CORPORA)
 
-# Dogfood-shaped compile measurement. The raw IR byte ceiling is a real
-# regression gate; timings remain observational. Lint already builds the same
-# release-lib compiler for hew-fmt-check, so this adds only the focused compile.
+# Dogfood-shaped compile measurement. IR size and timings remain observational.
+# Lint already builds the same release-lib compiler for hew-fmt-check, so this
+# adds only the focused compile.
 #
 #         tests/compile-measure/** scripts/dogfood-compile-measure.sh
-# The gate measures define blocks, excluding host-specific module headers.
+# The measurement reports define blocks, excluding host-specific module headers.
 # It uses Cargo's resolved release-lib binary by default, and honours HEW_BIN
 # when a caller supplies a staged compiler explicitly.
 HEW_BIN ?= $(RELEASE_LIB_HEW)
@@ -1200,7 +1202,7 @@ LINT_GATES += dogfood-compile-measure
 dogfood-compile-measure: hew
 	HEW_BIN="$(HEW_BIN)" bash scripts/dogfood-compile-measure.sh
 
-# MIR lowering time budget. The IR-size gate above measures what lowering
+# MIR lowering time budget. The IR measurement above reports what lowering
 # produces; this one measures what lowering costs.
 LINT_GATES += bench-mir
 bench-mir: hew ## Test: fail when MIR lowering time exceeds its budget
@@ -1663,29 +1665,26 @@ hew-fmt-property: hew
 # compiler but fixture files across crates/tests/examples are silently missed.
 # See scripts/corpus-ratchet.sh for the allowlist format and classification guide.
 hew-check-all: hew-native
+	@scripts/tests/test_hew_corpus_diagnostic_channels.sh
 	@echo "==> hew-check-all: compiling full .hew corpus"
 	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus
 
-# Runs one journey script under repros/journeys/ (day-one, day-two, or
-# week-one-local) against HEW_BIN and ratchets its `step <id>: pass|fail`
-# lines against scripts/journeys-expected.tsv: the target fails when a
-# step outside that file fails, or a step listed in it now passes (V060-FD-1).
-# inputs: repros/journeys/*.sh scripts/run-journeys.sh scripts/journeys-expected.tsv
-test-journeys: hew ## Test: run a repros/journeys script and ratchet its steps (JOURNEY=day-one|day-two|week-one-local)
-	@if [ -z "$(JOURNEY)" ]; then echo "usage: make test-journeys JOURNEY=day-one|day-two|week-one-local" >&2; exit 64; fi
-	HEW_BIN="$(HEW_BIN)" bash scripts/run-journeys.sh $(JOURNEY)
+# Parse the vertical-slice accept fixtures, std/, and examples/ with the
+# tree-sitter-hew grammar pinned in tools/downstream/tree-sitter.lock and
+# fail on any ERROR node (D19). The parser (hew-lexer/hew-parser) stays the
+# grammar authority; this only checks that the tree-sitter mirror used by
+# editor tooling has not drifted from it. See scripts/grammar-parity.sh.
+grammar-parity:
+	@echo "==> grammar-parity: parsing the accepted corpus with tree-sitter-hew"
+	scripts/grammar-parity.sh
 
-# Five runs of `hew check` on the largest std module a newcomer's program
-# pulls in; the median wall-clock cannot exceed 2x the recorded baseline
-# for this host class (uname -m plus the CI runner label when CI is set,
-# else "local"). A class with no baseline records one and passes: a first
-# run on a new runner class cannot be compared against itself (V060-FD-1).
-# inputs: scripts/check-time-ratchet.sh scripts/check-time-baseline.tsv std/net/http/http.hew
-check-time-ratchet: hew ## Test: fail when hew check's median time on the fixture exceeds 2x baseline
-	HEW_BIN="$(HEW_BIN)" bash scripts/check-time-ratchet.sh check
-
-check-time-ratchet-record: hew ## Build: record scripts/check-time-baseline.tsv's median for this host class
-	HEW_BIN="$(HEW_BIN)" bash scripts/check-time-ratchet.sh record
+# Report drift between docs/syntax-data.json and every downstream sibling
+# repo checkout found next to this one (vscode-hew, hew.sh, hew.run,
+# tree-sitter-hew, vim-hew, hew-studio). A sibling repo not present locally
+# is skipped, not failed — see scripts/sync-downstream.sh.
+downstream-check:
+	@echo "==> downstream-check: comparing docs/syntax-data.json against sibling repos"
+	scripts/sync-downstream.sh --check
 
 .PHONY: codegen-trap-inventory-check
 LINT_GATES += codegen-trap-inventory-check

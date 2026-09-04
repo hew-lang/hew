@@ -4184,8 +4184,9 @@ impl Checker {
                     .filter(|(prefix, _)| !prefix.contains('.'))
                     .filter(|_| self.variant_surface_owner_matches(name, expected))
                     .map(|(_, variant)| variant.to_string());
-                let is_unit_variant = self
-                    .lookup_type_def(expected_type_name)
+                let expected_type_def = self.lookup_type_def(expected_type_name);
+                let is_unit_variant = expected_type_def
+                    .as_ref()
                     .and_then(|td| {
                         td.variants
                             .get(variant_after_owner.as_deref().unwrap_or(name.as_str()))
@@ -4193,8 +4194,18 @@ impl Checker {
                     })
                     .is_some_and(|v| matches!(v, VariantDef::Unit))
                     && (variant_after_owner.is_some() || !name.contains("::"));
+                // A `machine`'s states are not enum variants in expression
+                // position (HEW-SPEC-2026 §3.11.3, "State names are not
+                // variants"): the target name after `=>` in a body-less
+                // transition (`on E: Src => Tgt;`) desugars to a bare
+                // `Expr::Identifier(Tgt)` checked against the machine's own
+                // type, and resolving it here must not suggest the enum
+                // `.Variant` fix-it — that fix-it is for real enum bare
+                // variants (#3264).
+                let is_machine_state =
+                    expected_type_def.is_some_and(|td| matches!(td.kind, TypeDefKind::Machine));
                 if is_unit_variant {
-                    if !name.contains("::") {
+                    if !name.contains("::") && !is_machine_state {
                         self.report_bare_variant_expr(name, &format!(".{name}"), span);
                     }
                     self.enforce_type_def_instantiation_bounds(
@@ -6963,6 +6974,7 @@ impl Checker {
                 field,
                 &DottedTypeMemberUse::Reference { span },
             ) {
+                self.mark_resolved_nominal_owner_used(&head.canonical_type);
                 return result;
             }
         }

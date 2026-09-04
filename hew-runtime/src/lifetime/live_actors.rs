@@ -308,7 +308,7 @@ pub(crate) fn with_live_actor<R>(
 // this scan consults) is not compiled on wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn has_drain_blocking_suspended_actor(
-    accept_parked: &std::collections::HashSet<usize>,
+    accept_parked: &std::collections::HashSet<ActorIncarnation>,
 ) -> bool {
     with_live_actors_opt(|map| {
         map.as_ref().is_some_and(|actors| {
@@ -325,8 +325,11 @@ pub(crate) fn has_drain_blocking_suspended_actor(
                 if gate.is_null() {
                     // Parked with no ask: an admission wait does not block;
                     // any other wait (plain recv/timer/stream) is outstanding
-                    // work and does.
-                    return !accept_parked.contains(&(*actor as usize));
+                    // work and does. Matched by INCARNATION, so a snapshot
+                    // entry left by a dead acceptor cannot exempt whatever
+                    // actor now occupies its address.
+                    return !accept_parked
+                        .contains(&ActorIncarnation::from_parts(a.id, a.spawn_serial));
                 }
                 // SAFETY: the gate slot owns a retained channel reference that
                 // is released only after a swap performed under this same
@@ -570,7 +573,7 @@ pub(crate) fn with_actor_send_by_identity<R>(
 /// is a hard spawn failure, not a wrap), so no two incarnations in a process
 /// ever share one. Recording the pair and resolving it through
 /// [`with_live_incarnation`] makes a wake name an incarnation, not an address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ActorIncarnation {
     actor_id: u64,
     spawn_serial: u64,

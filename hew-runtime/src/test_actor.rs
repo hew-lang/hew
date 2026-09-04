@@ -95,8 +95,14 @@ fn next_stub_actor_id() -> u64 {
 /// A distinct `spawn_serial` per stub incarnation. Production allocates from
 /// the same kind of monotonic counter and never reissues; the tests need the
 /// same property so a reincarnation is provably a different incarnation.
+///
+/// The counter starts from the same disjoint high base as the stub ids, for the
+/// reason the base exists and one more: the reactor's Dekker guards key on the
+/// serial alone, so a stub sharing a serial with a really-spawned actor in the
+/// same test would make a teardown wait out a delivery that is not its own.
+/// Production counts up from 1, so the base keeps the two apart.
 fn next_stub_spawn_serial() -> u64 {
-    static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
+    static NEXT_SERIAL: AtomicU64 = AtomicU64::new(STUB_ACTOR_ID_BASE);
     NEXT_SERIAL.fetch_add(1, Ordering::Relaxed)
 }
 

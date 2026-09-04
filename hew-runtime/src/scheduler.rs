@@ -8288,8 +8288,11 @@ mod tests {
         // Admission row: the same no-ask park does not block when the reactor
         // reports the actor parked on a listener `await accept()` (waiting for
         // connections that have not arrived is not in-flight work).
-        let admission_set: std::collections::HashSet<usize> =
-            std::iter::once(suspended_ptr as usize).collect();
+        // SAFETY: `suspended_ptr` is a live tracked actor for the whole test.
+        let admission_set: std::collections::HashSet<_> = std::iter::once(unsafe {
+            crate::lifetime::live_actors::ActorIncarnation::of(suspended_ptr)
+        })
+        .collect();
         assert!(
             !crate::lifetime::live_actors::has_drain_blocking_suspended_actor(&admission_set),
             "an admission-parked handler with no ask must not hold the drain open"
@@ -8413,7 +8416,8 @@ mod tests {
             fd1,
             listener1,
             ref_inject,
-            actor_ptr as usize,
+            // SAFETY: `actor_ptr` is a live tracked actor for the whole test.
+            unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor_ptr) },
             slot1,
         );
 
@@ -8482,7 +8486,8 @@ mod tests {
             fd2,
             listener2,
             ref_inject2,
-            actor_ptr as usize,
+            // SAFETY: `actor_ptr` is a live tracked actor for the whole test.
+            unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor_ptr) },
             slot2,
         );
 
@@ -8530,7 +8535,11 @@ mod tests {
             "a refused completion must leave the acceptor parked"
         );
         assert!(
-            crate::reactor::actors_parked_on_accept().contains(&(actor_ptr as usize)),
+            crate::reactor::actors_parked_on_accept()
+                // SAFETY: `actor_ptr` is live here.
+                .contains(&unsafe {
+                    crate::lifetime::live_actors::ActorIncarnation::of(actor_ptr)
+                }),
             "the refused park must remain a visible (skippable) admission wait"
         );
         // Step 6: the final blocker scan completes — the composite verdict is

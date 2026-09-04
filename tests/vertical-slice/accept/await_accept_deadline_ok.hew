@@ -23,7 +23,10 @@ actor Connector {
 actor Acceptor {
     let connector: LocalPid<Connector>;
     receive fn run() -> i64 {
-        let ln = net.listen("127.0.0.1:0");
+        let ln = match net.listen("127.0.0.1:0") {
+            .Ok(listener) => listener,
+            .Err(_) => return 7,
+        };
         let port = ln.local_port() as i32;
         connector.go(port);
         let code = match await ln.accept() | after 5s {

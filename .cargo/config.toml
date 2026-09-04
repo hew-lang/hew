@@ -54,7 +54,8 @@ linker = "lld-link"
 # Do NOT set build.target-dir here to a shared path: concurrent worktrees need
 # separate Cargo target directories to avoid Cargo lock contention and artifact
 # poisoning from killed builds.  The sccache layer above the target dir is the
-# correct sharing point.  See LESSONS.md `lsp-first-cargo-confirmation`.
+# correct sharing point.  See the single semantic authority principle in
+# docs/internal/engineering-invariants.md.
 
 # ── macOS deployment target ────────────────────────────────────────────────────
 # Default MACOSX_DEPLOYMENT_TARGET to 13.0 (Ventura — project minimum; see

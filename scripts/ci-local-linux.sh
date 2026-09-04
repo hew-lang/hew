@@ -5,8 +5,8 @@
 # WHY a remote native host (not Docker): on an Apple-Silicon dev machine Docker
 # emulates x86_64 with qemu, which segfaults rustc, and arm64 containers diverge
 # from CI (ppv-lite86 SIMD path, ARM64 LLVM tarball quirks). A native x86_64
-# Linux box is the only faithful, fast local parity. See LESSONS.md
-# `ci-local-parity-needs-native-x86_64`.
+# Linux box is the only faithful, fast local parity. See the parity principle
+# in docs/internal/engineering-invariants.md.
 #
 # Usage:
 #   make ci-local-linux CI_LINUX_HOST=<user@host>             # full Linux job

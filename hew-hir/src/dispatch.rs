@@ -17,7 +17,8 @@
 //! `HirImplBlock` (where it was emitted via `HirImplBlock::method_symbol`)
 //! so the canonical encoding lives in exactly one place.
 //!
-//! See LESSONS.md (`checker-authority`, `type-info-survival`,
+//! See `docs/internal/engineering-invariants.md` for the single semantic
+//! authority principle and
 //! `string-identifier-fragility`).
 
 use std::collections::HashMap;

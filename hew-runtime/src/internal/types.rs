@@ -244,7 +244,8 @@ pub enum HewActorState {
     /// must block through the `Suspended` window (destroying the parked
     /// continuation exactly once before freeing) rather than treating the
     /// actor as terminal.  Mirrors the `Sleeping`/`Crashing` non-quiescent
-    /// discipline; see `LESSONS.md` rows `cleanup-all-exits` and
+    /// discipline; see the lifecycle symmetry principle in
+    /// `docs/internal/engineering-invariants.md` and
     /// `raii-null-after-move`.  Only the slice-4 executor sets/clears it.
     Suspended = 3,
     Stopping = 4,
@@ -268,7 +269,8 @@ pub enum HewActorState {
     /// `Crashing`, so any thread waiting on the actor (e.g. a
     /// `hew_actor_free` caller spinning on the actor state) blocks through
     /// the `Crashing` window and cannot free `a.arena`/`a.mailbox` out
-    /// from under the worker.  See `LESSONS.md` rows `cleanup-all-exits`
+    /// from under the worker.  See the lifecycle symmetry principle in
+    /// `docs/internal/engineering-invariants.md`
     /// and `raii-null-after-move`.
     Crashing = 8,
 }

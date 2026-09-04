@@ -71,10 +71,7 @@ forward-links to this spec.
 ## 3. Mechanism comparison and verdict
 
 The candidate mechanisms below were evaluated against the prime invariant and
-the operational constraints from `LESSONS.md` rows `ffi-ownership-contracts`,
-`raii-null-after-move`, `field-alias-fail-closed`, `cleanup-all-exits`,
-`checker-output-boundary`, `checker-codegen-pattern-contract`, and
-`native-wasm-parity`.
+the ownership constraints defined in this specification.
 
 | ID | Mechanism | User-facing shape | Verdict |
 | --- | --- | --- | --- |

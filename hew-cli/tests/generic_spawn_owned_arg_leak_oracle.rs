@@ -1,6 +1,9 @@
 //! Generic free-fn task spawn: owned-`string` value-arg safety oracle.
 //!
-//! ## Design contract (LESSONS.md `by-value-heap-params-are-borrows`)
+//! ## Design contract
+//!
+//! This oracle follows the lifecycle and ownership principles in
+//! `docs/internal/engineering-invariants.md`.
 //!
 //! By-value heap params in Hew are `IntentKind::Read` borrows — the callee
 //! correctly does NOT drop them (only `#[resource]` params are `Consume`).

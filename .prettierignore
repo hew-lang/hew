@@ -35,8 +35,6 @@ docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md
 docs/specs/MACHINE-SPEC.md
 docs/wasm-capability-matrix.md
 # Root-level engineering logs, hand-wrapped (same rationale as above).
-LESSONS.md
-JOURNEY.md
 
 # Generated artefacts with their own writer. `scripts/generate-cabi-surface.py
 # --write` owns this file's shape; prettier collapsing its arrays turns any

@@ -29,7 +29,7 @@
 /// string (empty when unavailable).  Hooks may match on `code` to decide a
 /// `CrashAction`, but the canonical reading is "any non-zero code is a
 /// real fault — the hook's job is to choose between Restart, Escalate,
-/// and Kill".  See `JOURNEY.md` for the per-code assignment plan.
+/// and Kill".
 pub type CrashInfo {
     code: i64;
     message: string;

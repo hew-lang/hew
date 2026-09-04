@@ -2417,7 +2417,7 @@ fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
 /// file-imported iff one of its `source_paths` is among them. Keying on origin
 /// (rather than `"<type>:<trait>"`) is required for soundness: Hew deliberately
 /// permits two DISTINCT modules to declare same-bare-named `pub type`s and
-/// `impl Trait for T` (see `LESSONS.md` per-module-type-identity; e.g. std
+/// `impl Trait for T` (see the single semantic authority principle; e.g. std
 /// http and websocket each define their own `Server`/`impl ServerMethods for
 /// Server`). A bare-name skip would silently drop a package-import impl that
 /// merely shares a name with a file-import/root impl; an origin skip cannot.
@@ -5031,7 +5031,7 @@ pub fn lower_program_with_mono_cap(
         // lowered twice (third-pass splice + this fourth-pass walk), so the
         // skip targets exactly those modules by identity. Keying by name would
         // be unsound — Hew permits distinct modules to share a bare type/trait
-        // name (`LESSONS.md` per-module-type-identity), so a file-import/root
+        // name (the single semantic authority principle), so a file-import/root
         // impl could silently shadow a same-named but DISTINCT package-import
         // impl. `file_import_module_ids` cannot misroute a package impl: package
         // modules are never in the set, so this walk emits them exactly once.

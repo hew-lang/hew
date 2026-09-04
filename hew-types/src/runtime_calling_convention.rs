@@ -38,7 +38,8 @@
 //! resolved `TypeDef` table.
 //!
 //! This honours the substrate-first / checker-output-boundary
-//! invariants (`LESSONS.md` rows `boundary-fail-closed`,
+//! invariants in `docs/internal/engineering-invariants.md` (especially
+//! fail-closed boundaries,
 //! `checker-output-boundary`): the API itself cannot misclassify a
 //! value record as a heap handle. Same family of finding as W4.011
 //! ("substrate API must fail closed; downstream callers shouldn't
@@ -170,7 +171,7 @@ impl RuntimeCallingConvention {
     /// `.tmp/orchestration/hew-dialect-authority-*.md` §4.0).
     ///
     /// The W3.001 token set is the per-variant canonical spelling
-    /// (per the no-aliases rule A250 and `LESSONS.md` row
+    /// (per the no-aliases rule A250 and the lifecycle symmetry principle in
     /// `no-type-aliases-one-canonical-name`): exactly one canonical
     /// string per variant; no synonyms.
     #[must_use]

@@ -1921,6 +1921,7 @@ grep -Fq "E_HIR: join branch must be an actor receive-handler call (\`actor.meth
 # break `select`'s legitimate channel-receive arm. A `select { pat from
 # rx.recv() ... }` still checks OK.
 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/select_recv_guard.hew" >"${accept_output}" 2>&1
+echo 'PASS select_recv_guard'
 
 # Reject (SELECT ship-3, HEW-SPEC §4.11.1): the task-await arm
 # `<id> from await <expr>` is NOT one of the three sealed select forms

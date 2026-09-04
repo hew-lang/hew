@@ -8,7 +8,10 @@ import std.channel.channel;
 actor Worker {
     #[on(start)]
     fn start() {
-        let (txa, rxa): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);
+        let (txa, rxa): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) {
+            .Ok(pair) => pair,
+            .Err(_) => return,
+        };
         txa.send(7);
         select {
             a from rxa.recv() => {

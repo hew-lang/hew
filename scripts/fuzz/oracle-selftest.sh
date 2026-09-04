@@ -27,7 +27,11 @@
 #   pass, and replacing that fixture with a clean program while it remains
 #   listed reports recovery in normal mode and fails strict accounting.
 #
-# All five must pass for the self-test to succeed.
+# Test 6 (oracle-ratchets-mainless-import-helper):
+#   An importer plus a main-less imported helper requires the helper's exact
+#   accept-path identity in expected-reject.txt.
+#
+# All six must pass for the self-test to succeed.
 
 set -euo pipefail
 
@@ -476,5 +480,59 @@ fi
 pass "oracle-ratchets-positive-rejections"
 
 # ---------------------------------------------------------------------------
+echo "--- Test 6: oracle-ratchets-mainless-import-helper ---"
+T6_VERTICAL="${TMPDIR_BASE}/t6_vertical"
+T6_REGRESSIONS="${TMPDIR_BASE}/t6_regressions"
+T6_EF="${TMPDIR_BASE}/t6_expected_failures.txt"
+T6_ER="${TMPDIR_BASE}/t6_expected_rejects.txt"
+mkdir -p "${T6_VERTICAL}" "${T6_REGRESSIONS}"
+printf '# empty\n' >"${T6_EF}"
+printf '# empty\n' >"${T6_ER}"
+cp "${ROOT}/tests/vertical-slice/accept/imported_eq_impl_honoured.hew" \
+    "${T6_VERTICAL}/imported_eq_impl_honoured.hew"
+cp "${ROOT}/tests/vertical-slice/accept/imported_eq_impl_honoured_lib.hew" \
+    "${T6_VERTICAL}/imported_eq_impl_honoured_lib.hew"
+
+# The importer is executable, but its imported helper is not a standalone
+# program. Without the exact helper identity, the oracle must fail closed.
+rc=0
+output="$(python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T6_REGRESSIONS}" \
+    --expected-failures "${T6_EF}" \
+    --expected-rejects "${T6_ER}" \
+    --vertical-slice-dir "${T6_VERTICAL}" \
+    --min-candidates 1 \
+    2>&1)" || rc=$?
+if [[ "${rc}" -ne 1 ]]; then
+    fail "oracle-ratchets-mainless-import-helper (unlisted helper fails)" \
+        "expected oracle exit 1, got ${rc}; output: ${output}"
+fi
+if [[ "${output}" != *"tests/vertical-slice/accept/imported_eq_impl_honoured_lib.hew"* ]]; then
+    fail "oracle-ratchets-mainless-import-helper (unlisted helper fails)" \
+        "helper identity was not reported; output: ${output}"
+fi
+
+# Listing the exact helper identity makes the importer-plus-helper corpus pass.
+printf 'tests/vertical-slice/accept/imported_eq_impl_honoured_lib.hew\n' >"${T6_ER}"
+rc=0
+run_counterfactual "t6-listed-helper" python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T6_REGRESSIONS}" \
+    --expected-failures "${T6_EF}" \
+    --expected-rejects "${T6_ER}" \
+    --vertical-slice-dir "${T6_VERTICAL}" \
+    --min-candidates 1 ||
+    rc=$?
+if [[ "${rc}" -ne 0 ]]; then
+    fail "oracle-ratchets-mainless-import-helper (listed helper passes)" \
+        "expected oracle exit 0, got ${rc}"
+fi
+
+pass "oracle-ratchets-mainless-import-helper"
+
+# ---------------------------------------------------------------------------
 echo ""
-echo "oracle-selftest: all 5 tests PASS"
+echo "oracle-selftest: all 6 tests PASS"

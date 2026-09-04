@@ -781,6 +781,14 @@ pub enum TypeErrorKind {
     },
     /// Execution-context reader used outside an actor handler context
     ContextReaderOutsideHandler,
+    /// An actor-body plain `fn` was named from outside its own actor.
+    ///
+    /// Such a method runs on the actor's own state and is entered from the
+    /// actor's own handlers, hooks, `init`, and sibling methods. From anywhere
+    /// else the only reachable surface is the mailbox.
+    ///
+    /// Envelope code: `E_ACTOR_METHOD_OUTSIDE`.
+    ActorMethodOutsideActor,
     /// Wrong number of arguments
     ArityMismatch,
     /// Generic bounds not satisfied
@@ -1494,6 +1502,7 @@ impl TypeErrorKind {
             Self::WireOptionalFieldRequiresOption => "E_WIRE_OPTIONAL_REQUIRES_OPTION",
             Self::SupervisorError { subkind } => subkind.as_kind_str(),
             Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",
+            Self::ActorMethodOutsideActor => "E_ACTOR_METHOD_OUTSIDE",
             Self::ArityMismatch => "ArityMismatch",
             Self::BoundsNotSatisfied => "BoundsNotSatisfied",
             Self::InferenceFailed => "InferenceFailed",

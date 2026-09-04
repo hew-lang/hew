@@ -288,6 +288,181 @@ fn lower_actor_receive_handlers(
 
     lowered
 }
+/// The two leading MIR parameters of an actor-body plain `fn`: the execution
+/// context and the actor-state pointer, in that order.
+///
+/// They are explicit in the header, not implied by the calling convention, so
+/// codegen's direct-call edge zips Hew argument `i` to declared parameter
+/// `i + 2` with no per-callee ABI reshaping, and the callee prologue reads them
+/// as ordinary LLVM parameters 0 and 1. The synthetic `BindingId(u32::MAX)`
+/// mirrors the `receive gen fn` sink param: no `BindingRef` in the body ever
+/// names these, and lowering locates them positionally.
+fn actor_method_context_params(method: &hew_hir::HirActorMethod) -> Vec<HirBinding> {
+    let opaque_ptr = || ResolvedTy::Pointer {
+        is_mutable: true,
+        pointee: Box::new(ResolvedTy::Unit),
+    };
+    vec![
+        HirBinding {
+            id: BindingId(u32::MAX),
+            name: "__hew_actor_ctx".to_string(),
+            ty: opaque_ptr(),
+            mutable: false,
+            span: method.span.clone(),
+            is_consume: false,
+        },
+        HirBinding {
+            id: BindingId(u32::MAX),
+            name: "__hew_actor_state".to_string(),
+            ty: opaque_ptr(),
+            mutable: false,
+            span: method.span.clone(),
+            is_consume: false,
+        },
+    ]
+}
+
+/// The emitted symbol for every actor-body plain `fn` in the module, keyed by
+/// the checker-minted `ActorMethod` declaration.
+///
+/// MIR decides the callee shape from this declaration identity, never from a
+/// name suffix: the module lowering folds these rows into `direct_call_symbols`
+/// and `module_fn_names` before any body is lowered, so a call inside a handler
+/// resolves through the same tables an ordinary direct call uses.
+pub(crate) fn actor_method_symbols(items: &[hew_hir::HirItem]) -> Vec<(hew_types::DefId, String)> {
+    let mut symbols = Vec::new();
+    for item in items {
+        let hew_hir::HirItem::Actor(actor) = item else {
+            continue;
+        };
+        if !actor.type_params.is_empty() {
+            continue;
+        }
+        let base = actor_symbol_base(actor);
+        for method in &actor.methods {
+            symbols.push((
+                method.declaration.clone(),
+                mangle_actor_method(&base, &method.name),
+            ));
+        }
+    }
+    symbols
+}
+
+/// Lower each actor-body plain `fn` to an ordinary `Default`-callconv function.
+///
+/// This is deliberately NOT the receive-handler shape: no dispatch slot, no
+/// `borrow_mode` ABI parameter, no `with_actor_handler_identity` wrapper. What
+/// it shares with a handler is the body lowering — `Some(actor.qualified_name())`
+/// populates `current_actor_state_fields`, so a bare state-field reference in
+/// the body becomes `ActorStateFieldLoad`/`Store` exactly as it does in a
+/// handler. The state pointer those instructions read is the method's own
+/// second parameter, resolved in codegen from the carried `SourceOrigin`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor method lowering threads the same module tables as regular function lowering"
+)]
+fn lower_actor_methods(
+    actor: &HirActorDecl,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    actor_layouts: &HashMap<String, ActorLayout>,
+    supervisor_layout_map: &HashMap<String, crate::model::SupervisorLayout>,
+    machine_layout_names: &HashSet<String>,
+    enum_layouts: &[crate::model::EnumLayout],
+    opaque_handle_names: &[String],
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    direct_call_symbols: &HashMap<hew_types::DefId, String>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
+    param_ownership: &Rc<ParamOwnershipFacts>,
+    call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
+    pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
+    pointer_width: PointerWidth,
+    emitted_symbols: &mut HashMap<String, String>,
+    task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) -> Vec<LoweredFunction> {
+    let mut lowered = Vec::new();
+    // A generic actor's ORIGIN declaration is not a body MIR can type: a method
+    // signature naming the actor's `<T>` has no `ValueClass` at the MIR
+    // boundary, the same way a generic origin `receive fn` does not. Emit
+    // nothing for it, so its declaration reaches no symbol map and a call fails
+    // closed at the MIR boundary rather than lowering an untypeable body.
+    // WHEN OBSOLETE: when a generic actor is monomorphised per instantiation
+    // the way a generic function is, and its members lower under the
+    // substitution. WHAT: an actor monomorphisation pass feeding this loop the
+    // instantiated declaration instead of the origin.
+    if !actor.type_params.is_empty() {
+        return lowered;
+    }
+    for method in &actor.methods {
+        let emit_name = mangle_actor_method(&actor_symbol_base(actor), &method.name);
+        let duplicate_label = format!("actor `{}` fn `{}`", actor.name, method.name);
+        if let Some(existing) = emitted_symbols.get(&emit_name) {
+            diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                    symbol: emit_name,
+                    existing: existing.clone(),
+                    duplicate: duplicate_label,
+                },
+                note: "actor method symbol mangling must be one-to-one before MIR emission"
+                    .to_string(),
+            });
+            continue;
+        }
+        emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+        let mut params = actor_method_context_params(method);
+        params.extend(method.params.iter().cloned());
+        let synthetic_fn = HirFn {
+            id: actor.id,
+            node: actor.node,
+            declaration: method.declaration.clone(),
+            name: format!("{}::{}", actor.name, method.name),
+            type_params: Vec::new(),
+            params,
+            return_ty: method.return_ty.clone(),
+            body: method.body.clone(),
+            span: method.span.clone(),
+            is_generator: false,
+            intrinsic_id: None,
+        };
+        let mut function = lower_function(
+            &synthetic_fn,
+            emit_name,
+            crate::model::MirCallableKey::declared(method.declaration.clone()),
+            HashMap::new(),
+            type_classes,
+            record_field_orders,
+            actor_layouts,
+            supervisor_layout_map,
+            machine_layout_names,
+            enum_layouts,
+            opaque_handle_names,
+            Some(actor.qualified_name().as_str()),
+            module_fn_names,
+            module_generic_fn_names,
+            call_scrutinee_provenance,
+            param_ownership,
+            &HashMap::new(),
+            direct_call_symbols,
+            call_site_type_args,
+            None,
+            supervisor_child_slots,
+            pool_accessor_sites,
+            pointer_width,
+            crate::model::FunctionCallConv::Default,
+            task_entry_adapter_symbols.clone(),
+        );
+        function.raw.source_origin = SourceOrigin::SynthesizedActorMethod {
+            actor_layout_key: actor.qualified_name(),
+        };
+        lowered.push(function);
+    }
+    lowered
+}
 #[allow(
     clippy::too_many_arguments,
     reason = "actor body lowering threads the same module tables as regular function lowering"
@@ -365,6 +540,28 @@ pub(super) fn lower_actor_body_handlers(
         diagnostics,
     ));
     lowered.extend(lower_actor_receive_handlers(
+        actor,
+        type_classes,
+        record_field_orders,
+        actor_layouts,
+        supervisor_layout_map,
+        machine_layout_names,
+        enum_layouts,
+        opaque_handle_names,
+        module_fn_names,
+        module_generic_fn_names,
+        direct_call_symbols,
+        call_scrutinee_provenance,
+        param_ownership,
+        call_site_type_args,
+        supervisor_child_slots,
+        pool_accessor_sites,
+        pointer_width,
+        emitted_symbols,
+        task_entry_adapter_symbols,
+        diagnostics,
+    ));
+    lowered.extend(lower_actor_methods(
         actor,
         type_classes,
         record_field_orders,
@@ -1190,6 +1387,14 @@ pub(super) fn actor_symbol_base(actor: &HirActorDecl) -> String {
 /// existing function symbols and earlier handler symbols before body emission.
 fn mangle_actor_receive_handler(actor_name: &str, handler_name: &str) -> String {
     format!("{actor_name}__recv__{handler_name}")
+}
+/// Deterministic actor-body plain-`fn` symbol mangling.
+///
+/// Scheme: `<Actor>__fn__<method>`, distinct from `__recv__` because this
+/// callable takes no dispatch slot: Hew code inside the actor calls it
+/// directly, and no runtime trampoline ever names it.
+pub(super) fn mangle_actor_method(actor_name: &str, method_name: &str) -> String {
+    format!("{actor_name}__fn__{method_name}")
 }
 pub(super) fn mangle_actor_init_handler(actor_name: &str) -> String {
     format!("{actor_name}__init")

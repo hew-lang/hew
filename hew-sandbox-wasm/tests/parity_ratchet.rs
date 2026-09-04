@@ -163,6 +163,15 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("counter_actor"),
     },
     Construct {
+        id: "actor-body plain fn bare call",
+        // #3285: the sandbox profile and emitter currently know only receive
+        // handlers, so keep this native fixture fail-closed until that follow-up.
+        probe: include_str!("../../tests/vertical-slice/accept/actor_method_bare_call.hew"),
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "unknown_symbol",
+        },
+    },
+    Construct {
         id: "actor ask via await + Ok/Err reply match",
         probe: "actor Echo {\n    receive fn echo(n: i64) -> i64 { n }\n}\nfn main() {\n    let e = spawn Echo;\n    println(match await e.echo(9) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
         coverage: Coverage::Parity("actor_pipeline"),

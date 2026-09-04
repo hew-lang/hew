@@ -1215,6 +1215,47 @@ impl Checker {
     /// `fn_def_spans` under `signature_key`, or `None` when no declaration
     /// exists under that key.
     ///
+    /// The identity of the actor whose body is currently being checked.
+    ///
+    /// `check_actor_decl` sets `current_actor_type` to the actor's registration
+    /// identity (bare for a root actor, `{module}.{leaf}` for a module actor) —
+    /// the same string every `{owner}::{member}` registry key is built from.
+    fn current_actor_type_name(&self) -> Option<&str> {
+        match self.current_actor_type.as_ref()? {
+            Ty::Named { name, .. } => Some(name.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The `{actor}::{name}` signature key for a plain method of the actor
+    /// whose body is being checked, when that actor declares one.
+    fn enclosing_actor_method_key(&self, name: &str) -> Option<String> {
+        let actor = self.current_actor_type_name()?;
+        let key = format!("{actor}::{name}");
+        self.actor_method_owner(&key).map(|_| key)
+    }
+
+    /// The declaring actor when `signature_key` names an actor-body plain `fn`.
+    ///
+    /// The two facts are read off their own authorities: the identity table
+    /// says the declaration is an `ActorMethod` (a `receive fn` is
+    /// `ActorReceive`, an `impl` method is `ImplMethod`), and `fn_def_spans`
+    /// says a callable declaration was published for it (a `#[on(...)]`
+    /// lifecycle hook shares the `ActorMethod` kind but gets no row, because
+    /// the runtime, not Hew code, enters it).
+    fn actor_method_owner(&self, signature_key: &str) -> Option<String> {
+        if self.identity.declaration_kind_by_path(signature_key)
+            != Some(crate::identity::DeclarationKind::ActorMethod)
+        {
+            return None;
+        }
+        if !self.fn_def_spans.contains_key(signature_key) {
+            return None;
+        }
+        let (owner, _) = signature_key.rsplit_once("::")?;
+        Some(owner.to_string())
+    }
+
     fn user_call_target_for_declared_fn(&self, signature_key: &str) -> Option<CallTarget> {
         let (_, declaring_module) = self.fn_def_spans.get(signature_key)?;
         let declaration = declaring_module.as_ref().map_or_else(
@@ -2072,9 +2113,43 @@ impl Checker {
         let canonical_fn_name = self.canonical_fn_identity(self.canonical_fn_owner(), &func_name);
         let resolved_fn_name = if self.fn_sigs.contains_key(&canonical_fn_name) {
             canonical_fn_name
-        } else {
+        } else if self.fn_sigs.contains_key(&func_name) {
             func_name.clone()
+        } else {
+            // An actor-body plain `fn` is filed under `{actor}::{name}`, a key
+            // no bare spelling reconstructs, so `helper()` inside a handler used
+            // to fall off the ladder as `undefined function` (#3285). Probe the
+            // enclosing actor LAST — after both free-function keys and before
+            // the value-binding rung below — so a module function and a local
+            // closure of the same name both keep priority and nothing already
+            // resolving changes shape.
+            self.enclosing_actor_method_key(&func_name)
+                .unwrap_or_else(|| func_name.clone())
         };
+        // An actor method reads and writes the actor's own state, so it is
+        // entered with the caller's execution context and state pointer. Only
+        // the actor's own handlers, hooks, `init`, and sibling methods hold
+        // those; from anywhere else the mailbox is the surface. Refuse the
+        // qualified spelling here rather than letting it type-check and reach
+        // HIR with a target no call site can supply.
+        if let Some(owner) = self.actor_method_owner(&resolved_fn_name) {
+            if self.current_actor_type_name() != Some(owner.as_str()) {
+                let leaf = resolved_fn_name
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&resolved_fn_name);
+                self.report_error(
+                    TypeErrorKind::ActorMethodOutsideActor,
+                    span,
+                    format!(
+                        "E_ACTOR_METHOD_OUTSIDE: actor methods are reachable only from inside \
+                         the actor; send a message instead (`{leaf}` is declared in actor \
+                         `{owner}`)"
+                    ),
+                );
+                return Ty::Error;
+            }
+        }
         if let Some(sig) = self.fn_sigs.get(&resolved_fn_name).cloned() {
             // Visibility enforcement: check that the caller's module is allowed
             // to reference this function.  We only check when the resolved key
@@ -2209,11 +2284,19 @@ impl Checker {
             // Publish the same exact checker-selected executable target that
             // the method-call path carries so HIR never has to reconstruct it
             // from the dotted spelling.
+            //
+            // A bare sibling call inside an actor body (`helper()`) resolves to
+            // the same `{actor}::{name}` declaration the dotted spelling does,
+            // and carries the same rewrite for the same reason: the callee's
+            // source spelling is not its registry key, so HIR must be told the
+            // key rather than retry the leaf. Publishing it here is what makes
+            // both spellings one shape downstream.
             if matches!(
                 &func.0,
                 Expr::FieldAccess { object, .. }
                     if matches!(object.0, Expr::Identifier(_))
-            ) {
+            ) || self.actor_method_owner(&resolved_fn_name).is_some()
+            {
                 self.record_method_call_rewrite(
                     span,
                     MethodCallRewrite::RewriteModuleQualifiedToFunction {

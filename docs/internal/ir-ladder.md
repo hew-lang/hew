@@ -1412,7 +1412,10 @@ the symbol comes from `header.symbol` looked up by key.
 - **Calling convention** per callable: `CallableHeader { key, symbol, conv:
   Default | TaskEntry | ActorHandler | ActorInit | ActorMethod | LifecycleHook
   | ClosureInvoke | GeneratorBody | Extern, params: Vec<ParamMode>, ret:
-  RetMode }` where `ParamMode ∈ { Borrow, Consume, Retain }` (the same three
+  RetMode }` where `ActorMethod` is a header LABEL over the ordinary `Default`
+  shape rather than a second convention — an actor-body plain `fn` already
+  lowers as a `Default` callable whose declared params are `(ctx, state,
+  <user params>)` (#3285) — and `ParamMode ∈ { Borrow, Consume, Retain }` (the same three
   words as `ExternParamOwnership`, `hew-types/src/ffi_contracts.rs:10`) and
   `RetMode ∈ { None, Fresh, Borrowed }`. The header is derived from the
   checker's registries, never from body lowering. A slot is `Consume`

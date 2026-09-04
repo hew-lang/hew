@@ -4,7 +4,7 @@ use hew_sir::{
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
-fn lower_hir(source: &str) -> hew_hir::HirModule {
+fn lower_hir(source: &str) -> (hew_hir::HirModule, hew_types::TypeCheckOutput) {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -19,12 +19,12 @@ fn lower_hir(source: &str) -> hew_hir::HirModule {
         "source must lower to HIR before the SIR lowering test: {:#?}",
         hir.diagnostics
     );
-    hir.module
+    (hir.module, type_check_output)
 }
 
 fn lower_source(source: &str) -> hew_sir::LoweredModule {
-    let hir = lower_hir(source);
-    lower_module(&hir)
+    let (hir, type_facts) = lower_hir(source);
+    lower_module(&hir, &type_facts)
 }
 
 #[test]
@@ -343,7 +343,7 @@ fn recursive_scalar_call_resolves_to_its_own_callable_id() {
     reason = "the fixture intentionally verifies one complete instance graph, malformed-IR boundary, and dump"
 )]
 fn generic_scalar_instances_are_closed_cached_and_template_free() {
-    let mut hir = lower_hir(
+    let (mut hir, type_facts) = lower_hir(
         r"
         pub fn id<T>(x: T) -> T {
             let result: T = x;
@@ -376,7 +376,7 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
     );
     hir.monomorphisations.clear();
 
-    let lowered = lower_module(&hir);
+    let lowered = lower_module(&hir, &type_facts);
     assert!(
         verify_module(&lowered.module).is_empty(),
         "closed generic SIR instances must verify without the legacy registry: {:#?}",
@@ -548,7 +548,7 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
 /// second body would be unable to resolve its edge back to `even<i64>`.
 #[test]
 fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisation() {
-    let mut hir = lower_hir(
+    let (mut hir, type_facts) = lower_hir(
         r"
         pub fn even<T>(value: T, count: i64) -> T {
             if count == 0 {
@@ -577,7 +577,7 @@ fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisa
     );
     hir.monomorphisations.clear();
 
-    let lowered = lower_module(&hir);
+    let lowered = lower_module(&hir, &type_facts);
     assert!(
         verify_module(&lowered.module).is_empty(),
         "mutually recursive generic instances must verify without legacy monomorphisation: {:#?}",

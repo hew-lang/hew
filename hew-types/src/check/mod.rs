@@ -6,6 +6,7 @@ use crate::module_registry::ModuleError;
 use crate::resolved_ty::{BoundaryError, ResolvedTy};
 use crate::traits::{MarkerTrait, TraitRegistry};
 use crate::ty::{Ty, TypeVar};
+use crate::type_facts::{SendFact, TypeFacts, TypeInstanceKey};
 use crate::unify::unify;
 use crate::{WasmFeatureDisposition, WasmUnsupportedFeature};
 use hew_parser::ast::{
@@ -16,7 +17,7 @@ use hew_parser::ast::{
     SupervisorStrategy, TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind,
     TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
 };
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
 pub(crate) mod admissibility;
@@ -135,7 +136,7 @@ fn resolve_produced_node(
     dependencies: &HashMap<SpanKey, ProducedValueDependency>,
     leaves: &HashMap<SpanKey, ProducedValueFact>,
     expr_types: &HashMap<SpanKey, Ty>,
-    registry: &TraitRegistry,
+    declarations: &dyn crate::value_class::ClassDeclarations,
     invalid: &HashSet<SpanKey>,
     visiting: &mut HashSet<SpanKey>,
     memo: &mut HashMap<SpanKey, ProducedValueFact>,
@@ -166,7 +167,7 @@ fn resolve_produced_node(
                 dependencies,
                 leaves,
                 expr_types,
-                registry,
+                declarations,
                 invalid,
                 visiting,
                 memo,
@@ -187,7 +188,7 @@ fn resolve_produced_node(
                     dependencies,
                     leaves,
                     expr_types,
-                    registry,
+                    declarations,
                     invalid,
                     visiting,
                     memo,
@@ -220,7 +221,7 @@ fn resolve_produced_node(
                 dependencies,
                 leaves,
                 expr_types,
-                registry,
+                declarations,
                 invalid,
                 visiting,
                 memo,
@@ -232,7 +233,7 @@ fn resolve_produced_node(
             })
         }
     };
-    clear_copy_owner_authority(key, &mut fact, expr_types, registry);
+    clear_copy_owner_authority(key, &mut fact, expr_types, declarations);
     visiting.remove(key);
     memo.insert(key.clone(), fact.clone());
     fact
@@ -242,13 +243,13 @@ fn clear_copy_owner_authority(
     key: &SpanKey,
     fact: &mut ProducedValueFact,
     expr_types: &HashMap<SpanKey, Ty>,
-    registry: &TraitRegistry,
+    declarations: &dyn crate::value_class::ClassDeclarations,
 ) {
     use crate::runtime_call::ProducedValueOwnership as Ownership;
 
     let copy_result = expr_types
         .get(key)
-        .is_some_and(|ty| ty.is_copy() || registry.implements_marker(ty, MarkerTrait::Copy));
+        .is_some_and(|ty| class_is_non_owning(ty, declarations));
     if copy_result && !matches!(fact.ownership, Ownership::Unknown) {
         // Copy-ness governs only the published result. Call leaves also carry
         // receiver and source-argument contracts, so clear only its obligation.
@@ -329,7 +330,553 @@ fn patch_builtin_result_output_type(_ty: Ty, ok_ty: &Ty, err_ty: &Ty) -> Ty {
     Ty::result(ok_ty.clone(), err_ty.clone())
 }
 
+/// The §1.1 declaration lookup, answered from the checker's own tables.
+///
+/// `is_resource` / `is_linear` carry the `#[resource]` / `#[linear]` marker and
+/// `type_defs` carries the field and variant types the Aggregate rule joins.
+/// Both live in this crate, so the class authority reads them directly rather
+/// than through a second table.
+pub(crate) struct CheckerClassDeclarations<'a> {
+    registry: &'a TraitRegistry,
+    type_defs: &'a HashMap<String, crate::check::types::TypeDef>,
+    /// `#[opaque]` declarations written in this program.
+    user_opaque_type_names: &'a HashSet<String>,
+    /// Resolves an imported `#[opaque]` handle spelling, which the set above
+    /// does not carry.
+    module_registry: &'a crate::module_registry::ModuleRegistry,
+}
+
+impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
+    fn declared_type(&self, name: &str) -> Option<crate::value_class::DeclaredType> {
+        use crate::value_class::{DeclarationMarker, DeclaredType};
+
+        // The `#[opaque]` attribute is a declaration fact, carried for a
+        // program's own declarations by the checker's set and for an imported
+        // handle by the module registry.
+        let is_opaque = self.user_opaque_type_names.contains(name)
+            || name
+                .split_once('.')
+                .is_some_and(|(_, leaf)| self.user_opaque_type_names.contains(leaf))
+            || self.module_registry.is_handle_type(name);
+        let marker = if self.registry.is_resource(name) {
+            DeclarationMarker::Resource
+        } else if self.registry.is_linear(name) {
+            DeclarationMarker::Linear
+        } else {
+            DeclarationMarker::None
+        };
+        // `type_defs` is keyed by both the qualified path and its bare-name
+        // twin; a resolved type may carry either spelling.
+        let definition = self.type_defs.get(name).or_else(|| {
+            name.split_once('.')
+                .and_then(|(_, leaf)| self.type_defs.get(leaf))
+        });
+        let Some(definition) = definition else {
+            // A marker with no field table still decides the class outright.
+            return (marker != DeclarationMarker::None).then(|| DeclaredType {
+                marker,
+                is_opaque,
+                type_params: Vec::new(),
+                members: Vec::new(),
+            });
+        };
+        if marker != DeclarationMarker::None {
+            return Some(DeclaredType {
+                marker,
+                is_opaque,
+                type_params: definition.type_params.clone(),
+                members: Vec::new(),
+            });
+        }
+
+        let mut member_tys: Vec<Ty> = Vec::new();
+        if definition.field_order.is_empty() {
+            let mut names: Vec<&String> = definition.fields.keys().collect();
+            names.sort();
+            member_tys.extend(
+                names
+                    .into_iter()
+                    .filter_map(|n| definition.fields.get(n))
+                    .cloned(),
+            );
+        } else {
+            for field in &definition.field_order {
+                if let Some(ty) = definition.fields.get(field) {
+                    member_tys.push(ty.clone());
+                }
+            }
+        }
+        let mut variants: Vec<&String> = definition.variants.keys().collect();
+        variants.sort();
+        for variant in variants {
+            match definition.variants.get(variant) {
+                Some(crate::check::types::VariantDef::Unit) | None => {}
+                Some(crate::check::types::VariantDef::Tuple(payload)) => {
+                    member_tys.extend(payload.iter().cloned());
+                }
+                Some(crate::check::types::VariantDef::Struct(fields)) => {
+                    member_tys.extend(fields.iter().map(|(_, ty)| ty.clone()));
+                }
+            }
+        }
+
+        // §1.1's recursion cut (`classify_declaration`'s `walk.on_path`) keys a
+        // declaration by the exact name this lookup was asked for. A member
+        // that refers back to its own declaration is spelled bare inside the
+        // declaration's own source (name resolution never qualifies a
+        // self-reference), while an importer reaches the declaration through
+        // its qualified key — so the recursive occurrence and the declaration
+        // it recurses into carry two different keys and the cut never fires.
+        // `name` here is that qualified key whenever the lookup found one, so
+        // canonicalizing every bare member reference that also has a
+        // `{prefix}.{bare}` twin in `type_defs` gives the whole declaration
+        // one spelling, matching `ir-ladder.md` §1.1: one canonical key per
+        // declaration, the qualified one, with the bare twin staying a lookup
+        // alias never used as a fact key.
+        let module_prefix = name.rsplit_once('.').map(|(prefix, _)| prefix);
+        let mut members = Vec::with_capacity(member_tys.len());
+        for ty in member_tys {
+            // A member the boundary cannot render leaves the whole declaration
+            // unclassifiable: an aggregate over the members that happened to
+            // convert would be a guess.
+            let resolved = ResolvedTy::from_ty(&ty.materialize_literal_defaults()).ok()?;
+            let resolved = match module_prefix {
+                Some(prefix) => canonicalize_member_ty(resolved, prefix, self.type_defs),
+                None => resolved,
+            };
+            members.push(resolved);
+        }
+        // A declaration with no fields and no variants is still a declaration:
+        // the fieldless `#[opaque]` handle is the shape `std/path.hew` and
+        // `std/semaphore.hew` ship, and §1.1 decides it by its marker - an
+        // FFI pass-through id with no marker classes `BitCopy`, one with
+        // `#[resource]`/`#[linear]` classes over that marker instead.
+        // Answering `None` here sent the class rule to the builtin-name
+        // fallback instead, so an `#[opaque] type Location {}` published
+        // `BitCopy` while an identical `Handle` published nothing. The
+        // builtin row is for a name the checker has no declaration of at
+        // all.
+        Some(DeclaredType {
+            marker,
+            is_opaque,
+            type_params: definition.type_params.clone(),
+            members,
+        })
+    }
+}
+
+/// Rewrite a member type's bare `Named` occurrences to the declaring module's
+/// canonical (qualified) spelling, so a declaration's own recursive
+/// occurrence carries the same key its declaration is looked up under.
+///
+/// Only rewrites a bare name that has a `{prefix}.{bare}` twin registered in
+/// `type_defs` — an unqualified reference to a type outside this module (a
+/// builtin, or a name `type_defs` never published under the prefix) is left
+/// exactly as resolved.
+fn canonicalize_member_ty(
+    ty: ResolvedTy,
+    prefix: &str,
+    type_defs: &HashMap<String, crate::check::types::TypeDef>,
+) -> ResolvedTy {
+    let rewrite_name = |name: String| -> String {
+        if name.starts_with(prefix) && name[prefix.len()..].starts_with('.') {
+            return name;
+        }
+        let qualified = format!("{prefix}.{name}");
+        if type_defs.contains_key(&qualified) {
+            qualified
+        } else {
+            name
+        }
+    };
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            is_opaque,
+        } => {
+            let args = args
+                .into_iter()
+                .map(|a| canonicalize_member_ty(a, prefix, type_defs))
+                .collect();
+            // A builtin already carries its identity in `builtin`; the name
+            // string is display-only there and rewriting it would be a
+            // second, redundant identity authority.
+            let name = if builtin.is_none() {
+                rewrite_name(name)
+            } else {
+                name
+            };
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                is_opaque,
+            }
+        }
+        ResolvedTy::Tuple(elements) => ResolvedTy::Tuple(
+            elements
+                .into_iter()
+                .map(|e| canonicalize_member_ty(e, prefix, type_defs))
+                .collect(),
+        ),
+        ResolvedTy::Array(element, len) => ResolvedTy::Array(
+            Box::new(canonicalize_member_ty(*element, prefix, type_defs)),
+            len,
+        ),
+        ResolvedTy::Slice(element) => ResolvedTy::Slice(Box::new(canonicalize_member_ty(
+            *element, prefix, type_defs,
+        ))),
+        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
+            params: params
+                .into_iter()
+                .map(|p| canonicalize_member_ty(p, prefix, type_defs))
+                .collect(),
+            ret: Box::new(canonicalize_member_ty(*ret, prefix, type_defs)),
+        },
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => ResolvedTy::Closure {
+            params: params
+                .into_iter()
+                .map(|p| canonicalize_member_ty(p, prefix, type_defs))
+                .collect(),
+            ret: Box::new(canonicalize_member_ty(*ret, prefix, type_defs)),
+            captures: captures
+                .into_iter()
+                .map(|c| canonicalize_member_ty(c, prefix, type_defs))
+                .collect(),
+        },
+        ResolvedTy::Pointer {
+            is_mutable,
+            pointee,
+        } => ResolvedTy::Pointer {
+            is_mutable,
+            pointee: Box::new(canonicalize_member_ty(*pointee, prefix, type_defs)),
+        },
+        ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
+            pointee: Box::new(canonicalize_member_ty(*pointee, prefix, type_defs)),
+        },
+        ResolvedTy::TraitObject { traits } => ResolvedTy::TraitObject {
+            traits: traits
+                .into_iter()
+                .map(|bound| crate::resolved_ty::ResolvedTraitBound {
+                    trait_name: bound.trait_name,
+                    args: bound
+                        .args
+                        .into_iter()
+                        .map(|a| canonicalize_member_ty(a, prefix, type_defs))
+                        .collect(),
+                    assoc_bindings: bound.assoc_bindings,
+                })
+                .collect(),
+        },
+        ResolvedTy::Task(inner) => {
+            ResolvedTy::Task(Box::new(canonicalize_member_ty(*inner, prefix, type_defs)))
+        }
+        other => other,
+    }
+}
+
+/// The §6.3 replacement for `Ty::is_copy` and the `implements_marker(Copy)`
+/// disjunct beside it: a value carries no ownership obligation exactly when its
+/// §1.1 class is `BitCopy` or `View`.
+///
+/// `View` is included so an extern `Pointer` keeps the Copy verdict
+/// `Ty::is_copy` gave it. A type the class rule refuses fails closed as owning.
+pub(crate) fn class_is_non_owning(
+    ty: &Ty,
+    declarations: &dyn crate::value_class::ClassDeclarations,
+) -> bool {
+    // A type the boundary cannot render is a checker-internal state - a leaked
+    // error, an unresolved inference variable, an unresolved associated
+    // projection - and carries an obligation until something proves it does
+    // not. There is no "unresolved therefore Copy" verdict.
+    let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
+        return false;
+    };
+    let context = crate::value_class::ClassContext::new(declarations);
+    matches!(
+        crate::value_class::ValueClass::of_ty(&resolved, &context),
+        Ok(crate::value_class::ValueClass::BitCopy | crate::value_class::ValueClass::View)
+    )
+}
+
+/// Whether a declaration walk rooted at `ty` reaches no cycle.
+///
+/// The eligibility walks in `hash_eligibility` and `eq_eligibility` descend
+/// through `type_defs` without a visited set, so a self-recursive nominal makes
+/// them diverge. This answers, fail-closed, whether it is safe to ask them.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the walk enumerates every Ty and VariantDef shape it descends through"
+)]
+fn declaration_walk_terminates(
+    ty: &ResolvedTy,
+    type_defs: &HashMap<String, crate::check::types::TypeDef>,
+) -> bool {
+    fn definition<'a>(
+        name: &str,
+        type_defs: &'a HashMap<String, crate::check::types::TypeDef>,
+    ) -> Option<&'a crate::check::types::TypeDef> {
+        type_defs.get(name).or_else(|| {
+            name.split_once('.')
+                .and_then(|(_, local)| type_defs.get(local))
+        })
+    }
+
+    fn nominal_names(ty: &ResolvedTy, out: &mut Vec<String>) {
+        if let ResolvedTy::Named { name, .. } = ty {
+            out.push(name.clone());
+        }
+        let mut components = Vec::new();
+        crate::type_facts::push_type_components(ty, &mut components);
+        for component in &components {
+            nominal_names(component, out);
+        }
+    }
+
+    fn member_names(ty: &Ty, out: &mut Vec<String>) {
+        match ty {
+            Ty::Named { name, args, .. } => {
+                out.push(name.clone());
+                for arg in args {
+                    member_names(arg, out);
+                }
+            }
+            Ty::Tuple(elements) => {
+                for element in elements {
+                    member_names(element, out);
+                }
+            }
+            Ty::Array(inner, _)
+            | Ty::Slice(inner)
+            | Ty::Task(inner)
+            | Ty::Pointer { pointee: inner, .. }
+            | Ty::Borrow { pointee: inner } => member_names(inner, out),
+            Ty::Function { params, ret } => {
+                for param in params {
+                    member_names(param, out);
+                }
+                member_names(ret, out);
+            }
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                for param in params.iter().chain(captures) {
+                    member_names(param, out);
+                }
+                member_names(ret, out);
+            }
+            Ty::AssocType { base, .. } => member_names(base, out),
+            _ => {}
+        }
+    }
+
+    fn visit(
+        name: &str,
+        type_defs: &HashMap<String, crate::check::types::TypeDef>,
+        stack: &mut Vec<String>,
+        done: &mut HashSet<String>,
+    ) -> bool {
+        if stack.iter().any(|entry| entry == name) {
+            return false;
+        }
+        if done.contains(name) {
+            return true;
+        }
+        let Some(definition) = definition(name, type_defs) else {
+            done.insert(name.to_string());
+            return true;
+        };
+        stack.push(name.to_string());
+        let mut members: Vec<String> = Vec::new();
+        for field in definition.fields.values() {
+            member_names(field, &mut members);
+        }
+        for variant in definition.variants.values() {
+            match variant {
+                crate::check::types::VariantDef::Unit => {}
+                crate::check::types::VariantDef::Tuple(payload) => {
+                    for ty in payload {
+                        member_names(ty, &mut members);
+                    }
+                }
+                crate::check::types::VariantDef::Struct(fields) => {
+                    for (_, ty) in fields {
+                        member_names(ty, &mut members);
+                    }
+                }
+            }
+        }
+        let terminates = members
+            .iter()
+            .all(|member| visit(member, type_defs, stack, done));
+        stack.pop();
+        if terminates {
+            done.insert(name.to_string());
+        }
+        terminates
+    }
+
+    let mut roots = Vec::new();
+    nominal_names(ty, &mut roots);
+    let mut stack = Vec::new();
+    let mut done = HashSet::new();
+    roots
+        .iter()
+        .all(|root| visit(root, type_defs, &mut stack, &mut done))
+}
+
 impl Checker {
+    /// Build the §6.3 fact table over every concrete accepted expression type.
+    ///
+    /// The walk is closed under a type's own components so a `Vec<Conn>` row is
+    /// always accompanied by its `Conn` row: consumers key on the exact type
+    /// they hold, and glue emission descends into elements.
+    /// Publish the §6.2 fact table, with the refusals §1.1 could not decide.
+    ///
+    /// A type §1.1 refuses gets no row, and for most refusals that is the whole
+    /// statement: the type is a template parameter, or a declaration the
+    /// boundary cannot render, and a consumer that misses the key fails closed.
+    /// `RecursiveInstantiation` is different - it refuses a declaration the
+    /// user wrote, whose members reach it at a growing instantiation - so it is
+    /// stated as `E_LIMIT_CLASS_RECURSION` rather than left as an absence, once
+    /// per declaration.
+    fn build_type_facts(
+        &self,
+        resolved: &HashMap<SpanKey, ResolvedTy>,
+    ) -> (BTreeMap<TypeInstanceKey, TypeFacts>, Vec<TypeError>) {
+        let declarations = self.class_declarations();
+        let context = crate::value_class::ClassContext::new(&declarations);
+        let mut facts: BTreeMap<TypeInstanceKey, TypeFacts> = BTreeMap::new();
+        // Visited is tracked separately from the table: a type §1.1 refuses
+        // gets no row, and keying the walk on the table alone would revisit it
+        // for ever through a recursive declaration.
+        let mut visited: std::collections::BTreeSet<TypeInstanceKey> =
+            std::collections::BTreeSet::new();
+        // Each pending type carries the span of the accepted expression it came
+        // from, so a refusal names a place in the user's program rather than
+        // the start of the file. A component inherits its container's span.
+        let mut refusals: BTreeMap<String, TypeError> = BTreeMap::new();
+        let mut pending: Vec<(ResolvedTy, Span)> = resolved
+            .iter()
+            .map(|(key, ty)| (ty.clone(), key.start..key.end))
+            .collect();
+        pending.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.start.cmp(&right.1.start))
+        });
+        pending.dedup_by(|left, right| left.0 == right.0);
+        while let Some((ty, span)) = pending.pop() {
+            let key = TypeInstanceKey(ty.clone());
+            if !visited.insert(key.clone()) {
+                continue;
+            }
+            let as_ty = ty.to_ty();
+            let send = SendFact::Known(self.registry.implements_marker(&as_ty, MarkerTrait::Send));
+            // MARKED SHORTCUT — the hash and eq columns are asked only of a
+            // type whose declaration graph terminates.
+            // WHY: `hash_ineligibility` and `eq_ineligibility` carry no visited
+            // set, so a legal self-recursive nominal
+            // (`enum RedisReply { Array(Vec<RedisReply>) }`) walks its own
+            // declaration for ever and overflows the stack. No P1 consumer
+            // reads these two columns; the class and clone columns, which do
+            // have consumers, are computed for every type either way.
+            // WHEN: the two eligibility walks carry a visited set, with the
+            // collection descriptors that read hash and eq (P2, §5.3).
+            // WHAT: ask them unconditionally, as class and clone already are.
+            let terminates = declaration_walk_terminates(&ty, &self.type_defs);
+            let hash = terminates
+                && matches!(
+                    crate::hash_eligibility::ty_is_hash_eligible_with_resources(
+                        &as_ty,
+                        &self.type_defs,
+                        self.registry.resource_type_names(),
+                    ),
+                    crate::hash_eligibility::HashEligibility::Eligible
+                );
+            let eq = terminates
+                && matches!(
+                    crate::eq_eligibility::ty_is_eq_eligible(&as_ty, &self.type_defs),
+                    crate::eq_eligibility::EqEligibility::Eligible
+                );
+            match TypeFacts::of_type(&ty, &context, send, hash, eq) {
+                Ok(row) => {
+                    facts.insert(key, row);
+                }
+                Err(crate::value_class::ClassError::RecursiveInstantiation { name }) => {
+                    refusals.entry(format!("recursion:{name}")).or_insert_with(|| {
+                        TypeError::new(
+                            TypeErrorKind::ClassRecursion,
+                            span.clone(),
+                            format!(
+                                "E_LIMIT_CLASS_RECURSION: `{name}` reaches itself through its own members at a growing instantiation, so it has no value class and no ownership obligation can be decided for it"
+                            ),
+                        )
+                    });
+                }
+                // §1.1's `UnknownDeclaration` on a name `type_defs` actually
+                // holds a definition for is a class-rule/registration
+                // disagreement over a real declaration, not a legitimate
+                // absence - `declared_type` found no answer for a name the
+                // checker itself registered. D369 makes that never silent;
+                // it fires loudly in debug/test/CI and is compiled out of
+                // release, mirroring the W4.047 totality net above.
+                Err(crate::value_class::ClassError::UnknownDeclaration { name })
+                    if self.type_defs.contains_key(&name)
+                        || name
+                            .split_once('.')
+                            .is_some_and(|(_, leaf)| self.type_defs.contains_key(leaf)) =>
+                {
+                    debug_assert!(
+                        false,
+                        "D369 totality gap: `{name}` is a declaration `type_defs` holds, \
+                         but the §1.1 class rule refused it as `UnknownDeclaration` - a \
+                         class-rule refusal on a user-written declaration must never be \
+                         silent"
+                    );
+                }
+                // Every other refusal is a legitimate absence a consumer
+                // fails closed on: a template parameter the instance service
+                // substitutes first, a name genuinely outside `type_defs`
+                // (a checker-internal state), or a compiler-internal carrier
+                // that is never the type of a value.
+                Err(_) => {}
+            }
+            let mut components = Vec::new();
+            crate::type_facts::push_type_components(&ty, &mut components);
+            pending.extend(
+                components
+                    .into_iter()
+                    .map(|component| (component, span.clone())),
+            );
+        }
+        (facts, refusals.into_values().collect())
+    }
+
+    /// The §1.1 declaration lookup backed by this checker's tables.
+    pub(crate) fn class_declarations(&self) -> CheckerClassDeclarations<'_> {
+        CheckerClassDeclarations {
+            registry: &self.registry,
+            type_defs: &self.type_defs,
+            user_opaque_type_names: &self.user_opaque_type_names,
+            module_registry: &self.module_registry,
+        }
+    }
+
+    /// Whether a checker-internal type carries no ownership obligation, per
+    /// the §1.1 class table.
+    pub(crate) fn ty_is_non_owning(&self, ty: &Ty) -> bool {
+        class_is_non_owning(ty, &self.class_declarations())
+    }
+
     /// Log function names that accept keyword arguments for structured fields.
     const LOG_KWARGS_FUNCTIONS: &'static [&'static str] = &[
         // C extern (used by codegen interception for legacy compatibility)
@@ -1684,10 +2231,7 @@ impl Checker {
                 .subst
                 .resolve(&pending.resolved_result_ty)
                 .materialize_literal_defaults();
-            let non_owning = resolved_result.is_copy()
-                || self
-                    .registry
-                    .implements_marker(&resolved_result, MarkerTrait::Copy);
+            let non_owning = self.ty_is_non_owning(&resolved_result);
             let mut fact = pending.fact;
             if let Some(symbol) = pending.extern_symbol.as_deref() {
                 use crate::ffi_contracts::{ExternResultOwnership, ReleaseDischargeDepth};
@@ -1827,11 +2371,7 @@ impl Checker {
                 } else {
                     Ownership::Unknown
                 };
-            } else if resolved_result.is_copy()
-                || self
-                    .registry
-                    .implements_marker(&resolved_result, MarkerTrait::Copy)
-            {
+            } else if self.ty_is_non_owning(&resolved_result) {
                 fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
             }
             produced_value_ownership.insert(key, fact);
@@ -1844,6 +2384,7 @@ impl Checker {
             self.validate_produced_value_graph(&resolved_expr_types, &leaves);
         let mut memo = HashMap::with_capacity(resolved_expr_types.len());
         let mut finalized = HashMap::with_capacity(resolved_expr_types.len());
+        let class_declarations = self.class_declarations();
         for key in resolved_expr_types.keys() {
             let mut visiting = HashSet::new();
             let fact = resolve_produced_node(
@@ -1851,7 +2392,7 @@ impl Checker {
                 &self.produced_value_dependencies,
                 &leaves,
                 &resolved_expr_types,
-                &self.registry,
+                &class_declarations,
                 &invalid_produced_nodes,
                 &mut visiting,
                 &mut memo,
@@ -1875,6 +2416,19 @@ impl Checker {
             })
             .collect();
 
+        // The §6.3 fact table describes an accepted program. A rejected one
+        // hands off no CheckedProgram, and its declaration graph may be
+        // ill-formed - `type Direct { next: Direct }` has no finite value
+        // layout - so the hash and eq eligibility walks it would drive have no
+        // bottom. Building nothing there is the same rule the typed
+        // `resolved_expr_types` handoff above states for its own totality.
+        let type_facts = if self.errors.is_empty() {
+            let (facts, refusals) = self.build_type_facts(&resolved_expr_types_typed);
+            self.errors.extend(refusals);
+            facts
+        } else {
+            BTreeMap::new()
+        };
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
@@ -1885,6 +2439,7 @@ impl Checker {
                 &mut self.caller_visible_param_projections,
             ),
             actor_self_state_fields: std::mem::take(&mut self.actor_self_state_fields),
+            type_facts,
             resolved_expr_types: resolved_expr_types_typed,
             is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),

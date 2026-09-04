@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use crate::ownership::TypeFactTable;
 use crate::OpId;
 use crate::{
     BlockId, CallableId, CallableInstance, GenericTemplateId, SemCallConv, SemCallable,
     SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemTerminator, SirInstanceKey, UseMode, UseSite, ValueId,
+    SemSignature, SemTerminator, SirInstanceKey, UseSite, ValueId,
 };
 use hew_hir::{monomorph::function_monomorph_symbol, substitute_type_params};
 use hew_types::ResolvedTy;
@@ -101,15 +102,27 @@ pub enum SirDiagnosticKind {
         op: OpId,
         reason: String,
     },
-    /// The initial scalar SIR surface is intentionally read-only even though
-    /// operands retain the broader ownership vocabulary for later slices.
-    /// Keeping the exact use site makes malformed edge/return/condition uses
-    /// fail at the SIR stage rather than reaching ownership MIR silently.
-    InvalidUseMode {
-        site: UseSite,
-        expected: UseMode,
-        actual: UseMode,
-        context: &'static str,
+    /// A value definition whose §1.2 ownership kind is not the one the class
+    /// table gives its type, or whose type §1.1 cannot class at all. The kind
+    /// is a pure function of the type, so a definition that says otherwise is
+    /// a fact no later phase can trust.
+    OwnershipKind {
+        value: ValueId,
+        reason: String,
+    },
+    /// A source binding naming a value this body never defines. §1.6 reads the
+    /// table to tell a user-facing wall from an internal error, so a row it
+    /// cannot resolve would silently drop the user's name.
+    UnknownBinding {
+        name: String,
+        value: ValueId,
+    },
+    /// A terminator kind this relation table states no rule for. The
+    /// counterpart of [`SirDiagnosticKind::InvalidOperation`]'s
+    /// outside-the-table arm: a terminator nothing checks is refused, not
+    /// admitted.
+    InvalidTerminator {
+        reason: String,
     },
     BranchConditionType {
         value: ValueId,
@@ -173,13 +186,35 @@ pub struct SirDiagnostic {
 }
 
 #[derive(Debug)]
-struct CallableContext<'a> {
+pub(crate) struct CallableContext<'a> {
     by_id: BTreeMap<CallableId, &'a SemCallable>,
+}
+
+/// Index an already-verified module's callable table.
+///
+/// [`verify_callable_table`] both validates and indexes; a pass that has
+/// already run [`verify_module`] over the same callables needs only the index,
+/// and building it here lets that pass hold the table while it mutates the
+/// module's bodies.
+pub(crate) fn callable_context(callables: &[SemCallable]) -> CallableContext<'_> {
+    CallableContext {
+        by_id: callables
+            .iter()
+            .map(|callable| (callable.id, callable))
+            .collect(),
+    }
 }
 
 impl<'a> CallableContext<'a> {
     fn callable(&self, id: CallableId) -> Option<&'a SemCallable> {
         self.by_id.get(&id).copied()
+    }
+
+    /// The ABI slot of one parameter of `id`, when the table names it.
+    fn param_passing(&self, id: CallableId, index: usize) -> Option<SemParamPassing> {
+        self.callable(id)
+            .and_then(|callable| callable.signature.params.get(index))
+            .map(|param| param.passing)
     }
 }
 
@@ -208,7 +243,11 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
                 )),
             ));
         }
-        diagnostics.extend(verify_function_with_context(function, Some(&callables)));
+        diagnostics.extend(verify_function_with_context(
+            function,
+            Some(&callables),
+            &module.type_facts,
+        ));
     }
     diagnostics
 }
@@ -222,7 +261,11 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
 pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
     let callables = verify_callable_table(module, &mut diagnostics);
-    diagnostics.extend(verify_function_with_context(function, Some(&callables)));
+    diagnostics.extend(verify_function_with_context(
+        function,
+        Some(&callables),
+        &module.type_facts,
+    ));
     diagnostics
 }
 
@@ -230,14 +273,32 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
 /// or the ownership/layout MIR boundary.
 ///
 /// Keeping this public lets every consumer fail closed rather than relying on
-/// a particular CLI lane to have run whole-module verification first.
+/// a particular CLI lane to have run whole-module verification first. Without a
+/// module it carries neither the callable table nor the §6.2 fact table, so it
+/// refuses a parameter, whose §1.2 kind is its ABI slot, and a value whose type
+/// §1.1 cannot class without declaration facts. Use
+/// [`verify_function_in_module`] wherever those facts exist.
 #[allow(
     clippy::too_many_lines,
     reason = "the verifier keeps SSA collection, CFG shape, and dominance checks together so the stage boundary is auditable"
 )]
 #[must_use]
 pub fn verify_function(function: &SemFunction) -> Vec<SirDiagnostic> {
-    verify_function_with_context(function, None)
+    verify_function_with_facts(function, &TypeFactTable::new())
+}
+
+/// Verify one function against the §6.2 fact table its module carries.
+///
+/// A function verified away from its module has no fact table to read, so a
+/// value whose class needs declaration facts is refused rather than admitted.
+/// A pass that holds the module passes its table here so the kind it audits is
+/// the one the lowering wrote.
+#[must_use]
+pub(crate) fn verify_function_with_facts(
+    function: &SemFunction,
+    facts: &TypeFactTable,
+) -> Vec<SirDiagnostic> {
+    verify_function_with_context(function, None, facts)
 }
 
 /// Verify the semantic precondition for discarding blocks during a CFG rewrite.
@@ -293,8 +354,13 @@ pub(crate) fn verify_cfg_discard_safety(
                     ));
                 }
             }
-            operation.kind.visit_operands(|operand, use_| {
-                if matches!(use_.mode, UseMode::Move | UseMode::Consume) {
+            // An operand carries no mode: what a use does to its value is
+            // the op it feeds, so the obligation question is asked of the
+            // operation kind. A terminator in the admitted domain transfers no
+            // obligation of its own - a `Suspend`'s `Move` inputs do, and they
+            // arrive with the phase that emits one.
+            if operation.kind.transfers_obligation() {
+                operation.kind.visit_operands(|operand, use_| {
                     diagnostics.push(cfg_discard_diag(
                         original,
                         block.id,
@@ -303,29 +369,12 @@ pub(crate) fn verify_cfg_discard_safety(
                                 op: operation.id,
                                 operand,
                                 value: use_.value,
-                                mode: use_.mode,
                             },
                         },
                     ));
-                }
-            });
-        }
-        block.terminator.visit_operands(|operand, use_| {
-            if matches!(use_.mode, UseMode::Move | UseMode::Consume) {
-                diagnostics.push(cfg_discard_diag(
-                    original,
-                    block.id,
-                    CfgDiscardSafetyReason::DropObligationUse {
-                        site: UseSite::Terminator {
-                            block: block.id,
-                            operand,
-                            value: use_.value,
-                            mode: use_.mode,
-                        },
-                    },
-                ));
+                });
             }
-        });
+        }
     }
 
     diagnostics
@@ -346,9 +395,10 @@ fn cfg_discard_diag(
     clippy::too_many_lines,
     reason = "the verifier keeps SSA collection, CFG shape, and dominance checks together so the stage boundary is auditable"
 )]
-fn verify_function_with_context(
+pub(crate) fn verify_function_with_context(
     function: &SemFunction,
     callable_context: Option<&CallableContext<'_>>,
+    facts: &TypeFactTable,
 ) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
@@ -390,14 +440,44 @@ fn verify_function_with_context(
     let mut types = HashMap::new();
     let mut definitions = HashMap::new();
     let mut operations = HashSet::new();
-    for param in &function.params {
+    for (index, param) in function.params.iter().enumerate() {
         record_value(function, param.value, &mut values, &mut diagnostics);
+        // §1.2 rule 3: a parameter's kind is its header slot before it is its
+        // type's class, so the audit reads the slot the lowering read. Without
+        // the callable table there is no slot to read, and the rule has no
+        // authority to audit against: that is a finding, not a `ReadOnly`
+        // default, which would admit a `Guaranteed` borrow slot as `Owned` and
+        // refuse the borrow slot the lowering actually wrote.
+        let expected = match callable_context
+            .and_then(|context| context.param_passing(function.callable, index))
+        {
+            Some(passing) => crate::OwnKind::of_param(&param.ty, passing, facts),
+            None => Err(format!(
+                "parameter {index} has no header slot in the callable table, so §1.2 rule 3 has no ABI fact to audit its ownership kind against"
+            )),
+        };
+        verify_own_kind(
+            function,
+            param.value,
+            &param.ty,
+            param.own,
+            expected,
+            &mut diagnostics,
+        );
         types.insert(param.value, param.ty.clone());
         definitions.insert(param.value, (function.entry, None));
     }
     for block in &function.blocks {
         for arg in &block.args {
             record_value(function, arg.value, &mut values, &mut diagnostics);
+            verify_own_kind(
+                function,
+                arg.value,
+                &arg.ty,
+                arg.own,
+                crate::OwnKind::of_ty(&arg.ty, facts),
+                &mut diagnostics,
+            );
             types.insert(arg.value, arg.ty.clone());
             definitions.insert(arg.value, (block.id, None));
         }
@@ -407,9 +487,31 @@ fn verify_function_with_context(
             }
             for result in &op.results {
                 record_value(function, result.id, &mut values, &mut diagnostics);
+                verify_own_kind(
+                    function,
+                    result.id,
+                    &result.ty,
+                    result.own,
+                    crate::OwnKind::of_ty(&result.ty, facts),
+                    &mut diagnostics,
+                );
                 types.insert(result.id, result.ty.clone());
                 definitions.insert(result.id, (block.id, Some(op_index)));
             }
+        }
+    }
+    // §1.6's binding table is read by every user-facing wall, so a row naming
+    // a value this body never defines is refused rather than silently dropped
+    // when the wall goes looking for the user's name.
+    for binding in &function.bindings {
+        if !values.contains(&binding.value) {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::UnknownBinding {
+                    name: binding.name.clone(),
+                    value: binding.value,
+                },
+            ));
         }
     }
     // Every value type is known before checking operations, edges, and
@@ -419,7 +521,6 @@ fn verify_function_with_context(
         for op in &block.ops {
             verify_operation_shape(function, op, &types, callable_context, &mut diagnostics);
         }
-        verify_terminator_operand_modes(function, block.id, &block.terminator, &mut diagnostics);
         block.terminator.visit_successors(|edge| {
             let Some(target) = blocks.get(&edge.target) else {
                 diagnostics.push(diag(function, SirDiagnosticKind::UnknownBlock(edge.target)));
@@ -938,19 +1039,6 @@ fn verify_operation_shape(
     callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    operation.visit_operands(|operand, use_| {
-        require_read_use(
-            function,
-            UseSite::Operation {
-                op: operation.id,
-                operand,
-                value: use_.value,
-                mode: use_.mode,
-            },
-            operation_operand_context(&operation.kind, operand),
-            diagnostics,
-        );
-    });
     if let SemOpKind::Call { callee, args } = &operation.kind {
         verify_direct_call_operation(
             function,
@@ -1211,6 +1299,38 @@ fn verify_operation_shape(
         }
         SemOpKind::Call { .. } => unreachable!("calls return before value-result validation"),
         SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => {}
+        // The §1.3 ownership operations, the P1 literal producers, the
+        // structural-equality ops and `rt.call` have no producer on this route
+        // yet, and the rules that admit them are rules 1-6, which are the
+        // verifier lane's. Until those land the relation table refuses rather
+        // than admitting an operation nothing checks.
+        SemOpKind::ConstF64(_)
+        | SemOpKind::ConstChar(_)
+        | SemOpKind::ConstUnit
+        | SemOpKind::ConstDuration(_)
+        | SemOpKind::ConstStr(_)
+        | SemOpKind::ConstBytes(_)
+        | SemOpKind::StrEq { .. }
+        | SemOpKind::BytesEq { .. }
+        | SemOpKind::RtCall { .. }
+        | SemOpKind::CopyValue { .. }
+        | SemOpKind::DestroyValue { .. }
+        | SemOpKind::BeginBorrow { .. }
+        | SemOpKind::EndBorrow { .. }
+        | SemOpKind::Move { .. }
+        | SemOpKind::Fork { .. }
+        | SemOpKind::Destructure { .. }
+        | SemOpKind::AllocPlace { .. }
+        | SemOpKind::LoadCopy { .. }
+        | SemOpKind::LoadTake { .. }
+        | SemOpKind::StoreInit { .. }
+        | SemOpKind::StoreAssign { .. }
+        | SemOpKind::EndLifetime { .. } => invalid_operation(
+            function,
+            operation.id,
+            "operation is outside the verified SIR relation table".to_string(),
+            diagnostics,
+        ),
     }
 }
 
@@ -1331,62 +1451,6 @@ fn verify_direct_call_operation(
     }
 }
 
-fn require_read_use(
-    function: &SemFunction,
-    site: UseSite,
-    context: &'static str,
-    diagnostics: &mut Vec<SirDiagnostic>,
-) {
-    let mode = match site {
-        UseSite::Operation { mode, .. } | UseSite::Terminator { mode, .. } => mode,
-    };
-    if mode != UseMode::Read {
-        diagnostics.push(diag(
-            function,
-            SirDiagnosticKind::InvalidUseMode {
-                site,
-                expected: UseMode::Read,
-                actual: mode,
-                context,
-            },
-        ));
-    }
-}
-
-fn operation_operand_context(kind: &SemOpKind, operand: crate::OperandSlot) -> &'static str {
-    match kind {
-        SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => "operation operand",
-        SemOpKind::TupleMake { .. } => "tuple.make element",
-        SemOpKind::TupleGet { .. } => "tuple.get operand",
-        SemOpKind::Unary { .. } => "unary operand",
-        SemOpKind::Binary { .. } if operand.0 == 0 => "binary left operand",
-        SemOpKind::Binary { .. } => "binary right operand",
-        SemOpKind::Cast { .. } => "cast operand",
-        SemOpKind::Call { .. } => "direct call argument",
-    }
-}
-
-fn verify_terminator_operand_modes(
-    function: &SemFunction,
-    block: BlockId,
-    terminator: &SemTerminator,
-    diagnostics: &mut Vec<SirDiagnostic>,
-) {
-    terminator.visit_operands(|operand, use_| {
-        require_read_use(
-            function,
-            UseSite::Terminator {
-                block,
-                operand,
-                value: use_.value,
-                mode: use_.mode,
-            },
-            terminator.operand_context(operand),
-            diagnostics,
-        );
-    });
-}
-
 fn invalid_operation(
     function: &SemFunction,
     op: OpId,
@@ -1448,6 +1512,21 @@ fn verify_terminator_shape(
             }
         }
         SemTerminator::Return { .. } | SemTerminator::Goto(_) | SemTerminator::Unreachable => {}
+        // `Trap`'s kind table and `Suspend`'s shape rules - §1.5's kind/arity/
+        // mode agreement and the cancel-edge and resume-edge orderings -
+        // belong to the phase that emits one, and neither has a producer on
+        // this route. An unverified terminator is refused for the same reason
+        // an unverified operation is: admitting it would let a shape nothing
+        // checks reach MIR. This is the operation arm's refusal, not a new
+        // ownership rule.
+        SemTerminator::Trap { .. } | SemTerminator::Suspend { .. } => {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidTerminator {
+                    reason: "terminator is outside the verified SIR relation table".to_string(),
+                },
+            ));
+        }
     }
 }
 
@@ -1508,6 +1587,56 @@ fn record_value(
     }
 }
 
+/// §1.2: a value's ownership kind is decided by one rule, and this reads that
+/// rule's answer back off the definition.
+///
+/// `expected` comes from the same derivation the lowering used —
+/// [`OwnKind::of_param`] for a parameter, whose header slot decides before its
+/// type's class does, and [`OwnKind::of_ty`] for every other definition.
+/// Without the audit `own` is a free field the lowering writes and nothing
+/// reads, so an `i64` could present as `Owned`, and a `Guaranteed` could ride
+/// on a value no borrow produced. A type neither the fact table nor §1.1 can
+/// decide is refused for the same reason the lowering refuses it: there is no
+/// default kind.
+///
+/// MARKED SHORTCUT - a `begin_borrow` result is not yet a case here.
+/// WHY: `Guaranteed` has two producers under §1.2 - a borrow-slot parameter,
+/// which this reads, and a `begin_borrow` result, which no phase emits on this
+/// route.
+/// WHEN: `begin_borrow` lands (L2).
+/// WHAT: a `begin_borrow` result is `Guaranteed` whatever its type's class
+/// says, so the derivation branches on the defining operation as well as on
+/// the header slot.
+fn verify_own_kind(
+    function: &SemFunction,
+    value: ValueId,
+    ty: &ResolvedTy,
+    own: crate::OwnKind,
+    expected: Result<crate::OwnKind, String>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    match expected {
+        Ok(expected) if expected == own => {}
+        Ok(expected) => diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::OwnershipKind {
+                value,
+                reason: format!(
+                    "value is declared {own:?} but the class of `{}` gives it {expected:?}",
+                    ty.user_facing()
+                ),
+            },
+        )),
+        Err(error) => diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::OwnershipKind {
+                value,
+                reason: error,
+            },
+        )),
+    }
+}
+
 fn diag(function: &SemFunction, kind: SirDiagnosticKind) -> SirDiagnostic {
     SirDiagnostic {
         function: function.name.clone(),
@@ -1539,20 +1668,32 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<ValueId> {
 #[cfg(test)]
 mod cfg_discard_safety_tests {
     use super::{verify_cfg_discard_safety, CfgDiscardSafetyReason, SirDiagnosticKind};
+    use crate::ownership::OwnKind;
     use crate::{
-        BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, Operand, SemBlock, SemFunction,
-        SemTerminator, UseMode, UseSite, ValueId,
+        BlockArg, BlockId, CallableId, Edge, FunctionSourceOrigin, OpId, Operand, Provenance,
+        SemBlock, SemFunction, SemOp, SemOpKind, SemTerminator, UseSite, ValueId,
     };
     use hew_hir::ItemId;
     use hew_types::{DefId, ResolvedTy};
 
-    fn operand(value: u32, mode: UseMode) -> Operand {
+    fn operand(value: u32) -> Operand {
         Operand {
             value: ValueId(value),
-            mode,
         }
     }
 
+    fn param(value: u32, ty: ResolvedTy) -> BlockArg {
+        BlockArg {
+            value: ValueId(value),
+            ty,
+            own: OwnKind::None,
+        }
+    }
+
+    /// A discarded block whose ops discharge an ownership obligation is unsafe
+    /// to discard: the obligation would never be consumed on the surviving
+    /// path. The obligation is named by the operation now, not by a mode on the
+    /// operand it reads.
     #[test]
     fn records_a_discarded_ownership_discharge_as_a_drop_obligation() {
         let original = SemFunction {
@@ -1562,25 +1703,18 @@ mod cfg_discard_safety_tests {
             name: "discarded_drop_obligation".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::Unknown,
-            params: vec![
-                BlockArg {
-                    value: ValueId(0),
-                    ty: ResolvedTy::Bool,
-                },
-                BlockArg {
-                    value: ValueId(1),
-                    ty: ResolvedTy::I64,
-                },
-            ],
+            params: vec![param(0, ResolvedTy::Bool), param(1, ResolvedTy::I64)],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
+            places: Vec::new(),
+            bindings: Vec::new(),
             blocks: vec![
                 SemBlock {
                     id: BlockId(0),
                     args: Vec::new(),
                     ops: Vec::new(),
                     terminator: SemTerminator::Branch {
-                        condition: operand(0, UseMode::Read),
+                        condition: operand(0),
                         then_target: Edge {
                             target: BlockId(1),
                             args: Vec::new(),
@@ -1596,15 +1730,20 @@ mod cfg_discard_safety_tests {
                     args: Vec::new(),
                     ops: Vec::new(),
                     terminator: SemTerminator::Return {
-                        value: Some(operand(1, UseMode::Read)),
+                        value: Some(operand(1)),
                     },
                 },
                 SemBlock {
                     id: BlockId(2),
                     args: Vec::new(),
-                    ops: Vec::new(),
+                    ops: vec![SemOp {
+                        id: OpId(0),
+                        results: Vec::new(),
+                        kind: SemOpKind::DestroyValue { value: operand(1) },
+                        provenance: Provenance::Synthesized,
+                    }],
                     terminator: SemTerminator::Return {
-                        value: Some(operand(1, UseMode::Consume)),
+                        value: Some(operand(1)),
                     },
                 },
             ],
@@ -1621,12 +1760,290 @@ mod cfg_discard_safety_tests {
             SirDiagnosticKind::UnsafeCfgDiscard {
                 block: BlockId(2),
                 reason: CfgDiscardSafetyReason::DropObligationUse {
-                    site: UseSite::Terminator {
-                        mode: UseMode::Consume,
-                        ..
-                    }
+                    site: UseSite::Operation { op: OpId(0), .. }
                 }
             }
         )));
+    }
+
+    /// The counterfactual: a discarded block whose ops read their operands
+    /// without transferring an obligation is not reported for one.
+    #[test]
+    fn a_discarded_pure_block_is_not_a_drop_obligation() {
+        let original = SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("discarded_pure_block"),
+            name: "discarded_pure_block".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: vec![param(0, ResolvedTy::Bool), param(1, ResolvedTy::I64)],
+            return_ty: ResolvedTy::I64,
+            entry: BlockId(0),
+            places: Vec::new(),
+            bindings: Vec::new(),
+            blocks: vec![
+                SemBlock {
+                    id: BlockId(0),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SemTerminator::Branch {
+                        condition: operand(0),
+                        then_target: Edge {
+                            target: BlockId(1),
+                            args: Vec::new(),
+                        },
+                        else_target: Edge {
+                            target: BlockId(2),
+                            args: Vec::new(),
+                        },
+                    },
+                },
+                SemBlock {
+                    id: BlockId(1),
+                    args: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SemTerminator::Return {
+                        value: Some(operand(1)),
+                    },
+                },
+                SemBlock {
+                    id: BlockId(2),
+                    args: Vec::new(),
+                    ops: vec![SemOp {
+                        id: OpId(0),
+                        results: vec![crate::ValueDef {
+                            id: ValueId(2),
+                            ty: ResolvedTy::I64,
+                            own: OwnKind::None,
+                        }],
+                        kind: SemOpKind::ConstI64(7),
+                        provenance: Provenance::Synthesized,
+                    }],
+                    terminator: SemTerminator::Return {
+                        value: Some(operand(2)),
+                    },
+                },
+            ],
+        };
+        let mut rewritten = original.clone();
+        rewritten.blocks[0].terminator = SemTerminator::Goto(Edge {
+            target: BlockId(1),
+            args: Vec::new(),
+        });
+
+        let diagnostics = verify_cfg_discard_safety(&original, &rewritten);
+        assert!(!diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::UnsafeCfgDiscard {
+                reason: CfgDiscardSafetyReason::DropObligationUse { .. },
+                ..
+            }
+        )));
+    }
+}
+
+#[cfg(test)]
+mod parameter_own_kind_tests {
+    use super::{callable_context, verify_function_with_context, SirDiagnosticKind};
+    use crate::ownership::{OwnKind, TypeFactTable};
+    use crate::{
+        BlockArg, BlockId, CallableId, CallableInstance, FunctionSourceOrigin, SemAbiParam,
+        SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemParamPassing,
+        SemSignature, SemTerminator, ValueId,
+    };
+    use hew_hir::ItemId;
+    use hew_types::{DefId, ResolvedTy};
+
+    fn function(ty: ResolvedTy, own: OwnKind) -> SemFunction {
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("takes_one_parameter"),
+            name: "takes_one_parameter".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: vec![BlockArg {
+                value: ValueId(0),
+                ty,
+                own,
+            }],
+            return_ty: ResolvedTy::Unit,
+            entry: BlockId(0),
+            places: Vec::new(),
+            bindings: Vec::new(),
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return { value: None },
+            }],
+        }
+    }
+
+    fn callable(function: &SemFunction, passing: SemParamPassing) -> SemCallable {
+        SemCallable {
+            id: function.callable,
+            function: function.id,
+            declaration: function.declaration.clone(),
+            instance: CallableInstance::Monomorphic,
+            symbol: function.name.clone(),
+            source_origin: function.source_origin.clone(),
+            signature: SemSignature {
+                params: function
+                    .params
+                    .iter()
+                    .map(|parameter| SemAbiParam {
+                        ty: parameter.ty.clone(),
+                        passing,
+                        caller_visible_projection: false,
+                    })
+                    .collect(),
+                return_ty: function.return_ty.clone(),
+            },
+            call_conv: SemCallConv::Default,
+            kind: SemCallableKind::HewDirect,
+        }
+    }
+
+    /// Is there a §1.2 ownership-kind finding about the one parameter?
+    fn kind_finding(diagnostics: &[crate::SirDiagnostic]) -> Option<&str> {
+        diagnostics
+            .iter()
+            .find_map(|diagnostic| match &diagnostic.kind {
+                SirDiagnosticKind::OwnershipKind { value, reason } if *value == ValueId(0) => {
+                    Some(reason.as_str())
+                }
+                _ => None,
+            })
+    }
+
+    /// §1.2 rule 3: a `Borrow` header slot makes the parameter `Guaranteed` for
+    /// the whole body whatever its type's class says. A `string` in that slot
+    /// carrying the class's `Owned` contradicts the slot, and the audit says so.
+    #[test]
+    fn verifier_refuses_a_borrow_slot_parameter_the_class_kind_contradicts() {
+        let function = function(ResolvedTy::String, OwnKind::Owned);
+        let callables = vec![callable(&function, SemParamPassing::Borrow)];
+        let context = callable_context(&callables);
+        let diagnostics =
+            verify_function_with_context(&function, Some(&context), &TypeFactTable::new());
+        let reason = kind_finding(&diagnostics).expect("a Borrow slot refuses an Owned parameter");
+        assert!(reason.contains("Guaranteed"), "{reason}");
+    }
+
+    /// The counterfactual: the same parameter in the same slot, carrying the
+    /// kind rule 3 gives it, is admitted. The finding above is about the slot
+    /// disagreement and not about `Borrow` being unrepresentable.
+    #[test]
+    fn verifier_admits_a_borrow_slot_parameter_that_is_guaranteed() {
+        let function = function(ResolvedTy::String, OwnKind::Guaranteed);
+        let callables = vec![callable(&function, SemParamPassing::Borrow)];
+        let context = callable_context(&callables);
+        let diagnostics =
+            verify_function_with_context(&function, Some(&context), &TypeFactTable::new());
+        assert_eq!(None, kind_finding(&diagnostics));
+    }
+
+    /// The same body in a `ReadOnly` slot takes the class table's answer, so
+    /// `Guaranteed` is the wrong kind there. Rule 3 reads the slot rather than
+    /// making `Guaranteed` always acceptable on a parameter.
+    #[test]
+    fn verifier_refuses_a_read_only_slot_parameter_that_claims_guaranteed() {
+        let function = function(ResolvedTy::String, OwnKind::Guaranteed);
+        let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
+        let context = callable_context(&callables);
+        let diagnostics =
+            verify_function_with_context(&function, Some(&context), &TypeFactTable::new());
+        let reason =
+            kind_finding(&diagnostics).expect("a ReadOnly slot refuses a Guaranteed parameter");
+        assert!(reason.contains("Owned"), "{reason}");
+    }
+
+    /// The negative control for the deleted `ReadOnly` default: with no callable
+    /// table there is no header slot, so rule 3 has no ABI fact to audit
+    /// against and the parameter is refused. Defaulting to `ReadOnly` admitted
+    /// this `i64` silently, and would have admitted a `Borrow` slot's
+    /// `Guaranteed` parameter as `Owned`.
+    #[test]
+    fn verifier_refuses_a_parameter_whose_header_slot_it_cannot_read() {
+        let function = function(ResolvedTy::I64, OwnKind::None);
+        let diagnostics = verify_function_with_context(&function, None, &TypeFactTable::new());
+        let reason =
+            kind_finding(&diagnostics).expect("no callable table means no slot to audit against");
+        assert!(reason.contains("no header slot"), "{reason}");
+    }
+}
+
+#[cfg(test)]
+mod binding_table_tests {
+    use super::{verify_function, SirDiagnosticKind};
+    use crate::ownership::Binding;
+    use crate::{
+        BlockId, CallableId, FunctionSourceOrigin, SemBlock, SemFunction, SemTerminator, ValueId,
+    };
+    use hew_hir::ItemId;
+    use hew_types::{DefId, ResolvedTy};
+
+    fn function(bindings: Vec<Binding>) -> SemFunction {
+        SemFunction {
+            id: ItemId(0),
+            callable: CallableId(0),
+            declaration: DefId::for_test("named"),
+            name: "named".to_string(),
+            span: 0..0,
+            source_origin: FunctionSourceOrigin::Unknown,
+            params: Vec::new(),
+            return_ty: ResolvedTy::Unit,
+            entry: BlockId(0),
+            places: Vec::new(),
+            bindings,
+            blocks: vec![SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return { value: None },
+            }],
+        }
+    }
+
+    fn binding(name: &str, value: u32) -> Binding {
+        Binding {
+            name: name.to_string(),
+            span: 0..0,
+            mutable: false,
+            value: ValueId(value),
+        }
+    }
+
+    /// §1.6 reads the binding table to give a wall the user's own name for the
+    /// value it refuses. A row naming a value this body never defines cannot be
+    /// resolved, so the wall would silently lose the name; the verifier refuses
+    /// the row instead.
+    #[test]
+    fn verifier_refuses_a_binding_naming_a_value_the_body_never_defines() {
+        let diagnostics = verify_function(&function(vec![binding("ghost", 7)]));
+        assert!(
+            diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                SirDiagnosticKind::UnknownBinding { name, value }
+                    if name == "ghost" && *value == ValueId(7)
+            )),
+            "{diagnostics:#?}"
+        );
+    }
+
+    /// The counterfactual: an empty table raises nothing, so the rule is about
+    /// the unresolvable row and not about carrying bindings at all.
+    #[test]
+    fn verifier_admits_a_body_whose_binding_table_is_empty() {
+        let diagnostics = verify_function(&function(Vec::new()));
+        assert!(
+            !diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                SirDiagnosticKind::UnknownBinding { .. }
+            )),
+            "{diagnostics:#?}"
+        );
     }
 }

@@ -1348,6 +1348,15 @@ impl ValueOwnership {
     /// The carried `ty_owns_heap` seed — equal to `ty_owns_heap(ty, …)` for the
     /// classified `ty` **by construction**. This is the exact projection a
     /// future consolidation seam reads instead of re-walking the type.
+    ///
+    /// LEGACY (P5): a second copy/heap-ownership predicate outside the §1.1
+    /// class table (`hew_types::ValueClass::of_ty`), exempted from
+    /// `no-new-copy-predicate` by name rather than deleted. WHEN obsolete:
+    /// the legacy lowerer (`docs/internal/ir-ladder.md` §9) is deleted and
+    /// every MIR/codegen caller reads the checker's published `TypeFacts`
+    /// instead. WHAT the real fix looks like: delete this method and its
+    /// callers' second authority along with the legacy lowering path it
+    /// serves.
     #[must_use]
     pub fn owns_heap(&self) -> bool {
         self.owns_heap

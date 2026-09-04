@@ -10,7 +10,7 @@ use hew_sir::{
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
-fn lower_hir(source: &str) -> HirModule {
+fn lower_hir(source: &str) -> (HirModule, hew_types::TypeCheckOutput) {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -25,11 +25,14 @@ fn lower_hir(source: &str) -> HirModule {
         "source must lower to HIR before the SIR demand test: {:#?}",
         hir.diagnostics
     );
-    hir.module
+    (hir.module, type_check_output)
 }
 
 fn lower_source(source: &str) -> LoweredModule {
-    lower_module(&lower_hir(source))
+    {
+        let (hir, type_facts) = lower_hir(source);
+        lower_module(&hir, &type_facts)
+    }
 }
 
 fn status_of<'a>(lowered: &'a LoweredModule, name: &str) -> &'a SirLoweringStatus {
@@ -192,7 +195,7 @@ fn a_fully_lowered_program_dumps_no_unsupported_stanza() {
 /// says so rather than looking like an empty compilation.
 #[test]
 fn a_module_without_an_entry_lowers_no_bodies_and_says_why() {
-    let mut hir = lower_hir(
+    let (mut hir, type_facts) = lower_hir(
         r"
         fn add_one(value: i64) -> i64 {
             value + 1
@@ -205,7 +208,7 @@ fn a_module_without_an_entry_lowers_no_bodies_and_says_why() {
     );
     hir.entry_declaration = None;
 
-    let lowered = lower_module(&hir);
+    let lowered = lower_module(&hir, &type_facts);
     assert!(
         lowered.module.functions.is_empty(),
         "no entry means no demand: {:#?}",
@@ -245,9 +248,9 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
         }}
         "
     );
-    let hir = lower_hir(&source);
+    let (hir, type_facts) = lower_hir(&source);
 
-    let entry = lower_module(&hir);
+    let entry = lower_module(&hir, &type_facts);
     for name in ["stranded_ok", "stranded_bad", "refused_header"] {
         assert!(
             matches!(status_of(&entry, name), SirLoweringStatus::NotReached),
@@ -256,7 +259,7 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
         );
     }
 
-    let every = lower_module_with_demand(&hir, SirLoweringDemand::EveryCallable);
+    let every = lower_module_with_demand(&hir, &type_facts, SirLoweringDemand::EveryCallable);
     assert!(
         matches!(status_of(&every, "main"), SirLoweringStatus::Lowered),
         "{:#?}",

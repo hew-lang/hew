@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use crate::{LoweredModule, SemModule, SemOpKind, SemTerminator, SirLoweringStatus};
+use crate::{LoweredModule, OwnKind, SemModule, SemOpKind, SemTerminator, SirLoweringStatus};
 
 /// Deterministic printer for a whole HIR→SIR lowering result.
 ///
@@ -53,7 +53,14 @@ pub fn dump_sir(module: &SemModule) -> String {
             if index != 0 {
                 write!(out, ", ").expect("write to String");
             }
-            write!(out, "%{}: {}", param.value.0, param.ty.user_facing()).expect("write to String");
+            write!(
+                out,
+                "%{}: {}{}",
+                param.value.0,
+                param.ty.user_facing(),
+                own_suffix(param.own)
+            )
+            .expect("write to String");
         }
         writeln!(out, ") -> {} {{", function.return_ty.user_facing()).expect("write to String");
         for block in &function.blocks {
@@ -64,8 +71,14 @@ pub fn dump_sir(module: &SemModule) -> String {
                     if index != 0 {
                         write!(out, ", ").expect("write to String");
                     }
-                    write!(out, "%{}: {}", arg.value.0, arg.ty.user_facing())
-                        .expect("write to String");
+                    write!(
+                        out,
+                        "%{}: {}{}",
+                        arg.value.0,
+                        arg.ty.user_facing(),
+                        own_suffix(arg.own)
+                    )
+                    .expect("write to String");
                 }
                 write!(out, ")").expect("write to String");
             }
@@ -80,11 +93,32 @@ pub fn dump_sir(module: &SemModule) -> String {
     out
 }
 
+/// The §1.2 ownership kind a value definition carries, as dump text.
+///
+/// `OwnKind::None` renders as nothing: it is the kind of every value in the
+/// domain this dump prints today, so printing it would be noise on every line
+/// and would say nothing. The two kinds that carry an obligation are printed,
+/// which is what makes `ValueDef.own` and `BlockArg.own` readable facts rather
+/// than fields only the lowering ever touches.
+const fn own_suffix(own: OwnKind) -> &'static str {
+    match own {
+        OwnKind::None => "",
+        OwnKind::Owned => " owned",
+        OwnKind::Guaranteed => " guaranteed",
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per operation kind is the point of a closed textual rendering"
+)]
 fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
     write!(out, "    ").expect("write to String");
     match op.results.as_slice() {
         [] => {}
-        [result] => write!(out, "%{} = ", result.id.0).expect("write to String"),
+        [result] => {
+            write!(out, "%{}{} = ", result.id.0, own_suffix(result.own)).expect("write to String");
+        }
         // The verifier rejects multi-result operations in this initial slice,
         // but a dump must remain total for malformed IR used in diagnostics.
         results => {
@@ -92,7 +126,7 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
                 if index != 0 {
                     write!(out, ", ").expect("write to String");
                 }
-                write!(out, "%{}", result.id.0).expect("write to String");
+                write!(out, "%{}{}", result.id.0, own_suffix(result.own)).expect("write to String");
             }
             write!(out, " = ").expect("write to String");
         }
@@ -137,6 +171,74 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
             }
             writeln!(out, ")").expect("write to String");
         }
+        SemOpKind::ConstF64(value) => writeln!(out, "const {value}").expect("write to String"),
+        SemOpKind::ConstChar(value) => writeln!(out, "const {value:?}").expect("write to String"),
+        SemOpKind::ConstUnit => writeln!(out, "const ()").expect("write to String"),
+        SemOpKind::ConstDuration(nanos) => {
+            writeln!(out, "const {nanos}ns").expect("write to String");
+        }
+        SemOpKind::ConstStr(id) => {
+            writeln!(out, "const.str #{}", id.0).expect("write to String");
+        }
+        SemOpKind::ConstBytes(id) => {
+            writeln!(out, "const.bytes #{}", id.0).expect("write to String");
+        }
+        SemOpKind::StrEq { lhs, rhs } => {
+            writeln!(out, "str.eq {}, {}", operand(lhs), operand(rhs)).expect("write to String");
+        }
+        SemOpKind::BytesEq { lhs, rhs } => {
+            writeln!(out, "bytes.eq {}, {}", operand(lhs), operand(rhs)).expect("write to String");
+        }
+        SemOpKind::RtCall { family, args } => {
+            write!(out, "rt.call{{{family:?}}}(").expect("write to String");
+            for (index, arg) in args.iter().enumerate() {
+                if index != 0 {
+                    write!(out, ", ").expect("write to String");
+                }
+                write!(out, "{}", operand(arg)).expect("write to String");
+            }
+            writeln!(out, ")").expect("write to String");
+        }
+        SemOpKind::CopyValue { source } => {
+            writeln!(out, "copy_value {}", operand(source)).expect("write to String");
+        }
+        SemOpKind::DestroyValue { value } => {
+            writeln!(out, "destroy_value {}", operand(value)).expect("write to String");
+        }
+        SemOpKind::BeginBorrow { owner } => {
+            writeln!(out, "begin_borrow {}", operand(owner)).expect("write to String");
+        }
+        SemOpKind::EndBorrow { borrow } => {
+            writeln!(out, "end_borrow {}", operand(borrow)).expect("write to String");
+        }
+        SemOpKind::Move { source } => {
+            writeln!(out, "move {}", operand(source)).expect("write to String");
+        }
+        SemOpKind::Fork { source } => {
+            writeln!(out, "fork {}", operand(source)).expect("write to String");
+        }
+        SemOpKind::Destructure { aggregate } => {
+            writeln!(out, "destructure {}", operand(aggregate)).expect("write to String");
+        }
+        SemOpKind::AllocPlace { place } => {
+            writeln!(out, "alloc_place $p{}", place.0).expect("write to String");
+        }
+        SemOpKind::LoadCopy { place } => {
+            writeln!(out, "load.copy $p{}", place.0).expect("write to String");
+        }
+        SemOpKind::LoadTake { place } => {
+            writeln!(out, "load.take $p{}", place.0).expect("write to String");
+        }
+        SemOpKind::StoreInit { place, value } => {
+            writeln!(out, "store.init $p{}, {}", place.0, operand(value)).expect("write to String");
+        }
+        SemOpKind::StoreAssign { place, value } => {
+            writeln!(out, "store.assign $p{}, {}", place.0, operand(value))
+                .expect("write to String");
+        }
+        SemOpKind::EndLifetime { place } => {
+            writeln!(out, "end_lifetime $p{}", place.0).expect("write to String");
+        }
     }
 }
 
@@ -166,6 +268,33 @@ fn dump_term(out: &mut String, term: &SemTerminator) {
             edge_args(else_target)
         )
         .expect("write to String"),
+        SemTerminator::Trap { kind } => {
+            writeln!(out, "    trap{{{kind:?}}}").expect("write to String");
+        }
+        SemTerminator::Suspend {
+            kind,
+            inputs,
+            resumes,
+            cancel,
+        } => {
+            write!(out, "    suspend{{{kind:?}}}(").expect("write to String");
+            for (index, input) in inputs.iter().enumerate() {
+                if index != 0 {
+                    write!(out, ", ").expect("write to String");
+                }
+                write!(out, "{:?} {}", input.mode, operand(&input.operand))
+                    .expect("write to String");
+            }
+            write!(out, ") resumes [").expect("write to String");
+            for (index, edge) in resumes.iter().enumerate() {
+                if index != 0 {
+                    write!(out, ", ").expect("write to String");
+                }
+                write!(out, "bb{}{}", edge.target.0, edge_args(edge)).expect("write to String");
+            }
+            writeln!(out, "] cancel bb{}{}", cancel.target.0, edge_args(cancel))
+                .expect("write to String");
+        }
         SemTerminator::Unreachable => writeln!(out, "    unreachable").expect("write to String"),
     }
 }
@@ -181,11 +310,7 @@ fn edge_args(edge: &crate::Edge) -> String {
 }
 
 fn operand(operand: &crate::Operand) -> String {
-    match operand.mode {
-        crate::UseMode::Read => format!("%{}", operand.value.0),
-        crate::UseMode::BorrowShared => format!("borrow %{}", operand.value.0),
-        crate::UseMode::BorrowMut => format!("borrow_mut %{}", operand.value.0),
-        crate::UseMode::Move => format!("move %{}", operand.value.0),
-        crate::UseMode::Consume => format!("consume %{}", operand.value.0),
-    }
+    // An operand has no mode: what a use does to its value is the op it feeds,
+    // so the rendering is the value alone.
+    format!("%{}", operand.value.0)
 }

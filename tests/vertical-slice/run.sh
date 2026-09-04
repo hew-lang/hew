@@ -558,6 +558,13 @@ expect_check_fail_contains \
     "type \`Choice\` cannot be used as a value" \
     "dotted_bare_type_value"
 
+# §1.1: a declaration reaching itself at a growing instantiation has no value
+# class, and the refusal is stated rather than left as a missing fact row.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/class_recursion_growing_instantiation.hew" \
+    "E_LIMIT_CLASS_RECURSION" \
+    "class_recursion_growing_instantiation"
+
 # #2648: an admitted fresh-producer call scrutinee (fresh through immutable
 # bindings + a helper chain) must keep compiling and produce deterministic
 # output — the D108 non-regression the return-provenance preflight protects.

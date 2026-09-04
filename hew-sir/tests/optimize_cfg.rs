@@ -1,18 +1,17 @@
 use hew_hir::ItemId;
 use hew_sir::{
-    canonicalize_constant_cfg, canonicalize_module_constant_cfg, verify_function, verify_module,
-    BlockArg, BlockId, CallableId, CallableInstance, CfgCanonicalizationReport,
-    CfgDiscardSafetyReason, Edge, EffectSummary, FunctionSourceOrigin, OpId, Operand, Provenance,
-    SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
-    SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
-    SirOptimizationError, UseMode, ValueDef, ValueId,
+    canonicalize_module_constant_cfg, verify_function_in_module, verify_module, BlockArg, BlockId,
+    CallableId, CallableInstance, CfgCanonicalizationReport, CfgDiscardSafetyReason, Edge,
+    FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance, SemAbiParam, SemBlock, SemCallConv,
+    SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing,
+    SemSignature, SemTerminator, SirDiagnosticKind, SirOptimizationError, ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
+use std::collections::BTreeMap;
 
 fn read(value: u32) -> Operand {
     Operand {
         value: ValueId(value),
-        mode: UseMode::Read,
     }
 }
 
@@ -20,6 +19,7 @@ fn value(id: u32, ty: ResolvedTy) -> ValueDef {
     ValueDef {
         id: ValueId(id),
         ty,
+        own: OwnKind::None,
     }
 }
 
@@ -45,7 +45,6 @@ fn callable_for(function: &SemFunction) -> SemCallable {
         },
         call_conv: SemCallConv::Default,
         kind: SemCallableKind::HewDirect,
-        effect_summary: EffectSummary::Unknown,
     }
 }
 
@@ -56,6 +55,9 @@ fn module(function: SemFunction) -> SemModule {
         root_unit_callables: Vec::new(),
         entry_callable: None,
         functions: vec![function],
+        type_facts: BTreeMap::new(),
+        string_literals: BTreeMap::new(),
+        bytes_literals: BTreeMap::new(),
     }
 }
 
@@ -76,7 +78,28 @@ fn function(
         return_ty,
         entry: BlockId(0),
         blocks,
+        places: Vec::new(),
+        bindings: Vec::new(),
     }
+}
+
+/// Canonicalize one function through the module entry.
+///
+/// A parameter's §1.2 kind is its ABI header slot before it is its type's
+/// class, so canonicalization runs against the callable table that names those
+/// slots. This keeps each test's subject the function it built while the pass
+/// still sees the facts it audits against.
+fn canonicalize(
+    function: &mut SemFunction,
+) -> Result<CfgCanonicalizationReport, SirOptimizationError> {
+    let mut wrapper = module(function.clone());
+    let reports = canonicalize_module_constant_cfg(&mut wrapper)?;
+    *function = wrapper.functions.remove(0);
+    Ok(reports
+        .into_iter()
+        .next()
+        .expect("a one-function module reports one canonicalization")
+        .1)
 }
 
 fn false_same_target_diamond() -> SemFunction {
@@ -86,10 +109,12 @@ fn false_same_target_diamond() -> SemFunction {
             BlockArg {
                 value: ValueId(0),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
             },
             BlockArg {
                 value: ValueId(1),
                 ty: ResolvedTy::I64,
+                own: OwnKind::None,
             },
         ],
         ResolvedTy::I64,
@@ -133,6 +158,7 @@ fn false_same_target_diamond() -> SemFunction {
                 args: vec![BlockArg {
                     value: ValueId(4),
                     ty: ResolvedTy::I64,
+                    own: OwnKind::None,
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
@@ -146,10 +172,9 @@ fn false_same_target_diamond() -> SemFunction {
 #[test]
 fn false_branch_keeps_the_selected_duplicate_target_edge_and_remaps_blocks() {
     let mut function = false_same_target_diamond();
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 
-    let report = canonicalize_constant_cfg(&mut function)
-        .expect("verified SIR must canonicalize successfully");
+    let report = canonicalize(&mut function).expect("verified SIR must canonicalize successfully");
     assert_eq!(
         report,
         CfgCanonicalizationReport {
@@ -160,7 +185,7 @@ fn false_branch_keeps_the_selected_duplicate_target_edge_and_remaps_blocks() {
                 .collect(),
         }
     );
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
     assert_eq!(function.blocks.len(), 2);
     assert!(matches!(
         &function.blocks[0].terminator,
@@ -175,8 +200,8 @@ fn compaction_preserves_every_surviving_non_block_identity_and_fact() {
     let mut function = false_same_target_diamond();
     let before = function.clone();
 
-    let report = canonicalize_constant_cfg(&mut function)
-        .expect("verified duplicate-edge CFG must canonicalize");
+    let report =
+        canonicalize(&mut function).expect("verified duplicate-edge CFG must canonicalize");
 
     assert_eq!(function.id, before.id);
     assert_eq!(function.callable, before.callable);
@@ -200,7 +225,7 @@ fn compaction_preserves_every_surviving_non_block_identity_and_fact() {
             .expect("every remap target must name an output block");
 
         // These equalities jointly cover block-argument and operation
-        // ValueIds, OpIds, types, provenance, operands, and UseModes.
+        // ValueIds, OpIds, types, provenance and operands.
         assert_eq!(canonical.args, former.args);
         assert_eq!(canonical.ops, former.ops);
 
@@ -287,7 +312,7 @@ fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() 
         ],
     );
     let before = function.clone();
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 
     // This is the counterfactual: the ordinary post-fold verifier alone sees
     // valid SSA even though compaction would erase a MayTrap region.
@@ -296,10 +321,13 @@ fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() 
         target: BlockId(1),
         args: Vec::new(),
     });
-    assert!(verify_function(&structurally_valid_but_unsafe).is_empty());
+    assert!(verify_function_in_module(
+        &module(structurally_valid_but_unsafe.clone()),
+        &structurally_valid_but_unsafe
+    )
+    .is_empty());
 
-    let error = canonicalize_constant_cfg(&mut function)
-        .expect_err("discarding a MayTrap arm must fail closed");
+    let error = canonicalize(&mut function).expect_err("discarding a MayTrap arm must fail closed");
     assert!(matches!(
         error,
         SirOptimizationError::InvalidOutput(diagnostics)
@@ -356,9 +384,9 @@ fn constant_branch_preserves_a_reachable_semantic_unreachable_endpoint() {
             },
         ],
     );
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 
-    let report = canonicalize_constant_cfg(&mut function).expect("constant CFG must fold");
+    let report = canonicalize(&mut function).expect("constant CFG must fold");
     assert_eq!(report.removed_blocks, vec![BlockId(1)]);
     assert!(matches!(
         &function.blocks[0].terminator,
@@ -371,7 +399,7 @@ fn constant_branch_preserves_a_reachable_semantic_unreachable_endpoint() {
         &function.blocks[1].terminator,
         SemTerminator::Unreachable
     ));
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 }
 
 #[test]
@@ -381,6 +409,7 @@ fn compaction_accepts_a_newly_dead_block_that_reads_an_entry_parameter() {
         vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
+            own: OwnKind::None,
         }],
         ResolvedTy::Bool,
         vec![
@@ -426,13 +455,13 @@ fn compaction_accepts_a_newly_dead_block_that_reads_an_entry_parameter() {
             },
         ],
     );
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 
-    let report = canonicalize_constant_cfg(&mut function)
+    let report = canonicalize(&mut function)
         .expect("dead blocks may retain entry-value uses until compaction");
     assert_eq!(report.removed_blocks, vec![BlockId(2)]);
     assert_eq!(function.blocks.len(), 2);
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 }
 
 #[test]
@@ -480,9 +509,9 @@ fn compaction_remaps_reachable_self_loops() {
             },
         ],
     );
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 
-    canonicalize_constant_cfg(&mut function).expect("loop CFG must canonicalize");
+    canonicalize(&mut function).expect("loop CFG must canonicalize");
     assert_eq!(function.blocks.len(), 2);
     assert!(matches!(
         &function.blocks[1].terminator,
@@ -491,7 +520,7 @@ fn compaction_remaps_reachable_self_loops() {
             ..
         })
     ));
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 }
 
 #[test]
@@ -505,6 +534,7 @@ fn compaction_remaps_multiblock_loop_edges_after_dead_block_removal() {
         vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
+            own: OwnKind::None,
         }],
         ResolvedTy::Unit,
         vec![
@@ -568,9 +598,9 @@ fn compaction_remaps_multiblock_loop_edges_after_dead_block_removal() {
             },
         ],
     );
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 
-    let report = canonicalize_constant_cfg(&mut function)
+    let report = canonicalize(&mut function)
         .expect("a constant entry edge must compact a multiblock loop safely");
     assert_eq!(report.removed_blocks, vec![BlockId(1)]);
     assert_eq!(
@@ -620,7 +650,7 @@ fn compaction_remaps_multiblock_loop_edges_after_dead_block_removal() {
             ..
         }
     ));
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 }
 
 #[test]
@@ -630,6 +660,7 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
         vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
+            own: OwnKind::None,
         }],
         ResolvedTy::I64,
         vec![
@@ -678,9 +709,9 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
         ],
     );
     let before = function.clone();
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 
-    let report = canonicalize_constant_cfg(&mut function).expect("dynamic CFG remains valid");
+    let report = canonicalize(&mut function).expect("dynamic CFG remains valid");
     assert_eq!(report.folded_branches, 0);
     assert!(report.removed_blocks.is_empty());
     assert_eq!(function, before);
@@ -705,7 +736,7 @@ fn malformed_input_is_rejected_atomically() {
     let before = function.clone();
 
     assert!(matches!(
-        canonicalize_constant_cfg(&mut function),
+        canonicalize(&mut function),
         Err(SirOptimizationError::InvalidInput(_))
     ));
     assert_eq!(function, before);
@@ -717,10 +748,12 @@ fn duplicate_block_identity_is_rejected_before_cfg_indexing_or_mutation() {
     function.blocks[1].id = BlockId(0);
     let before = function.clone();
 
-    assert!(matches!(
-        canonicalize_constant_cfg(&mut function),
-        Err(SirOptimizationError::InvalidInput(_))
-    ));
+    let Err(SirOptimizationError::InvalidInput(diagnostics)) = canonicalize(&mut function) else {
+        panic!("a duplicate block identity is malformed input");
+    };
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.kind == SirDiagnosticKind::DuplicateBlock(BlockId(0))));
     assert_eq!(function, before);
 }
 
@@ -751,7 +784,7 @@ fn noncanonical_unique_block_order_is_rejected_atomically() {
     let before = function.clone();
 
     assert!(matches!(
-        canonicalize_constant_cfg(&mut function),
+        canonicalize(&mut function),
         Err(SirOptimizationError::InvalidInput(_))
     ));
     assert_eq!(function, before);
@@ -788,10 +821,10 @@ fn compaction_canonicalizes_a_nonzero_entry_block() {
         ],
     );
     function.entry = BlockId(2);
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 
-    let report = canonicalize_constant_cfg(&mut function)
-        .expect("a valid nonzero entry must canonicalize successfully");
+    let report =
+        canonicalize(&mut function).expect("a valid nonzero entry must canonicalize successfully");
     assert_eq!(report.folded_branches, 0);
     assert_eq!(report.removed_blocks, vec![BlockId(0)]);
     assert_eq!(
@@ -808,7 +841,7 @@ fn compaction_canonicalizes_a_nonzero_entry_block() {
             ..
         })
     ));
-    assert!(verify_function(&function).is_empty());
+    assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 }
 
 #[test]
@@ -850,6 +883,9 @@ fn module_canonicalization_rejects_an_invalid_body_atomically() {
         root_unit_callables: Vec::new(),
         entry_callable: None,
         functions: vec![valid, invalid],
+        type_facts: BTreeMap::new(),
+        string_literals: BTreeMap::new(),
+        bytes_literals: BTreeMap::new(),
     };
     let before = module.clone();
 

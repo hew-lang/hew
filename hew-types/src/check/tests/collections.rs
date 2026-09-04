@@ -2176,18 +2176,34 @@ fn vec_iter_clone_totality_rejects_marked_resource_direct_and_wrapped() {
     );
 }
 
+/// `Grow<T>` reaches itself as `Grow<Vec<T>>`, so its member walk has no finite
+/// fixpoint. The checker must terminate on it rather than walk for ever, and it
+/// must say why: §1.1 refuses the declaration under `E_LIMIT_CLASS_RECURSION`
+/// rather than publishing no row and letting a later stage guess. Reaching this
+/// assertion at all is the termination proof.
 #[test]
-fn vec_clone_growing_recursive_generic_terminates_fail_closed() {
+fn vec_clone_growing_recursive_generic_terminates_and_names_the_refusal() {
     let output = check_source(
         r"
         enum Grow<T> { Node(Vec<Grow<Vec<T>>>); Leaf(T); }
         fn main() { let xs: Vec<Grow<i64>> = []; let _ys = xs.clone(); }
     ",
     );
-    assert!(
-        output.errors.is_empty(),
-        "checker must terminate before the downstream clone fail-closed gate: {:#?}",
+    let refusals: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::ClassRecursion)
+        .collect();
+    assert_eq!(
+        1,
+        refusals.len(),
+        "one refusal naming the declaration: {:#?}",
         output.errors
+    );
+    assert!(
+        refusals[0].message.contains("`Grow`"),
+        "{}",
+        refusals[0].message
     );
 }
 

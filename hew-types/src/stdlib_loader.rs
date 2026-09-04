@@ -281,7 +281,17 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                     });
                 }
             }
-            // Only fieldless structs are opaque handles.
+            // A fieldless struct is an opaque handle only when its own
+            // `#[opaque]` attribute says so. A fieldless struct with no
+            // attribute (`pub type Location {}` in `std/builtins.hew`, a
+            // compiler-intrinsic type with its own §1.1 builtin-table row) is
+            // an ordinary value type; treating "fieldless" alone as "opaque"
+            // made `ClassDeclarations::declared_type` see `is_opaque: true`
+            // for these compiler intrinsics too (via `ModuleRegistry::
+            // is_handle_type`) - a false fact about the declaration even
+            // though it happens not to change §1.1's verdict today (an
+            // opaque and a non-opaque fieldless declaration both class
+            // `BitCopy`).
             // Enums (including fieldless enums) are real value types and must
             // not be lowered as handles when imported from stdlib Hew modules.
             Item::TypeDecl(td) => {
@@ -293,7 +303,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                     .body
                     .iter()
                     .any(|b| matches!(b, TypeBodyItem::Field { .. }));
-                if td.kind == TypeDeclKind::Struct && !has_fields {
+                if td.kind == TypeDeclKind::Struct && !has_fields && td.is_opaque {
                     info.handle_types.push(qualified);
                 }
             }

@@ -1,0 +1,23 @@
+// §1.1: an `indirect` enum reaches itself through its own members, and the
+// recursion is legal only because the payload sits behind a heap box. The
+// recursive occurrence is therefore an owning edge, so `Tree` keeps its
+// payload class and clones field-wise; it is never `BitCopy`, which §1.2 gives
+// no owner. `Colour` is the counterfactual in the same program: a
+// non-recursive enum over the same scalar payloads is bit-copyable.
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+enum Colour {
+    Red;
+    Green;
+}
+
+fn main() -> i64 {
+    let t: Tree = Tree.Leaf(1);
+    let c: Colour = Colour.Red;
+    let _ = t;
+    let _ = c;
+    0
+}

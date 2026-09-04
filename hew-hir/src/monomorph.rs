@@ -30,7 +30,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use hew_types::resolved_ty::{mangle_resolved_ty_segment, TypeParamMangle};
 use hew_types::{DefId, ResolvedTy};
 
 use crate::ids::ItemId;
@@ -341,26 +340,10 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
     }
 }
 
-/// Render a single `ResolvedTy` as a mangled fragment.
-///
-/// Compound structure is encoded with `$`-letter tokens: `$l`/`$g` delimit
-/// named type arguments, `$x`/`$g` delimit structural compounds, `$c`
-/// separates list items, `$r` marks function returns, `$a` marks trait-object
-/// associated bindings, and `$m` replaces name qualifiers. Every token starts
-/// with `$`, which Hew identifiers cannot contain, so the rendering is
-/// structural and injective over the supported `ResolvedTy` identity
-/// dimensions. This compatibility wrapper selects the shared encoder's total
-/// `TypeParam` mode, preserving `typeparam$x{name}$g` for speculative HIR keys.
-///
-/// # Panics
-///
-/// Panics if the shared encoder violates the contract that
-/// [`TypeParamMangle::Concrete`] renders every [`ResolvedTy`].
-#[must_use]
-pub fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
-    mangle_resolved_ty_segment(ty, TypeParamMangle::Concrete)
-        .expect("Concrete TypeParam mangling must render every ResolvedTy")
-}
+/// The mangler moved to `hew_types::mangle` beside the class authority
+/// (ir-ladder §5.1) so `hew-mir` does not depend on `hew-hir` for a name.
+/// The nine call sites in this crate and downstream keep this spelling.
+pub use hew_types::mangle::mangle_resolved_ty;
 
 /// Insertion-ordered registry used during HIR lowering.
 ///
@@ -733,6 +716,14 @@ pub struct EnumLayout {
     pub mangled_name: String,
     /// All variants in declaration order with substituted payload types.
     pub variants: Vec<EnumVariantLayout>,
+    /// The origin declaration's `indirect` modifier.
+    ///
+    /// Carried per instantiation because it decides the physical shape: an
+    /// `indirect enum`'s variables and self-referential payloads are heap
+    /// pointers rather than the inline tagged union. Dropping it here published
+    /// `List$$i64` as a direct enum, so its own `Cons(T, List<T>)` payload
+    /// resolved to its still-opaque struct and codegen-front refused it.
+    pub is_indirect: bool,
 }
 
 /// Insertion-ordered registry for enum-layout monomorphisations.
@@ -771,6 +762,7 @@ impl EnumLayoutRegistry {
         &mut self,
         key: EnumMonoKey,
         variants: Vec<EnumVariantLayout>,
+        is_indirect: bool,
     ) -> Result<bool, ()> {
         let normalized_args: Vec<ResolvedTy> = key
             .type_args
@@ -794,6 +786,7 @@ impl EnumLayoutRegistry {
             key: key.clone(),
             mangled_name,
             variants,
+            is_indirect,
         });
         self.seen.insert(key, idx);
         Ok(true)
@@ -1273,8 +1266,8 @@ mod tests {
         let mut reg = EnumLayoutRegistry::with_cap(8);
         let key = option_key(ResolvedTy::I64);
         let variants = vec![some_variant(ResolvedTy::I64), none_variant()];
-        assert_eq!(reg.insert(key.clone(), variants.clone()), Ok(true));
-        assert_eq!(reg.insert(key, variants), Ok(false));
+        assert_eq!(reg.insert(key.clone(), variants.clone(), false), Ok(true));
+        assert_eq!(reg.insert(key, variants, false), Ok(false));
         assert_eq!(reg.into_vec().len(), 1);
     }
 
@@ -1285,6 +1278,7 @@ mod tests {
             reg.insert(
                 option_key(ResolvedTy::I64),
                 vec![some_variant(ResolvedTy::I64), none_variant()],
+                false,
             ),
             Ok(true)
         );
@@ -1292,6 +1286,7 @@ mod tests {
             reg.insert(
                 option_key(ResolvedTy::String),
                 vec![some_variant(ResolvedTy::String), none_variant()],
+                false,
             ),
             Ok(true)
         );
@@ -1318,6 +1313,7 @@ mod tests {
             reg.insert(
                 result_key(qualified_err.clone()),
                 vec![some_variant(ResolvedTy::String), none_variant()],
+                false,
             ),
             Ok(true)
         );
@@ -1326,6 +1322,7 @@ mod tests {
             reg.insert(
                 result_key(bare_err.clone()),
                 vec![some_variant(ResolvedTy::String), none_variant()],
+                false,
             ),
             Ok(true)
         );
@@ -1386,6 +1383,7 @@ mod tests {
             reg.insert(
                 option_vec_key(qualified.clone()),
                 vec![some_variant(ResolvedTy::I64), none_variant()],
+                false,
             ),
             Ok(true)
         );
@@ -1393,6 +1391,7 @@ mod tests {
             reg.insert(
                 option_vec_key(bare.clone()),
                 vec![some_variant(ResolvedTy::I64), none_variant()],
+                false,
             ),
             Ok(true)
         );
@@ -1416,11 +1415,13 @@ mod tests {
         reg.insert(
             option_key(ResolvedTy::String),
             vec![some_variant(ResolvedTy::String), none_variant()],
+            false,
         )
         .unwrap();
         reg.insert(
             option_key(ResolvedTy::I64),
             vec![some_variant(ResolvedTy::I64), none_variant()],
+            false,
         )
         .unwrap();
         let entries = reg.into_vec();
@@ -1435,7 +1436,7 @@ mod tests {
         for ty in [ResolvedTy::I64, ResolvedTy::I32, ResolvedTy::Bool] {
             let key = option_key(ty.clone());
             let variants = vec![some_variant(ty), none_variant()];
-            if reg.insert(key, variants).is_err() {
+            if reg.insert(key, variants, false).is_err() {
                 overflowed = true;
             }
         }
@@ -1449,8 +1450,12 @@ mod tests {
         // `Option<i64>` becomes `Option$$i64` — same scheme as fn/record.
         let mut reg = EnumLayoutRegistry::with_cap(8);
         let key = option_key(ResolvedTy::I64);
-        reg.insert(key, vec![some_variant(ResolvedTy::I64), none_variant()])
-            .unwrap();
+        reg.insert(
+            key,
+            vec![some_variant(ResolvedTy::I64), none_variant()],
+            false,
+        )
+        .unwrap();
         let entries = reg.into_vec();
         assert_eq!(entries[0].mangled_name, "Option$$i64");
     }

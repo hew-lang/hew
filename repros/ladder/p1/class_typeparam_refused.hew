@@ -1,0 +1,8 @@
+fn id<T>(x: T) -> T {
+    return x;
+}
+
+fn main() -> i64 {
+    println(id(7));
+    0
+}

@@ -1,16 +1,17 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmtKind,
     IntentKind, ResolvedRef,
 };
-use hew_types::{CallTarget, DefId, ResolvedTy};
+use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeInstanceKey};
 
+use crate::ownership::{Binding, OwnKind, TypeFactTable};
 use crate::{
-    BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSummary, FunctionSourceOrigin,
-    GenericTemplateId, OpId, Operand, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable,
-    SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemTerminator, SirInstanceKey, UseMode, ValueDef, ValueId,
+    BlockArg, BlockId, CallableId, CallableInstance, Edge, FunctionSourceOrigin, GenericTemplateId,
+    OpId, Operand, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind,
+    SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature,
+    SemTerminator, SirInstanceKey, ValueDef, ValueId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,8 +124,8 @@ impl LoweredModule {
 ///
 /// A module with no entry callable is not a program: it lowers no bodies.
 #[must_use]
-pub fn lower_module(module: &HirModule) -> LoweredModule {
-    lower_module_with_demand(module, SirLoweringDemand::Entry)
+pub fn lower_module(module: &HirModule, facts: &TypeCheckOutput) -> LoweredModule {
+    lower_module_with_demand(module, facts, SirLoweringDemand::Entry)
 }
 
 /// Lower SIR bodies under an explicit demand policy.
@@ -135,12 +136,16 @@ pub fn lower_module(module: &HirModule) -> LoweredModule {
 /// The strict compile route never asks for that demand, so nothing about it
 /// changes here.
 #[must_use]
-pub fn lower_module_with_demand(module: &HirModule, demand: SirLoweringDemand) -> LoweredModule {
+pub fn lower_module_with_demand(
+    module: &HirModule,
+    facts: &TypeCheckOutput,
+    demand: SirLoweringDemand,
+) -> LoweredModule {
     // The HIR monomorphisation registry remains deliberately unused here.
     // SIR discovers concrete direct-user instances from each resolved call's
     // `SiteId -> call_site_type_args` fact, applies the enclosing semantic
     // substitution, and creates its own closed instance worklist.
-    let mut service = InstanceService::new(module, demand);
+    let mut service = InstanceService::new(module, &facts.type_facts, demand);
     match demand {
         SirLoweringDemand::Entry => service.request_entry(),
         SirLoweringDemand::EveryCallable => service.request_every_callable(),
@@ -353,7 +358,6 @@ impl<'a> CallableTable<'a> {
                 signature,
                 call_conv: SemCallConv::Default,
                 kind: SemCallableKind::HewDirect,
-                effect_summary: EffectSummary::Unknown,
             });
         }
         generic_templates.sort_by(|left, right| left.id.cmp(&right.id));
@@ -401,6 +405,10 @@ enum CallableState {
 /// `HirModule::monomorphisations` or invokes MIR lowering.
 struct InstanceService<'a> {
     module: &'a HirModule,
+    /// The checker's §6.2 rows. The lowering reads a decided class out of this
+    /// rather than recomputing one, and projects the rows its own bodies
+    /// mention onto the module it produces.
+    checked_facts: &'a TypeFactTable,
     demand: SirLoweringDemand,
     table: CallableTable<'a>,
     states: Vec<CallableState>,
@@ -416,11 +424,16 @@ struct InstanceService<'a> {
 }
 
 impl<'a> InstanceService<'a> {
-    fn new(module: &'a HirModule, demand: SirLoweringDemand) -> Self {
+    fn new(
+        module: &'a HirModule,
+        checked_facts: &'a TypeFactTable,
+        demand: SirLoweringDemand,
+    ) -> Self {
         let table = CallableTable::from_hir(module);
         let count = table.callables.len();
         Self {
             module,
+            checked_facts,
             demand,
             table,
             states: vec![CallableState::Unreached; count],
@@ -687,7 +700,6 @@ impl<'a> InstanceService<'a> {
             signature,
             call_conv: SemCallConv::Default,
             kind: SemCallableKind::HewDirect,
-            effect_summary: EffectSummary::Unknown,
         });
         self.by_instance.insert(key, id);
         self.states.push(CallableState::Queued);
@@ -769,11 +781,12 @@ impl<'a> InstanceService<'a> {
     fn into_module(self) -> SemModule {
         let Self {
             table,
+            checked_facts,
             used_templates,
             mut functions,
             ..
         } = self;
-        let generic_templates = table
+        let generic_templates: Vec<SemGenericTemplate> = table
             .generic_templates
             .into_iter()
             .filter(|template| used_templates.contains(&template.id))
@@ -783,12 +796,27 @@ impl<'a> InstanceService<'a> {
         // module — and every dump taken from it — a function of the program,
         // not of the traversal that discovered it.
         functions.sort_unstable_by_key(|function| function.callable);
+        let type_facts = project_type_facts(
+            checked_facts,
+            &table.callables,
+            &generic_templates,
+            &functions,
+        );
         SemModule {
             callables: table.callables,
             generic_templates,
             root_unit_callables: table.root_unit_callables,
             entry_callable: table.entry_callable,
             functions,
+            type_facts,
+            // MARKED SHORTCUT — the two literal pools ship empty.
+            // WHY: §1.3.1's `const.str` and `const.bytes` producers are the
+            // phase that interns into them, and this domain emits neither, so
+            // there is nothing to pool.
+            // WHEN: the string and bytes literal producers land (L3).
+            // WHAT: the interning table the producers fill is carried here.
+            string_literals: BTreeMap::new(),
+            bytes_literals: BTreeMap::new(),
         }
     }
 
@@ -799,6 +827,67 @@ impl<'a> InstanceService<'a> {
             .map(|callable| (callable.id, self.callable_status(callable.id)))
             .collect()
     }
+}
+
+/// Project the checker's §6.2 rows onto the types one SIR module mentions.
+///
+/// The module carries the rows its own values and headers need and no others:
+/// a consumer keys on the exact type it holds, so the projection is closed
+/// under a type's components the same way the checker's table is. A type the
+/// checker published no row for gets none here either — there is no default
+/// class, and a missing key is the fail-closed case (`MissingTypeFacts`, L2).
+fn project_type_facts(
+    checked: &TypeFactTable,
+    callables: &[SemCallable],
+    templates: &[SemGenericTemplate],
+    functions: &[SemFunction],
+) -> TypeFactTable {
+    let mut mentioned: Vec<ResolvedTy> = Vec::new();
+    let push_signature = |signature: &SemSignature, out: &mut Vec<ResolvedTy>| {
+        for param in &signature.params {
+            out.push(param.ty.clone());
+        }
+        out.push(signature.return_ty.clone());
+    };
+    for callable in callables {
+        push_signature(&callable.signature, &mut mentioned);
+    }
+    for template in templates {
+        push_signature(&template.signature, &mut mentioned);
+    }
+    for function in functions {
+        mentioned.push(function.return_ty.clone());
+        for param in &function.params {
+            mentioned.push(param.ty.clone());
+        }
+        for place in &function.places {
+            mentioned.push(place.ty.clone());
+        }
+        for block in &function.blocks {
+            for arg in &block.args {
+                mentioned.push(arg.ty.clone());
+            }
+            for op in &block.ops {
+                for result in &op.results {
+                    mentioned.push(result.ty.clone());
+                }
+            }
+        }
+    }
+
+    let mut projected = TypeFactTable::new();
+    let mut seen: std::collections::BTreeSet<TypeInstanceKey> = std::collections::BTreeSet::new();
+    while let Some(ty) = mentioned.pop() {
+        let key = TypeInstanceKey(ty.clone());
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        if let Some(row) = checked.get(&key) {
+            projected.insert(key, *row);
+        }
+        hew_types::push_type_components(&ty, &mut mentioned);
+    }
+    projected
 }
 
 struct LoweringInput<'a> {
@@ -910,22 +999,16 @@ fn is_initial_scalar_return(ty: &ResolvedTy) -> bool {
     matches!(ty, hew_types::ResolvedTy::Unit) || is_initial_scalar(ty)
 }
 
-/// Translate HIR's authoritative source-semantic intent into the SIR operand
-/// vocabulary exactly once.
-///
-/// This deliberately does *not* normalize an ownership intent to `Read` just
-/// because the first scalar SIR slice cannot realize it yet. Callers use the
-/// returned mode to reject unsupported ownership semantics at the HIR → SIR
-/// boundary, preserving a precise implementation gap for later domains.
-fn use_mode_from_hir_intent(intent: IntentKind) -> Result<UseMode, String> {
+fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
     match intent {
-        IntentKind::Read => Ok(UseMode::Read),
-        IntentKind::Modify => Ok(UseMode::BorrowMut),
-        // HIR's `Consume` is an ownership transfer to a receiving semantic
-        // operation/callee, whereas `Discharge` releases an obligation with
-        // no receiver. SIR preserves that distinction as Move vs Consume.
-        IntentKind::Consume => Ok(UseMode::Move),
-        IntentKind::Discharge => Ok(UseMode::Consume),
+        IntentKind::Read => Ok(()),
+        // HIR's `Modify`, `Consume` and `Discharge` each need a SIR ownership
+        // operation - `begin_borrow`, `move`, `destroy_value` - that the
+        // initial scalar domain does not emit. Naming the intent rather than a
+        // mode keeps the refusal precise without reviving the deleted mode set.
+        IntentKind::Modify | IntentKind::Consume | IntentKind::Discharge => Err(format!(
+            "HIR {intent:?} intent needs a SIR ownership operation; initial scalar SIR admits only read operands"
+        )),
         IntentKind::Capture => Err(
             "HIR Capture intent requires closure/COW capture semantics that the initial scalar SIR slice does not model"
                 .to_string(),
@@ -940,16 +1023,6 @@ fn use_mode_from_hir_intent(intent: IntentKind) -> Result<UseMode, String> {
     }
 }
 
-fn initial_scalar_use_mode(intent: IntentKind) -> Result<UseMode, String> {
-    let mode = use_mode_from_hir_intent(intent)?;
-    if mode != UseMode::Read {
-        return Err(format!(
-            "HIR {intent:?} intent maps to SIR {mode:?}; initial scalar SIR admits only Read operands"
-        ));
-    }
-    Ok(mode)
-}
-
 /// Lower a value flowing into a binding or function return in the initial
 /// no-drop scalar/tuple domain.
 ///
@@ -961,20 +1034,19 @@ fn initial_scalar_use_mode(intent: IntentKind) -> Result<UseMode, String> {
 /// rule, not a general weakening of `Move`: actual operand positions remain
 /// read-only in this slice, and every ownership-bearing transfer fails closed
 /// until ownership/layout MIR can realize it.
-fn initial_value_transfer_mode(
+fn require_initial_value_transfer(
     intent: IntentKind,
     ty: &hew_types::ResolvedTy,
     context: &str,
 ) -> Result<(), String> {
-    let mode = use_mode_from_hir_intent(intent).map_err(|reason| format!("{context}: {reason}"))?;
-    match mode {
-        UseMode::Read | UseMode::Move if is_initial_value_type(ty) => Ok(()),
-        UseMode::Read | UseMode::Move => Err(format!(
-            "{context}: HIR intent maps to SIR {mode:?} for ownership-bearing `{}`; initial SIR only aliases BitCopy scalar/tuple binding/return flow",
+    match intent {
+        IntentKind::Read | IntentKind::Consume if is_initial_value_type(ty) => Ok(()),
+        IntentKind::Read | IntentKind::Consume => Err(format!(
+            "{context}: HIR {intent:?} intent transfers ownership-bearing `{}`; initial SIR only aliases BitCopy scalar/tuple binding/return flow",
             ty.user_facing()
         )),
         other => Err(format!(
-            "{context}: HIR intent maps to SIR {other:?}; initial scalar/tuple binding/return flow admits only Read or BitCopy Move"
+            "{context}: HIR {other:?} intent; initial scalar/tuple binding/return flow admits only a read or a BitCopy transfer"
         )),
     }
 }
@@ -984,7 +1056,7 @@ fn lower_initial_value_transfer(
     expr: &HirExpr,
     context: &str,
 ) -> Result<ValueId, String> {
-    initial_value_transfer_mode(expr.intent, &builder.ty(&expr.ty), context)?;
+    require_initial_value_transfer(expr.intent, &builder.ty(&expr.ty), context)?;
     builder.lower_expr(expr)
 }
 
@@ -996,12 +1068,11 @@ fn lower_initial_value_transfer(
 /// transfers control to the caller; HIR marks that transfer `Consume`, which
 /// is harmless for `Unit` but must not be rechecked as an ordinary operand use.
 fn lower_initial_unit_return(builder: &mut Builder<'_, '_>, expr: &HirExpr) -> Result<(), String> {
-    let mode = use_mode_from_hir_intent(expr.intent)
-        .map_err(|reason| format!("unit return value: {reason}"))?;
     let ty = builder.ty(&expr.ty);
-    if !matches!(mode, UseMode::Read | UseMode::Move) || ty != ResolvedTy::Unit {
+    if !matches!(expr.intent, IntentKind::Read | IntentKind::Consume) || ty != ResolvedTy::Unit {
         return Err(format!(
-            "unit return value: HIR intent maps to SIR {mode:?} for `{}`; initial SIR admits only Read or Unit Move return transfer",
+            "unit return value: HIR {:?} intent for `{}`; initial SIR admits only a read or a Unit transfer return",
+            expr.intent,
             ty.user_facing()
         ));
     }
@@ -1077,6 +1148,9 @@ struct Builder<'hir, 'service> {
     values: u32,
     ops: u32,
     bindings: HashMap<BindingId, ValueId>,
+    /// Every source binding this body declares, parameters first and then
+    /// statement bindings in source order (§1.6).
+    source_bindings: Vec<Binding>,
     params: Vec<BlockArg>,
 }
 
@@ -1116,12 +1190,25 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let value = ValueId(values);
                 values += 1;
                 bindings.insert(param.id, value);
-                Ok(BlockArg {
-                    value,
-                    ty,
-                })
+                // §1.2 rule 3: the header slot decides before the type's
+                // class does. A `Borrow` slot makes the parameter
+                // `Guaranteed` for the whole body, so a consuming use of it is
+                // rule 3's `E_OWN_CONSUME_BORROWED` wall and not rule 1's
+                // leak. No lowering emits that slot yet, so every parameter
+                // here takes the class table's answer.
+                let own = OwnKind::of_param(&ty, abi.passing, service.checked_facts)?;
+                Ok((
+                    BlockArg { value, ty, own },
+                    Binding {
+                        name: param.name.clone(),
+                        span: param.span.clone(),
+                        mutable: param.mutable,
+                        value,
+                    },
+                ))
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<(BlockArg, Binding)>, String>>()?;
+        let (params, source_bindings): (Vec<BlockArg>, Vec<Binding>) = params.into_iter().unzip();
         Ok(Self {
             function,
             service,
@@ -1132,6 +1219,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             values,
             ops: 0,
             bindings,
+            source_bindings,
             params,
         })
     }
@@ -1190,6 +1278,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             return_ty: self.callable.signature.return_ty.clone(),
             entry: BlockId(0),
             blocks,
+            // No P1 program produces a function-owned place: HIR-to-SIR
+            // construction does mem2reg and the only escape hatch, an extern
+            // `&`/`&mut` on a local, has no producer on this route yet.
+            places: Vec::new(),
+            bindings: self.source_bindings,
         })
     }
 
@@ -1200,11 +1293,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// prevents a source move/borrow/discharge from being silently weakened
     /// into a reusable SIR value during the migration.
     fn lower_read_operand(&mut self, expr: &HirExpr, context: &str) -> Result<Operand, String> {
-        let mode = initial_scalar_use_mode(expr.intent)
+        require_initial_scalar_read(expr.intent)
             .map_err(|reason| format!("{context}: {reason}"))?;
         Ok(Operand {
             value: self.lower_expr(expr)?,
-            mode,
         })
     }
 
@@ -1225,6 +1317,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         .ok_or_else(|| {
                             "uninitialised bindings are not in the initial SIR subset".to_string()
                         })?;
+                    // §1.6: the value a binding names carries the binding's
+                    // name, span and mutability, so a rule 2, 3, 4 or 6
+                    // violation rooted in it renders its `E_OWN_*` code rather
+                    // than `E_SIR_ICE`, and rule 6a has a mutability bit to
+                    // read. A `let` aliases the SSA value its initializer
+                    // produced rather than defining one of its own, so the
+                    // provenance lands on that definition — and only when it
+                    // has none, because `let y = x` must not rename the
+                    // parameter `x` already named.
+                    self.source_bindings.push(Binding {
+                        name: binding.name.clone(),
+                        span: binding.span.clone(),
+                        mutable: binding.mutable,
+                        value,
+                    });
                     self.bindings.insert(binding.id, value);
                 }
                 HirStmtKind::Expr(expr) => {
@@ -1238,7 +1345,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         }
                         Some(expr) => Some(Operand {
                             value: lower_initial_value_transfer(self, expr, "return value")?,
-                            mode: UseMode::Read,
                         }),
                         None => None,
                     };
@@ -1279,7 +1385,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// no semantic value to define, but the call itself must remain in SIR so
     /// later lowering can realize its call/continuation CFG edge.
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
-        initial_scalar_use_mode(expr.intent)
+        require_initial_scalar_read(expr.intent)
             .map_err(|reason| format!("discarded expression: {reason}"))?;
         if matches!(expr.kind, HirExprKind::Call { .. }) {
             self.lower_direct_call(expr, false)?;
@@ -1588,9 +1694,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let then_block = self.new_block(Vec::new());
         let else_block = self.new_block(Vec::new());
         let join_value = self.fresh_value();
+        let join_ty = self.ty(&whole.ty);
         let join_block = self.new_block(vec![BlockArg {
             value: join_value,
-            ty: self.ty(&whole.ty),
+            own: OwnKind::of_ty(&join_ty, self.service.checked_facts)?,
+            ty: join_ty,
         }]);
         self.set_terminator(SemTerminator::Branch {
             condition,
@@ -1664,9 +1772,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let evaluate_right = self.new_block(Vec::new());
         let short_circuit = self.new_block(Vec::new());
         let result = self.fresh_value();
+        let join_ty = self.ty(&whole.ty);
         let join = self.new_block(vec![BlockArg {
             value: result,
-            ty: self.ty(&whole.ty),
+            own: OwnKind::of_ty(&join_ty, self.service.checked_facts)?,
+            ty: join_ty,
         }]);
         let (then_target, else_target) = if short_circuit_value {
             (short_circuit, evaluate_right)
@@ -1701,10 +1811,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let constant = self.emit(whole, SemOpKind::ConstBool(short_circuit_value))?;
         self.set_terminator(SemTerminator::Goto(Edge {
             target: join,
-            args: vec![Operand {
-                value: constant,
-                mode: UseMode::Read,
-            }],
+            args: vec![Operand { value: constant }],
         }))?;
 
         self.current = join;
@@ -1713,11 +1820,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<ValueId, String> {
         let value = self.fresh_value();
+        let result_ty = self.ty(&expr.ty);
         let op = SemOp {
             id: OpId(self.ops),
             results: vec![ValueDef {
                 id: value,
-                ty: self.ty(&expr.ty),
+                own: OwnKind::of_ty(&result_ty, self.service.checked_facts)?,
+                ty: result_ty,
             }],
             kind,
             provenance: Provenance::Site(expr.site),
@@ -1779,31 +1888,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 #[cfg(test)]
 mod tests {
     use super::{
-        initial_scalar_use_mode, initial_value_transfer_mode, is_initial_value_type,
-        use_mode_from_hir_intent, PendingBlock,
+        is_initial_value_type, require_initial_scalar_read, require_initial_value_transfer,
+        PendingBlock,
     };
-    use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemTerminator, UseMode};
+    use crate::ownership::{OwnKind, TypeFactTable};
+    use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemParamPassing, SemTerminator};
     use hew_hir::IntentKind;
     use hew_types::ResolvedTy;
 
     #[test]
-    fn hir_intents_map_once_and_initial_scalar_sir_fails_closed() {
-        assert_eq!(
-            use_mode_from_hir_intent(IntentKind::Read),
-            Ok(UseMode::Read)
-        );
-        assert_eq!(
-            use_mode_from_hir_intent(IntentKind::Modify),
-            Ok(UseMode::BorrowMut)
-        );
-        assert_eq!(
-            use_mode_from_hir_intent(IntentKind::Consume),
-            Ok(UseMode::Move)
-        );
-        assert_eq!(
-            use_mode_from_hir_intent(IntentKind::Discharge),
-            Ok(UseMode::Consume)
-        );
+    fn only_a_read_intent_reaches_an_initial_scalar_operand() {
+        assert_eq!(Ok(()), require_initial_scalar_read(IntentKind::Read));
 
         for intent in [
             IntentKind::Modify,
@@ -1813,10 +1908,10 @@ mod tests {
             IntentKind::Yield,
             IntentKind::Unknown,
         ] {
-            let reason = initial_scalar_use_mode(intent)
-                .expect_err("non-Read or unresolved HIR intent must not become a scalar SIR Read");
+            let reason = require_initial_scalar_read(intent)
+                .expect_err("a non-read HIR intent must not become a scalar SIR operand");
             assert!(
-                reason.contains("initial scalar SIR")
+                reason.contains("ownership operation")
                     || reason.contains("requires")
                     || reason.contains("not a legal"),
                 "the failure must explain why {intent:?} is outside the current SIR ownership domain: {reason}"
@@ -1826,16 +1921,20 @@ mod tests {
 
     #[test]
     fn scalar_and_tuple_binding_transfers_admit_only_bitcopy_values() {
-        assert!(initial_value_transfer_mode(IntentKind::Consume, &ResolvedTy::I64, "test").is_ok());
-        assert!(initial_value_transfer_mode(IntentKind::Read, &ResolvedTy::Bool, "test").is_ok());
+        assert!(
+            require_initial_value_transfer(IntentKind::Consume, &ResolvedTy::I64, "test").is_ok()
+        );
+        assert!(
+            require_initial_value_transfer(IntentKind::Read, &ResolvedTy::Bool, "test").is_ok()
+        );
         let tuple = ResolvedTy::Tuple(vec![
             ResolvedTy::I64,
             ResolvedTy::Tuple(vec![ResolvedTy::Bool]),
         ]);
         assert!(is_initial_value_type(&tuple));
-        assert!(initial_value_transfer_mode(IntentKind::Consume, &tuple, "test").is_ok());
+        assert!(require_initial_value_transfer(IntentKind::Consume, &tuple, "test").is_ok());
         for intent in [IntentKind::Read, IntentKind::Consume] {
-            let error = initial_value_transfer_mode(intent, &ResolvedTy::String, "test")
+            let error = require_initial_value_transfer(intent, &ResolvedTy::String, "test")
                 .expect_err(
                     "an ownership-bearing transfer must stay outside the SIR value-only subset",
                 );
@@ -1844,6 +1943,87 @@ mod tests {
                     && error.contains("only aliases BitCopy scalar/tuple"),
                 "the transfer diagnostic must explain that this would erase ownership: {error}",
             );
+        }
+    }
+
+    /// The ownership kind of every value this lowering mints comes from the
+    /// §1.1 class table, and a type the table cannot class is refused rather
+    /// than defaulted.
+    #[test]
+    fn lowering_reads_the_ownership_kind_from_the_class_table() {
+        let none = TypeFactTable::new();
+        assert_eq!(Ok(OwnKind::None), OwnKind::of_ty(&ResolvedTy::I64, &none));
+        assert_eq!(
+            Ok(OwnKind::None),
+            OwnKind::of_ty(
+                &ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]),
+                &none
+            )
+        );
+        assert_eq!(
+            Ok(OwnKind::Owned),
+            OwnKind::of_ty(&ResolvedTy::String, &none)
+        );
+        let refused = OwnKind::of_ty(&conn_ty(), &none)
+            .expect_err("a user declaration with no row and no context must be refused");
+        assert!(
+            refused.contains("no declaration facts"),
+            "the refusal must name the missing declaration: {refused}"
+        );
+    }
+
+    /// The checker's row is the authority the lowering reads: a user
+    /// declaration the class rule cannot reach on its own is decided by its
+    /// published row, so the same type is refused without one and owning with
+    /// it.
+    #[test]
+    fn a_published_row_decides_a_kind_the_empty_context_refuses() {
+        let mut facts = TypeFactTable::new();
+        facts.insert(
+            hew_types::TypeInstanceKey(conn_ty()),
+            hew_types::TypeFacts {
+                class: hew_types::ValueClass::AffineResource,
+                clone: hew_types::CloneKind::None,
+                send: hew_types::SendFact::Known(true),
+                hash: false,
+                eq: false,
+            },
+        );
+        assert!(OwnKind::of_ty(&conn_ty(), &TypeFactTable::new()).is_err());
+        assert_eq!(Ok(OwnKind::Owned), OwnKind::of_ty(&conn_ty(), &facts));
+    }
+
+    /// §1.2 rule 3: a parameter whose header slot is `Borrow` is `Guaranteed`
+    /// for the whole body whatever its type's class says, and the same type in
+    /// a `ReadOnly` slot keeps the class table's kind. Without the slot read,
+    /// a borrowed parameter presents as an `Owned` value the callee owes a
+    /// consuming use it must never make.
+    #[test]
+    fn a_borrow_slot_parameter_is_guaranteed_whatever_its_class_says() {
+        let none = TypeFactTable::new();
+        assert_eq!(
+            Ok(OwnKind::Guaranteed),
+            OwnKind::of_param(&ResolvedTy::String, SemParamPassing::Borrow, &none)
+        );
+        assert_eq!(
+            Ok(OwnKind::Owned),
+            OwnKind::of_param(&ResolvedTy::String, SemParamPassing::ReadOnly, &none)
+        );
+        // The slot decides before the class rule is consulted, so a type the
+        // rule cannot decide is still `Guaranteed` in a borrow slot.
+        assert_eq!(
+            Ok(OwnKind::Guaranteed),
+            OwnKind::of_param(&conn_ty(), SemParamPassing::Borrow, &none)
+        );
+        assert!(OwnKind::of_param(&conn_ty(), SemParamPassing::ReadOnly, &none).is_err());
+    }
+
+    fn conn_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Conn".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
         }
     }
 

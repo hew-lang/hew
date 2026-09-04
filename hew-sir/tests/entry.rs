@@ -8,7 +8,7 @@ use hew_hir::{lower_program_host_target, HirItem, HirModule, ResolutionCtx};
 use hew_sir::{lower_module, verify_module};
 use hew_types::{module_registry::ModuleRegistry, Checker, DefId};
 
-fn lower_hir(source: &str) -> HirModule {
+fn lower_hir(source: &str) -> (HirModule, hew_types::TypeCheckOutput) {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -23,7 +23,7 @@ fn lower_hir(source: &str) -> HirModule {
         "source must lower to HIR before the SIR entry test: {:#?}",
         hir.diagnostics
     );
-    hir.module
+    (hir.module, type_check_output)
 }
 
 fn declaration_of(module: &HirModule, name: &str) -> DefId {
@@ -51,7 +51,7 @@ const TWO_ROOT_FUNCTIONS: &str = r"
 
 #[test]
 fn hir_publishes_the_root_entry_declaration_once() {
-    let hir = lower_hir(TWO_ROOT_FUNCTIONS);
+    let (hir, _type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
     assert_eq!(
         hir.entry_declaration.as_ref(),
         Some(&declaration_of(&hir, "main")),
@@ -61,10 +61,10 @@ fn hir_publishes_the_root_entry_declaration_once() {
 
 #[test]
 fn an_entry_fact_naming_a_non_main_declaration_selects_and_lowers_that_callable() {
-    let mut hir = lower_hir(TWO_ROOT_FUNCTIONS);
+    let (mut hir, type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
     hir.entry_declaration = Some(declaration_of(&hir, "start"));
 
-    let lowered = lower_module(&hir);
+    let lowered = lower_module(&hir, &type_facts);
     let entry = lowered
         .module
         .entry_callable
@@ -93,7 +93,10 @@ fn an_entry_fact_naming_a_non_main_declaration_selects_and_lowers_that_callable(
 /// fact and nothing else.
 #[test]
 fn the_unmodified_entry_fact_still_selects_main() {
-    let lowered = lower_module(&lower_hir(TWO_ROOT_FUNCTIONS));
+    let lowered = {
+        let (hir, type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
+        lower_module(&hir, &type_facts)
+    };
     let entry = lowered
         .module
         .entry_callable
@@ -111,10 +114,10 @@ fn the_unmodified_entry_fact_still_selects_main() {
 /// though a root declaration spelled `main` is right there in the table.
 #[test]
 fn removing_the_entry_fact_leaves_no_entry_callable_to_rediscover_by_name() {
-    let mut hir = lower_hir(TWO_ROOT_FUNCTIONS);
+    let (mut hir, type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
     hir.entry_declaration = None;
 
-    let lowered = lower_module(&hir);
+    let lowered = lower_module(&hir, &type_facts);
     assert!(
         lowered
             .module
@@ -133,7 +136,7 @@ fn removing_the_entry_fact_leaves_no_entry_callable_to_rediscover_by_name() {
 /// rejected by the verifier, rather than being silently dropped into `None`.
 #[test]
 fn an_entry_fact_naming_a_non_root_declaration_is_rejected_by_the_verifier() {
-    let mut hir = lower_hir(TWO_ROOT_FUNCTIONS);
+    let (mut hir, type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
     let start = declaration_of(&hir, "start");
     let start_item = hir
         .items
@@ -146,7 +149,7 @@ fn an_entry_fact_naming_a_non_root_declaration_is_rejected_by_the_verifier() {
     hir.root_item_ids.remove(&start_item);
     hir.entry_declaration = Some(start);
 
-    let lowered = lower_module(&hir);
+    let lowered = lower_module(&hir, &type_facts);
     assert!(
         lowered.module.entry_callable.is_some(),
         "a non-root entry fact must reach the verifier, not vanish"

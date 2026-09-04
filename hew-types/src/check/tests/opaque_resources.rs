@@ -8,7 +8,7 @@ use crate::ffi_contracts::{
     ReleaseDischargeDepth,
 };
 use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 

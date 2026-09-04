@@ -659,7 +659,7 @@ fn sir_bridge_and_legacy_lowering_agree_on_a_monomorphic_key() {
     );
 
     let legacy = lower_hir_module(&hir.module);
-    let sir = hew_sir::lower_module(&hir.module);
+    let sir = hew_sir::lower_module(&hir.module, &type_check);
     assert!(
         hew_sir::verify_module(&sir.module).is_empty(),
         "SIR must verify: {:#?}",
@@ -713,7 +713,7 @@ fn sir_bridge_keys_a_generic_instance_by_its_declared_type_arguments() {
     let hir = lower_program_host_target(&parsed.program, &type_check, &ResolutionCtx);
     let origin = declaration_of(&hir, "id");
 
-    let sir = hew_sir::lower_module(&hir.module);
+    let sir = hew_sir::lower_module(&hir.module, &type_check);
     let entry = sir
         .module
         .entry_callable

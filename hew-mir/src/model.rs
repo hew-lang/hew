@@ -1496,14 +1496,37 @@ pub fn machine_event_enum_views(machine_layouts: &[MachineLayout]) -> Vec<EnumLa
         .collect()
 }
 
-/// Returns `true` when the named enum registered in `enum_layouts` has
-/// `is_indirect = true`, meaning every variable of the type holds a
-/// heap pointer rather than an inline tagged-union struct.
+/// Returns `true` when `ty`'s registered enum layout has `is_indirect = true`,
+/// meaning every variable of the type holds a heap pointer rather than an
+/// inline tagged-union struct.
+///
+/// The probe takes the whole type rather than its name because a generic
+/// instantiation is registered under the mangle of the bare name and its
+/// shortened argument spine: a name-only lookup found `Tree` but missed
+/// `List<i64>`, whose layout is registered as `List$$i64`, and a self-recursive
+/// member of a generic indirect enum then resolved to its own still-opaque
+/// struct instead of a pointer. Routing through [`find_enum_layout`] makes that
+/// miss structurally impossible.
 #[must_use]
-pub fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
+pub fn is_indirect_enum_for_ty(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
+    let ResolvedTy::Named { name, args, .. } = ty else {
+        return false;
+    };
+    find_enum_layout(name, args, enum_layouts).is_some_and(|el| el.is_indirect)
+}
+
+/// Returns `true` when the enum registered under the exact layout key `key` has
+/// `is_indirect = true`.
+///
+/// The input is a registered layout key, not a use-site type name: a generic
+/// instantiation is already mangled here. Use [`is_indirect_enum_for_ty`]
+/// wherever the caller holds the type instead, so the mangle is derived rather
+/// than assumed.
+#[must_use]
+pub fn is_indirect_enum_layout_key(key: &str, enum_layouts: &[EnumLayout]) -> bool {
     enum_layouts
         .iter()
-        .find(|el| el.name == name)
+        .find(|el| el.name == key)
         .is_some_and(|el| el.is_indirect)
 }
 
@@ -1676,6 +1699,14 @@ impl<S: std::hash::BuildHasher> HeapOwnershipLayouts for MirHeapLayouts<'_, S> {
 /// functions (the `derive_*` drop-allow derivations, `aggregate_ingress_*`,
 /// `ty_is_heap_owning_tuple`) already hold. Closes DIV-1 at every former
 /// record-blind call site without converting those free functions to methods.
+///
+/// LEGACY (P5): a second copy/heap-ownership predicate outside the §1.1 class
+/// table (`hew_types::ValueClass::of_ty`), exempted from `no-new-copy-
+/// predicate` by name rather than deleted. WHEN obsolete: the legacy lowerer
+/// (`docs/internal/ir-ladder.md` §9) is deleted and every MIR/codegen caller
+/// reads the checker's published `TypeFacts` instead. WHAT the real fix looks
+/// like: delete this function and its callers' second authority along with
+/// the legacy lowering path it serves.
 #[must_use]
 pub fn ty_owns_heap_mir<S: std::hash::BuildHasher>(
     ty: &ResolvedTy,
@@ -1890,6 +1921,14 @@ impl CloseObligationRegistry for NoCloseObligations {
 /// projection:
 /// the boolean a consumer reads off the value is exactly the boolean this
 /// authority would re-derive, so the swap is byte-identical by construction.
+///
+/// LEGACY (P5): a second copy/heap-ownership predicate outside the §1.1 class
+/// table (`hew_types::ValueClass::of_ty`), exempted from `no-new-copy-
+/// predicate` by name rather than deleted. WHEN obsolete: the legacy lowerer
+/// (`docs/internal/ir-ladder.md` §9) is deleted and every MIR/codegen caller
+/// reads the checker's published `TypeFacts` instead. WHAT the real fix looks
+/// like: delete this function and its callers' second authority along with
+/// the legacy lowering path it serves.
 #[must_use]
 pub fn ty_owns_heap(ty: &ResolvedTy, layouts: &impl HeapOwnershipLayouts) -> bool {
     ty_heap_ownership(ty, layouts).owns_heap
@@ -3129,6 +3168,14 @@ pub struct PolymorphicMirFunction {
 /// source operand and is excluded unconditionally (copy-in sources leak rather
 /// than double-free). This primitive documents the per-symbol release contract
 /// that a future copy-in-aware refinement will reinstate.
+///
+/// LEGACY (P5): a second copy/heap-ownership predicate outside the §1.1 class
+/// table (`hew_types::ValueClass::of_ty`), exempted from `no-new-copy-
+/// predicate` by name rather than deleted. WHEN obsolete: the legacy lowerer
+/// (`docs/internal/ir-ladder.md` §9) is deleted and every MIR/codegen caller
+/// reads the checker's published `TypeFacts` instead. WHAT the real fix looks
+/// like: delete this function and its callers' second authority along with
+/// the legacy lowering path it serves.
 #[must_use]
 pub fn container_ingress_is_copy_in(target_symbol: &str) -> bool {
     matches!(target_symbol, "hew_vec_push" | "hew_vec_set")

@@ -286,7 +286,11 @@ fn inventory_file(
         };
     };
     let module = &verified.lower_output.module;
-    let sir = hew_sir::lower_module_with_demand(module, hew_sir::SirLoweringDemand::EveryCallable);
+    let sir = hew_sir::lower_module_with_demand(
+        module,
+        verified.typecheck_output(),
+        hew_sir::SirLoweringDemand::EveryCallable,
+    );
     let findings = VerifierFindings::new(&sir, hew_sir::verify_module(&sir.module));
 
     // Positive record of which materialized trait-default method bodies

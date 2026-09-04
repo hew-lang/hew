@@ -859,6 +859,10 @@ pub enum TypeErrorKind {
     OrphanImpl,
     /// Feature is not available on the selected compilation target
     PlatformLimitation,
+    /// A declaration whose members reach it at a growing instantiation, so
+    /// §1.1's member walk has no finite fixpoint and the type has no class.
+    /// The refusal is stated rather than left as a missing `type_facts` row.
+    ClassRecursion,
     /// Machine state × event exhaustiveness violation
     MachineExhaustivenessError,
     /// Import cannot be resolved: module not found or failed to parse
@@ -1540,6 +1544,7 @@ impl TypeErrorKind {
             Self::Shadowing => "Shadowing",
             Self::OrphanImpl => "OrphanImpl",
             Self::PlatformLimitation => "PlatformLimitation",
+            Self::ClassRecursion => "E_LIMIT_CLASS_RECURSION",
             Self::MachineExhaustivenessError => "MachineExhaustivenessError",
             Self::UnresolvedImport => "UnresolvedImport",
             Self::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",

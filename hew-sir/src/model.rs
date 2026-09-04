@@ -1,6 +1,13 @@
+use std::collections::BTreeMap;
+
 use hew_hir::{ItemId, SiteId};
 use hew_parser::ast::Span;
-use hew_types::{DefId, ResolvedTy};
+use hew_types::{DefId, ResolvedTy, TypeFacts, TypeInstanceKey};
+
+use crate::ownership::{
+    Binding, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, StringLiteralId, SuspendInputMode,
+    SuspendKind, TrapKind,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockId(pub u32);
@@ -69,28 +76,14 @@ pub enum FunctionSourceOrigin {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum UseMode {
-    Read,
-    BorrowShared,
-    BorrowMut,
-    /// Transfer this use's ownership into another semantic value or operation.
-    ///
-    /// This is deliberately distinct from [`Self::Consume`]: a move has a
-    /// receiving owner, while consumption discharges the source value without
-    /// creating a new semantic owner.
-    Move,
-    /// Discharge a value's source-semantic ownership obligation.
-    ///
-    /// Ownership/layout MIR will later decide whether that becomes a drop,
-    /// release, move-out, or another concrete lifetime action.
-    Consume,
-}
-
+/// One semantic use of an SSA value.
+///
+/// An operand carries no mode: what a use does to its value **is the op it
+/// feeds** (§1.3). `begin_borrow`, `copy_value`, `move`, `fork`, `load.*` and
+/// `store.*` are operations, not annotations on a read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Operand {
     pub value: ValueId,
-    pub mode: UseMode,
 }
 
 /// Stable position of an operand within one operation or terminator.
@@ -119,23 +112,20 @@ pub struct SuccessorSlot(pub u32);
 ///
 /// A value's use site is either an operation operand, identified by its stable
 /// [`OpId`], or a terminator operand, identified by its containing [`BlockId`].
-/// The use mode is part of the identity so a rewrite cannot silently apply an
-/// analysis result after the operand's semantic ownership use changed. The
-/// expected value closes the final stale-index hole: a rewrite must not replace
-/// a different value that later occupies the same slot with the same mode.
+/// The expected value closes the stale-index hole: a rewrite must not replace a
+/// different value that later occupies the same slot. What the use *does* is
+/// the operation's own kind, so no mode is part of this identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UseSite {
     Operation {
         op: OpId,
         operand: OperandSlot,
         value: ValueId,
-        mode: UseMode,
     },
     Terminator {
         block: BlockId,
         operand: OperandSlot,
         value: ValueId,
-        mode: UseMode,
     },
 }
 
@@ -143,19 +133,24 @@ pub enum UseSite {
 pub struct ValueDef {
     pub id: ValueId,
     pub ty: ResolvedTy,
+    /// The §1.2 ownership obligation this value carries.
+    pub own: OwnKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockArg {
     pub value: ValueId,
     pub ty: ResolvedTy,
+    /// The §1.2 ownership obligation this argument carries. §1.4 requires edge
+    /// argument kinds to match block argument kinds exactly.
+    pub own: OwnKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Edge {
     pub target: BlockId,
-    /// Semantic uses forwarded to the target block arguments. These retain
-    /// their source ownership mode until ownership/layout MIR realizes it.
+    /// Semantic uses forwarded to the target block arguments. §1.4 requires
+    /// their ownership kinds to match the target's exactly.
     pub args: Vec<Operand>,
 }
 
@@ -224,6 +219,27 @@ pub struct SemFunction {
     pub return_ty: ResolvedTy,
     pub entry: BlockId,
     pub blocks: Vec<SemBlock>,
+    /// Memory places this body addresses (§1.3 `alloc_place`). Non-escaping
+    /// `var`s never get one: HIR-to-SIR construction does mem2reg.
+    pub places: Vec<PlaceDecl>,
+    /// Every source binding in this body, parameters first and then statement
+    /// bindings in source order (§1.6).
+    ///
+    /// Several bindings may name one value; a value no binding names is a
+    /// lowering temp.
+    pub bindings: Vec<Binding>,
+}
+
+impl SemFunction {
+    /// The binding a §1.6 diagnostic should name for `value`: the most recent
+    /// one, because a later `let` shadows an earlier name for the same value.
+    #[must_use]
+    pub fn binding_naming(&self, value: ValueId) -> Option<&Binding> {
+        self.bindings
+            .iter()
+            .rev()
+            .find(|binding| binding.value == value)
+    }
 }
 
 /// The call convention SIR is permitted to model before ownership/layout MIR
@@ -246,13 +262,23 @@ pub enum SemCallableKind {
 
 /// ABI disposition for one semantic callable parameter.
 ///
-/// This is intentionally separate from [`UseMode`]: call operands express the
+/// This is intentionally separate from an operand: a call operand expresses the
 /// semantic use at one call site, while this records the callee-side ABI
 /// obligation that ownership/layout MIR must eventually realize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemParamPassing {
     /// The initial scalar direct-call domain accepts only non-owning reads.
     ReadOnly,
+    /// The callee borrows the caller's value for the whole body: §1.2 rule 3
+    /// makes the parameter a `Guaranteed` value, so a consuming use of it is
+    /// rule 3's `E_OWN_CONSUME_BORROWED` wall rather than a leak.
+    ///
+    /// No lowering emits this slot yet — the ownership-bearing parameter types
+    /// that need it arrive with the callable header's borrow disposition (L3) —
+    /// and every structural check in `verify.rs` refuses a non-`ReadOnly` slot
+    /// until then. The kind derivation reads the slot rather than the type
+    /// alone, so the slot is the only thing that has to change.
+    Borrow,
 }
 
 /// ABI-neutral parameter facts owned by a resolved SIR callable.
@@ -299,36 +325,6 @@ pub struct SemGenericTemplate {
     pub signature: SemSignature,
 }
 
-/// Conservative interprocedural effect summary carried by a resolved SIR
-/// callable.
-///
-/// SIR does not yet compute a function-summary fixed point, so every
-/// producer currently writes [`Self::Unknown`].  The explicit carrier means
-/// call operations can derive their effects from resolved callee metadata when
-/// that analysis arrives, without turning `SemOp` into a second source of
-/// truth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum EffectSummary {
-    #[default]
-    Unknown,
-    /// The callable has no other known observable effect, but can transfer
-    /// control to a language-visible trap. Initial scalar bodies commonly
-    /// fall in this class because checked integer operations can overflow.
-    MayTrap,
-    Pure,
-}
-
-impl EffectSummary {
-    #[must_use]
-    pub const fn effects(self) -> EffectSet {
-        match self {
-            Self::Unknown => EffectSet::UNKNOWN_CALL,
-            Self::MayTrap => EffectSet::MAY_TRAP,
-            Self::Pure => EffectSet::PURE,
-        }
-    }
-}
-
 /// One checker-resolved, ABI-neutral SIR callable.
 ///
 /// This table is the sole SIR authority for a direct call's stable semantic
@@ -357,7 +353,6 @@ pub struct SemCallable {
     pub signature: SemSignature,
     pub call_conv: SemCallConv,
     pub kind: SemCallableKind,
-    pub effect_summary: EffectSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -381,6 +376,17 @@ pub struct SemModule {
     /// program whose entry is not spelled `main` selects exactly as well.
     pub entry_callable: Option<CallableId>,
     pub functions: Vec<SemFunction>,
+    /// The §6.3 fact table for every type this module's bodies mention,
+    /// projected from `TypeCheckOutput::type_facts`.
+    ///
+    /// Carried on the module rather than passed to `verify_module` so a
+    /// hand-written SIR fixture can be verified at all, and so every existing
+    /// caller keeps its signature.
+    pub type_facts: BTreeMap<TypeInstanceKey, TypeFacts>,
+    /// Interned `string` literal pool. `BTreeMap` per §6.1's determinism rule.
+    pub string_literals: BTreeMap<StringLiteralId, String>,
+    /// Interned `bytes` literal pool. `BTreeMap` per §6.1's determinism rule.
+    pub bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
 }
 
 impl SemModule {
@@ -513,8 +519,8 @@ impl SemOp {
         self.kind.visit_operands_mut(visit);
     }
 
-    /// Replace the value at one concrete operand slot when its use mode still
-    /// agrees with an analysis result. Returning `false` makes stale rewrite
+    /// Replace the value at one concrete operand slot when the slot still
+    /// holds the value an analysis saw. Returning `false` makes stale rewrite
     /// sites explicit instead of mutating an unrelated operand after an IR
     /// change.
     #[must_use]
@@ -522,12 +528,11 @@ impl SemOp {
         &mut self,
         slot: OperandSlot,
         expected: ValueId,
-        mode: UseMode,
         replacement: ValueId,
     ) -> bool {
         let mut replaced = false;
         self.visit_operands_mut(|candidate, operand| {
-            if candidate == slot && operand.value == expected && operand.mode == mode {
+            if candidate == slot && operand.value == expected {
                 operand.value = replacement;
                 replaced = true;
             }
@@ -543,8 +548,8 @@ impl SemOp {
 /// truth.  The initial bit set is intentionally small; it gives early
 /// canonicalization passes a sound motion/CSE barrier without committing SIR
 /// to memory SSA or effect tokens.  Isolated operations conservatively report
-/// [`Self::UNKNOWN_CALL`] for calls; module-aware consumers use the resolved
-/// callable's effect summary through [`SemOpKind::effects_in`].
+/// [`Self::UNKNOWN_CALL`] for calls; a module-aware consumer resolves the
+/// callee itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct EffectSet(u8);
 
@@ -624,6 +629,101 @@ pub enum SemOpKind {
         callee: CallableId,
         args: Vec<Operand>,
     },
+
+    // --- P1 literal producers (matrix Legend `const.{f,char,unit,duration,str,bytes}`)
+    ConstF64(f64),
+    ConstChar(char),
+    ConstUnit,
+    /// Nanoseconds, the representation `duration` already carries.
+    ConstDuration(i64),
+    /// A `string` literal, interned in [`SemModule::string_literals`]. The
+    /// result is `Owned`: the constant pool hands out a retained value.
+    ConstStr(StringLiteralId),
+    /// A `bytes` literal, interned in [`SemModule::bytes_literals`].
+    ConstBytes(BytesLiteralId),
+
+    // --- P1 structural equality (matrix Legend `str.eq`, `bytes.eq`)
+    /// Structural equality over two borrowed `string` operands.
+    StrEq {
+        lhs: Operand,
+        rhs: Operand,
+    },
+    /// Structural equality over two borrowed `bytes` operands.
+    BytesEq {
+        lhs: Operand,
+        rhs: Operand,
+    },
+
+    // --- P1 runtime call (matrix Legend `rt.call{Family}`)
+    /// A call to a runtime symbol family. Per-operand ownership comes from the
+    /// family's FFI ownership row, never from the symbol spelling.
+    RtCall {
+        family: hew_types::RuntimeCallFamily,
+        args: Vec<Operand>,
+    },
+
+    // --- §1.3 ownership operations
+    /// `copy_value %v` - a new obligation over the same value. Legal only when
+    /// the type's clone kind is not `None` (rule 6b).
+    CopyValue {
+        source: Operand,
+    },
+    /// `destroy_value %v` - consumes the obligation. Illegal on a `Linear`
+    /// value except on an unwind edge (rule 6d).
+    DestroyValue {
+        value: Operand,
+    },
+    /// `begin_borrow %v` - produces a `Guaranteed` value; the owner is not
+    /// consumed inside the region.
+    BeginBorrow {
+        owner: Operand,
+    },
+    /// `end_borrow %b` - ends the region on this path.
+    EndBorrow {
+        borrow: Operand,
+    },
+    /// `move %v` - one obligation in, one out.
+    Move {
+        source: Operand,
+    },
+    /// `fork %v` - one obligation in, one unique obligation out. A fork of a
+    /// `BitCopy`, `View` or `PersistentShare` value is `E_SIR_ICE`.
+    Fork {
+        source: Operand,
+    },
+    /// `destructure %agg` - consumes the aggregate and produces one result per
+    /// field, each of which must be consumed on every path.
+    Destructure {
+        aggregate: Operand,
+    },
+
+    // --- §1.3 place operations
+    /// `alloc_place T` - definite initialization is tracked from here (rule 4).
+    AllocPlace {
+        place: PlaceId,
+    },
+    /// `load.copy %p` - retain out; the place stays initialized.
+    LoadCopy {
+        place: PlaceId,
+    },
+    /// `load.take %p` - the place becomes uninitialized.
+    LoadTake {
+        place: PlaceId,
+    },
+    /// `store.init %p, %v` - the place becomes initialized.
+    StoreInit {
+        place: PlaceId,
+        value: Operand,
+    },
+    /// `store.assign %p, %v` - the old value is destroyed, then stored.
+    StoreAssign {
+        place: PlaceId,
+        value: Operand,
+    },
+    /// `end_lifetime %p` - destroys the contents; the place is uninitialized.
+    EndLifetime {
+        place: PlaceId,
+    },
 }
 
 impl SemOpKind {
@@ -640,7 +740,18 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         match self {
-            Self::ConstI64(_) | Self::ConstBool(_) => {}
+            Self::ConstI64(_)
+            | Self::ConstBool(_)
+            | Self::ConstF64(_)
+            | Self::ConstChar(_)
+            | Self::ConstUnit
+            | Self::ConstDuration(_)
+            | Self::ConstStr(_)
+            | Self::ConstBytes(_)
+            | Self::AllocPlace { .. }
+            | Self::LoadCopy { .. }
+            | Self::LoadTake { .. }
+            | Self::EndLifetime { .. } => {}
             Self::TupleMake { elements } => {
                 for (index, element) in elements.iter().enumerate() {
                     visit(
@@ -655,11 +766,22 @@ impl SemOpKind {
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
-            Self::Binary { lhs, rhs, .. } => {
+            Self::Binary { lhs, rhs, .. }
+            | Self::StrEq { lhs, rhs }
+            | Self::BytesEq { lhs, rhs } => {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::Call { args, .. } => {
+            Self::CopyValue { source: value }
+            | Self::Move { source: value }
+            | Self::Fork { source: value }
+            | Self::DestroyValue { value }
+            | Self::BeginBorrow { owner: value }
+            | Self::EndBorrow { borrow: value }
+            | Self::Destructure { aggregate: value }
+            | Self::StoreInit { value, .. }
+            | Self::StoreAssign { value, .. } => visit(OperandSlot(0), value),
+            Self::Call { args, .. } | Self::RtCall { args, .. } => {
                 for (index, argument) in args.iter().enumerate() {
                     visit(
                         OperandSlot(
@@ -680,7 +802,18 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         match self {
-            Self::ConstI64(_) | Self::ConstBool(_) => {}
+            Self::ConstI64(_)
+            | Self::ConstBool(_)
+            | Self::ConstF64(_)
+            | Self::ConstChar(_)
+            | Self::ConstUnit
+            | Self::ConstDuration(_)
+            | Self::ConstStr(_)
+            | Self::ConstBytes(_)
+            | Self::AllocPlace { .. }
+            | Self::LoadCopy { .. }
+            | Self::LoadTake { .. }
+            | Self::EndLifetime { .. } => {}
             Self::TupleMake { elements } => {
                 for (index, element) in elements.iter_mut().enumerate() {
                     visit(
@@ -695,11 +828,22 @@ impl SemOpKind {
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
-            Self::Binary { lhs, rhs, .. } => {
+            Self::Binary { lhs, rhs, .. }
+            | Self::StrEq { lhs, rhs }
+            | Self::BytesEq { lhs, rhs } => {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::Call { args, .. } => {
+            Self::CopyValue { source: value }
+            | Self::Move { source: value }
+            | Self::Fork { source: value }
+            | Self::DestroyValue { value }
+            | Self::BeginBorrow { owner: value }
+            | Self::EndBorrow { borrow: value }
+            | Self::Destructure { aggregate: value }
+            | Self::StoreInit { value, .. }
+            | Self::StoreAssign { value, .. } => visit(OperandSlot(0), value),
+            Self::Call { args, .. } | Self::RtCall { args, .. } => {
                 for (index, argument) in args.iter_mut().enumerate() {
                     visit(
                         OperandSlot(
@@ -714,6 +858,10 @@ impl SemOpKind {
 
     /// Return the operation's conservative semantic effect classification.
     #[must_use]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "an unresolved call and an ownership operation are distinct barriers that happen to share a bit set"
+    )]
     pub const fn effects(&self) -> EffectSet {
         match self {
             Self::Call { .. } => EffectSet::UNKNOWN_CALL,
@@ -732,8 +880,35 @@ impl SemOpKind {
                     | hew_parser::ast::BinaryOp::Shr,
                 ..
             } => EffectSet::MAY_TRAP,
+            // Ownership operations are optimization barriers, not pure
+            // values: two `copy_value`s of one value are two retains and must
+            // never be common-subexpression-eliminated into one, and a
+            // `destroy_value` or a place write is observable. A runtime call is
+            // opaque for the same reason a Hew call is.
+            Self::CopyValue { .. }
+            | Self::DestroyValue { .. }
+            | Self::BeginBorrow { .. }
+            | Self::EndBorrow { .. }
+            | Self::Move { .. }
+            | Self::Fork { .. }
+            | Self::Destructure { .. }
+            | Self::AllocPlace { .. }
+            | Self::LoadCopy { .. }
+            | Self::LoadTake { .. }
+            | Self::StoreInit { .. }
+            | Self::StoreAssign { .. }
+            | Self::EndLifetime { .. }
+            | Self::RtCall { .. } => EffectSet::UNKNOWN_CALL,
             Self::ConstI64(_)
             | Self::ConstBool(_)
+            | Self::ConstF64(_)
+            | Self::ConstChar(_)
+            | Self::ConstUnit
+            | Self::ConstDuration(_)
+            | Self::ConstStr(_)
+            | Self::ConstBytes(_)
+            | Self::StrEq { .. }
+            | Self::BytesEq { .. }
             | Self::TupleMake { .. }
             | Self::TupleGet { .. }
             | Self::Unary { .. }
@@ -742,19 +917,23 @@ impl SemOpKind {
         }
     }
 
-    /// Return the operation's effect set using resolved module call metadata
-    /// when it is available.  The context-free [`Self::effects`] remains
-    /// conservative for tools that inspect isolated operations.
+    /// Whether this operation moves or discharges an ownership obligation.
+    ///
+    /// A CFG rewrite that discards a block containing one would drop or
+    /// duplicate an obligation, which is what the discard-safety check refuses.
     #[must_use]
-    pub fn effects_in(&self, module: &SemModule) -> EffectSet {
-        match self {
-            Self::Call { callee, .. } => module
-                .callable(*callee)
-                .map_or(EffectSet::UNKNOWN_CALL, |callable| {
-                    callable.effect_summary.effects()
-                }),
-            _ => self.effects(),
-        }
+    pub const fn transfers_obligation(&self) -> bool {
+        matches!(
+            self,
+            Self::DestroyValue { .. }
+                | Self::Move { .. }
+                | Self::Fork { .. }
+                | Self::Destructure { .. }
+                | Self::LoadTake { .. }
+                | Self::StoreInit { .. }
+                | Self::StoreAssign { .. }
+                | Self::EndLifetime { .. }
+        )
     }
 }
 
@@ -777,12 +956,40 @@ pub enum SemTerminator {
         then_target: Edge,
         else_target: Edge,
     },
+    /// A language-visible trap (§1.6). Unlike [`Self::Unreachable`] this is a
+    /// reachable endpoint the program can take.
+    Trap {
+        kind: TrapKind,
+    },
+    /// A suspension (§1.5).
+    ///
+    /// Operand slots are flattened deterministically: the inputs in order, then
+    /// each resume edge's arguments in resume order, then the cancel edge's
+    /// arguments. Successor slots are the resume edges at `0..resumes.len()`
+    /// followed by the cancel edge.
+    Suspend {
+        kind: SuspendKind,
+        inputs: Vec<SuspendInput>,
+        /// One edge per outcome: `await` has one, `select` has one per arm,
+        /// a deadline form has two, `join` has one.
+        resumes: Vec<Edge>,
+        /// Always present; its first op is the kind's abandon op.
+        cancel: Edge,
+    },
     /// A semantically unreachable CFG endpoint.
     ///
     /// Raw MIR preserves this as its own semantic endpoint, and LLVM lowers it
     /// directly to `unreachable`. It is not a language-visible trap and owns no
     /// cleanup path.
     Unreachable,
+}
+
+/// One input of a [`SemTerminator::Suspend`], with the mode §1.5's struct
+/// declares for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuspendInput {
+    pub operand: Operand,
+    pub mode: SuspendInputMode,
 }
 
 impl SemTerminator {
@@ -824,7 +1031,29 @@ impl SemTerminator {
                         .expect("SIR branch operand count exceeds u32");
                 }
             }
-            Self::Unreachable => {}
+            Self::Suspend {
+                inputs,
+                resumes,
+                cancel,
+                ..
+            } => {
+                let mut next = 0_u32;
+                for input in inputs {
+                    visit(OperandSlot(next), &input.operand);
+                    next = next
+                        .checked_add(1)
+                        .expect("SIR suspend operand count exceeds u32");
+                }
+                for edge in resumes.iter().chain(std::iter::once(cancel)) {
+                    for operand in &edge.args {
+                        visit(OperandSlot(next), operand);
+                        next = next
+                            .checked_add(1)
+                            .expect("SIR suspend operand count exceeds u32");
+                    }
+                }
+            }
+            Self::Trap { .. } | Self::Unreachable => {}
         }
     }
 
@@ -862,7 +1091,29 @@ impl SemTerminator {
                         .expect("SIR branch operand count exceeds u32");
                 }
             }
-            Self::Unreachable => {}
+            Self::Suspend {
+                inputs,
+                resumes,
+                cancel,
+                ..
+            } => {
+                let mut next = 0_u32;
+                for input in inputs.iter_mut() {
+                    visit(OperandSlot(next), &mut input.operand);
+                    next = next
+                        .checked_add(1)
+                        .expect("SIR suspend operand count exceeds u32");
+                }
+                for edge in resumes.iter_mut().chain(std::iter::once(cancel)) {
+                    for operand in &mut edge.args {
+                        visit(OperandSlot(next), operand);
+                        next = next
+                            .checked_add(1)
+                            .expect("SIR suspend operand count exceeds u32");
+                    }
+                }
+            }
+            Self::Trap { .. } | Self::Unreachable => {}
         }
     }
 
@@ -872,9 +1123,14 @@ impl SemTerminator {
     /// block. This preserves the distinction between duplicate edges such as
     /// `branch %condition, bb1, bb1`, which later CFG rewrites must be able
     /// to redirect independently.
+    ///
+    /// # Panics
+    ///
+    /// Panics only when a suspension carries more edges than the module-local
+    /// `u32` successor-slot range can represent.
     pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
-            Self::Return { .. } | Self::Unreachable => {}
+            Self::Return { .. } | Self::Trap { .. } | Self::Unreachable => {}
             Self::Goto(edge) => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
@@ -884,16 +1140,33 @@ impl SemTerminator {
                 visit(SuccessorSlot(0), then_target);
                 visit(SuccessorSlot(1), else_target);
             }
+            Self::Suspend {
+                resumes, cancel, ..
+            } => {
+                for (index, edge) in resumes.iter().chain(std::iter::once(cancel)).enumerate() {
+                    visit(
+                        SuccessorSlot(
+                            u32::try_from(index).expect("SIR suspend edge count exceeds u32"),
+                        ),
+                        edge,
+                    );
+                }
+            }
         }
     }
 
     /// Mutable counterpart to [`Self::visit_successors_with_slots`].
+    ///
+    /// # Panics
+    ///
+    /// Panics only when a suspension carries more edges than the module-local
+    /// `u32` successor-slot range can represent.
     pub fn visit_successors_with_slots_mut(
         &mut self,
         mut visit: impl FnMut(SuccessorSlot, &mut Edge),
     ) {
         match self {
-            Self::Return { .. } | Self::Unreachable => {}
+            Self::Return { .. } | Self::Trap { .. } | Self::Unreachable => {}
             Self::Goto(edge) => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
@@ -902,6 +1175,22 @@ impl SemTerminator {
             } => {
                 visit(SuccessorSlot(0), then_target);
                 visit(SuccessorSlot(1), else_target);
+            }
+            Self::Suspend {
+                resumes, cancel, ..
+            } => {
+                for (index, edge) in resumes
+                    .iter_mut()
+                    .chain(std::iter::once(cancel))
+                    .enumerate()
+                {
+                    visit(
+                        SuccessorSlot(
+                            u32::try_from(index).expect("SIR suspend edge count exceeds u32"),
+                        ),
+                        edge,
+                    );
+                }
             }
         }
     }
@@ -924,7 +1213,13 @@ impl SemTerminator {
                 1 => Some(else_target),
                 _ => None,
             },
-            Self::Return { .. } | Self::Goto(_) | Self::Unreachable => None,
+            Self::Suspend {
+                resumes, cancel, ..
+            } => resumes
+                .iter()
+                .chain(std::iter::once(cancel))
+                .nth(usize::try_from(slot.0).ok()?),
+            Self::Return { .. } | Self::Goto(_) | Self::Trap { .. } | Self::Unreachable => None,
         }
     }
 
@@ -942,7 +1237,13 @@ impl SemTerminator {
                 1 => Some(else_target),
                 _ => None,
             },
-            Self::Return { .. } | Self::Goto(_) | Self::Unreachable => None,
+            Self::Suspend {
+                resumes, cancel, ..
+            } => resumes
+                .iter_mut()
+                .chain(std::iter::once(cancel))
+                .nth(usize::try_from(slot.0).ok()?),
+            Self::Return { .. } | Self::Goto(_) | Self::Trap { .. } | Self::Unreachable => None,
         }
     }
 
@@ -978,23 +1279,29 @@ impl SemTerminator {
                 "branch then-edge argument"
             }
             Self::Branch { .. } => "branch else-edge argument",
+            Self::Suspend { inputs, .. }
+                if usize::try_from(slot.0).is_ok_and(|slot| slot < inputs.len()) =>
+            {
+                "suspend input"
+            }
+            Self::Suspend { .. } => "suspend edge argument",
+            Self::Trap { .. } => "trap terminator operand",
             Self::Unreachable => "unreachable terminator operand",
         }
     }
 
-    /// Replace the value at one concrete terminator operand slot when its use
-    /// mode still agrees with the indexed use site.
+    /// Replace the value at one concrete terminator operand slot when the slot
+    /// still holds the value the indexed use site named.
     #[must_use]
     pub fn replace_operand_at(
         &mut self,
         slot: OperandSlot,
         expected: ValueId,
-        mode: UseMode,
         replacement: ValueId,
     ) -> bool {
         let mut replaced = false;
         self.visit_operands_mut(|candidate, operand| {
-            if candidate == slot && operand.value == expected && operand.mode == mode {
+            if candidate == slot && operand.value == expected {
                 operand.value = replacement;
                 replaced = true;
             }

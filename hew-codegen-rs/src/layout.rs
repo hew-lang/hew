@@ -772,10 +772,8 @@ pub(crate) fn build_tagged_union_layout<'ctx>(
                 // heap corruption). `#[opaque]` handle fields still resolve to
                 // `ptr` through `resolve_ty`'s own post-struct opaque check, so
                 // no field shape regresses.
-                if let ResolvedTy::Named { name, .. } = fty {
-                    if is_indirect_enum(name, enum_layouts) {
-                        return Ok(ctx.ptr_type(AddressSpace::default()).into());
-                    }
+                if is_indirect_enum_for_ty(fty, enum_layouts) {
+                    return Ok(ctx.ptr_type(AddressSpace::default()).into());
                 }
                 resolve_ty(ctx, target_data, fty, record_layout_map)
             })
@@ -1123,7 +1121,7 @@ pub(crate) fn is_tuple_composite_shape(ty: &ResolvedTy) -> bool {
 /// (`hew-mir/src/thunk_requirements.rs`) so the MIR-side seed derivation and
 /// every codegen consumer answer "is this enum heap-indirect?" from ONE
 /// function that cannot drift.
-pub(crate) use hew_mir::is_indirect_enum;
+pub(crate) use hew_mir::{is_indirect_enum_for_ty, is_indirect_enum_layout_key};
 
 /// The single layout-witness descriptor for a runtime-managed collection's
 /// memory lifecycle (W5.001 F0a).
@@ -4060,7 +4058,7 @@ pub(crate) fn layout_vec_element_needs_descriptor<'ctx>(
             // operation is not implemented"). Fall through to `Ok(None)` so the
             // constructor selects the plain pointer-element Vec
             // (`dedup-semantic-boundary`).
-            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+            if crate::layout::is_indirect_enum_for_ty(elem_ty, fn_ctx.enum_layouts) {
                 return Ok(None);
             }
             let lookup_key = if args.is_empty() {
@@ -4246,8 +4244,8 @@ pub(crate) fn lower_vec_constructor_call(
         // would fail closed. Without this arm the indirect enum fell through to
         // the layout-descriptor path and `hew_vec_push_ptr` tripped the runtime
         // layout-aware abort (`dedup-semantic-boundary`).
-        ResolvedTy::Named { name, .. }
-            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) =>
+        named @ ResolvedTy::Named { .. }
+            if crate::layout::is_indirect_enum_for_ty(named, fn_ctx.enum_layouts) =>
         {
             VecCtor::Plain("hew_vec_new_ptr")
         }

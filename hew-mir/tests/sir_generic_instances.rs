@@ -51,7 +51,7 @@ fn strict_scalar_component_realizes_sir_owned_generic_instances() {
     );
     hir.module.monomorphisations.clear();
 
-    let sir = hew_sir::lower_module(&hir.module);
+    let sir = hew_sir::lower_module(&hir.module, &type_check);
     assert!(
         hew_sir::verify_module(&sir.module).is_empty(),
         "generic SIR must verify: {:#?}",

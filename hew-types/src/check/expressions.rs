@@ -2672,10 +2672,7 @@ impl Checker {
                 let capture_key = SpanKey::in_module(span, self.current_module_idx);
                 if let Some(captures) = self.closure_capture_facts.get(&capture_key).cloned() {
                     for capture in captures {
-                        let capture_is_copy = capture.ty.is_copy()
-                            || self
-                                .registry
-                                .implements_marker(&capture.ty, MarkerTrait::Copy);
+                        let capture_is_copy = self.ty_is_non_owning(&capture.ty);
                         let borrowed_parameter = !capture_is_copy
                             && self.env.lookup_ref(&capture.name).is_some_and(|binding| {
                                 binding.id == capture.binding_id && binding.is_param()
@@ -9050,7 +9047,7 @@ impl Checker {
         else {
             return false;
         };
-        ty.is_copy() || self.registry.implements_marker(&ty, MarkerTrait::Copy)
+        self.ty_is_non_owning(&ty)
     }
 
     fn provisional_argument_boundaries(
@@ -9117,10 +9114,7 @@ impl Checker {
 
         let key = SpanKey::in_module(span, self.current_module_idx);
         let resolved = self.subst.resolve(ty);
-        let no_owner = resolved.is_copy()
-            || self
-                .registry
-                .implements_marker(&resolved, MarkerTrait::Copy);
+        let no_owner = self.ty_is_non_owning(&resolved);
         let mut fact = match expr {
             Expr::Identifier(_) | Expr::This => ProducedValueFact::result(if no_owner {
                 Ownership::NoOwner
@@ -9540,8 +9534,9 @@ impl Checker {
         self.expr_type_source_modules
             .insert(key.clone(), self.current_module.clone());
         self.expr_types.insert(key.clone(), ty.clone());
+        let non_owning = self.ty_is_non_owning(ty);
         self.produced_value_ownership.entry(key).or_insert_with(|| {
-            ProducedValueFact::result(if ty.is_copy() {
+            ProducedValueFact::result(if non_owning {
                 crate::runtime_call::ProducedValueOwnership::NoOwner
             } else {
                 crate::runtime_call::ProducedValueOwnership::Unknown

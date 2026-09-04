@@ -1,0 +1,14 @@
+// §1.1: `Nest<T>` reaches itself as `Nest<Vec<T>>`, so every turn of the cycle
+// is a strictly larger type and the member walk has no finite fixpoint. The
+// class rule refuses it, and the refusal is stated rather than left as a
+// missing `type_facts` row.
+indirect enum Nest<T> {
+    Leaf(T);
+    More(Nest<Vec<T>>);
+}
+
+fn main() -> i64 {
+    let n: Nest<i64> = Nest.Leaf(1);
+    let _ = n;
+    0
+}

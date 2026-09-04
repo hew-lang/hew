@@ -72,7 +72,7 @@ pub fn default_impl_method_declaration(
 ///
 /// Producing a `ResolvedTy` therefore proves at the type level that none of
 /// those four states leaked past the checker.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ResolvedTy {
     /// 8-bit signed integer
     I8,
@@ -217,7 +217,7 @@ pub enum ResolvedTy {
 }
 
 /// A single trait bound in a resolved trait object.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResolvedTraitBound {
     /// Trait name
     pub trait_name: String,

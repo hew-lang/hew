@@ -84,6 +84,9 @@ struct EnumDecl {
     id: ItemId,
     type_params: Vec<String>,
     variants: Vec<HirVariant>,
+    /// The declaration's `indirect` modifier, carried onto every instantiation
+    /// this pass registers so a generic `indirect enum` keeps its heap shape.
+    is_indirect: bool,
 }
 
 /// Classification of a generic instantiation's type arguments — see
@@ -226,6 +229,7 @@ pub fn run_layout_mono_pass(
                             id: td.id,
                             type_params: td.type_params.clone(),
                             variants: td.variants.clone(),
+                            is_indirect: td.is_indirect,
                         },
                     );
                 }
@@ -315,6 +319,7 @@ pub fn run_layout_mono_pass(
                             id: td.id,
                             type_params: td.type_params.clone(),
                             variants: td.variants.clone(),
+                            is_indirect: td.is_indirect,
                         });
                 }
             }
@@ -354,6 +359,7 @@ pub fn run_layout_mono_pass(
         enum_decls
             .entry(type_name.to_string())
             .or_insert_with(|| EnumDecl {
+                is_indirect: false,
                 id: spec.item_id,
                 type_params: spec
                     .type_params
@@ -1144,6 +1150,7 @@ impl Discovery<'_> {
             id,
             type_params,
             variants,
+            is_indirect,
         } = decl;
         if args.len() != type_params.len() {
             return;
@@ -1199,6 +1206,7 @@ impl Discovery<'_> {
             key,
             mangled_name,
             variants: variant_layouts,
+            is_indirect: *is_indirect,
         });
     }
 }
@@ -1406,6 +1414,46 @@ mod tests {
         );
     }
 
+    /// An `indirect enum`'s modifier is a per-instantiation fact: `List<i64>`
+    /// of `indirect enum List<T>` is heap-shaped exactly as the declaration
+    /// says, so its own recursive payload is a node pointer. Publishing every
+    /// instantiation as direct made that payload resolve to its own
+    /// still-opaque struct at the codegen-front layout boundary.
+    #[test]
+    fn register_enum_carries_the_declarations_indirect_modifier() {
+        let record_decls = HashMap::new();
+        let enum_decls = HashMap::new();
+        let all_type_params = HashSet::new();
+        let mut disc = empty_discovery(&record_decls, &enum_decls, &all_type_params);
+
+        let variants = vec![
+            HirVariant {
+                name: "Nil".to_string(),
+                kind: HirVariantKind::Unit,
+            },
+            HirVariant {
+                name: "Cons".to_string(),
+                kind: HirVariantKind::Tuple(vec![ResolvedTy::named_user("T", vec![])]),
+            },
+        ];
+        for is_indirect in [true, false] {
+            let decl = EnumDecl {
+                id: ItemId(3),
+                type_params: vec!["T".to_string()],
+                is_indirect,
+                variants: variants.clone(),
+            };
+            disc.new_enums.clear();
+            disc.seen_enums.clear();
+            disc.register_enum("List", &decl, &[ResolvedTy::I64], &(0..0));
+            let layout = disc.new_enums.first().expect("one layout registered");
+            assert_eq!(
+                is_indirect, layout.is_indirect,
+                "`List$$i64` must carry the declaration's own modifier"
+            );
+        }
+    }
+
     /// `register_enum` mirrors `register_record`: a qualified payload spine is
     /// retained before the key and mangled name.
     #[test]
@@ -1417,6 +1465,7 @@ mod tests {
             EnumDecl {
                 id: ItemId(2),
                 type_params: vec!["T".to_string()],
+                is_indirect: false,
                 variants: vec![
                     HirVariant {
                         name: "Filled".to_string(),
@@ -1435,6 +1484,7 @@ mod tests {
         let decl = EnumDecl {
             id: ItemId(2),
             type_params: vec!["T".to_string()],
+            is_indirect: false,
             variants: vec![
                 HirVariant {
                     name: "Filled".to_string(),

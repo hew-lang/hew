@@ -1,0 +1,40 @@
+id: no-new-copy-predicate
+language: rust
+severity: error
+message: >-
+  New copy/heap predicate outside hew-types. Whether a type is bit-copyable, and
+  whether it owns heap, are decided once by the §1.1 class table
+  (hew_types::ValueClass::of_ty) and published as TypeFacts.
+note: >-
+  Read hew_types::ValueClass::of_ty through a ClassContext, or read the decided
+  fact from TypeCheckOutput.type_facts. A second predicate is how
+  `(i64, i64)` came to be Copy under one authority and CowValue under another
+  (docs/internal/ir-ladder.md §1.1). If a genuinely new authority is needed, it
+  belongs in hew-types beside the class table.
+# §1.1 scopes this rule at "outside hew-types", so it carries no allow-list of
+# crates: every path the scan reaches is covered. `hew-types` holds the class
+# table itself, and the three files carrying the legacy predicates are scanned
+# by `no-new-copy-predicate-legacy` instead, which is the only rule that exempts
+# anything and exempts it by symbol.
+ignores:
+  - "hew-types/**"
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "hew-mir/src/model.rs"
+  - "hew-mir/src/ownership.rs"
+  - "hew-codegen-rs/src/llvm.rs"
+# Match the function shape rather than a list of spellings: a `pub(crate)`,
+# generic, const or async predicate is the same second authority as a bare one,
+# and enumerating `fn` prefixes left each of those unscanned.
+rule:
+  all:
+    - kind: function_item
+    - has:
+        field: name
+        regex: "(^|_)(is_copy|owns_heap)"
+    - has:
+        field: return_type
+        regex: "bool"

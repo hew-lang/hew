@@ -21,6 +21,7 @@ pub mod identity;
 pub mod jit_symbols;
 pub mod lang_items;
 pub mod lowering_facts;
+pub mod mangle;
 pub mod method_resolution;
 pub mod module_registry;
 pub mod resolved_ty;
@@ -33,7 +34,9 @@ pub mod stdlib_loader;
 pub mod traits;
 pub mod ty;
 pub mod type_descriptor;
+pub mod type_facts;
 pub mod unify;
+pub mod value_class;
 pub mod vec_authority;
 mod wasm_capabilities_generated;
 
@@ -84,6 +87,7 @@ pub use lowering_facts::{
     HashSetElementType, HashSetLoweringFact, HashSetLoweringFactError, LoweringFact,
     LoweringFactConsistencyError, LoweringFactError, LoweringKind,
 };
+pub use mangle::mangle_resolved_ty;
 pub use resolved_ty::{
     default_impl_method_declaration, BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy,
 };
@@ -102,6 +106,9 @@ pub use stdlib_authority::{
 };
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
+pub use type_facts::push_type_components;
+pub use type_facts::{CloneKind, SendFact, TypeFacts, TypeInstanceKey};
+pub use value_class::{ClassContext, ClassError, DeclarationMarker, DeclaredType, ValueClass};
 pub use vec_authority::VecElementToken;
 pub use wasm_capabilities_generated::{
     wasm_capability_ids, WasmCapabilityId, WasmFeatureDisposition, WasmFunctionRejection,

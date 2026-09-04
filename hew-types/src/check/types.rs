@@ -5,6 +5,7 @@ use crate::module_registry::ModuleRegistry;
 use crate::resolved_ty::ResolvedTy;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
+use crate::type_facts::{TypeFacts, TypeInstanceKey};
 use crate::WasmUnsupportedFeature;
 use hew_parser::ast::{
     ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
@@ -268,6 +269,19 @@ pub struct TypeCheckOutput {
     /// (zero behaviour change). Phase 2 promotes this to the primary read path;
     /// Phase 4 removes the `Ty`-typed `expr_types` HIR type-derivation reads.
     pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
+    /// The one authority for a substituted type's ownership and capability
+    /// facts (`docs/internal/ir-ladder.md` §6.3), keyed structurally by §6.2's
+    /// [`TypeInstanceKey`].
+    ///
+    /// SIR rules 5 and 6, `TargetLayout`, glue emission and collection
+    /// descriptors read this table; nothing downstream re-derives a class, a
+    /// clone kind or a send verdict from a type's spelling.
+    ///
+    /// Populated from every concrete accepted expression type, closed under the
+    /// type's own components so an element's row exists whenever its
+    /// collection's does. A type §1.1 refuses gets **no row**: absence is a
+    /// refusal the consumer fails closed on, never a licence to guess.
+    pub type_facts: BTreeMap<TypeInstanceKey, TypeFacts>,
     /// RHS spans of accepted `lhs is TypeName` type patterns.
     ///
     /// The parser still represents the RHS as an identifier expression; this
@@ -1305,6 +1319,7 @@ impl Default for TypeCheckOutput {
             caller_visible_param_projections: HashSet::new(),
             actor_self_state_fields: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            type_facts: BTreeMap::new(),
             is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),

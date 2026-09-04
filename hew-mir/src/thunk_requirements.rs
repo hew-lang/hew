@@ -38,7 +38,7 @@ use std::collections::HashSet;
 use hew_types::{BuiltinType, ResolvedTy};
 
 use crate::model::{
-    find_enum_layout, find_record_layout_for_ty, is_indirect_enum, machine_enum_views,
+    find_enum_layout, find_record_layout_for_ty, is_indirect_enum_for_ty, machine_enum_views,
     machine_event_enum_views, EnumLayout, IrPipeline, RawMirFunction, RecordLayout,
     SupervisorLayout,
 };
@@ -1042,9 +1042,7 @@ fn collect_xnode_codec_drop_seeds(
             // drop-seed bodies. Multi-arg handlers are not seeded (their
             // packed-args wire has no cross-node codec yet).
             if let [msg_ty] = h.param_tys.as_slice() {
-                if !matches!(msg_ty, ResolvedTy::Named { name, .. }
-                    if is_indirect_enum(name, enum_layouts))
-                {
+                if !is_indirect_enum_for_ty(msg_ty, enum_layouts) {
                     try_add(
                         msg_ty,
                         &mut rec_seeds,

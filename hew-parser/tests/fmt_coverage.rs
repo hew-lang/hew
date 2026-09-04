@@ -1557,12 +1557,15 @@ fn fmt_mutable_parameter() {
 
 #[test]
 fn fmt_function_attribute() {
-    let src = r"#[inline]
+    // `#[test]` (not `#[inline]`, which HEW-SPEC-2026 §12.6's closed
+    // attribute table does not recognise) exercises the formatter's
+    // attribute-printing path on a free function.
+    let src = r"#[test]
 fn fast() -> i32 {
     42
 }";
     let out = roundtrip(src);
-    assert!(out.contains("#[inline]"), "output: {out}");
+    assert!(out.contains("#[test]"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------

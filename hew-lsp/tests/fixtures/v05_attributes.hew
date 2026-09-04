@@ -5,12 +5,14 @@ actor AttributeActor {
     }
 }
 
-#[on(crash)]
+// `#[on(..)]` is only legal on a plain `fn` inside an actor body
+// (HEW-SPEC-2026 §12.6); these two probes are free functions, so they carry
+// no attribute — the fixture only needs their names for the LSP hover/
+// goto-definition/find-references smoke checks below.
 fn attribute_crash_probe() -> i32 {
     7
 }
 
-#[on(upgrade)]
 fn attribute_upgrade_probe() -> i32 {
     attribute_crash_probe()
 }

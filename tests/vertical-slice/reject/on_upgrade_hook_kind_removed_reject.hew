@@ -1,0 +1,13 @@
+// `upgrade` left the `#[on(..)]` hook-kind list (HEW-SPEC-2026 §12.6): hot
+// code upgrade is refused permanently, so the hook list stops holding a
+// place for it. `#[on(upgrade)]` is now an ordinary unrecognised hook kind.
+actor Worker {
+    let count: i64;
+
+    #[on(upgrade)]
+    fn on_upgrade() {
+    }
+}
+
+fn main() {
+}

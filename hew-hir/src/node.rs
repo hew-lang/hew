@@ -654,9 +654,6 @@ pub enum HirLifecycleHookKind {
     Exit,
     /// `#[on(down)]` — receives a typed monitor terminal notification.
     Down,
-    /// `#[on(upgrade)]` — reserved marker for hot-upgrade flows. No
-    /// runtime invocation in v0.5.
-    Upgrade,
 }
 
 // ── Machine declarations ─────────────────────────────────────────────────────

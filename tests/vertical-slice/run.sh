@@ -901,16 +901,50 @@ run_accept_expect_status "hashmap_iter_user_shadow" 43
 # Ownership markers (#[resource], #[linear]) remain valid on nominal `type`
 # declarations and preserve their affine/linear behaviour. Positive control on
 # `type`, plus both reject boundaries: an alias, which carries no resource
-# semantics, and a callable, which has no ResourceMarker slot at all.
+# semantics, and a callable, which has no ResourceMarker slot at all. Both
+# reject with E_UNKNOWN_ATTRIBUTE (HEW-SPEC-2026 §12.6's closed attribute
+# table) rather than the retired E_RESOURCE_MARKER_TARGET.
 run_accept_expect_status "resource_marker_nominal_type" 0
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/resource_marker_on_fn_reject.hew" \
-    "#[resource] is only valid on \`type\` or \`enum\` declarations" \
+    "unrecognised attribute \`#[resource]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
     "resource_marker_on_fn_reject"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/resource_marker_on_record_reject.hew" \
-    "#[resource] is only valid on \`type\` or \`enum\` declarations" \
+    "unrecognised attribute \`#[resource]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
     "resource_marker_on_type_alias_reject"
+
+# The closed attribute table (HEW-SPEC-2026 §12.6, issue #3261): an
+# unrecognised attribute name, or a recognised name used in a position the
+# table does not list for it, is E_UNKNOWN_ATTRIBUTE everywhere — not just on
+# type declarations. Accept twin exercises every legal attribute in every
+# position the table lists it for; the reject fixtures pin the fn, field,
+# impl-method, and actor-member positions plus the two removed surfaces.
+run_accept_expect_status "attribute_closed_table_positions" 0
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/unknown_attribute_on_fn_reject.hew" \
+    "unrecognised attribute \`#[bogus]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
+    "unknown_attribute_on_fn_reject"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/unknown_attribute_on_field_reject.hew" \
+    "unrecognised attribute \`#[bogus]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
+    "unknown_attribute_on_field_reject"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/unknown_attribute_on_impl_method_reject.hew" \
+    "unrecognised attribute \`#[bogus]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
+    "unknown_attribute_on_impl_method_reject"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/unknown_attribute_on_actor_member_reject.hew" \
+    "unrecognised attribute \`#[bogus]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
+    "unknown_attribute_on_actor_member_reject"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/noncancellable_attribute_removed_reject.hew" \
+    "unrecognised attribute \`#[noncancellable]\` in this position [E_UNKNOWN_ATTRIBUTE]" \
+    "noncancellable_attribute_removed_reject"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/on_upgrade_hook_kind_removed_reject.hew" \
+    "on(upgrade)" \
+    "on_upgrade_hook_kind_removed_reject"
 
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR

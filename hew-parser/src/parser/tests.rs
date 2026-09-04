@@ -1556,8 +1556,10 @@ fn parse_actor_on_crash_hook_attaches_to_method() {
 
 #[test]
 fn parse_actor_on_upgrade_hook_attaches_to_method() {
-    // E1: `#[on(upgrade)]` parses on an actor method. The parser accepts
-    // it; the type-checker rejects it as a reserved, unsupported attribute.
+    // E1: `#[on(upgrade)]` parses on an actor method — the parser is
+    // hook-kind-agnostic, only checking the attribute name is `on`. `upgrade`
+    // left the hook-kind list at the type-checker (HEW-SPEC-2026 §12.6);
+    // it rejects this as an unrecognised lifecycle hook.
     let source = r"actor Worker {
     #[on(upgrade)]
     fn on_upgrade() { }
@@ -1581,7 +1583,10 @@ fn parse_attribute_key_value_missing_value_emits_error_without_empty_fallback() 
 fn demo() {}
 ";
     let result = parse(source);
-    assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+    // `meta` is not a recognised attribute name, so the closed table also
+    // reports `E_UNKNOWN_ATTRIBUTE` in addition to the key-value shape error
+    // this test targets — both diagnostics are expected.
+    assert_eq!(result.errors.len(), 2, "errors: {:?}", result.errors);
     assert_eq!(
         result.errors[0].message,
         "invalid value for attribute `rename`: missing value"
@@ -1589,6 +1594,11 @@ fn demo() {}
     assert_eq!(
         result.errors[0].hint.as_deref(),
         Some("expected identifier, string literal, or integer literal")
+    );
+    assert!(
+        result.errors[1].message.contains("E_UNKNOWN_ATTRIBUTE"),
+        "errors: {:?}",
+        result.errors
     );
 
     let Item::Function(func) = &result.program.items[0].0 else {
@@ -3866,6 +3876,10 @@ fn unmarked_type_has_no_resource_marker() {
 
 #[test]
 fn resource_marker_rejects_tuple_type_without_affecting_supported_targets() {
+    // `#[resource]` is only legal at `type`/`enum` declaration position
+    // (HEW-SPEC-2026 §12.6); a tuple-form `type` never carries `ResourceMarker`,
+    // so this is `E_UNKNOWN_ATTRIBUTE`, superseding the old
+    // `E_RESOURCE_MARKER_TARGET` code.
     let unsupported_source = "#[resource]\ntype Pair(i64);";
     let unsupported = parse(unsupported_source);
     assert_eq!(
@@ -3877,8 +3891,8 @@ fn resource_marker_rejects_tuple_type_without_affecting_supported_targets() {
     assert!(
         unsupported.errors[0]
             .message
-            .contains("E_RESOURCE_MARKER_TARGET"),
-        "tuple-form ownership marker must use the target diagnostic: {:?}",
+            .contains("E_UNKNOWN_ATTRIBUTE"),
+        "tuple-form ownership marker must use the closed-table diagnostic: {:?}",
         unsupported.errors
     );
     assert_eq!(
@@ -3935,7 +3949,7 @@ fn resource_markers_reject_unsupported_top_level_items_in_every_visibility_form(
     let marker_errors: Vec<_> = result
         .errors
         .iter()
-        .filter(|error| error.message.contains("E_RESOURCE_MARKER_TARGET"))
+        .filter(|error| error.message.contains("E_UNKNOWN_ATTRIBUTE"))
         .collect();
 
     assert_eq!(
@@ -4006,7 +4020,7 @@ actor Worker {
     let marker_errors: Vec<_> = result
         .errors
         .iter()
-        .filter(|error| error.message.contains("E_RESOURCE_MARKER_TARGET"))
+        .filter(|error| error.message.contains("E_UNKNOWN_ATTRIBUTE"))
         .collect();
 
     assert_eq!(
@@ -4062,6 +4076,8 @@ fn linear_then_resource_combined_emits_conflict_diagnostic() {
 
 #[test]
 fn unknown_type_marker_emits_diagnostic() {
+    // `E_UNKNOWN_ATTRIBUTE` (the closed-table diagnostic) supersedes the
+    // retired `E_UNKNOWN_TYPE_MARKER` for this position.
     let source = r"
             #[both]
             type Bad { x: int }
@@ -4069,11 +4085,11 @@ fn unknown_type_marker_emits_diagnostic() {
     let result = parse(source);
     assert!(
         !result.errors.is_empty(),
-        "expected E_UNKNOWN_TYPE_MARKER diagnostic but got none"
+        "expected E_UNKNOWN_ATTRIBUTE diagnostic but got none"
     );
     assert!(
-        result.errors[0].message.contains("E_UNKNOWN_TYPE_MARKER"),
-        "expected E_UNKNOWN_TYPE_MARKER in message, got: {:?}",
+        result.errors[0].message.contains("E_UNKNOWN_ATTRIBUTE"),
+        "expected E_UNKNOWN_ATTRIBUTE in message, got: {:?}",
         result.errors[0].message
     );
 }
@@ -4194,36 +4210,41 @@ fn max_heap_attribute_gb_suffix_rejected() {
 
 #[test]
 fn max_heap_attribute_on_fn_rejected() {
+    // `#[max_heap]` is only legal on an actor declaration (HEW-SPEC-2026
+    // §12.6); on a free fn it is `E_UNKNOWN_ATTRIBUTE`, superseding the old
+    // bespoke "only allowed on actor declarations" message.
     let source = "#[max_heap(1024)] fn foo() {}";
     let result = parse(source);
     assert!(
         !result.errors.is_empty(),
-        "expected error: #[max_heap] only allowed on actor declarations"
+        "expected E_UNKNOWN_ATTRIBUTE for #[max_heap] on a free fn"
     );
     assert!(
         result
             .errors
             .iter()
-            .any(|e| e.message.contains("max_heap") && e.message.contains("actor")),
-        "expected error mentioning max_heap and actor, got: {:?}",
+            .any(|e| e.message.contains("max_heap") && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected error mentioning max_heap and E_UNKNOWN_ATTRIBUTE, got: {:?}",
         result.errors
     );
 }
 
 #[test]
 fn max_heap_attribute_on_type_rejected() {
+    // Same closed-table refusal as `max_heap_attribute_on_fn_rejected`, on a
+    // `type` declaration instead of a free fn.
     let source = "#[max_heap(1 kb)] type Bar { x: i32; }";
     let result = parse(source);
     assert!(
         !result.errors.is_empty(),
-        "expected error: #[max_heap] only allowed on actor declarations"
+        "expected E_UNKNOWN_ATTRIBUTE for #[max_heap] on a type declaration"
     );
     assert!(
         result
             .errors
             .iter()
-            .any(|e| e.message.contains("max_heap") && e.message.contains("actor")),
-        "expected error mentioning max_heap and actor, got: {:?}",
+            .any(|e| e.message.contains("max_heap") && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected error mentioning max_heap and E_UNKNOWN_ATTRIBUTE, got: {:?}",
         result.errors
     );
 }
@@ -5240,5 +5261,130 @@ fn record_rest_patterns_round_trip_through_formatter() {
         reparsed.errors.is_empty(),
         "formatted source failed to parse: {:?}\n{formatted}",
         reparsed.errors
+    );
+}
+
+// ── Closed attribute table (HEW-SPEC-2026 §12.6, issue #3261) ─────────
+//
+// These exercise `Parser::validate_attributes_for` directly through `parse`,
+// independent of the vertical-slice harness: an invented attribute name is
+// refused everywhere, a real name in the wrong position is refused too, and
+// the `#[test]`-only trio (`ignore`/`should_panic`/`serial`) is refused
+// without a co-occurring `#[test]`.
+
+#[test]
+fn unrecognised_attribute_name_rejected_on_free_fn() {
+    // The issue's own repro: an invented attribute name on a free function
+    // must fail closed, not disappear silently.
+    let source = "#[bogus]\nfn helper() -> i64 { 1 }\nfn main() { helper(); }";
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("unrecognised attribute `#[bogus]`")
+                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected E_UNKNOWN_ATTRIBUTE for #[bogus], got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn recognised_attribute_name_rejected_in_wrong_position() {
+    // `#[every(..)]` is only legal on an actor `receive fn`; here it targets
+    // a plain actor method, so the name is known but the position is not.
+    let source = r"
+        actor Worker {
+            #[every(1s)]
+            fn tick() {}
+        }
+        fn main() {}
+    ";
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("unrecognised attribute `#[every]`")
+                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected E_UNKNOWN_ATTRIBUTE for #[every] on a plain actor fn, got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn test_trio_attrs_rejected_without_co_occurring_test_attr() {
+    // `#[ignore]`, `#[should_panic]`, and `#[serial]` are only legal on a
+    // function that also carries `#[test]` (§12.6). Without it, each is
+    // E_UNKNOWN_ATTRIBUTE — a misspelled `#[test]` must not leave these
+    // siblings silently accepted either.
+    for attr in ["ignore", "should_panic", "serial"] {
+        let source = format!("#[{attr}]\nfn probe() {{}}\nfn main() {{ probe(); }}");
+        let result = parse(&source);
+        assert!(
+            result.errors.iter().any(|e| e
+                .message
+                .contains(&format!("unrecognised attribute `#[{attr}]`"))
+                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+            "expected E_UNKNOWN_ATTRIBUTE for #[{attr}] without #[test], got: {:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn test_trio_attrs_accepted_with_co_occurring_test_attr() {
+    // The positive control for `test_trio_attrs_rejected_without_co_occurring_test_attr`:
+    // the same three attributes are legal once `#[test]` is present.
+    for attr in ["ignore", "should_panic", "serial"] {
+        let source = format!("#[test]\n#[{attr}]\nfn probe() {{}}\nfn main() {{}}");
+        let result = parse(&source);
+        assert!(
+            result.errors.is_empty(),
+            "expected #[test] + #[{attr}] to parse cleanly, got: {:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn noncancellable_attribute_no_longer_recognised() {
+    // `#[noncancellable]` is removed in edition 2026 (§12.6): it is now an
+    // ordinary unrecognised name, not a special-cased parse.
+    let source = "#[noncancellable]\nfn helper() {}\nfn main() { helper(); }";
+    let result = parse(source);
+    assert!(
+        result.errors.iter().any(|e| e
+            .message
+            .contains("unrecognised attribute `#[noncancellable]`")
+            && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected E_UNKNOWN_ATTRIBUTE for #[noncancellable], got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn wire_attribute_legal_on_type_decl_and_field_only() {
+    // `#[wire]` is legal on a type declaration and, separately, on a field
+    // inside a plain (non-`#[wire]`) type declaration (§12.6) — not on a
+    // free function, which has no field/type-decl position for it to attach
+    // to. (The `@N` field-tag syntax used inside a `#[wire] type` body is a
+    // distinct grammar from the `#[wire]` attribute exercised here.)
+    let legal = parse("#[wire]\ntype Contract { x: i64; }\ntype Point { #[wire] x: i64; }");
+    assert!(
+        legal.errors.is_empty(),
+        "expected #[wire] on type decl and field to parse cleanly, got: {:?}",
+        legal.errors
+    );
+
+    let illegal = parse("#[wire]\nfn helper() {}\nfn main() { helper(); }");
+    assert!(
+        illegal
+            .errors
+            .iter()
+            .any(|e| e.message.contains("unrecognised attribute `#[wire]`")
+                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
+        "expected E_UNKNOWN_ATTRIBUTE for #[wire] on a free fn, got: {:?}",
+        illegal.errors
     );
 }

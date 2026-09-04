@@ -7,6 +7,27 @@
 )]
 use super::*;
 
+/// Identifiers [`Parser::foreign_keyword_redirect`] recognises as
+/// foreign-language keywords at item position (`struct`, `class`, bare
+/// `wire`, and friends). [`Parser::top_level_attr_position`] skips
+/// closed-table validation ahead of these — the redirect emits its own
+/// targeted diagnostic and never constructs an item.
+const FOREIGN_KEYWORD_IDENTS: &[&str] = &[
+    "record",
+    "struct",
+    "class",
+    "object",
+    "func",
+    "function",
+    "def",
+    "sub",
+    "proc",
+    "method",
+    "interface",
+    "protocol",
+    "wire",
+];
+
 impl Parser<'_> {
     // ── Program and Items ──
     pub fn parse_program(&mut self) -> Program {
@@ -310,52 +331,49 @@ impl Parser<'_> {
         }
     }
 
-    /// Reject ownership markers on a top-level item that cannot store a
-    /// [`ResourceMarker`].
+    /// Determine which [`AttrPosition`] the leading attributes just parsed by
+    /// [`Self::parse_item`] belong to, without consuming any tokens.
     ///
-    /// `type Name { ... }`, `enum Name { ... }`, and `indirect enum Name {
-    /// ... }` are the only item forms that lower through `TypeDecl` and may
-    /// therefore carry `#[resource]` or `#[linear]`. Type aliases deliberately
-    /// do not qualify: they have no independent ownership contract.
-    fn reject_resource_markers_on_unsupported_item(&mut self, attrs: &[Attribute]) {
+    /// This is a lookahead over the same token shapes [`Self::parse_item`]'s
+    /// own dispatch match reads: an optional `pub`/`package` visibility
+    /// modifier, then the keyword (or lookahead-disambiguated `type` form)
+    /// that decides what item this becomes. Item forms with no legal
+    /// top-level attribute position (`const`, `import`, `supervisor`,
+    /// `machine`, type aliases, tuple-form records, `impl` blocks, `extern`
+    /// blocks) resolve to [`AttrPosition::Unsupported`], which the closed
+    /// table lists no attribute for.
+    ///
+    /// Returns `None` when the upcoming token is one [`Self::foreign_keyword_redirect`]
+    /// recognises (`struct`, `class`, `func`, bare `wire`, and friends) or the
+    /// reserved `foreign` keyword: these paths never construct an item — they
+    /// emit their own targeted diagnostic (e.g. "write `#[wire] type Name {
+    /// .. }` instead") and return `None` from [`Self::parse_item`] — so the
+    /// closed table stays silent rather than layering `E_UNKNOWN_ATTRIBUTE`
+    /// on top of that guidance.
+    fn top_level_attr_position(&self) -> Option<AttrPosition> {
         let target_pos = if matches!(self.peek(), Some(Token::Pub | Token::Package)) {
             self.pos + 1
         } else {
             self.pos
         };
 
-        let supports_resource_marker = match self.peek_at(target_pos) {
-            Some(Token::Enum | Token::Indirect) => true,
-            Some(Token::Type) => {
-                !self.is_type_alias_lookahead_at(target_pos)
-                    && !self.is_tuple_type_lookahead_at(target_pos)
+        match self.peek_at(target_pos) {
+            Some(Token::Fn | Token::Async | Token::Gen) => Some(AttrPosition::FreeFn),
+            Some(Token::Enum | Token::Indirect) => Some(AttrPosition::TypeDecl),
+            Some(Token::Type)
+                if !self.is_type_alias_lookahead_at(target_pos)
+                    && !self.is_tuple_type_lookahead_at(target_pos) =>
+            {
+                Some(AttrPosition::TypeDecl)
             }
-            _ => false,
-        };
-
-        if !supports_resource_marker {
-            self.reject_resource_marker_attributes(attrs);
-        }
-    }
-
-    /// Emit a source-spanned error for ownership markers in a context that
-    /// cannot carry [`ResourceMarker`].
-    ///
-    /// Attribute-bearing nested declarations (trait items, impl methods,
-    /// extern functions, and actor members) call this directly because they do
-    /// not pass through [`Self::parse_item`].
-    pub(crate) fn reject_resource_marker_attributes(&mut self, attrs: &[Attribute]) {
-        for attr in attrs {
-            if matches!(attr.name.as_str(), "resource" | "linear") {
-                self.error_at(
-                    format!(
-                        "#[{}] is only valid on `type` or `enum` declarations \
-                         [E_RESOURCE_MARKER_TARGET]",
-                        attr.name
-                    ),
-                    attr.span.clone(),
-                );
-            }
+            Some(Token::Trait) => Some(AttrPosition::TraitDecl),
+            Some(Token::Actor) => Some(AttrPosition::ActorDecl),
+            Some(Token::Foreign) => None,
+            Some(Token::Identifier(id)) if FOREIGN_KEYWORD_IDENTS.contains(id) => None,
+            // `type` alias/tuple-record forms, `const`, `import`,
+            // `supervisor`, `machine`, `impl`, `extern`, and anything else:
+            // no attribute is legal on these item forms.
+            _ => Some(AttrPosition::Unsupported),
         }
     }
 
@@ -368,45 +386,23 @@ impl Parser<'_> {
         if doc_comment.is_none() {
             doc_comment = self.collect_doc_comments();
         }
-        // `#[extern_symbol("…")]` attaches to a `fn` declaration nested inside
-        // either an `extern "C" { … }` block or an `impl Ty { … }` / `impl Trait
-        // for Ty { … }` block (parsed via `parse_extern_block` and
-        // `parse_impl_decl`'s body loop respectively). At item level it is
-        // never valid — reject it here with a clear diagnostic rather than
-        // silently dropping it onto whatever item follows.
-        for attr in &attrs {
-            if attr.name == "extern_symbol" {
-                self.error_at(
-                    "`#[extern_symbol]` is only valid on `fn` declarations inside an \
-                     `extern \"C\"` block or an `impl` block"
-                        .to_string(),
-                    attr.span.clone(),
-                );
-            }
-        }
         let start = self.peek_span().start;
         // Pre-compute attribute span before attrs is moved into the item.
         let attr_start = attrs.first().map(|a| a.span.start);
-
-        // Extract `#[max_heap]` before dispatch so we can set it on the actor
-        // and reject it on any non-actor item.  We pull both the result and the
-        // diagnostic span out as owned values so `attrs` can be moved freely
-        // into the match arms below.
-        let (max_heap_result, max_heap_attr_span): (Option<Result<u64, String>>, Option<Span>) =
-            if let Some(a) = attrs.iter().find(|a| a.name == "max_heap") {
-                (Some(resolve_max_heap_args(&a.args)), Some(a.span.clone()))
-            } else {
-                (None, None)
-            };
         let has_wire_attr = attrs.iter().any(|a| a.name == "wire");
 
-        // `#[resource]` and `#[linear]` are ownership declarations, not
-        // general-purpose item attributes. Only `type` / `enum` declarations
-        // carry `ResourceMarker` in the AST; accepting either marker on another
-        // item would parse successfully and then silently discard ownership.
-        // Validate before dispatch so every visibility form receives the same
-        // source-spanned, fail-closed diagnostic.
-        self.reject_resource_markers_on_unsupported_item(&attrs);
+        // Validate every leading attribute against the closed table for the
+        // item kind about to be dispatched, before dispatch, so every
+        // visibility form (`pub`, `package`, private) receives the same
+        // source-spanned, fail-closed `E_UNKNOWN_ATTRIBUTE` diagnostic. This
+        // is a lookahead only — no tokens are consumed.
+        if let Some(item_attr_position) = self.top_level_attr_position() {
+            self.validate_attributes_for(&attrs, item_attr_position);
+        }
+        // `attrs` is moved into the fn/type dispatch arms below; `#[max_heap]`
+        // is wired onto the resulting `Item::Actor` post-dispatch, so its
+        // value (if present) is captured here as an owned clone.
+        let max_heap_attr = attrs.iter().find(|a| a.name == "max_heap").cloned();
 
         let item = match self.peek() {
             Some(Token::Import) => {
@@ -584,28 +580,22 @@ impl Parser<'_> {
             }
         };
 
-        // Wire `#[max_heap]` into the actor, or emit a diagnostic if it appears
-        // on a non-actor item.
-        let item = match (item, max_heap_result) {
-            (Item::Actor(mut actor), Some(Ok(bytes))) => {
-                actor.max_heap_bytes = Some(bytes);
+        // Wire `#[max_heap]` into the actor. `attrs` was already validated
+        // against the closed table above, so `#[max_heap]` on a non-actor
+        // item was already reported there as `E_UNKNOWN_ATTRIBUTE`; only a
+        // malformed value on an actor itself (`#[max_heap(huge)]`) needs a
+        // diagnostic here.
+        let item = match item {
+            Item::Actor(mut actor) => {
+                if let Some(attr) = max_heap_attr {
+                    match resolve_max_heap_args(&attr.args) {
+                        Ok(bytes) => actor.max_heap_bytes = Some(bytes),
+                        Err(msg) => self.error_at(msg, attr.span),
+                    }
+                }
                 Item::Actor(actor)
             }
-            (Item::Actor(actor), Some(Err(msg))) => {
-                let span = max_heap_attr_span.unwrap_or(start..start);
-                self.error_at(msg, span);
-                Item::Actor(actor)
-            }
-            (Item::Actor(actor), None) => Item::Actor(actor),
-            (other_item, Some(_)) => {
-                let span = max_heap_attr_span.unwrap_or(start..start);
-                self.error_at(
-                    "#[max_heap] is only allowed on actor declarations".to_string(),
-                    span,
-                );
-                other_item
-            }
-            (other_item, None) => other_item,
+            other_item => other_item,
         };
 
         let end = self.peek_span().start;
@@ -1059,34 +1049,23 @@ impl Parser<'_> {
     /// `#[linear]`   → `ResourceMarker::Linear`
     ///
     /// Emits a diagnostic if both `#[resource]` and `#[linear]` appear on the
-    /// same type (they declare incompatible ownership disciplines).  Emits a
-    /// diagnostic for any attribute that is not a recognised type-decl attribute;
-    /// unrecognised names could be ownership-marker typos and are rejected
-    /// fail-closed rather than silently ignored.
+    /// same type (they declare incompatible ownership disciplines) via
+    /// `E_TYPE_MARKER_CONFLICT`. Attribute name/position validity itself is
+    /// the closed table's job (`validate_attributes_for`, called by
+    /// `parse_item` before dispatch reaches here) — `E_UNKNOWN_ATTRIBUTE`
+    /// supersedes the old `E_UNKNOWN_TYPE_MARKER` for this position.
     ///
     /// The attribute is not consumed from the slice; callers that render
     /// attributes should filter `resource` / `linear` out themselves if they
     /// want to suppress them in output. The checker is the only consumer, so
     /// we leave the slice untouched.
-    ///
-    /// Valid type-decl attributes: `resource`, `linear`, `wire`, `json`,
-    /// `yaml`, `deprecated`, `opaque`.  Anything else triggers `E_UNKNOWN_TYPE_MARKER`.
     pub(crate) fn extract_resource_marker(&mut self, attrs: &[Attribute]) -> ResourceMarker {
-        // Known-valid attributes for type declarations.  These are consumed by
-        // other parser paths (wire metadata, deprecation, naming-case, opaque
-        // representation); only `resource` and `linear` belong to the
-        // ownership-discipline surface this helper returns.
-        const KNOWN_TYPE_ATTRS: &[&str] = &[
-            "resource",
-            "linear",
-            "wire",
-            "json",
-            "yaml",
-            "deprecated",
-            "opaque",
-            "lang_item",
-        ];
-
+        // Attribute names and positions are validated by the closed table
+        // (`validate_attributes_for`) in `parse_item` before any of the
+        // `type`/`enum` dispatch functions run, so this only needs to decide
+        // the ownership-discipline surface `resource`/`linear` carry and
+        // catch the one combination the table can't express: the two
+        // markers conflicting on the same declaration.
         let mut resource_span: Option<std::ops::Range<usize>> = None;
         let mut linear_span: Option<std::ops::Range<usize>> = None;
         let mut marker = ResourceMarker::None;
@@ -1122,15 +1101,6 @@ impl Parser<'_> {
                     }
                     linear_span = Some(attr.span.clone());
                     marker = ResourceMarker::Linear;
-                }
-                name if !KNOWN_TYPE_ATTRS.contains(&name) => {
-                    self.error_at(
-                        format!(
-                            "unrecognised type attribute '#[{name}]' \
-                             [E_UNKNOWN_TYPE_MARKER]"
-                        ),
-                        attr.span.clone(),
-                    );
                 }
                 _ => {}
             }
@@ -1175,23 +1145,13 @@ impl Parser<'_> {
                 if doc_comment.is_none() {
                     doc_comment = self.collect_doc_comments();
                 }
-                self.reject_resource_marker_attributes(&attributes);
-
-                // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
-                // methods — not on methods declared inline in a type body.
-                for attr in &attributes {
-                    if attr.name == "extern_symbol" {
-                        self.error_at(
-                            "`#[extern_symbol]` is only valid on `fn` declarations inside an \
-                             `extern \"C\"` block or an `impl` block; declare the method in an \
-                             `impl` block instead"
-                                .to_string(),
-                            attr.span.clone(),
-                        );
-                    }
-                }
 
                 if self.peek() == Some(&Token::Fn) {
+                    // No attribute is legal on a method declared inline in a
+                    // `type { .. }` body (`#[extern_symbol]` belongs on an
+                    // `impl` method instead, `#[resource]`/`#[linear]` only
+                    // on the type declaration itself, and so on).
+                    self.validate_attributes_for(&attributes, AttrPosition::Unsupported);
                     let fn_start = self.peek_span().start;
                     self.advance();
                     // Use parse_type_method so `consuming self` receivers are accepted.
@@ -1200,6 +1160,7 @@ impl Parser<'_> {
                     method.doc_comment = doc_comment;
                     Some((TypeBodyItem::Method(method), has_consuming_self))
                 } else {
+                    self.validate_attributes_for(&attributes, AttrPosition::Field);
                     // Field with optional attributes (e.g. #[encode(rename = "x")])
                     let name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
@@ -1320,8 +1281,15 @@ impl Parser<'_> {
     pub(crate) fn parse_trait_item(&mut self) -> Option<TraitItem> {
         let doc_comment = self.collect_doc_comments();
         let attrs = self.parse_attributes();
-        self.reject_resource_marker_attributes(&attrs);
-        self.reject_extern_symbol_on_trait_item(&attrs);
+        // Only a method signature carries a legal attribute (the substrate
+        // set and `#[returns_receiver]`); an associated `type` declaration
+        // carries none.
+        let trait_item_attr_position = if self.peek() == Some(&Token::Fn) {
+            AttrPosition::TraitMethod
+        } else {
+            AttrPosition::Unsupported
+        };
+        self.validate_attributes_for(&attrs, trait_item_attr_position);
 
         match self.peek() {
             Some(Token::Fn) => {
@@ -1422,22 +1390,6 @@ impl Parser<'_> {
         }
     }
 
-    fn reject_extern_symbol_on_trait_item(&mut self, attrs: &[Attribute]) {
-        // Trait items describe an abstract surface; bind the C ABI symbol on
-        // the concrete implementation method instead.
-        for attr in attrs {
-            if attr.name == "extern_symbol" {
-                self.error_at(
-                    "`#[extern_symbol]` is only valid on `fn` declarations inside an \
-                     `extern \"C\"` block or an `impl` block; bind the symbol on the \
-                     concrete `impl` method instead"
-                        .to_string(),
-                    attr.span.clone(),
-                );
-            }
-        }
-    }
-
     pub(crate) fn parse_impl_decl(&mut self) -> Option<ImplDecl> {
         let type_params = self.parse_opt_type_params()?;
 
@@ -1465,7 +1417,21 @@ impl Parser<'_> {
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             let doc_comment = self.collect_doc_comments();
             let method_attrs = self.parse_attributes();
-            self.reject_resource_marker_attributes(&method_attrs);
+            // `fn` methods carry the impl-method attribute set
+            // (`#[extern_symbol]`, the substrate set, `#[returns_receiver]`);
+            // a `type` alias inside an impl block carries none. Look past an
+            // optional `pub`/`package` modifier without consuming it.
+            let impl_item_probe = if matches!(self.peek(), Some(Token::Pub | Token::Package)) {
+                self.pos + 1
+            } else {
+                self.pos
+            };
+            let impl_item_attr_position = if self.peek_at(impl_item_probe) == Some(&Token::Fn) {
+                AttrPosition::ImplMethod
+            } else {
+                AttrPosition::Unsupported
+            };
+            self.validate_attributes_for(&method_attrs, impl_item_attr_position);
             let vis = if matches!(self.peek(), Some(Token::Pub | Token::Package)) {
                 self.parse_visibility()
             } else {
@@ -1473,13 +1439,6 @@ impl Parser<'_> {
             };
             match self.peek() {
                 Some(Token::Type) => {
-                    if !method_attrs.is_empty() {
-                        let span = method_attrs.first().map_or(0..0, |a| a.span.clone());
-                        self.error_at(
-                            "attributes are not supported on impl-block type aliases".to_string(),
-                            span,
-                        );
-                    }
                     if vis != Visibility::Private {
                         self.error(
                             "type aliases in impl bodies cannot have visibility modifiers"
@@ -1511,15 +1470,6 @@ impl Parser<'_> {
                 other => {
                     let other_msg =
                         format!("expected 'fn' or 'type' in impl body, found {other:?}");
-                    if !method_attrs.is_empty() {
-                        let span = method_attrs.first().map_or(0..0, |a| a.span.clone());
-                        self.error_at(
-                            "attributes inside an impl block must be followed by a `fn` \
-                             declaration"
-                                .to_string(),
-                            span,
-                        );
-                    }
                     self.error(other_msg);
                     self.advance(); // error recovery: skip the bad token
                 }
@@ -1568,7 +1518,7 @@ impl Parser<'_> {
             // Doc comments are not supported inside extern blocks today; only
             // attributes between the opening `{` and the next `fn` are parsed.
             let attributes = self.parse_attributes();
-            self.reject_resource_marker_attributes(&attributes);
+            self.validate_attributes_for(&attributes, AttrPosition::ExternFn);
             if self.peek() == Some(&Token::Fn) {
                 let item_start = attributes
                     .first()

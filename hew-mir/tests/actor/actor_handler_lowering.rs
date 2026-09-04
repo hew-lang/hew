@@ -1671,11 +1671,10 @@ fn generator_handler_call_lowers_to_stream_dispatch() {
 }
 
 #[test]
-fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
+fn actor_lifecycle_start_and_crash_hooks_lower_to_actor_handler_functions() {
     let mut ids = IdGen::default();
     let start_return = return_none_stmt(&mut ids);
     let crash_return = return_none_stmt(&mut ids);
-    let upgrade_return = return_none_stmt(&mut ids);
     let actor = {
         let mut actor = actor(&mut ids, "Counter", vec![]);
         actor.lifecycle_hooks = vec![
@@ -1695,15 +1694,6 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
                 params: vec![],
                 return_ty: ResolvedTy::Unit,
                 body: block(&mut ids, vec![crash_return], None, ResolvedTy::Unit),
-                span: 0..0,
-            },
-            HirLifecycleHook {
-                kind: HirLifecycleHookKind::Upgrade,
-                name: "upgrade".to_string(),
-                declaration: hew_types::DefId::for_test("upgrade"),
-                params: vec![],
-                return_ty: ResolvedTy::Unit,
-                body: block(&mut ids, vec![upgrade_return], None, ResolvedTy::Unit),
                 span: 0..0,
             },
         ];
@@ -1741,16 +1731,6 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
         .find(|func| func.name == "Counter__on_crash")
         .expect("on(crash) hook must produce a MIR function");
     assert_eq!(crash_fn.call_conv, FunctionCallConv::ActorHandler);
-    // on(upgrade) remains fail-closed — no MIR function, a diagnostic.
-    assert!(
-        pipeline.diagnostics.iter().any(|diag| {
-            matches!(
-                &diag.kind,
-                MirDiagnosticKind::UnsupportedNode { reason } if reason.contains("OnUpgradeNotYetWired")
-            )
-        }),
-        "OnUpgradeNotYetWired must still be fail-closed"
-    );
     // on(stop) is wired — no fail-closed diagnostic for it.
     assert!(
         !pipeline.diagnostics.iter().any(|diag| {

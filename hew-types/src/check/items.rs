@@ -1375,10 +1375,6 @@ impl Checker {
                     self.check_down_hook(&ad.name, method, &ad.fields);
                     continue;
                 }
-                "upgrade" => {
-                    self.reject_upgrade_hook(&ad.name, &method.name, hook_attr.span.clone());
-                    continue;
-                }
                 _ => {}
             }
 
@@ -1406,19 +1402,19 @@ impl Checker {
                     hook_attr.span.clone(),
                     format!(
                         "`#[on]` on `{actor_name}.{method_name}` requires a hook kind argument; \
-                         valid hook kinds are: start, stop, crash, exit, down, upgrade"
+                         valid hook kinds are: start, stop, crash, exit, down"
                     ),
                 ));
                 return None;
             }
-            Some("start" | "stop" | "crash" | "exit" | "down" | "upgrade") => {}
+            Some("start" | "stop" | "crash" | "exit" | "down") => {}
             Some(unknown) => {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     hook_attr.span.clone(),
                     format!(
                         "`#[on({unknown})]` on `{actor_name}.{method_name}` is not a recognised \
-                         lifecycle hook; valid hook kinds are: start, stop, crash, exit, down, upgrade"
+                         lifecycle hook; valid hook kinds are: start, stop, crash, exit, down"
                     ),
                 ));
                 return None;
@@ -1443,21 +1439,6 @@ impl Checker {
         }
 
         Some(hook_kind_str)
-    }
-
-    fn reject_upgrade_hook(&mut self, actor_name: &str, method_name: &str, attr_span: Span) {
-        // `#[on(upgrade)]` is a reserved attribute with no runtime behaviour:
-        // the runtime never invokes it, so accepting it would create a hook
-        // that silently never runs. Reject it fail-closed.
-        self.errors.push(TypeError::new(
-            TypeErrorKind::OnUpgradeNotYetWired,
-            attr_span,
-            format!(
-                "`#[on(upgrade)]` on `{actor_name}.{method_name}` is reserved and not supported: \
-                 the runtime never invokes this hook, so it would silently never run; \
-                 remove the attribute"
-            ),
-        ));
     }
 
     /// Bind actor fields as bare names with their *declared* mutability:

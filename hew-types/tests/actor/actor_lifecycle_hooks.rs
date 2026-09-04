@@ -1,5 +1,7 @@
 //! Type-checker fixtures for actor lifecycle hooks
-//! (`#[on(start)]` / `#[on(stop)]` / `#[on(crash)]` / `#[on(upgrade)]`).
+//! (`#[on(start)]` / `#[on(stop)]` / `#[on(crash)]` / `#[on(exit)]` /
+//! `#[on(down)]`). `upgrade` is no longer a hook kind (HEW-SPEC-2026 §12.6);
+//! `#[on(upgrade)]` is exercised here only as an unrecognised-kind case.
 //!
 //! These exercise the §9.1.2 surface defined in
 //! `docs/specs/HEW-SPEC-2026.md`. The accept fixtures pin the
@@ -1188,18 +1190,18 @@ fn reject_unknown_hook_kind() {
                 && e.message.contains("start")
                 && e.message.contains("stop")
                 && e.message.contains("crash")
-                && e.message.contains("upgrade")),
+                && !e.message.contains("upgrade")),
         "`#[on(restart)]` should be rejected with valid-kinds list \
-         (start, stop, crash, upgrade): {:?}",
+         (start, stop, crash, exit, down) and no longer name `upgrade`: {:?}",
         output.errors
     );
 }
 
-// ── E1: `#[on(crash)]` recognition / `#[on(upgrade)]` fail-closed ─────
+// ── E1: `#[on(crash)]` recognition / `#[on(upgrade)]` removed ─────────
 //
-// `#[on(crash)]` remains a live lifecycle hook. `#[on(upgrade)]` remains
-// parser-recognised but must fail closed: it is reserved and not supported,
-// because accepting it would create code that never runs.
+// `#[on(crash)]` remains a live lifecycle hook. `upgrade` left the hook-kind
+// list (HEW-SPEC-2026 §12.6): `#[on(upgrade)]` is now an ordinary unrecognised
+// hook kind, the same as any other misspelling.
 
 #[test]
 fn on_crash_still_works() {
@@ -1230,6 +1232,9 @@ fn on_crash_still_works() {
 
 #[test]
 fn on_upgrade_attribute_compile_errors() {
+    // `upgrade` left the `#[on(..)]` hook-kind list (HEW-SPEC-2026 §12.6):
+    // `#[on(upgrade)]` is rejected the same way as any other unrecognised
+    // hook kind, not through a bespoke reserved-attribute diagnostic.
     let source = r"
         actor Worker {
             let count: i32;
@@ -1246,8 +1251,10 @@ fn on_upgrade_attribute_compile_errors() {
     let error = output
         .errors
         .iter()
-        .find(|e| matches!(&e.kind, TypeErrorKind::OnUpgradeNotYetWired))
-        .expect("`#[on(upgrade)]` should produce OnUpgradeNotYetWired");
+        .find(|e| {
+            matches!(&e.kind, TypeErrorKind::InvalidOperation) && e.message.contains("on(upgrade)")
+        })
+        .expect("`#[on(upgrade)]` should be rejected as an unrecognised lifecycle hook");
     let attr_start = source
         .find("#[on(upgrade)]")
         .expect("fixture should contain upgrade attribute");
@@ -1257,10 +1264,10 @@ fn on_upgrade_attribute_compile_errors() {
         "diagnostic should point at the `#[on(upgrade)]` attribute"
     );
     assert!(
-        error.message.contains("reserved")
-            && error.message.contains("not supported")
-            && error.message.contains("remove the attribute"),
-        "diagnostic should explain that the hook is reserved/unsupported and advise removal: {:?}",
+        error.message.contains("not a recognised")
+            && error.message.contains("start")
+            && error.message.contains("stop"),
+        "diagnostic should explain the hook kind is unrecognised and list the valid kinds: {:?}",
         output.errors
     );
 }
@@ -1292,6 +1299,9 @@ fn reject_on_crash_with_extra_args() {
 
 #[test]
 fn reject_on_upgrade_with_extra_args() {
+    // `upgrade` is no longer a recognised hook kind at all (HEW-SPEC-2026
+    // §12.6), so `#[on(upgrade, v2)]` fails the same way `#[on(upgrade)]`
+    // does — the unrecognised-kind check runs before any extra-args check.
     let output = typecheck(
         r"
         actor Worker {
@@ -1307,8 +1317,10 @@ fn reject_on_upgrade_with_extra_args() {
         output
             .errors
             .iter()
-            .any(|e| matches!(&e.kind, TypeErrorKind::OnUpgradeNotYetWired)),
-        "`#[on(upgrade, …)]` should fail closed before runtime wiring lands: {:?}",
+            .any(|e| matches!(&e.kind, TypeErrorKind::InvalidOperation)
+                && e.message.contains("on(upgrade)")
+                && e.message.contains("not a recognised")),
+        "`#[on(upgrade, …)]` should be rejected as an unrecognised hook kind: {:?}",
         output.errors
     );
 }

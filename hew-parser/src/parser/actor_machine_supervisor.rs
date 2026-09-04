@@ -63,27 +63,10 @@ impl Parser<'_> {
             if doc_comment.is_none() {
                 doc_comment = self.collect_doc_comments();
             }
-            self.reject_resource_marker_attributes(&attrs);
-
-            // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
-            // methods — not on actor body members (init, receive fn,
-            // receive gen fn, or inherent methods).
-            for attr in &attrs {
-                if attr.name == "extern_symbol" {
-                    self.error_at(
-                        "`#[extern_symbol]` is only valid on `fn` declarations inside an \
-                         `extern \"C\"` block or an `impl` block; actor members cannot \
-                         bind to a runtime C-ABI symbol"
-                            .to_string(),
-                        attr.span.clone(),
-                    );
-                }
-            }
 
             if self.peek() == Some(&Token::Init) {
-                if !attrs.is_empty() {
-                    self.error("attributes are not supported on init blocks".to_string());
-                }
+                // No attribute is legal on an `init` block.
+                self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
                 self.expect(&Token::LeftParen)?;
                 let params = self.parse_params();
@@ -91,6 +74,7 @@ impl Parser<'_> {
                 let body = self.parse_block()?;
                 init = Some(ActorInit { params, body });
             } else if self.peek() == Some(&Token::Receive) {
+                self.validate_attributes_for(&attrs, AttrPosition::ActorReceiveFn);
                 let recv_start = self.peek_span().start;
                 self.advance();
                 let is_generator = if self.eat(&Token::Gen) {
@@ -140,18 +124,11 @@ impl Parser<'_> {
                 // permitted on plain `fn` declarations inside an actor body.
                 // All other attributes on actor methods are rejected: they
                 // belong on `receive fn` declarations.
-                let mut hook_attrs = Vec::new();
-                let mut other_attrs = Vec::new();
-                for attr in attrs {
-                    if is_lifecycle_hook_attr(&attr.name) {
-                        hook_attrs.push(attr);
-                    } else {
-                        other_attrs.push(attr);
-                    }
-                }
-                if !other_attrs.is_empty() {
-                    self.error("attributes are not supported on actor methods; use them on receive fn declarations".to_string());
-                }
+                self.validate_attributes_for(&attrs, AttrPosition::ActorMemberFn);
+                let hook_attrs: Vec<_> = attrs
+                    .into_iter()
+                    .filter(|attr| is_lifecycle_hook_attr(&attr.name))
+                    .collect();
                 let fn_start = self.peek_span().start;
                 self.advance();
                 if let Some(mut method) =
@@ -165,9 +142,7 @@ impl Parser<'_> {
                     self.skip_to_actor_item_boundary();
                 }
             } else if self.peek() == Some(&Token::Let) {
-                if !attrs.is_empty() {
-                    self.error("attributes are not supported on field declarations".to_string());
-                }
+                self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
@@ -189,6 +164,7 @@ impl Parser<'_> {
                     doc_comment,
                 });
             } else if self.peek() == Some(&Token::Var) {
+                self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
@@ -210,6 +186,7 @@ impl Parser<'_> {
                     doc_comment,
                 });
             } else if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "mailbox") {
+                self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 self.advance();
                 if let Some(Token::Integer(n)) = self.peek() {
                     if let Some(cap) = parse_int_literal(n)
@@ -227,6 +204,7 @@ impl Parser<'_> {
                 }
                 self.eat(&Token::Semicolon);
             } else if self.peek_is_field_decl() {
+                self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;

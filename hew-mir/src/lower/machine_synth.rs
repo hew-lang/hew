@@ -485,7 +485,7 @@ fn lower_actor_init_handler(
 )]
 #[allow(
     clippy::too_many_lines,
-    reason = "each lifecycle hook kind (Start, Stop, Crash, Upgrade) needs its own arm; extracting would not reduce conceptual complexity"
+    reason = "each lifecycle hook kind (Start, Stop, Crash, Exit, Down) needs its own arm; extracting would not reduce conceptual complexity"
 )]
 fn lower_actor_lifecycle_handlers(
     actor: &HirActorDecl,
@@ -1168,34 +1168,9 @@ fn lower_actor_lifecycle_handlers(
                     ActorHandlerKind::Down,
                 ));
             }
-            HirLifecycleHookKind::Upgrade => push_lifecycle_not_wired_diagnostic(
-                diagnostics,
-                &actor.name,
-                &hook.name,
-                "OnUpgradeNotYetWired",
-                "upgrade",
-                "hot-upgrade lifecycle invocation is pending explicit ratification",
-            ),
         }
     }
     lowered
-}
-fn push_lifecycle_not_wired_diagnostic(
-    diagnostics: &mut Vec<MirDiagnostic>,
-    actor_name: &str,
-    hook_name: &str,
-    diagnostic_name: &str,
-    hook_kind: &str,
-    reason: &str,
-) {
-    diagnostics.push(MirDiagnostic {
-        kind: MirDiagnosticKind::UnsupportedNode {
-            reason: format!("{diagnostic_name}: #[on({hook_kind})] is not wired"),
-        },
-        note: format!(
-            "`#[on({hook_kind})]` hook `{actor_name}.{hook_name}` would silently never run; {reason}"
-        ),
-    });
 }
 /// The `$`-mangled symbol base for an actor's native symbols.
 ///

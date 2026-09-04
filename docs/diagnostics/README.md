@@ -60,12 +60,13 @@ them.
 | `E_VISIBILITY_PRIVATE`, `E_VISIBILITY_PACKAGE` | A cross-module reference to a private or package item.                                                                        |
 | `E_MODULE_NOT_FOUND`                           | An `import` no search path resolves.                                                                                          |
 | `E_GEN_RETURN_SPELLING`                        | A `gen fn` return type spelling the generator handle (`Generator<Y, R>`) instead of the yield type `Y` (HEW-SPEC-2026 §4.12). |
+| `E_UNKNOWN_ATTRIBUTE`                          | An attribute whose name is not in the closed table of HEW-SPEC-2026 §12.6, or that appears in a position the table does not list for it — on a type declaration, function, parameter, field, actor member, or `impl` block alike. Supersedes the retired `E_UNKNOWN_TYPE_MARKER`. |
 
 The remaining v0.6.0 surface codes are named by the decision that introduces
 them, and their rule lives in the spec section that decision writes — not
 here. Each row is added by the lane that lands the refusal:
 `E_IS_VALUE_TYPE`, `E_OPAQUE_MESSAGE_PAYLOAD`, `E_CALLABLE_MESSAGE_PAYLOAD`,
-`E_USE_AFTER_SEND`, `E_UNKNOWN_ATTRIBUTE`, `E_RESERVED_HANDLER_NAME`,
+`E_USE_AFTER_SEND`, `E_RESERVED_HANDLER_NAME`,
 `E_ACTOR_CONTEXT_REQUIRED`, `E_BREAK_VALUE`, `E_SCOPE_IS_STATEMENT`,
 `E_NO_ASYNC_FN`, `E_NO_ASYNC_GEN`,
 `E_FOR_STREAM_NEEDS_AWAIT`, `E_AWAIT_NOT_STREAM`.

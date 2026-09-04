@@ -2008,6 +2008,7 @@ pub(crate) fn get_or_emit_eq_thunk<'ctx>(
     elem_ty: BasicTypeEnum<'ctx>,
     resolved_ty: Option<&ResolvedTy>,
 ) -> CodegenResult<FunctionValue<'ctx>> {
+    let (user_eq_impl, _) = selected_collection_impls(fn_ctx, resolved_ty);
     let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
     let key = eq_thunk_struct_key(elem_ty);
     let resolved_key = eq_thunk_resolved_key(resolved_ty);
@@ -2034,8 +2035,6 @@ pub(crate) fn get_or_emit_eq_thunk<'ctx>(
     let saved_block = fn_ctx.builder.get_insert_block();
 
     let entry_bb = ctx.append_basic_block(func, "entry");
-    let ret_true_bb = ctx.append_basic_block(func, "eq_thunk_ret_true");
-    let ret_false_bb = ctx.append_basic_block(func, "eq_thunk_ret_false");
 
     fn_ctx.builder.position_at_end(entry_bb);
     let lhs = func
@@ -2047,6 +2046,66 @@ pub(crate) fn get_or_emit_eq_thunk<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("eq_thunk: missing rhs param".into()))?
         .into_pointer_value();
 
+    if let Some(symbol) = user_eq_impl {
+        let selected = *fn_ctx.fn_symbols.get(symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "checker selected user Eq implementation `{symbol}`, but codegen has no function symbol"
+            ))
+        })?;
+        let (callee, return_ty, returns_unit) = selected.real(symbol, "user Eq thunk")?;
+        let BasicTypeEnum::IntType(return_ty) = return_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "user Eq implementation `{symbol}` does not return bool"
+            )));
+        };
+        if returns_unit {
+            return Err(CodegenError::FailClosed(format!(
+                "user Eq implementation `{symbol}` does not return bool"
+            )));
+        }
+        let lhs_value = fn_ctx
+            .builder
+            .build_load(elem_ty, lhs, "user_eq_lhs")
+            .llvm_ctx("user Eq thunk lhs load")?;
+        let rhs_value = fn_ctx
+            .builder
+            .build_load(elem_ty, rhs, "user_eq_rhs")
+            .llvm_ctx("user Eq thunk rhs load")?;
+        let call = fn_ctx
+            .builder
+            .build_call(
+                callee,
+                &[lhs_value.into(), rhs_value.into()],
+                "user_eq_call",
+            )
+            .llvm_ctx("user Eq thunk call")?;
+        let result = call
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!("user Eq implementation `{symbol}` returned void"))
+            })?
+            .into_int_value();
+        let result = if return_ty.get_bit_width() < 32 {
+            fn_ctx
+                .builder
+                .build_int_z_extend(result, i32_ty, "user_eq_i32")
+                .llvm_ctx("user Eq thunk result extension")?
+        } else {
+            result
+        };
+        fn_ctx
+            .builder
+            .build_return(Some(&result))
+            .llvm_ctx("user Eq thunk return")?;
+        if let Some(bb) = saved_block {
+            fn_ctx.builder.position_at_end(bb);
+        }
+        return Ok(func);
+    }
+
+    let ret_true_bb = ctx.append_basic_block(func, "eq_thunk_ret_true");
+    let ret_false_bb = ctx.append_basic_block(func, "eq_thunk_ret_false");
     emit_eq_thunk_body(
         fn_ctx,
         elem_ty,
@@ -2880,11 +2939,43 @@ fn emit_hash_thunk_body<'ctx>(
 /// is preserved: the dedup key embeds the LLVM struct identity (which
 /// includes the Hew type name), so two records with identical (size,
 /// align) but different shapes emit two distinct thunks.
+fn selected_collection_impls<'a>(
+    fn_ctx: &'a FnCtx<'_, '_>,
+    resolved_ty: Option<&ResolvedTy>,
+) -> (Option<&'a str>, Option<&'a str>) {
+    let Some(ResolvedTy::Named { name, .. }) = resolved_ty else {
+        return (None, None);
+    };
+    if let Some(fact) = fn_ctx.hashmap_lowering_facts.iter().find(|fact| {
+        matches!(
+            &fact.abi,
+            hew_types::HashMapAbi::LayoutKey { key_record_name, .. }
+                if key_record_name == name
+        )
+    }) {
+        return (fact.user_eq_impl.as_deref(), fact.user_hash_impl.as_deref());
+    }
+    fn_ctx
+        .hashset_lowering_facts
+        .iter()
+        .find(|fact| {
+            matches!(
+                &fact.abi,
+                hew_types::HashSetAbi::Layout { elem_record_name }
+                    if elem_record_name == name
+            )
+        })
+        .map_or((None, None), |fact| {
+            (fact.user_eq_impl.as_deref(), fact.user_hash_impl.as_deref())
+        })
+}
+
 pub(crate) fn get_or_emit_hash_thunk<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     elem_ty: BasicTypeEnum<'ctx>,
     resolved_ty: Option<&ResolvedTy>,
 ) -> CodegenResult<FunctionValue<'ctx>> {
+    let (_, user_hash_impl) = selected_collection_impls(fn_ctx, resolved_ty);
     let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
     let key = eq_thunk_struct_key(elem_ty);
     let name = format!("__hew_hash_thunk_{size}_{align}_{key}");
@@ -2903,8 +2994,58 @@ pub(crate) fn get_or_emit_hash_thunk<'ctx>(
     let saved_block = fn_ctx.builder.get_insert_block();
 
     let entry_bb = ctx.append_basic_block(func, "entry");
-    let exit_bb = ctx.append_basic_block(func, "hash_thunk_exit");
     fn_ctx.builder.position_at_end(entry_bb);
+
+    let key_ptr = func
+        .get_nth_param(0)
+        .ok_or_else(|| CodegenError::FailClosed("hash_thunk: missing key param".into()))?
+        .into_pointer_value();
+
+    if let Some(symbol) = user_hash_impl {
+        let selected = *fn_ctx.fn_symbols.get(symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "checker selected user Hash implementation `{symbol}`, but codegen has no function symbol"
+            ))
+        })?;
+        let (callee, return_ty, returns_unit) = selected.real(symbol, "user Hash thunk")?;
+        let BasicTypeEnum::IntType(return_ty) = return_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "user Hash implementation `{symbol}` does not return i64"
+            )));
+        };
+        if returns_unit || return_ty.get_bit_width() != 64 {
+            return Err(CodegenError::FailClosed(format!(
+                "user Hash implementation `{symbol}` does not return i64"
+            )));
+        }
+        let key = fn_ctx
+            .builder
+            .build_load(elem_ty, key_ptr, "user_hash_key")
+            .llvm_ctx("user Hash thunk key load")?;
+        let call = fn_ctx
+            .builder
+            .build_call(callee, &[key.into()], "user_hash_call")
+            .llvm_ctx("user Hash thunk call")?;
+        let hash = call
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "user Hash implementation `{symbol}` returned void"
+                ))
+            })?
+            .into_int_value();
+        fn_ctx
+            .builder
+            .build_return(Some(&hash))
+            .llvm_ctx("user Hash thunk return")?;
+        if let Some(bb) = saved_block {
+            fn_ctx.builder.position_at_end(bb);
+        }
+        return Ok(func);
+    }
+
+    let exit_bb = ctx.append_basic_block(func, "hash_thunk_exit");
 
     // FNV-1a 64-bit offset basis.
     let acc_slot = fn_ctx
@@ -2915,11 +3056,6 @@ pub(crate) fn get_or_emit_hash_thunk<'ctx>(
         .builder
         .build_store(acc_slot, i64_ty.const_int(0xcbf29ce484222325_u64, false))
         .llvm_ctx("hash_thunk init store")?;
-
-    let key_ptr = func
-        .get_nth_param(0)
-        .ok_or_else(|| CodegenError::FailClosed("hash_thunk: missing key param".into()))?
-        .into_pointer_value();
 
     emit_hash_thunk_body(fn_ctx, elem_ty, resolved_ty, key_ptr, acc_slot)?;
 

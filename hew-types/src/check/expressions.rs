@@ -5134,9 +5134,9 @@ impl Checker {
         // `impl Ord`/`impl PartialOrd` is still honoured (D340, same
         // dispatch mechanism as Eq, no codegen thunk involved — HIR emits a
         // call to the resolved `lt` method); absent that, every aggregate
-        // ordering comparison reports the Limitation-channel
-        // `E_LIMIT_DERIVED_ORD` instead of a plain `InvalidOperation`,
-        // whether or not its fields are themselves ordered.
+        // ordering comparison that is structurally derivable reports the
+        // Limitation-channel `E_LIMIT_DERIVED_ORD`. A shape with an unordered
+        // member does not derive the trait and remains an ordinary user error.
         if matches!(
             op,
             BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
@@ -5259,17 +5259,29 @@ impl Checker {
             op,
             BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
         ) {
-            // No user impl (the bypass above already returned for that case)
-            // and no structural ordering codegen exists for aggregates
-            // (see the comment on the bypass above) — Limitation, not User:
-            // this is legal Hew the compiler cannot lower yet, not a program
-            // error.
             let type_name = match &unsupported {
                 UnsupportedComparison::Record { type_name, .. }
                 | UnsupportedComparison::PayloadEnum { type_name, .. }
                 | UnsupportedComparison::Tuple { type_name, .. } => type_name.clone(),
                 UnsupportedComparison::EnumOrdering(name) => name.clone(),
             };
+            if !self
+                .registry
+                .implements_marker(left_resolved, MarkerTrait::PartialOrd)
+            {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    &span,
+                    format!(
+                        "`{op}` is not available for `{type_name}` because the type does not \
+                         derive `PartialOrd`; provide a user `impl Ord` or `impl PartialOrd`"
+                    ),
+                );
+                return;
+            }
+            // No user impl (the bypass above already returned) and the type
+            // does derive ordering, but no structural lexicographic lowering
+            // exists yet. This is a compiler limitation, not a program error.
             self.report_error(
                 TypeErrorKind::DerivedOrdUnavailable {
                     type_name: type_name.clone(),
@@ -5358,7 +5370,7 @@ impl Checker {
     /// `record_trait_impl`/`record_trait_impl_methods` still run
     /// unconditionally for any `impl` with a trait bound, so the fact is
     /// there to read.
-    fn has_user_trait_impl(&self, type_name: &str, trait_name: &str) -> bool {
+    pub(super) fn has_user_trait_impl(&self, type_name: &str, trait_name: &str) -> bool {
         self.trait_impls_set
             .contains(&(type_name.to_string(), trait_name.to_string()))
     }

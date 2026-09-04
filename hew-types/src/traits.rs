@@ -691,9 +691,6 @@ impl TraitRegistry {
         if marker == MarkerTrait::Num {
             return ty.is_numeric();
         }
-        if marker == MarkerTrait::PartialOrd {
-            return ty.is_numeric();
-        }
         match ty {
             // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug.
             // NOT Resource: primitives own no OS/runtime resource and need no drop close.
@@ -742,6 +739,7 @@ impl TraitRegistry {
                     | MarkerTrait::Clone
                     | MarkerTrait::Eq
                     | MarkerTrait::Ord
+                    | MarkerTrait::PartialOrd
                     | MarkerTrait::Hash
                     | MarkerTrait::Display
                     | MarkerTrait::Debug
@@ -945,7 +943,10 @@ impl TraitRegistry {
                 // but NOT Copy or Frozen (heap-allocated, mutable)
                 if builtin.is_some_and(BuiltinType::is_collection) {
                     return match marker {
-                        MarkerTrait::Copy | MarkerTrait::Frozen => false,
+                        MarkerTrait::Copy
+                        | MarkerTrait::Frozen
+                        | MarkerTrait::Ord
+                        | MarkerTrait::PartialOrd => false,
                         _ => args
                             .iter()
                             .all(|a| self.implements_marker_guarded(a, marker, visiting)),

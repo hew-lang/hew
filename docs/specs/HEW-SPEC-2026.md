@@ -1331,10 +1331,11 @@ to for that type.
   is the operator that does (§12.2).
 
 > **Limitation at edition 2026 (`E_LIMIT_DERIVED_ORD`, Limitation channel).**
-> The derived `Ord`/`PartialOrd` for records and enums is not yet available to a
-> generic bound, so `T: Ord` does not resolve for a user type and the refusal
-> reads "type `T` does not implement trait `Ord`". Use an explicit comparator
-> (`sort_by`) or a user `impl Ord` until the derive reaches generic bounds.
+> A record, enum, or tuple whose members derive ordering is legal, but its
+> lexicographic comparison lowering is not implemented yet. Direct ordering
+> reports `E_LIMIT_DERIVED_ORD`; use an explicit comparator (`sort_by`) or a
+> user `impl Ord`/`impl PartialOrd`. A shape with an unordered member does not
+> derive ordering and receives an ordinary type error instead.
 
 **The three receivers (normative):**
 

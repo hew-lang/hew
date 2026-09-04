@@ -509,11 +509,26 @@ impl Checker {
                     // (Eligible) or a diagnostic (ineligible).
                     if let Ty::Named { name, .. } = &resolved_ty {
                         let type_defs_snapshot = self.type_defs.clone();
-                        match ty_is_hash_eligible_with_resources(
-                            &resolved_ty,
-                            &type_defs_snapshot,
-                            self.registry.resource_type_names(),
-                        ) {
+                        let user_hash_impl = self
+                            .has_user_trait_impl(name, "Hash")
+                            .then(|| format!("{name}::hash"));
+                        let user_eq_impl = self
+                            .has_user_trait_impl(name, "Eq")
+                            .then(|| format!("{name}::eq"));
+                        let has_eq = user_eq_impl.is_some()
+                            || self
+                                .registry
+                                .implements_marker(&resolved_ty, MarkerTrait::Eq);
+                        let eligibility = if user_hash_impl.is_some() && has_eq {
+                            HashEligibility::Eligible
+                        } else {
+                            ty_is_hash_eligible_with_resources(
+                                &resolved_ty,
+                                &type_defs_snapshot,
+                                self.registry.resource_type_names(),
+                            )
+                        };
+                        match eligibility {
                             HashEligibility::Eligible => {
                                 let type_def = self.lookup_type_def(name);
                                 let layout =
@@ -523,8 +538,10 @@ impl Checker {
                                         })
                                     });
                                 if let Some((elem_size, elem_align)) = layout {
-                                    let fact =
+                                    let mut fact =
                                         hashset_layout_fact(name.clone(), elem_size, elem_align);
+                                    fact.user_hash_impl = user_hash_impl;
+                                    fact.user_eq_impl = user_eq_impl;
                                     self.hashset_layout_facts.insert(span_key, fact);
                                     // Fact inserted into hashset_layout_facts;
                                     // NOT inserted into lowering_facts result.
@@ -728,11 +745,27 @@ impl Checker {
                 // Collect the type_defs snapshot before borrowing self mutably below.
                 let type_defs_snapshot = self.type_defs.clone();
 
-                match ty_is_hash_eligible_with_resources(
-                    &resolved_key,
-                    &type_defs_snapshot,
-                    self.registry.resource_type_names(),
-                ) {
+                let user_hash_impl = self
+                    .has_user_trait_impl(key_name, "Hash")
+                    .then(|| format!("{key_name}::hash"));
+                let user_eq_impl = self
+                    .has_user_trait_impl(key_name, "Eq")
+                    .then(|| format!("{key_name}::eq"));
+                let has_eq = user_eq_impl.is_some()
+                    || self
+                        .registry
+                        .implements_marker(&resolved_key, MarkerTrait::Eq);
+                let eligibility = if user_hash_impl.is_some() && has_eq {
+                    HashEligibility::Eligible
+                } else {
+                    ty_is_hash_eligible_with_resources(
+                        &resolved_key,
+                        &type_defs_snapshot,
+                        self.registry.resource_type_names(),
+                    )
+                };
+
+                match eligibility {
                     HashEligibility::Eligible => {
                         let key_type_def = self.lookup_type_def(key_name);
                         let key_layout = identity_aggregate_layout(&resolved_key).or_else(|| {
@@ -755,7 +788,7 @@ impl Checker {
                                                         &type_defs_snapshot,
                                                     ) {
                                                         Some((val_size, val_align)) => {
-                                                            let fact =
+                                                            let mut fact =
                                                                         hashmap_layout_key_layout_value_fact(
                                                                             key_name.clone(),
                                                                             key_size,
@@ -764,6 +797,10 @@ impl Checker {
                                                                             val_size,
                                                                             val_align,
                                                                         );
+                                                            fact.user_hash_impl
+                                                                .clone_from(&user_hash_impl);
+                                                            fact.user_eq_impl
+                                                                .clone_from(&user_eq_impl);
                                                             new_layout_facts.push((span_key, fact));
                                                         }
                                                         None => {
@@ -808,12 +845,14 @@ impl Checker {
                                     }
                                     Ok(val_type) => {
                                         // Scalar value path.
-                                        let fact = hashmap_layout_key_fact(
+                                        let mut fact = hashmap_layout_key_fact(
                                             key_name.clone(),
                                             key_size,
                                             key_align,
                                             val_type,
                                         );
+                                        fact.user_hash_impl.clone_from(&user_hash_impl);
+                                        fact.user_eq_impl.clone_from(&user_eq_impl);
                                         new_layout_facts.push((span_key, fact));
                                     }
                                     Err(e) => {

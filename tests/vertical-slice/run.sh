@@ -1024,11 +1024,18 @@ run_accept_expect_stdout "generic_aggregate_eq"
 # deliberately disagrees with structural equality so a passing run proves
 # the user body ran, not the compiler's structural comparison.
 run_accept_expect_stdout "user_eq_impl_honoured"
+run_accept_expect_stdout "user_ord_impl_honoured"
+run_accept_expect_stdout "user_hash_impl_honoured"
 # D26/D340: no user `impl Ord`/`impl PartialOrd`, and no structural-ordering
 # codegen exists for aggregates — `<` on a record reports the
 # Limitation-channel `E_LIMIT_DERIVED_ORD`, not a plain "not supported".
 expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/derived_ord_lowering_limit.hew" \
+    "E_LIMIT_DERIVED_ORD" \
+    "derived_ord_lowering_limit"
+expect_check_fail_contains_without \
     "${ROOT}/tests/vertical-slice/reject/derived_ord_unordered_field.hew" \
+    "does not derive \`PartialOrd\`" \
     "E_LIMIT_DERIVED_ORD" \
     "derived_ord_unordered_field"
 # Arena<T> generational-index slotmap (std/arena.hew): the first stdlib

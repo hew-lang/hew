@@ -6961,6 +6961,8 @@ fn make_test_fn_ctx<'a, 'ctx>(
         runtime_unwind_block: std::cell::Cell::new(None),
         record_layouts: &harness.record_layouts,
         fn_symbols: &harness.fn_symbols,
+        hashmap_lowering_facts: &[],
+        hashset_lowering_facts: &[],
         frame_cleanup_thunks: &harness.frame_cleanup_thunks,
         machine_step_symbols: &harness.machine_step_symbols,
         lifecycle_registry: &harness.lifecycle_registry,

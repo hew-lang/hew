@@ -2194,6 +2194,11 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// is shared (read-only) — no new declarations are added during body
     /// lowering.
     pub(crate) fn_symbols: &'a FnSymbolMap<'ctx>,
+    /// Checker-selected Hash overrides carried by the existing collection
+    /// lowering facts. Codegen consumes the symbol and does not rediscover
+    /// trait implementations from emitted function names.
+    pub(crate) hashmap_lowering_facts: &'a [hew_types::HashMapLoweringFact],
+    pub(crate) hashset_lowering_facts: &'a [hew_types::HashSetLoweringFact],
     /// Exact module-scoped cache for generated typed frame-cleanup thunks.
     /// Every function borrows the same cache; generated names are allocation
     /// details and must never be used as a descriptor identity.
@@ -35827,6 +35832,8 @@ fn lower_function<'ctx>(
     fn_symbols: &FnSymbolMap<'ctx>,
     representation_loan_params_by_function: &HashMap<String, Vec<u32>>,
     param_boundary_modes_by_function: &HashMap<String, Vec<Option<ParamBoundaryMode>>>,
+    hashmap_lowering_facts: &[hew_types::HashMapLoweringFact],
+    hashset_lowering_facts: &[hew_types::HashSetLoweringFact],
     machine_step_symbols: &HashSet<String>,
     elab: &ElaboratedMirFunction,
     checked: &CheckedMirFunction,
@@ -36836,6 +36843,8 @@ fn lower_function<'ctx>(
         runtime_unwind_block: std::cell::Cell::new(None),
         record_layouts,
         fn_symbols,
+        hashmap_lowering_facts,
+        hashset_lowering_facts,
         frame_cleanup_thunks,
         machine_step_symbols,
         lifecycle_registry,
@@ -38252,6 +38261,8 @@ fn build_module_for_target<'ctx>(
             &fn_symbols,
             &representation_loan_params_by_function,
             &param_boundary_modes_by_function,
+            &pipeline.hashmap_lowering_facts,
+            &pipeline.hashset_lowering_facts,
             &machine_step_symbols,
             elab,
             checked,

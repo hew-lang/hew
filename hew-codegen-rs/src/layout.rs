@@ -3249,6 +3249,8 @@ pub(crate) fn verify_hashmap_lowering_facts_consistent(pipeline: &IrPipeline) ->
                 val: HashMapValueType::Char,
             },
             state: set_fact.state,
+            user_hash_impl: set_fact.user_hash_impl.clone(),
+            user_eq_impl: set_fact.user_eq_impl.clone(),
             key_size: set_fact.elem_size,
             key_align: set_fact.elem_align,
             val_size: None,

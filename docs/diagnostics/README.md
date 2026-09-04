@@ -43,7 +43,7 @@ same change that lands the mechanism.
 | `E_LIMIT_MAIN_CONTEXT`             | Limitation | v0.7.0     | A suspension `main` cannot carry, because `main` has no execution context in this build.                                                                                                                      |
 | `E_LIMIT_INHERENT_VAR_SELF`        | Limitation | v0.7.0     | A `var self` receiver on an inherent `impl` method. The trait form is accepted.                                                                                                                               |
 | `E_LIMIT_OPAQUE_ACTOR`             | Limitation | v0.7.0     | An `#[opaque]` value, or a `#[resource]` wrapper around one, as an actor's init field.                                                                                                                        |
-| `E_LIMIT_DERIVED_ORD`              | Limitation | v0.7.0     | A derived `Ord`/`PartialOrd` comparison the current lowering cannot generate.                                                                                                                                 |
+| `E_LIMIT_DERIVED_ORD`              | Limitation | v0.7.0     | A structurally derivable aggregate ordering comparison whose lexicographic lowering is not implemented.                                                                                                       |
 | `E_ASSOC_BOUND_UNSUPPORTED`        | Limitation | v0.7.0     | An associated-type bound in a `where` clause (`where T.Item: Bound`, §3.8.3). It parses and type-checks but never reaches method resolution, so writing it is an error rather than a bound that does nothing. |
 
 ## User-channel codes in the same family

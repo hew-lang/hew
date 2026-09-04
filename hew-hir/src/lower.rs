@@ -5919,27 +5919,12 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.diagnostics,
     );
 
-    // The language's entry rule is applied here, once: the root compilation
-    // unit's monomorphic `main` declaration. Publishing the resolved `DefId`
-    // is what lets SIR and the strict driver select an entry callable without
-    // ever comparing a declaration path or an emitted symbol against "main".
-    let entry_declaration = items.iter().find_map(|item| match item {
-        HirItem::Function(function)
-            if function.name == "main"
-                && function.type_params.is_empty()
-                && ctx.root_item_ids.contains(&function.id) =>
-        {
-            Some(function.declaration.clone())
-        }
-        _ => None,
-    });
-
     let mut module = HirModule {
         items,
         produced_value_facts: HashMap::new(),
         diagnostic_source_modules,
         root_item_ids: ctx.root_item_ids,
-        entry_declaration,
+        entry_exit_plan: type_check_output.entry_exit_plan.clone(),
         caller_visible_param_projections: ctx.caller_visible_param_projections,
         wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
         type_classes: ctx.type_classes,
@@ -6178,12 +6163,10 @@ fn validate_opaque_resource_close(
                 candidate.release_param_index,
                 receiver,
             );
-            exact_wrapper
-                .then(|| close.name.clone())
-                .ok_or_else(|| {
-                    "canonical close must be one unconditional straight-line exact release call"
-                        .to_string()
-                })
+            exact_wrapper.then(|| close.name.clone()).ok_or_else(|| {
+                "canonical close must be one unconditional straight-line exact release call"
+                    .to_string()
+            })
         }
         (closes, releases) => Err(format!(
             "expected one unit close and one owner-module release declaration; found {} close(s), {} release declaration(s)",
@@ -7625,6 +7608,10 @@ struct LowerCtx {
     /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
+    /// Checker-authoritative closed ownership classification for each concrete
+    /// type instance. HIR projects this fact but does not derive a second
+    /// ownership answer from type shape.
+    type_facts: std::collections::BTreeMap<hew_types::TypeInstanceKey, hew_types::TypeFacts>,
     interpolation_display_types: HashMap<SpanKey, Ty>,
     /// `==`/`!=`/`<`/`<=`/`>`/`>=` binary expressions dispatching to a user
     /// trait impl instead of the structural default (D340). Consulted at
@@ -8666,6 +8653,7 @@ impl LowerCtx {
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
+            type_facts: tc_output.type_facts.clone(),
             interpolation_display_types: tc_output.interpolation_display_types.clone(),
             user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
             produced_value_ownership: tc_output.produced_value_ownership.clone(),
@@ -18256,10 +18244,18 @@ impl LowerCtx {
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         let mut lowered = self.lower_expr_without_root_fact(expr, intent);
         let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
-        if normalized_ty != lowered.ty {
-            lowered.value_class = ValueClass::of_ty(&normalized_ty, &self.type_classes);
-            lowered.ty = normalized_ty;
-        }
+        lowered.value_class = self
+            .checked_ty(&expr.1)
+            .and_then(|ty| self.type_facts.get(&hew_types::TypeInstanceKey(ty.clone())))
+            .map_or(ValueClass::Unknown, |facts| match facts.class {
+                hew_types::ValueClass::BitCopy => ValueClass::BitCopy,
+                hew_types::ValueClass::View => ValueClass::View,
+                hew_types::ValueClass::CowValue => ValueClass::CowValue,
+                hew_types::ValueClass::PersistentShare => ValueClass::PersistentShare,
+                hew_types::ValueClass::AffineResource => ValueClass::AffineResource,
+                hew_types::ValueClass::Linear => ValueClass::Linear,
+            });
+        lowered.ty = normalized_ty;
         if !self
             .generated_produced_value_facts
             .contains_key(&lowered.site)

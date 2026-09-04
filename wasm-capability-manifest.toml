@@ -30,7 +30,7 @@
 #   - enum_variant values are unique and stable.
 #   - native_only_modules/native_only_functions are unique and belong only to
 #     reject rows. Function entries use canonical qualified `module.function`
-#     identity (for example `std.fs.try_read`).
+#     identity (for example `std.fs.read`).
 
 manifest_version = 1
 
@@ -308,7 +308,7 @@ native_only_modules = ["stream"]
 id = "filesystem-streams"
 enum_variant = "FilesystemStreams"
 label = "File-backed stream operations"
-prose_label = "`std.fs.try_read` (file-stream ownership path)"
+prose_label = "`std.fs.read` (file-stream ownership path)"
 reason = "the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols"
 checker = "reject"
 runtime = "unavailable"
@@ -316,7 +316,7 @@ runtime_status = "File-backed stream runtime is native-only; path-independent fs
 categories = ["stdlib", "filesystem"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(filesystem-streams):"
-native_only_functions = ["std.fs.try_read"]
+native_only_functions = ["std.fs.read"]
 
 [[feature]]
 id = "http-client"

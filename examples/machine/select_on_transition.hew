@@ -74,7 +74,10 @@ actor Observer {
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(8);
+    let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(8) {
+        .Ok(pair) => pair,
+        .Err(err) => panic(f"channel.new failed: {err}"),
+    };
     let obs = spawn Observer;
     obs.watch(rx);
     let owner = spawn Owner;

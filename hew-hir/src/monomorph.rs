@@ -275,12 +275,24 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
             args,
             builtin,
             is_opaque,
-        } => ResolvedTy::Named {
-            name,
-            args: args.into_iter().map(shorten_named_arg_qualifiers).collect(),
-            builtin,
-            is_opaque,
-        },
+        } => {
+            // Channel endpoint message types are semantic parameters, but the
+            // handles themselves are opaque pointer words. Erase those
+            // parameters only while deriving a containing nominal's layout
+            // key so a source declaration's bare endpoint and a checked
+            // `Sender<T>` / `Receiver<T>` call share one ABI identity.
+            let args = if builtin.is_some_and(hew_types::BuiltinType::is_channel_handle) {
+                Vec::new()
+            } else {
+                args.into_iter().map(shorten_named_arg_qualifiers).collect()
+            };
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                is_opaque,
+            }
+        }
         ResolvedTy::Tuple(items) => ResolvedTy::Tuple(
             items
                 .into_iter()
@@ -956,6 +968,30 @@ mod tests {
     fn mangle_module_qualified_encodes_colons() {
         let ty = ResolvedTy::named_user("widgets::Label", vec![]);
         assert_eq!(mangle("describe", &[ty]), "describe$$widgets$mLabel");
+    }
+
+    #[test]
+    fn result_layout_key_erases_channel_endpoint_message_types() {
+        let channel_pair = |element: Option<ResolvedTy>| {
+            let args = element.into_iter().collect::<Vec<_>>();
+            ResolvedTy::Tuple(vec![
+                ResolvedTy::named_builtin(
+                    "channel.Sender",
+                    hew_types::BuiltinType::Sender,
+                    args.clone(),
+                ),
+                ResolvedTy::named_builtin(
+                    "channel.Receiver",
+                    hew_types::BuiltinType::Receiver,
+                    args,
+                ),
+            ])
+        };
+        let result_key = |pair| mangle_layout_key("Result", &[pair, ResolvedTy::String]);
+        let bare = result_key(channel_pair(None));
+
+        assert_eq!(result_key(channel_pair(Some(ResolvedTy::I64))), bare);
+        assert_eq!(result_key(channel_pair(Some(ResolvedTy::String))), bare);
     }
 
     #[test]

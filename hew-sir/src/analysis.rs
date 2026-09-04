@@ -511,6 +511,7 @@ mod tests {
             }],
             generic_templates: Vec::new(),
             root_unit_callables: Vec::new(),
+            entry_exit_plan: None,
             entry_callable: None,
             functions: vec![function],
             type_facts: std::collections::BTreeMap::new(),

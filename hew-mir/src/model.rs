@@ -101,6 +101,8 @@ impl PointerWidth {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrPipeline {
+    /// Checker-selected process entry and its complete typed exit contract.
+    pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
     pub raw_mir: Vec<RawMirFunction>,
     pub checked_mir: Vec<CheckedMirFunction>,
     pub elaborated_mir: Vec<ElaboratedMirFunction>,

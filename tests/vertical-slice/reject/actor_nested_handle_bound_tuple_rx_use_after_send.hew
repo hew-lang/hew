@@ -16,7 +16,10 @@ actor Worker {
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) {
+        .Ok(pair) => pair,
+        .Err(err) => panic(f"channel.new failed: {err}"),
+    };
     tx.close();
     let w = spawn Worker;
     let pair = (rx, 42);

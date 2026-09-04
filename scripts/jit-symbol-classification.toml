@@ -181,6 +181,7 @@ stable = [
   "hew_arena_set_current",
   "hew_args_count",
   "hew_args_get",
+  "hew_ask_error_translate_for_public_result",
   "hew_assert",
   "hew_assert_eq_bool",
   "hew_assert_eq_f64",
@@ -6491,6 +6492,7 @@ params = [
   "borrow",
   "retain",
   "borrow",
+  "borrow",
 ]
 release-symbol = ""
 discharge-depth = "none"
@@ -6551,7 +6553,17 @@ discharge-depth = "none"
 [[ownership.contracts]]
 symbol = "hew_actor_await_send_by_id"
 result = "none"
-params = ["borrow", "borrow", "borrow", "borrow", "borrow", "retain"]
+params = ["borrow", "borrow", "borrow", "borrow", "borrow", "retain", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/internal/types.rs: translates a scalar runtime ask-error tag
+# into the scalar public Result tag domain. Neither argument nor result owns a
+# resource, and codegen is the only caller of this ABI boundary.
+[[ownership.contracts]]
+symbol = "hew_ask_error_translate_for_public_result"
+result = "none"
+params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

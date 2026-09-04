@@ -61,6 +61,7 @@ fn send_status_pipeline() -> IrPipeline {
     ];
 
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("send_probe"),

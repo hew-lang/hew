@@ -19,7 +19,10 @@ actor Reader {
 
         // Give main a moment to start listening, then connect + await a read.
         sleep(200ms);
-        let conn = net.connect(f"127.0.0.1:{port}");
+        let conn = match net.connect(f"127.0.0.1:{port}") {
+            .Ok(conn) => conn,
+            .Err(err) => panic(f"network setup failed: {err}"),
+        };
         let body = await conn.read_string();
         println(f"reader-received: {body}");
         let _ = conn.close();
@@ -27,7 +30,10 @@ actor Reader {
 }
 
 fn main() {
-    let listener = net.listen("127.0.0.1:18077");
+    let listener = match net.listen("127.0.0.1:18077") {
+        .Ok(listener) => listener,
+        .Err(err) => panic(f"network setup failed: {err}"),
+    };
     let reader = spawn Reader(port: "18077");
     reader.go(0);
     let client = listener.accept();

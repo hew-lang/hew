@@ -1,0 +1,15 @@
+enum NonError {
+    Failed(string);
+}
+
+impl Display for NonError {
+    fn fmt(self) -> string {
+        match self {
+            NonError.Failed(message) => message,
+        }
+    }
+}
+
+fn main() -> Result<(), NonError> {
+    Err(NonError.Failed("not an error"))
+}

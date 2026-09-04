@@ -13,7 +13,10 @@ import std.channel.channel;
 
 actor Slow {
     receive fn block() -> i64 {
-        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {
+            .Ok(pair) => pair,
+            .Err(_) => return 7,
+        };
         // `tx` stays in scope (never sent / closed) so the recv parks forever.
         let parked = match await rx.recv() {
             .Some(v) => v,

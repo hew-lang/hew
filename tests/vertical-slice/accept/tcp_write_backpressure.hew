@@ -19,10 +19,16 @@
 import std.net.{Listener};
 
 fn main() {
-    let listener = net.listen("127.0.0.1:0");
+    let listener = match net.listen("127.0.0.1:0") {
+        .Ok(listener) => listener,
+        .Err(_) => exit(3),
+    };
     let port = listener.local_port() as i32;
     // Producer side: connect, then accept the peer but never read from it.
-    let conn = net.connect(f"127.0.0.1:{port}");
+    let conn = match net.connect(f"127.0.0.1:{port}") {
+        .Ok(conn) => conn,
+        .Err(_) => exit(3),
+    };
     let peer = listener.accept();
     // Bound the wait so a full send buffer fails fast instead of blocking.
     let _ = conn.set_write_timeout(100);

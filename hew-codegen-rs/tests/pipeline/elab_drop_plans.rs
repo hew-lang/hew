@@ -63,6 +63,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
         }],
     };
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -251,6 +252,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         }],
     };
     let pipeline = IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),

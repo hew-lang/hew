@@ -11,7 +11,10 @@
 import std.channel.channel;
 
 fn relay(items: Vec<i64>) {
-    let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) = channel.new(2);
+    let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) = match channel.new(2) {
+        .Ok(pair) => pair,
+        .Err(err) => panic(f"channel.new failed: {err}"),
+    };
     tx.send(items);
     tx.close();
     match rx.try_recv() {

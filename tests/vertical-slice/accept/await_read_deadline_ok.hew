@@ -10,7 +10,10 @@ actor Reader {
     let port: i32;
     receive fn go() {
         sleep(100ms);
-        let conn = net.connect(f"127.0.0.1:{port}");
+        let conn = match net.connect(f"127.0.0.1:{port}") {
+            .Ok(conn) => conn,
+            .Err(_) => return,
+        };
         let code = match await conn.read() | after 5s {
             .Ok(_body) => 42,
             .Err(_e) => 7,
@@ -20,7 +23,10 @@ actor Reader {
 }
 
 fn main() {
-    let listener = net.listen("127.0.0.1:0");
+    let listener = match net.listen("127.0.0.1:0") {
+        .Ok(listener) => listener,
+        .Err(_) => return,
+    };
     let port = listener.local_port() as i32;
     let reader = spawn Reader(port: port);
     reader.go();

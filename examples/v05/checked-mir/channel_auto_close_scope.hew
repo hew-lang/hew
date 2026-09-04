@@ -5,7 +5,10 @@
 import std.channel.channel;
 
 fn main() {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {
+        .Ok(pair) => pair,
+        .Err(err) => panic(f"channel.new failed: {err}"),
+    };
     tx.send("ready");
     match rx.try_recv() {
         .Some(msg) => println(msg),

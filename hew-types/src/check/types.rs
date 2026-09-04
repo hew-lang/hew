@@ -204,6 +204,65 @@ pub struct ExternMethodCallIdentity {
     pub trusted_compiled_stdlib: bool,
 }
 
+/// Integer process-exit representation selected for a source entry function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntryIntegerType {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    Isize,
+    Usize,
+}
+
+impl EntryIntegerType {
+    pub(super) fn from_ty(ty: &Ty) -> Option<Self> {
+        match ty {
+            Ty::I8 => Some(Self::I8),
+            Ty::I16 => Some(Self::I16),
+            Ty::I32 => Some(Self::I32),
+            Ty::I64 => Some(Self::I64),
+            Ty::U8 => Some(Self::U8),
+            Ty::U16 => Some(Self::U16),
+            Ty::U32 => Some(Self::U32),
+            Ty::U64 => Some(Self::U64),
+            Ty::Isize => Some(Self::Isize),
+            Ty::Usize => Some(Self::Usize),
+            _ => None,
+        }
+    }
+}
+
+/// Concrete `Display::fmt` implementation selected for a `Result` entry error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryDisplayTarget {
+    pub declaration: crate::DefId,
+    pub type_args: Vec<ResolvedTy>,
+}
+
+/// Closed process-exit action selected by the checker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryExitAction {
+    Unit,
+    Integer(EntryIntegerType),
+    Result {
+        result_ty: ResolvedTy,
+        error_ty: ResolvedTy,
+        display: EntryDisplayTarget,
+    },
+}
+
+/// Typed process-entry exit plan keyed by the selected source declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryExitPlan {
+    pub entry: crate::DefId,
+    pub action: EntryExitAction,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
@@ -443,6 +502,8 @@ pub struct TypeCheckOutput {
     /// exact declaration occurrence; no downstream canonical-string alias is
     /// published.
     pub identity: crate::IdentityView,
+    /// The checker-selected process entry and its complete exit contract.
+    pub entry_exit_plan: Option<EntryExitPlan>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B):
     /// one C symbol resolves under exactly one [`crate::extern_table::ExternContract`],
     /// minted at the first declaration; later declarations must agree and
@@ -1341,6 +1402,7 @@ impl Default for TypeCheckOutput {
             type_defs: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
             identity: crate::IdentityView::default(),
+            entry_exit_plan: None,
             extern_contracts: crate::extern_table::ExternTable::new(),
             fn_sigs: HashMap::new(),
             direct_call_targets: HashMap::new(),

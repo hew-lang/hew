@@ -66,6 +66,7 @@ fn pipeline_with_call_runtime_abi_parts(
         },
     ];
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("probe"),

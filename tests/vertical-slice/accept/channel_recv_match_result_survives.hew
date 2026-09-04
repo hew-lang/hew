@@ -15,7 +15,10 @@
 import std.channel.channel;
 
 fn main() {
-    let (tx1, rx1): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    let (tx1, rx1): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+        .Ok(pair) => pair,
+        .Err(_) => return,
+    };
     tx1.send("direct");
     tx1.close();
     let direct = match rx1.recv() {
@@ -25,7 +28,10 @@ fn main() {
     println(f"direct: [{direct}]");
     rx1.close();
 
-    let (tx2, rx2): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    let (tx2, rx2): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+        .Ok(pair) => pair,
+        .Err(_) => return,
+    };
     tx2.send("via local");
     tx2.close();
     let carrier = rx2.recv();
@@ -38,7 +44,10 @@ fn main() {
 
     // `try_recv` is the non-suspending sibling of `recv` and reaches the same
     // codegen intercept, so it lost the same payload before the fix.
-    let (tx3, rx3): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    let (tx3, rx3): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+        .Ok(pair) => pair,
+        .Err(_) => return,
+    };
     tx3.send("try");
     tx3.close();
     let attempted = match rx3.try_recv() {

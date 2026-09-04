@@ -11,7 +11,10 @@ actor Writer {
 }
 
 fn main() {
-    let (sink, input) = stream.pipe(4);
+    let (sink, input) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(_) => panic("stream pipe failed"),
+    };
     let w = spawn Writer(sink: sink);
     w.put("hello");
     match input.recv() {

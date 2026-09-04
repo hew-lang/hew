@@ -1,4 +1,4 @@
-//! Entry selection is a join on HIR's resolved entry declaration.
+//! Entry selection is a join on the checker-authored plan's declaration.
 //!
 //! These tests move the fact away from the declaration spelled `main` and
 //! prove SIR follows the fact, then remove the fact entirely and prove SIR
@@ -6,7 +6,10 @@
 
 use hew_hir::{lower_program_host_target, HirItem, HirModule, ResolutionCtx};
 use hew_sir::{lower_module, verify_module};
-use hew_types::{module_registry::ModuleRegistry, Checker, DefId};
+use hew_types::{
+    module_registry::ModuleRegistry, Checker, DefId, EntryExitAction, EntryExitPlan,
+    EntryIntegerType,
+};
 
 fn lower_hir(source: &str) -> (HirModule, hew_types::TypeCheckOutput) {
     let parsed = hew_parser::parse(source);
@@ -39,6 +42,13 @@ fn declaration_of(module: &HirModule, name: &str) -> DefId {
         .unwrap_or_else(|| panic!("source must define `{name}`"))
 }
 
+fn integer_entry(entry: DefId) -> EntryExitPlan {
+    EntryExitPlan {
+        entry,
+        action: EntryExitAction::Integer(EntryIntegerType::I64),
+    }
+}
+
 const TWO_ROOT_FUNCTIONS: &str = r"
     fn start() -> i64 {
         7
@@ -50,10 +60,10 @@ const TWO_ROOT_FUNCTIONS: &str = r"
     ";
 
 #[test]
-fn hir_publishes_the_root_entry_declaration_once() {
+fn hir_carries_the_checker_entry_plan_once() {
     let (hir, _type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
     assert_eq!(
-        hir.entry_declaration.as_ref(),
+        hir.entry_exit_plan.as_ref().map(|plan| &plan.entry),
         Some(&declaration_of(&hir, "main")),
         "HIR applies the language entry rule and publishes the resolved declaration"
     );
@@ -62,7 +72,7 @@ fn hir_publishes_the_root_entry_declaration_once() {
 #[test]
 fn an_entry_fact_naming_a_non_main_declaration_selects_and_lowers_that_callable() {
     let (mut hir, type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
-    hir.entry_declaration = Some(declaration_of(&hir, "start"));
+    hir.entry_exit_plan = Some(integer_entry(declaration_of(&hir, "start")));
 
     let lowered = lower_module(&hir, &type_facts);
     let entry = lowered
@@ -115,7 +125,7 @@ fn the_unmodified_entry_fact_still_selects_main() {
 #[test]
 fn removing_the_entry_fact_leaves_no_entry_callable_to_rediscover_by_name() {
     let (mut hir, type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
-    hir.entry_declaration = None;
+    hir.entry_exit_plan = None;
 
     let lowered = lower_module(&hir, &type_facts);
     assert!(
@@ -147,7 +157,7 @@ fn an_entry_fact_naming_a_non_root_declaration_is_rejected_by_the_verifier() {
         })
         .expect("source must define `start`");
     hir.root_item_ids.remove(&start_item);
-    hir.entry_declaration = Some(start);
+    hir.entry_exit_plan = Some(integer_entry(start));
 
     let lowered = lower_module(&hir, &type_facts);
     assert!(

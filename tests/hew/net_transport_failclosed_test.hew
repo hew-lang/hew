@@ -21,7 +21,10 @@ fn test_negative_channel_capacity_is_rejected() {
 #[test]
 #[should_panic]
 fn test_negative_channel_capacity_panics_at_legacy_boundary() {
-    let (tx, rx) = channel.new(-1);
+    let (tx, rx) = match channel.new(-1) {
+        .Ok(pair) => pair,
+        .Err(err) => panic(f"channel.new failed: {err}"),
+    };
     tx.send("unreachable");
     rx.close();
 }

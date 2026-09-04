@@ -62,6 +62,7 @@ fn pipeline_with_task_abi_call(
     ];
 
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("probe"),
@@ -172,6 +173,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         terminator: Terminator::Return,
     };
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
@@ -286,6 +288,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         terminator: Terminator::Return,
     };
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
@@ -421,6 +424,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         terminator: Terminator::Return,
     };
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![
             RawMirFunction {
                 source_origin: hew_mir::SourceOrigin::Unknown,
@@ -682,6 +686,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
     ];
     let locals = vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))];
     let pipeline = IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("probe"),

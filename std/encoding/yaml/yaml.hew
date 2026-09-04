@@ -297,13 +297,16 @@ fn parse_error_message() -> string {
         hew_yaml_last_error()
     }
 }
+
 /// Parse a YAML string into a `Value`.
 ///
 /// Returns `Err(ParseError.Invalid(message))` with the native parser message
 /// when parsing fails. Match on `ParseError.Invalid(message)` to recover the
 /// original parser message.
 pub fn parse(s: string) -> Result<Value, ParseError> {
-    let val = parse(s);
+    let val = unsafe {
+        hew_yaml_parse(s)
+    };
     if val.type_of() >= 0 {
         Ok(val)
     } else {

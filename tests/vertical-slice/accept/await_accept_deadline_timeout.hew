@@ -13,7 +13,10 @@ import std.net;
 
 actor Server {
     receive fn go() {
-        let ln = net.listen("127.0.0.1:0");
+        let ln = match net.listen("127.0.0.1:0") {
+            .Ok(listener) => listener,
+            .Err(_) => return,
+        };
         let code = match await ln.accept() | after 60ms {
             .Ok(_conn) => 42,
             .Err(e) => {

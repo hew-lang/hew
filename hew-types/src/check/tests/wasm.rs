@@ -691,8 +691,8 @@ mod wasm_rejects {
         let source = concat!(
             "import std.fs as files;\n",
             "fn main() {\n",
-            "    let _result = files.try_read(\"/dev/null\");\n",
-            "    let _producer = files.try_read;\n",
+            "    let _result = files.read(\"/dev/null\");\n",
+            "    let _producer = files.read;\n",
             "}\n",
         );
         let output = check_wasm_with_registry(source);
@@ -714,8 +714,8 @@ mod wasm_rejects {
     #[test]
     fn wasm_named_std_function_imports_preserve_exact_owner_for_calls_and_values() {
         for (binding, import) in [
-            ("try_read", "import std.fs.{ try_read };"),
-            ("read_handle", "import std.fs.{ try_read as read_handle };"),
+            ("read", "import std.fs.{ read };"),
+            ("read_handle", "import std.fs.{ read as read_handle };"),
         ] {
             let source = format!(
                 "{import}\nfn main() {{ let _result = {binding}(\"/dev/null\"); let _producer = {binding}; }}\n"
@@ -733,7 +733,7 @@ mod wasm_rejects {
                 checker
                     .import_fn_name_aliases
                     .get(&(None, 0, binding.to_string())),
-                Some(&"std.fs.try_read".to_string()),
+                Some(&"std.fs.read".to_string()),
                 "named binding `{binding}` must retain exact source identity; all bindings: {:#?}",
                 checker.import_fn_name_aliases,
             );
@@ -747,7 +747,7 @@ mod wasm_rejects {
                 .count();
             assert_eq!(
                 rejections, 2,
-                "named binding `{binding}` must preserve the std.fs.try_read policy for call and value positions: {:#?}",
+                "named binding `{binding}` must preserve the std.fs.read policy for call and value positions: {:#?}",
                 output.errors
             );
             assert!(

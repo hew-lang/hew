@@ -124,7 +124,7 @@ fn constructed_affine_collection_call(
         (ResourceMarker::Resource, Some("close".to_string())),
     );
     let module = HirModule {
-        entry_declaration: None,
+        entry_exit_plan: None,
         items: vec![HirItem::Function(HirFn {
             id: ids.item(),
             node: ids.node(),

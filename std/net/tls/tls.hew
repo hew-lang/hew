@@ -113,11 +113,6 @@ pub trait TlsHandler {
 trait TlsStreamMethods {
     /// Write raw bytes to the TLS stream.
     ///
-    /// Returns the number of bytes written, or −1 on error.
-    fn write(self, data: bytes) -> i64;
-
-    /// Write raw bytes to the TLS stream.
-    ///
     /// Returns the number of bytes written, or `Err(net.NetError)` on failure.
     fn write(self, data: bytes) -> Result<i64, net.NetError>;
 
@@ -135,7 +130,7 @@ trait TlsStreamMethods {
     /// chunk as an `on_data` actor message. When the connection closes or
     /// errors, a single `on_close` message is sent. After attach, calling
     /// `read()` produces undefined behaviour — the runtime owns the read side.
-    /// Outbound `write()` / `write()` remain valid.
+    /// Outbound `write()` remains valid.
     ///
     /// `handler` is the actor that will receive `on_data` and `on_close`.
     /// The compiler synthesises both protocol message IDs from the concrete
@@ -144,16 +139,6 @@ trait TlsStreamMethods {
 }
 
 impl TlsStreamMethods for TlsStream {
-    fn write(stream: TlsStream, data: bytes) -> i64 {
-        let result = unsafe {
-            hew_tls_write_result(stream, data)
-        };
-        if result.status == TLS_STATUS_SUCCESS {
-            result.written as i64
-        } else {
-            -1
-        }
-    }
     fn write(stream: TlsStream, data: bytes) -> Result<i64, net.NetError> {
         tls_write_result(unsafe {
             hew_tls_write_result(stream, data)
@@ -217,6 +202,7 @@ pub fn last_error() -> string {
         hew_tls_last_error()
     }
 }
+
 /// Write raw bytes to a TLS stream.
 ///
 /// Returns the number of bytes written, or `Err(net.NetError)` on failure.

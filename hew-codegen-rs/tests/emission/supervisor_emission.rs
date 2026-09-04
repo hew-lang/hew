@@ -181,6 +181,7 @@ fn supervisor_pipeline() -> IrPipeline {
     };
 
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![bootstrap_fn.clone(), main_fn.clone()],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -500,6 +501,7 @@ fn on_crash_pipeline() -> IrPipeline {
     };
 
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![on_crash_fn, bootstrap_fn, main_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -842,6 +844,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
     };
 
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![root_fn, inner_fn, main_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -1050,6 +1053,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
     };
 
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![bootstrap_fn, main_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],

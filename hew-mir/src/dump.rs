@@ -2398,6 +2398,7 @@ mod tests {
 
     fn empty_pipeline() -> IrPipeline {
         IrPipeline {
+            entry_exit_plan: None,
             raw_mir: vec![],
             checked_mir: vec![],
             elaborated_mir: vec![],
@@ -2425,6 +2426,7 @@ mod tests {
 
     fn minimal_pipeline_with_raw(func: RawMirFunction) -> IrPipeline {
         IrPipeline {
+            entry_exit_plan: None,
             raw_mir: vec![func],
             ..empty_pipeline()
         }
@@ -2501,6 +2503,7 @@ mod tests {
             ownership_elaboration: None,
         };
         let pipeline = IrPipeline {
+            entry_exit_plan: None,
             checked_mir: vec![checked],
             ..empty_pipeline()
         };
@@ -2577,6 +2580,7 @@ mod tests {
 
         let checked_dump = dump_mir(
             &IrPipeline {
+                entry_exit_plan: None,
                 checked_mir: vec![checked],
                 ..empty_pipeline()
             },
@@ -2584,6 +2588,7 @@ mod tests {
         );
         let shuffled_dump = dump_mir(
             &IrPipeline {
+                entry_exit_plan: None,
                 checked_mir: vec![shuffled_checked],
                 ..empty_pipeline()
             },
@@ -2591,6 +2596,7 @@ mod tests {
         );
         let elab_dump = dump_mir(
             &IrPipeline {
+                entry_exit_plan: None,
                 elaborated_mir: vec![elaborated],
                 ..empty_pipeline()
             },
@@ -2643,6 +2649,7 @@ mod tests {
             ownership_elaboration: None,
         };
         let pipeline = IrPipeline {
+            entry_exit_plan: None,
             checked_mir: vec![checked],
             ..empty_pipeline()
         };
@@ -2683,6 +2690,7 @@ mod tests {
             ownership_elaboration: None,
         };
         let pipeline = IrPipeline {
+            entry_exit_plan: None,
             checked_mir: vec![checked],
             ..empty_pipeline()
         };
@@ -2705,6 +2713,7 @@ mod tests {
             lambda_captures: vec![],
         };
         let pipeline = IrPipeline {
+            entry_exit_plan: None,
             elaborated_mir: vec![elab],
             ..empty_pipeline()
         };
@@ -2753,6 +2762,7 @@ mod tests {
         };
         let dump = dump_mir(
             &IrPipeline {
+                entry_exit_plan: None,
                 elaborated_mir: vec![elab],
                 ..empty_pipeline()
             },

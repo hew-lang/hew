@@ -58,6 +58,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
         },
     ];
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),

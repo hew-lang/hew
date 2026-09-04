@@ -35,7 +35,10 @@ supervisor App {
 
 fn main() -> i64 {
     let sup = spawn App;
-    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {
+        .Ok(pair) => pair,
+        .Err(_) => return 1,
+    };
     sup.stopper.stop_tree(sup, ready_tx);
     match await ready_rx.recv() {
         .Some(n) => n,

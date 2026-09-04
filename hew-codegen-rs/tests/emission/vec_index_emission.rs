@@ -140,6 +140,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
     ];
 
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -305,6 +306,7 @@ fn vec_index_bool_pipeline() -> IrPipeline {
     let raw_blocks = vec![entry_bb, bounds_bb, trap_bb, cont_bb, return_bb];
 
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -470,6 +472,7 @@ fn vec_index_char_pipeline() -> IrPipeline {
     let raw_blocks = vec![entry_bb, bounds_bb, trap_bb, cont_bb, return_bb];
 
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),

@@ -227,9 +227,27 @@ fn parse_listen_mode(val: &str) -> Option<ListenMode> {
             );
             None
         }
-        addr if addr.starts_with(':') => Some(ListenMode::Tcp(format!("0.0.0.0{addr}"))),
-        addr => Some(ListenMode::Tcp(addr.to_owned())),
+        addr => {
+            let (bind_addr, warns_on_wildcard) = normalise_tcp_bind_address(addr);
+            if warns_on_wildcard {
+                eprintln!(
+                    "[hew-pprof] WARNING: binding profiler to wildcard address {bind_addr}; it is reachable from the network"
+                );
+            }
+            Some(ListenMode::Tcp(bind_addr))
+        }
     }
+}
+
+/// Return the address to bind and whether the user explicitly requested a
+/// wildcard listener.
+fn normalise_tcp_bind_address(addr: &str) -> (String, bool) {
+    if addr.starts_with(':') {
+        return (format!("127.0.0.1{addr}"), false);
+    }
+
+    let warns_on_wildcard = addr.starts_with("0.0.0.0:") || addr.starts_with("[::]:");
+    (addr.to_owned(), warns_on_wildcard)
 }
 
 /// Sampler loop: captures a snapshot every second.
@@ -349,6 +367,22 @@ mod tests {
                 .expect("last error should be utf-8")
                 .to_owned()
         }
+    }
+
+    #[test]
+    fn port_only_profiler_address_binds_to_loopback() {
+        let (bind_addr, warns_on_wildcard) = normalise_tcp_bind_address(":6060");
+
+        assert_eq!(bind_addr, "127.0.0.1:6060");
+        assert!(!warns_on_wildcard);
+    }
+
+    #[test]
+    fn explicit_wildcard_profiler_address_requests_warning() {
+        let (bind_addr, warns_on_wildcard) = normalise_tcp_bind_address("0.0.0.0:6060");
+
+        assert_eq!(bind_addr, "0.0.0.0:6060");
+        assert!(warns_on_wildcard);
     }
 
     #[test]

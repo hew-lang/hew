@@ -8051,7 +8051,7 @@ fn emit_nested_supervisor_register<'ctx>(
 
 /// Register a supervised child actor's type name and per-handler names into the
 /// runtime profiler registry so a crash inside one of its handlers is reported
-/// by name (`Worker::run`) rather than the bare `msg_type` discriminant.
+/// by name (`Worker.run`) rather than the bare `msg_type` discriminant.
 ///
 /// The direct-`spawn` path emits the equivalent registration via
 /// `emit_native_actor_metadata_registration`. A supervised child, however, is
@@ -8126,7 +8126,7 @@ fn emit_supervised_child_handler_name_registration<'ctx>(
         void_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
     );
     for (h_idx, handler) in layout.handlers.iter().enumerate() {
-        let handler_name = format!("{actor_name}::{}", handler.name);
+        let handler_name = format!("{actor_name}.{}", handler.name);
         let handler_fragment = llvm_global_name_fragment(&handler.name);
         let handler_name_global = builder
             .build_global_string_ptr(
@@ -8212,7 +8212,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     // (where `emit_native_actor_metadata_registration` would do this), so
     // without this its handler-name registry stays empty and a crash inside one
     // of its handlers is reported by the bare `msg_type` discriminant instead of
-    // the handler name (e.g. `Worker::run`).
+    // the handler name (e.g. `Worker.run`).
     emit_supervised_child_handler_name_registration(
         ctx,
         llvm_mod,

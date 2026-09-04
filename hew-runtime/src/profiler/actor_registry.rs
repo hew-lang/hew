@@ -47,7 +47,7 @@ static DISPATCH_TYPE_REGISTRY: PoisonSafe<Option<HashMap<usize, &'static str>>> 
     PoisonSafe::new(None);
 
 /// Side table mapping `(dispatch_fn_ptr_as_usize, msg_type)` to the fully-qualified
-/// handler name `"ActorName::handler_name"`.
+/// handler name `"ActorName.handler_name"`.
 ///
 /// Populated by `hew_register_handler_name` (called at program startup by codegen).
 /// Used at `drain_events_json` time on native profiler builds to resolve handler names
@@ -179,7 +179,7 @@ pub fn lookup_dispatch_type_by_ptr(dispatch_ptr: usize) -> String {
 
 /// Look up the fully-qualified handler name by raw dispatch pointer and `msg_type`.
 ///
-/// Returns `Some("ActorName::handler_name")` when registered, `None` otherwise.
+/// Returns `Some("ActorName.handler_name")` when registered, `None` otherwise.
 /// This variant avoids a `transmute` by operating on the raw `usize` pointer.
 pub fn handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<String> {
     if dispatch_ptr == 0 {
@@ -198,7 +198,7 @@ pub fn handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<String>
 /// any instances of that actor type are spawned.  Subsequent registrations for the
 /// same key are silently ignored (first-registered wins, matching `register_dispatch_type`).
 ///
-/// `handler_name` must be a `"ActorName::handler_name"` string.
+/// `handler_name` must be a `"ActorName.handler_name"` string.
 pub fn register_handler_name(
     dispatch_fn: Option<HewDispatchFn>,
     msg_type: i32,

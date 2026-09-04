@@ -118,10 +118,10 @@ string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-
 string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-analysis/src/signature_help.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/layout.rs	20	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm.rs	114	stage-5	reviewed qualified string identity construction; Raw virtual-value semantic admission belongs to the canonical hew-mir verifier, leaving LLVM realization diagnostics only
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm.rs	113	stage-5	reviewed qualified string identity construction; Raw virtual-value semantic admission belongs to the canonical hew-mir verifier, leaving LLVM realization diagnostics only
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm/identity.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	64	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	11	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	10	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/thunks.rs	3	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	2	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	32	stage-1	reviewed compatibility-key factory for unique imported tagged-union constructors and `?` checker payload mismatch diagnostics; exact source owner remains the authority

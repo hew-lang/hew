@@ -18,48 +18,50 @@
 # two as stale rows even though nothing regressed. Tracked as #3297:
 # the gate should be green in its default configuration either way.
 #
-# day-one: hew new/--actor/--lib do not exist yet (V060-FD-5), so every
-# step downstream of scaffolding a package fails too.
-day-one.1	V060-FD-5	hew new: unrecognized subcommand
-day-one.2	V060-FD-5	hew new does not exist; scaffold ships no test file
-day-one.3	V060-FD-5	hew new does not exist; no repository to check
-day-one.4	V060-FD-5	hew new does not exist; no .gitignore to check
-day-one.5	V060-FD-5	hew new does not exist; hew run finds no hew.toml
-day-one.6	V060-FD-5	hew new does not exist; hew test finds no test files
-day-one.7	V060-FD-5	hew new does not exist; hew build finds no hew.toml
-day-one.8	V060-FD-5	hew new does not exist; no target/release/svc artefact
-day-one.9	V060-FD-5	hew new does not exist; no release binary to run
-day-one.11	V060-FD-5	hew new --actor: unrecognized subcommand
-day-one.12	V060-FD-5	hew new --actor does not exist; actor scaffold never created
-day-one.13	V060-FD-5	hew new --lib: unrecognized subcommand
-day-one.14	V060-FD-5	hew new --lib does not exist; lib scaffold never created
+# day-one: hew new/--actor/--lib scaffold and test green (V060-FD-5);
+# build's target/ layout (day-one.7-9, ground item 3) is a separate,
+# undispatched gap the day-one.1-6/11-14 fix did not touch.
+day-one.7	V060-FD-5	build does not write target/release/svc: default_binary_path has no target/ component (ground item 3, undispatched)
+day-one.8	V060-FD-5	no target/release/svc artefact (cascades from day-one.7)
+day-one.9	V060-FD-5	no release binary to run (cascades from day-one.7)
+day-one.16	V060-FD-4	let mut error text says "rename this binding", not "var x"
+day-one.17	V060-FD-4	let mut is a three-error cascade, not one error
+day-one.20	V060-FD-4	module-not-found JSON carries a zero span (start_line: 0)
+day-one.21	V060-FD-4	module-not-found JSON carries no nearest-module suggestion
 day-one.22	V060-FD-3	HEW_CC has no reader in the compiler (grep -rn HEW_CC --include=*.rs is empty); the env var is silently ignored and build falls through to system cc, exit 0
 day-one.23	V060-FD-3	HEW_CC unimplemented (see day-one.22): no error output naming the bad path
 day-one.24	V060-FD-3	HEW_CC unimplemented (see day-one.22): no error output naming a package to install
 #
 # day-two: trap symbolization (V060-FD-7) is unimplemented; hew new
-# (V060-FD-5) cascades through the whole dependency/build/deploy chain
-# once app/ is never created.
+# (V060-FD-5) itself is green (step 8) but the dependency chain past it
+# (search/add/install/info) still needs a reachable registry - day-two.12,
+# day-two.16, day-two.17, day-two.20 pass on a dev machine with a local
+# hew-registry checkout (empty seed data still resolves each step's own
+# check, e.g. install has nothing to fetch) but fail closed in CI, where
+# no registry is reachable; #3297 tracks making the gate agree either way,
+# do not delete those four rows from a dev-machine run. Two -o-in-file-mode
+# bugs are V060-FD-2.
 day-two.3	V060-FD-7	trap message has no crash.hew:2 file:line
 day-two.4	V060-FD-7	trap message does not name the function (boom)
 day-two.5	V060-FD-7	HEW_BACKTRACE=1 output has no caller frame line
 day-two.7	V060-FD-7	release-build trap has no file:line either
-day-two.8	V060-FD-5	hew new: unrecognized subcommand
-day-two.9	V060-FD-5	search prints hew::math::stats, not the dotted hew.math.stats that add accepts
-day-two.10	V060-FD-5	hew new never created app/; add runs with no hew.toml
-day-two.11	V060-FD-5	cascades from day-two.8/10: no hew.toml to write the dependency into
-day-two.12	V060-FD-5	no local registry (registry-harness.sh exit 75): unknown-package refusal never attempted
-day-two.15	V060-FD-5	cascades from day-two.8: hew.toml never had a [package] table to append to
-day-two.16	V060-FD-5	cascades from day-two.8/15: install has no valid manifest to read
-day-two.17	V060-FD-5	cascades: no hew.lock without a working install
+day-two.9	V060-FD-5	search prints hew::math::stats, not the dotted hew.math.stats that add accepts (or no registry reachable)
+day-two.10	V060-FD-5	add resolves against the registry: no registry reachable, or the package is not seeded there
+day-two.11	V060-FD-5	cascades from day-two.10: no hew.toml to write the dependency into
+day-two.12	V060-FD-5	no local registry (registry-harness.sh exit 75): unknown-package refusal never attempted (#3297: passes on a dev machine with an empty local registry)
+day-two.15	V060-FD-5	deny_unknown_fields rejects the unquoted dotted key (exit 1, day-two.14) but its generic "unknown field" message does not name the quoted `"hew.math.stats"` form the journey expects
+day-two.16	V060-FD-5	cascades from day-two.10: install has no dependency to fetch (#3297: passes on a dev machine with an empty local registry)
+day-two.17	V060-FD-5	cascades: no hew.lock without a working install (#3297: passes on a dev machine with an empty local registry)
 day-two.18	V060-FD-5	cascades: main.hew never compiles without the dependency installed
 day-two.19	V060-FD-5	cascades: tests never compile without the dependency installed
-day-two.20	V060-FD-5	no local registry (registry-harness.sh exit 75): info not-found never attempted
+day-two.20	V060-FD-5	no local registry (registry-harness.sh exit 75): info not-found never attempted (#3297: passes on a dev machine with an empty local registry)
 day-two.22	V060-SURFACE	.Err(AErr.Bad)/.Ok(()) construction refused: "no variant Err/Ok" on Result<(), AErr> (D3 bare-variant expression construction, unshipped; owning S-lane not yet assigned)
-day-two.23	V060-FD-5	cascades from day-two.8: build has no [package] table
-day-two.25	V060-FD-5	cascades from day-two.8: cross-object emission has no [package] table
-day-two.26	V060-FD-5	cascades from day-two.8: app-aarch64.o never written
-day-two.28	V060-FD-5	cascades from day-two.8: app-aarch64.o never written
+day-two.23	V060-FD-5	cascades from day-two.10: build has no dependency to compile against
+day-two.25	V060-FD-5	cascades from day-two.10: cross-object emission has no dependency to compile against
+day-two.26	V060-FD-5	cascades from day-two.10: app-aarch64.o never written
+day-two.28	V060-FD-5	cascades from day-two.10: app-aarch64.o never written
+day-two.30	V060-FD-2	file-mode --emit-obj -o obj-aarch64.o did not write the named file
+day-two.31	V060-FD-2	file-mode --emit-obj wrote obj.o instead of honouring -o
 #
 # week-one-local: the decided-dialect program does not run today by design
 # (hew-platform-program.md §0.1: it is fable4/probes/local_svc.hew rewritten

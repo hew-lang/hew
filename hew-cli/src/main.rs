@@ -3077,6 +3077,53 @@ fn cmd_init(a: &args::InitArgs) {
     hew_pkg::cli::run_init(&project_dir, template);
 }
 
+/// `hew new <name>`: create `<name>/`, scaffold it exactly as `hew init`
+/// would (sharing `hew_pkg::cli::run_init`'s template table — no second
+/// scaffold writer), then `git init -q` unless the new directory already
+/// sits inside a repository. `hew init` never touches git; this is the only
+/// site that runs `git init`.
+fn cmd_new(a: &args::NewArgs) {
+    let project_dir = std::path::PathBuf::from(&a.name);
+    if let Err(e) = std::fs::create_dir_all(&project_dir) {
+        eprintln!(
+            "Error: cannot create directory '{}': {e}",
+            project_dir.display()
+        );
+        std::process::exit(1);
+    }
+
+    let template = if a.lib {
+        hew_pkg::manifest::ManifestTemplate::Lib
+    } else if a.actor {
+        hew_pkg::manifest::ManifestTemplate::Actor
+    } else {
+        hew_pkg::manifest::ManifestTemplate::Bin
+    };
+
+    hew_pkg::cli::run_init(&project_dir, template);
+
+    let already_in_repo = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&project_dir)
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if already_in_repo {
+        return;
+    }
+    match std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&project_dir)
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!(
+            "hew new: warning: git init exited {} (skipping)",
+            status.code().unwrap_or(-1)
+        ),
+        Err(e) => eprintln!("hew new: warning: could not run git init: {e}"),
+    }
+}
+
 fn cmd_completions(a: &args::CompletionsArgs) {
     use clap::CommandFactory;
     use clap_complete::{generate, Shell};

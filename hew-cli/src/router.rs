@@ -19,6 +19,7 @@ pub(crate) trait CommandDispatcher {
     fn machine(&mut self, args: &args::MachineCommand);
     fn fmt(&mut self, args: &args::FmtArgs);
     fn init(&mut self, args: &args::InitArgs);
+    fn new_project(&mut self, args: &args::NewArgs);
     fn playground_verify(&mut self, args: &args::PlaygroundVerifyArgs);
     fn sir_coverage(&mut self, args: &args::SirCoverageArgs);
     fn completions(&mut self, args: &args::CompletionsArgs);
@@ -85,6 +86,10 @@ impl CommandDispatcher for MainCommandDispatcher {
         crate::cmd_init(args);
     }
 
+    fn new_project(&mut self, args: &args::NewArgs) {
+        crate::cmd_new(args);
+    }
+
     fn playground_verify(&mut self, args: &args::PlaygroundVerifyArgs) {
         crate::playground::cmd_playground_verify(args);
     }
@@ -148,6 +153,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Machine(args)) => dispatcher.machine(args),
         Some(Command::Fmt(args)) => dispatcher.fmt(args),
         Some(Command::Init(args)) => dispatcher.init(args),
+        Some(Command::New(args)) => dispatcher.new_project(args),
         Some(Command::Playground(args)) => match &args.command {
             args::PlaygroundSubcommand::Verify(verify) => dispatcher.playground_verify(verify),
         },
@@ -559,6 +565,10 @@ mod tests {
 
         fn init(&mut self, _args: &crate::args::InitArgs) {
             self.calls.push("init".to_string());
+        }
+
+        fn new_project(&mut self, _args: &crate::args::NewArgs) {
+            self.calls.push("new".to_string());
         }
 
         fn playground_verify(&mut self, _args: &crate::args::PlaygroundVerifyArgs) {

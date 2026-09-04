@@ -10,7 +10,10 @@ type Point { x: i64, y: i64 }
 
 actor Worker {
     receive fn run() -> i64 {
-        let (tx, rx): (channel.Sender<Point>, channel.Receiver<Point>) = channel.new(1);
+        let (tx, rx): (channel.Sender<Point>, channel.Receiver<Point>) = match channel.new(1) {
+            .Ok(pair) => pair,
+            .Err(_) => return -2,
+        };
         tx.send(Point { x: 10, y: 20 });
         let got: Result<Option<Point>, TimeoutError> = await rx.recv() | after 5000ms;
         let _ = tx;

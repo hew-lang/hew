@@ -28,7 +28,10 @@ actor Worker {
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+        .Ok(pair) => pair,
+        .Err(_) => return,
+    };
     tx.send("hello");
     tx.close();
     let w = spawn Worker;

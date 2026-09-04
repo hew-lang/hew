@@ -6,7 +6,10 @@ import std.channel.channel;
 // an under-retained clone or duplicate close; LSan catches a missing Vec-slot
 // close across this repeated lifecycle.
 fn exercise_sender_vec_clone_drop() {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {
+        .Ok(pair) => pair,
+        .Err(_) => return,
+    };
     let senders: Vec<channel.Sender<i64>> = [tx];
     let senders_copy = senders.clone();
     if senders.len() != 1 {

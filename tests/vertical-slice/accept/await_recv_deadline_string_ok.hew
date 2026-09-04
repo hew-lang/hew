@@ -8,7 +8,10 @@ import std.channel.channel;
 
 actor Worker {
     receive fn run() -> i64 {
-        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {
+            .Ok(pair) => pair,
+            .Err(_) => return -2,
+        };
         tx.send("hello");
         let got: Result<Option<string>, TimeoutError> = await rx.recv() | after 5000ms;
         let _ = tx;

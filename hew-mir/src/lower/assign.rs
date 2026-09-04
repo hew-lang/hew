@@ -610,7 +610,18 @@ impl Builder {
                     // adopted the RHS temp, retire that exact source-place owner
                     // now; the destination binding remains the sole authority
                     // whose drop plan fans out across exits.
-                    if !cursor_owner_handoff {
+                    let receiver_identity_already_adopted = src == dest
+                        && self
+                            .param_ownership
+                            .produced_value_facts
+                            .get(&value.site)
+                            .is_some_and(|fact| {
+                                matches!(
+                                    fact.ownership,
+                                    hew_types::ProducedValueOwnership::ReceiverIdentity
+                                )
+                            });
+                    if !cursor_owner_handoff && !receiver_identity_already_adopted {
                         self.retire_provisional_owner_after_assignment_move(
                             *binding, dest, &target.ty, src, &value.ty,
                         );

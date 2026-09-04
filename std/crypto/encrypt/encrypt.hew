@@ -81,6 +81,7 @@ pub fn last_seal_error() -> CryptoError {
         hew_encrypt_last_seal_error_code()
     })
 }
+
 /// Encrypt plaintext using AES-256-GCM, reporting an unusable key instead of
 /// failing out of the FFI boundary.
 ///
@@ -111,6 +112,7 @@ pub fn open(key: bytes, ciphertext: bytes) -> Result<string, CryptoError> {
         err => Err(err),
     }
 }
+
 /// Decrypt ciphertext and panic on failure.
 ///
 /// Alias for `open`, provided for callers that prefer an explicit must-style

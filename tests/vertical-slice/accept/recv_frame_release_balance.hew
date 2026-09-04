@@ -92,7 +92,10 @@ fn main() {
 
     // The direct-match shape #3127 reported: the value the match produces must
     // survive the match, and its frame must still be released exactly once.
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(8);
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(8) {
+        .Ok(pair) => pair,
+        .Err(_) => return,
+    };
     var seen = 0;
     for i in 0..500 {
         tx.send(f"channel-frame-{i}-payload");

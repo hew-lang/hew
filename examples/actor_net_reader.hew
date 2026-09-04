@@ -13,7 +13,10 @@ actor ServerReader {
 }
 
 fn main() {
-    let listener = net.listen(":9001");
+    let listener = match net.listen(":9001") {
+        .Ok(listener) => listener,
+        .Err(err) => panic(f"network setup failed: {err}"),
+    };
     let conn = listener.accept();
     let reader = spawn ServerReader(conn: conn);
     reader.start(0);

@@ -1,10 +1,11 @@
 use hew_hir::ItemId;
 use hew_sir::{
     canonicalize_module_constant_cfg, verify_function_in_module, verify_module, BlockArg, BlockId,
-    CallableId, CallableInstance, CfgCanonicalizationReport, CfgDiscardSafetyReason, Edge,
-    FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance, SemAbiParam, SemBlock, SemCallConv,
-    SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemTerminator, SirDiagnosticKind, SirOptimizationError, ValueDef, ValueId,
+    BoundaryDecision, BoundaryOperand, CallableId, CallableInstance, CfgCanonicalizationReport,
+    CfgDiscardSafetyReason, Edge, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance,
+    SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
+    SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
+    SirOptimizationError, ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
 use std::collections::BTreeMap;
@@ -12,6 +13,13 @@ use std::collections::BTreeMap;
 fn read(value: u32) -> Operand {
     Operand {
         value: ValueId(value),
+    }
+}
+
+fn returned(value: u32) -> BoundaryOperand {
+    BoundaryOperand {
+        operand: read(value),
+        decision: BoundaryDecision::Move,
     }
 }
 
@@ -150,7 +158,7 @@ fn false_same_target_diamond() -> SemFunction {
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
-                    value: Some(read(3)),
+                    value: Some(returned(3)),
                 },
             },
             SemBlock {
@@ -162,7 +170,7 @@ fn false_same_target_diamond() -> SemFunction {
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(read(4)),
+                    value: Some(returned(4)),
                 },
             },
         ],
@@ -439,7 +447,7 @@ fn compaction_accepts_a_newly_dead_block_that_reads_an_entry_parameter() {
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(read(0)),
+                    value: Some(returned(0)),
                 },
             },
             // Folding bb0 makes this block unreachable before the pass's
@@ -450,7 +458,7 @@ fn compaction_accepts_a_newly_dead_block_that_reads_an_entry_parameter() {
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(read(0)),
+                    value: Some(returned(0)),
                 },
             },
         ],
@@ -690,7 +698,7 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
-                    value: Some(read(1)),
+                    value: Some(returned(1)),
                 },
             },
             SemBlock {
@@ -703,7 +711,7 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
-                    value: Some(read(2)),
+                    value: Some(returned(2)),
                 },
             },
         ],

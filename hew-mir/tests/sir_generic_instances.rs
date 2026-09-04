@@ -1,17 +1,17 @@
-//! End-to-end proof for the first SIR-owned generic specialization slice.
+//! Proof that a call-free SIR-owned generic instance reaches MIR.
 //!
 //! The HIR generic registry is intentionally cleared before SIR lowering.
 //! A successful strict component therefore proves concrete semantic instances
-//! came from SIR's `CallTarget::User` + call-site substitution service, then
-//! crossed the unchanged scalar raw/checked/elaborated MIR ladder without a
-//! legacy generic-body fallback.
+//! came from SIR's `CallTarget::User` + call-site substitution service. The
+//! selected identity body then crosses the unchanged scalar MIR ladder without
+//! requiring MIR to discard the caller's explicit unwind edge.
 
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_mir::lower_closed_scalar_component;
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 #[test]
-fn strict_scalar_component_realizes_sir_owned_generic_instances() {
+fn call_free_sir_owned_generic_instance_reaches_mir_without_a_legacy_template() {
     let parsed = hew_parser::parse(
         r"
         pub fn id<T>(x: T) -> T {
@@ -57,26 +57,22 @@ fn strict_scalar_component_realizes_sir_owned_generic_instances() {
         "generic SIR must verify: {:#?}",
         hew_sir::verify_module(&sir.module)
     );
-    let entry = sir
+    let instance = sir
         .module
-        .entry_callable
-        .expect("scalar root main must be a strict SIR entry");
-    let component = lower_closed_scalar_component(&sir.module, &[entry])
-        .expect("closed generic SIR component must lower without an HIR/MIR template");
-    assert_eq!(
-        component.callables().len(),
-        3,
-        "the component must contain main, relay<i64>, and one cached id<i64> instance"
-    );
+        .callables
+        .iter()
+        .find(|callable| callable.symbol == "id$$i64")
+        .expect("SIR must own the requested concrete identity instance");
+    let component = lower_closed_scalar_component(&sir.module, &[instance.id])
+        .expect("the call-free generic identity body must lower without an HIR/MIR template");
+    assert_eq!(component.callables(), &[instance.id]);
     let pipeline = component.into_pipeline();
     let names = pipeline
         .raw_mir
         .iter()
         .map(|function| function.name.as_str())
         .collect::<Vec<_>>();
-    assert!(names.contains(&"main"));
-    assert!(names.contains(&"relay$$i64"));
-    assert!(names.contains(&"id$$i64"));
+    assert_eq!(names, vec!["id$$i64"]);
     assert_eq!(
         pipeline.raw_mir.len(),
         pipeline.checked_mir.len(),

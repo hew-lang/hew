@@ -4,7 +4,10 @@ import std.channel.channel;
 // exactly once. ASan catches a duplicate source/slot close; LSan catches an
 // omitted slot close and its retained channel state.
 fn exercise_receiver_vec_drop() {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {
+        .Ok(pair) => pair,
+        .Err(_) => return,
+    };
     tx.close();
     let receivers: Vec<channel.Receiver<i64>> = [rx];
     if receivers.len() != 1 {

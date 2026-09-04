@@ -14,7 +14,10 @@ import std.channel.channel;
 
 actor Combined {
     receive fn run() {
-        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(8);
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(8) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"channel.new failed: {err}"),
+        };
         var lc: Lifecycle<i64> = .Created;
         let before = lc.state_name();
         lc.step(LifecycleEvent.Initialise);

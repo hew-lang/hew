@@ -2,12 +2,12 @@ use hew_hir::ItemId;
 use hew_parser::ast::BinaryOp;
 use hew_sir::{
     build_def_use, dump_sir, replace_all_uses, replace_use, verify_function_in_module,
-    verify_module, BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet,
-    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, OwnKind, Provenance,
-    RewriteError, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
-    SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
-    SirInstanceKey, SuspendInput, SuspendInputMode, SuspendKind, TrapKind, UseSite, ValueDef,
-    ValueId,
+    verify_module, BlockArg, BlockId, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind,
+    CallableId, CallableInstance, Edge, EffectSet, FunctionSourceOrigin, GenericTemplateId, OpId,
+    Operand, OperandSlot, OwnKind, Provenance, RewriteError, SemAbiParam, SemBlock, SemCallConv,
+    SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing,
+    SemSignature, SemTerminator, SirDiagnosticKind, SirInstanceKey, SuspendKind, TrapKind, UseSite,
+    ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
 use std::collections::BTreeMap;
@@ -22,6 +22,41 @@ fn definition(id: u32) -> ValueDef {
 
 fn read(value: ValueId) -> Operand {
     Operand { value }
+}
+
+fn returned(value: ValueId) -> BoundaryOperand {
+    BoundaryOperand {
+        operand: read(value),
+        decision: BoundaryDecision::Move,
+    }
+}
+
+fn copy_argument(value: ValueId) -> BoundaryOperand {
+    BoundaryOperand {
+        operand: read(value),
+        decision: BoundaryDecision::Copy,
+    }
+}
+
+fn call(
+    id: u32,
+    callee: u32,
+    args: Vec<BoundaryOperand>,
+    result: CallResult,
+    normal: u32,
+    normal_args: Vec<Operand>,
+) -> SemTerminator {
+    SemTerminator::Call {
+        id: OpId(id),
+        callee: CallableId(callee),
+        args,
+        result,
+        normal: Edge {
+            target: BlockId(normal),
+            args: normal_args,
+        },
+        unwind: CallUnwind::NotApplicable,
+    }
 }
 
 fn callable_for(function: &SemFunction) -> SemCallable {
@@ -257,7 +292,7 @@ fn block_arguments_are_ssa_join_values() {
                     },
                 ],
                 terminator: SemTerminator::Return {
-                    value: Some(read(ValueId(12))),
+                    value: Some(returned(ValueId(12))),
                 },
             },
         ],
@@ -368,7 +403,7 @@ fn verifier_rejects_entry_block_arguments() {
             }],
             ops: Vec::new(),
             terminator: SemTerminator::Return {
-                value: Some(read(ValueId(0))),
+                value: Some(returned(ValueId(0))),
             },
         }],
         places: Vec::new(),
@@ -415,20 +450,20 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
         params: Vec::new(),
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
-        blocks: vec![SemBlock {
-            id: BlockId(0),
-            args: Vec::new(),
-            ops: vec![SemOp {
-                id: OpId(0),
-                results: Vec::new(),
-                kind: SemOpKind::Call {
-                    callee: CallableId(0),
-                    args: Vec::new(),
-                },
-                provenance: Provenance::Synthesized,
-            }],
-            terminator: SemTerminator::Return { value: None },
-        }],
+        blocks: vec![
+            SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: call(0, 0, Vec::new(), CallResult::Unit, 1, Vec::new()),
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return { value: None },
+            },
+        ],
         places: Vec::new(),
         bindings: Vec::new(),
     };
@@ -439,7 +474,9 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
         verify_module(&valid)
     );
 
-    valid.functions[1].blocks[0].ops[0].results = vec![definition(0)];
+    if let SemTerminator::Call { result, .. } = &mut valid.functions[1].blocks[0].terminator {
+        *result = CallResult::Value(definition(0));
+    }
     assert!(
         verify_module(&valid).iter().any(|diagnostic| matches!(
             diagnostic.kind,
@@ -487,7 +524,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
-                    value: Some(read(ValueId(0))),
+                    value: Some(returned(ValueId(0))),
                 },
             },
         ],
@@ -524,7 +561,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
-                    value: Some(read(ValueId(0))),
+                    value: Some(returned(ValueId(0))),
                 },
             },
             SemBlock {
@@ -573,14 +610,6 @@ fn operation_effects_are_derived_and_conservative() {
         rhs: Operand { value: ValueId(1) },
     };
     assert!(wrapping_add.effects().is_pure());
-
-    let unresolved_call = SemOpKind::Call {
-        callee: CallableId(0),
-        args: Vec::new(),
-    };
-    assert_eq!(unresolved_call.effects(), EffectSet::UNKNOWN_CALL);
-    assert!(unresolved_call.effects().contains(EffectSet::MAY_TRAP));
-    assert!(unresolved_call.effects().may_trap());
 }
 
 #[test]
@@ -604,7 +633,7 @@ fn verifier_checks_resolved_direct_call_signature() {
             args: Vec::new(),
             ops: Vec::new(),
             terminator: SemTerminator::Return {
-                value: Some(read(ValueId(0))),
+                value: Some(returned(ValueId(0))),
             },
         }],
         places: Vec::new(),
@@ -624,26 +653,37 @@ fn verifier_checks_resolved_direct_call_signature() {
         }],
         return_ty: ResolvedTy::Bool,
         entry: BlockId(0),
-        blocks: vec![SemBlock {
-            id: BlockId(0),
-            args: Vec::new(),
-            ops: vec![SemOp {
-                id: OpId(0),
-                results: vec![ValueDef {
-                    id: ValueId(1),
+        blocks: vec![
+            SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: call(
+                    0,
+                    0,
+                    vec![copy_argument(ValueId(0))],
+                    CallResult::Value(ValueDef {
+                        id: ValueId(1),
+                        ty: ResolvedTy::Bool,
+                        own: OwnKind::None,
+                    }),
+                    1,
+                    vec![read(ValueId(1))],
+                ),
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: vec![BlockArg {
+                    value: ValueId(2),
                     ty: ResolvedTy::Bool,
                     own: OwnKind::None,
                 }],
-                kind: SemOpKind::Call {
-                    callee: CallableId(0),
-                    args: vec![Operand { value: ValueId(0) }],
+                ops: Vec::new(),
+                terminator: SemTerminator::Return {
+                    value: Some(returned(ValueId(2))),
                 },
-                provenance: Provenance::Synthesized,
-            }],
-            terminator: SemTerminator::Return {
-                value: Some(read(ValueId(1))),
             },
-        }],
+        ],
         places: Vec::new(),
         bindings: Vec::new(),
     };
@@ -675,18 +715,15 @@ fn verifier_rejects_unknown_direct_callable() {
         blocks: vec![SemBlock {
             id: BlockId(0),
             args: Vec::new(),
-            ops: vec![SemOp {
-                id: OpId(0),
-                results: vec![definition(0)],
-                kind: SemOpKind::Call {
-                    callee: CallableId(9),
-                    args: Vec::new(),
-                },
-                provenance: Provenance::Synthesized,
-            }],
-            terminator: SemTerminator::Return {
-                value: Some(read(ValueId(0))),
-            },
+            ops: Vec::new(),
+            terminator: call(
+                0,
+                9,
+                Vec::new(),
+                CallResult::Value(definition(0)),
+                0,
+                Vec::new(),
+            ),
         }],
         places: Vec::new(),
         bindings: Vec::new(),
@@ -724,7 +761,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
                 provenance: Provenance::Synthesized,
             }],
             terminator: SemTerminator::Return {
-                value: Some(read(ValueId(0))),
+                value: Some(returned(ValueId(0))),
             },
         }],
         places: Vec::new(),
@@ -740,20 +777,20 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
         params: Vec::new(),
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
-        blocks: vec![SemBlock {
-            id: BlockId(0),
-            args: Vec::new(),
-            ops: vec![SemOp {
-                id: OpId(0),
-                results: Vec::new(),
-                kind: SemOpKind::Call {
-                    callee: CallableId(0),
-                    args: Vec::new(),
-                },
-                provenance: Provenance::Synthesized,
-            }],
-            terminator: SemTerminator::Return { value: None },
-        }],
+        blocks: vec![
+            SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: call(0, 0, Vec::new(), CallResult::Unit, 1, Vec::new()),
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::Return { value: None },
+            },
+        ],
         places: Vec::new(),
         bindings: Vec::new(),
     };
@@ -804,7 +841,7 @@ fn verifier_rejects_eager_logical_ops() {
                 provenance: Provenance::Synthesized,
             }],
             terminator: SemTerminator::Return {
-                value: Some(read(ValueId(1))),
+                value: Some(returned(ValueId(1))),
             },
         }],
         places: Vec::new(),
@@ -964,7 +1001,7 @@ fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_a
                 provenance: Provenance::Synthesized,
             }],
             terminator: SemTerminator::Return {
-                value: Some(read(ValueId(0))),
+                value: Some(returned(ValueId(0))),
             },
         }],
         places: Vec::new(),
@@ -1024,7 +1061,7 @@ fn verifier_rejects_value_carrying_return_from_unit_function() {
                 provenance: Provenance::Synthesized,
             }],
             terminator: SemTerminator::Return {
-                value: Some(read(ValueId(0))),
+                value: Some(returned(ValueId(0))),
             },
         }],
         places: Vec::new(),
@@ -1134,7 +1171,7 @@ fn rewrite_fixture() -> SemFunction {
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(read(ValueId(6))),
+                    value: Some(returned(ValueId(6))),
                 },
             },
         ],
@@ -1392,9 +1429,9 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
                 ops: Vec::new(),
                 terminator: SemTerminator::Suspend {
                     kind: SuspendKind::Await,
-                    inputs: vec![SuspendInput {
+                    inputs: vec![BoundaryOperand {
                         operand: read(ValueId(0)),
-                        mode: SuspendInputMode::Move,
+                        decision: BoundaryDecision::Move,
                     }],
                     resumes: Vec::new(),
                     cancel: Edge {
@@ -1408,7 +1445,7 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(read(ValueId(0))),
+                    value: Some(returned(ValueId(0))),
                 },
             },
         ],
@@ -1502,7 +1539,7 @@ fn verifier_still_admits_the_terminators_it_states_rules_for() {
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(read(ValueId(0))),
+                    value: Some(returned(ValueId(0))),
                 },
             },
         ],
@@ -1632,7 +1669,7 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(read(ValueId(2))),
+                    value: Some(returned(ValueId(2))),
                 },
             },
         ],
@@ -1694,7 +1731,7 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
                 }],
                 ops: Vec::new(),
                 terminator: SemTerminator::Return {
-                    value: Some(read(ValueId(2))),
+                    value: Some(returned(ValueId(2))),
                 },
             },
         ],
@@ -1742,23 +1779,26 @@ fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
         Vec::new(),
     );
     call_site.callable = CallableId(1);
-    call_site.blocks[0].ops = vec![
-        SemOp {
-            id: OpId(0),
-            results: vec![definition(1)],
-            kind: SemOpKind::ConstI64(7),
-            provenance: Provenance::Synthesized,
-        },
-        SemOp {
-            id: OpId(1),
-            results: Vec::new(),
-            kind: SemOpKind::Call {
-                callee: CallableId(0),
-                args: vec![read(ValueId(1))],
-            },
-            provenance: Provenance::Synthesized,
-        },
-    ];
+    call_site.blocks[0].ops = vec![SemOp {
+        id: OpId(0),
+        results: vec![definition(1)],
+        kind: SemOpKind::ConstI64(7),
+        provenance: Provenance::Synthesized,
+    }];
+    call_site.blocks[0].terminator = call(
+        1,
+        0,
+        vec![copy_argument(ValueId(1))],
+        CallResult::Unit,
+        1,
+        Vec::new(),
+    );
+    call_site.blocks.push(SemBlock {
+        id: BlockId(1),
+        args: Vec::new(),
+        ops: Vec::new(),
+        terminator: SemTerminator::Return { value: None },
+    });
     let mut module = module(vec![callee, call_site]);
     module.callables[0].signature.params[0].passing = passing;
     module

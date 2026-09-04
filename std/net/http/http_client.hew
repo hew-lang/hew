@@ -196,6 +196,7 @@ pub fn request_string(method: string, url: string, body: string, headers: Vec<(s
     };
     Some(result)
 }
+
 /// Set the global outbound-request timeout, rejecting a value the C ABI
 /// cannot represent rather than narrowing it into a different deadline.
 pub fn set_timeout(timeout_ms: i64) -> Result<(), net.NetError> {

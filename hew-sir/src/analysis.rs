@@ -307,6 +307,9 @@ pub fn build_def_use(function: &SemFunction) -> DefUseIndex {
                     });
             });
         }
+        block
+            .terminator
+            .visit_results(|result| _ = index.definitions.insert(result.id, block.id));
         block.terminator.visit_operands(|operand, use_| {
             index
                 .uses
@@ -652,7 +655,10 @@ mod tests {
             block(
                 1,
                 SemTerminator::Return {
-                    value: Some(read(0)),
+                    value: Some(crate::BoundaryOperand {
+                        operand: read(0),
+                        decision: crate::BoundaryDecision::Move,
+                    }),
                 },
             ),
             // This structural predecessor cannot execute from the entry and

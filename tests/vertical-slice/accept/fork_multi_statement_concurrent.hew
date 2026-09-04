@@ -5,8 +5,14 @@ import std.net;
 
 actor Driver {
     receive fn run() -> i64 {
-        let first_listener = net.listen("127.0.0.1:0");
-        let second_listener = net.listen("127.0.0.1:0");
+        let first_listener = match net.listen("127.0.0.1:0") {
+            .Ok(listener) => listener,
+            .Err(_) => return 1,
+        };
+        let second_listener = match net.listen("127.0.0.1:0") {
+            .Ok(listener) => listener,
+            .Err(_) => return 1,
+        };
         let first_addr = f"127.0.0.1:{first_listener.local_port()}";
         let second_addr = f"127.0.0.1:{second_listener.local_port()}";
 
@@ -26,8 +32,14 @@ actor Driver {
                 println("second-end");
             };
 
-            let first_client = net.connect(first_addr);
-            let second_client = net.connect(second_addr);
+            let first_client = match net.connect(first_addr) {
+                .Ok(conn) => conn,
+                .Err(_) => return 1,
+            };
+            let second_client = match net.connect(second_addr) {
+                .Ok(conn) => conn,
+                .Err(_) => return 1,
+            };
             let _ = first_client.read_string();
             let _ = second_client.read_string();
             let _ = first_client.write_string("finish");

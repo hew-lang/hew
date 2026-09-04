@@ -85,6 +85,7 @@ pub fn encode(payload: string, secret: string, algorithm: string) -> Result<stri
         err => Err(err),
     }
 }
+
 /// Decode and verify a JWT, returning its payload as a JSON string.
 ///
 /// Returns `Err(JwtError)` when the token is malformed, expired, signed with a
@@ -99,6 +100,7 @@ pub fn decode(token: string, secret: string, algorithm: string) -> Result<string
         err => Err(err),
     }
 }
+
 /// Decode a JWT without verifying its signature.
 ///
 /// **Warning:** This does not validate the token. Only use for

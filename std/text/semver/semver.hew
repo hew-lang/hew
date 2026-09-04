@@ -283,6 +283,7 @@ pub fn parse(s: string) -> Result<Version, string> {
     }
     Ok(Version { pre_release: pre, build_meta: build, maj: major_str, min: minor_str, pat: patch_str })
 }
+
 /// Format a `Version` as its canonical string representation.
 fn version_to_string(v: Version) -> string {
     let maj = v.maj;

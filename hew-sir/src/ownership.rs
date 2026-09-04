@@ -177,35 +177,46 @@ pub enum SuspendKind {
     SleepUntil,
 }
 
-/// How a `Suspend` terminator takes one of its inputs (§1.5).
-///
-/// This is the one place a mode word survives on an operand, and it is legal
-/// because §1.5's `Suspend` struct declares it:
-/// `inputs: Vec<Operand>, // mode ∈ { Borrow, Move }`. It is a terminator-input
-/// mode, not a successor to the deleted operand-mode set: `Read`,
-/// `BorrowShared` and `BorrowMut` are gone and do not come back here.
-///
-/// §1.5's own kind table needs more than these two, and that is a defect in the
-/// section rather than a choice this vocabulary makes:
-///
-/// - Four rows give an input the mode `Snapshot`, which is in rule 5's closed
-///   decided-mode set - `ActorSend`'s args, `Ask`'s args, `StreamSend`'s value,
-///   and the `receive gen fn` `Yield` value.
-/// - Seven rows give an input the mode `(None)`, the §1.2 `OwnKind::None` of a
-///   `BitCopy` scalar, which is neither `Borrow` nor `Move` - `Read`'s and
-///   `Accept`'s deadline, `ChannelRecv`'s and `StreamNext`'s deadline,
-///   `RemoteAsk`'s timeout, `Select`'s `AfterTimer` duration, and the durations
-///   of `ScopeDeadline`, `Sleep` and `SleepUntil`.
-///
-/// The two variants the struct names are landed here; the rows above need more
-/// at P4, when a producer for them exists.
+/// How an owning value crosses an actor or task boundary (§2 rule 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SuspendInputMode {
-    Borrow,
-    Move,
+pub enum SnapshotDecision {
+    Share,
+    DeepCopy,
+    Transfer,
 }
 
-/// One source binding, and the SSA value it names.
+/// The total ownership decision for one semantic boundary operand.
+///
+/// This is carried only by call, return, and suspension boundary shapes. Plain
+/// [`crate::Operand`] remains a value use with no generic mode field, and
+/// construction has no absent, default, or undecided state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BoundaryDecision {
+    Borrow,
+    Copy,
+    Move,
+    Snapshot(SnapshotDecision),
+}
+
+/// Function-local identity of one source binding.
+///
+/// This is distinct from HIR's binding identity: SIR assigns it from the
+/// deterministic [`crate::SemFunction::bindings`] order after specialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BindingId(pub u32);
+
+/// The semantic storage a source binding names.
+///
+/// A closed target keeps value aliases and materialized place roots in the one
+/// ordered binding table, rather than copying source provenance onto places or
+/// stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BindingTarget {
+    Value(ValueId),
+    Place(PlaceId),
+}
+
+/// One source binding, and the value or place it names.
 ///
 /// §1.6 separates a user-facing wall from an internal error by asking whether
 /// the offending value is named by a source binding, and rule 6a needs the
@@ -219,11 +230,11 @@ pub enum SuspendInputMode {
 /// ([`crate::SemFunction::binding_naming`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
+    pub id: BindingId,
     pub name: String,
     pub span: Span,
     pub mutable: bool,
-    /// The SSA value this binding names.
-    pub value: ValueId,
+    pub target: BindingTarget,
 }
 
 #[cfg(test)]

@@ -1680,13 +1680,16 @@ fn main() {
 
     #[test]
     fn is_operator_is_reserved_runtime_feature() {
-        // The operands are `Vec` handles, not a record: `is` on a record is a
-        // checker rejection (E_IS_VALUE_TYPE, #3108), and this test is about
-        // the sandbox profile reserving the operator, not about the value
-        // model. A record receiver would never reach the profile check.
+        // Actor handles are admitted operands for `is`; value-shaped operands
+        // are rejected by E_IS_VALUE_TYPE before the sandbox profile. This
+        // test therefore reaches the profile boundary it is meant to cover.
         assert_profile_rejection(
             r#"
-fn same(left: Vec<i64>, right: Vec<i64>) -> bool {
+actor Probe {
+    receive fn ping() {}
+}
+
+fn same(left: LocalPid<Probe>, right: LocalPid<Probe>) -> bool {
     left is right
 }
 

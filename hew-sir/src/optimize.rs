@@ -106,9 +106,12 @@ fn canonicalize_verified_function(
                 }
             }),
             SemTerminator::Return { .. }
+            | SemTerminator::Call { .. }
+            | SemTerminator::RtCall { .. }
             | SemTerminator::Goto(_)
             | SemTerminator::Trap { .. }
             | SemTerminator::Suspend { .. }
+            | SemTerminator::ResumeUnwind
             | SemTerminator::Unreachable => None,
         };
         if let Some(edge) = selected {

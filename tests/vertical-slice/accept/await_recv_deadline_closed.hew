@@ -10,7 +10,10 @@ import std.channel.channel;
 
 actor Worker {
     receive fn run() -> i64 {
-        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {
+            .Ok(pair) => pair,
+            .Err(_) => return -2,
+        };
         tx.close();
         let got: Result<Option<i64>, TimeoutError> = await rx.recv() | after 5000ms;
         match got {

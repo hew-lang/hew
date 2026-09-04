@@ -76,6 +76,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         },
     ];
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -180,6 +181,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         terminator: Terminator::Return,
     }];
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -274,6 +276,7 @@ fn pipeline_no_duplex() -> IrPipeline {
         terminator: Terminator::Return,
     }];
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),

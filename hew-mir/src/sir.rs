@@ -20,7 +20,7 @@ use hew_sir::{
 use hew_sir::{CallableInstance, OwnKind};
 #[cfg(test)]
 use hew_types::DefId;
-use hew_types::ResolvedTy;
+use hew_types::{EntryExitPlan, ResolvedTy};
 
 use crate::{
     dataflow, raw_uses_virtual_values, raw_virtual_class, verify_raw_virtual_value_checked,
@@ -61,6 +61,7 @@ pub struct SirMirComponent {
     raw_mir: Vec<RawMirFunction>,
     checked_mir: Vec<CheckedMirFunction>,
     elaborated_mir: Vec<ElaboratedMirFunction>,
+    entry_exit_plan: Option<EntryExitPlan>,
 }
 
 impl SirMirComponent {
@@ -79,6 +80,7 @@ impl SirMirComponent {
     #[must_use]
     pub fn into_pipeline(self) -> IrPipeline {
         let mut pipeline = IrPipeline {
+            entry_exit_plan: self.entry_exit_plan,
             raw_mir: self.raw_mir,
             checked_mir: self.checked_mir,
             elaborated_mir: self.elaborated_mir,
@@ -248,6 +250,7 @@ pub fn lower_closed_scalar_component(
         raw_mir,
         checked_mir,
         elaborated_mir,
+        entry_exit_plan: module.entry_exit_plan.clone(),
     })
 }
 
@@ -2369,6 +2372,7 @@ mod tests {
             callables,
             generic_templates: Vec::new(),
             root_unit_callables,
+            entry_exit_plan: None,
             entry_callable,
             functions,
             type_facts: BTreeMap::new(),

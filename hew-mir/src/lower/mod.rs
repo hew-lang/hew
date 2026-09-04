@@ -4063,6 +4063,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     let capabilities = crate::model::ModuleCapabilities::from_raw_mir(&raw_mir, &extern_decls);
 
     let pipeline = IrPipeline {
+        entry_exit_plan: module.entry_exit_plan.clone(),
         raw_mir,
         checked_mir,
         elaborated_mir,

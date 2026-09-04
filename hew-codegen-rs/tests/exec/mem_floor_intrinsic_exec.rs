@@ -238,6 +238,7 @@ fn floor_exec_pipeline() -> IrPipeline {
 
 fn floor_pipeline_with_driver(driver: RawMirFunction) -> IrPipeline {
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![
             floor_fn(
                 "mem$alloc",

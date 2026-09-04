@@ -225,6 +225,7 @@ struct CallableTable<'a> {
     generic_templates: Vec<SemGenericTemplate>,
     root_unit_callables: Vec<CallableId>,
     entry_callable: Option<CallableId>,
+    entry_exit_plan: Option<hew_types::EntryExitPlan>,
     monomorphic_by_declaration: HashMap<DefId, CallableId>,
     templates: HashMap<DefId, GenericTemplate<'a>>,
     functions_by_item: HashMap<hew_hir::ItemId, &'a HirFn>,
@@ -344,7 +345,9 @@ impl<'a> CallableTable<'a> {
             // a declaration path or an emitted symbol against "main". A fact
             // that names a non-root declaration is admitted here and rejected
             // by the verifier's entry rule rather than silently dropped.
-            if module.entry_declaration.as_ref() == Some(&function.declaration) {
+            if module.entry_exit_plan.as_ref().map(|plan| &plan.entry)
+                == Some(&function.declaration)
+            {
                 entry_callable = Some(id);
             }
             monomorphic_by_declaration.insert(function.declaration.clone(), id);
@@ -366,6 +369,7 @@ impl<'a> CallableTable<'a> {
             generic_templates,
             root_unit_callables,
             entry_callable,
+            entry_exit_plan: module.entry_exit_plan.clone(),
             monomorphic_by_declaration,
             templates,
             functions_by_item,
@@ -806,6 +810,7 @@ impl<'a> InstanceService<'a> {
             callables: table.callables,
             generic_templates,
             root_unit_callables: table.root_unit_callables,
+            entry_exit_plan: table.entry_exit_plan,
             entry_callable: table.entry_callable,
             functions,
             type_facts,

@@ -206,7 +206,7 @@ fn a_module_without_an_entry_lowers_no_bodies_and_says_why() {
         }
         ",
     );
-    hir.entry_declaration = None;
+    hir.entry_exit_plan = None;
 
     let lowered = lower_module(&hir, &type_facts);
     assert!(

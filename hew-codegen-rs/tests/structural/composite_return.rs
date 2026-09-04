@@ -120,6 +120,7 @@ fn option_some_pipeline() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![maybe_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -223,6 +224,7 @@ fn option_string_pipeline() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![greet_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -362,6 +364,7 @@ fn envelope_i64_pipeline() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![send_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -446,6 +449,7 @@ fn bytes_return_pipeline() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![make_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -523,6 +527,7 @@ fn tuple_of_bytes_return_pipeline() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![make_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
@@ -614,6 +619,7 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![make_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),

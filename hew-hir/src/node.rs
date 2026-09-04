@@ -45,17 +45,10 @@ pub struct HirModule {
     /// producer missing from `diagnostic_source_modules` cannot leak a false
     /// root caret — it simply is not in this set.
     pub root_item_ids: HashSet<ItemId>,
-    /// Resolver-minted declaration identity of the program's executable entry
-    /// point, when this compilation unit has one.
-    ///
-    /// HIR applies the language's entry rule exactly once — the root
-    /// compilation unit's monomorphic `main` declaration — and publishes the
-    /// resulting [`DefId`]. Downstream layers join on this identity; none of
-    /// them re-derives the entry by comparing a rendered declaration path or
-    /// an emitted symbol against `"main"`. `None` means this unit is not an
-    /// executable program, which every strict consumer must treat as a
-    /// fail-closed condition rather than a cue to go looking for a name.
-    pub entry_declaration: Option<DefId>,
+    /// Checker-selected process entry and its complete typed exit contract.
+    /// Downstream layers join on the plan's declaration identity and execute
+    /// its action without rediscovering either fact.
+    pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
     /// Parameters whose resolved type has a checker-proven projection into
     /// caller-visible storage, keyed by stable function item id and parameter
     /// index.

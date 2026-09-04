@@ -181,6 +181,7 @@ fn colour_red_pipeline() -> IrPipeline {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![main_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),

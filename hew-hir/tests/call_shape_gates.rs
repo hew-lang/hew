@@ -607,7 +607,7 @@ fn call_shape_in_machine_transition_guard_rejected() {
         type_param_bounds: Vec::new(),
         states: vec![HirMachineState {
             declaration: hew_types::DefId::for_test("Gate::state Locked"),
-            entry_declaration: None,
+            entry_exit_plan: None,
             exit_declaration: None,
             name: "Locked".to_string(),
             fields: Vec::new(),

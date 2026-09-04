@@ -357,6 +357,7 @@ fn vec_index_oob_branch_targets_trap_and_cont() {
 fn vec_index_mir_wraps_in_pipeline_without_errors() {
     let func = vec_index_i64_mir();
     let pipeline = IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![func],
         checked_mir: vec![],
         elaborated_mir: vec![],

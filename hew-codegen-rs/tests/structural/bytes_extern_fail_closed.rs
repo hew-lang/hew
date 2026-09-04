@@ -135,6 +135,7 @@ fn pipeline_with_extern(
     };
 
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![raw],
         checked_mir: vec![checked],
         elaborated_mir: vec![elab],

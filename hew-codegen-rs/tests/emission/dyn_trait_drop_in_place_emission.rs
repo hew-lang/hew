@@ -107,6 +107,7 @@ fn pipeline_with(
     record_layouts: Vec<RecordLayout>,
 ) -> IrPipeline {
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir,
         checked_mir: vec![],
         elaborated_mir: vec![],

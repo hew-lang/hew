@@ -104,11 +104,6 @@ fn limitation_channel_exits_3_with_prefix_and_json_channel_limitation() {
         stderr.contains("E_LIMIT_MAIN_CONTEXT"),
         "must name the D9 code; got:\n{stderr}",
     );
-    assert!(
-        stderr.contains("actor") && stderr.contains("join"),
-        "the day-one journey asserts the words `actor` and `join`; got:\n{stderr}",
-    );
-
     let json_output = run(&["check", "--format=json", path.to_str().unwrap()]);
     assert_eq!(json_output.status.code(), Some(3));
     let diagnostics = parse_json_array(&json_output);

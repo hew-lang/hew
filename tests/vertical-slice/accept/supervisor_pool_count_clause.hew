@@ -30,25 +30,25 @@ fn main() -> i64 {
     var total = tickers.len();
 
     match await tickers[0].ticks() {
-        Ok(value) => {
+        .Ok(value) => {
             if value != 9 {
                 return 1;
             }
             total = total + value;
         },
-        Err(_) => {
+        .Err(_) => {
             return 2;
         },
     }
 
     match await tickers[1].ticks() {
-        Ok(value) => {
+        .Ok(value) => {
             if value != 9 {
                 return 3;
             }
             total = total + value;
         },
-        Err(_) => {
+        .Err(_) => {
             return 4;
         },
     }

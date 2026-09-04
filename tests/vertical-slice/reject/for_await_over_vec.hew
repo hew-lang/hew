@@ -1,0 +1,6 @@
+fn main() {
+    let values: Vec<i64> = Vec.new();
+    for await value in values {
+        println(value);
+    }
+}

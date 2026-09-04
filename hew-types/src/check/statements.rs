@@ -1698,12 +1698,11 @@ impl Checker {
                 let elem_ty = match &iter_ty {
                     Ty::Array(inner, _) | Ty::Slice(inner) => {
                         if *is_await {
-                            self.report_error(
+                            self.report_error_with_suggestions(
                                 TypeErrorKind::InvalidOperation,
                                 &iterable.1,
-                                "`for await` is not valid over an Array or Slice; \
-                                 use a plain `for` loop"
-                                    .to_string(),
+                                "E_AWAIT_NOT_STREAM: `for await` requires a Stream".to_string(),
+                                vec!["remove `await` to use a plain `for` loop".to_string()],
                             );
                         }
                         (**inner).clone()
@@ -1714,12 +1713,11 @@ impl Checker {
                         ..
                     } if args.len() == 1 => {
                         if *is_await {
-                            self.report_error(
+                            self.report_error_with_suggestions(
                                 TypeErrorKind::InvalidOperation,
                                 &iterable.1,
-                                "`for await` is not valid over a Range; \
-                                 use a plain `for` loop"
-                                    .to_string(),
+                                "E_AWAIT_NOT_STREAM: `for await` requires a Stream".to_string(),
+                                vec!["remove `await` to use a plain `for` loop".to_string()],
                             );
                         }
                         args[0].clone()
@@ -1809,10 +1807,12 @@ impl Checker {
                         } else if let Some(inner) = inner_opt {
                             inner
                         } else {
-                            self.report_error(
+                            self.report_error_with_suggestions(
                                 TypeErrorKind::InvalidOperation,
                                 &iterable.1,
-                                "`for` over a Stream requires a resolved element type".to_string(),
+                                "E_FOR_STREAM_NEEDS_AWAIT: `for` over a Stream requires `await`"
+                                    .to_string(),
+                                vec!["change `for` to `for await`".to_string()],
                             );
                             Ty::Error
                         }
@@ -1823,12 +1823,11 @@ impl Checker {
                         ..
                     } => {
                         if *is_await {
-                            self.report_error(
+                            self.report_error_with_suggestions(
                                 TypeErrorKind::InvalidOperation,
                                 &iterable.1,
-                                "`for await` is not valid over a Vec; \
-                                 use a plain `for` loop"
-                                    .to_string(),
+                                "E_AWAIT_NOT_STREAM: `for await` requires a Stream".to_string(),
+                                vec!["remove `await` to use a plain `for` loop".to_string()],
                             );
                         }
                         if let Some(elem) = args.first().cloned() {
@@ -1863,12 +1862,11 @@ impl Checker {
                         ..
                     } if !args.is_empty() => {
                         if *is_await {
-                            self.report_error(
+                            self.report_error_with_suggestions(
                                 TypeErrorKind::InvalidOperation,
                                 &iterable.1,
-                                "`for await` is not valid over a VecIter; \
-                                 use a plain `for` loop"
-                                    .to_string(),
+                                "E_AWAIT_NOT_STREAM: `for await` requires a Stream".to_string(),
+                                vec!["remove `await` to use a plain `for` loop".to_string()],
                             );
                         }
                         let elem = args[0].clone();
@@ -1884,12 +1882,11 @@ impl Checker {
                         ..
                     } if args.len() >= 2 => {
                         if *is_await {
-                            self.report_error(
+                            self.report_error_with_suggestions(
                                 TypeErrorKind::InvalidOperation,
                                 &iterable.1,
-                                "`for await` is not valid over a HashMap; \
-                                 use a plain `for` loop"
-                                    .to_string(),
+                                "E_AWAIT_NOT_STREAM: `for await` requires a Stream".to_string(),
+                                vec!["remove `await` to use a plain `for` loop".to_string()],
                             );
                         }
                         // `for (k, v) in m` desugars (in HIR) to a `HashMapIter`
@@ -1940,12 +1937,11 @@ impl Checker {
                         ..
                     } if !args.is_empty() => {
                         if *is_await {
-                            self.report_error(
+                            self.report_error_with_suggestions(
                                 TypeErrorKind::InvalidOperation,
                                 &iterable.1,
-                                "`for await` is not valid over a HashSet; \
-                                 use a plain `for` loop"
-                                    .to_string(),
+                                "E_AWAIT_NOT_STREAM: `for await` requires a Stream".to_string(),
+                                vec!["remove `await` to use a plain `for` loop".to_string()],
                             );
                         }
                         // `for x in s` desugars (in HIR) to a `VecIter` over the
@@ -1989,7 +1985,17 @@ impl Checker {
                     Ty::Error => Ty::Error,
                     Ty::Never => Ty::Never,
                     _ => {
-                        if let Some(item_ty) = self.iterator_trait_item_ty(&iter_ty, &iterable.1) {
+                        if *is_await {
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "E_AWAIT_NOT_STREAM: `for await` requires a Stream".to_string(),
+                                vec!["remove `await` to use a plain `for` loop".to_string()],
+                            );
+                            Ty::Error
+                        } else if let Some(item_ty) =
+                            self.iterator_trait_item_ty(&iter_ty, &iterable.1)
+                        {
                             item_ty
                         } else {
                             self.report_error(

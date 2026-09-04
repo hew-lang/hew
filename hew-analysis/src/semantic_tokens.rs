@@ -124,11 +124,6 @@ pub fn build_semantic_tokens(source: &str) -> Vec<SemanticToken> {
             }
         }
 
-        // Mark `async` keyword with ASYNC modifier.
-        if matches!(token, Token::Async) {
-            modifiers |= token_modifiers::ASYNC;
-        }
-
         // Mark labels at definition sites ('label:) with DECLARATION modifier.
         if matches!(token, Token::Label(_)) {
             let next = lexer_tokens.get(i + 1).map(|(t, _)| t);

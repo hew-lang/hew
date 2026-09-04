@@ -7655,17 +7655,9 @@ struct LowerCtx {
     /// checker side-table row but whose cloned operands are not new checker
     /// occurrences. The root is recorded explicitly after leaving this mode.
     suppress_produced_value_recording_depth: usize,
-    /// W4.047 P1.2 — the **typed** checker→HIR handoff map (the shadow of
-    /// `expr_types`). Carries `ResolvedTy` (never `Ty::Var`/`Ty::Error`/literal)
-    /// for every concrete accepted span; cloned verbatim from
-    /// `TypeCheckOutput::resolved_expr_types`.
-    ///
-    /// In Phase 1 this is a *shadow*: lowering still derives every node type
-    /// from `expr_types`, and the typed map is only consulted by the
-    /// `assert_resolved_ty_totality` net to prove — across the whole real
-    /// corpus — that it agrees with the live `expr_types`→`from_ty` path at
-    /// every fail-open / boundary-violation site. Zero behaviour change in
-    /// Phase 1; Phase 2 promotes this to the primary read path.
+    /// Typed checker→HIR handoff map. Carries `ResolvedTy` (never
+    /// `Ty::Var`/`Ty::Error`/literal) for every concrete accepted span; cloned
+    /// verbatim from `TypeCheckOutput::resolved_expr_types`.
     resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
     /// Checker-authoritative RHS spans for accepted `lhs is TypeName`
     /// patterns. When present, the RHS identifier is a type pattern, not a
@@ -8891,18 +8883,10 @@ impl LowerCtx {
         result
     }
 
-    /// W4.047 P1.2 — read the typed checker→HIR handoff map.
-    ///
     /// Returns the `ResolvedTy` the checker recorded for `span`, or `None` if
     /// the span is absent (a synthesised/no-span node, or a pre-monomorphi-
     /// zation generic body whose type is a covered inference var and so is
     /// legitimately not in the typed map).
-    ///
-    /// Phase 1 only consults this through `assert_resolved_ty_totality`; Phase
-    /// 2 promotes it to the primary node-type read path. Annotated `dead_code`
-    /// because in release builds the only caller (the debug-only totality net)
-    /// compiles away.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     fn checked_ty(&self, span: &Span) -> Option<&ResolvedTy> {
         self.resolved_expr_types.get(&self.mk_key(span))
     }
@@ -9183,45 +9167,6 @@ impl LowerCtx {
             "checker did not provide a canonical plan for this record-shaped enum/record pattern",
         ));
         true
-    }
-
-    /// W4.047 P1.2 — the totality assert net (zero behaviour change).
-    ///
-    /// At a fail-open / boundary-violation lowering site, prove that the typed
-    /// `resolved_expr_types` map agrees *exactly* with the live
-    /// `expr_types`→`ResolvedTy::from_ty` path the production code still drives
-    /// off. The two must be observationally identical at every concrete
-    /// accepted span:
-    ///
-    /// - span present + `from_ty` succeeds → typed map has the identical value,
-    /// - span present + `from_ty` fails (covered generic var) → typed map omits
-    ///   it and the live `.ok()` is `None`, so both agree on absence,
-    /// - span absent → both miss.
-    ///
-    /// A trip means the typed handoff is missing an entry for an accepted
-    /// concrete expr (a real fail-open gap the `.unwrap_or(Unit)` was masking)
-    /// or that P1.1's population diverged from the live conversion. Compiled
-    /// out of release: the live path is unchanged, so lowering output is
-    /// byte-identical.
-    #[inline]
-    fn assert_resolved_ty_totality(&self, span: &Span) {
-        #[cfg(debug_assertions)]
-        {
-            let key = self.mk_key(span);
-            let live = self
-                .expr_types
-                .get(&key)
-                .and_then(|ty| ResolvedTy::from_ty(ty).ok());
-            debug_assert_eq!(
-                self.checked_ty(span),
-                live.as_ref(),
-                "W4.047 totality: typed resolved_expr_types disagrees with the \
-                 live expr_types->from_ty path at span {key:?} — the typed \
-                 checker->HIR handoff is not total over this accepted span"
-            );
-        }
-        #[cfg(not(debug_assertions))]
-        let _ = span;
     }
 
     fn tag_diagnostics_since(&mut self, start: usize, source_module: &str) {
@@ -12535,7 +12480,6 @@ impl LowerCtx {
             .map_or(ResolvedTy::Unit, |ty| {
                 self.qualify_current_module_record_ty(ty)
             });
-        self.assert_resolved_ty_totality(span);
         let resolved_ref = match &target {
             // The checker has already selected this closed executable family.
             // Do not require a synthetic fn-registry spelling (or recover one
@@ -18257,19 +18201,46 @@ impl LowerCtx {
     }
 
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
+        let Some(checked_ty) = self.checked_ty(&expr.1).cloned() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "expression value class".to_string(),
+                    reason: "resolved_expr_types has no entry for expression".to_string(),
+                },
+                expr.1.clone(),
+                "checker did not publish this expression's resolved type",
+            ));
+            return self.unsupported_expr(
+                expr.1.clone(),
+                "expression has no checker-published resolved type",
+            );
+        };
+        let Some(facts) = self.type_facts.get(&hew_types::TypeInstanceKey(checked_ty)) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "expression value class".to_string(),
+                    reason: "type_facts has no row for checker-resolved expression type"
+                        .to_string(),
+                },
+                expr.1.clone(),
+                "checker did not publish ownership facts for this expression type",
+            ));
+            return self.unsupported_expr(
+                expr.1.clone(),
+                "expression has no checker-published type facts",
+            );
+        };
+        let value_class = match facts.class {
+            hew_types::ValueClass::BitCopy => ValueClass::BitCopy,
+            hew_types::ValueClass::View => ValueClass::View,
+            hew_types::ValueClass::CowValue => ValueClass::CowValue,
+            hew_types::ValueClass::PersistentShare => ValueClass::PersistentShare,
+            hew_types::ValueClass::AffineResource => ValueClass::AffineResource,
+            hew_types::ValueClass::Linear => ValueClass::Linear,
+        };
         let mut lowered = self.lower_expr_without_root_fact(expr, intent);
         let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
-        lowered.value_class = self
-            .checked_ty(&expr.1)
-            .and_then(|ty| self.type_facts.get(&hew_types::TypeInstanceKey(ty.clone())))
-            .map_or(ValueClass::Unknown, |facts| match facts.class {
-                hew_types::ValueClass::BitCopy => ValueClass::BitCopy,
-                hew_types::ValueClass::View => ValueClass::View,
-                hew_types::ValueClass::CowValue => ValueClass::CowValue,
-                hew_types::ValueClass::PersistentShare => ValueClass::PersistentShare,
-                hew_types::ValueClass::AffineResource => ValueClass::AffineResource,
-                hew_types::ValueClass::Linear => ValueClass::Linear,
-            });
+        lowered.value_class = value_class;
         lowered.ty = normalized_ty;
         if !self
             .generated_produced_value_facts
@@ -18713,9 +18684,6 @@ impl LowerCtx {
                         default_ty
                     }
                 };
-                // W4.047 P1.2: prove the typed handoff agrees with the live
-                // path at this fail-open literal site (no behaviour change).
-                self.assert_resolved_ty_totality(&span);
                 (kind, ty)
             }
             Expr::RegexLiteral(pattern) => {
@@ -18742,9 +18710,6 @@ impl LowerCtx {
                         is_opaque: false,
                     }
                 };
-                // W4.047 P1.2: prove the typed handoff agrees with the live
-                // path at this fail-open regex-literal site (no behaviour change).
-                self.assert_resolved_ty_totality(&span);
                 // No named captures from a standalone literal — captures are
                 // resolved per-arm in the match-arm context. Pass an empty
                 // capture list; the table deduplicates by pattern only.
@@ -22314,7 +22279,6 @@ impl LowerCtx {
                 default_ty
             }
         };
-        self.assert_resolved_ty_totality(span);
         (HirExprKind::Literal(HirLiteral::Integer(negated)), ty)
     }
 
@@ -23866,12 +23830,6 @@ impl LowerCtx {
                         is_opaque: false,
                     }
                 };
-                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
-                // bare-name unit-ctor site (the B1 archetype; no behaviour
-                // change). When the checker stamped the span (W4.042), the
-                // typed map carries the concrete `Named` type and this assert
-                // confirms it; when the span is genuinely absent, both miss.
-                self.assert_resolved_ty_totality(&span);
                 return (
                     HirExprKind::MachineVariantCtor {
                         machine_name: tagged_union_name,
@@ -28290,9 +28248,6 @@ impl LowerCtx {
                     ret_ty,
                 );
             }
-            // W4.047 P1.2: prove the typed handoff agrees at this fail-open
-            // dyn-method-return site (no behaviour change).
-            self.assert_resolved_ty_totality(&span);
             return (
                 HirExprKind::CallDynMethod {
                     receiver: Box::new(lowered_receiver),
@@ -28665,9 +28620,6 @@ impl LowerCtx {
                         ret_ty,
                     );
                 }
-                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
-                // receiver-method-rewrite return site (no behaviour change).
-                self.assert_resolved_ty_totality(&span);
                 if self.signature_requires_mutable_receiver(&c_symbol) {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
                     let receiver_ty = lowered_receiver.ty.clone();
@@ -28948,10 +28900,6 @@ impl LowerCtx {
                     .cloned()
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                     .unwrap_or(ResolvedTy::Unit);
-                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
-                // static-trait-dispatch return site (no behaviour change).
-                self.assert_resolved_ty_totality(&span);
-
                 // Trait default method body — concrete Self interception.
                 //
                 // When a trait default method body is lowered as a concrete

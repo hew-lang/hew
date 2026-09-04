@@ -48,7 +48,7 @@ fn test_non_2xx_response_body_round_trips() {
             let client = spawn Client(url: f"http://127.0.0.1:{port}/missing", status: 0, body: "");
             client.fetch(0);
             let req = server.accept();
-            let _ = req.try_respond_text(404, "not found: the resource does not exist");
+            let _ = req.respond_text(404, "not found: the resource does not exist");
             req.close();
             server.close();
             match await client.status_result() {

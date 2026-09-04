@@ -138,7 +138,7 @@ pub fn from_stdin() -> Scanner {
 ///
 /// Returns `Err(fs.IoError)` if the file cannot be opened or read.
 pub fn from_file(path: string) -> Result<Scanner, fs.IoError> {
-    match fs.try_read(path) {
+    match fs.read(path) {
         .Ok(contents) => Ok(Scanner { source: contents, pos: 0, current: "", valid: false, done: false, mode: .SplitLines }),
         .Err(e) => Err(e),
     }

@@ -63,7 +63,7 @@ fn test_server_client_roundtrip_returns_200_and_echoes_path() {
             client.fetch(0);
             let req = server.accept();
             let path = req.path();
-            let _ = req.try_respond_text(200, "pong:" + path);
+            let _ = req.respond_text(200, "pong:" + path);
             req.close();
             server.close();
             match await client.status_result() {

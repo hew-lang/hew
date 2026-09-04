@@ -28,6 +28,6 @@ fn main() {
     let converted_char = Some('x').ok_or("missing char").expect("option should contain a char");
     let expected_bool = Some(false).expect("bool should be present");
     let propagated = propagate_same_error().expect("same error should propagate");
-    let boxed = erase_fault();
+    let _boxed = erase_fault();
     println(f"{propagated} {remapped_value} {expected_char} {converted_char} {expected_bool}");
 }

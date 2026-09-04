@@ -1682,6 +1682,11 @@ pub enum RcIntrinsicOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodCallRewrite {
+    /// Fixed-array length is part of the checked type and lowers as an i64
+    /// literal, without reading the receiver at runtime.
+    FixedArrayLen {
+        length: i64,
+    },
     /// Typed Rc/Weak intrinsic selected by the checker. `payload_ty` is the
     /// concrete `T` from the receiver or constructor result; downstream stages
     /// must dispatch on `op`, never on a method or runtime-symbol string.

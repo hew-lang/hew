@@ -80,14 +80,6 @@ pub fn map_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
     }
 }
 
-/// Apply `f` to the contained `Err` value, or return `Ok` unchanged.
-pub fn map_err_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
-    match r {
-        .Ok(v) => Ok(v),
-        .Err(e) => Err(f(e)),
-    }
-}
-
 // ── Contains ────────────────────────────────────────────────────────
 /// Returns `true` if the result is `Ok` and contains `needle`.
 pub fn contains_int(r: Result<i64, i64>, needle: i64) -> bool {
@@ -211,6 +203,18 @@ impl<T, E> Result<T, E> {
         match r {
             .Ok(v) => v,
             .Err(_) => fallback,
+        }
+    }
+    fn map_err<F>(r: Result<T, E>, f: fn(E) -> F) -> Result<T, F> {
+        match r {
+            .Ok(v) => Ok(v),
+            .Err(e) => Err(f(e)),
+        }
+    }
+    fn expect(r: Result<T, E>, message: string) -> T {
+        match r {
+            .Ok(v) => v,
+            .Err(_) => panic(message),
         }
     }
 }

@@ -90,6 +90,8 @@ impl Display for SendError {
     }
 }
 
+impl Error for SendError {}
+
 /// Error returned when `Node.lookup<T>(name)` cannot resolve `name`.
 ///
 /// Returned as `Err(LookupError.NotFound)` when no actor is registered
@@ -131,6 +133,8 @@ impl Display for LookupError {
         }
     }
 }
+
+impl Error for LookupError {}
 
 /// Error returned when a remote actor ask cannot complete.
 ///
@@ -210,6 +214,8 @@ impl Display for AskError {
     }
 }
 
+impl Error for AskError {}
+
 /// Error arm of `await rx.recv() | after d` and `await stream.recv() | after d`.
 ///
 /// Returned as `Err(TimeoutError.Timeout)` when the deadline fires before an
@@ -238,6 +244,8 @@ impl Display for TimeoutError {
         }
     }
 }
+
+impl Error for TimeoutError {}
 
 /// Error returned by the `link(handle)` builtin in value position
 /// (`link(actor) -> Result<(), LinkError>`).
@@ -279,6 +287,8 @@ impl Display for LinkError {
         }
     }
 }
+
+impl Error for LinkError {}
 
 /// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.
 ///
@@ -722,6 +732,9 @@ pub trait Display {
     #[lang_item(display_fmt)]
     fn fmt(val: Self) -> string;
 }
+
+/// A displayable failure value that may be returned through `dyn Error`.
+pub trait Error: Display {}
 
 // Blanket impls for primitive types.  Each body delegates to the magic
 // `to_string` helper which still routes through `MarkerTrait::Display`

@@ -926,6 +926,19 @@ pub enum TypeErrorKind {
         /// Short reason: `"generic method"` or `"Self-returning method"`.
         reason: &'static str,
     },
+    /// A dynamic trait call selected a method inherited from a supertrait.
+    ///
+    /// The current trait-object vtable carries only methods declared directly
+    /// on the dynamic bound, so inherited method dispatch must be rejected in
+    /// the checker before HIR sees an unrepresentable call.
+    ///
+    /// Envelope code: `E_DYN_SUPERTRAIT`.
+    DynSupertrait {
+        /// Dynamic bound written at the call site.
+        trait_name: String,
+        /// Inherited method selected through that bound.
+        method_name: String,
+    },
     /// A trait object omits required associated-type bindings.
     ///
     /// Rust-aligned object safety requires every associated type declared by a
@@ -1557,6 +1570,7 @@ impl TypeErrorKind {
             Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
             Self::RawPointerOpNotLowered { .. } => "RawPointerOpNotLowered",
             Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",
+            Self::DynSupertrait { .. } => "E_DYN_SUPERTRAIT",
             Self::MissingAssocTypeBinding { .. } => "MissingAssocTypeBinding",
             Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",
             Self::ClosureCaptureModeUnresolved { .. } => "ClosureCaptureModeUnresolved",

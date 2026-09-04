@@ -29131,6 +29131,10 @@ impl LowerCtx {
                     ty,
                 )
             }
+            Some(MethodCallRewrite::FixedArrayLen { length }) => (
+                HirExprKind::Literal(HirLiteral::Integer(length)),
+                ResolvedTy::I64,
+            ),
             None => {
                 // The stdlib impl resolver can consume the dedicated
                 // `BuiltinVecIntoIter` marker while retaining the checker-owned

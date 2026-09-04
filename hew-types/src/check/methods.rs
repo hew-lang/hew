@@ -8903,6 +8903,19 @@ impl Checker {
         }
 
         match (&resolved, method) {
+            (Ty::Array(_, declared_length), "len") => {
+                self.check_arity(args, 0, "`[T; N].len`", span);
+                let Ok(length) = i64::try_from(*declared_length) else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "fixed-array length exceeds the i64 return type of `.len()`".to_string(),
+                    );
+                    return Ty::Error;
+                };
+                self.record_method_call_rewrite(span, MethodCallRewrite::FixedArrayLen { length });
+                Ty::I64
+            }
             (Ty::CancellationToken, "is_cancelled") => {
                 self.check_arity(args, 0, "`CancellationToken.is_cancelled`", span);
                 self.record_method_call_rewrite(
@@ -11160,6 +11173,30 @@ impl Checker {
                             && method == "send"
                     });
                     if let Some(bound) = found_bound {
+                        let trait_lookup_key = self.trait_ref_lookup_key(&bound.trait_name);
+                        let declares_method_directly = self
+                            .trait_defs
+                            .get(&trait_lookup_key)
+                            .is_some_and(|trait_info| {
+                                trait_info
+                                    .methods
+                                    .iter()
+                                    .any(|candidate| candidate.name == method)
+                            });
+                        if !declares_method_directly {
+                            self.report_error(
+                                TypeErrorKind::DynSupertrait {
+                                    trait_name: bound.trait_name.clone(),
+                                    method_name: method.to_string(),
+                                },
+                                span,
+                                format!(
+                                    "E_DYN_SUPERTRAIT: `dyn {}` cannot dispatch inherited method `{method}`; call through a dyn bound that declares the method directly",
+                                    bound.trait_name,
+                                ),
+                            );
+                            return Ty::Error;
+                        }
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::TraitObject {

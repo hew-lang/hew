@@ -500,8 +500,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1489] = {
      "{\"native\": \"fn hew_ask_error_translate_for_public_result( i32) -> "
      "i32\", \"wasm32-wasip1\": \"fn "
      "hew_ask_error_translate_for_public_result( i32) -> i32\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
-     "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
+     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_assert",
      "{\"native\": \"fn hew_assert( u8)\", \"wasm32-wasip1\": \"fn hew_assert( "
      "u8)\"}",

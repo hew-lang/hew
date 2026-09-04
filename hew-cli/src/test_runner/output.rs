@@ -291,6 +291,13 @@ mod tests {
                 test: TestCase {
                     name: "test_ok".into(),
                     file: "f.hew".into(),
+                    occurrence: hew_types::DeclarationOccurrence::new(
+                        None,
+                        &(0..0),
+                        hew_types::DeclarationKind::Function,
+                        0,
+                    ),
+                    companion: None,
                     ignored: false,
                     should_panic: false,
                     serial: false,
@@ -316,6 +323,13 @@ mod tests {
                 test: TestCase {
                     name: "test_bad".into(),
                     file: "f.hew".into(),
+                    occurrence: hew_types::DeclarationOccurrence::new(
+                        None,
+                        &(0..0),
+                        hew_types::DeclarationKind::Function,
+                        0,
+                    ),
+                    companion: None,
                     ignored: false,
                     should_panic: false,
                     serial: false,
@@ -343,6 +357,13 @@ mod tests {
                     test: TestCase {
                         name: "test_pass".into(),
                         file: "math_test.hew".into(),
+                        occurrence: hew_types::DeclarationOccurrence::new(
+                            None,
+                            &(0..0),
+                            hew_types::DeclarationKind::Function,
+                            0,
+                        ),
+                        companion: None,
                         ignored: false,
                         should_panic: false,
                         serial: false,
@@ -355,6 +376,13 @@ mod tests {
                     test: TestCase {
                         name: "test_fail".into(),
                         file: "math_test.hew".into(),
+                        occurrence: hew_types::DeclarationOccurrence::new(
+                            None,
+                            &(0..0),
+                            hew_types::DeclarationKind::Function,
+                            0,
+                        ),
+                        companion: None,
                         ignored: false,
                         should_panic: false,
                         serial: false,
@@ -367,6 +395,13 @@ mod tests {
                     test: TestCase {
                         name: "test_skip".into(),
                         file: "other_test.hew".into(),
+                        occurrence: hew_types::DeclarationOccurrence::new(
+                            None,
+                            &(0..0),
+                            hew_types::DeclarationKind::Function,
+                            0,
+                        ),
+                        companion: None,
                         ignored: true,
                         should_panic: false,
                         serial: false,

@@ -356,6 +356,13 @@ mod partition_tests {
         let test = discovery::TestCase {
             name: "works".into(),
             file: "/repo/tests/hew/sample_test.hew".into(),
+            occurrence: hew_types::DeclarationOccurrence::new(
+                None,
+                &(0..0),
+                hew_types::DeclarationKind::Function,
+                0,
+            ),
+            companion: None,
             ignored: false,
             should_panic: false,
             serial: false,

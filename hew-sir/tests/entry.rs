@@ -45,6 +45,7 @@ fn declaration_of(module: &HirModule, name: &str) -> DefId {
 fn integer_entry(entry: DefId) -> EntryExitPlan {
     EntryExitPlan {
         entry,
+        displaced_entry: None,
         action: EntryExitAction::Integer(EntryIntegerType::I64),
     }
 }

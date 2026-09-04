@@ -369,7 +369,8 @@ pub struct SemModule {
     /// from [`Self::entry_callable`], so unrelated root bodies do not block a
     /// selected program.
     pub root_unit_callables: Vec<CallableId>,
-    /// Checker-selected process entry and its complete typed exit contract.
+    /// Checker-selected process entry, any displaced authored entry, and its
+    /// complete typed exit contract.
     pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
     /// Resolved entry callable, projected by joining the entry plan's `DefId`.
     /// Neither lowering nor the verifier rediscovers an entry from a

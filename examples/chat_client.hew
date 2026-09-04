@@ -64,7 +64,7 @@ fn main() {
     let addr = f"127.0.0.1:{port}";
     let connect_timeout_sec: i64 = 5;
     let connect_timeout_usec: i64 = 0;
-    let conn = match net.try_connect_timeout(addr, connect_timeout_sec, connect_timeout_usec) {
+    let conn = match net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec) {
         .Ok(conn) => conn,
         .Err(err) => {
             panic(f"[client] connect to {addr} failed: {err}");

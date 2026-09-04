@@ -19,27 +19,6 @@
 //! ```
 
 import std.net;
-
-/// Resolve a hostname to all associated IP addresses.
-///
-/// Returns a vector of IP address strings. Returns an empty vector
-/// if the hostname cannot be resolved.
-///
-/// # Examples
-///
-/// ```
-/// import std.net.dns;
-///
-/// fn main() {
-///     let addrs = dns.resolve("localhost");  // ["127.0.0.1", "::1"]
-/// }
-/// ```
-pub fn resolve(hostname: string) -> Vec<string> {
-    unsafe {
-        hew_dns_resolve(hostname)
-    }
-}
-
 /// Resolve a hostname to all associated IP addresses.
 ///
 /// Returns `Err(NetError.Other(0))` when the hostname cannot be resolved.
@@ -48,7 +27,7 @@ pub fn resolve(hostname: string) -> Vec<string> {
 ///
 /// Note: DNS has no OS errno channel; the errno payload is always 0.
 /// A follow-up issue will wire errno once hew_dns_resolve exposes it.
-pub fn try_resolve(hostname: string) -> Result<Vec<string>, net.NetError> {
+pub fn resolve(hostname: string) -> Result<Vec<string>, net.NetError> {
     let addrs = resolve(hostname);
     if addrs.len() == 0 {
         Err(net.net_error_from_errno(0))
@@ -56,27 +35,6 @@ pub fn try_resolve(hostname: string) -> Result<Vec<string>, net.NetError> {
         Ok(addrs)
     }
 }
-
-/// Resolve a hostname to its first IP address.
-///
-/// Returns the first resolved IP address as a string, or an empty
-/// string if the hostname cannot be resolved.
-///
-/// # Examples
-///
-/// ```
-/// import std.net.dns;
-///
-/// fn main() {
-///     let ip = dns.lookup_host("localhost");  // "127.0.0.1"
-/// }
-/// ```
-pub fn lookup_host(hostname: string) -> string {
-    unsafe {
-        hew_dns_lookup_host(hostname)
-    }
-}
-
 /// Resolve a hostname to its first IP address.
 ///
 /// Returns `Err(NetError.Other(0))` when the hostname cannot be resolved.
@@ -85,7 +43,7 @@ pub fn lookup_host(hostname: string) -> string {
 ///
 /// Note: DNS has no OS errno channel; the errno payload is always 0.
 /// A follow-up issue will wire errno once hew_dns_lookup_host exposes it.
-pub fn try_lookup_host(hostname: string) -> Result<string, net.NetError> {
+pub fn lookup_host(hostname: string) -> Result<string, net.NetError> {
     let ip = lookup_host(hostname);
     if ip == "" {
         Err(net.net_error_from_errno(0))

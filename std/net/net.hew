@@ -15,7 +15,7 @@
 //! import std.net;
 //!
 //! fn dial(addr: string) -> Result<net.Connection, net.NetError> {
-//!     net.try_connect(addr)
+//!     net.connect(addr)
 //! }
 //!
 //! fn main() {
@@ -166,7 +166,7 @@ pub fn abi_i32_max() -> i64 {
 /// Validate a millisecond duration that the C ABI carries as an `i32`.
 ///
 /// `context` names the calling API so the rejection identifies its origin.
-pub fn try_duration_ms(context: string, ms: i64) -> Result<i64, NetError> {
+pub fn duration_ms(context: string, ms: i64) -> Result<i64, NetError> {
     if ms < 0 {
         return Err(NetError.InvalidArgument(f"{context}: invalid duration {ms} ms (must be >= 0)"));
     }
@@ -185,11 +185,11 @@ fn try_connection_timeout_ms(context: string, ms: i64) -> Result<i64, NetError> 
     if ms < 0 {
         return Ok(-1);
     }
-    try_duration_ms(context, ms)
+    duration_ms(context, ms)
 }
 
 /// Validate a byte count that the C ABI carries as an `i32`.
-pub fn try_size_arg(context: string, size: i64) -> Result<i64, NetError> {
+pub fn size_arg(context: string, size: i64) -> Result<i64, NetError> {
     if size < 0 {
         return Err(NetError.InvalidArgument(f"{context}: invalid size {size} (must be >= 0)"));
     }
@@ -200,7 +200,7 @@ pub fn try_size_arg(context: string, size: i64) -> Result<i64, NetError> {
 }
 
 /// Validate a TCP/UDP port number.
-pub fn try_port_arg(context: string, port: i64) -> Result<i64, NetError> {
+pub fn port_arg(context: string, port: i64) -> Result<i64, NetError> {
     if port < 0 || port > 65535 {
         return Err(NetError.InvalidArgument(f"{context}: invalid port {port} (must be 0..=65535)"));
     }
@@ -234,7 +234,7 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
         return Err(endpoint_reject(context, addr, "empty port"));
     }
     match string.to_int(text) {
-        .Some(port) => try_port_arg(context, port),
+        .Some(port) => port_arg(context, port),
         .None => Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
     }
 }
@@ -254,13 +254,13 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
 /// import std.net;
 ///
 /// fn main() {
-///     match net.try_parse_endpoint("net.connect_timeout", "[::1]:9000") {
+///     match net.parse_endpoint("net.connect_timeout", "[::1]:9000") {
 ///         .Ok(ep) => println(f"{ep.host} {ep.port}"),
 ///         .Err(err) => println(err),
 ///     }
 /// }
 /// ```
-pub fn try_parse_endpoint(context: string, addr: string) -> Result<Endpoint, NetError> {
+pub fn parse_endpoint(context: string, addr: string) -> Result<Endpoint, NetError> {
     if addr == "" {
         return Err(endpoint_reject(context, addr, "empty address"));
     }
@@ -342,7 +342,7 @@ pub fn net_error_cancelled() -> NetError {
 /// buffer at the application layer rather than block its actor indefinitely.
 ///
 /// `BackpressureExceeded` is the write-side analogue of a bounded channel's
-/// `try_send` rejection: it is recoverable. `Disconnected` and `Other` are
+/// `send` rejection: it is recoverable. `Disconnected` and `Other` are
 /// genuine failures of the connection.
 ///
 /// For connection-establishment and read-side failures, see `NetError`.
@@ -726,25 +726,6 @@ impl Connection {
 // ── Module-level functions ────────────────────────────────────────────
 /// Create a TCP listener bound to the given address.
 ///
-/// The address format is `"host:port"` or `":port"`.
-///
-/// # Examples
-///
-/// ```
-/// import std.net;
-///
-/// fn main() {
-///     let listener = net.listen(":9000");
-/// }
-/// ```
-pub fn listen(addr: string) -> Listener {
-    unsafe {
-        hew_tcp_listen(addr)
-    }
-}
-
-/// Create a TCP listener bound to the given address.
-///
 /// Returns `Err(NetError)` instead of panicking on bind failure.
 ///
 /// # Examples
@@ -753,14 +734,14 @@ pub fn listen(addr: string) -> Listener {
 /// import std.net;
 ///
 /// fn main() {
-///     match net.try_listen(":9000") {
+///     match net.listen(":9000") {
 ///         .Ok(ln) => { /* accept connections */ },
 ///         .Err(net.NetError.AddressInUse(_)) => println("port already taken"),
 ///         .Err(e) => println("bind failed"),
 ///     }
 /// }
 /// ```
-pub fn try_listen(addr: string) -> Result<Listener, NetError> {
+pub fn listen(addr: string) -> Result<Listener, NetError> {
     unsafe {
         let ln = hew_tcp_listen(addr);
         if hew_listener_is_valid(ln) {
@@ -772,26 +753,6 @@ pub fn try_listen(addr: string) -> Result<Listener, NetError> {
         }
     }
 }
-
-/// Connect to a TCP server at the given address.
-///
-/// Blocks until the connection is established.
-///
-/// # Examples
-///
-/// ```
-/// import std.net;
-///
-/// fn main() {
-///     let conn = net.connect("localhost:9000");
-/// }
-/// ```
-pub fn connect(addr: string) -> Connection {
-    unsafe {
-        hew_tcp_connect(addr)
-    }
-}
-
 /// Connect to a TCP server at the given address.
 ///
 /// Returns `Err(NetError)` instead of panicking on failure.
@@ -802,14 +763,14 @@ pub fn connect(addr: string) -> Connection {
 /// import std.net;
 ///
 /// fn main() {
-///     match net.try_connect("localhost:9000") {
+///     match net.connect("localhost:9000") {
 ///         .Ok(conn) => { /* use conn */ },
 ///         .Err(net.NetError.ConnectionRefused(_)) => println("nothing listening"),
 ///         .Err(e) => println("connect failed"),
 ///     }
 /// }
 /// ```
-pub fn try_connect(addr: string) -> Result<Connection, NetError> {
+pub fn connect(addr: string) -> Result<Connection, NetError> {
     unsafe {
         let conn = hew_tcp_connect(addr);
         if hew_connection_is_valid(conn) {
@@ -821,34 +782,6 @@ pub fn try_connect(addr: string) -> Result<Connection, NetError> {
         }
     }
 }
-
-/// Connect to a TCP server with a timeout.
-///
-/// `timeout_sec` and `timeout_usec` specify the deadline. The address must
-/// carry an explicit port (`host:port`, `:port`, or `[ipv6]:port`).
-///
-/// Panics on a malformed address or an unrepresentable deadline. Use
-/// `try_connect_timeout` to observe those rejections instead.
-pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Connection {
-    let Endpoint { host, port } = match try_parse_endpoint("net.connect_timeout", addr) {
-        .Ok(endpoint) => endpoint,
-        .Err(err) => {
-            panic(f"net.connect_timeout failed: {err}");
-            Endpoint { host: "", port: 0 }
-        },
-    };
-    let timeout_ms = match try_connect_timeout_ms(timeout_sec, timeout_usec) {
-        .Ok(ms) => ms,
-        .Err(err) => {
-            panic(f"net.connect_timeout failed: {err}");
-            0
-        },
-    };
-    unsafe {
-        hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32) // INTERNAL-ABI: both values are range-checked above
-    }
-}
-
 /// Connect to a TCP server with a timeout, reporting invalid input and
 /// connect failure instead of fabricating a default.
 ///
@@ -857,8 +790,8 @@ pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Con
 /// before the native connect rather than becoming host `127.0.0.1` port `0`.
 /// The deadline is accumulated with overflow checks and validated against the
 /// `i32` the C ABI carries.
-pub fn try_connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Result<Connection, NetError> {
-    let Endpoint { host, port } = try_parse_endpoint("net.connect_timeout", addr)?;
+pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Result<Connection, NetError> {
+    let Endpoint { host, port } = parse_endpoint("net.connect_timeout", addr)?;
     let timeout_ms = try_connect_timeout_ms(timeout_sec, timeout_usec)?;
     unsafe {
         let conn = hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32); // INTERNAL-ABI: both values are range-checked above
@@ -893,22 +826,8 @@ fn try_connect_timeout_ms(timeout_sec: i64, timeout_usec: i64) -> Result<i64, Ne
     if micros_ms > abi_i32_max() - seconds_ms {
         return Err(NetError.InvalidArgument(f"net.connect_timeout: invalid deadline (timeout_sec {timeout_sec} + timeout_usec {timeout_usec} exceeds {abi_i32_max()} ms)"));
     }
-    try_duration_ms("net.connect_timeout", seconds_ms + micros_ms)
+    duration_ms("net.connect_timeout", seconds_ms + micros_ms)
 }
-
-/// Broadcast a message to all connections except the sender.
-///
-/// Used in chat-server patterns to fan out messages. Delivery is
-/// best-effort: every eligible connection is attempted even after one
-/// fails. Returns the delivered count (0 when there are no eligible
-/// connections), or -1 when at least one eligible connection's write
-/// failed. Use `try_broadcast_except` for a structured `NetError`.
-pub fn broadcast_except(sender: Connection, message: bytes) -> i64 {
-    unsafe {
-        hew_tcp_broadcast_except(sender, message) as i64
-    }
-}
-
 /// Broadcast a message to all connections except the sender.
 ///
 /// Used in chat-server patterns to fan out messages. Delivery is
@@ -917,7 +836,7 @@ pub fn broadcast_except(sender: Connection, message: bytes) -> i64 {
 /// failed (`Ok(0)` means there was nothing to deliver to); `Err`
 /// carries the `NetError` for the first failed write — healthy
 /// connections were still delivered to.
-pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<i64, NetError> {
+pub fn broadcast_except(sender: Connection, message: bytes) -> Result<i64, NetError> {
     let n: i32 = unsafe {
         hew_tcp_broadcast_except(sender, message)
     };

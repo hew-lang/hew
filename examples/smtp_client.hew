@@ -19,7 +19,7 @@ import std.net.smtp;
 fn send_plain(host: string, port: i64, username: string, password: string, from: string, to: string) -> Result<i64, string> {
     match smtp.connect(host, port, username, password) {
         .Ok(conn) => {
-            let result = conn.try_send(from, to, "Hello from Hew", "This is a plain-text test email.");
+            let result = conn.send(from, to, "Hello from Hew", "This is a plain-text test email.");
             conn.close();
             match result {
                 .Ok(()) => Ok(0),
@@ -34,7 +34,7 @@ fn send_html(host: string, port: i64, username: string, password: string, from: 
     match smtp.connect_tls(host, port, username, password) {
         .Ok(conn) => {
             let body = "<h1>Hello</h1><p>This is an <b>HTML</b> test email sent from Hew.</p>";
-            let result = conn.try_send_html(from, to, "HTML email from Hew", body);
+            let result = conn.send_html(from, to, "HTML email from Hew", body);
             conn.close();
             match result {
                 .Ok(()) => Ok(0),

@@ -604,7 +604,7 @@ fn try_quic_deadline_ms(context: string, deadline_ms: i64) -> Result<i64, net.Ne
     if deadline_ms <= 0 {
         return Ok(0);
     }
-    net.try_duration_ms(context, deadline_ms)
+    net.duration_ms(context, deadline_ms)
 }
 
 /// Send bytes on a QUIC stream with a per-call deadline.

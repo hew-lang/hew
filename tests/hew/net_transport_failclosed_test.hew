@@ -46,7 +46,7 @@ fn test_negative_stream_capacity_panics_at_legacy_boundary() {
 
 #[test]
 fn test_password_cost_overflow_is_rejected() {
-    match password.try_hash_custom("secret", 4294967299) {
+    match password.hash_custom("secret", 4294967299) {
         .Ok(_) => panic("expected oversized password cost to fail"),
         .Err(err) => testing.assert_eq_str(err, "password.hash_custom: invalid cost 4294967299 (must be 1..=2147483647)"),
     }
@@ -60,7 +60,7 @@ fn test_password_cost_overflow_panics_at_legacy_boundary() {
 
 #[test]
 fn test_malformed_password_hash_is_not_a_mismatch() {
-    match password.try_verify("secret", "not-a-phc-hash") {
+    match password.verify("secret", "not-a-phc-hash") {
         .Ok(_) => panic("expected malformed password hash to fail"),
         .Err(err) => testing.assert_eq_str(err, "password.verify: malformed password hash"),
     }

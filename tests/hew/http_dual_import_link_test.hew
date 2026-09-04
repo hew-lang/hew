@@ -20,7 +20,7 @@ import std.testing;
 
 /// Server-side impl (`impl ServerMethods for Server`) is reachable and
 /// executable in the dual-import unit. `:0` binds an ephemeral port (the
-/// CI-safe pattern, cf. `net_try_api_test.hew` `net.try_listen(":0")`), so no
+/// CI-safe pattern, cf. `net_try_api_test.hew` `net.listen(":0")`), so no
 /// fixed port is held across the test run.
 #[test]
 fn test_server_impl_linked_in_dual_import_unit() {

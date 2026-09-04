@@ -15,14 +15,7 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
 #[test]
 fn simple_function_lowers_with_stable_sites() {
     let output = lower("fn main() -> i64 { let x = 1 + 2; return x; }");
-    assert!(
-        !output.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { .. }
-        )),
-        "unexpected checker boundary diagnostics: {:?}",
-        output.diagnostics
-    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let verify = verify_hir(&output.module);
     assert!(verify.is_empty(), "{verify:?}");
 
@@ -192,18 +185,23 @@ fn channel_recv_deadline_preserves_await_and_method_occurrences() {
 #[test]
 fn channel_result_sites_are_affine_in_hir() {
     let output = support::checker_pipeline::lower_through_checker_with_modules(
-        r"
+        r#"
         import std.channel.channel;
+
+        fn make_channel_result()
+            -> Result<(channel.Sender<i64>, channel.Receiver<i64>), string> {
+            panic("not called")
+        }
 
         fn main() {
             let result: Result<(channel.Sender<i64>, channel.Receiver<i64>), string> =
-                channel.new(1);
+                make_channel_result();
             match result {
                 .Ok((_sender, _receiver)) => (),
                 .Err(error) => panic(error),
             }
         }
-        ",
+        "#,
     );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 

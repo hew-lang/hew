@@ -1,11 +1,11 @@
 import std.text.template;
 
 fn main() {
-    match template.try_parse("hello {{.name") {
+    match template.parse("hello {{.name") {
         .Ok(_) => println("unclosed-ok"),
         .Err(_) => println("unclosed-error"),
     }
-    match template.try_parse("{{end}}") {
+    match template.parse("{{end}}") {
         .Ok(_) => println("end-ok"),
         .Err(_) => println("end-error"),
     }

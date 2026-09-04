@@ -38,7 +38,7 @@ fn main() {
 
     // try_* recovers a structured error instead of panicking. Re-registering
     // an existing name returns a handle to the same slot.
-    match metrics.try_counter("app.requests") {
+    match metrics.counter("app.requests") {
         .Ok(again) => again.inc(), // app.requests → 10
         .Err(_) => println("unexpected counter rejection"),
     }

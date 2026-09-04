@@ -178,7 +178,7 @@ impl HistogramMethods for Histogram {
 // ── Module-level constructors ─────────────────────────────────────────
 /// Register (or get) a counter named `name`.
 ///
-/// Panics if the name is rejected by the registry. Use [`try_counter`] for a
+/// Panics if the name is rejected by the registry. Use [`counter`] for a
 /// recoverable result.
 ///
 /// # Examples
@@ -203,7 +203,7 @@ pub fn counter(name: string) -> Counter {
 
 /// Register (or get) a counter named `name`, returning a structured error if
 /// the registry rejects the name.
-pub fn try_counter(name: string) -> Result<Counter, MetricsError> {
+pub fn counter(name: string) -> Result<Counter, MetricsError> {
     let id = unsafe {
         hew_metric_counter_register(name)
     };
@@ -216,7 +216,7 @@ pub fn try_counter(name: string) -> Result<Counter, MetricsError> {
 
 /// Register (or get) a gauge named `name`.
 ///
-/// Panics if the name is rejected by the registry. Use [`try_gauge`] for a
+/// Panics if the name is rejected by the registry. Use [`gauge`] for a
 /// recoverable result.
 pub fn gauge(name: string) -> Gauge {
     let id = unsafe {
@@ -230,7 +230,7 @@ pub fn gauge(name: string) -> Gauge {
 
 /// Register (or get) a gauge named `name`, returning a structured error if the
 /// registry rejects the name.
-pub fn try_gauge(name: string) -> Result<Gauge, MetricsError> {
+pub fn gauge(name: string) -> Result<Gauge, MetricsError> {
     let id = unsafe {
         hew_metric_gauge_register(name)
     };
@@ -243,7 +243,7 @@ pub fn try_gauge(name: string) -> Result<Gauge, MetricsError> {
 
 /// Register (or get) a histogram named `name`.
 ///
-/// Panics if the name is rejected by the registry. Use [`try_histogram`] for a
+/// Panics if the name is rejected by the registry. Use [`histogram`] for a
 /// recoverable result.
 ///
 /// The histogram records observations; the scrape exposes the running count
@@ -261,7 +261,7 @@ pub fn histogram(name: string) -> Histogram {
 
 /// Register (or get) a histogram named `name`, returning a structured error if
 /// the registry rejects the name.
-pub fn try_histogram(name: string) -> Result<Histogram, MetricsError> {
+pub fn histogram(name: string) -> Result<Histogram, MetricsError> {
     let id = unsafe {
         hew_metric_histogram_register_simple(name)
     };

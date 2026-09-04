@@ -74,7 +74,7 @@ fn test_histogram_count_and_sum_exposition() {
 // ── try_* recovers a structured result ────────────────────────────────
 #[test]
 fn test_try_counter_ok_for_valid_name() {
-    match metrics.try_counter("test.try_ok") {
+    match metrics.counter("test.try_ok") {
         .Ok(c) => {
             c.inc();
             let scrape = observe.scrape();
@@ -87,7 +87,7 @@ fn test_try_counter_ok_for_valid_name() {
 #[test]
 fn test_try_counter_rejects_builtin_collision() {
     // `heap.live_bytes` is a runtime built-in; a user metric may not shadow it.
-    match metrics.try_counter("heap.live_bytes") {
+    match metrics.counter("heap.live_bytes") {
         .Ok(_) => testing.assert_true(false),
         .Err(_) => testing.assert_true(true),
     }
@@ -99,7 +99,7 @@ fn test_try_counter_rejects_rendered_builtin_collision() {
     // but both render to the same `heap_live_bytes` Prometheus series. The
     // registry rejects it so a user metric cannot shadow the built-in's scrape
     // output.
-    match metrics.try_counter("heap_live_bytes") {
+    match metrics.counter("heap_live_bytes") {
         .Ok(_) => testing.assert_true(false),
         .Err(_) => testing.assert_true(true),
     }

@@ -205,13 +205,13 @@ impl<T, E> Result<T, E> {
             .Err(_) => fallback,
         }
     }
-    fn map_err<F>(r: Result<T, E>, f: fn(E) -> F) -> Result<T, F> {
+    pub fn map_err<F>(r: Result<T, E>, f: fn(E) -> F) -> Result<T, F> {
         match r {
             .Ok(v) => Ok(v),
             .Err(e) => Err(f(e)),
         }
     }
-    fn expect(r: Result<T, E>, message: string) -> T {
+    pub fn expect(r: Result<T, E>, message: string) -> T {
         match r {
             .Ok(v) => v,
             .Err(_) => panic(message),

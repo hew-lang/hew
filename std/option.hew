@@ -207,13 +207,13 @@ impl<T> Option<T> {
             .None => fallback,
         }
     }
-    fn ok_or<E>(opt: Option<T>, error: E) -> Result<T, E> {
+    pub fn ok_or<E>(opt: Option<T>, error: E) -> Result<T, E> {
         match opt {
             .Some(v) => Ok(v),
             .None => Err(error),
         }
     }
-    fn expect(opt: Option<T>, message: string) -> T {
+    pub fn expect(opt: Option<T>, message: string) -> T {
         match opt {
             .Some(v) => v,
             .None => panic(message),

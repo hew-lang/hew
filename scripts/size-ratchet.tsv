@@ -1,0 +1,41 @@
+# crate	ceiling_lines
+#
+# One row per workspace crate (Cargo.toml [workspace] members).
+# ceiling_lines is wc -l over <crate>/src/**/*.rs (scripts/size-ratchet.sh).
+# make size-ratchet fails when a crate's current count exceeds its
+# ceiling here. Ceilings are only ever lowered by deleting code, never
+# raised to meet a count (#3296).
+#
+# Every crate is seeded flat at its count on main when this gate landed,
+# except the three the platform plan (hew-platform-program.md §7, v0.6.0
+# row) carries a delta for, re-based onto this instrument's own count
+# rather than the plan's absolute numbers (#3296 decision): hew-types
+# +1,785, hew-runtime +1,777, hew-pkg -75. hew-pkg's seeded ceiling is
+# below its count on main; the plan requires meeting it by deleting
+# hew-pkg/src/index.rs (V060-FD-5), never by raising the ceiling, so this
+# gate is red until that deletion lands.
+hew-cabi	3327
+hew-std	36417
+std/encoding/binary	5
+std/text/template	5
+hew-cli	27293
+hew-pkg	15729
+hew-lexer	1470
+hew-lib	9
+hew-lsp	14923
+hew-parser	24804
+hew-runtime	216692
+hew-runtime-testkit	750
+hew-types	157543
+hew-observe	6149
+hew-wasm	2353
+hew-sandbox-wasm	9544
+hew-analysis	13975
+hew-compile	5732
+hew-hir	61567
+hew-sir	5647
+hew-mir	148556
+hew-codegen-rs	98035
+hew-capability-gen	1055
+hew-testutil	2424
+xtask	1553

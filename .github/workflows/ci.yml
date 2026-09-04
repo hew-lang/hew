@@ -474,6 +474,24 @@ jobs:
           bash scripts/run-journeys.sh day-one
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Size ratchet — per-crate wc -l against scripts/size-ratchet.tsv
+  # ceilings (#3296). Informational, not a branch-protection job: unlike
+  # `lint`, a red crate here (hew-pkg is, pending V060-FD-5's index.rs
+  # deletion) must stay visible without blocking every PR on main. wc -l
+  # over tracked source needs no build, so this runs standalone rather
+  # than depending on compiled-hew-linux like the journeys jobs above.
+  # ─────────────────────────────────────────────────────────────────────────
+  size-ratchet:
+    name: Size ratchet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Run size-ratchet
+        run: bash scripts/size-ratchet.sh check
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Build & test — Rust workspace
   # Produces JUnit XML for GitHub Actions test reporting.
   # ─────────────────────────────────────────────────────────────────────────

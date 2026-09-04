@@ -19,12 +19,7 @@ pub struct NativeArtifact {
     pub path: PathBuf,
 }
 
-/// The `<release> <host>` identity of the rustc that built something.
-///
-/// A `[native]` crate's staticlib must be built with the identical rustc that
-/// built `libhew.a`, or its embedded `libstd` is not byte-identical and the
-/// final link fails on a duplicate `rust_eh_personality` symbol (see
-/// [`build_native`]'s toolchain check below).
+/// The release and host identity of a rustc toolchain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustcIdentity {
     pub release: String,
@@ -64,14 +59,11 @@ impl RustcIdentity {
     }
 }
 
-/// The rustc identity that built this compiler — and, in the same workspace
-/// build, `libhew.a` — embedded at compile time by `hew-pkg/build.rs`.
+/// The rustc identity embedded while building the Hew runtime.
 ///
 /// # Panics
 ///
-/// Panics if `HEW_RUNTIME_RUSTC` is malformed, which cannot happen from a
-/// normal build: `hew-pkg/build.rs` is the only writer of this env var and
-/// always emits the `<release> <host>` shape this parses.
+/// Panics if the build stamp is malformed.
 #[must_use]
 pub fn embedded_rustc_identity() -> RustcIdentity {
     RustcIdentity::parse_stamp(env!("HEW_RUNTIME_RUSTC")).unwrap_or_else(|| {
@@ -82,11 +74,7 @@ pub fn embedded_rustc_identity() -> RustcIdentity {
     })
 }
 
-/// Query the rustc identity `cargo build` will use for the crate at
-/// `crate_dir`. Spawned **from** `crate_dir`, exactly like the `cargo build`
-/// call in [`build_native`], so rustup resolves the same
-/// `rust-toolchain.toml` cargo is about to honour — probing from a different
-/// directory could report a different (wrong) toolchain.
+/// Query the rustc selected for a native crate directory.
 fn crate_rustc_identity(crate_dir: &Path) -> Result<RustcIdentity, String> {
     let output = Command::new("rustc")
         .arg("-vV")
@@ -157,11 +145,7 @@ pub fn build_native(
         ));
     }
 
-    // Fail closed before invoking cargo: cargo build "succeeds" under a
-    // mismatched rustc, but the resulting staticlib embeds a libstd that
-    // isn't byte-identical to libhew.a's, and the *final* link fails much
-    // later on a duplicate `rust_eh_personality` symbol — a confusing
-    // failure far from its cause.
+    // Refuse before cargo builds a static library with an incompatible libstd.
     let actual = crate_rustc_identity(&crate_dir)?;
     if actual != *expected {
         return Err(format!(
@@ -313,11 +297,6 @@ mod tests {
         assert!(RustcIdentity::parse_verbose("binary: rustc\n").is_none());
     }
 
-    /// `build_native` must refuse a `[native]` crate before ever invoking
-    /// cargo when the caller's `expected` identity doesn't match the host's
-    /// actual rustc — the negative control for the toolchain check: with a
-    /// matching `expected` (any real build) this same fixture would proceed
-    /// past this point.
     #[test]
     fn build_native_refuses_mismatched_rustc() {
         let dir = tempfile::tempdir().unwrap();

@@ -1971,15 +1971,8 @@ mod tests {
         );
     }
 
-    /// A clang `--version` first line, vendor-prefixed the way distributions
-    /// ship it, for the injected driver probe.
     const CLANG_BANNER: &str = "Ubuntu clang version 20.1.8 (++20250918)";
-    /// A GCC-family `--version` first line — the shape Debian's `cc` prints.
     const GCC_BANNER: &str = "cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0";
-
-    // ── HEW_CC env-var contract ───────────────────────────────────────
-    // Mirrors the HEW_COVERAGE/HEW_SANITIZE_ADDRESS tests above; uses the
-    // same ENV_LOCK for safety, since these mutate the process environment.
 
     #[test]
     fn hew_cc_selects_named_driver_when_present() {
@@ -2056,8 +2049,6 @@ mod tests {
             compiler,
             NativeCompiler {
                 program: "/usr/bin/cc".to_string(),
-                // GCC rejects clang's `-target`; passing it makes the link
-                // fail with "unrecognized command-line option '-target'".
                 accepts_target_flag: false
             }
         );

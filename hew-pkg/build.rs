@@ -1,18 +1,10 @@
-//! Stamps the rustc identity that built this crate (and, in the same
-//! workspace build, `libhew.a`) so `native::build_native` can refuse to
-//! build a `[native]` crate with a *different* rustc: a mismatched toolchain
-//! produces a staticlib whose embedded `libstd` is not byte-identical to
-//! `libhew.a`'s, and the final link fails on a duplicate
-//! `rust_eh_personality` symbol (see the comment at native.rs's `build_native`).
+//! Stamps the rustc identity used to build the Hew runtime.
 
 use std::env;
 use std::process::Command;
 
 fn main() {
-    // Cargo sets `RUSTC` to the compiler it is actually invoking, which can
-    // differ from a bare `rustc` on PATH (rustup proxies, explicit `RUSTC=`
-    // builds); querying that exact binary is what makes the embedded identity
-    // trustworthy.
+    // Cargo may use a rustc other than the one on PATH.
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     println!("cargo:rerun-if-env-changed=RUSTC");
 

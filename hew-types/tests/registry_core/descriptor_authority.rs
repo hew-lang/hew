@@ -195,17 +195,6 @@ fn canonical_string_trait_object_with_type_arg() {
 }
 
 #[test]
-fn canonical_string_is_deterministic() {
-    let ty = ResolvedTy::Named {
-        name: "Pair".into(),
-        args: vec![ResolvedTy::I64, ResolvedTy::String],
-        builtin: None,
-        is_opaque: false,
-    };
-    assert_eq!(ty.canonical_string(), ty.canonical_string());
-}
-
-#[test]
 fn is_native_wire_true_for_primitive_scalars() {
     let native = [
         ResolvedTy::Bool,

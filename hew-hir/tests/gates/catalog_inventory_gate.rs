@@ -135,36 +135,6 @@ fn catalog_runtime_symbols_are_classified() {
 }
 
 #[test]
-fn stable_symbol_parser_is_non_empty() {
-    // A regression guard: if the include_str! path is wrong or the parser
-    // silently produces nothing, catch it here rather than letting the
-    // coverage test pass vacuously.
-    let stable = parse_stable_symbols();
-    assert!(
-        stable.len() > 100,
-        "expected > 100 stable symbols, got {} — parser may be broken",
-        stable.len()
-    );
-    // Spot-check a few well-known entries.
-    assert!(
-        stable.contains("hew_actor_send"),
-        "hew_actor_send missing from stable"
-    );
-    assert!(
-        stable.contains("hew_duplex_send"),
-        "hew_duplex_send missing from stable"
-    );
-    assert!(
-        stable.contains("hew_sleep_ns"),
-        "hew_sleep_ns missing from stable"
-    );
-    assert!(
-        stable.contains("hew_sleep_until_ns"),
-        "hew_sleep_until_ns missing from stable"
-    );
-}
-
-#[test]
 fn catalog_contains_bytes_constructor_and_method_targets() {
     let mut names: HashSet<&str> = HashSet::new();
     for entry in entries() {

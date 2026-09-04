@@ -686,8 +686,13 @@ ci-preflight-smoke:
 	$(TEST_RUN_ENV) cargo nextest run --workspace --profile smoke
 
 NODE_API_TEST ?= node_api
+NODE_API_EXAMPLE_INVENTORY = --label "node API" \
+	  --source examples/distributed/kv_server.hew \
+	  --source examples/distributed/kv_client.hew
 test-node-api: hew-native
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test distributed_two_process_e2e $(NODE_API_TEST) -- --test-threads=1
+	@$(PYTHON) scripts/example-expectations.py \
+	  --hew-bin "$(DEBUG_DIR)/hew" $(NODE_API_EXAMPLE_INVENTORY)
 
 # ── Local Linux CI-parity harness ────────────────────────────────────────────
 # Runs the GitHub Actions `Build & test (Linux)` job on a NATIVE x86_64 Linux
@@ -1392,6 +1397,7 @@ ux-examples-expect: hew-native
 #
 SURFACE_EXAMPLE_INVENTORY = --label "surface" \
 	  --source-root examples/v05/surfaces \
+	  --source-root examples/distributed \
 	  --source examples/net/http_await_service.hew
 
 test-surface-examples: hew-native test-example-expectations-selftest

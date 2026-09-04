@@ -55,19 +55,42 @@ impl ActorMsg for KeyValue {
     type Reply = KvResp;
 }
 
-fn main() {
-    var port: string = "9100";
-    if os.args().len() > 1 {
-        port = os.args().get(1);
+fn main() -> i64 {
+    let key = os.env("HEW_NODE_KEY").unwrap_or("");
+    let peer = os.env("HEW_NODE_PEER").unwrap_or("");
+    if key.is_empty() || peer.is_empty() {
+        println("[kv-server] set HEW_NODE_KEY and HEW_NODE_PEER before starting");
+        return 0;
     }
+
+    let args = os.args();
+    let port = match args.get(1) {
+        .Some(value) => value,
+        .None => "9100",
+    };
     let addr = f"0.0.0.0:{port}";
     println(f"[kv-server] starting on {addr}");
-    Node.set_transport("tcp");
-    Node.start(addr);
+    let peers: Vec<string> = Vec.new();
+    peers.push(f"2@{peer}");
+    let config = NodeConfig { bind: addr, transport: "tcp", key: key, trust: "pinned", peers: peers, seeds: Vec.new() };
+    match Node.start(config) {
+        .Err(err) => {
+            println(f"[kv-server] start failed: {err}");
+            return 1;
+        },
+        .Ok(_) => {},
+    }
     println("[kv-server] node started");
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue(store: s);
-    Node.register("kv", kv);
+    match Node.register("kv", kv) {
+        .Err(err) => {
+            println(f"[kv-server] registration failed: {err}");
+            Node.shutdown();
+            return 2;
+        },
+        .Ok(_) => {},
+    }
     println("[kv-server] 'kv' actor registered; waiting for client...");
 
     // Wait for client to connect and run assertions.
@@ -82,4 +105,5 @@ fn main() {
     }
     Node.shutdown();
     println("[kv-server] shutdown complete");
+    0
 }

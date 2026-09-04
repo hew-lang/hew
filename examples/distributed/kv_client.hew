@@ -42,21 +42,44 @@ impl ActorMsg for KeyValue {
 }
 
 fn main() -> i64 {
-    var port: string = "9100";
-    var server_addr: string = "127.0.0.1";
-    if os.args().len() > 1 {
-        server_addr = os.args().get(1);
+    let key = os.env("HEW_NODE_KEY").unwrap_or("");
+    let peer = os.env("HEW_NODE_PEER").unwrap_or("");
+    if key.is_empty() || peer.is_empty() {
+        println("[kv-client] set HEW_NODE_KEY and HEW_NODE_PEER before starting");
+        return 0;
     }
-    if os.args().len() > 2 {
-        port = os.args().get(2);
-    }
+
+    let args = os.args();
+    let server_addr = match args.get(1) {
+        .Some(value) => value,
+        .None => "127.0.0.1",
+    };
+    let port = match args.get(2) {
+        .Some(value) => value,
+        .None => "9100",
+    };
     let remote_addr = f"{server_addr}:{port}";
     println(f"[kv-client] starting node, will connect to {remote_addr}");
-    Node.set_transport("tcp");
-    Node.start("0.0.0.0:0");
+    let peers: Vec<string> = Vec.new();
+    peers.push(f"1@{peer}");
+    let config = NodeConfig { bind: "0.0.0.0:0", transport: "tcp", key: key, trust: "pinned", peers: peers, seeds: Vec.new() };
+    match Node.start(config) {
+        .Err(err) => {
+            println(f"[kv-client] start failed: {err}");
+            return 1;
+        },
+        .Ok(_) => {},
+    }
     println("[kv-client] local node started");
     sleep(500ms);
-    Node.connect(remote_addr);
+    match Node.connect(f"1@{remote_addr}") {
+        .Err(err) => {
+            println(f"[kv-client] connect failed: {err}");
+            Node.shutdown();
+            return 1;
+        },
+        .Ok(_) => {},
+    }
     println(f"[kv-client] connected to {remote_addr}");
     // Wait for the connection handshake to complete and registry gossip to arrive.
     // hew_node_connect is non-blocking; gossip propagates asynchronously.

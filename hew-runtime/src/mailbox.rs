@@ -26,7 +26,7 @@ use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
@@ -1405,11 +1405,34 @@ struct SlowPathQueue {
     user_queue: VecDeque<*mut HewMsgNode>,
 }
 
+/// Identity of one [`BlockedSender`] registration, minted at
+/// [`mailbox_await_send`] and handed back to the caller so a later detach
+/// names the registration rather than the read-slot address that carried it.
+///
+/// Slot allocations are recycled ([`crate::read_slot`]), so a detach keyed on
+/// `waiter.slot == slot` can match a different registration that reused the
+/// freed address (#3147). The registration id is minted from a monotonic
+/// counter scoped to the whole process and never reused, so it identifies
+/// exactly the registration that minted it.
+pub(crate) type BlockedSenderId = u64;
+
+/// Monotonic counter for [`BlockedSenderId`]; never reuses an id within a
+/// process. `0` is reserved as "no registration" (an admitted-immediately
+/// send never parks a waiter and so never needs to be detached).
+static NEXT_BLOCKED_SENDER_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Mint the next [`BlockedSenderId`].
+fn next_blocked_sender_id() -> BlockedSenderId {
+    // 1 is the first valid id; in practice u64 will never wrap during a process.
+    NEXT_BLOCKED_SENDER_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// One producer continuation parked by a full `overflow block` mailbox. The
 /// mailbox owns the copied node and one retained read-slot ref until admission,
 /// cancellation, or close wins the registration race.
 #[derive(Debug)]
 struct BlockedSender {
+    id: BlockedSenderId,
     sender: ActorIncarnation,
     slot: *mut HewReadSlot,
     node: *mut HewMsgNode,
@@ -2771,9 +2794,11 @@ pub(crate) const MAILBOX_AWAIT_SEND_READY: i32 = 1;
 /// Register a cooperative producer wait for a bounded `Block` mailbox.
 ///
 /// On a full mailbox this copies the message into a FIFO waiter, retains
-/// `slot`, and returns [`MAILBOX_AWAIT_SEND_SUSPEND`]. The consumer admits and
-/// wakes one waiter whenever it frees a queue slot. An immediately available
-/// slot admits the copied node and returns [`MAILBOX_AWAIT_SEND_READY`].
+/// `slot`, mints a [`BlockedSenderId`] for the registration, and returns
+/// [`MAILBOX_AWAIT_SEND_SUSPEND`] with the id. The consumer admits and wakes
+/// one waiter whenever it frees a queue slot. An immediately available slot
+/// admits the copied node and returns [`MAILBOX_AWAIT_SEND_READY`] with `0`
+/// (no registration to detach).
 ///
 /// # Safety
 ///
@@ -2786,34 +2811,34 @@ pub(crate) unsafe fn mailbox_await_send(
     size: usize,
     actor: *mut crate::actor::HewActor,
     slot: *mut HewReadSlot,
-) -> i32 {
+) -> (i32, BlockedSenderId) {
     if mb.is_null() || slot.is_null() {
-        return HewError::ErrClosed as i32;
+        return (HewError::ErrClosed as i32, 0);
     }
     // SAFETY: caller guarantees a live mailbox.
     let mailbox = unsafe { &*mb };
     if mailbox.closed.load(Ordering::Acquire) {
-        return HewError::ErrActorStopped as i32;
+        return (HewError::ErrActorStopped as i32, 0);
     }
     if mailbox.capacity <= 0 || mailbox.overflow != HewOverflowPolicy::Block {
-        return HewError::ErrMailboxFull as i32;
+        return (HewError::ErrMailboxFull as i32, 0);
     }
 
     let mut queue = mailbox.slow_path.lock_or_recover();
     if mailbox.closed.load(Ordering::Acquire) {
-        return HewError::ErrActorStopped as i32;
+        return (HewError::ErrActorStopped as i32, 0);
     }
     // SAFETY: the caller guarantees the readable payload range.
     let node = unsafe { msg_node_alloc(msg_type, data, size, ptr::null_mut()) };
     if node.is_null() {
-        return HewError::ErrOom as i32;
+        return (HewError::ErrOom as i32, 0);
     }
     if i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) < mailbox.capacity {
         enqueue_bounded_slow_path_node(mailbox, &mut queue, node);
         drop(queue);
         update_high_water_mark(mailbox);
         MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-        return MAILBOX_AWAIT_SEND_READY;
+        return (MAILBOX_AWAIT_SEND_READY, 0);
     }
 
     // Join the independent waiter lock while the queue is still held so a
@@ -2826,7 +2851,7 @@ pub(crate) unsafe fn mailbox_await_send(
         drop(queue);
         // SAFETY: the node was never published and remains exclusively owned.
         unsafe { hew_msg_node_free_with_message_drop(node, mailbox.message_drop_fn) };
-        return HewError::ErrActorStopped as i32;
+        return (HewError::ErrActorStopped as i32, 0);
     }
     // SAFETY: the caller owns the creator ref, so the slot is live to retain.
     unsafe { read_slot_retain(slot) };
@@ -2835,8 +2860,14 @@ pub(crate) unsafe fn mailbox_await_send(
     // than the pointer is what makes the later wake refuse a replacement actor
     // that reused this allocation.
     let sender = unsafe { ActorIncarnation::of(actor) };
-    waiters.push_back(BlockedSender { sender, slot, node });
-    MAILBOX_AWAIT_SEND_SUSPEND
+    let id = next_blocked_sender_id();
+    waiters.push_back(BlockedSender {
+        id,
+        sender,
+        slot,
+        node,
+    });
+    (MAILBOX_AWAIT_SEND_SUSPEND, id)
 }
 
 /// Submit an ask without parking the scheduler worker when a bounded `Block`
@@ -2900,6 +2931,10 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
         return HewError::ErrActorStopped as i32;
     }
     waiters.push_back(BlockedSender {
+        // An ask waiter has no capacity-wait read slot and is never detached
+        // by id (its caller is suspended on the reply channel instead); mint
+        // one anyway so every waiter carries a unique, non-zero identity.
+        id: next_blocked_sender_id(),
         sender: ActorIncarnation::NONE,
         slot: ptr::null_mut(),
         node,
@@ -2907,14 +2942,20 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
     HewError::Ok as i32
 }
 
-/// Remove an abandoned cooperative block-send registration. Idempotent when
-/// admission or close already consumed the waiter.
+/// Remove an abandoned cooperative block-send registration, named by the
+/// [`BlockedSenderId`] [`mailbox_await_send`] minted for it. Idempotent when
+/// admission or close already consumed the waiter, and safe against slot
+/// address reuse: read-slot allocations are recycled, so matching by
+/// `waiter.slot == slot` could remove a different registration that reused
+/// the freed address after this caller's slot was freed (#3147). The id is
+/// minted from a monotonic counter that never repeats within a process, so it
+/// names exactly the registration that minted it and nothing else.
 ///
 /// # Safety
 ///
-/// `mb` and `slot` must be live pointers supplied to [`mailbox_await_send`].
-pub(crate) unsafe fn mailbox_detach_await_send(mb: *mut HewMailbox, slot: *mut HewReadSlot) {
-    if mb.is_null() || slot.is_null() {
+/// `mb` must be a live pointer supplied to [`mailbox_await_send`].
+pub(crate) unsafe fn mailbox_detach_await_send(mb: *mut HewMailbox, id: BlockedSenderId) {
+    if mb.is_null() || id == 0 {
         return;
     }
     // SAFETY: caller guarantees a live mailbox.
@@ -2923,7 +2964,7 @@ pub(crate) unsafe fn mailbox_detach_await_send(mb: *mut HewMailbox, slot: *mut H
         let mut waiters = mailbox.blocked_senders.lock_or_recover();
         waiters
             .iter()
-            .position(|waiter| waiter.slot == slot)
+            .position(|waiter| waiter.id == id)
             .and_then(|position| waiters.remove(position))
     };
     if let Some(waiter) = removed {
@@ -3695,11 +3736,11 @@ mod tests {
         // SAFETY: mailbox and zero-sized payload are valid.
         assert_eq!(unsafe { hew_mailbox_send(mb, 1, ptr::null_mut(), 0) }, 0);
         let slot = crate::read_slot::hew_read_slot_new();
-        assert_eq!(
+        let (rc, id) =
             // SAFETY: mailbox and slot remain live through waiter resolution.
-            unsafe { mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot) },
-            MAILBOX_AWAIT_SEND_SUSPEND
-        );
+            unsafe { mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot) };
+        assert_eq!(rc, MAILBOX_AWAIT_SEND_SUSPEND);
+        assert_ne!(id, 0, "a suspended registration must mint a non-zero id");
         // SAFETY: the creator reference keeps the slot live.
         assert_eq!(unsafe { crate::read_slot::hew_read_slot_status(slot) }, 0);
 
@@ -3738,11 +3779,10 @@ mod tests {
         // SAFETY: mailbox and zero-sized payload are valid.
         assert_eq!(unsafe { hew_mailbox_send(mb, 1, ptr::null_mut(), 0) }, 0);
         let slot = crate::read_slot::hew_read_slot_new();
-        assert_eq!(
+        let (rc, _id) =
             // SAFETY: mailbox and slot remain live through waiter resolution.
-            unsafe { mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot) },
-            MAILBOX_AWAIT_SEND_SUSPEND
-        );
+            unsafe { mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot) };
+        assert_eq!(rc, MAILBOX_AWAIT_SEND_SUSPEND);
         // SAFETY: this test owns the mailbox; close drains and deposits the waiter slot.
         unsafe { mailbox_close(mb) };
         assert_eq!(
@@ -3753,6 +3793,139 @@ mod tests {
         // SAFETY: this test retains the slot and mailbox creator ownership.
         unsafe {
             crate::read_slot::hew_read_slot_free(slot);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    /// #3147's oracle: a stale detach must not remove a registration that
+    /// happens to reuse a freed read-slot address. The first registration's
+    /// owner detaches by id, releasing the mailbox's retained slot ref while
+    /// the test's own creator ref keeps the allocation (and its address)
+    /// alive — standing in for whatever legitimately kept the address live
+    /// for the next registration. A second registration then parks on the
+    /// exact same address. A late or duplicated detach carrying the first
+    /// registration's (now-stale) id must remove nothing, even though the
+    /// pre-fix `waiter.slot == slot` match would have found the second
+    /// registration at that address and wrongly removed it — the assertion
+    /// after the stale detach proves both halves in one place.
+    #[test]
+    fn detach_by_id_ignores_a_registration_that_reused_the_freed_slot_address() {
+        // SAFETY: this test exclusively owns the mailbox.
+        let mb = unsafe { hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block) };
+        // SAFETY: mailbox and zero-sized payload are valid.
+        assert_eq!(unsafe { hew_mailbox_send(mb, 1, ptr::null_mut(), 0) }, 0);
+
+        let slot = crate::read_slot::hew_read_slot_new();
+        let (rc, first_id) =
+            // SAFETY: mailbox and slot remain live through waiter resolution.
+            unsafe { mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot) };
+        assert_eq!(rc, MAILBOX_AWAIT_SEND_SUSPEND);
+        assert_ne!(
+            first_id, 0,
+            "a suspended registration must mint a non-zero id"
+        );
+
+        // The first registration's owner gives up and detaches by id. This
+        // releases the mailbox's retained slot ref; the test's own creator
+        // ref is what keeps `slot`'s address live for reuse below.
+        // SAFETY: `mb` is live and `first_id` names the just-created waiter.
+        unsafe { mailbox_detach_await_send(mb, first_id) };
+
+        // A second registration reuses the exact same slot address.
+        let (rc, second_id) =
+            // SAFETY: mailbox and slot remain live through waiter resolution.
+            unsafe { mailbox_await_send(mb, 3, ptr::null_mut(), 0, ptr::null_mut(), slot) };
+        assert_eq!(rc, MAILBOX_AWAIT_SEND_SUSPEND);
+        assert_ne!(
+            first_id, second_id,
+            "registration ids must never repeat within a process"
+        );
+
+        // The stale first-registration id arrives again (a late or duplicated
+        // detach). By id, it names nothing live and must remove nothing.
+        // SAFETY: `mb` is live; `first_id` is a stale (already-detached) id.
+        unsafe { mailbox_detach_await_send(mb, first_id) };
+
+        // SAFETY: this test exclusively owns the mailbox for inspection.
+        let mailbox = unsafe { &*mb };
+        let waiters = mailbox.blocked_senders.lock_or_recover();
+        assert_eq!(
+            waiters.len(),
+            1,
+            "the second registration must remain parked"
+        );
+        assert_eq!(
+            waiters[0].id, second_id,
+            "the surviving waiter must be the second registration, named by its own id"
+        );
+        assert!(
+            waiters.iter().any(|w| w.slot == slot),
+            "the surviving waiter's slot equals the first registration's freed \
+             address — matching on that address (the pre-fix behaviour) would \
+             have found and removed this waiter instead of leaving it alone"
+        );
+        drop(waiters);
+
+        // SAFETY: this test owns the mailbox; close drains and deposits the
+        // surviving waiter's slot before the creator ref is freed.
+        unsafe { mailbox_close(mb) };
+        // SAFETY: this test retains the slot and mailbox creator ownership.
+        unsafe {
+            crate::read_slot::hew_read_slot_free(slot);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    /// Positive control for [`detach_by_id_ignores_a_registration_that_reused_the_freed_slot_address`]:
+    /// with two distinct live registrations at two distinct addresses,
+    /// detaching by one's id removes exactly that one and leaves the other
+    /// parked.
+    #[test]
+    fn detach_by_id_removes_exactly_the_registering_waiter() {
+        // SAFETY: this test exclusively owns the mailbox.
+        let mb = unsafe { hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block) };
+        // SAFETY: mailbox and zero-sized payload are valid.
+        assert_eq!(unsafe { hew_mailbox_send(mb, 1, ptr::null_mut(), 0) }, 0);
+
+        let slot_a = crate::read_slot::hew_read_slot_new();
+        let (rc, id_a) =
+            // SAFETY: mailbox and slot remain live through waiter resolution.
+            unsafe { mailbox_await_send(mb, 2, ptr::null_mut(), 0, ptr::null_mut(), slot_a) };
+        assert_eq!(rc, MAILBOX_AWAIT_SEND_SUSPEND);
+
+        let slot_b = crate::read_slot::hew_read_slot_new();
+        let (rc, id_b) =
+            // SAFETY: mailbox and slot remain live through waiter resolution.
+            unsafe { mailbox_await_send(mb, 3, ptr::null_mut(), 0, ptr::null_mut(), slot_b) };
+        assert_eq!(rc, MAILBOX_AWAIT_SEND_SUSPEND);
+        assert_ne!(id_a, id_b);
+
+        // SAFETY: `mb` is live and `id_a` names the first waiter.
+        unsafe { mailbox_detach_await_send(mb, id_a) };
+
+        // SAFETY: this test exclusively owns the mailbox for inspection.
+        let mailbox = unsafe { &*mb };
+        let waiters = mailbox.blocked_senders.lock_or_recover();
+        assert_eq!(
+            waiters.len(),
+            1,
+            "exactly the named registration must be removed"
+        );
+        assert_eq!(
+            waiters[0].id, id_b,
+            "the untouched registration must remain parked"
+        );
+        drop(waiters);
+
+        // SAFETY: `slot_a`'s waiter was removed by detach and freed its own
+        // retained ref; this test's creator ref is the last owner.
+        unsafe { crate::read_slot::hew_read_slot_free(slot_a) };
+        // SAFETY: this test owns the mailbox; close drains and deposits the
+        // surviving waiter's slot before its creator ref is freed.
+        unsafe { mailbox_close(mb) };
+        // SAFETY: this test retains the slot and mailbox creator ownership.
+        unsafe {
+            crate::read_slot::hew_read_slot_free(slot_b);
             hew_mailbox_free(mb);
         }
     }

@@ -1,11 +1,11 @@
-//! Two-module same-name generic known-gap reject pin (#2653), left module.
+//! Two-module same-name generic layout oracle, left module.
 //!
 //! Declares a generic value record `Key<T>` whose sole field `v` is `i64`.
 //! The right module (`hew::keyright`) declares a same-named `Key<T>` whose
-//! `v` is `string`. Both monomorphise to the bare mangled symbol
-//! `Key$$i32`, so the two distinct layouts collide on identity — the
-//! qualified-identity gap tracked by #2653. The collision fails CLOSED
-//! (never a silent miscompile); see the reject pin in `run.sh`.
+//! `v` is `string`. Each instantiation must reach codegen under its own
+//! module-qualified layout symbol (`hew$keyleft$Key$$i32`), never a shared
+//! bare `Key$$i32`; the fixture
+//! `two_module_same_generic_valueclass_accept` pins both symbols.
 
 /// Generic value record with an i64 payload field.
 pub type Key<T> {

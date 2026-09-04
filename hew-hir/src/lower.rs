@@ -2101,7 +2101,7 @@ fn render_type_expr(ty: &TypeExpr) -> String {
     }
 }
 
-fn builtin_receiver_impl_program() -> Option<Program> {
+fn builtin_callable_impl_program() -> Option<Program> {
     let parsed = hew_parser::parse(BUILTINS_HEW_SOURCE);
     debug_assert!(
         parsed.errors.is_empty(),
@@ -2116,11 +2116,7 @@ fn builtin_receiver_impl_program() -> Option<Program> {
         .items
         .into_iter()
         .filter(|(item, _)| {
-            matches!(
-                item,
-                Item::Trait(tr) if tr.name == "Iterator" || tr.name == "IntoIterator"
-            ) || matches!(item, Item::TypeDecl(td) if td.name == "VecIter")
-                || is_builtin_receiver_impl(item)
+            matches!(item, Item::Trait(_) | Item::TypeDecl(_)) || is_builtin_callable_impl(item)
         })
         .collect();
     Some(Program {
@@ -2169,41 +2165,6 @@ fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
         })
 }
 
-fn is_builtin_display_impl(item: &Item) -> bool {
-    let Item::Impl(impl_decl) = item else {
-        return false;
-    };
-    let Some(trait_name) = impl_decl
-        .trait_bound
-        .as_ref()
-        .map(|bound| bound.name.as_str())
-    else {
-        return false;
-    };
-    let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
-        return false;
-    };
-    trait_name == "Display"
-        && matches!(
-            name.as_str(),
-            "i8" | "i16"
-                | "i32"
-                | "i64"
-                | "u8"
-                | "u16"
-                | "u32"
-                | "u64"
-                | "isize"
-                | "usize"
-                | "bool"
-                | "char"
-                | "f32"
-                | "f64"
-                | "string"
-                | "duration"
-        )
-}
-
 /// The pure-Hew `duration` constructor block in `std/builtins.hew`
 /// (`from_nanos` / `from_micros` / `from_millis` / `from_secs`).
 ///
@@ -2247,8 +2208,11 @@ fn is_duration_receiver_param(param: &Param) -> bool {
 }
 
 fn is_builtin_receiver_impl(item: &Item) -> bool {
-    is_builtin_vec_iterator_impl(item)
-        || is_builtin_display_impl(item)
+    is_builtin_vec_iterator_impl(item) || is_builtin_duration_ctor_impl(item)
+}
+
+fn is_builtin_callable_impl(item: &Item) -> bool {
+    matches!(item, Item::Impl(impl_decl) if impl_decl.trait_bound.is_some())
         || is_builtin_duration_ctor_impl(item)
 }
 
@@ -2259,7 +2223,7 @@ fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn check_builtin_receiver_impl_program(
+fn check_builtin_callable_impl_program(
     program: &Program,
 ) -> Result<TypeCheckOutput, Box<HirDiagnostic>> {
     // The parsed embedded source uses private leaf spellings for its synthetic
@@ -2300,11 +2264,11 @@ fn check_builtin_receiver_impl_program(
         .join("; ");
     Err(Box::new(HirDiagnostic::new(
         HirDiagnosticKind::CheckerBoundaryViolation {
-            name: "std/builtins.hew receiver impls".to_string(),
+            name: "std/builtins.hew callable impls".to_string(),
             reason,
         },
         0..0,
-        "compiler-injected receiver impls were not lowered",
+        "compiler-injected callable impls were not lowered",
     )))
 }
 
@@ -2948,9 +2912,9 @@ pub fn lower_program_with_mono_cap(
         }
     }
     ctx.seed_stdlib_fn_registry();
-    let (builtin_receiver_impl_program, builtin_receiver_impl_output) =
-        match builtin_receiver_impl_program() {
-            Some(program) => match check_builtin_receiver_impl_program(&program) {
+    let (builtin_callable_impl_program, builtin_callable_impl_output) =
+        match builtin_callable_impl_program() {
+            Some(program) => match check_builtin_callable_impl_program(&program) {
                 Ok(output) => (Some(program), Some(output)),
                 Err(diagnostic) => {
                     ctx.diagnostics.push(*diagnostic);
@@ -3123,7 +3087,7 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
-    let mut builtin_receiver_impl_method_symbols: HashSet<String> = HashSet::new();
+    let mut builtin_callable_impl_method_symbols: HashSet<String> = HashSet::new();
 
     // First pass: collect all function signatures so that forward and mutual
     // references in call expressions resolve to the correct return type.
@@ -4663,33 +4627,64 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
-    // Register std builtins.hew receiver impl methods only after all user item
-    // IDs have been preallocated. This makes the builtin impls visible to
-    // source-body lowering without perturbing stable user `ItemId`s.
-    if let Some(program) = &builtin_receiver_impl_program {
+    // Register executable std builtins.hew impl methods only after all user
+    // item IDs have been preallocated. This makes builtin bodies visible to
+    // source-body lowering without perturbing stable user `ItemId`s. Ordinary
+    // trait impls use the same module-qualified symbols as imported impls;
+    // receiver-specific cursor and duration impls retain their compiler owner.
+    if let Some(program) = &builtin_callable_impl_program {
         for (item, _) in &program.items {
             if let Item::Impl(impl_decl) = item {
-                if !is_builtin_receiver_impl(item) {
+                if !is_builtin_callable_impl(item) {
                     continue;
                 }
                 if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
-                    let symbol_owner = injected_builtin_impl_symbol_owner(name);
-                    let method_symbols: Vec<String> = impl_decl
-                        .methods
-                        .iter()
-                        .map(|method| {
-                            crate::node::HirImplBlock::method_symbol(symbol_owner, &method.name)
-                        })
-                        .collect();
-                    if method_symbols
-                        .iter()
-                        .any(|symbol| ctx.fn_registry.contains_key(symbol))
-                    {
-                        continue;
-                    }
+                    let receiver_specific = is_builtin_receiver_impl(item);
+                    let symbol_owner = if receiver_specific {
+                        injected_builtin_impl_symbol_owner(name).to_string()
+                    } else {
+                        imported_impl_symbol_self_name("std.builtins", name)
+                    };
                     let impl_type_params = impl_type_param_names(impl_decl);
                     for method in &impl_decl.methods {
-                        ctx.register_impl_method_fn_entry(symbol_owner, method, &impl_type_params);
+                        let emitted_symbol =
+                            crate::node::HirImplBlock::method_symbol(&symbol_owner, &method.name);
+                        let source_symbol =
+                            crate::node::HirImplBlock::method_symbol(name, &method.name);
+                        let declaration = ctx
+                            .impl_method_declaration_ids
+                            .get(&emitted_symbol)
+                            .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
+                            .cloned()
+                            .or_else(|| {
+                                builtin_callable_impl_output.as_ref().and_then(|output| {
+                                    output
+                                        .impl_method_declaration_ids
+                                        .get(&emitted_symbol)
+                                        .or_else(|| {
+                                            output.impl_method_declaration_ids.get(&source_symbol)
+                                        })
+                                        .cloned()
+                                })
+                            });
+                        let selected_by_checker = declaration.as_ref().is_some_and(|declaration| {
+                            ctx.direct_call_targets.values().any(|target| {
+                                matches!(target, hew_types::CallTarget::ImplMethod(selected) if selected == declaration)
+                            }) || ctx.method_call_rewrites.values().any(|rewrite| match rewrite {
+                                hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
+                                | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                                    target,
+                                    ..
+                                } => matches!(target, hew_types::CallTarget::ImplMethod(selected) if selected == declaration),
+                                _ => false,
+                            })
+                        });
+                        if (!receiver_specific && !selected_by_checker)
+                            || ctx.fn_registry.contains_key(&emitted_symbol)
+                        {
+                            continue;
+                        }
+                        ctx.register_impl_method_fn_entry(&symbol_owner, method, &impl_type_params);
                         // Establish the declaration-keyed body plan for the
                         // injected builtin impl NOW, before any user body is
                         // lowered in the third pass. The body itself is emitted
@@ -4705,37 +4700,17 @@ pub fn lower_program_with_mono_cap(
                         // `plan_imported_impl_bodies` covers user/imported
                         // bodies; the compiler-injected builtins live in a
                         // separate program, so they must be planned here.
-                        let emitted_symbol =
-                            crate::node::HirImplBlock::method_symbol(symbol_owner, &method.name);
-                        let source_symbol =
-                            crate::node::HirImplBlock::method_symbol(name, &method.name);
-                        if let Some(declaration) = ctx
-                            .impl_method_declaration_ids
-                            .get(&emitted_symbol)
-                            .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
-                            .cloned()
-                            .or_else(|| {
-                                builtin_receiver_impl_output.as_ref().and_then(|output| {
-                                    output
-                                        .impl_method_declaration_ids
-                                        .get(&emitted_symbol)
-                                        .or_else(|| {
-                                            output.impl_method_declaration_ids.get(&source_symbol)
-                                        })
-                                        .cloned()
-                                })
-                            })
-                        {
+                        if let Some(declaration) = declaration {
                             ctx.impl_body_plan
                                 .compiler_selected
                                 .insert(declaration.clone());
                             ctx.impl_body_plan
                                 .symbols
                                 .entry(declaration)
-                                .or_insert(emitted_symbol);
+                                .or_insert_with(|| emitted_symbol.clone());
                         }
+                        builtin_callable_impl_method_symbols.insert(emitted_symbol);
                     }
-                    builtin_receiver_impl_method_symbols.extend(method_symbols);
                 }
             }
         }
@@ -5672,17 +5647,17 @@ pub fn lower_program_with_mono_cap(
         ctx.current_module_name = None;
     }
 
-    // Inject the std builtins.hew receiver impls through the same lowering path
-    // as user impls so direct method rewrites and the static-dispatch index see
-    // them. Keep them after source items to avoid changing user-item ordering
-    // guarantees.
+    // Inject executable std builtins.hew impls through the same lowering path
+    // as user and imported impls so direct method rewrites and the
+    // static-dispatch index see them. Keep them after source items to avoid
+    // changing user-item ordering guarantees.
     if let (Some(program), Some(output)) = (
-        &builtin_receiver_impl_program,
-        &builtin_receiver_impl_output,
+        &builtin_callable_impl_program,
+        &builtin_callable_impl_output,
     ) {
         let item_start = items.len();
         ctx.with_typecheck_facts(output, |ctx| {
-            // The builtin receiver impls lower at module index 0 but their
+            // The builtin callable impls lower at module index 0 but their
             // bodies index `std/builtins.hew`, not the user's root source. Flag
             // the phase so the `root_item_ids` inserts in `lower_impl_block`
             // skip them — a fail-closed in a builtin method must render bare,
@@ -5695,22 +5670,33 @@ pub fn lower_program_with_mono_cap(
             let saved_none = ctx
                 .machine_ctor_registry
                 .insert("None".to_string(), ("Option".to_string(), 1));
+            let empty_rewrites = HashMap::new();
             for (item, span) in &program.items {
                 if let Item::Impl(impl_decl) = item {
-                    if is_builtin_receiver_impl(item) {
+                    if is_builtin_callable_impl(item) {
                         let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
                             continue;
                         };
-                        let symbol_owner = injected_builtin_impl_symbol_owner(name);
-                        let registered = impl_decl.methods.iter().all(|method| {
-                            builtin_receiver_impl_method_symbols.contains(
-                                &crate::node::HirImplBlock::method_symbol(
-                                    symbol_owner,
-                                    &method.name,
-                                ),
-                            )
-                        });
-                        if !registered {
+                        let receiver_specific = is_builtin_receiver_impl(item);
+                        let symbol_owner = if receiver_specific {
+                            injected_builtin_impl_symbol_owner(name).to_string()
+                        } else {
+                            imported_impl_symbol_self_name("std.builtins", name)
+                        };
+                        let skipped_methods: HashSet<String> = impl_decl
+                            .methods
+                            .iter()
+                            .filter(|method| {
+                                !builtin_callable_impl_method_symbols.contains(
+                                    &crate::node::HirImplBlock::method_symbol(
+                                        &symbol_owner,
+                                        &method.name,
+                                    ),
+                                )
+                            })
+                            .map(|method| method.name.clone())
+                            .collect();
+                        if skipped_methods.len() == impl_decl.methods.len() {
                             continue;
                         }
                         // The checker output for the isolated builtins source
@@ -5724,9 +5710,12 @@ pub fn lower_program_with_mono_cap(
                             let source_symbol =
                                 crate::node::HirImplBlock::method_symbol(name, &method.name);
                             let emitted_symbol = crate::node::HirImplBlock::method_symbol(
-                                symbol_owner,
+                                &symbol_owner,
                                 &method.name,
                             );
+                            if !builtin_callable_impl_method_symbols.contains(&emitted_symbol) {
+                                continue;
+                            }
                             if let Some(declaration) = ctx
                                 .impl_method_declaration_ids
                                 .get(&emitted_symbol)
@@ -5746,7 +5735,22 @@ pub fn lower_program_with_mono_cap(
                                     .insert(emitted_symbol, declaration);
                             }
                         }
-                        ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
+                        if receiver_specific {
+                            ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
+                        } else {
+                            let imported = ImportedImplLowering {
+                                rewrites: &empty_rewrites,
+                                skip_methods: &skipped_methods,
+                                symbol_self_name: Some(&symbol_owner),
+                            };
+                            ctx.lower_impl_block(
+                                impl_decl,
+                                span.clone(),
+                                &mut items,
+                                false,
+                                Some(&imported),
+                            );
+                        }
                     }
                 }
             }
@@ -8136,7 +8140,7 @@ struct LowerCtx {
     caller_visible_param_spans: HashSet<SpanKey>,
     /// True while lowering items that are INJECTED at root `current_module_idx`
     /// but do NOT index the user's root source — currently the `std/builtins.hew`
-    /// receiver impls (and the Vec iterator harness), which are lowered
+    /// callable impls (and the Vec iterator harness), which are lowered
     /// out-of-band at module index 0 rather than through `module_graph`. Their
     /// spans index `std/builtins.hew`, so they must be kept OUT of
     /// `root_item_ids` even though `current_module_idx == 0`: a codegen
@@ -11977,20 +11981,31 @@ impl LowerCtx {
         let ty = dispatch_ty;
         match &ty {
             // String: route through a user `impl Display for string` if one
-            // is registered; otherwise pass through identity. The stdlib
+            // is registered in the user's OWN source (a root-level impl,
+            // bare `string::fmt` symbol — see `fstring_string_routes_
+            // through_user_display_impl`); otherwise the stdlib's own
+            // `impl Display for string` in `std/builtins.hew`, discovered
+            // like any imported module's impl (see
+            // `insert_builtins_display_module`), so its symbol carries that
+            // module prefix, exactly like `duration` below. The stdlib
             // identity impl ordinarily makes this a real (no-op) call so a
-            // user impl can transparently replace it.
+            // user impl can transparently replace it; falling through to
+            // raw identity below only happens with neither impl registered
+            // (zero-stdlib unit tests).
             ResolvedTy::String => {
-                let symbol = crate::node::HirImplBlock::method_symbol("string", &method_name);
+                let user_symbol = crate::node::HirImplBlock::method_symbol("string", &method_name);
+                let stdlib_symbol =
+                    crate::node::HirImplBlock::method_symbol("std.builtins.string", &method_name);
                 if let Some(call) =
-                    self.build_user_fn_call(&symbol, vec![value.clone()], span.clone())
+                    self.build_user_fn_call(&user_symbol, vec![value.clone()], span.clone())
+                {
+                    call
+                } else if let Some(call) =
+                    self.build_user_fn_call(&stdlib_symbol, vec![value.clone()], span.clone())
                 {
                     call
                 } else {
-                    // No registered impl (not even the stdlib identity) —
-                    // fall through to identity. This keeps zero-stdlib unit
-                    // tests working while preserving correctness in normal
-                    // builds.
+                    // No registered impl at all — fall through to identity.
                     value
                 }
             }
@@ -12011,14 +12026,19 @@ impl LowerCtx {
                 self.build_catalog_call(builtin, vec![value], span)
             }
             ResolvedTy::F32 => self.lower_f32_display(value, span),
-            // `duration` has a pure-Hew `impl Display for duration` (rendered
-            // through `is_builtin_display_impl`), so dispatch to its fmt symbol
-            // exactly like a user named-type Display impl. The `_` fail-closed
-            // arm below would otherwise reject it (checker–HIR contract
-            // violation) even though the checker admitted it.
-            ResolvedTy::Duration => {
-                self.dispatch_display_to_named_impl("duration", &method_name, value, span)
-            }
+            // `duration` has a pure-Hew `impl Display for duration` in
+            // `std/builtins.hew`, discovered and lowered like any imported
+            // module's impl (see `insert_builtins_display_module`), so
+            // dispatch to its module-qualified fmt symbol exactly like a
+            // user named-type Display impl. The `_` fail-closed arm below
+            // would otherwise reject it (checker–HIR contract violation)
+            // even though the checker admitted it.
+            ResolvedTy::Duration => self.dispatch_display_to_named_impl(
+                "std.builtins.duration",
+                &method_name,
+                value,
+                span,
+            ),
             ResolvedTy::Named {
                 builtin: Some(BuiltinType::Instant),
                 ..
@@ -13019,13 +13039,15 @@ impl LowerCtx {
         };
         // Symbol name for this impl's methods: mangled when the impl is a concrete
         // specialisation of a generic type, bare otherwise.
-        let base_symbol_self_name = if self.lowering_injected_items {
-            injected_builtin_impl_symbol_owner(self_type_name)
-        } else {
-            imported
-                .and_then(|context| context.symbol_self_name)
-                .unwrap_or(self_type_name.as_str())
-        };
+        let base_symbol_self_name = imported
+            .and_then(|context| context.symbol_self_name)
+            .unwrap_or_else(|| {
+                if self.lowering_injected_items {
+                    injected_builtin_impl_symbol_owner(self_type_name)
+                } else {
+                    self_type_name.as_str()
+                }
+            });
         let symbol_self_name: std::borrow::Cow<str> = if imported
             .and_then(|context| context.symbol_self_name)
             .is_some()
@@ -14451,34 +14473,25 @@ impl LowerCtx {
                     is_pool: child.is_pool,
                     slot_index,
                     // Lower named init args from AST `(field, expr)` pairs.
-                    // These were previously silently dropped at this boundary.
-                    //
-                    // For a pool child the reserved `count:` arg designates the
-                    // pool size, not a per-member init field; split it out into
-                    // `pool_count` so `init_args` carries only the per-member
-                    // init template. `count` is reserved only on pool decls — a
-                    // static child keeps any `count:` arg as an ordinary init
-                    // field (e.g. `spawn Counter(count: 0)` stays a state field).
+                    // The parenthesised list is the actor's own field namespace
+                    // in full — pool arity arrives separately as the `count:`
+                    // clause, so an actor field named `count` lowers here like
+                    // any other.
                     init_args: child
                         .args
                         .iter()
-                        .filter(|(field_name, _)| !(child.is_pool && field_name == "count"))
                         .map(|(field_name, spanned_expr)| {
                             let hir_expr = self.lower_expr(spanned_expr, IntentKind::Read);
                             (field_name.clone(), hir_expr)
                         })
                         .collect(),
-                    pool_count: if child.is_pool {
-                        child
-                            .args
-                            .iter()
-                            .find(|(field_name, _)| field_name == "count")
-                            .map(|(_, spanned_expr)| {
-                                self.lower_expr(spanned_expr, IntentKind::Read)
-                            })
-                    } else {
-                        None
-                    },
+                    // Pool arity comes from the `count:` clause. The parser
+                    // refuses the clause on a static child, so `count` is only
+                    // ever populated on a pool.
+                    pool_count: child
+                        .count
+                        .as_ref()
+                        .map(|spanned_expr| self.lower_expr(spanned_expr, IntentKind::Read)),
                     shutdown: child.shutdown.as_ref().map(|s| match s {
                         ShutdownDirective::Timeout(d) => HirShutdownDirective::Timeout(d.clone()),
                         ShutdownDirective::BrutalKill => HirShutdownDirective::BrutalKill,
@@ -15343,6 +15356,25 @@ impl LowerCtx {
                 self.source_declaration(&span, hew_types::DeclarationKind::ActorMethod, index)
             })
             .collect::<Option<Vec<_>>>()?;
+        // An actor-body plain `fn` is callable from the actor's own handlers,
+        // hooks, `init`, and sibling methods (#3285). The checker files its
+        // signature under `{actor identity}::{name}` and publishes that string
+        // as the call's `c_symbol`, so the direct-call lowering below looks the
+        // callee up under the mangled form of that key. Register the entry
+        // before any of this actor's bodies are lowered — those bodies are the
+        // only call sites the checker admits, so this is the whole visibility
+        // window. `#[on(...)]` hooks are excluded: the runtime enters them.
+        let registry_owner = decl_module.map_or_else(
+            || decl.name.clone(),
+            |module| format!("{module}.{}", decl.name),
+        );
+        for method in &decl.methods {
+            if method.attributes.iter().any(|a| a.name == "on") {
+                continue;
+            }
+            let key = crate::mangle_dotted_name(&format!("{registry_owner}::{}", method.name));
+            self.register_fn_entry(&key, method);
+        }
         let state_fields: Vec<HirField> = decl
             .fields
             .iter()
@@ -15412,6 +15444,11 @@ impl LowerCtx {
             // genuine root actor still carries `None`. Package-module actors
             // use the same identity through `lower_imported_actor`.
             defining_module: decl_module.map(str::to_string),
+            type_params: decl
+                .type_params
+                .iter()
+                .map(|param| param.name.clone())
+                .collect(),
             state_fields,
             init,
             receive_handlers,
@@ -15651,7 +15688,6 @@ impl LowerCtx {
                     "crash" => Some(HirLifecycleHookKind::Crash),
                     "exit" => Some(HirLifecycleHookKind::Exit),
                     "down" => Some(HirLifecycleHookKind::Down),
-                    "upgrade" => Some(HirLifecycleHookKind::Upgrade),
                     _ => None,
                 });
             match hook_kind {
@@ -35174,6 +35210,14 @@ fn build_callable_set(
             HirItem::Impl(block) => {
                 declarations.extend(block.method_ids.iter().flatten().cloned());
             }
+            HirItem::Actor(actor) => {
+                // An actor-body plain `fn` realizes an emitted body too: MIR's
+                // actor lowering emits `{Actor}__fn__{name}` for it and maps
+                // the declaration to that symbol in `direct_call_symbols`.
+                // Receive handlers and lifecycle hooks stay out — the runtime
+                // trampolines enter those, and no Hew call site may name them.
+                declarations.extend(actor.methods.iter().map(|m| m.declaration.clone()));
+            }
             _ => {}
         }
     }
@@ -36890,12 +36934,12 @@ impl Sample for Broken {
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-        let diagnostic = *check_builtin_receiver_impl_program(&parsed.program)
+        let diagnostic = *check_builtin_callable_impl_program(&parsed.program)
             .expect_err("the invalid injected impl must fail closed");
         let HirDiagnosticKind::CheckerBoundaryViolation { name, reason } = diagnostic.kind else {
             panic!("expected checker-boundary diagnostic, got {diagnostic:?}");
         };
-        assert_eq!(name, "std/builtins.hew receiver impls");
+        assert_eq!(name, "std/builtins.hew callable impls");
         assert!(
             reason.contains("returns `bool`") && reason.contains("requires `i64`"),
             "diagnostic must preserve the checker mismatch: {reason}"

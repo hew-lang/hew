@@ -1,0 +1,46 @@
+// Accept twin for reject/scope_in_value_position.hew.
+//
+// `scope` leaving `Primary` closes every value position without touching the
+// statement spelling. `guarded` ends with a `scope { .. }` that carries no
+// trailing `;`: it must stay a statement and must NOT be promoted to the
+// block's trailing expression, so the explicit `return fired` still decides
+// the handler's value. `announce` uses the `scope { .. };` spelling.
+
+fn nap() {
+    sleep(1ms);
+}
+
+actor Worker {
+    var fired: i64 = 0;
+
+    receive fn guarded() -> i64 {
+        fired = 7;
+        // No trailing `;`, and still a statement: the block's value is the
+        // `return` below, not the scope.
+        scope {
+            fork nap();
+        }
+        return fired;
+    }
+
+    receive fn announce() -> i64 {
+        scope {
+            fork nap();
+        };
+        return fired + 1;
+    }
+}
+
+fn main() {
+    let w = spawn Worker(fired: 0);
+    let r = await w.guarded();
+    match r {
+        .Ok(v) => println(f"guarded={v}"),
+        .Err(_) => println("guarded failed"),
+    }
+    let a = await w.announce();
+    match a {
+        .Ok(v) => println(f"announce={v}"),
+        .Err(_) => println("announce failed"),
+    }
+}

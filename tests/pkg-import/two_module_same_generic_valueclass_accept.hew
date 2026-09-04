@@ -1,0 +1,27 @@
+// Two imported modules each declare a generic value record named `Key<T>` with
+// DIFFERENT payload types (`keyleft.Key<T>.v: i64` vs `keyright.Key<T>.v:
+// string`). Both are instantiated at `i32` in one program, so each module's
+// declaration must reach codegen under its own module-qualified layout symbol
+// (`hew$keyleft$Key$$i32` and `hew$keyright$Key$$i32`), never one shared
+// `Key$$i32`.
+//
+// Layout identity is declaration identity: `mangle_layout_key` carries the
+// owner module through `mangle_dotted_name`, and the type-argument spine keeps
+// its canonical paths. The run.sh block for this fixture pins both qualified
+// symbols in the emitted IR and asserts the bare `Key$$i32` never appears.
+//
+// Contrast the SINGLE-module case (`imported_generic_valueclass.hew`), which
+// covers an imported generic value record with no same-named twin.
+//
+// Harness verb: hew run
+// Expected: each field read returns its own module's payload.
+import hew.keyleft;
+
+import hew.keyright;
+
+fn main() {
+    let a: keyleft.Key<i32> = keyleft.mk(12345);
+    let b: keyright.Key<i32> = keyright.mk("hello");
+    println(a.v);
+    println(b.v);
+}

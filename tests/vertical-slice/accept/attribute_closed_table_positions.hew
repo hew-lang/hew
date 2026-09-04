@@ -1,0 +1,88 @@
+// Accept twin for the closed-table reject fixtures: every attribute
+// HEW-SPEC-2026 §12.6 legalises, used in each position the spec lists for
+// it, must still type-check cleanly. Proves the closed table doesn't
+// over-refuse legitimate uses.
+
+#[resource]
+type Handle {
+    #[wire]
+    id: i64;
+}
+
+impl Handle {
+    fn close(self) {
+    }
+}
+
+#[linear]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn consume(consuming self) {
+    }
+}
+
+#[opaque]
+type Blob {
+}
+
+#[deprecated]
+type OldShape {
+    value: i64;
+}
+
+#[max_heap(4096)]
+actor Worker {
+    let count: i64;
+
+    #[on(start)]
+    fn setup() {
+    }
+
+    #[every(1s)]
+    receive fn tick() {
+    }
+}
+
+trait Ordered {
+    #[returns_receiver]
+    fn bump(consuming self) -> Self;
+}
+
+impl Ordered for Ticket {
+    #[returns_receiver]
+    fn bump(consuming self) -> Ticket {
+        self
+    }
+}
+
+#[test]
+fn covered_by_test() {
+}
+
+#[test]
+#[ignore]
+fn skipped_test() {
+}
+
+#[test]
+#[should_panic]
+fn panicking_test() {
+    panic("boom");
+}
+
+#[test]
+#[serial]
+fn serial_test() {
+}
+
+#[export("helper")]
+fn helper() -> i64 {
+    1
+}
+
+fn main() {
+    println(f"{helper()}");
+}

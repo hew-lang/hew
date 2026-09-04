@@ -1,9 +1,0 @@
-# host_class	median_ms	recorded_at
-#
-# One row per host_class (`uname -m` plus the CI runner label when CI is
-# set, else "local"): the median of five `hew check std/net/http/http.hew`
-# runs. `make check-time-ratchet` fails when a fresh median exceeds 2x
-# this row's median_ms; `make check-time-ratchet-record` rewrites the row
-# for the current host_class. A host_class with no row is recorded on its
-# first `check` run and passed, not failed (V060-FD-1).
-x86_64-local	677	2026-09-03T03:23:31Z

@@ -293,19 +293,21 @@ sync_wasm_repo() {
     if $CHECK_ONLY; then
         local wasm_drifts=0
         for pair in "$WASM_PKG/hew_wasm_bg.wasm:$dest_bin" \
-                    "$WASM_PKG/hew_wasm.js:$dest_js" \
-                    "$WASM_PKG/hew_wasm.d.ts:$dest_dts"; do
+            "$WASM_PKG/hew_wasm.js:$dest_js" \
+            "$WASM_PKG/hew_wasm.d.ts:$dest_dts"; do
             if ! cmp -s "${pair%%:*}" "$repo_dir/${pair##*:}" 2>/dev/null; then
                 fail "Drift detected in ${pair##*:}"
                 wasm_drifts=$((wasm_drifts + 1))
                 DRIFTS=$((DRIFTS + 1))
             fi
         done
-        [ $wasm_drifts -eq 0 ] && ok "Already in sync"
+        if [ $wasm_drifts -eq 0 ]; then
+            ok "Already in sync"
+        fi
     else
         cp "$WASM_PKG/hew_wasm_bg.wasm" "$repo_dir/$dest_bin"
-        cp "$WASM_PKG/hew_wasm.js"      "$repo_dir/$dest_js"
-        cp "$WASM_PKG/hew_wasm.d.ts"    "$repo_dir/$dest_dts"
+        cp "$WASM_PKG/hew_wasm.js" "$repo_dir/$dest_js"
+        cp "$WASM_PKG/hew_wasm.d.ts" "$repo_dir/$dest_dts"
         cd "$repo_dir"
         local wasm_updated=0
         for rel in "$dest_bin" "$dest_js" "$dest_dts"; do

@@ -1076,31 +1076,61 @@ pub(crate) fn compile_native_from_program_with_paths(
     }
 }
 
-/// Resolve the output binary path for `hew build` using go-build naming.
+/// Which build artefact [`resolve_output`] is naming.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Artifact {
+    /// The linked, runnable binary `hew build` produces by default.
+    Binary,
+    /// The standalone relocatable object `hew build --emit-obj` produces.
+    Object,
+}
+
+/// Resolve the output path for a build artefact using go-build/cargo naming.
 ///
-/// With `-o`, the path is used verbatim. A package builds
-/// `<package-root>/<package-name><suffix>`; an explicit file builds
-/// `./<input-stem><suffix>` in the current directory. The suffix is
-/// target-driven, not host-driven — `""` on Unix targets, `.exe` on Windows
-/// targets, `.wasm` on wasm targets — so a Windows cross-build names `foo.exe`
-/// even on a Unix host.
-fn resolve_build_output_path(
-    a: &args::BuildArgs,
-    resolved: &package::Input,
+/// `-o` (`explicit`) wins over every default, in both file mode and package
+/// mode, for both `kind`s. Absent `-o`: a package writes into
+/// `<root>/target/<profile>/`, named `<package-name><suffix>` — `profile` is
+/// `"debug"` or `"release"`, `suffix` is the target's executable suffix for
+/// [`Artifact::Binary`] (`""` on Unix targets, `.exe` on Windows targets,
+/// `.wasm` on wasm targets) or its object suffix for [`Artifact::Object`]
+/// (`.o`/`.obj`). An explicit file writes `<stem><suffix>` in the current
+/// directory — a single-file program has no package root to own a `target/`.
+fn resolve_output(
+    kind: Artifact,
+    input: &Path,
+    package: Option<&hew_pkg::project::ResolvedPackage>,
+    profile: &str,
     target: &target::TargetSpec,
+    explicit: Option<&Path>,
 ) -> std::path::PathBuf {
-    if let Some(output) = &a.output {
-        return output.clone();
+    if let Some(output) = explicit {
+        return output.to_path_buf();
     }
-    if let Some(pkg) = resolved.package() {
-        return pkg.default_binary_path(target.executable_suffix());
+    let suffix = match kind {
+        Artifact::Binary => target.executable_suffix(),
+        Artifact::Object => target.object_suffix(),
+    };
+    if let Some(pkg) = package {
+        return pkg.default_binary_path(profile, suffix);
     }
-    let source = resolved.source();
-    let stem = source
+    let stem = input
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("a.out");
-    target.executable_path(Path::new(""), stem)
+        .unwrap_or(match kind {
+            Artifact::Binary => "a.out",
+            Artifact::Object => "module",
+        });
+    Path::new(".").join(format!("{stem}{suffix}"))
+}
+
+/// `"release"` when `--release` is given, else `"debug"` — the `target/`
+/// profile directory `hew build` writes into.
+fn build_profile(a: &args::BuildArgs) -> &'static str {
+    if a.release {
+        "release"
+    } else {
+        "debug"
+    }
 }
 
 /// Link a native object into a binary for an explicit target.
@@ -1280,10 +1310,16 @@ fn remove_intermediate_object(path: &Path) -> Result<(), DiagChannel> {
 }
 
 /// Emit a single relocatable object for `hew build --emit-obj`, skipping the
-/// link step entirely. Writes `<cwd>/<stem><.o|.obj>` and exits 0 — even for
-/// foreign-OS targets that cannot be linked on this host (the whole point of
-/// object-only emission). The object format/arch are driven by the target
-/// triple, threaded into codegen.
+/// link step entirely — even for foreign-OS targets that cannot be linked on
+/// this host (the whole point of object-only emission). The object format/arch
+/// are driven by the target triple, threaded into codegen. `output` is `-o`
+/// when given; otherwise [`resolve_output`] names the object the same way it
+/// names the linked binary (package → `target/<profile>/`, file mode → the
+/// current directory).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the emit-obj path threads each naming/emit knob explicitly; grouping obscures the flow"
+)]
 fn emit_obj_only(
     input: &Path,
     target: &target::TargetSpec,
@@ -1291,13 +1327,20 @@ fn emit_obj_only(
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
     options: &compile::CompileOptions,
+    package: Option<&hew_pkg::project::ResolvedPackage>,
+    profile: &str,
+    output: Option<&Path>,
 ) -> Result<(), DiagChannel> {
     let (pipeline, _native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
-    let stem = input
+    let final_path = resolve_output(Artifact::Object, input, package, profile, target, output);
+    let out_dir = match final_path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    let stem = final_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("module");
-    let out_dir = Path::new(".");
     let emit_target = if target.is_wasm() {
         CompileEmitTarget::Wasm
     } else {
@@ -1327,9 +1370,8 @@ fn emit_obj_only(
         DiagChannel::User
     })?;
 
-    // Codegen writes `<dir>/<stem>.o` (or `.wasm.o`); rename to the
-    // target-driven object extension (`.o`/`.obj`) when it differs.
-    let final_path = out_dir.join(format!("{stem}{}", target.object_suffix()));
+    // Codegen writes `<out_dir>/<stem>.o` (or `.wasm.o`); rename to the
+    // requested/target-driven object path when it differs.
     if produced != final_path {
         std::fs::rename(&produced, &final_path).map_err(|e| {
             eprintln!("Error: cannot move object to {}: {e}", final_path.display());
@@ -1424,8 +1466,20 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
         return 2;
     };
 
+    let profile = build_profile(a);
+
     if a.emit_obj {
-        return match emit_obj_only(input, &target, a.debug, opt_level, a.emit_llvm, &options) {
+        return match emit_obj_only(
+            input,
+            &target,
+            a.debug,
+            opt_level,
+            a.emit_llvm,
+            &options,
+            resolved.package(),
+            profile,
+            a.output.as_deref(),
+        ) {
             Ok(()) => 0,
             Err(channel) => channel.exit_code(),
         };
@@ -1438,7 +1492,14 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
         return 1;
     }
 
-    let output_path = resolve_build_output_path(a, &resolved, &target);
+    let output_path = resolve_output(
+        Artifact::Binary,
+        input,
+        resolved.package(),
+        profile,
+        &target,
+        a.output.as_deref(),
+    );
     match compile_build_binary(
         input,
         &output_path,
@@ -1449,9 +1510,27 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
         &link_libs,
         &options,
     ) {
-        Ok(()) => 0,
+        Ok(()) => {
+            eprintln!(
+                "   Built {}",
+                display_relative_to_cwd(&output_path).display()
+            );
+            0
+        }
         Err(channel) => channel.exit_code(),
     }
+}
+
+/// Render `path` relative to the current directory when it falls under it
+/// (the common case: a package root is an absolute path, but invocation
+/// happens from inside — or above — it), so the status line reads
+/// `target/release/<name>` rather than a full absolute path. Falls back to
+/// `path` unchanged when it is not.
+fn display_relative_to_cwd(path: &Path) -> std::path::PathBuf {
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| path.strip_prefix(&cwd).ok())
+        .map_or_else(|| path.to_path_buf(), std::path::Path::to_path_buf)
 }
 
 fn cmd_compile(a: &args::CompileArgs) {
@@ -1587,7 +1666,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     // linker behaviour as release builds.
     if let Some(obj) = &artefacts.native_obj_path {
         // Name the executable through the same authority `hew build` uses
-        // (`resolve_build_output_path` → `TargetSpec::executable_suffix`).
+        // (`resolve_output` → `TargetSpec::executable_suffix`).
         // `hew compile` links for the host, and on Windows the linker writes
         // `<stem>.exe` whatever stem it is given — so a suffixless name made
         // the reported `native:` path name a file that does not exist.
@@ -2798,6 +2877,27 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
                 _ => None,
             })?
         }) else {
+            // `hew_lexer::lex` emits an entire f-string interpolation
+            // (`f"...{expr}..."`) as one `InterpolatedString` token; the
+            // identifier inside `{}` never appears as its own top-level
+            // `Identifier` token, so a bare-variant warning whose span falls
+            // inside one is a token-lookup miss, not a genuine
+            // checker/lexer disagreement. The automatic migration does not
+            // rewrite inside f-string interpolations yet, so skip this
+            // occurrence rather than refusing the whole file (#3243).
+            let inside_interpolated_string = tokens.iter().any(|(token, span)| {
+                matches!(token, hew_lexer::Token::InterpolatedString(_))
+                    && span.start <= error.span.start
+                    && error.span.end <= span.end
+            });
+            if inside_interpolated_string {
+                eprintln!(
+                    "{}:{}-{}: skipping bare-variant migration inside an f-string \
+                     interpolation (not yet supported by the automatic migration)",
+                    file, error.span.start, error.span.end
+                );
+                continue;
+            }
             refusals.push(format!(
                 "{}:{}-{}: checker-selected variant has no identifier token",
                 file, error.span.start, error.span.end
@@ -2998,6 +3098,53 @@ fn cmd_init(a: &args::InitArgs) {
     hew_pkg::cli::run_init(&project_dir, template);
 }
 
+/// `hew new <name>`: create `<name>/`, scaffold it exactly as `hew init`
+/// would (sharing `hew_pkg::cli::run_init`'s template table — no second
+/// scaffold writer), then `git init -q` unless the new directory already
+/// sits inside a repository. `hew init` never touches git; this is the only
+/// site that runs `git init`.
+fn cmd_new(a: &args::NewArgs) {
+    let project_dir = std::path::PathBuf::from(&a.name);
+    if let Err(e) = std::fs::create_dir_all(&project_dir) {
+        eprintln!(
+            "Error: cannot create directory '{}': {e}",
+            project_dir.display()
+        );
+        std::process::exit(1);
+    }
+
+    let template = if a.lib {
+        hew_pkg::manifest::ManifestTemplate::Lib
+    } else if a.actor {
+        hew_pkg::manifest::ManifestTemplate::Actor
+    } else {
+        hew_pkg::manifest::ManifestTemplate::Bin
+    };
+
+    hew_pkg::cli::run_init(&project_dir, template);
+
+    let already_in_repo = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&project_dir)
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if already_in_repo {
+        return;
+    }
+    match std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&project_dir)
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!(
+            "hew new: warning: git init exited {} (skipping)",
+            status.code().unwrap_or(-1)
+        ),
+        Err(e) => eprintln!("hew new: warning: could not run git init: {e}"),
+    }
+}
+
 fn cmd_completions(a: &args::CompletionsArgs) {
     use clap::CommandFactory;
     use clap_complete::{generate, Shell};
@@ -3014,6 +3161,34 @@ fn cmd_completions(a: &args::CompletionsArgs) {
 
 fn cmd_version() {
     println!("hew {}", env!("HEW_VERSION"));
+}
+
+/// `hew env`: print the resolved package-manager environment, one
+/// `NAME=value` line per variable, `(default)` appended when the variable
+/// itself is unset and a compiled-in default is in effect.
+fn cmd_env() {
+    let hew_home = hew_pkg::config::hew_home();
+    let hew_home_set = std::env::var("HEW_HOME").is_ok();
+    println!(
+        "HEW_HOME={}{}",
+        hew_home.display(),
+        if hew_home_set { "" } else { " (default)" }
+    );
+
+    let registry = hew_pkg::config::discover_registry();
+    let registry_set = std::env::var("HEW_REGISTRY").is_ok();
+    println!(
+        "HEW_REGISTRY={}{}",
+        registry.api,
+        if registry_set { "" } else { " (default)" }
+    );
+
+    // HEW_CC has no reader yet (V060-FD-3): report the raw env value, with
+    // no resolved default to fall back to.
+    match std::env::var("HEW_CC") {
+        Ok(value) => println!("HEW_CC={value}"),
+        Err(_) => println!("HEW_CC= (default)"),
+    }
 }
 
 // ---------------------------------------------------------------------------

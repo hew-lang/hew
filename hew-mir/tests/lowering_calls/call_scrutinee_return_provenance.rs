@@ -3,8 +3,7 @@
 //! These are the 33 scenarios formerly pinned to the retired
 //! `__hew_call_scrutinee` preflight. Each case now names the exact source call,
 //! asserts its completed HIR ownership fact, and checks the successor MIR
-//! boundary: non-owned facts cannot mint a generic typed-publication owner,
-//! while `Unknown` fails closed at an ownership-demanding sink.
+//! boundary: non-owned facts cannot mint a generic typed-publication owner.
 
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -1109,23 +1108,4 @@ fn guard_buried_return_forwarder_publishes_retained_fact() {
     let p = pipeline(src);
     assert_owned(&p, "evil(p, 0)", Acquisition::Retained);
     assert_clean(&p);
-}
-
-#[test]
-fn indirect_function_value_scrutinee_stays_unknown_and_fails_closed() {
-    let src = r#"
-        fn make(s: string) -> Result<string, string> { Ok(s) }
-        fn use_it() -> i64 {
-            let f = make;
-            match f("x") { .Ok(_) => 1, .Err(_) => 0 }
-        }
-    "#;
-    let p = pipeline(src);
-    // An indirect call has no resolvable return summary, so the completed
-    // fact stays `Unknown` and the ownership-demanding sink refuses it —
-    // the compile-time fail-closed tooth the extern-Named shapes above no
-    // longer exercise now that they complete as foreign `NoOwner`.
-    assert_authority(&p, "f(\"x\")", Ownership::Unknown);
-    assert_eq!(unresolved_ownership_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
 }

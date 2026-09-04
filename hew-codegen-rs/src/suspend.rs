@@ -4712,7 +4712,19 @@ pub(crate) fn emit_suspending_actor_send_terminator<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
         .into_pointer_value();
     let msg_type = fn_ctx.ctx.i32_type().const_int(term.msg_type as u64, false);
-    let (actor_id, rc) = if let Some(role) = term.stable_role {
+    // The registration id `mailbox_await_send` mints for a parked waiter
+    // (`0` when admitted immediately). Detach must name this id rather than
+    // the read-slot address: slot allocations are recycled, so a detach
+    // keyed on the slot pointer could remove a different registration that
+    // reused the freed address after this one parked (#3147).
+    let reg_id_out = fn_ctx
+        .builder
+        .build_alloca(
+            fn_ctx.ctx.i64_type(),
+            "suspending_actor_send_registration_id",
+        )
+        .llvm_ctx("suspending actor-send registration-id alloca")?;
+    let (actor_id, reg_id, rc) = if let Some(role) = term.stable_role {
         let i64_ty = fn_ctx.ctx.i64_type();
         let supervisor_token = load_int_arg(
             fn_ctx,
@@ -4757,6 +4769,7 @@ pub(crate) fn emit_suspending_actor_send_terminator<'ctx>(
                     sender.into(),
                     slot.into(),
                     actor_id_out.into(),
+                    reg_id_out.into(),
                 ],
                 "suspending_actor_send_role_register",
             )
@@ -4776,7 +4789,16 @@ pub(crate) fn emit_suspending_actor_send_terminator<'ctx>(
             )
             .llvm_ctx("suspending actor-send role actor-id load")?
             .into_int_value();
-        (actor_id, rc)
+        let reg_id = fn_ctx
+            .builder
+            .build_load(
+                i64_ty,
+                reg_id_out,
+                "suspending_actor_send_role_registration_id_load",
+            )
+            .llvm_ctx("suspending actor-send role registration-id load")?
+            .into_int_value();
+        (actor_id, reg_id, rc)
     } else {
         let actor_ptr = load_duplex_handle(fn_ctx, term.actor, "suspending_actor_send receiver")?;
         let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
@@ -4797,6 +4819,7 @@ pub(crate) fn emit_suspending_actor_send_terminator<'ctx>(
                     payload_size.into(),
                     sender.into(),
                     slot.into(),
+                    reg_id_out.into(),
                 ],
                 "suspending_actor_send_register",
             )
@@ -4807,7 +4830,16 @@ pub(crate) fn emit_suspending_actor_send_terminator<'ctx>(
                 CodegenError::FailClosed("hew_actor_await_send_by_id returned void".into())
             })?
             .into_int_value();
-        (actor_id, rc)
+        let reg_id = fn_ctx
+            .builder
+            .build_load(
+                fn_ctx.ctx.i64_type(),
+                reg_id_out,
+                "suspending_actor_send_registration_id_load",
+            )
+            .llvm_ctx("suspending actor-send registration-id load")?
+            .into_int_value();
+        (actor_id, reg_id, rc)
     };
 
     let parent = fn_ctx
@@ -4939,7 +4971,7 @@ pub(crate) fn emit_suspending_actor_send_terminator<'ctx>(
                 .builder
                 .build_call(
                     detach,
-                    &[actor_id.into(), slot.into()],
+                    &[actor_id.into(), reg_id.into()],
                     "suspending_actor_send_abandon_detach",
                 )
                 .llvm_ctx("hew_actor_detach_await_send_by_id call")?;
@@ -7847,7 +7879,7 @@ pub(crate) fn emit_supervisor_bootstrap_body<'ctx>(
     // occupy static slots.
     let mut actor_child_index = 0usize;
     for child in &layout.children {
-        // Pool children (`pool name: Type(count: N)`) reserve a slot in the
+        // Pool children (`pool name: Type count: N`) reserve a slot in the
         // runtime's disjoint `pool_slots[]` space, then spawn N fungible members
         // as static children (registered into `children[]` via add_child_spec)
         // and bind each member's static index into the pool via
@@ -8051,7 +8083,7 @@ fn emit_nested_supervisor_register<'ctx>(
 
 /// Register a supervised child actor's type name and per-handler names into the
 /// runtime profiler registry so a crash inside one of its handlers is reported
-/// by name (`Worker::run`) rather than the bare `msg_type` discriminant.
+/// by name (`Worker.run`) rather than the bare `msg_type` discriminant.
 ///
 /// The direct-`spawn` path emits the equivalent registration via
 /// `emit_native_actor_metadata_registration`. A supervised child, however, is
@@ -8126,7 +8158,7 @@ fn emit_supervised_child_handler_name_registration<'ctx>(
         void_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
     );
     for (h_idx, handler) in layout.handlers.iter().enumerate() {
-        let handler_name = format!("{actor_name}::{}", handler.name);
+        let handler_name = format!("{actor_name}.{}", handler.name);
         let handler_fragment = llvm_global_name_fragment(&handler.name);
         let handler_name_global = builder
             .build_global_string_ptr(
@@ -8212,7 +8244,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     // (where `emit_native_actor_metadata_registration` would do this), so
     // without this its handler-name registry stays empty and a crash inside one
     // of its handlers is reported by the bare `msg_type` discriminant instead of
-    // the handler name (e.g. `Worker::run`).
+    // the handler name (e.g. `Worker.run`).
     emit_supervised_child_handler_name_registration(
         ctx,
         llvm_mod,
@@ -8769,8 +8801,8 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     Ok(())
 }
 
-/// Emit the bootstrap registration for a static pool (`pool name: Type(count:
-/// N)`): reserve the pool slot, spawn N fungible members as static children, and
+/// Emit the bootstrap registration for a static pool (`pool name: Type count:
+/// N`): reserve the pool slot, spawn N fungible members as static children, and
 /// bind each member's static index into the pool via `pool_member_add_static`.
 ///
 /// Members are homogeneous (A204): one shared init template / init thunk, the

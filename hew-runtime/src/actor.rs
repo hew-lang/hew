@@ -1984,12 +1984,16 @@ unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
         // SAFETY: caller guarantees `actor` is valid and quiescent.
         let actor_id = unsafe { (*actor).id };
         crate::timer_periodic::cancel_all_timers_for_actor(actor);
-        // Unregister any active-mode connection fds owned by this actor BEFORE
-        // it is untracked/freed, so a readiness event arriving after the actor
-        // stops is dropped (the dead-actor-while-registered race) rather than
-        // delivered to a freed actor. Keyed by the actor's address, matching
-        // the snapshot the reactor stored at attach time.
-        crate::reactor::reactor_detach_actor(actor as usize);
+        // Unregister any connection fds owned by this actor BEFORE it is
+        // untracked/freed, so a readiness event arriving after the actor stops
+        // is dropped (the dead-actor-while-registered race) rather than
+        // delivered to a freed actor. Keyed by the INCARNATION the reactor
+        // recorded at registration, so the scrub and the Dekker handshake both
+        // name this actor and not whatever later spawn inherits its address.
+        // SAFETY: the caller guarantees `actor` is valid here.
+        crate::reactor::reactor_detach_actor(unsafe {
+            crate::lifetime::live_actors::ActorIncarnation::of(actor)
+        });
         // SAFETY: caller guarantees `actor` is valid; `unregister_actor_names`
         // does not require LIVE_ACTORS membership, only the actor id.
         unsafe { crate::hew_node::unregister_actor_names(actor_id) };
@@ -4079,10 +4083,17 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
 /// no ownership transfer occurred. A registered producer is resumed by the
 /// target mailbox after dequeue creates capacity.
 ///
+/// `out_id` receives the [`mailbox::BlockedSenderId`] minted for a parked
+/// registration (`0` when the send was admitted immediately, since there is
+/// then no registration to detach). The caller passes it back to
+/// [`hew_actor_detach_await_send_by_id`] to withdraw the registration by
+/// identity rather than by the read-slot address, which is recycled (#3147).
+///
 /// # Safety
 ///
 /// `data` must cover `size` readable bytes; `sender` is the current live actor
 /// and `slot` is a live read slot whose creator ref remains with the caller.
+/// `out_id` must be a writable `*mut u64`, or null to discard the id.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_await_send_by_id(
@@ -4092,17 +4103,26 @@ pub unsafe extern "C" fn hew_actor_await_send_by_id(
     size: usize,
     sender: *mut HewActor,
     slot: *mut crate::read_slot::HewReadSlot,
+    out_id: *mut u64,
 ) -> c_int {
     let result = live_actors::with_actor_send_by_id(actor_id, |actor| {
         // SAFETY: the live registry pin keeps the actor valid for this closure;
         // the remaining arguments retain the public ABI's contract.
         unsafe { actor_await_send_pinned(actor, msg_type, data, size, sender, slot) }
     });
-    result.unwrap_or(HewError::ErrActorStopped as i32)
+    let (rc, id) = result.unwrap_or((HewError::ErrActorStopped as i32, 0));
+    if !out_id.is_null() {
+        // SAFETY: caller-provided non-null output, per this function's contract.
+        unsafe { out_id.write(id) };
+    }
+    rc
 }
 
 /// Register a cooperative send while an identity-verified live-actor pin is
 /// held. Shared by direct-PID and stable-supervisor-role submission.
+///
+/// Returns the status code and the [`mailbox::BlockedSenderId`] minted for a
+/// parked registration (`0` when admitted immediately or refused).
 ///
 /// # Safety
 ///
@@ -4116,42 +4136,44 @@ pub(crate) unsafe fn actor_await_send_pinned(
     size: usize,
     sender: *mut HewActor,
     slot: *mut crate::read_slot::HewReadSlot,
-) -> c_int {
+) -> (c_int, mailbox::BlockedSenderId) {
     // SAFETY: the caller holds an identity-verified live-actor pin.
     let target = unsafe { &*actor };
     if !actor_runtime_matches(target) {
-        return HewError::ErrForeignRuntime as i32;
+        return (HewError::ErrForeignRuntime as i32, 0);
     }
     if actor_send_is_terminal(target) {
-        return HewError::ErrActorStopped as i32;
+        return (HewError::ErrActorStopped as i32, 0);
     }
     // SAFETY: the pin keeps the mailbox live and the caller supplies the
     // payload, sender, and read-slot contracts.
-    let rc = unsafe {
+    let (rc, id) = unsafe {
         mailbox::mailbox_await_send(target.mailbox.cast(), msg_type, data, size, sender, slot)
     };
     if rc == mailbox::MAILBOX_AWAIT_SEND_READY {
         // SAFETY: immediate readiness means a node reached the target queue.
         unsafe { schedule_actor_after_enqueue(actor, target, msg_type) };
     }
-    rc
+    (rc, id)
 }
 
-/// Detach an abandoned cooperative block-send registration. Idempotent when
-/// admission or target close already resolved the waiter.
+/// Detach an abandoned cooperative block-send registration, named by the
+/// [`mailbox::BlockedSenderId`] [`hew_actor_await_send_by_id`] minted for it.
+/// Idempotent when admission or target close already resolved the waiter.
 ///
 /// # Safety
 ///
-/// `slot` must be the live slot passed to [`hew_actor_await_send_by_id`].
+/// No pointer safety obligations beyond the ordinary ABI call convention;
+/// `registration_id` is an opaque scalar identity, not a pointer.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_detach_await_send_by_id(
     actor_id: u64,
-    slot: *mut crate::read_slot::HewReadSlot,
+    registration_id: mailbox::BlockedSenderId,
 ) {
     let _ = live_actors::with_actor_send_by_id(actor_id, |actor| {
         // SAFETY: the registry pin keeps the actor and mailbox live.
-        unsafe { mailbox::mailbox_detach_await_send((*actor).mailbox.cast(), slot) };
+        unsafe { mailbox::mailbox_detach_await_send((*actor).mailbox.cast(), registration_id) };
     });
 }
 
@@ -5270,7 +5292,7 @@ pub unsafe extern "C" fn hew_actor_register_type(
 /// multiple actor types use overlapping `msg_type` integers (unlike the WASM
 /// bridge's flat `msg_type → name` map).
 ///
-/// `name` must be a NUL-terminated `"ActorName::handler_name"` string with
+/// `name` must be a NUL-terminated `"ActorName.handler_name"` string with
 /// static lifetime (a string literal baked into the binary).
 ///
 /// # Safety

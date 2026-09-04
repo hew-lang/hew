@@ -72,6 +72,83 @@ impl Checker {
         }
     }
 
+    /// Reject a `gen fn` return-type annotation that spells the generator
+    /// handle (`Generator<Y, R>`) instead of the yield type `Y`
+    /// (HEW-SPEC-2026 §4.12). `gen fn f() -> Y` names the type of each
+    /// `yield` operand; the compiler synthesizes the `Generator<Y, R>`
+    /// handle wrapper itself, so a source annotation that spells the handle
+    /// double-wraps it and every `yield` in the body then fails to unify
+    /// against the (wrong) expected type — surfacing as a confusing type
+    /// mismatch pointed at the first `yield` instead of the actual mistake
+    /// at the annotation. This diagnostic fires at the annotation's span and
+    /// recovers using the intended `Y`, so the body still checks sensibly.
+    pub(super) fn report_gen_return_spelling(&mut self, declared: &Ty, yields: &Ty, span: &Span) {
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::GenReturnSpelling,
+            span: span.clone(),
+            message: format!(
+                "E_GEN_RETURN_SPELLING: `gen fn` return type names the yield type, not the generator handle it produces; write `-> {yields}` instead of the `Generator<Y, R>` handle spelling"
+            ),
+            notes: Vec::new(),
+            suggestions: vec![format!("replace `{declared}` with `{yields}`")],
+            source_module: self.current_module.clone(),
+        });
+    }
+
+    /// If `declared` (the raw, unwrapped return-type annotation of a `gen
+    /// fn`) already spells `Generator<Y, R>`, report
+    /// [`Self::report_gen_return_spelling`] (once per span — a function's
+    /// signature is rebuilt by more than one registration pass, e.g. its own
+    /// module's registration and an importer's, and both visit the same
+    /// annotation) and return the recovered yield type `Y` in its place;
+    /// otherwise return `declared` unchanged. Callers use the recovered type
+    /// to continue building the function signature on every call, so the
+    /// mis-spelling produces exactly one diagnostic but a correct signature
+    /// on every registration pass.
+    fn recover_gen_return_spelling(
+        &mut self,
+        is_generator: bool,
+        declared: Ty,
+        span: Option<&Span>,
+    ) -> Ty {
+        if !is_generator {
+            return declared;
+        }
+        let Some((yields, _returns)) = declared.as_generator() else {
+            return declared;
+        };
+        let yields = yields.clone();
+        if let Some(span) = span {
+            let span_key = SpanKey::in_module(span, self.current_module_idx);
+            if self.reported_gen_return_spellings.insert(span_key) {
+                self.report_gen_return_spelling(&declared, &yields, span);
+            }
+        }
+        yields
+    }
+
+    /// A function declaration's final return type: `E_GEN_RETURN_SPELLING`
+    /// recovery (see [`Self::recover_gen_return_spelling`]) followed by the
+    /// generator/async-generator wrap (`Generator<Y, R>` / `AsyncGenerator<Y>`).
+    /// `span` is the return-type annotation's span, if any.
+    pub(super) fn wrap_fn_return_type(
+        &mut self,
+        fd: &FnDecl,
+        declared_return: Ty,
+        span: Option<&Span>,
+    ) -> Ty {
+        let declared_return =
+            self.recover_gen_return_spelling(fd.is_generator, declared_return, span);
+        if fd.is_generator && fd.is_async {
+            Ty::async_generator(declared_return)
+        } else if fd.is_generator {
+            Ty::generator(declared_return, Ty::Unit)
+        } else {
+            declared_return
+        }
+    }
+
     /// Emit warnings for functions that are never called (dead code).
     /// Uses BFS reachability from entry points: main, actor handlers, and
     /// underscore-prefixed functions.
@@ -142,6 +219,14 @@ impl Checker {
                 is_pub,
             ));
         }
+        // `fn_def_spans` is a `HashMap`, so its iteration order is
+        // unspecified and varies run to run. Sort findings by (span,
+        // fn_name) so diagnostic emission order — and therefore the
+        // rendered warning order a user sees — is deterministic (#3169).
+        findings.sort_by(|(a_span, a_name, ..), (b_span, b_name, ..)| {
+            (a_span.start, a_span.end, a_name).cmp(&(b_span.start, b_span.end, b_name))
+        });
+
         // A root module with no `fn main` cannot link as a binary, so it is
         // a library unit: every `pub fn` in it is public API for another
         // crate/module to call, not dead code from this compilation unit's

@@ -483,6 +483,13 @@ pub struct HirActorDecl {
     /// derives the dotted registry key; root actors qualify to their bare
     /// name, so single-module programs see byte-identical symbols.
     pub defining_module: Option<String>,
+    /// Generic type parameters declared on the actor (`actor Worker<T>`).
+    ///
+    /// Names only, threaded verbatim from `ActorDecl::type_params`. MIR reads
+    /// it to tell a generic ORIGIN from a monomorphic actor: an origin's member
+    /// signatures may name a type parameter that has no `ValueClass` at the MIR
+    /// boundary, so nothing that would have to type one may be emitted for it.
+    pub type_params: Vec<String>,
     /// `let <name>: <ty>;` state fields declared in the actor body. Field
     /// ordering is source order; the runtime layout follows the same order.
     pub state_fields: Vec<HirField>,
@@ -495,8 +502,10 @@ pub struct HirActorDecl {
     /// periodic scheduling (validated by the checker; recorded here as a
     /// structural flag plus the duration in nanoseconds).
     pub receive_handlers: Vec<HirActorReceiveFn>,
-    /// Plain methods on the actor (not lifecycle hooks), with lowered HIR
-    /// bodies ready for MIR/codegen consumers.
+    /// Plain methods on the actor (not lifecycle hooks). MIR emits one
+    /// `{Actor}__fn__{name}` callable per entry, entered from the actor's own
+    /// handlers, hooks, `init`, and sibling methods; the body reads and writes
+    /// state through the same field instructions a handler uses.
     pub methods: Vec<HirActorMethod>,
     /// `#[on(start|stop|crash|upgrade)]` lifecycle hooks, exhaustively
     /// bucketed by `kind`. The checker (`check_actor_methods`) enforces
@@ -654,9 +663,6 @@ pub enum HirLifecycleHookKind {
     Exit,
     /// `#[on(down)]` — receives a typed monitor terminal notification.
     Down,
-    /// `#[on(upgrade)]` — reserved marker for hot-upgrade flows. No
-    /// runtime invocation in v0.5.
-    Upgrade,
 }
 
 // ── Machine declarations ─────────────────────────────────────────────────────
@@ -973,7 +979,7 @@ pub struct HirSupervisorChild {
     /// all N fungible members.
     pub init_args: Vec<(String, HirExpr)>,
     /// Reserved pool-size expression, lowered from the `count:` named arg on a
-    /// `pool name: Type(count: N, ...)` declaration. `None` for a static child
+    /// `pool name: Type(...) count: N` declaration. `None` for a static child
     /// or a pool child that omitted `count:` (which the checker rejects). The
     /// expression yields the number of fungible members the bootstrap spawns
     /// into the pool slot. `count` is a reserved arg name on pool declarations,

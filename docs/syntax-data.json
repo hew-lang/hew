@@ -201,6 +201,7 @@
     "shutdown": "Supervisor child graceful-stop deadline clause",
     "infinity": "Supervisor child shutdown: wait indefinitely (accepted-only)",
     "wired_to": "Supervisor child sibling-wiring clause",
+    "count": "Supervisor pool arity clause (pool ws: Worker(..) count: N)",
     "export": "FFI export attribute",
     "resource": "Type-decl ownership attribute — move-only, non-duplicable value",
     "linear": "Type-decl ownership attribute — must be consumed exactly once",

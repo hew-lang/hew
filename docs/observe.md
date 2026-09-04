@@ -50,7 +50,8 @@ visible in `scrape()` output, not by a labelled `read` call.
 ### `observe.series() -> string`
 
 Returns the canonical metric names, one per line. It lists the 28 scalar names
-accepted by `observe.read` plus the two labelled actor-attribution series names.
+accepted by `observe.read` plus the labelled series names (per-handler actor
+attribution and per-child supervisor restarts).
 
 ```hew
 import std.observe;
@@ -82,7 +83,9 @@ Example excerpt:
 # TYPE heap_live_bytes gauge
 heap_live_bytes 32
 # TYPE actors_attributed_turns_by_handler_total counter
-actors_attributed_turns_by_handler_total{dispatch="0x...",msg_type="...",handler="Counter::increment"} 2
+actors_attributed_turns_by_handler_total{dispatch="0x...",msg_type="...",handler="Counter.increment"} 2
+# TYPE supervisor_restarts_by_child_total counter
+supervisor_restarts_by_child_total{supervisor="supervisor:1",child="store"} 1
 ```
 
 ## Getting started: read and scrape a small workload
@@ -127,8 +130,8 @@ Expected useful output includes:
 - `3` from the actor's `total` handler.
 - A non-zero `actors.turns_total` scalar.
 - `actors.attributed_turns_by_handler_total` in the series list.
-- Scrape samples labelled with handlers such as `Counter::increment` and
-  `Counter::total`.
+- Scrape samples labelled with handlers such as `Counter.increment` and
+  `Counter.total`.
 
 `observe.barrier()` is a current synchronization helper, not a metric API. It
 waits until actor dispatches that started before the call have reached their
@@ -173,22 +176,26 @@ value only increments when `HEW_OBSERVE` enables the hot tier.
 | `reactor.ready_events_total` | counter | no | Reactor ready-event count. |
 | `arena.resets_total` | counter | no | Arena reset count. |
 
-The two labelled series are emitted by `observe.scrape()` when attribution data
+The labelled series are emitted by `observe.scrape()` when attribution data
 exists:
 
 | Scrape series | Kind | Labels | What it measures |
 | --- | --- | --- | --- |
 | `actors_attributed_turns_by_handler_total` | counter | `dispatch`, `msg_type`, `handler` | Actor turn count grouped by dispatch pointer, message type id, and resolved handler name. |
 | `actors_attributed_turn_duration_ns_by_handler_total` | counter | `dispatch`, `msg_type`, `handler` | Total actor turn duration in nanoseconds for the same label set. |
+| `supervisor_restarts_by_child_total` | counter | `supervisor`, `child` | Each supervised child's lifetime restart count, one row per child across every registered supervisor tree. |
 
 How to read the labelled series:
 
 - `handler` is the most useful label. With profiler support enabled, it resolves
-  to names such as `Counter::increment`.
+  to names such as `Counter.increment`.
 - `msg_type` is an integer message type id. It is useful for joining samples but
   is not meant to be hand-decoded.
 - `dispatch` is the dispatch function pointer rendered as hex. Treat it as a
   process-local grouping key, not a stable cross-run identifier.
+- `child` is the declared child slot name (e.g. `store`), not the actor type.
+  `supervisor` identifies the owning supervisor by its actor id and is a
+  process-local grouping key like `dispatch`, not a stable cross-run identifier.
 - The labelled series are scrape-only. Use the aggregate scalar metrics when you
   need `observe.read`.
 

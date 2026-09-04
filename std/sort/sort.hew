@@ -261,7 +261,6 @@ pub fn sort_ints(v: Vec<i64>) -> Vec<i64> {
 /// Sort integers and return the production merge core's comparison count.
 ///
 /// This diagnostic form exists for deterministic complexity regression tests.
-#[doc(hidden)]
 pub fn sort_ints_counted(v: Vec<i64>) -> (Vec<i64>, i64) {
     let out = copy_ints(v);
     let comparisons = sort_ints_in_place(out);
@@ -280,7 +279,6 @@ pub fn sort_strings(v: Vec<string>) -> Vec<string> {
 /// Sort strings and return the production merge core's comparison count.
 ///
 /// This diagnostic form exists for deterministic complexity regression tests.
-#[doc(hidden)]
 pub fn sort_strings_counted(v: Vec<string>) -> (Vec<string>, i64) {
     let out = copy_strings(v);
     let comparisons = sort_strings_in_place(out);

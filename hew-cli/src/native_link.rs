@@ -49,9 +49,10 @@ fn collect_items(items: &[Spanned<Item>], dirs: &mut BTreeSet<PathBuf>) {
 /// that declares a `[native]` library. Directories without a `[native]` section
 /// yield nothing. Returns an error string if a native crate fails to build.
 pub fn build_native_link_libs(dirs: &[PathBuf]) -> Result<Vec<String>, String> {
+    let expected = hew_pkg::native::embedded_rustc_identity();
     let mut libs = Vec::new();
     for dir in dirs {
-        if let Some(artifact) = hew_pkg::native::build_native(dir)? {
+        if let Some(artifact) = hew_pkg::native::build_native(dir, &expected)? {
             let path = artifact.path.to_str().ok_or_else(|| {
                 format!(
                     "native library path is not valid UTF-8: {}",

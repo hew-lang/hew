@@ -34,8 +34,6 @@ mod hashmap_layout_ops;
 mod lifecycle_registry_call_sites;
 #[path = "structural/lifecycle_state_transaction.rs"]
 mod lifecycle_state_transaction;
-#[path = "structural/llvm_module_size.rs"]
-mod llvm_module_size;
 #[path = "structural/machine_layout.rs"]
 mod machine_layout;
 #[path = "structural/periodic_spawn_arming.rs"]

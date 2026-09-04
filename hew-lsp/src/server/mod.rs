@@ -2532,7 +2532,6 @@ machine Traffic {
             TypeErrorKind::Shadowing,
             TypeErrorKind::OrphanImpl,
             TypeErrorKind::PlatformLimitation,
-            TypeErrorKind::OnUpgradeNotYetWired,
             TypeErrorKind::MachineExhaustivenessError,
             TypeErrorKind::BlockingCallInReceiveFn,
         ];

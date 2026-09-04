@@ -1499,6 +1499,67 @@ fn for_await_receive_generator_int_stream_typechecks() {
     );
 }
 
+/// A `gen fn` return type that spells the generator handle
+/// `Generator<Y, R>` instead of the yield type `Y` is `E_GEN_RETURN_SPELLING`
+/// (HEW-SPEC-2026 §4.12), not a fallthrough type mismatch on the first
+/// `yield`. #3265.
+#[test]
+fn gen_fn_return_type_spelling_generator_handle_rejected() {
+    let output = typecheck_inline(
+        r"
+        gen fn counter() -> Generator<i64, ()> {
+            yield 1;
+        }
+
+        fn main() {
+            let _g = counter();
+        }
+        ",
+    );
+    // Pinned at exactly 1: the checker recovers using the intended yield
+    // type, so no downstream `yield` mismatch cascades alongside the new
+    // diagnostic.
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected exactly one error (no mismatch cascade), got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::GenReturnSpelling
+                && e.message.contains("E_GEN_RETURN_SPELLING")
+        }),
+        "expected E_GEN_RETURN_SPELLING for a gen fn spelling its own Generator<Y, R> handle, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Negative control: naming the yield type directly (the accepted spelling)
+/// must not trip `E_GEN_RETURN_SPELLING`.
+#[test]
+fn gen_fn_return_type_spelling_yield_type_accepted() {
+    let output = typecheck_inline(
+        r"
+        gen fn counter() -> i64 {
+            yield 1;
+        }
+
+        fn main() {
+            let _g = counter();
+        }
+        ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::GenReturnSpelling),
+        "expected no E_GEN_RETURN_SPELLING for the accepted `-> Y` spelling, got: {:#?}",
+        output.errors
+    );
+}
+
 /// Actor method calls in `for await` must target `receive gen fn`, even if the
 /// method's return type is `Stream<T>`.
 #[test]
@@ -3410,32 +3471,10 @@ fn rc_param_explicit_return_errors_borrowed_rc() {
     );
 }
 
-/// `break <rc_param>` inside a loop must trigger the error — the broken value
-/// escapes to the enclosing scope with the same aliasing hazard as `return`.
-#[test]
-fn rc_param_break_value_errors_borrowed_rc() {
-    let output = typecheck_inline(
-        r"
-        fn escape(r: Rc<i64>) -> Rc<i64> {
-            loop {
-                break r;
-            }
-        }
-        fn main() {}
-        ",
-    );
-    // Note: the type checker currently types `loop { break v; }` as Unit,
-    // so this also gets a ReturnTypeMismatch.  The BorrowedParamReturn error
-    // must still fire independently of that.
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
-        "break-with-value of Rc param should emit BorrowedParamReturn error, got errors: {:#?}",
-        output.errors
-    );
-}
+// `break <rc_param>` is gone from the language: `break` carries no operand
+// (`E_BREAK_VALUE`, HEW-SPEC-2026 §12.4), so the escape route this checker
+// rule once had to cover cannot be written. The remaining escapes — an
+// explicit `return`, a block tail, a match arm — are covered above and below.
 
 /// Block-wrapped return `{ r }` must be caught — `Expr::Block` descent.
 #[test]

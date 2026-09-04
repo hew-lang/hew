@@ -1335,14 +1335,10 @@ impl Parser<'_> {
                 // into that shape, so this introduces no new tree for the
                 // break-detection soundness argument to cover.
                 let label = self.parse_control_flow_label();
-                let value = if self.break_value_is_absent(BreakValuePosition::Expression) {
-                    None
-                } else {
-                    Some(self.parse_expr()?)
-                };
+                self.refuse_break_operand(BreakValuePosition::Expression);
                 let stmt_span = start..self.peek_span().start;
                 Expr::Block(Block {
-                    stmts: vec![(Stmt::Break { label, value }, stmt_span)],
+                    stmts: vec![(Stmt::Break { label, value: None }, stmt_span)],
                     trailing_expr: None,
                 })
             }
@@ -1358,26 +1354,20 @@ impl Parser<'_> {
                 })
             }
             Token::Scope => {
-                self.advance();
-                // Reject obsolete surfaces: `scope.method()` and `scope |s| { ... }`.
-                if self.eat(&Token::Dot) {
-                    self.error(
-                        "'scope.method()' syntax has been removed; use 'scope { ... }' with `fork name = expr;` bindings instead"
-                            .to_string(),
-                    );
-                    return None;
-                }
-                if self.peek() == Some(&Token::Pipe) {
-                    self.error(
-                        "'scope |s| { s.launch / s.spawn / s.cancel }' has been removed; use 'scope { fork name = call(...); }' instead"
-                            .to_string(),
-                    );
-                    return None;
-                }
-                self.scope_expr_depth += 1;
-                let body = self.parse_block()?;
-                self.scope_expr_depth -= 1;
-                Expr::Scope { body }
+                // `scope` is not a `Primary` (HEW-SPEC-2026 §4.2). Reaching it
+                // here means a value was expected — a `let` initialiser, a call
+                // argument, a match-arm body, an operand, a block's trailing
+                // expression — and `scope { .. }` produces none. Naming that
+                // beats the generic "expected expression, found scope", which
+                // reads as though the keyword were unknown. The statement
+                // spelling lives in `parse_stmt`.
+                self.error_with_hint(
+                    "E_SCOPE_IS_STATEMENT: `scope` cannot be used as a value; \
+                     `scope { .. }` is a statement that produces nothing"
+                        .to_string(),
+                    "use `join { .. }` for a value-producing fan-out",
+                );
+                return None;
             }
             Token::Fork => {
                 let fork_span = self.peek_span();

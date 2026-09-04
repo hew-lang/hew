@@ -1,0 +1,12 @@
+// Reject fixture: a `gen fn` return type that spells the generator handle
+// `Generator<Y, R>` instead of the yield type `Y` — HEW-SPEC-2026 §4.12.
+// `-> Y` is the accepted spelling; the compiler synthesizes the handle
+// wrapper itself, so naming it explicitly is E_GEN_RETURN_SPELLING, not a
+// generic type mismatch on the first `yield`.
+gen fn counter() -> Generator<i64, ()> {
+    yield 1;
+}
+
+fn main() {
+    let _g = counter();
+}

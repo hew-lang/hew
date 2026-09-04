@@ -2201,6 +2201,12 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// Symbols of functions carrying typed machine-step provenance in raw MIR.
     /// Call lowering consults this set instead of interpreting the callee name.
     pub(crate) machine_step_symbols: &'a HashSet<String>,
+    /// Symbols of actor-body plain `fn`s, carried in raw MIR as
+    /// `SourceOrigin::SynthesizedActorMethod`. Call lowering consults this set
+    /// — never a name suffix — to decide that the callee's header opens with
+    /// the execution context and the actor-state pointer, which the caller
+    /// supplies from its own.
+    pub(crate) actor_method_symbols: &'a HashSet<String>,
     /// Exact declaration-identity lifecycle authority for both opaque and
     /// field-bearing resources. Linkage symbols are payload, never lookup keys.
     pub(crate) lifecycle_registry: &'a hew_hir::LifecycleRegistry,
@@ -5073,7 +5079,7 @@ pub(crate) fn emit_native_actor_metadata_registration<'ctx>(
                 "actor `{actor_name}` handler index exceeds u32::MAX"
             ))
         })?;
-        let handler_name = format!("{actor_name}::{}", handler.name);
+        let handler_name = format!("{actor_name}.{}", handler.name);
         let handler_name_fragment = llvm_global_name_fragment(&handler.name);
         let handler_name_ptr = intern_global_string_ptr(
             fn_ctx,
@@ -22229,6 +22235,20 @@ fn actor_handler_identity(func: &RawMirFunction) -> Option<(ActorHandlerKind, &s
     }
 }
 
+/// The actor layout key of an actor-body plain `fn`.
+///
+/// Deliberately separate from `actor_handler_identity`: an actor method is
+/// entered from Hew code inside the actor, not from a runtime trampoline, so it
+/// takes no dispatch slot, no `borrow_mode` parameter, and no lifecycle state
+/// transaction of its own. What it does share with a handler is the state
+/// layout, which types `ActorStateFieldLoad`/`Store`.
+fn actor_method_identity(func: &RawMirFunction) -> Option<&str> {
+    match &func.source_origin {
+        SourceOrigin::SynthesizedActorMethod { actor_layout_key } => Some(actor_layout_key),
+        _ => None,
+    }
+}
+
 fn is_receive_handler(func: &RawMirFunction) -> bool {
     actor_handler_identity(func).is_some_and(|(kind, _)| kind == ActorHandlerKind::Receive)
 }
@@ -22244,6 +22264,9 @@ fn is_crash_handler(func: &RawMirFunction) -> bool {
 /// hook/handler phase must decide whether its state pointer is the scheduler's
 /// active dispatch domain before codegen will compile.
 fn actor_state_store_transaction(func: &RawMirFunction) -> ActorStateStoreTransaction {
+    if actor_method_identity(func).is_some() {
+        return ActorStateStoreTransaction::LifecycleOutsideDispatch;
+    }
     actor_state_store_transaction_for_kind(actor_handler_identity(func).map(|(kind, _)| kind))
 }
 
@@ -31749,9 +31772,33 @@ fn lower_terminator<'ctx>(
                         // values correct for signed operands; unsigned operands
                         // must zero-extend at this boundary.
                         let declared_param_tys = value.get_type().get_param_types();
-                        let mut arg_vals: Vec<BasicValueEnum<'ctx>> =
-                            Vec::with_capacity(args.len());
-                        for (idx, arg) in args.iter().enumerate() {
+                        // An actor-body plain `fn` declares `(ctx, state,
+                        // <user params>)`, so Hew argument `i` is declared
+                        // parameter `i + 2`. The caller supplies the two
+                        // leading values from its own: it is inside the same
+                        // actor's dispatch, which is the only place the checker
+                        // admits such a call. Driven by the callee's carried
+                        // MIR identity, never by its symbol spelling.
+                        let implicit_args: Vec<BasicValueEnum<'ctx>> =
+                            if fn_ctx.actor_method_symbols.contains(callee) {
+                                let caller_ctx = fn_ctx.execution_context.ok_or_else(|| {
+                                    CodegenError::FailClosed(format!(
+                                        "call to actor method `{callee}` from a function with no \
+                                         execution context"
+                                    ))
+                                })?;
+                                vec![
+                                    live_execution_context_ptr(fn_ctx, caller_ctx)?.into(),
+                                    current_actor_state_ptr(fn_ctx)?.into(),
+                                ]
+                            } else {
+                                Vec::new()
+                            };
+                        let implicit_arg_count = implicit_args.len();
+                        let mut arg_vals: Vec<BasicValueEnum<'ctx>> = implicit_args;
+                        arg_vals.reserve(args.len());
+                        for (arg_idx, arg) in args.iter().enumerate() {
+                            let idx = arg_idx + implicit_arg_count;
                             let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
                             let declared_ty =
                                 declared_param_tys.get(idx).copied().ok_or_else(|| {
@@ -35828,6 +35875,7 @@ fn lower_function<'ctx>(
     representation_loan_params_by_function: &HashMap<String, Vec<u32>>,
     param_boundary_modes_by_function: &HashMap<String, Vec<Option<ParamBoundaryMode>>>,
     machine_step_symbols: &HashSet<String>,
+    actor_method_symbols: &HashSet<String>,
     elab: &ElaboratedMirFunction,
     checked: &CheckedMirFunction,
     record_layouts: &RecordLayoutMap<'ctx>,
@@ -36199,10 +36247,42 @@ fn lower_function<'ctx>(
             ))
         })?;
         Some(param.into_pointer_value())
+    } else if actor_method_identity(func).is_some() {
+        // An actor method carries the context EXPLICITLY: MIR declares it as
+        // parameter 0 of an ordinary `Default`-callconv header, so there is no
+        // ABI-injected leading parameter to skip and Hew argument `i` still
+        // lands on declared parameter `i + 2`.
+        let param = llvm_fn.get_nth_param(0).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "actor method `{}` has no leading execution-context LLVM parameter; \
+                 MIR and codegen disagree on the actor-method header",
+                func.name
+            ))
+        })?;
+        Some(param.into_pointer_value())
     } else {
         None
     };
-    let explicit_actor_state_ptr = if is_crash_handler(func) {
+    let explicit_actor_state_ptr = if actor_method_identity(func).is_some() {
+        // Parameter 1 is the caller's actor-state pointer. A COROUTINE method
+        // must not use it: the spilled parameter names the scheduler's
+        // per-dispatch state domain, which is gone after the first suspend
+        // (W6.010). Leaving it `None` there routes state access through
+        // `current_actor_ptr`, whose coroutine arm re-fetches the live actor
+        // from the thread-local at every use.
+        if is_coroutine_function(func) {
+            None
+        } else {
+            let param = llvm_fn.get_nth_param(1).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "actor method `{}` has no actor-state LLVM parameter at index 1; \
+                     MIR and codegen disagree on the actor-method header",
+                    func.name
+                ))
+            })?;
+            Some(param.into_pointer_value())
+        }
+    } else if is_crash_handler(func) {
         if !func.call_conv.carries_execution_context() {
             return Err(CodegenError::FailClosed(format!(
                 "synthesised crash handler `{}` does not carry an execution context",
@@ -36536,8 +36616,12 @@ fn lower_function<'ctx>(
         }
     }
 
-    let actor_layout_key =
-        actor_handler_identity(func).map(|(_, actor_layout_key)| actor_layout_key);
+    // An actor method reads and writes the same state a handler does, so it
+    // resolves the same layout key — the difference between the two shapes is
+    // how the state POINTER is obtained, not how the state is typed.
+    let actor_layout_key = actor_handler_identity(func)
+        .map(|(_, actor_layout_key)| actor_layout_key)
+        .or_else(|| actor_method_identity(func));
     let actor_state_ty =
         actor_layout_key.and_then(|actor_key| record_layouts.get(actor_key).copied());
     // Per-field clone kinds for the same actor, resolved from the layout
@@ -36822,7 +36906,12 @@ fn lower_function<'ctx>(
         execution_context,
         explicit_actor_state_ptr,
         closure_call_fallback_context,
-        execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler,
+        // An actor method runs inside its actor's dispatch, on the actor's own
+        // heap, so actor access (`self`-relative sends, asks, spawns) is legal
+        // in it exactly as it is in a handler. The context it hands those is
+        // its own leading parameter, forwarded by its caller.
+        execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler
+            || actor_method_identity(func).is_some(),
         actor_state_ty,
         actor_state_field_kinds,
         actor_state_store_transaction: actor_state_store_transaction(func),
@@ -36838,6 +36927,7 @@ fn lower_function<'ctx>(
         fn_symbols,
         frame_cleanup_thunks,
         machine_step_symbols,
+        actor_method_symbols,
         lifecycle_registry,
         actor_layouts,
         machine_layouts,
@@ -38204,6 +38294,17 @@ fn build_module_for_target<'ctx>(
         })
         .map(|func| func.name.clone())
         .collect();
+    let actor_method_symbols: HashSet<String> = pipeline
+        .raw_mir
+        .iter()
+        .filter(|func| {
+            matches!(
+                func.source_origin,
+                SourceOrigin::SynthesizedActorMethod { .. }
+            )
+        })
+        .map(|func| func.name.clone())
+        .collect();
     // One exact cache for every body in this LLVM module.  The cache's
     // monotonic generated names are deliberately module-local; descriptor
     // equality is decided only by its structured key.
@@ -38253,6 +38354,7 @@ fn build_module_for_target<'ctx>(
             &representation_loan_params_by_function,
             &param_boundary_modes_by_function,
             &machine_step_symbols,
+            &actor_method_symbols,
             elab,
             checked,
             &record_layouts,

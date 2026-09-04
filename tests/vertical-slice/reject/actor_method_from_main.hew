@@ -1,0 +1,20 @@
+// An actor method runs on the actor's own state and is entered from inside the
+// actor. From `main` the only reachable surface is the mailbox: the call is a
+// User-channel refusal, never an internal error (#3285).
+actor Counter {
+    var count: i64 = 0;
+
+    fn helper() -> i64 {
+        count + 1
+    }
+
+    receive fn bump() {
+        count = helper();
+    }
+}
+
+fn main() {
+    let c = spawn Counter(count: 0);
+    c.bump();
+    println(Counter.helper());
+}

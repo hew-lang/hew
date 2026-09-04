@@ -1,0 +1,14 @@
+// A field inside a `type { .. }` body only carries `#[wire]` (HEW-SPEC-2026
+// §12.6). An unrecognised attribute on a field must fail closed the same
+// way it does on a type declaration or a free function — it is not a
+// special-cased position with its own silent-accept path.
+type Point {
+    #[bogus]
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    let p = Point { x: 1, y: 2 };
+    println(f"{p.x}");
+}

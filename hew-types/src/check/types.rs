@@ -3219,6 +3219,12 @@ pub struct Checker {
     pub(super) reported_undefined_named_types: HashSet<(String, SpanKey)>,
     /// Borrow-type spans already rejected during ordinary annotation resolution.
     pub(super) reported_borrow_types_outside_extern: HashSet<SpanKey>,
+    /// `gen fn` return-type spans already rejected as
+    /// `E_GEN_RETURN_SPELLING`, so the mis-spelling is reported exactly once
+    /// even though a function's signature is rebuilt by more than one
+    /// registration pass (own-module registration and import registration
+    /// both visit the same return-type annotation).
+    pub(super) reported_gen_return_spellings: HashSet<SpanKey>,
     /// `false` until `collect_types` has registered every type declaration.
     /// The undefined-named-type guard in `resolve_type_expr_tracking_holes`
     /// only fires once this is `true`: type-declaration member resolution runs
@@ -3433,14 +3439,6 @@ pub struct Checker {
     /// record (a name unique to one module keeps its bare identity, so no
     /// stdlib `http.Response`/`xml.Node` over-qualification) (#2208).
     pub(super) cross_module_colliding_record_names: HashSet<String>,
-    /// First owner-qualified use of each concrete bare generic
-    /// monomorphisation key. Rc1 layout symbols omit the owner module, so a
-    /// later use from a different owner must prove layout compatibility before
-    /// the checker permits the program to reach HIR/MIR.
-    pub(super) generic_layout_instantiations: HashMap<(String, Vec<Ty>), String>,
-    /// Concrete generic layout keys for which the checker already emitted the
-    /// cross-module collision diagnostic.
-    pub(super) reported_generic_layout_collisions: HashSet<(String, Vec<Ty>)>,
     /// 1-based index of the non-root module currently being type-checked.
     /// 0 = root; N = N-th non-root module in topo order. Combined with
     /// `SpanKey.module_idx` to prevent byte-offset collisions across files.
@@ -3956,6 +3954,7 @@ impl Checker {
             reported_type_visibility_violations: HashSet::new(),
             reported_undefined_named_types: HashSet::new(),
             reported_borrow_types_outside_extern: HashSet::new(),
+            reported_gen_return_spellings: HashSet::new(),
             type_decls_registered: false,
             suppress_undefined_type_report: false,
             declared_type_param_names: HashSet::new(),
@@ -3983,8 +3982,6 @@ impl Checker {
             reported_declaration_collisions: std::collections::HashSet::new(),
             canonical_module_spellings: std::collections::HashMap::new(),
             cross_module_colliding_record_names: HashSet::new(),
-            generic_layout_instantiations: HashMap::new(),
-            reported_generic_layout_collisions: HashSet::new(),
             current_module_idx: 0,
             local_type_defs: HashSet::new(),
             source_type_defs: HashSet::new(),

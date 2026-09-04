@@ -1,0 +1,18 @@
+// Reject fixture: `break expr;` is E_BREAK_VALUE (User).
+//
+// A loop never produces a value, so an operand on `break` has nowhere to go.
+// The parser used to accept it and evaluate it for its side effects only, so
+// `hew check` reported OK on a program that reads as a loop-as-expression —
+// a model Hew does not have (HEW-SPEC-2026 §12.4).
+//
+// The accept twin is accept/break_control_flow_only.hew: bare `break`,
+// `break @label`, and a `break` arm body all stay legal.
+
+fn main() {
+    var total: i64 = 0;
+    loop {
+        total = 1;
+        break total;
+    }
+    println(f"{total}");
+}

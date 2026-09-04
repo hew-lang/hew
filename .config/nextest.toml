@@ -57,6 +57,15 @@ filter = "binary(eval_e2e)"
 test-group = "subprocess-intensive"
 
 [[profile.default.overrides]]
+# sort_complexity_e2e's wasmtime case (sort_merge_authority_runs_under_wasmtime)
+# spawns the full hew compiler binary under `--target wasm32-wasi` (AOT compile
+# + codegen + wasmtime execute); its native-O0/O2 sibling case does the same
+# without wasmtime. Both belong in the subprocess-intensive group alongside
+# eval_e2e so this binary cannot oversubscribe workspace-wide compiler/link work.
+filter = "binary(sort_complexity_e2e)"
+test-group = "subprocess-intensive"
+
+[[profile.default.overrides]]
 # This executable ownership oracle runs a complete compiler + codegen + native
 # link + actor execution under a strict 30-second child deadline. On a hosted
 # runner the same healthy test twice exhausted that deadline while competing
@@ -149,6 +158,14 @@ slow-timeout = { period = "120s", terminate-after = 4 }
 # so at most 8 run concurrently, preventing compiler-process oversubscription
 # that inflates compile times and causes the eval hang-guard to fire spuriously.
 filter = "binary(eval_e2e)"
+test-group = "subprocess-intensive"
+
+[[profile.ci.overrides]]
+# sort_complexity_e2e's wasmtime case spawns the full hew compiler binary
+# under `--target wasm32-wasi` (AOT compile + codegen + wasmtime execute).
+# Same medicine as eval_e2e on hosted runners: cap concurrency in the
+# subprocess-intensive group, change no coverage.
+filter = "binary(sort_complexity_e2e)"
 test-group = "subprocess-intensive"
 
 [[profile.ci.overrides]]

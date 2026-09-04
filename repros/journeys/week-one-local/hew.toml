@@ -1,8 +1,0 @@
-[package]
-name = "kvlocal"
-edition = "2026"
-version = "0.1.0"
-
-# Standard library only, no [dependencies], no [cluster]: the first service is
-# one node, and the north star's "one binary and the standard library" is what
-# this journey tests (§0.1, §6.3).

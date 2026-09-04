@@ -359,6 +359,7 @@ tests/pkg-import/sameleaf_named_type_ambiguous.hew
 tests/pkg-import/sameleaf_qualified_alias_accept.hew
 tests/pkg-import/samename_type_layout.hew
 tests/pkg-import/self_qualified_type_identity.hew
+tests/pkg-import/two_module_same_generic_valueclass_accept.hew
 
 # ── tests/vertical-slice/accept/ ─────────────────────────────────────────────
 #

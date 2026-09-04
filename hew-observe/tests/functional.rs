@@ -136,6 +136,57 @@ fn profiler_endpoint_captures_fixture_observability_data() {
     }
 }
 
+/// `supervisor.restarts_by_child_total` reports each child's lifetime restart total
+/// separately: a supervisor with two children restarted a different number of
+/// times must emit two distinct series values, not a shared or collapsed one.
+#[test]
+#[ignore = "run by `make observe-functional-test` with built compiler artifacts"]
+fn restarts_by_child_counts_each_child_separately() {
+    let fixture = build_restarts_fixture_binary();
+    let port = reserve_local_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let child = ChildGuard::new(
+        Command::new(&fixture.binary)
+            .env("HEW_PPROF", format!("127.0.0.1:{port}"))
+            .env("HEW_OBSERVE", "hot")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|error| {
+                panic!("failed to start {}: {error}", fixture.binary.display())
+            }),
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(750))
+        .build()
+        .expect("build HTTP client");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last_error = "restarts-by-child fixture was not contacted".to_owned();
+    let mut scrape = String::new();
+    while Instant::now() < deadline {
+        match fetch_text(&client, &base_url, "/api/observe/scrape") {
+            Ok(text) => {
+                let a = restart_count(&text, "a");
+                let b = restart_count(&text, "b");
+                scrape = text;
+                if a == Some(1) && b == Some(3) {
+                    return;
+                }
+                last_error = format!("observed restarts a={a:?} b={b:?}");
+            }
+            Err(error) => last_error = error,
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!(
+        "timed out waiting for the expected restart counts: {last_error}\n\
+         last scrape:\n{scrape}\n{}",
+        child.output_after_kill()
+    );
+}
+
 #[test]
 #[ignore = "run by `make observe-functional-test` with the positive endpoint test"]
 fn observe_snapshot_validation_rejects_no_data() {
@@ -170,6 +221,38 @@ fn build_fixture_binary() -> BuiltFixture {
     assert!(
         output.status.success(),
         "failed to build observe fixture with {}\nstdout:\n{}\nstderr:\n{}",
+        hew.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    BuiltFixture {
+        _dir: out_dir,
+        binary,
+    }
+}
+
+fn build_restarts_fixture_binary() -> BuiltFixture {
+    ensure_compiler_artifacts();
+
+    let out_dir = tempfile::tempdir().expect("create restarts fixture output directory");
+    let binary = out_dir.path().join(format!(
+        "observe-restarts-fixture{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+    let fixture = repo_root().join("examples/observe-restarts-fixture.hew");
+    let hew = hew_binary_path();
+    let output = Command::new(&hew)
+        .args(["build"])
+        .arg(&fixture)
+        .args(["-o"])
+        .arg(&binary)
+        .current_dir(repo_root())
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run {} build: {error}", hew.display()));
+
+    assert!(
+        output.status.success(),
+        "failed to build observe-restarts fixture with {}\nstdout:\n{}\nstderr:\n{}",
         hew.display(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -394,9 +477,9 @@ fn validate_scrape_metrics(scrape: &str) -> Result<(), String> {
         "actors_attributed_turns_total",
         EXPECTED_ACTOR_TURNS,
     )?;
-    expect_handler_turns(scrape, "Counter::increment", FIXTURE_COUNTER_INCREMENTS)?;
-    expect_handler_turns(scrape, "Counter::total", 1)?;
-    expect_handler_turns(scrape, "Pinger::ping", 1)?;
+    expect_handler_turns(scrape, "Counter.increment", FIXTURE_COUNTER_INCREMENTS)?;
+    expect_handler_turns(scrape, "Counter.total", 1)?;
+    expect_handler_turns(scrape, "Pinger.ping", 1)?;
     Ok(())
 }
 
@@ -455,6 +538,20 @@ fn expect_handler_turns(scrape: &str, handler: &str, expected: u64) -> Result<()
             many.len()
         )),
     }
+}
+
+/// Read the `supervisor_restarts_by_child_total{...,child="<child>"}` value
+/// off a scrape, regardless of which `supervisor="..."` label carries it —
+/// the restarts-fixture registers exactly one supervisor, so the child label
+/// alone disambiguates the row.
+fn restart_count(scrape: &str, child: &str) -> Option<u64> {
+    let prefix = "supervisor_restarts_by_child_total{";
+    let needle = format!("child=\"{child}\"");
+    scrape
+        .lines()
+        .find(|line| line.starts_with(prefix) && line.contains(&needle))
+        .and_then(|line| line.rsplit_once(' '))
+        .and_then(|(_, value)| value.parse::<u64>().ok())
 }
 
 fn assert_snapshot_has_expected_data(snapshot: &Snapshot) {

@@ -129,6 +129,7 @@ fn minimal_actor(
         declaration: hew_types::DefId::for_test(name),
         name: name.to_string(),
         defining_module: None,
+        type_params: vec![],
         state_fields: vec![HirField {
             name: "count".to_string(),
             ty: ResolvedTy::I64,

@@ -208,6 +208,55 @@ fn main() {
     );
 }
 
+/// Dead-code findings are collected from `fn_def_spans`, a `HashMap` whose
+/// iteration order is unspecified. Emission must sort by `(span, fn_name)`
+/// before pushing warnings so the diagnostic order a user sees is
+/// deterministic and matches source order, not hash-bucket order (#3169).
+#[test]
+fn dead_code_warnings_are_emitted_in_source_span_order() {
+    const SOURCE: &str = r"
+fn zeta() -> i64 { 1 }
+fn mike() -> i64 { 2 }
+fn alpha() -> i64 { 3 }
+fn quebec() -> i64 { 4 }
+fn india() -> i64 { 5 }
+fn charlie() -> i64 { 6 }
+
+fn main() {}
+";
+    let parsed = hew_parser::parse(SOURCE);
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture should parse cleanly, got: {:?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+
+    let dead_code_spans: Vec<usize> = output
+        .warnings
+        .iter()
+        .filter(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode))
+        .map(|w| w.span.start)
+        .collect();
+
+    assert_eq!(
+        dead_code_spans.len(),
+        6,
+        "expected one dead_code warning per unreferenced function, got: {:?}",
+        output.warnings
+    );
+    let mut expected_sorted = dead_code_spans.clone();
+    expected_sorted.sort_unstable();
+    assert_eq!(
+        dead_code_spans, expected_sorted,
+        "dead_code warnings must be emitted in ascending source-span order, \
+         not HashMap iteration order: {:?}",
+        output.warnings
+    );
+}
+
 #[test]
 fn where_clause_assoc_binding_projects_iterator_item_in_generic_body() {
     let result = hew_parser::parse(

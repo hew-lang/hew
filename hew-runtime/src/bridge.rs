@@ -144,7 +144,7 @@ impl std::fmt::Debug for HewActorMeta {
 struct MetaState {
     registry: HashMap<String, ActorMetaEntry>,
     trace_attribution: HashMap<i32, ActorTraceAttribution>,
-    /// `msg_type → "ActorName::handler_name"` side table for trace attribution.
+    /// `msg_type → "ActorName.handler_name"` side table for trace attribution.
     ///
     /// Populated at registration time by [`hew_wasm_register_actor_meta`].
     ///
@@ -244,7 +244,7 @@ pub(crate) fn register_bridge_reset_hook() {
 
 /// Resolve a `msg_type` integer to its fully-qualified handler name.
 ///
-/// Returns `Some("ActorName::handler_name")` when the `msg_type` was
+/// Returns `Some("ActorName.handler_name")` when the `msg_type` was
 /// previously registered via [`hew_wasm_register_actor_meta`], or `None`
 /// if registration has not yet occurred for this `msg_type` (e.g. a trace
 /// event arrived before registration completed).
@@ -642,11 +642,11 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
     }
 
     let mut state = meta_state();
-    // Populate the msg_type → "ActorName::handler_name" side table used by
+    // Populate the msg_type → "ActorName.handler_name" side table used by
     // drain_events_json for span-level trace attribution.
     let actor_type_id = wasm_actor_type_id(&name);
     for h in &handlers {
-        let handler_name = format!("{}::{}", name, h.name);
+        let handler_name = format!("{}.{}", name, h.name);
         state.handler_names.insert(h.msg_type, handler_name.clone());
         state.trace_attribution.insert(
             h.msg_type,
@@ -1417,7 +1417,7 @@ mod tests {
             hew_wasm_register_actor_meta(&raw const actor_meta);
         }
 
-        assert_eq!(resolve_handler_name(42), Some("Foo::handle_bar".to_owned()));
+        assert_eq!(resolve_handler_name(42), Some("Foo.handle_bar".to_owned()));
         // Unknown msg_type still returns None.
         assert_eq!(resolve_handler_name(99), None);
     }
@@ -1452,7 +1452,7 @@ mod tests {
         assert_ne!(actor_type_id, 0);
         assert_eq!(actor_type_id, wasm_actor_type_id("TraceActor"));
         assert_eq!(actor_type, "TraceActor");
-        assert_eq!(handler_name, Some("TraceActor::handle_ping".to_owned()));
+        assert_eq!(handler_name, Some("TraceActor.handle_ping".to_owned()));
         assert_eq!(resolve_actor_trace_attribution(99), None);
     }
 
@@ -1482,7 +1482,7 @@ mod tests {
         // SAFETY: actor_meta is a valid stack-allocated struct with valid C strings.
         unsafe { hew_wasm_register_actor_meta(&raw const actor_meta) };
 
-        assert_eq!(resolve_handler_name(7), Some("ResetActor::ping".to_owned()));
+        assert_eq!(resolve_handler_name(7), Some("ResetActor.ping".to_owned()));
         assert!(
             resolve_actor_trace_attribution(7).is_some(),
             "trace attribution must be populated before reset"
@@ -1491,7 +1491,7 @@ mod tests {
         bridge_shutdown();
         assert_eq!(
             resolve_handler_name(7),
-            Some("ResetActor::ping".to_owned()),
+            Some("ResetActor.ping".to_owned()),
             "bridge_shutdown keeps handler_names until session_reset runs"
         );
         assert!(

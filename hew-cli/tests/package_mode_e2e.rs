@@ -312,7 +312,7 @@ fn native_prerequisite_with_matching_toolchain_builds_and_links() {
         "a package whose [native] crate matches the runtime's rustc must build\n{}",
         describe_output(&output),
     );
-    assert_prints_greeting(&binary_in(dir.path(), "withnativeok"));
+    assert_prints_greeting(&package_binary_in(dir.path(), "debug", "withnativeok"));
 }
 
 /// Outside any package, the file-less form is a usage error naming the search

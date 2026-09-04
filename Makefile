@@ -1189,12 +1189,12 @@ sir-coverage: hew-native ## Test: fail when the SIR admission count drops below 
 sir-parity: hew-native ## Test: run SIR-route and legacy-route binaries and compare their output
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/sir-parity.sh --ratchet scripts/sir-parity-ratchet.txt hew-cli/tests/fixtures/sir-parity $(SIR_COVERAGE_CORPORA)
 
-# Dogfood-shaped compile measurement. The raw IR byte ceiling is a real
-# regression gate; timings remain observational. Lint already builds the same
-# release-lib compiler for hew-fmt-check, so this adds only the focused compile.
+# Dogfood-shaped compile measurement. IR size and timings remain observational.
+# Lint already builds the same release-lib compiler for hew-fmt-check, so this
+# adds only the focused compile.
 #
 #         tests/compile-measure/** scripts/dogfood-compile-measure.sh
-# The gate measures define blocks, excluding host-specific module headers.
+# The measurement reports define blocks, excluding host-specific module headers.
 # It uses Cargo's resolved release-lib binary by default, and honours HEW_BIN
 # when a caller supplies a staged compiler explicitly.
 HEW_BIN ?= $(RELEASE_LIB_HEW)
@@ -1202,7 +1202,7 @@ LINT_GATES += dogfood-compile-measure
 dogfood-compile-measure: hew
 	HEW_BIN="$(HEW_BIN)" bash scripts/dogfood-compile-measure.sh
 
-# MIR lowering time budget. The IR-size gate above measures what lowering
+# MIR lowering time budget. The IR measurement above reports what lowering
 # produces; this one measures what lowering costs.
 LINT_GATES += bench-mir
 bench-mir: hew ## Test: fail when MIR lowering time exceeds its budget

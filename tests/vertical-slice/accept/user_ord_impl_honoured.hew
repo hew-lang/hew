@@ -1,0 +1,19 @@
+type Reverse { rank: i64 }
+type PartialReverse { rank: i64 }
+
+impl Ord for Reverse {
+    fn lt(self, other: Reverse) -> bool {
+        self.rank > other.rank
+    }
+}
+
+impl PartialOrd for PartialReverse {
+    fn lt(self, other: PartialReverse) -> bool {
+        self.rank > other.rank
+    }
+}
+
+fn main() {
+    println(Reverse { rank: 1 } < Reverse { rank: 2 });
+    println(PartialReverse { rank: 1 } < PartialReverse { rank: 2 });
+}

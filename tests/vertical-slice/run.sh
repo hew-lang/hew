@@ -1096,6 +1096,25 @@ run_accept_expect_stdout "payload_enum_equality"
 run_accept_expect_stdout "builtin_payload_enum_equality"
 run_accept_expect_stdout "builtin_payload_enum_inequality_result"
 run_accept_expect_stdout "generic_aggregate_eq"
+# D26 as amended by D340: a user `impl Eq for T` overrides the derived
+# structural default and `==` dispatches to it. The fixture's body
+# deliberately disagrees with structural equality so a passing run proves
+# the user body ran, not the compiler's structural comparison.
+run_accept_expect_stdout "user_eq_impl_honoured"
+run_accept_expect_stdout "user_ord_impl_honoured"
+run_accept_expect_stdout "user_hash_impl_honoured"
+# D26/D340: no user `impl Ord`/`impl PartialOrd`, and no structural-ordering
+# codegen exists for aggregates — `<` on a record reports the
+# Limitation-channel `E_LIMIT_DERIVED_ORD`, not a plain "not supported".
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/derived_ord_lowering_limit.hew" \
+    "E_LIMIT_DERIVED_ORD" \
+    "derived_ord_lowering_limit"
+expect_check_fail_contains_without \
+    "${ROOT}/tests/vertical-slice/reject/derived_ord_unordered_field.hew" \
+    "does not derive \`PartialOrd\`" \
+    "E_LIMIT_DERIVED_ORD" \
+    "derived_ord_unordered_field"
 # Arena<T> generational-index slotmap (std/arena.hew): the first stdlib
 # consumer of the generic Vec<Composite<T>> codegen path. Each fixture asserts
 # exact/boundary/negative values — stale-key None, generation +1, exact len.
@@ -5570,6 +5589,12 @@ grep -q 'UseAfterConsume' "${reject_output}"
 # verification to fail with "Global is external, but doesn't have external
 # or weak linkage!".
 run_check_run_expect_stdout file_import_trait_impl
+
+# Imported derived-trait implementations remain the selected behavioural
+# authority after module discovery. Both fixtures deliberately disagree with
+# their structural defaults.
+run_check_run_expect_stdout imported_eq_impl_honoured
+run_check_run_expect_stdout imported_hash_impl_honoured
 
 # Regression: a file-imported pub FREE function used both as a direct call and
 # as a first-class value must resolve to ONE body. The fourth-pass module-graph

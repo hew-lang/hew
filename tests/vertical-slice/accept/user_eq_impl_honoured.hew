@@ -1,0 +1,17 @@
+type P { a: i64; b: i64 }
+
+// A user `impl Eq` overrides the derived structural default (D26 as
+// amended by D340). Its body deliberately disagrees with structural
+// equality (`p1`/`p2` differ in `b`, so structural `==` would be `false`)
+// so a passing run proves this body actually ran.
+impl Eq for P {
+    fn eq(self, o: P) -> bool {
+        true
+    }
+}
+
+fn main() {
+    let p1 = P { a: 1, b: 2 };
+    let p2 = P { a: 1, b: 999 };
+    println(p1 == p2);
+}

@@ -1,0 +1,10 @@
+type ImportedEqKey {
+    primary: i64,
+    ignored: i64,
+}
+
+impl Eq for ImportedEqKey {
+    fn eq(self, other: ImportedEqKey) -> bool {
+        self.primary == other.primary
+    }
+}

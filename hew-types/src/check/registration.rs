@@ -7742,6 +7742,11 @@ impl Checker {
         // still needs the checker-owned identity for static dispatch and must
         // not reconstruct it from the trait's leaf spelling.
         if let Some(bound) = trait_bound {
+            let type_identity = self.trait_impl_type_identity(type_name);
+            let trait_identity = self.trait_defs_key_for_bound(&bound.name);
+            self.trait_impl_method_declaration_ids
+                .entry((type_identity, trait_identity, method.name.clone()))
+                .or_insert_with(|| declaration_id.clone());
             if let Some(ids) = self.trait_method_call_target_ids(&bound.name, &method.name) {
                 self.trait_method_ids_by_binding.insert(
                     (

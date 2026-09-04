@@ -1,0 +1,15 @@
+type ImportedHashKey {
+    id: i64,
+}
+
+impl Eq for ImportedHashKey {
+    fn eq(self, other: ImportedHashKey) -> bool {
+        self.id % 10 == other.id % 10
+    }
+}
+
+impl Hash for ImportedHashKey {
+    fn hash(self) -> i64 {
+        self.id % 10
+    }
+}

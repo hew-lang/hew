@@ -54,6 +54,12 @@ const USER_FIXTURE: &str = "fn main() {\n    let x: i64 = \"oops\";\n}\n";
 /// `E_LIMIT_MAIN_CONTEXT` (ledger D340).
 const LIMITATION_FIXTURE: &str = "fn main() {\n    scope { fork { println(\"x\"); } }\n}\n";
 
+/// D26 as amended by D340: `<` on a record with no user `impl Ord` — the
+/// checker's own first Limitation-channel kind (every prior `TypeError` was
+/// User-channel; HIR/MIR diagnostics carried the only prior Limitation
+/// codes).
+const CHECKER_LIMITATION_FIXTURE: &str = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 3 };\n    println(a < b);\n}\n";
+
 #[test]
 fn user_channel_exits_1_with_no_prefix_and_json_channel_user() {
     let (_dir, path) = write_fixture(USER_FIXTURE);
@@ -114,5 +120,43 @@ fn limitation_channel_exits_3_with_prefix_and_json_channel_limitation() {
     assert_eq!(
         main_context["channel"], "limitation",
         "D9's JSON channel field must be \"limitation\": {main_context}",
+    );
+}
+
+/// D26/D340: the checker's own `TypeErrorKind::DerivedOrdUnavailable`
+/// carries the same exit-3 / prefix / JSON-channel contract as the
+/// HIR/MIR-authored Limitation diagnostics above, proving `TypeErrorKind::
+/// channel()` is actually wired into the CLI rather than only unit-tested.
+#[test]
+fn checker_limitation_channel_exits_3_with_prefix_and_json_channel_limitation() {
+    let (_dir, path) = write_fixture(CHECKER_LIMITATION_FIXTURE);
+
+    let text_output = run(&["check", path.to_str().unwrap()]);
+    assert_eq!(
+        text_output.status.code(),
+        Some(3),
+        "a checker Limitation-channel diagnostic must exit 3\n{}",
+        describe_output(&text_output),
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&text_output.stderr));
+    assert!(
+        stderr.contains("compiler limitation:"),
+        "must render the Limitation channel prefix; got:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("E_LIMIT_DERIVED_ORD"),
+        "must name the D26/D340 code; got:\n{stderr}",
+    );
+
+    let json_output = run(&["check", "--format=json", path.to_str().unwrap()]);
+    assert_eq!(json_output.status.code(), Some(3));
+    let diagnostics = parse_json_array(&json_output);
+    let derived_ord = diagnostics
+        .iter()
+        .find(|d| d["code"] == "E_LIMIT_DERIVED_ORD")
+        .expect("expected an E_LIMIT_DERIVED_ORD diagnostic");
+    assert_eq!(
+        derived_ord["channel"], "limitation",
+        "the checker's JSON channel field must be \"limitation\": {derived_ord}",
     );
 }

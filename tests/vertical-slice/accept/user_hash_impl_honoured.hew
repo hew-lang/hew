@@ -1,0 +1,22 @@
+type Key { id: i64 }
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.id % 10 == other.id % 10
+    }
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.id % 10
+    }
+}
+
+fn main() {
+    let values: HashMap<Key, i64> = HashMap.new();
+    values.insert(Key { id: 1 }, 42);
+    println(match values.get(Key { id: 11 }) {
+        .Some(value) => value,
+        .None => -1,
+    });
+}

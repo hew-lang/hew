@@ -60,9 +60,10 @@ pub use check::{
     OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
     PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
     ProducedValueDependency, ProducedValueFact, RcIntrinsicOp, ResolvedCall, RuntimeAbi, SpanKey,
-    TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput, VariantDef, VariantMatch,
-    VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput, UserComparisonDispatch,
+    VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering,
+    WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable,
+    WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{
@@ -78,10 +79,10 @@ pub use lang_items::{
 pub use lowering_facts::{
     assert_lowering_facts_consistent, hashmap_layout_key_fact,
     hashmap_layout_key_layout_value_fact, hashset_layout_element_admissible, hashset_layout_fact,
-    DropKind, HashMapAbi, HashMapKeyType, HashMapLoweringFact, HashMapLoweringFactError,
-    HashMapLoweringFactState, HashMapValueType, HashSetAbi, HashSetElementType,
-    HashSetLoweringFact, HashSetLoweringFactError, LoweringFact, LoweringFactConsistencyError,
-    LoweringFactError, LoweringKind,
+    CollectionMethodDispatch, DropKind, HashMapAbi, HashMapKeyType, HashMapLoweringFact,
+    HashMapLoweringFactError, HashMapLoweringFactState, HashMapValueType, HashSetAbi,
+    HashSetElementType, HashSetLoweringFact, HashSetLoweringFactError, LoweringFact,
+    LoweringFactConsistencyError, LoweringFactError, LoweringKind,
 };
 pub use resolved_ty::{
     default_impl_method_declaration, BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy,

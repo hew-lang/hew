@@ -32,7 +32,7 @@ use hew_types::{
     LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
     NumericMethodLowering, OptionResultMethod, PatternKind, ProducedValueDependency,
     ProducedValueFact, RcIntrinsicOp, ResolvedTraitBound, ResolvedTy, SpanKey, Ty, TyPattern,
-    TypeCheckOutput, WireCodecDirection,
+    TypeCheckOutput, UserComparisonDispatch, WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -7620,6 +7620,10 @@ struct LowerCtx {
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
     interpolation_display_types: HashMap<SpanKey, Ty>,
+    /// `==`/`!=`/`<`/`<=`/`>`/`>=` binary expressions dispatching to a user
+    /// trait impl instead of the structural default (D340). Consulted at
+    /// `Expr::Binary` lowering; see [`UserComparisonDispatch`].
+    user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
     /// Checker result-ownership rows waiting to be projected from their
     /// source spans onto stable HIR expression sites.
     produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
@@ -8653,6 +8657,7 @@ impl LowerCtx {
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
             interpolation_display_types: tc_output.interpolation_display_types.clone(),
+            user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
             produced_value_ownership: tc_output.produced_value_ownership.clone(),
             produced_value_dependencies: tc_output.produced_value_dependencies.clone(),
             produced_value_source_sites: HashMap::new(),
@@ -11812,6 +11817,91 @@ impl LowerCtx {
             },
             span,
         })
+    }
+
+    /// Wrap `operand` (already-lowered, `bool`-typed) in a boolean `!`.
+    fn build_bool_not(&mut self, operand: HirExpr, span: Span) -> HirExpr {
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&ResolvedTy::Bool, &self.type_classes),
+            ty: ResolvedTy::Bool,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Unary {
+                op: UnaryOp::Not,
+                operand: Box::new(operand),
+                operand_ty: ResolvedTy::Bool,
+            },
+            span,
+        }
+    }
+
+    /// Lower a `==`/`!=`/`<`/`<=`/`>`/`>=` binary expression the checker
+    /// marked for user-impl dispatch (D340 — see [`UserComparisonDispatch`])
+    /// into a call to the resolved impl method, rather than the structural
+    /// comparison codegen path `Expr::Binary` otherwise lowers to.
+    ///
+    /// No trait declares `eq`/`lt` (`Eq`/`Ord`/`PartialOrd` are compiler
+    /// marker traits with no `trait_defs` entry — see `MarkerTrait` in
+    /// `hew-types/src/traits.rs`), so there is no independent contract
+    /// pinning these method names or the derived-order convention below;
+    /// this lowering is their sole producer and so is the one place that
+    /// convention is decided: `Eq` calls `<type>::eq(left, right)`, negated
+    /// for `!=`; `Ord`/`PartialOrd` calls `<type>::lt`, permuting/negating
+    /// the operands so every ordering operator reduces to one user-provided
+    /// `lt` — `<` is `lt(a,b)`, `>` is `lt(b,a)`, `<=` is `!lt(b,a)`, `>=` is
+    /// `!lt(a,b)`.
+    fn lower_user_comparison_dispatch(
+        &mut self,
+        dispatch: &UserComparisonDispatch,
+        op: BinaryOp,
+        left: HirExpr,
+        right: HirExpr,
+        span: Span,
+    ) -> HirExpr {
+        let (method, args, negate): (&hew_types::DefId, Vec<HirExpr>, bool) = match dispatch {
+            UserComparisonDispatch::Eq { method } => {
+                (method, vec![left, right], op == BinaryOp::NotEqual)
+            }
+            UserComparisonDispatch::Ord { method }
+            | UserComparisonDispatch::PartialOrd { method } => match op {
+                BinaryOp::Greater => (method, vec![right, left], false),
+                BinaryOp::LessEqual => (method, vec![right, left], true),
+                BinaryOp::GreaterEqual => (method, vec![left, right], true),
+                // `Less`, and any op the checker never records `Ord`
+                // dispatch for, share the direct `lt(left, right)` shape.
+                _ => (method, vec![left, right], false),
+            },
+        };
+        let Some(symbol) = self.registered_impl_method_symbol(method) else {
+            let name = method.full_path().to_string();
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.clone(),
+                    reason: "selected comparison impl has no emitted body symbol".to_string(),
+                },
+                span.clone(),
+                "checker selected a comparison implementation but HIR did not emit its body",
+            ));
+            return self.unsupported_expr(span, format!("comparison dispatch: missing {name}"));
+        };
+        let Some(call) = self.build_user_fn_call(&symbol, args, span.clone()) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: symbol.clone(),
+                    reason: format!("no fn_registry entry for user comparison impl `{symbol}`"),
+                },
+                span.clone(),
+                "checker recorded a user comparison dispatch but HIR has no corresponding \
+                 impl symbol — checker-HIR contract violation",
+            ));
+            return self.unsupported_expr(span, format!("comparison dispatch: missing {symbol}"));
+        };
+        if negate {
+            self.build_bool_not(call, span)
+        } else {
+            call
+        }
     }
 
     /// Single construction site for the deprecated, allowlist-gated
@@ -18712,6 +18802,29 @@ impl LowerCtx {
             Expr::Binary { left, op, right } => {
                 let left = self.lower_expr(left, IntentKind::Read);
                 let right = self.lower_expr(right, IntentKind::Read);
+                // D340: a user `impl Eq`/`impl Ord`/`impl PartialOrd` for the
+                // operand type overrides the compiler's structural default —
+                // dispatch to the resolved impl method instead of the
+                // structural comparison this arm otherwise builds below.
+                let dispatch_key = self.mk_key(&span);
+                if let Some(dispatch) = self.user_comparison_dispatch.get(&dispatch_key).cloned() {
+                    let call = self.lower_user_comparison_dispatch(
+                        &dispatch,
+                        *op,
+                        left,
+                        right,
+                        span.clone(),
+                    );
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        value_class: ValueClass::of_ty(&call.ty, &self.type_classes),
+                        ty: call.ty.clone(),
+                        intent,
+                        kind: call.kind,
+                        span,
+                    };
+                }
                 let mut ty = Self::binary_ty(*op, &left.ty, &right.ty);
                 // `instant - instant -> duration`: both operands erase to i64
                 // (instant canonicalises to i64), so `binary_ty` over the operand

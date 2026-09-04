@@ -35,7 +35,7 @@ checker-hir-fact-relation	checker-relation-use	hew-hir/src/lower.rs	7	stage-2	re
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/expressions.rs	11	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/mod.rs	15	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-variant	hew-types/src/check/types.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	383	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering and the identity-view reads that resolve an impl receiver's spelling and a peer file's span index; +4 for the actor_self_state_fields read that resolves the `self.field` receiver spelling to the state binding, replacing HIR's own copy of the predicate
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	389	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering and the identity-view reads that resolve an impl receiver's spelling and a peer file's span index; +4 for the actor_self_state_fields read that resolves the `self.field` receiver spelling to the state binding, replacing HIR's own copy of the predicate
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	5	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	4	stage-2	real checker/HIR produced-value carrier inventory
@@ -43,7 +43,7 @@ checker-hir-fact-relation	hir-relation-use	hew-hir/src/lower.rs	4	stage-2	real c
 checker-hir-fact-relation	hir-relation-use	hew-hir/src/verify.rs	22	stage-2	real checker/HIR produced-value carrier inventory; +3 for the subsumption-spine guardrail (Subsumes/Identity edge-skip check publishing CheckerBoundaryViolation)
 checker-hir-fact-relation	hir-relation-use	hew-mir/src/lower/ownership.rs	9	stage-2	real checker/HIR produced-value carrier inventory plus exact projection-source lookup for completing an owned temporary parent behind a runtime-borrowed string field
 checker-hir-fact-relation	hir-relation-variant	hew-hir/src/node.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	65	stage-2	real checker/HIR produced-value carrier inventory plus interpolation Display-selection identity; +1 for actor_self_state_fields, the checker's receiver-spelling resolution both lowerers consume
+checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	66	stage-2	real checker/HIR produced-value carrier inventory plus interpolation Display-selection identity; +1 for actor_self_state_fields, the checker's receiver-spelling resolution both lowerers consume
 checker-hir-publication	checker-insert-call	hew-types/src/check/expressions.rs	1	stage-2	RC1 syntax-node authority inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/methods.rs	2	stage-2	RC1 syntax-node authority inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/resolution.rs	3	stage-2	RC1 syntax-node authority inventory; +1 for the range-bound identifier declaration-site expr_types re-record
@@ -124,7 +124,7 @@ string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	10	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/thunks.rs	3	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	2	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	32	stage-1	reviewed compatibility-key factory for unique imported tagged-union constructors and `?` checker payload mismatch diagnostics; exact source owner remains the authority
+string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	33	stage-1	reviewed compatibility-key factory for unique imported tagged-union constructors and `?` checker payload mismatch diagnostics; exact source owner remains the authority
 string-method-identity	qualified-format-macro	hew-hir/src/node.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/dump.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/consts.rs	2	stage-5	reviewed qualified string identity construction
@@ -132,12 +132,12 @@ string-method-identity	qualified-format-macro	hew-mir/src/lower/control_flow.rs	
 string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan.rs	2	stage-3	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan/typed_resource_close_authority.rs	1	stage-5	reviewed typed-resource close test identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/expr.rs	2	stage-5	A315 S7 retired source-facing scoped diagnostic spellings
-string-method-identity	qualified-format-macro	hew-mir/src/lower/machine_synth.rs	16	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/lower/machine_synth.rs	17	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/pattern.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/raw_values.rs	2	stage-5	canonical Raw virtual-value verifier reports the verified Raw/Checked/Elaborated ladder boundary
 string-method-identity	qualified-format-macro	hew-mir/src/thunk_requirements.rs	1	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/actor_protocol.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/calls.rs	3	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/calls.rs	4	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/coerce.rs	2	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	8	stage-1	reviewed qualified string identity construction; adds dotted module-qualified unit-constructor resolution (module.Type.Variant); plus the single join of nominal+method into a fn_sigs key in record_generic_application, which every generic application funnels through so dispatch sites never build method identity themselves
 string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	9	stage-1	A315 S7 retired source-facing scoped diagnostic spellings

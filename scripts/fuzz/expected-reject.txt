@@ -32,8 +32,10 @@ tests/vertical-slice/accept/generic_display_xmod_lib.hew
 tests/vertical-slice/accept/generic_record_box.hew
 tests/vertical-slice/accept/greeting.hew
 tests/vertical-slice/accept/imported_actor_msg_discriminants_lib.hew
+tests/vertical-slice/accept/imported_eq_impl_honoured_lib.hew
 tests/vertical-slice/accept/imported_fn_local_shadow/m.hew
 tests/vertical-slice/accept/imported_generics_resolve/lib.hew
+tests/vertical-slice/accept/imported_hash_impl_honoured_lib.hew
 tests/vertical-slice/accept/imported_shadow_errmod.hew
 tests/vertical-slice/accept/imported_supervisor_child_identity_support/worker.hew
 tests/vertical-slice/accept/let_record_destructure_selective_import_module.hew

@@ -42,12 +42,6 @@ fn test_negative_stream_capacities_are_rejected() {
 }
 
 #[test]
-#[should_panic]
-fn test_negative_stream_capacity_panics_at_legacy_boundary() {
-    let _ = stream.pipe(-1);
-}
-
-#[test]
 fn test_password_cost_overflow_is_rejected() {
     match password.hash_custom("secret", 4294967299) {
         .Ok(_) => panic("expected oversized password cost to fail"),

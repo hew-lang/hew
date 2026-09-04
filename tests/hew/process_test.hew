@@ -12,7 +12,7 @@ import std.time.datetime;
 
 fn cleanup_file(file_path: string) {
     if fs.exists(file_path) {
-        fs.delete(file_path);
+        let _ = fs.delete(file_path);
     }
 }
 
@@ -20,7 +20,7 @@ fn kill_zero_exit_code(pid: string) -> i64 {
     let args: Vec<string> = Vec.new();
     args.push("-0");
     args.push(pid);
-    process.run_argv("kill", args).exit_code
+    process.run_argv("kill", args).expect("failed to run kill probe").exit_code
 }
 
 fn read_pid_with_retry(pid_path: string) -> string {
@@ -37,7 +37,7 @@ fn read_pid_with_retry(pid_path: string) -> string {
 }
 
 fn spawn_child_for_implicit_drop(pid_path: string) -> string {
-    let child = process.start(f"echo $$ > {pid_path}; sleep 60");
+    let child = process.start(f"echo $$ > {pid_path}; sleep 60").expect("failed to start child");
     let pid = read_pid_with_retry(pid_path);
     testing.assert_true(kill_zero_exit_code(pid) == 0);
     pid
@@ -80,7 +80,7 @@ fn test_run_argv_replaces_legacy_run_args_usage() {
     args.push("<%s>|<%s>");
     args.push("alpha");
     args.push("beta");
-    let output = process.run_argv("printf", args);
+    let output = process.run_argv("printf", args).expect("failed to run printf");
     testing.assert_true(output.exit_code == 0);
     testing.assert_eq_str(output.stdout, "<alpha>|<beta>");
     testing.assert_eq_str(output.stderr, "");

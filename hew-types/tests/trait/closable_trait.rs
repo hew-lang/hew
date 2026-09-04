@@ -140,7 +140,7 @@ fn child_drop_not_in_consume_receiver_set() {
         import std.process;
 
         fn main() {
-            let child = process.start("sleep 1");
+            let child = process.start("sleep 1").unwrap();
             child.drop();
             let _ = child.kill();
         }

@@ -12,6 +12,6 @@ fn helper(conn: Connection) {
 }
 
 fn main() {
-    let conn = net.connect("127.0.0.1:9");
+    let conn = net.connect("127.0.0.1:9").expect("network setup failed");
     helper(conn);
 }

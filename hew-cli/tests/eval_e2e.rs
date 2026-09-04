@@ -406,7 +406,7 @@ fn eval_std_observe_reads_runtime_metric() {
     let path = dir.path().join("observe_eval.hew");
     std::fs::write(
         &path,
-        "import std.observe;\n\nobserve.read(\"heap.live_bytes\") >= 0\n",
+        "import std.observe;\n\nobserve.read(\"heap.live_bytes\").unwrap_or(0) >= 0\n",
     )
     .unwrap();
 
@@ -453,7 +453,7 @@ fn run_counter() {
     counter.increment(1);
     counter.increment(2);
     let _total = await counter.total();
-    let _barrier = observe.barrier();
+    let _barrier = observe.barrier().unwrap();
     println(observe.series());
     println(observe.scrape());
 }
@@ -1917,7 +1917,7 @@ fn compile_wasm_rejects_for_await_receiver_before_link() {
         concat!(
             "import std.channel.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1);\n",
+            "    let (tx, rx) = channel.new(1).expect(\"channel allocation failed\");\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
             "    for await item in rx {\n",

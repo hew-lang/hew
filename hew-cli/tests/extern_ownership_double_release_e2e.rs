@@ -644,7 +644,7 @@ fn resource_payload_beside_an_interpolated_string_closes_exactly_once() {
 const RETURNED_CHANNEL_PAIR: &str = r#"import std.channel.channel;
 
 fn main() -> i64 {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).unwrap();
     tx.send(f"ready-{1}");
     match rx.try_recv() {
         .Some(msg) => { println(f"got={msg}"); }

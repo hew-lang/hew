@@ -239,7 +239,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.channel.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1);\n",
+            "    let (tx, rx) = channel.new(1).expect(\"channel allocation failed\");\n",
             "    tx.send(\"hello\");\n",
             "    let _ = rx.try_recv();\n",
             "    tx.close();\n",
@@ -291,7 +291,7 @@ mod wasm_rejects {
             "import std.channel.channel;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
-            "        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n",
+            "        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).expect(\"channel allocation failed\");\n",
             "        tx.send(\"hello\");\n",
             "        tx.close();\n",
             "        let _ = await rx.recv();\n",
@@ -332,7 +332,7 @@ mod wasm_rejects {
             "import std.channel.channel;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
-            "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n",
+            "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).expect(\"channel allocation failed\");\n",
             "        let _ = rx.recv();\n",
             "        rx.close();\n",
             "    }\n",
@@ -365,7 +365,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.channel.channel;\n",
             "fn main() {\n",
-            "    let (_tx, rx) = channel.new(1);\n",
+            "    let (_tx, rx) = channel.new(1).expect(\"channel allocation failed\");\n",
             "    let _ = rx.recv();\n",
             "}\n",
         );
@@ -395,7 +395,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.channel.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1);\n",
+            "    let (tx, rx) = channel.new(1).expect(\"channel allocation failed\");\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
             "    for await item in rx {\n",
@@ -429,7 +429,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.stream;\n",
             "fn main() {\n",
-            "    let (sink, input) = stream.bytes_pipe(1);\n",
+            "    let (sink, input) = stream.bytes_pipe(1).expect(\"stream allocation failed\");\n",
             "    sink.close();\n",
             "    for await item in input {\n",
             "        println(item.to_string());\n",
@@ -462,7 +462,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.channel.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1);\n",
+            "    let (tx, rx) = channel.new(1).expect(\"channel allocation failed\");\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
             "    for await item in rx {\n",

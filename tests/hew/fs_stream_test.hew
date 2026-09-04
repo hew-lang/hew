@@ -21,7 +21,7 @@ extern "C" {
 
 fn cleanup_file(file_path: string) {
     if fs.exists(file_path) {
-        fs.delete(file_path);
+        let _ = fs.delete(file_path);
     }
 }
 

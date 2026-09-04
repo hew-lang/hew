@@ -196,7 +196,7 @@ fn for_await_source(frames: usize) -> String {
          \n\
          actor ForAwaitRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY}).expect(\"channel allocation failed\");\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       for await item in rx {{\n\
@@ -252,7 +252,7 @@ fn parked_for_await_receiver_handoff_source(frames: usize) -> String {
          \n\
          actor ParkedReceiver {{\n\
          \x20   receive fn run(index: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).expect(\"channel allocation failed\");\n\
          \x20       let payload = f\"parked-direct-receiver-{{index}}\";\n\
          \x20       tx.send(payload);\n\
          \x20       for await item in rx {{\n\
@@ -332,7 +332,7 @@ fn receiver_vec_drop_only_source(frames: usize) -> String {
         "import std.channel.channel;\n\
          \n\
          fn drop_receiver_vec() {{\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1).expect(\"channel allocation failed\");\n\
          \x20   tx.close();\n\
          \x20   let receivers: Vec<channel.Receiver<i64>> = [rx];\n\
          \x20   if receivers.len() != 1 {{ panic(\"receiver Vec move\"); }}\n\
@@ -399,7 +399,7 @@ fn sender_vec_clone_drop_source(frames: usize) -> String {
         "import std.channel.channel;\n\
          \n\
          fn clone_and_drop_sender_vec() {{\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1).expect(\"channel allocation failed\");\n\
          \x20   let senders: Vec<channel.Sender<i64>> = [tx];\n\
          \x20   let senders_copy = senders.clone();\n\
          \x20   if senders.len() != 1 {{ panic(\"sender Vec source clone\"); }}\n\
@@ -454,7 +454,7 @@ fn await_recv_source(frames: usize) -> String {
          \n\
          actor AwaitRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY}).expect(\"channel allocation failed\");\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -490,7 +490,7 @@ fn try_recv_source(frames: usize) -> String {
          \n\
          actor TryRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY}).expect(\"channel allocation failed\");\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -530,7 +530,7 @@ fn try_recv_continue_source(frames: usize) -> String {
          \n\
          actor TryRecvContinue {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY}).expect(\"channel allocation failed\");\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -573,7 +573,7 @@ fn await_recv_continue_source(frames: usize) -> String {
          \n\
          actor AwaitRecvContinue {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY}).expect(\"channel allocation failed\");\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -614,7 +614,7 @@ fn owned_send_source(frames: usize) -> String {
          \n\
          actor OwnedSend {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY}).expect(\"channel allocation failed\");\n\
          \x20       var i: i64 = 0;\n\
          \x20       while i < {frames} {{\n\
          \x20           let s = f\"item-{{i}}\";\n\
@@ -1038,7 +1038,7 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
          \n\
          actor ForAwaitStreamBytes {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (sink, input) = stream.bytes_pipe({CHANNEL_CAPACITY});\n\
+         \x20       let (sink, input) = stream.bytes_pipe({CHANNEL_CAPACITY}).expect(\"stream allocation failed\");\n\
          \x20       let b = \"frame-some-long-data\".to_bytes();\n\
          \x20       var i: i64 = 0;\n\
          \x20       while i < {frames} {{\n\
@@ -1133,7 +1133,7 @@ fn carry_for_await_bytes_escape_source() -> String {
      \n\
      actor CarryStreamBytesEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
-     \x20       let (sink, input) = stream.bytes_pipe(4);\n\
+     \x20       let (sink, input) = stream.bytes_pipe(4).expect(\"stream allocation failed\");\n\
      \x20       let b = \"escaped-bytes-payload\".to_bytes();\n\
      \x20       await sink.send(b);\n\
      \x20       sink.close();\n\
@@ -1215,7 +1215,7 @@ fn carry_continue_escape_source() -> String {
      \n\
      actor CarryContinueEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
-     \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
+     \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4).expect(\"channel allocation failed\");\n\
      \x20       tx.send(\"escaped\");\n\
      \x20       tx.close();\n\
      \x20       var carry = \"init\";\n\
@@ -1256,7 +1256,7 @@ fn carry_fallthrough_escape_source() -> String {
      \n\
      actor CarryFallEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
-     \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
+     \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4).expect(\"channel allocation failed\");\n\
      \x20       tx.send(\"escaped\");\n\
      \x20       tx.close();\n\
      \x20       var carry = \"init\";\n\

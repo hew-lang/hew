@@ -24,16 +24,16 @@ fn main() {
         .Err(_) => (),
     }
     let run_args: Vec<string> = Vec.new();
-    match process.try_run_argv("printf", run_args) {
+    match process.run_argv("printf", run_args) {
         .Ok(output) => println(output.stdout),
         .Err(_) => (),
     }
-    match process.try_start("true") {
+    match process.start("true") {
         .Ok(child) => println(child.wait()),
         .Err(_) => (),
     }
     let spawn_args: Vec<string> = Vec.new();
-    match process.try_start_argv("true", spawn_args) {
+    match process.start_argv("true", spawn_args) {
         .Ok(child) => println(child.wait()),
         .Err(_) => (),
     }

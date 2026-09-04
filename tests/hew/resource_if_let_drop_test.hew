@@ -6,7 +6,7 @@ import std.testing;
 
 fn cleanup(path: string) {
     if fs.exists(path) {
-        fs.delete(path);
+        let _ = fs.delete(path);
     }
 }
 

@@ -23,7 +23,7 @@ fn close_event(value: quic.QUICEvent) {
 }
 
 fn main() -> i64 {
-    let glob = path.glob("tests/vertical-slice/accept/*.hew");
+    let glob = path.glob("tests/vertical-slice/accept/*.hew").expect("failed to expand fixture glob");
     glob.close();
     let sem = semaphore.new(1);
     sem.close();

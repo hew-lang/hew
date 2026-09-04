@@ -11,7 +11,7 @@ const STREAM_PAIR_SOURCE: &str = r#"
 import std.stream;
 
 fn main() {
-    let (text_sink, text_input) = stream.pipe(2);
+    let (text_sink, text_input) = stream.pipe(2).unwrap();
     text_sink.send("text-frame");
     text_sink.close();
     match text_input.try_recv() {
@@ -23,7 +23,7 @@ fn main() {
         .None => panic("stream text frame missing"),
     }
 
-    let (bytes_sink, bytes_input) = stream.bytes_pipe(2);
+    let (bytes_sink, bytes_input) = stream.bytes_pipe(2).unwrap();
     bytes_sink.send(b"ok");
     bytes_sink.close();
     match bytes_input.try_recv() {
@@ -42,7 +42,7 @@ const CHANNEL_PAIR_SOURCE: &str = r#"
 import std.channel.channel;
 
 fn main() {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).unwrap();
     tx.send("channel-frame");
     tx.close();
     match rx.try_recv() {
@@ -62,9 +62,9 @@ import std.net;
 import std.stream.{Sink, Stream};
 
 fn main() {
-    let listener = net.listen("127.0.0.1:0");
+    let listener = net.listen("127.0.0.1:0").unwrap();
     let port = listener.local_port();
-    let peer = net.connect(f"127.0.0.1:{port as i64}");
+    let peer = net.connect(f"127.0.0.1:{port as i64}").unwrap();
     let server = listener.accept();
     let (input, sink): (Stream<bytes>, Sink<bytes>) = server.into_stream_sink();
     sink.close();

@@ -154,18 +154,6 @@ fn test_connect_timeout_rejects_a_malformed_address_before_connecting() {
 }
 
 #[test]
-#[should_panic]
-fn test_connect_timeout_panics_at_legacy_boundary_on_a_wrapped_deadline() {
-    let _ = net.connect_timeout("127.0.0.1:9", 4294967, 0);
-}
-
-#[test]
-#[should_panic]
-fn test_connect_timeout_panics_at_legacy_boundary_on_a_missing_port() {
-    let _ = net.connect_timeout("localhost", 1, 0);
-}
-
-#[test]
 fn test_http_client_timeout_above_abi_range_is_rejected() {
     match http_client.set_timeout(wrapped_to_500()) {
         .Ok(_) => panic("expected a wrapped HTTP timeout to be rejected"),
@@ -182,10 +170,4 @@ fn test_http_client_timeout_above_abi_range_is_rejected() {
 #[should_panic]
 fn test_http_client_set_timeout_panics_at_legacy_boundary() {
     http_client.set_timeout(4294967796);
-}
-
-#[test]
-#[should_panic]
-fn test_tls_connect_panics_at_legacy_boundary_on_a_wrapped_port() {
-    let _ = tls.connect("127.0.0.1", 4294967376);
 }

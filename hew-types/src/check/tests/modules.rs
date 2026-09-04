@@ -1546,7 +1546,7 @@ mod module_body_diagnostic_envelope {
                 import std.channel.channel;
 
                 fn relay() {
-                    let (tx, rx) = channel.new(1);
+                    let (tx, rx) = channel.new(1).unwrap();
                     let _value = rx.recv();
                     tx.send("hello");
                 }

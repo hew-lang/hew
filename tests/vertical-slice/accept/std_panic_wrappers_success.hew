@@ -14,7 +14,8 @@ fn main() -> i64 {
         return 1;
     }
     re.close();
-    let contents = fs.read("tests/vertical-slice/accept/std_panic_wrappers_success.hew");
+    let contents = fs.read("tests/vertical-slice/accept/std_panic_wrappers_success.hew")
+        .expect("failed to read success fixture");
     if contents.len() == 0 {
         return 2;
     }

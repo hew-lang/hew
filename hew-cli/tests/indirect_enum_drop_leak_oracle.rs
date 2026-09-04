@@ -422,7 +422,7 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   let sup = spawn App;\n\
          \x20   let sink = sup.sink;\n\
-         \x20   let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1).expect(\"channel allocation failed\");\n\
          \x20   sink.hold(ready_tx);\n\
          \x20   let started = match await ready_rx.recv() {{ .Some(n) => n, .None => 0, }};\n\
          \x20   if started != 1 {{ print(\"BAD\"); return 1; }}\n\

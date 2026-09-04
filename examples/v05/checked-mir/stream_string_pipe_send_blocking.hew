@@ -10,7 +10,7 @@
 import std.stream;
 
 fn main() {
-    let (sink, input) = stream.pipe(2);
+    let (sink, input) = stream.pipe(2).expect("stream allocation failed");
     sink.send("hi");
     sink.close();
     input.close();

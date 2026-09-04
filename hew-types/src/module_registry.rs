@@ -3,7 +3,7 @@
 //! Replaces the baked-in `stdlib_generated.rs` tables. Discovers modules
 //! by searching the filesystem and parsing `.hew` files at user compile time.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use hew_parser::ast::Item;
@@ -20,7 +20,7 @@ struct ModuleParseCache {
 /// Module declarations and derived metadata visible to one checked program.
 #[derive(Debug, Clone, Default)]
 struct ProgramModuleState {
-    modules: HashMap<ModuleId, ModuleInfo>,
+    modules: BTreeMap<ModuleId, ModuleInfo>,
     handle_types: HashSet<String>,
     resource_wrapper_types: HashSet<String>,
     drop_types: HashSet<String>,
@@ -45,6 +45,22 @@ pub struct ModuleRegistry {
     /// `search_paths`, which may contain project-, cwd-, or environment-owned
     /// roots.
     compiler_stdlib_root: Option<PathBuf>,
+}
+
+/// One module in the registry's active program closure.
+///
+/// The view borrows the parser-owned declarations retained by the registry;
+/// consumers must not reconstruct or clone a separate source program. Compiler
+/// ownership is derived from the selected source's canonical path, never from
+/// the module's spelling.
+#[derive(Debug, Clone, Copy)]
+pub struct LoadedModule<'a> {
+    /// Canonical nominal identity selected for the active source.
+    pub module_id: &'a ModuleId,
+    /// Parsed declarations and extracted module metadata.
+    pub info: &'a ModuleInfo,
+    /// Whether the source belongs to this compiler's stdlib distribution.
+    pub compiler_owned: bool,
 }
 
 /// Parse a canonical dotted module identity at the registry boundary.
@@ -378,6 +394,72 @@ pub enum ModuleError {
     },
 }
 
+/// Failure to activate a module from the running compiler's own distribution.
+#[derive(Debug)]
+pub enum CompilerModuleError {
+    /// No installed or development stdlib root belongs to this compiler.
+    AuthorityUnavailable {
+        /// Requested dotted module identity.
+        module_path: String,
+    },
+    /// The program already resolved this nominal identity to another source.
+    ConflictingActiveModule {
+        /// Requested dotted module identity.
+        module_path: String,
+        /// Source already active for the identity, when recorded.
+        loaded_source: Option<PathBuf>,
+    },
+    /// The trusted root resolved through a symlink or alias to an outside source.
+    SourceOutsideAuthority {
+        /// Requested dotted module identity.
+        module_path: String,
+        /// Outside source selected by the loader, when recorded.
+        source_path: Option<PathBuf>,
+    },
+    /// The compiler-owned source was missing or malformed.
+    Module(ModuleError),
+}
+
+impl std::fmt::Display for CompilerModuleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AuthorityUnavailable { module_path } => write!(
+                f,
+                "compiler-owned standard library is unavailable while loading `{module_path}`"
+            ),
+            Self::ConflictingActiveModule {
+                module_path,
+                loaded_source,
+            } => write!(
+                f,
+                "module `{module_path}` is already active from a non-compiler source{}",
+                loaded_source
+                    .as_ref()
+                    .map_or_else(String::new, |path| format!(" ({})", path.display()))
+            ),
+            Self::SourceOutsideAuthority {
+                module_path,
+                source_path,
+            } => write!(
+                f,
+                "compiler module `{module_path}` resolved outside its owned standard library{}",
+                source_path
+                    .as_ref()
+                    .map_or_else(String::new, |path| format!(" ({})", path.display()))
+            ),
+            Self::Module(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for CompilerModuleError {}
+
+impl From<ModuleError> for CompilerModuleError {
+    fn from(error: ModuleError) -> Self {
+        Self::Module(error)
+    }
+}
+
 impl std::fmt::Display for ModuleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -596,6 +678,109 @@ impl ModuleRegistry {
                 std::slice::from_ref(root),
             )
         })
+    }
+
+    fn module_info_has_stdlib_authority(&self, id: &ModuleId, info: &ModuleInfo) -> bool {
+        info.source_path.as_deref().is_some_and(|source_path| {
+            self.source_has_stdlib_authority(source_path, &id.path.join("."))
+        })
+    }
+
+    /// Iterate the modules active for this checked program in canonical identity
+    /// order.
+    ///
+    /// Parse-cache and configured backing maps are not separately exposed. Each
+    /// item borrows a declaration currently active for the program and reports
+    /// compiler ownership from canonical source provenance.
+    #[must_use]
+    pub fn loaded_modules(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = LoadedModule<'_>> + ExactSizeIterator {
+        self.active
+            .modules
+            .iter()
+            .map(|(module_id, info)| LoadedModule {
+                module_id,
+                info,
+                compiler_owned: self.module_info_has_stdlib_authority(module_id, info),
+            })
+    }
+
+    /// Activate a module from the running compiler's exact stdlib distribution.
+    ///
+    /// This bypasses ordinary project and environment search paths. A compatible
+    /// compiler-owned active or cached entry is reused; an active same-identity
+    /// module from another source is rejected rather than silently replacing
+    /// checker-visible state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompilerModuleError::AuthorityUnavailable`] when the running
+    /// compiler has no owned stdlib layout, a wrapped [`ModuleError`] when the
+    /// exact source cannot be loaded, or a provenance error when the selected or
+    /// already-active source is outside compiler authority.
+    pub fn load_compiler_stdlib_module(
+        &mut self,
+        module_path: &str,
+    ) -> Result<(), CompilerModuleError> {
+        let id = module_id_from_identity(module_path);
+        let loader_path = id.path.join("::");
+
+        if let Some(info) = self.active.modules.get(&id) {
+            if !self.module_info_has_stdlib_authority(&id, info) {
+                return Err(CompilerModuleError::ConflictingActiveModule {
+                    module_path: module_path.to_string(),
+                    loaded_source: info.source_path.clone(),
+                });
+            }
+            return Ok(());
+        }
+
+        if let Some(info) = self.cache.modules.get(&id).cloned() {
+            if self.module_info_has_stdlib_authority(&id, &info) {
+                self.activate_module(&id, info);
+                return Ok(());
+            }
+        }
+
+        let compiler_root = self.compiler_stdlib_root.clone().ok_or_else(|| {
+            CompilerModuleError::AuthorityUnavailable {
+                module_path: module_path.to_string(),
+            }
+        })?;
+        let Some(info) = load_module_checked(&loader_path, &compiler_root)? else {
+            return Err(ModuleError::NotFound {
+                module_path: module_path.to_string(),
+                searched: vec![compiler_root],
+            }
+            .into());
+        };
+
+        let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
+        let canonical_owner = canonical_source_module_identity(&id.path.join("."), &source_paths);
+        let canonical_id = module_id_from_identity(&canonical_owner);
+        if !self.module_info_has_stdlib_authority(&canonical_id, &info) {
+            return Err(CompilerModuleError::SourceOutsideAuthority {
+                module_path: module_path.to_string(),
+                source_path: info.source_path,
+            });
+        }
+
+        if let Some(active) = self.active.modules.get(&canonical_id) {
+            if !self.module_info_has_stdlib_authority(&canonical_id, active) {
+                return Err(CompilerModuleError::ConflictingActiveModule {
+                    module_path: canonical_owner,
+                    loaded_source: active.source_path.clone(),
+                });
+            }
+            return Ok(());
+        }
+
+        self.cache
+            .modules
+            .insert(canonical_id.clone(), info.clone());
+        self.activate_module(&canonical_id, info);
+        Ok(())
     }
 
     /// Load a module by its full path (e.g. `std::encoding::json`).
@@ -1818,6 +2003,125 @@ mod tests {
         fn root(&self) -> &PathBuf {
             &self.dir.root
         }
+
+        fn write_std_module(&self, name: &str, source: &str) -> PathBuf {
+            let path = self.dir.root.join("std").join(format!("{name}.hew"));
+            fs::write(&path, source).expect("write test stdlib module");
+            path
+        }
+    }
+
+    #[test]
+    fn loaded_modules_are_active_only_and_deterministically_ordered() {
+        let modules = TestHewTree::new("loaded-module-order");
+        modules.write_std_module("zeta", "pub fn zeta() -> i64 { 26 }\n");
+        modules.write_std_module("alpha", "pub fn alpha() -> i64 { 1 }\n");
+
+        let mut registry = ModuleRegistry::new(vec![modules.root().clone()]);
+        registry.load("std.zeta").expect("load zeta module");
+        registry.load("std.alpha").expect("load alpha module");
+
+        let loaded = registry
+            .loaded_modules()
+            .map(|module| module.module_id.path.join("."))
+            .collect::<Vec<_>>();
+        assert_eq!(loaded, ["std.alpha", "std.zeta"]);
+
+        let next_program = registry.for_new_program();
+        assert!(
+            next_program.loaded_modules().next().is_none(),
+            "the loaded view must not reveal parse-cache entries from a completed program"
+        );
+    }
+
+    #[test]
+    fn compiler_module_activation_uses_exact_owned_source_and_reuses_membership() {
+        let compiler = TestHewTree::new("compiler-module-exact-source");
+        let compiler_source =
+            compiler.write_std_module("option", "pub fn authority() -> i64 { 1 }\n");
+        let lookalike = TestHewTree::new("compiler-module-lookalike-search-path");
+        lookalike.write_std_module("option", "pub fn authority() -> i64 { 2 }\n");
+
+        let mut registry = ModuleRegistry::new(vec![lookalike.root().clone()]);
+        registry.compiler_stdlib_root = compiler.root().canonicalize().ok();
+
+        registry
+            .load_compiler_stdlib_module("std.option")
+            .expect("load exact compiler-owned option module");
+        let loaded = registry
+            .get("std.option")
+            .expect("compiler-owned option module is active");
+        assert_eq!(
+            loaded.source_path.as_deref(),
+            Some(compiler_source.as_path())
+        );
+
+        registry
+            .load_compiler_stdlib_module("std.option")
+            .expect("reuse exact compiler-owned option module");
+        let active = registry.loaded_modules().collect::<Vec<_>>();
+        assert_eq!(
+            active.len(),
+            1,
+            "reuse must not duplicate active membership"
+        );
+        assert_eq!(active[0].module_id.path, ["std", "option"]);
+        assert!(active[0].compiler_owned);
+        assert_eq!(
+            active[0].info.source_path.as_deref(),
+            Some(compiler_source.as_path())
+        );
+    }
+
+    #[test]
+    fn compiler_module_activation_rejects_an_active_lookalike() {
+        let compiler = TestHewTree::new("compiler-module-conflict-owned");
+        compiler.write_std_module("result", "pub fn authority() -> i64 { 1 }\n");
+        let lookalike = TestHewTree::new("compiler-module-conflict-lookalike");
+        let lookalike_source =
+            lookalike.write_std_module("result", "pub fn authority() -> i64 { 2 }\n");
+
+        let mut registry = ModuleRegistry::new(vec![lookalike.root().clone()]);
+        registry.compiler_stdlib_root = compiler.root().canonicalize().ok();
+        registry
+            .load("std.result")
+            .expect("activate ordinary lookalike module");
+
+        let error = registry
+            .load_compiler_stdlib_module("std.result")
+            .expect_err("an active lookalike must conflict with compiler authority");
+        assert!(matches!(
+            error,
+            CompilerModuleError::ConflictingActiveModule { ref module_path, ref loaded_source }
+                if module_path == "std.result"
+                    && loaded_source.as_deref() == Some(lookalike_source.as_path())
+        ));
+        let active = registry.loaded_modules().collect::<Vec<_>>();
+        assert_eq!(active.len(), 1);
+        assert!(!active[0].compiler_owned);
+        assert_eq!(
+            active[0].info.source_path.as_deref(),
+            Some(lookalike_source.as_path()),
+            "a failed authority load must not replace active program state"
+        );
+    }
+
+    #[test]
+    fn compiler_module_activation_fails_closed_without_owned_root() {
+        let project = TestHewTree::new("compiler-module-no-authority");
+        project.write_std_module("option", "pub fn authority() -> i64 { 2 }\n");
+        let mut registry = ModuleRegistry::new(vec![project.root().clone()]);
+        registry.compiler_stdlib_root = None;
+
+        let error = registry
+            .load_compiler_stdlib_module("std.option")
+            .expect_err("missing compiler authority must fail closed");
+        assert!(matches!(
+            error,
+            CompilerModuleError::AuthorityUnavailable { ref module_path }
+                if module_path == "std.option"
+        ));
+        assert!(registry.loaded_modules().next().is_none());
     }
 
     #[test]

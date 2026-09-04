@@ -93,3 +93,21 @@
   the final combined integration base rather than recapturing them here.
 - `make hew-fmt-check` and `make lint` pass with an isolated target directory,
   sccache and an eight-job build cap.
+
+## Canonical loaded-module view
+
+- Expose active modules as a deterministic borrowed view over the registry's
+  retained declarations. Parse-cache and configured backing maps are not a
+  second HIR source surface.
+- Activate compiler stdlib modules only through the compiler distribution root
+  selected by the existing installed/development resolver. Project and
+  environment search paths cannot confer authority; an already-active
+  lookalike is refused without mutation.
+- Counterfactual runs proved the focused tests detect both reversed module
+  order and accidental user-search-path selection. The focused
+  `module_registry` nextest selection and package-scoped `lint-rust` pass.
+- An exploratory full `hew-types` run with `test-artifacts` deliberately omitted
+  stopped on the existing `std.channel` import setup in two channel tests; the
+  failures occur before the changed registry APIs and are not used as evidence.
+- Checker, HIR and compile-session consumers remain untouched for the combined
+  S10 continuation after the entry-identity work integrates.

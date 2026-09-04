@@ -4,7 +4,7 @@
 //! `__hew_call_scrutinee` preflight. Each case now names the exact source call,
 //! asserts its completed HIR ownership fact, and checks the successor MIR
 //! boundary: non-owned facts cannot mint a generic typed-publication owner,
-//! while `Unknown` fails closed at an ownership-demanding sink.
+//! while an absent producer contract fails closed at an ownership-demanding sink.
 
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -1112,20 +1112,26 @@ fn guard_buried_return_forwarder_publishes_retained_fact() {
 }
 
 #[test]
-fn indirect_function_value_scrutinee_stays_unknown_and_fails_closed() {
+fn indirect_function_value_result_rejects_reuse_after_consuming_call() {
     let src = r#"
         fn make(s: string) -> Result<string, string> { Ok(s) }
+        fn consume(consume value: Result<string, string>) -> i64 {
+            match value { .Ok(s) => s.len(), .Err(e) => e.len() }
+        }
         fn use_it() -> i64 {
             let f = make;
-            match f("x") { .Ok(_) => 1, .Err(_) => 0 }
+            let result = f("x");
+            let first = consume(result);
+            first + consume(result)
         }
     "#;
     let p = pipeline(src);
-    // An indirect call has no resolvable return summary, so the completed
-    // fact stays `Unknown` and the ownership-demanding sink refuses it —
-    // the compile-time fail-closed tooth the extern-Named shapes above no
-    // longer exercise now that they complete as foreign `NoOwner`.
-    assert_authority(&p, "f(\"x\")", Ownership::Unknown);
-    assert_eq!(unresolved_ownership_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+    assert!(
+        p.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "result"
+        )),
+        "an indirect non-copy result must be consumed exactly once: {:#?}",
+        p.diagnostics
+    );
 }

@@ -242,11 +242,13 @@ fn main() {
 }
 "#;
 
-const VEC_ITER_INDIRECT_FACTORY_SOURCE: &str = r"
+const VEC_ITER_INDIRECT_FACTORY_REUSE_SOURCE: &str = r"
 fn take_cursor(it: VecIter<i64>) {}
 
 fn invoke(make: fn() -> Vec<i64>) {
-    take_cursor(make().iter());
+    var cursor = make().iter();
+    take_cursor(cursor);
+    let _ = cursor.next();
 }
 
 fn main() {}
@@ -1502,53 +1504,29 @@ fn fresh_direct_vec_factory_publishes_one_cursor_owner_before_handoff() {
 }
 
 #[test]
-fn opaque_vec_factories_cannot_mint_a_cursor_handoff_owner() {
-    for (source, producer, expected) in [
-        (
-            VEC_ITER_EXTERN_FACTORY_SOURCE,
-            "extern",
-            "ownership transfer of a proven-foreign value into a callee-owned parameter",
+fn foreign_vec_factory_is_rejected_before_cursor_handoff() {
+    let pipeline = lower_clean_to_checked_mir(VEC_ITER_EXTERN_FACTORY_SOURCE);
+    assert!(
+        has_not_yet_implemented(
+            &pipeline,
+            "ownership transfer of a proven-foreign value into a callee-owned parameter"
         ),
-        (
-            VEC_ITER_INDIRECT_FACTORY_SOURCE,
-            "indirect",
-            "OwnedCursor argument without one caller owner",
-        ),
-    ] {
-        let pipeline = lower_clean_to_checked_mir(source);
-        assert!(
-            has_not_yet_implemented(&pipeline, expected),
-            "an {producer} Vec factory must remain owner-opaque: {:#?}",
-            pipeline.diagnostics
-        );
-        let caller_name = if producer == "extern" {
-            "main"
-        } else {
-            "invoke"
-        };
-        let caller = pipeline
-            .checked_mir
-            .iter()
-            .find(|function| function.name == caller_name)
-            .unwrap_or_else(|| panic!("{caller_name} must reach Checked MIR"));
-        let committed = caller.blocks.iter().any(|block| {
-            let Terminator::Call { callee, args, .. } = &block.terminator else {
-                return false;
-            };
-            if !callee.contains("take_cursor") {
-                return false;
-            }
-            args.first().is_some_and(|source| {
-                block.instructions.iter().any(|instruction| {
-                    matches!(instruction, Instr::OwnershipEvent(OwnershipEvent::Transfer { from, to: None, .. }) if from == source)
-                })
-            })
-        });
-        assert!(
-            !committed,
-            "the rejected {producer} factory must not commit an OwnedCursor transfer into the callee"
-        );
-    }
+        "a foreign Vec result has no caller-owned cursor authority: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn indirect_vec_factory_cursor_rejects_reuse_after_handoff() {
+    let pipeline = lower_clean_to_checked_mir(VEC_ITER_INDIRECT_FACTORY_REUSE_SOURCE);
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "cursor"
+        )),
+        "a delivered indirect Vec result must transfer its cursor exactly once: {:#?}",
+        pipeline.diagnostics
+    );
 }
 
 #[test]

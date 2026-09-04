@@ -261,6 +261,7 @@ fn registry_payload(op: u8, name: &str, location: Location) -> RegistryGossipPay
         op,
         name: name.to_owned(),
         location,
+        actor_type: "test.Worker".to_owned(),
     }
 }
 
@@ -446,11 +447,12 @@ fn registry_gossip_payload_round_trips_and_matches_cluster_ops() {
 
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 3);
-    assert_integer_keys_and_order(entries, &[1, 2, 3]);
+    assert_eq!(entries.len(), 4);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4]);
     assert_integer_value(find_field(entries, 1), i128::from(REGISTRY_GOSSIP_OP_ADD));
     assert_text_value(find_field(entries, 2), "worker");
     assert_location_value(find_field(entries, 3), original.location);
+    assert_text_value(find_field(entries, 4), "test.Worker");
 
     let remove = registry_payload(
         REGISTRY_GOSSIP_OP_REMOVE,
@@ -470,6 +472,7 @@ fn registry_gossip_payload_codec_rejects_malformed_payloads() {
         (int(1u64), int(99u8)),
         (int(2u64), Value::Text("worker".to_owned())),
         (int(3u64), location_value(location(11, 42, 37))),
+        (int(4u64), Value::Text("test.Worker".to_owned())),
     ]);
     assert!(matches!(
         decode_registry_gossip_payload(&value_to_cbor(&unknown_op)),
@@ -487,6 +490,7 @@ fn registry_gossip_payload_codec_rejects_malformed_payloads() {
         (int(2u64), Value::Text("worker".to_owned())),
         (int(2u64), Value::Text("other".to_owned())),
         (int(3u64), location_value(location(11, 42, 37))),
+        (int(4u64), Value::Text("test.Worker".to_owned())),
     ]);
     assert!(matches!(
         decode_registry_gossip_payload(&value_to_cbor(&duplicate_name)),
@@ -497,17 +501,19 @@ fn registry_gossip_payload_codec_rejects_malformed_payloads() {
         (int(1u64), int(REGISTRY_GOSSIP_OP_ADD)),
         (int(2u64), Value::Text("worker".to_owned())),
         (int(3u64), location_value(location(11, 42, 37))),
-        (int(4u64), int(0u64)),
+        (int(4u64), Value::Text("test.Worker".to_owned())),
+        (int(5u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_registry_gossip_payload(&value_to_cbor(&unknown_key)),
-        Err(RegistryGossipPayloadError::UnknownKey { key: 4 })
+        Err(RegistryGossipPayloadError::UnknownKey { key: 5 })
     ));
 
     let add_zero_node = Value::Map(vec![
         (int(1u64), int(REGISTRY_GOSSIP_OP_ADD)),
         (int(2u64), Value::Text("worker".to_owned())),
         (int(3u64), raw_location_value([0; 16], 42, 37)),
+        (int(4u64), Value::Text("test.Worker".to_owned())),
     ]);
     assert!(matches!(
         decode_registry_gossip_payload(&value_to_cbor(&add_zero_node)),
@@ -518,6 +524,7 @@ fn registry_gossip_payload_codec_rejects_malformed_payloads() {
         (int(1u64), int(REGISTRY_GOSSIP_OP_ADD)),
         (int(2u64), Value::Text("bad\0name".to_owned())),
         (int(3u64), location_value(location(11, 42, 37))),
+        (int(4u64), Value::Text("test.Worker".to_owned())),
     ]);
     assert!(matches!(
         decode_registry_gossip_payload(&value_to_cbor(&nul_name)),

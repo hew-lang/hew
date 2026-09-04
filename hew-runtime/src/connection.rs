@@ -6211,7 +6211,7 @@ mod tests {
 
             let location = test_location(2, 0x42);
             assert_eq!(
-                hew_connmgr_broadcast_registry_gossip(mgr, "worker", location, true),
+                hew_connmgr_broadcast_registry_gossip(mgr, "worker", location, "test.Worker", true,),
                 1
             );
 
@@ -7153,7 +7153,7 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(peer));
             let token = test_publish_claim(&*mgr, 2, 10);
 
-            (&*cluster).emit_registry_add("svc", test_location(1, 0x77));
+            (&*cluster).emit_registry_add("svc", test_location(1, 0x77), "test.Service");
 
             // Initial flush: the send fails; the frame must be parked, not lost.
             flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
@@ -7481,7 +7481,7 @@ mod tests {
             let token = test_publish_claim(&*mgr, 2, 10);
 
             let location = test_location(1, 0x88);
-            (&*cluster).emit_registry_add("svc", location);
+            (&*cluster).emit_registry_add("svc", location, "test.Service");
             // The ADD flush fails and parks.
             flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
             assert_eq!(
@@ -7492,7 +7492,7 @@ mod tests {
 
             // A later REMOVE broadcast must park BEHIND it, not overtake it.
             assert_eq!(
-                hew_connmgr_broadcast_registry_gossip(mgr, "svc", location, false),
+                hew_connmgr_broadcast_registry_gossip(mgr, "svc", location, "test.Service", false,),
                 0,
                 "the REMOVE must not report a direct send while the ADD is parked"
             );
@@ -7588,7 +7588,7 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(peer));
             let token = test_publish_claim(&*mgr, 2, 10);
 
-            (&*cluster).emit_registry_add("svc", test_location(1, 0x99));
+            (&*cluster).emit_registry_add("svc", test_location(1, 0x99), "test.Service");
             flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
             assert_eq!(
                 (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
@@ -7638,13 +7638,19 @@ mod tests {
     extern "C" fn record_registry_apply(
         name: *const std::ffi::c_char,
         location: *const HewLocation,
+        actor_type: *const std::ffi::c_char,
         is_add: bool,
         user_data: *mut std::ffi::c_void,
     ) {
         // SAFETY: test installs a Mutex<Vec<_>> as the callback user data.
-        let applied = unsafe { &*(user_data.cast::<Mutex<Vec<(String, Location, bool)>>>()) };
+        let applied =
+            unsafe { &*(user_data.cast::<Mutex<Vec<(String, Location, String, bool)>>>()) };
         // SAFETY: the cluster passes a valid NUL-terminated name.
         let name = unsafe { std::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: the cluster passes a valid NUL-terminated actor type.
+        let actor_type = unsafe { std::ffi::CStr::from_ptr(actor_type) }
             .to_string_lossy()
             .into_owned();
         // SAFETY: cluster callback supplies a valid location pointer.
@@ -7652,7 +7658,7 @@ mod tests {
         applied
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((name, location, is_add));
+            .push((name, location, actor_type, is_add));
     }
 
     /// Real admission ordering through the production pieces (the full
@@ -7671,7 +7677,9 @@ mod tests {
     /// deny loses the peer's one-shot flush and the name never resolves.
     #[test]
     fn control_frame_before_install_applies_registry_event_after_real_publish() {
-        let applied = Box::into_raw(Box::new(Mutex::new(Vec::<(String, Location, bool)>::new())));
+        let applied = Box::into_raw(Box::new(Mutex::new(
+            Vec::<(String, Location, String, bool)>::new(),
+        )));
         let ops = Box::new(crate::transport::HewTransportOps {
             connect: None,
             listen: None,
@@ -7724,6 +7732,7 @@ mod tests {
                 op: crate::cluster::GOSSIP_REGISTRY_ADD,
                 name: "svc".to_owned(),
                 location: test_location(5, 0x99),
+                actor_type: "test.Service".to_owned(),
             };
             let frame_bytes = encode_control_frame(&ControlFrame {
                 version: WIRE_VERSION,
@@ -7780,7 +7789,12 @@ mod tests {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 assert_eq!(
                     applied.as_slice(),
-                    &[("svc".to_owned(), location, true)],
+                    &[(
+                        "svc".to_owned(),
+                        location,
+                        "test.Service".to_owned(),
+                        true,
+                    )],
                     "the pre-install frame must apply exactly once after publication: {reader_error:?}",
                 );
             }
@@ -8116,8 +8130,13 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clear();
-            let count =
-                hew_connmgr_broadcast_registry_gossip(mgr, "svc", test_location(1, 0xdef0), true);
+            let count = hew_connmgr_broadcast_registry_gossip(
+                mgr,
+                "svc",
+                test_location(1, 0xdef0),
+                "test.Service",
+                true,
+            );
             assert_eq!(
                 count, 1,
                 "registry gossip broadcast reaches exactly the one authenticated peer"
@@ -8974,6 +8993,7 @@ mod tests {
                 "counter",
                 crate::node_identity::Location::new(NodeId::from_bytes([7; 16]), 9, 3)
                     .expect("test location should be valid"),
+                "test.Counter",
             );
             assert_eq!((&*cluster).registry_gossip_count(), 1);
 
@@ -9197,6 +9217,7 @@ mod tests {
                 "counter",
                 crate::node_identity::Location::new(NodeId::from_bytes([7; 16]), 9, 3)
                     .expect("test location should be valid"),
+                "test.Counter",
             );
             assert_eq!((&*cluster).registry_gossip_count(), 1);
 

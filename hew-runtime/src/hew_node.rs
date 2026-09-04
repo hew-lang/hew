@@ -7197,13 +7197,13 @@ mod tests {
         };
         let tcp = CString::new("tcp").expect("valid transport name");
         // SAFETY: tcp is a valid C string for this call.
-        assert_eq!(unsafe { hew_node_api_set_transport(tcp.as_ptr()) }, 0);
+        assert_eq!(unsafe { configure_transport(tcp.as_ptr()) }, 0);
 
         let key_path = identity.dir.path().join("node.key");
         let key_path = CString::new(key_path.to_str().expect("UTF-8 tempfile key path"))
             .expect("valid tempfile key path");
         // SAFETY: key_path is a valid C string and the directory remains live in the guard.
-        assert_eq!(unsafe { hew_node_api_load_keys(key_path.as_ptr()) }, 0);
+        assert_eq!(unsafe { configure_keys(key_path.as_ptr()) }, 0);
 
         identity
     }
@@ -8464,7 +8464,7 @@ mod tests {
         let _identity = stage_public_api_test_identity();
         let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind is a valid C string for this call.
-        let rc = unsafe { hew_node_api_start(bind.as_ptr()) };
+        let rc = unsafe { start_address(bind.as_ptr()) };
         assert_eq!(rc, 0, "identity-backed public start should succeed");
         {
             let g = PEER_AUTH_STATE
@@ -8515,9 +8515,9 @@ mod tests {
         let _identity = stage_public_api_test_identity();
         let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind valid.
-        assert_eq!(unsafe { hew_node_api_start(bind.as_ptr()) }, 0);
+        assert_eq!(unsafe { start_address(bind.as_ptr()) }, 0);
         // SAFETY: bind valid; second start must be rejected.
-        let second_rc = unsafe { hew_node_api_start(bind.as_ptr()) };
+        let second_rc = unsafe { start_address(bind.as_ptr()) };
         assert_eq!(
             second_rc, -1,
             "a second concurrent public start must be refused"
@@ -8579,9 +8579,9 @@ mod tests {
         std::fs::write(&key, b"not-a-keyfile-frame").unwrap();
         let c_key = CString::new(key.to_str().unwrap()).unwrap();
         // SAFETY: c_key is a valid NUL-terminated C string for this call.
-        let rc_load = unsafe { hew_node_api_load_keys(c_key.as_ptr()) };
+        let rc_load = unsafe { configure_keys(c_key.as_ptr()) };
         // SAFETY: bind is a valid NUL-terminated C string for this call.
-        let rc_start_after_load = unsafe { hew_node_api_start(bind.as_ptr()) };
+        let rc_start_after_load = unsafe { start_address(bind.as_ptr()) };
         // A fail-closed start never created a node; clean up if the gate regressed.
         if rc_start_after_load == 0 {
             // SAFETY: shutdown reclaims the current node, if any; takes no arguments.
@@ -8593,9 +8593,9 @@ mod tests {
         reset_staging();
         let bad_hex = CString::new("nothex!!").expect("valid C string");
         // SAFETY: bad_hex is a valid NUL-terminated C string for this call.
-        let rc_allow = unsafe { hew_node_api_allow_peer(2, bad_hex.as_ptr()) };
+        let rc_allow = unsafe { configure_peer(2, bad_hex.as_ptr()) };
         // SAFETY: bind is a valid NUL-terminated C string for this call.
-        let rc_start_after_allow = unsafe { hew_node_api_start(bind.as_ptr()) };
+        let rc_start_after_allow = unsafe { start_address(bind.as_ptr()) };
         if rc_start_after_allow == 0 {
             // SAFETY: shutdown reclaims the current node, if any; takes no arguments.
             unsafe { hew_node_api_shutdown() };
@@ -8634,7 +8634,7 @@ mod tests {
         let _identity = stage_public_api_test_identity();
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind_addr is a valid C string for the duration of this test.
-        unsafe { assert_eq!(hew_node_api_start(bind_addr.as_ptr()), 0) };
+        unsafe { assert_eq!(start_address(bind_addr.as_ptr()), 0) };
 
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
         let handles: Vec<_> = (0..2)
@@ -8785,12 +8785,12 @@ mod tests {
         // Pin TCP explicitly, then stage a peer credential under it.
         let tcp = CString::new("tcp").unwrap();
         // SAFETY: tcp is a valid C string for the call.
-        assert_eq!(unsafe { hew_node_api_set_transport(tcp.as_ptr()) }, 0);
+        assert_eq!(unsafe { configure_transport(tcp.as_ptr()) }, 0);
         assert_eq!(pinned_transport(), Some(PT::Tcp));
 
         let noise_hex = CString::new("11".repeat(32)).unwrap();
         // SAFETY: noise_hex is a valid 32-byte (64-hex) C string.
-        assert_eq!(unsafe { hew_node_api_allow_peer(2, noise_hex.as_ptr()) }, 0);
+        assert_eq!(unsafe { configure_peer(2, noise_hex.as_ptr()) }, 0);
         assert_eq!(
             pinned_transport(),
             Some(PT::Tcp),
@@ -8802,7 +8802,7 @@ mod tests {
         let mesh = CString::new("quic-mesh").unwrap();
         crate::hew_clear_error();
         // SAFETY: mesh is a valid C string for the call.
-        let flip_rc = unsafe { hew_node_api_set_transport(mesh.as_ptr()) };
+        let flip_rc = unsafe { configure_transport(mesh.as_ptr()) };
         assert_eq!(
             flip_rc, -1,
             "set_transport after credential staging must be rejected"
@@ -8820,7 +8820,7 @@ mod tests {
 
         // Re-selecting the same transport is idempotent and allowed.
         // SAFETY: tcp is a valid C string for the call.
-        let reselect_rc = unsafe { hew_node_api_set_transport(tcp.as_ptr()) };
+        let reselect_rc = unsafe { configure_transport(tcp.as_ptr()) };
         assert_eq!(
             reselect_rc, 0,
             "re-selecting the same transport after staging stays allowed"
@@ -8881,7 +8881,7 @@ mod tests {
                 let name = CString::new("quic-mesh").expect("valid transport name");
                 set_barrier.wait();
                 // SAFETY: name is a valid C string for this call.
-                unsafe { hew_node_api_set_transport(name.as_ptr()) }
+                unsafe { configure_transport(name.as_ptr()) }
             });
 
             let allow_hex = cred_hex.clone();
@@ -8889,7 +8889,7 @@ mod tests {
                 let hex = CString::new(allow_hex).expect("valid hex credential");
                 barrier.wait();
                 // SAFETY: hex is a valid C string for this call.
-                unsafe { hew_node_api_allow_peer(2, hex.as_ptr()) }
+                unsafe { configure_peer(2, hex.as_ptr()) }
             });
 
             let _ = set_thread.join().expect("set_transport thread panicked");
@@ -8982,7 +8982,7 @@ mod tests {
         let keyfile = dir.path().join("node.key");
         let keyfile_c = CString::new(keyfile.to_str().unwrap()).unwrap();
         // SAFETY: keyfile_c is a valid C string for the call.
-        assert_eq!(unsafe { hew_node_api_load_keys(keyfile_c.as_ptr()) }, 0);
+        assert_eq!(unsafe { configure_keys(keyfile_c.as_ptr()) }, 0);
         assert_eq!(pinned_transport(), Some(PT::Tcp));
 
         let key_before = read_identity();
@@ -8995,7 +8995,7 @@ mod tests {
         let mesh = CString::new("quic-mesh").unwrap();
         crate::hew_clear_error();
         // SAFETY: mesh is a valid C string for the call.
-        assert_eq!(unsafe { hew_node_api_set_transport(mesh.as_ptr()) }, -1);
+        assert_eq!(unsafe { configure_transport(mesh.as_ptr()) }, -1);
 
         let key_after = read_identity();
         assert_eq!(
@@ -9385,8 +9385,15 @@ mod tests {
             .insert("l18_gossip".to_owned(), Location::try_from(old).unwrap());
         let user_data = (&raw const registry).cast_mut().cast::<c_void>();
         let name = c"l18_gossip";
+        let actor_type = c"test.Counter";
 
-        node_registry_gossip_callback(name.as_ptr(), &raw const new, true, user_data);
+        node_registry_gossip_callback(
+            name.as_ptr(),
+            &raw const new,
+            actor_type.as_ptr(),
+            true,
+            user_data,
+        );
         let map = registry.remote_names.lock_or_recover();
         assert_eq!(
             map.get("l18_gossip").copied(),
@@ -9394,7 +9401,13 @@ mod tests {
             "new registration must re-point future lookup"
         );
         drop(map);
-        node_registry_gossip_callback(name.as_ptr(), &raw const old, false, user_data);
+        node_registry_gossip_callback(
+            name.as_ptr(),
+            &raw const old,
+            actor_type.as_ptr(),
+            false,
+            user_data,
+        );
         assert_eq!(
             registry
                 .remote_names
@@ -10302,12 +10315,14 @@ mod tests {
             // Simulate a remote registry gossip event arriving.
             let n = &*node.as_ptr();
             let remote_name = c"remote_counter";
+            let remote_actor_type = c"test.Counter";
             let remote_location = HewLocation::from(test_location(200, 0x99));
 
             // Invoke the callback directly (as the cluster would).
             node_registry_gossip_callback(
                 remote_name.as_ptr(),
                 &raw const remote_location,
+                remote_actor_type.as_ptr(),
                 true,
                 n.registry.cast::<c_void>(),
             );
@@ -10318,7 +10333,12 @@ mod tests {
             // Node lookup should find it via remote_names.
             let mut found = HewRemotePid::default();
             assert_eq!(
-                hew_node_lookup_location(node.as_ptr(), remote_name.as_ptr(), &raw mut found,),
+                hew_node_lookup_location_typed(
+                    node.as_ptr(),
+                    remote_name.as_ptr(),
+                    remote_actor_type.as_ptr(),
+                    &raw mut found,
+                ),
                 0
             );
             assert_eq!(
@@ -10330,6 +10350,7 @@ mod tests {
             node_registry_gossip_callback(
                 remote_name.as_ptr(),
                 &raw const remote_location,
+                remote_actor_type.as_ptr(),
                 false,
                 n.registry.cast::<c_void>(),
             );

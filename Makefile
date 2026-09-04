@@ -76,7 +76,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check baselines baselines-check
-.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-node-api test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-node-api test-node-api-runtime test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
@@ -693,6 +693,10 @@ test-node-api: hew-native
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test distributed_two_process_e2e $(NODE_API_TEST) -- --test-threads=1
 	@$(PYTHON) scripts/example-expectations.py \
 	  --hew-bin "$(DEBUG_DIR)/hew" $(NODE_API_EXAMPLE_INVENTORY)
+
+test-node-api-runtime:
+	$(TEST_RUN_ENV) cargo test -p hew-runtime registry_gossip --lib -- --test-threads=1
+	$(TEST_RUN_ENV) cargo test -p hew-runtime --test envelope_round_trip registry_gossip -- --test-threads=1
 
 # ── Local Linux CI-parity harness ────────────────────────────────────────────
 # Runs the GitHub Actions `Build & test (Linux)` job on a NATIVE x86_64 Linux

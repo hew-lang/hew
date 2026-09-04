@@ -4298,13 +4298,14 @@ mod tests {
         assert_eq!(cluster.registry_gossip_count(), 0);
 
         let location = test_location(0x1234);
-        cluster.emit_registry_add("counter", location);
+        cluster.emit_registry_add("counter", location, "test.Counter");
         assert_eq!(cluster.registry_gossip_count(), 1);
 
         let events = cluster.take_registry_gossip(10);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].name, "counter");
         assert_eq!(events[0].location, location);
+        assert_eq!(events[0].actor_type, "test.Counter");
         assert!(events[0].is_add);
     }
 
@@ -4312,7 +4313,7 @@ mod tests {
     fn registry_remove_event_queued() {
         let cluster = HewCluster::new(make_config(1));
         let location = test_location(0x1234);
-        cluster.emit_registry_remove("counter", location);
+        cluster.emit_registry_remove("counter", location, "test.Counter");
         assert_eq!(cluster.registry_gossip_count(), 1);
 
         let events = cluster.take_registry_gossip(10);
@@ -4325,8 +4326,8 @@ mod tests {
     #[test]
     fn registry_events_deduplicate_by_name() {
         let cluster = HewCluster::new(make_config(1));
-        cluster.emit_registry_add("counter", test_location(0x1111));
-        cluster.emit_registry_add("counter", test_location(0x2222));
+        cluster.emit_registry_add("counter", test_location(0x1111), "test.Counter");
+        cluster.emit_registry_add("counter", test_location(0x2222), "test.Counter");
         assert_eq!(cluster.registry_gossip_count(), 1);
 
         let events = cluster.take_registry_gossip(10);
@@ -4337,7 +4338,7 @@ mod tests {
     #[test]
     fn registry_events_pruned_after_dissemination() {
         let cluster = HewCluster::new(make_config(1));
-        cluster.emit_registry_add("alpha", test_location(1));
+        cluster.emit_registry_add("alpha", test_location(1), "test.Alpha");
         // Disseminate 8 times to reach the prune threshold.
         for _ in 0..8 {
             let _ = cluster.take_registry_gossip(10);
@@ -4352,36 +4353,51 @@ mod tests {
         extern "C" fn collect_registry(
             name: *const c_char,
             location: *const HewLocation,
+            actor_type: *const c_char,
             is_add: bool,
             user_data: *mut c_void,
         ) {
             // SAFETY: test passes a valid Vec pointer.
-            let vec = unsafe { &mut *user_data.cast::<Vec<(String, Location, bool)>>() };
+            let vec = unsafe { &mut *user_data.cast::<Vec<(String, Location, String, bool)>>() };
             // SAFETY: name is a valid NUL-terminated C string from the cluster callback.
             let s = unsafe { CStr::from_ptr(name) }
                 .to_string_lossy()
                 .into_owned();
+            // SAFETY: actor_type is a valid C string from the cluster callback.
+            let actor_type = unsafe { CStr::from_ptr(actor_type) }
+                .to_string_lossy()
+                .into_owned();
             // SAFETY: location points to the callback's readable stack value.
             let location = Location::try_from(unsafe { *location }).unwrap();
-            vec.push((s, location, is_add));
+            vec.push((s, location, actor_type, is_add));
         }
 
         let mut cluster = HewCluster::new(make_config(1));
-        let mut collected: Vec<(String, Location, bool)> = Vec::new();
+        let mut collected: Vec<(String, Location, String, bool)> = Vec::new();
         cluster.registry_callback = Some(collect_registry);
         cluster.registry_callback_user_data = (&raw mut collected).cast();
 
-        cluster.apply_registry_event("counter", test_location(0x42), true);
-        cluster.apply_registry_event("timer", test_location(0x99), false);
+        cluster.apply_registry_event("counter", test_location(0x42), "test.Counter", true);
+        cluster.apply_registry_event("timer", test_location(0x99), "test.Timer", false);
 
         assert_eq!(collected.len(), 2);
         assert_eq!(
             collected[0],
-            ("counter".to_owned(), test_location(0x42), true)
+            (
+                "counter".to_owned(),
+                test_location(0x42),
+                "test.Counter".to_owned(),
+                true,
+            )
         );
         assert_eq!(
             collected[1],
-            ("timer".to_owned(), test_location(0x99), false)
+            (
+                "timer".to_owned(),
+                test_location(0x99),
+                "test.Timer".to_owned(),
+                false,
+            )
         );
     }
 
@@ -4394,11 +4410,22 @@ mod tests {
             assert_eq!(hew_cluster_registry_gossip_count(cluster), 0);
 
             let name = c"my_actor";
+            let actor_type = c"test.MyActor";
             let location = HewLocation::from(test_location(0xABCD));
-            hew_cluster_registry_add(cluster, name.as_ptr(), &raw const location);
+            hew_cluster_registry_add(
+                cluster,
+                name.as_ptr(),
+                &raw const location,
+                actor_type.as_ptr(),
+            );
             assert_eq!(hew_cluster_registry_gossip_count(cluster), 1);
 
-            hew_cluster_registry_remove(cluster, name.as_ptr(), &raw const location);
+            hew_cluster_registry_remove(
+                cluster,
+                name.as_ptr(),
+                &raw const location,
+                actor_type.as_ptr(),
+            );
             // Dedup replaces the add with a remove.
             assert_eq!(hew_cluster_registry_gossip_count(cluster), 1);
 
@@ -4609,7 +4636,7 @@ mod tests {
     fn apply_registry_event_without_callback_is_noop() {
         let cluster = HewCluster::new(make_config(1));
         // No callback registered — should not panic.
-        cluster.apply_registry_event("counter", test_location(42), true);
+        cluster.apply_registry_event("counter", test_location(42), "test.Counter", true);
     }
 
     #[test]
@@ -4617,6 +4644,7 @@ mod tests {
         extern "C" fn should_not_be_called(
             _: *const c_char,
             _: *const HewLocation,
+            _: *const c_char,
             _: bool,
             _: *mut c_void,
         ) {
@@ -4627,7 +4655,7 @@ mod tests {
         cluster.registry_callback_user_data = std::ptr::null_mut();
 
         // Name with interior null byte — CString::new fails, early return.
-        cluster.apply_registry_event("bad\0name", test_location(42), true);
+        cluster.apply_registry_event("bad\0name", test_location(42), "test.Bad", true);
     }
 
     // ── membership callback edge cases ─────────────────────────────────
@@ -4717,12 +4745,12 @@ mod tests {
     fn registry_gossip_overflow_evicts_oldest() {
         let cluster = HewCluster::new(make_config(1));
         for i in 0..MAX_GOSSIP_EVENTS {
-            cluster.emit_registry_add(&format!("actor_{i}"), test_location(i as u64));
+            cluster.emit_registry_add(&format!("actor_{i}"), test_location(i as u64), "test.Actor");
         }
         assert_eq!(cluster.registry_gossip_count(), MAX_GOSSIP_EVENTS);
 
         // One more should evict the oldest.
-        cluster.emit_registry_add("overflow", test_location(999));
+        cluster.emit_registry_add("overflow", test_location(999), "test.Actor");
         assert_eq!(cluster.registry_gossip_count(), MAX_GOSSIP_EVENTS);
 
         let events = cluster.take_registry_gossip(MAX_GOSSIP_EVENTS + 1);
@@ -4740,6 +4768,7 @@ mod tests {
         extern "C" fn noop_registry_cb(
             _: *const c_char,
             _: *const HewLocation,
+            _: *const c_char,
             _: bool,
             _: *mut c_void,
         ) {
@@ -4773,8 +4802,8 @@ mod tests {
             hew_cluster_set_registry_callback(null, noop_registry_cb, std::ptr::null_mut());
 
             // Null name pointers.
-            hew_cluster_registry_add(null, std::ptr::null(), std::ptr::null());
-            hew_cluster_registry_remove(null, std::ptr::null(), std::ptr::null());
+            hew_cluster_registry_add(null, std::ptr::null(), std::ptr::null(), std::ptr::null());
+            hew_cluster_registry_remove(null, std::ptr::null(), std::ptr::null(), std::ptr::null());
         }
     }
 

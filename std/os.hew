@@ -33,7 +33,7 @@ pub fn args() -> Vec<string> {
         hew_args_count() as i64
     };
     var values: Vec<string> = Vec.new();
-    for index in 0..count {
+    for index in 0 .. count {
         let value = unsafe {
             hew_args_get(index as i32)
         };

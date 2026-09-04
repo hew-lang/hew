@@ -286,6 +286,7 @@ fn parse_error_message() -> string {
         hew_toml_last_error()
     }
 }
+
 /// Parse a TOML string into a `Value`.
 ///
 /// Returns `Err(ParseError.Invalid(message))` with the native parser message

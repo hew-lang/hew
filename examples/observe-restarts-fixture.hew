@@ -18,7 +18,6 @@ supervisor Pair {
 fn main() {
     let sup = spawn Pair;
     sleep(30ms);
-
     let a = sup.a;
     a.break_it();
     sleep(1s);
@@ -34,7 +33,6 @@ fn main() {
         b = sup.b;
         i = i + 1;
     }
-
     let _barrier = observe.barrier();
     println("restarts fixture ready");
     sleep(15s);

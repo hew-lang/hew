@@ -23,6 +23,7 @@
 //!     println(decompressed.len());  // 5
 //! }
 //! ```
+
 /// Gzip-compress `data` without panicking.
 ///
 /// A failed codec call and a codec call that legitimately produced no bytes
@@ -41,6 +42,7 @@ pub fn gzip_compress(data: bytes) -> Result<bytes, string> {
         Ok(out)
     }
 }
+
 /// Gzip-decompress `data` without panicking.
 pub fn gzip_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string> {
     let out = unsafe {
@@ -55,6 +57,7 @@ pub fn gzip_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string
         Ok(out)
     }
 }
+
 /// Deflate-compress `data` (raw DEFLATE) without panicking.
 pub fn deflate_compress(data: bytes) -> Result<bytes, string> {
     let out = unsafe {
@@ -69,6 +72,7 @@ pub fn deflate_compress(data: bytes) -> Result<bytes, string> {
         Ok(out)
     }
 }
+
 /// Deflate-decompress `data` (raw DEFLATE) without panicking.
 pub fn deflate_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string> {
     let out = unsafe {
@@ -83,6 +87,7 @@ pub fn deflate_decompress(data: bytes, max_output_len: i64) -> Result<bytes, str
         Ok(out)
     }
 }
+
 /// Zlib-compress `data` without panicking.
 pub fn zlib_compress(data: bytes) -> Result<bytes, string> {
     let out = unsafe {
@@ -97,6 +102,7 @@ pub fn zlib_compress(data: bytes) -> Result<bytes, string> {
         Ok(out)
     }
 }
+
 /// Zlib-decompress `data` without panicking.
 pub fn zlib_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string> {
     let out = unsafe {

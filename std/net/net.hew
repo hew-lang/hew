@@ -753,6 +753,7 @@ pub fn listen(addr: string) -> Result<Listener, NetError> {
         }
     }
 }
+
 /// Connect to a TCP server at the given address.
 ///
 /// Returns `Err(NetError)` instead of panicking on failure.
@@ -782,6 +783,7 @@ pub fn connect(addr: string) -> Result<Connection, NetError> {
         }
     }
 }
+
 /// Connect to a TCP server with a timeout, reporting invalid input and
 /// connect failure instead of fabricating a default.
 ///
@@ -828,6 +830,7 @@ fn try_connect_timeout_ms(timeout_sec: i64, timeout_usec: i64) -> Result<i64, Ne
     }
     duration_ms("net.connect_timeout", seconds_ms + micros_ms)
 }
+
 /// Broadcast a message to all connections except the sender.
 ///
 /// Used in chat-server patterns to fan out messages. Delivery is

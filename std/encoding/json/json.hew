@@ -312,6 +312,7 @@ fn parse_value(s: string) -> Value {
         hew_json_parse(s)
     }
 }
+
 /// Parse a JSON string into a `Value`.
 ///
 /// Returns `Err(ParseError.Invalid(message))` with the native parser message

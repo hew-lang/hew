@@ -202,6 +202,7 @@ pub fn last_error() -> string {
         hew_tls_last_error()
     }
 }
+
 /// Write raw bytes to a TLS stream.
 ///
 /// Returns the number of bytes written, or `Err(net.NetError)` on failure.

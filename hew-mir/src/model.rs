@@ -5172,19 +5172,21 @@ pub enum Instr {
     /// `dest = (lhs is rhs)` — pointer/handle identity comparison.
     ///
     /// Produced exclusively from `HirExprKind::IdentityCompare`, which the
-    /// HIR lowering emits for `Expr::Is` once the checker (D-2) has
-    /// validated that both operands are identity-bearing types (actor refs,
-    /// `Vec`, `HashMap`, `HashSet`, `bytes`, machine instances, user named
-    /// `type` declarations). The result is a boolean (`1` = same identity,
-    /// `0` = distinct identities), stored in `dest`.
+    /// HIR lowering emits for `Expr::Is` once the checker (D-2, D340) has
+    /// validated that both operands are identity-bearing types: actor refs
+    /// (`LocalPid<T>`) and user actor declarations. Records, enums (`indirect`
+    /// included), machines, and the heap-backed value types (`Vec`,
+    /// `HashMap`, `HashSet`, `bytes`) never reach here (#3108, #3134). The
+    /// result is a boolean (`1` = same identity, `0` = distinct identities),
+    /// stored in `dest`.
     ///
     /// Codegen (D-3): for pointer-shaped LLVM values (`ptr` alloca, i.e.
     /// `ResolvedTy::Named { name: "Duplex", .. }` and future heap-backed
     /// types), `ptrtoint` both operands to `i64`, compare with `icmp eq`,
     /// then `zext` the `i1` result to the dest's stored width. For
-    /// machine-id integers (encoded as stable `i64` identifiers by the
-    /// machine runtime), the `ptrtoint` step is skipped and `icmp eq` is
-    /// applied directly to the loaded integer values.
+    /// integer-shaped handles (e.g. a stable `i64` identifier), the
+    /// `ptrtoint` step is skipped and `icmp eq` is applied directly to the
+    /// loaded integer values.
     ///
     /// LESSONS: `checker-authority` (P0) — codegen reads the operand's
     /// `ResolvedTy` to select between the pointer-path and the integer-path.

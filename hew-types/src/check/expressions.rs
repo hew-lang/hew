@@ -7,8 +7,8 @@ use super::types::GenericLambdaSig;
 )]
 use super::*;
 use crate::check::types::{
-    GenericCallEdge, GenericCallee, GenericFnInstantiationSite, GenericStructuralEqRequirement,
-    PendingInstantiation,
+    DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
+    GenericStructuralEqRequirement, PendingInstantiation,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::eq_eligibility::{
@@ -19,6 +19,23 @@ use std::collections::VecDeque;
 
 type DangerousRcBinding = String;
 type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
+
+/// Build the `E_IS_VALUE_TYPE` diagnostic for a value-type operand of `is`.
+///
+/// One authority for the wording, shared by the in-place rejection and the
+/// deferred re-check of an operand whose type only settled at a call site.
+fn is_value_type_diagnostic(span: &Span, ty: &Ty) -> (TypeErrorKind, Span, String) {
+    (
+        TypeErrorKind::InvalidOperation,
+        span.clone(),
+        format!(
+            "`is` compares identity, and `{}` is a value type \
+             (E_IS_VALUE_TYPE) — use `==` to compare it by value; `is` \
+             applies to handles: actor references",
+            ty.user_facing()
+        ),
+    )
+}
 
 impl Checker {
     fn lambda_generic_schema_ty(ty: &Ty, generic_param_names: &HashMap<u32, String>) -> Ty {
@@ -746,10 +763,11 @@ impl Checker {
 
             // Identity comparison: `lhs is rhs` (slice D-2).
             //
-            // Allowed receivers: machines, actors/actor refs, heap-backed
-            // `Vec`/`HashMap`/`HashSet`/`bytes`, and user `enum` declarations.
+            // Allowed receivers: actors/actor refs and heap-backed
+            // `Vec`/`HashMap`/`HashSet`/`bytes`.
             // Rejected with `E_IS_VALUE_TYPE`: scalars, `String`, `type
-            // Foo { ... }` record declarations, `record` types, tuples,
+            // Foo { ... }` record declarations, `record` types, enum
+            // declarations (`indirect` included), machines, tuples,
             // ranges, fn/closures.
             //
             // Result is always `bool`. Cross-class mismatches (e.g.
@@ -9687,17 +9705,63 @@ impl Checker {
         let rhs_resolved = self.subst.resolve(&rhs_ty);
 
         // Don't double-report when either side is already poisoned by an
-        // upstream diagnostic (`Ty::Error`) or still under inference
-        // (`Ty::Var`). The operator still produces `bool` so enclosing
-        // expressions see a stable type.
-        if matches!(lhs_resolved, Ty::Error | Ty::Var(_))
-            || matches!(rhs_resolved, Ty::Error | Ty::Var(_))
-        {
+        // upstream diagnostic (`Ty::Error`). The operator still produces
+        // `bool` so enclosing expressions see a stable type.
+        if matches!(lhs_resolved, Ty::Error) || matches!(rhs_resolved, Ty::Error) {
             return Ty::Bool;
         }
 
-        let lhs_ok = self.is_identity_capable(&lhs_resolved);
-        let rhs_ok = self.is_identity_capable(&rhs_resolved);
+        // An operand still under inference cannot be decided here, and it must
+        // not be abandoned either: a closure's parameter types are fresh
+        // variables while its body is checked and only settle when a call site
+        // unifies them, so `let same = |a, b| a is b;` used to escape
+        // `is_identity_capable` entirely and die in the codegen front on the
+        // span-less `IdentityCompare lhs must be a pointer or integer value`.
+        // Record the obligation and re-run the same decision once inference
+        // has settled (`report_unresolved_inference_holes`) — #3134.
+        if matches!(lhs_resolved, Ty::Var(_)) || matches!(rhs_resolved, Ty::Var(_)) {
+            let key = SpanKey::in_module(span, self.current_module_idx);
+            let check = DeferredIsCheck {
+                span: span.clone(),
+                lhs_span: lhs.1.clone(),
+                lhs_ty,
+                rhs_span: rhs.1.clone(),
+                rhs_ty,
+                source_module: self.current_diagnostic_source_module(),
+            };
+            self.deferred_is_checks.insert(key, check);
+            return Ty::Bool;
+        }
+
+        for (kind, span, message) in
+            self.is_value_form_diagnostics(&lhs.1, &lhs_resolved, &rhs.1, &rhs_resolved, span)
+        {
+            self.report_error(kind, &span, message);
+        }
+
+        Ty::Bool
+    }
+
+    /// The `is` value-form allowance decision over two fully resolved
+    /// operands, as the diagnostics it produces (empty when the comparison is
+    /// admitted).
+    ///
+    /// Shared by [`Self::synthesize_is`] and the deferred re-check in
+    /// [`Self::report_unresolved_inference_holes`] so an `is` whose operand
+    /// types only settle at a call site reaches the identical answer. The two
+    /// callers differ only in how a diagnostic is routed to its source module,
+    /// which is why this returns them instead of reporting.
+    pub(super) fn is_value_form_diagnostics(
+        &self,
+        lhs_span: &Span,
+        lhs_resolved: &Ty,
+        rhs_span: &Span,
+        rhs_resolved: &Ty,
+        span: &Span,
+    ) -> Vec<(TypeErrorKind, Span, String)> {
+        let lhs_ok = self.is_identity_capable(lhs_resolved);
+        let rhs_ok = self.is_identity_capable(rhs_resolved);
+        let mut diagnostics = Vec::new();
 
         // One rejection per `is` expression when both operands resolve to the
         // same value type: two carets carrying a byte-identical message about
@@ -9705,10 +9769,10 @@ impl Checker {
         // types still get one diagnostic each, since each names its own type.
         let same_value_type = !lhs_ok && !rhs_ok && lhs_resolved == rhs_resolved;
         if !lhs_ok {
-            self.report_is_value_type(&lhs.1, &lhs_resolved);
+            diagnostics.push(is_value_type_diagnostic(lhs_span, lhs_resolved));
         }
         if !rhs_ok && !same_value_type {
-            self.report_is_value_type(&rhs.1, &rhs_resolved);
+            diagnostics.push(is_value_type_diagnostic(rhs_span, rhs_resolved));
         }
 
         // Cross-class / cross-instantiation mismatch (e.g. `Vec<int> is Vec<String>`
@@ -9716,21 +9780,21 @@ impl Checker {
         // independently identity-capable; otherwise the value-type rejection
         // above carries the diagnostic.
         if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
-            self.report_error(
+            diagnostics.push((
                 TypeErrorKind::Mismatch {
                     expected: lhs_resolved.user_facing().to_string(),
                     actual: rhs_resolved.user_facing().to_string(),
                 },
-                span,
+                span.clone(),
                 format!(
                     "`is` operands must have the same type; found `{}` and `{}`",
                     lhs_resolved.user_facing(),
                     rhs_resolved.user_facing()
                 ),
-            );
+            ));
         }
 
-        Ty::Bool
+        diagnostics
     }
 
     fn resolve_is_type_pattern(&self, rhs: &Expr) -> Option<Ty> {
@@ -9825,78 +9889,73 @@ impl Checker {
 
     /// Report `E_IS_VALUE_TYPE` for a value-type operand of `is`.
     fn report_is_value_type(&mut self, span: &Span, ty: &Ty) {
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "`is` compares identity, and `{}` is a value type \
-                 (E_IS_VALUE_TYPE) — use `==` to compare it by value; `is` \
-                 applies to handles such as actor references and \
-                 `Vec`/`HashMap`/`HashSet`",
-                ty.user_facing()
-            ),
-        );
+        let (kind, span, message) = is_value_type_diagnostic(span, ty);
+        self.report_error(kind, &span, message);
     }
 
-    /// Classify a resolved type as identity-bearing per plan §D-D2.
+    /// Classify a resolved type as identity-bearing per plan §D-D2 (D340: the
+    /// `is` admission set is handle identity only, HEW-SPEC-2026 §3.4.3's pid
+    /// handle category).
     ///
     /// Returns `true` when `is` is valid on values of this type:
     ///
-    /// * Machines (`TypeDefKind::Machine`).
     /// * Actors and actor handles: `TypeDefKind::Actor` named types and
     ///   `LocalPid<T>`.
-    /// * Heap-backed collections: `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`.
-    /// * `bytes`.
-    /// * User `enum` declarations (`TypeDefKind::Enum`).
     ///
-    /// Returns `false` for value types: scalars, `String`, `type Foo { ... }`
-    /// record declarations (`TypeDefKind::Struct`), `record` types,
-    /// tuples, arrays, slices, ranges, durations, functions, closures, and
-    /// trait objects. Caller is responsible for handling `Ty::Var` / `Ty::Error`
-    /// before invoking this predicate.
+    /// Returns `false` for value types: scalars, `String`, `bytes`,
+    /// `type Foo { ... }` record declarations (`TypeDefKind::Struct`),
+    /// `record` types, `enum` declarations (`TypeDefKind::Enum`), machines
+    /// (`TypeDefKind::Machine`), heap-backed collections (`Vec<T>`,
+    /// `HashMap<K,V>`, `HashSet<T>`), tuples, arrays, slices, ranges,
+    /// durations, functions, closures, and trait objects. Caller is
+    /// responsible for handling `Ty::Var` / `Ty::Error` before invoking this
+    /// predicate.
+    ///
+    /// This is the single authority for the `is` allowance set: HIR lowering,
+    /// MIR, and the codegen front all read the answer from here and never
+    /// re-derive it (LESSONS `checker-authority`). The set is exactly the set
+    /// of shapes the codegen front can identity-compare, so the
+    /// `Instr::IdentityCompare` legality check stays an unreachable backstop
+    /// rather than a user-visible diagnostic.
     fn is_identity_capable(&self, ty: &Ty) -> bool {
         match ty {
-            // Heap-backed builtin handles.
-            Ty::Bytes => true,
-
-            // Named types: actor handles, collection builtins, and any user
-            // `TypeDef` whose kind carries heap/reference identity.
-            Ty::Named { name, builtin, .. } => {
+            // Named types: actor handles and any user `TypeDef` whose kind
+            // carries heap/reference identity.
+            Ty::Named { name, .. } => {
                 // Actor handles (`LocalPid<T>`).
                 if ty.as_actor_handle().is_some() {
                     return true;
                 }
-                // Heap-backed builtin collections — kept name-keyed since they
-                // have no `TypeDef` entry.
-                if builtin.is_some_and(BuiltinType::is_collection) {
-                    return true;
-                }
-                // A `type Foo { ... }` record declaration
-                // (`TypeDefKind::Struct`) is not identity-capable: under the
-                // v0.5 value model a record is a copy-on-write value with
-                // structural `==` and no pointer identity
-                // (`docs/v05/ownership.md`), and the codegen front has no
-                // `IdentityCompare` lowering for its representation. The
-                // checker owns that answer, so the codegen-front legality
-                // check stays an unreachable backstop (#3108).
+                // Actor declarations are the only identity-bearing user
+                // `TypeDef`. Everything else a `TypeDef` can name is a value:
                 //
-                // Machines, actors and enums stay in the set: only the record
-                // answer is settled here. `is` on an `enum` or `machine` value
-                // still reaches the codegen-front check today; whether they are
-                // value-class too is a separate language decision, tracked as
-                // follow-up on #3108.
+                // * `type Foo { ... }` records (`TypeDefKind::Struct`) are
+                //   copy-on-write values with structural `==` and no pointer
+                //   identity (`docs/v05/ownership.md`), settled by #3108.
+                // * `enum` declarations are tagged values. An `indirect` enum
+                //   does carry a heap box, but `indirect` is a layout
+                //   annotation (HEW-SPEC-2026 §3.7.4) — admitting it to `is`
+                //   would promote it to a semantic one and make identity
+                //   depend on how a variant happens to be laid out, so every
+                //   enum is rejected uniformly (#3134).
+                // * Machines are tagged state values with payload fields, the
+                //   same value class as an enum.
+                //
+                // None of the three has an `IdentityCompare` representation in
+                // the codegen front, which is the other half of the answer:
+                // the set here is the set codegen can lower, so its legality
+                // check stays an unreachable backstop (#3108, #3134).
                 if let Some(td) = self.type_defs.get(name) {
-                    return matches!(
-                        td.kind,
-                        TypeDefKind::Machine | TypeDefKind::Actor | TypeDefKind::Enum
-                    );
+                    return matches!(td.kind, TypeDefKind::Actor);
                 }
                 false
             }
 
             // Everything else is a value type for `is` purposes: scalars,
-            // `String`, tuples, arrays, slices, function/closure types,
-            // pointers, trait objects, durations, unit, never, tasks,
+            // `String`, `bytes`, `Vec`/`HashMap`/`HashSet` (copy-on-write
+            // values with structural `==`, HEW-SPEC-2026 §3.4.3's value
+            // category, D340), tuples, arrays, slices, function/closure
+            // types, pointers, trait objects, durations, unit, never, tasks,
             // type vars (handled by caller), and the error sentinel.
             _ => false,
         }

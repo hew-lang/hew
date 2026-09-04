@@ -1,14 +1,15 @@
-enum Payload {
-    First;
-    Second;
+actor Worker {
+    let _id: i64;
+
+    receive fn ping() {}
 }
 
 fn is_probe() -> i32 {
     7
 }
 
-fn is_operator(value: Payload) -> i32 {
-    if value is Payload {
+fn is_operator(value: LocalPid<Worker>, other: LocalPid<Worker>) -> i32 {
+    if value is other {
         is_probe()
     } else {
         0

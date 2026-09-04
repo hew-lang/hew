@@ -6340,7 +6340,7 @@ machine Traffic {
     //  v05_generators                     | accepted                       | generator functions; LSP test passes
     //  v05_impl_where_clause              | accepted                       | impl<T> … where T: Display; LSP test passes
     //  v05_index_trait                    | accepted                       | Indexable trait; type errors intentional (fixture exercises error-recovery); LSP test passes
-    //  v05_is_operator                    | accepted                       | `is` operator + targeted surface tests (resolver, semantic-token, completion) pass
+    //  v05_is_operator                    | accepted                       | `is` operator on the accepted `LocalPid<Worker>` actor-handle value form (D340); the RHS type-pattern surfaces (resolver, semantic-token, completion) are asserted on an inline refused program, since no user declaration has an accepted `expr is Name` form (#3134)
     //  v05_link_monitor                   | accepted                       | actor link/monitor; LSP test passes
     //  v05_machine_generics               | accepted                       | generic machine `machine Boxed<T>`; one-state semantic error is intentional fixture design; LSP test passes
     //  v05_machine_methods                | accepted                       | machine methods; non-exhaustive event coverage intentional; LSP test passes
@@ -6766,15 +6766,78 @@ machine Traffic {
             "v05_is_operator",
             source,
             "is_probe",
-            &["Payload", "is_probe", "is_operator"],
+            &["Worker", "is_probe", "is_operator"],
         );
+    }
+
+    /// An `is` whose RHS names a user declaration. No such program type-checks
+    /// after #3134: the only identity-bearing user `TypeDef` is an actor, and
+    /// an actor's values are `LocalPid<T>` handles, so `handle is Actor` is a
+    /// type-pattern mismatch and every other declaration is a value type. The
+    /// LSP still has to resolve the RHS as a type — jump-to-definition,
+    /// semantic tokens and completion serve the buffer the user is typing,
+    /// which is broken most of the time — so the surfaces are asserted on a
+    /// program the checker refuses.
+    ///
+    /// This source is inline rather than a `tests/fixtures/*.hew` file because
+    /// the hew-corpus gate compiles every tracked `.hew` in the tree, and a
+    /// refused program there would need a ratchet row it has not earned. The
+    /// accepted `LocalPid<Worker>` value form lives in the fixture instead.
+    const IS_RHS_TYPE_PATTERN_SOURCE: &str = "enum Payload {\n\
+         First;\n\
+         Second;\n\
+         }\n\
+         \n\
+         fn is_probe() -> i32 {\n\
+         7\n\
+         }\n\
+         \n\
+         fn is_operator(value: Payload) -> i32 {\n\
+         if value is Payload {\n\
+         is_probe()\n\
+         } else {\n\
+         0\n\
+         }\n\
+         }\n";
+
+    #[test]
+    fn v05_is_operator_value_form_fixture_is_accepted() {
+        // Negative control for the test below: the `LocalPid<Worker>` value
+        // form the fixture uses carries no hard type error, so the rejection
+        // asserted there is about the enum operand and not about `is` itself.
+        let source = include_str!("../../tests/fixtures/v05_is_operator.hew");
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors("v05_is_operator", &doc);
     }
 
     #[test]
     fn v05_is_operator_rhs_type_pattern_lsp_surfaces_are_correct() {
-        let source = include_str!("../../tests/fixtures/v05_is_operator.hew");
+        let source = IS_RHS_TYPE_PATTERN_SOURCE;
         let doc = make_typed_doc(source);
-        assert_no_hard_type_errors("v05_is_operator", &doc);
+
+        // `value is Payload` is rejected: an enum is a value with no identity
+        // to compare, `indirect` included (#3134). That rejection is the only
+        // hard error this program may carry — the LSP surfaces below are about
+        // how the RHS *resolves*, not about whether the checker admits the
+        // comparison, and they must keep working on a refused program.
+        let errors = doc
+            .type_output
+            .as_ref()
+            .map_or(&[] as &[hew_types::error::TypeError], |output| {
+                output.errors.as_slice()
+            });
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.message.contains("E_IS_VALUE_TYPE")),
+            "the `is` RHS source should carry only the value-type rejection; got {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("E_IS_VALUE_TYPE")),
+            "`value is Payload` must be rejected: an enum has no identity to compare"
+        );
 
         let uri = Url::parse(&v05_fixture_path("v05_is_operator")).unwrap();
         let documents: DashMap<Url, DocumentState> = DashMap::new();

@@ -228,8 +228,8 @@ pub(super) fn append_concurrency_snippets(
     for (label, insert_text, detail) in [
         (
             "channel.new...",
-            "let (${1:tx}, ${2:rx}): (channel.Sender<${3:string}>, channel.Receiver<${3:string}>) = channel.new(${4:capacity});",
-            "let (tx, rx) = channel.new(capacity);",
+            "let (${1:tx}, ${2:rx}): (channel.Sender<${3:string}>, channel.Receiver<${3:string}>) = match channel.new(${4:capacity}) { .Ok(pair) => pair, .Err(error) => panic(error), };",
+            "let (tx, rx) = match channel.new(capacity) { .Ok(pair) => pair, .Err(error) => panic(error), };",
         ),
         (
             "await rx.recv...",

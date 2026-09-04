@@ -9,7 +9,10 @@
 //! import std.encoding.xml;
 //!
 //! fn main() {
-//!     let root = xml.parse("<book><title>Hew Guide</title></book>");
+//!     let root = match xml.parse("<book><title>Hew Guide</title></book>") {
+//!         .Ok(node) => node,
+//!         .Err(reason) => panic(reason),
+//!     };
 //!     let title = root.get_child(0);
 //!     println(title.get_text());
 //!     title.close();

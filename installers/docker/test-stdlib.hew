@@ -21,10 +21,9 @@ fn main() {
 
     // ── fs.mkdir_all / fs.is_dir / fs.list_dir ───────────────────────────
     let dir = "/tmp/hew_smoke_test";
-    let rc = fs.mkdir_all(dir);
-    assert(rc == 0);
+    fs.mkdir_all(dir).unwrap();
     assert(fs.is_dir(dir));
-    let entries = fs.list_dir("/tmp");
+    let entries = fs.list_dir("/tmp").unwrap();
     assert(entries.len() > 0);
     println("fs.mkdir_all/is_dir/list_dir: ok");
 

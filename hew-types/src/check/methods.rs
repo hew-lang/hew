@@ -11953,7 +11953,7 @@ mod tests {
         checker
             .module_import_bindings
             .insert((None, 0, "files".to_string()), "std.fs".to_string());
-        checker.reject_wasm_native_only_module_function("files", "try_read", &span);
+        checker.reject_wasm_native_only_module_function("files", "read", &span);
         assert_eq!(checker.errors.len(), 1, "module alias must reject");
 
         // Use a fresh checker: the production de-duplication key intentionally

@@ -79,12 +79,19 @@ fn main() {
     // Parse arguments
     var url = "http://example.com";
     var outfile = "";
-    let argc = os.args().len();
+    let arguments = os.args();
+    let argc = arguments.len();
     if argc > 1 {
-        url = os.args().get(1);
+        url = match arguments.get(1) {
+            .Some(value) => value,
+            .None => return,
+        };
     }
     if argc > 2 {
-        outfile = os.args().get(2);
+        outfile = match arguments.get(2) {
+            .Some(value) => value,
+            .None => return,
+        };
     }
     let host = parse_host(url);
     let port = parse_port(url);
@@ -107,7 +114,7 @@ fn main() {
     let connect_timeout_usec: i64 = 0;
     let conn = match net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec) {
         .Ok(conn) => conn,
-        .Err(err) => panic(f"network setup failed: {err}"),
+        .Err(_) => panic("network setup failed"),
     };
     match conn.set_read_timeout(-1) {
         .Ok(_) => {},
@@ -120,8 +127,8 @@ fn main() {
     let request = f"GET {path} HTTP/1.0\nHost: {host}\nUser-Agent: hew-curl/1.0\nAccept: */*\nConnection: close\n\n";
     match conn.write_string(request) {
         .Ok(_) => {},
-        .Err(e) => {
-            let err = f"  Error: failed to send request to {addr}: {e}";
+        .Err(_) => {
+            let err = f"  Error: failed to send request to {addr}";
             panic(err);
         },
     }
@@ -166,12 +173,10 @@ fn main() {
         body = full_response;
     }
     // Write body to file
-    let write_result = fs.write(outfile, body);
-    if write_result == 0 {
-        let body_len = body.len();
-        println(f"  Saved {body_len} bytes to {outfile}");
-    } else {
-        println(f"  Error: failed to write {outfile}");
+    let body_len = body.len();
+    match fs.write(outfile, body) {
+        .Ok(_) => println(f"  Saved {body_len} bytes to {outfile}"),
+        .Err(_) => println(f"  Error: failed to write {outfile}"),
     }
     conn.close();
     println("  Done!");

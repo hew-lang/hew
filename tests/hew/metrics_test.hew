@@ -13,7 +13,10 @@ import std.testing;
 // ── Counter: exact value renders in the scrape ───────────────────────
 #[test]
 fn test_counter_exact_value_in_scrape() {
-    let c = metrics.counter("test.counter_exact");
+    let c = match metrics.counter("test.counter_exact") {
+        .Ok(counter) => counter,
+        .Err(error) => panic(to_string(error)),
+    };
     c.inc();
     c.inc();
     c.inc();
@@ -26,7 +29,10 @@ fn test_counter_exact_value_in_scrape() {
 
 #[test]
 fn test_counter_add_accumulates() {
-    let c = metrics.counter("test.counter_add");
+    let c = match metrics.counter("test.counter_add") {
+        .Ok(counter) => counter,
+        .Err(error) => panic(to_string(error)),
+    };
     c.inc();
     c.add(9);
     let scrape = observe.scrape();
@@ -35,7 +41,10 @@ fn test_counter_add_accumulates() {
 
 #[test]
 fn test_counter_rejects_negative_add() {
-    let c = metrics.counter("test.counter_neg");
+    let c = match metrics.counter("test.counter_neg") {
+        .Ok(counter) => counter,
+        .Err(error) => panic(to_string(error)),
+    };
     c.add(7);
     c.add(-100);
     let scrape = observe.scrape();
@@ -46,7 +55,10 @@ fn test_counter_rejects_negative_add() {
 // ── Gauge: bidirectional, exact value ─────────────────────────────────
 #[test]
 fn test_gauge_set_inc_dec_exact() {
-    let g = metrics.gauge("test.gauge_value");
+    let g = match metrics.gauge("test.gauge_value") {
+        .Ok(gauge) => gauge,
+        .Err(error) => panic(to_string(error)),
+    };
     g.set(10);
     g.inc();
     g.dec();
@@ -59,7 +71,10 @@ fn test_gauge_set_inc_dec_exact() {
 // ── Histogram: valid _count / _sum exposition ─────────────────────────
 #[test]
 fn test_histogram_count_and_sum_exposition() {
-    let h = metrics.histogram("test.histogram_count");
+    let h = match metrics.histogram("test.histogram_count") {
+        .Ok(histogram) => histogram,
+        .Err(error) => panic(to_string(error)),
+    };
     h.observe(1.0);
     h.observe(50.0);
     h.observe(900.0);
@@ -71,21 +86,21 @@ fn test_histogram_count_and_sum_exposition() {
     testing.assert_true(scrape.contains("test_histogram_count_sum 951"));
 }
 
-// ── try_* recovers a structured result ────────────────────────────────
+// ── Registration returns a structured result ──────────────────────────
 #[test]
-fn test_try_counter_ok_for_valid_name() {
+fn test_counter_ok_for_valid_name() {
     match metrics.counter("test.try_ok") {
         .Ok(c) => {
             c.inc();
             let scrape = observe.scrape();
-            testing.assert_true(scrape.contains("test_try_ok 1"));
+            testing.assert_true(scrape.contains("test_ok 1"));
         },
         .Err(_) => testing.assert_true(false),
     }
 }
 
 #[test]
-fn test_try_counter_rejects_builtin_collision() {
+fn test_counter_rejects_builtin_collision() {
     // `heap.live_bytes` is a runtime built-in; a user metric may not shadow it.
     match metrics.counter("heap.live_bytes") {
         .Ok(_) => testing.assert_true(false),
@@ -94,7 +109,7 @@ fn test_try_counter_rejects_builtin_collision() {
 }
 
 #[test]
-fn test_try_counter_rejects_rendered_builtin_collision() {
+fn test_counter_rejects_rendered_builtin_collision() {
     // `heap_live_bytes` is a distinct name from the built-in `heap.live_bytes`,
     // but both render to the same `heap_live_bytes` Prometheus series. The
     // registry rejects it so a user metric cannot shadow the built-in's scrape

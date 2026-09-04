@@ -56,3 +56,28 @@
   continuation uses while retaining valid normal-edge forwarding.
 - The integrated native acceptance cases pass at O0 and O2; these exercise
   the existing native route, not a completed ownership cutover or sanitizers.
+
+## Result consumer intake
+
+- Restacked the complete 19-commit Result consumer migration from PR #3349
+  onto integration checkpoint `6892e1017` without textual conflicts.
+- Regenerated the C ABI surface after the integration base and PR both added
+  `hew_ask_error_translate_for_public_result`; the generator removed only the
+  duplicate manifest row. `make cabi-surface-check test-cabi-surface` passes.
+- `make test-vertical-slice` reproduced the stale transition after
+  `vec_iter_free_fold_unwind`: `fs.read` now returned structured `IoError`,
+  while its old fixture still forced a generic `Result.unwrap` panic.
+- Replaced that panic assertion with an executable `IoError.NotFound` branch
+  and removed the obsolete `os.args(index)` panic case. The replacement
+  `os.args() -> Vec<string>` surface is already exercised on its success path,
+  and ordinary Vec out-of-bounds traps have dedicated fixtures.
+- The complete vertical-slice run reaches its final fixture after passing the
+  replacement Result case. Existing #3127 and #3226 runtime failures remain
+  explicitly classified by the harness rather than being migration failures.
+- `make checked-mir-run` passes. `make checked-mir-verify` reports composed
+  dump drift: the Result migration removes the obsolete `AskError` "no error"
+  display arm, while the integration base changes ownership classes for actor
+  handles and aggregates. Leave these generated files for one regeneration on
+  the final combined integration base rather than recapturing them here.
+- `make hew-fmt-check` and `make lint` pass with an isolated target directory,
+  sccache and an eight-job build cap.

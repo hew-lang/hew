@@ -2586,10 +2586,7 @@ run_accept_expect_panic "vec_iter_free_fold_unwind" "free fold boom" \
 
 run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_regex_new_invalid.hew" "std_panic_wrapper_regex_new_invalid" 101
 grep -q 'regex.new: invalid pattern' "${stderr_output}"
-run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_fs_read_missing.hew" "std_panic_wrapper_fs_read_missing" 101
-grep -q 'fs.read failed' "${stderr_output}"
-run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_os_args_oob.hew" "std_panic_wrapper_os_args_oob" 101
-grep -q 'os.args: index' "${stderr_output}"
+run_accept_expect_status "fs_read_missing_returns_not_found" 0
 run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_url_parse_invalid.hew" "std_panic_wrapper_url_parse_invalid" 101
 grep -q 'url.parse: invalid URL' "${stderr_output}"
 run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_cron_parse_invalid.hew" "std_panic_wrapper_cron_parse_invalid" 101

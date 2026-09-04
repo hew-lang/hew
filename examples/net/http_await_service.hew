@@ -29,7 +29,7 @@ actor Server {
     receive fn serve(unused: i64) {
         let listener = match net.listen(addr) {
             .Ok(listener) => listener,
-            .Err(err) => panic(f"network setup failed: {err}"),
+            .Err(_) => panic(f"network setup failed"),
         };
         for r in 0 .. requests {
             let conn = await listener.accept();
@@ -76,7 +76,7 @@ actor Client {
     receive fn fetch(path: string) {
         let conn = match net.connect(addr) {
             .Ok(conn) => conn,
-            .Err(err) => panic(f"network setup failed: {err}"),
+            .Err(_) => panic(f"network setup failed"),
         };
         let _ = conn.write_string(http_async_client.build_get(host, path));
         var raw = "";

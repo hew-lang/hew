@@ -204,18 +204,18 @@ fn construct_and_match_imported_ioerror_variant_round_trips() {
 }
 
 /// The same round-trip across the `std::net` surface that motivated the fix:
-/// `net.try_connect` returns `Result<_, net.NetError>`; connecting to a closed
+/// `net.connect` returns `Result<_, net.NetError>`; connecting to a closed
 /// port on localhost yields `ConnectionRefused`, matched at the importer.
 #[test]
-fn net_try_connect_error_match_round_trips() {
+fn net_connect_error_match_round_trips() {
     let repo = repo_root();
     let (ok, stdout, stderr) = run_hew_source_raw(
         &repo,
-        "net_try_connect_match",
+        "net_connect_match",
         r#"
         import std.net;
         fn main() {
-            match net.try_connect("127.0.0.1:1") {
+            match net.connect("127.0.0.1:1") {
                 .Ok(_) => println("connected"),
                 .Err(e) => match e {
                     NetError.ConnectionRefused(_) => println("refused"),
@@ -227,7 +227,7 @@ fn net_try_connect_error_match_round_trips() {
     );
     assert!(
         ok,
-        "`net.try_connect` + match on NetError must compile and run;\nstderr:\n{stderr}"
+        "`net.connect` + match on NetError must compile and run;\nstderr:\n{stderr}"
     );
     assert!(
         stdout.contains("refused") || stdout.contains("other"),
@@ -242,7 +242,7 @@ fn net_try_connect_error_match_round_trips() {
 /// An imported enum carrying an OWNED (string) payload must round-trip too,
 /// proving the drop spine for the bound payload is correct across the import
 /// boundary. `json.ParseError::Invalid(string)` is constructed in the json
-/// module by `json.try_parse` on bad input and matched at the importer.
+/// module by `json.parse` on bad input and matched at the importer.
 #[test]
 fn imported_enum_owned_string_payload_round_trips() {
     let repo = repo_root();
@@ -252,7 +252,7 @@ fn imported_enum_owned_string_payload_round_trips() {
         r#"
         import std.encoding.json;
         fn main() {
-            match json.try_parse("{ not valid") {
+            match json.parse("{ not valid") {
                 .Ok(_) => println("parsed"),
                 .Err(e) => match e {
                     ParseError.Invalid(msg) => println(f"invalid: {msg}"),

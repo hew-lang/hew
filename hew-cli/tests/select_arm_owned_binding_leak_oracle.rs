@@ -84,7 +84,7 @@ fn recv_unused_binding_loop_source(frames: usize) -> String {
         "import std.channel.channel;\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   var hits: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
@@ -121,7 +121,7 @@ fn after_wins_owned_losers_loop_source(frames: usize) -> String {
          \n\
          fn main() -> i64 {{\n\
          \x20   let slow = spawn SlowReplier;\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   var timeouts: i64 = 0;\n\
          \x20   while i < {frames} {{\n\

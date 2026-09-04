@@ -335,7 +335,7 @@ pub unsafe extern "C" fn hew_hmac_sha256_hew(
 /// Fill and return a `bytes` value of `len` cryptographically random bytes.
 ///
 /// On failure an empty triple is returned and the reason is recorded for
-/// [`hew_random_last_error_code`], which `crypto.try_random_bytes` consumes
+/// [`hew_random_last_error_code`], which `crypto.random_bytes` consumes
 /// immediately. A negative length, a length no `bytes` value can hold, and an
 /// entropy-source failure are all reported: none of them is answered with an
 /// empty buffer presented as a successful draw, and none terminates the

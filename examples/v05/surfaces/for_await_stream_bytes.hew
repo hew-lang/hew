@@ -7,7 +7,10 @@ actor DrainBytes {
     let frames: i64;
 
     receive fn run(unused: i64) {
-        let (sink, input) = stream.bytes_pipe(8);
+        let (sink, input) = match stream.bytes_pipe(8) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
         for i in 0 .. frames {
             let frame = f"frame-{i}".to_bytes();
             await sink.send(frame);

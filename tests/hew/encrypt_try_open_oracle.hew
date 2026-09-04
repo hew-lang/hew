@@ -31,18 +31,24 @@ fn tamper_last_byte(ciphertext: bytes) -> bytes {
 fn main() {
     let roundtrip_seal_key = test_key();
     let roundtrip_open_key = test_key();
-    let roundtrip_ciphertext = encrypt.seal(roundtrip_seal_key, "hew survives");
+    let roundtrip_ciphertext = match encrypt.seal(roundtrip_seal_key, "hew survives") {
+        .Ok(ciphertext) => ciphertext,
+        .Err(error) => panic(to_string(error)),
+    };
     match encrypt.open(roundtrip_open_key, roundtrip_ciphertext) {
         .Ok(plaintext) => testing.assert_eq_str(plaintext, "hew survives"),
-        .Err(err) => panic(f"try_open unexpectedly failed: {err}"),
+        .Err(err) => panic(f"open unexpectedly failed: {err}"),
     }
     let tamper_seal_key = test_key();
     let tamper_open_key = test_key();
-    let tamper_ciphertext = encrypt.seal(tamper_seal_key, "hew survives tamper");
+    let tamper_ciphertext = match encrypt.seal(tamper_seal_key, "hew survives tamper") {
+        .Ok(ciphertext) => ciphertext,
+        .Err(error) => panic(to_string(error)),
+    };
     let tampered = tamper_last_byte(tamper_ciphertext);
     var survived = false;
     match encrypt.open(tamper_open_key, tampered) {
-        .Ok(_) => panic("try_open accepted tampered ciphertext"),
+        .Ok(_) => panic("open accepted tampered ciphertext"),
         .Err(err) => {
             match err {
                 CryptoError.AuthFailed => {

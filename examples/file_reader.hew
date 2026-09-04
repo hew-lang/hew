@@ -25,11 +25,12 @@ import std.fs;
 
 fn main() {
     println("=== File Reader via Actors ===");
+    let content = match fs.read("examples/actor_fib.hew") {
+        .Ok(content) => content,
+        .Err(_) => panic("failed to read actor example"),
+    };
     println("--- File Contents ---");
-    match fs.read("examples/actor_fib.hew") {
-        .Ok(content) => println(content),
-        .Err(_) => println("FileReader: failed to read file"),
-    }
+    println(content);
     println("--- End Contents ---");
     println("=== Done ===");
 }

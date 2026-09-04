@@ -47,9 +47,13 @@ fn main() {
     println(child.get_int());
     println(keys.array_len());
 
-    // An invalid parent still consumes the child transfer.
-    let invalid = json.parse("{");
-    invalid.with("child", json.from_int(1));
-    invalid.free();
+    // A parse failure returns no parent owner to mutate or free.
+    match json.parse("{") {
+        .Ok(parsed) => {
+            parsed.free();
+            panic("malformed JSON unexpectedly parsed");
+        },
+        .Err(_) => {},
+    }
     early_exit(true);
 }

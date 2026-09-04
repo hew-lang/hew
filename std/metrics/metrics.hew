@@ -11,11 +11,17 @@
 //! import std.observe;
 //!
 //! fn main() {
-//!     let requests = metrics.counter("app.requests");
+//!     let requests = match metrics.counter("app.requests") {
+//!         .Ok(counter) => counter,
+//!         .Err(error) => panic(to_string(error)),
+//!     };
 //!     requests.inc();
 //!     requests.add(4);
 //!
-//!     let active = metrics.gauge("app.active_connections");
+//!     let active = match metrics.gauge("app.active_connections") {
+//!         .Ok(gauge) => gauge,
+//!         .Err(error) => panic(to_string(error)),
+//!     };
 //!     active.set(3);
 //!     active.dec();
 //!
@@ -42,9 +48,7 @@
 //! name collides with a runtime built-in or an already-registered user metric
 //! (`heap_live_bytes` vs the built-in `heap.live_bytes`; `foo.bar` vs `foo_bar`)
 //! is rejected, so a user metric cannot shadow or alias another's scrape output.
-//! The fail-fast constructors (`counter`/`gauge`/`histogram`) panic on
-//! rejection; the `try_*` variants return a [`MetricsError`] so the caller can
-//! recover.
+//! The constructors return a [`MetricsError`] when registration is rejected.
 
 /// Why a metric registration was rejected.
 pub enum MetricsError {
@@ -178,21 +182,20 @@ impl HistogramMethods for Histogram {
 // ── Module-level constructors ─────────────────────────────────────────
 /// Register (or get) a counter named `name`.
 ///
-/// Panics if the name is rejected by the registry. Use [`counter`] for a
-/// recoverable result.
-///
 /// # Examples
 ///
 /// ```
 /// import std.metrics;
 ///
 /// fn main() {
-///     let hits = metrics.counter("app.cache_hits");
+///     let hits = match metrics.counter("app.cache_hits") {
+///         .Ok(counter) => counter,
+///         .Err(error) => panic(to_string(error)),
+///     };
 ///     hits.inc();
 /// }
 /// ```
-/// Register (or get) a counter named `name`, returning a structured error if
-/// the registry rejects the name.
+/// Returns a structured error if the registry rejects the name.
 pub fn counter(name: string) -> Result<Counter, MetricsError> {
     let id = unsafe {
         hew_metric_counter_register(name)
@@ -206,10 +209,7 @@ pub fn counter(name: string) -> Result<Counter, MetricsError> {
 
 /// Register (or get) a gauge named `name`.
 ///
-/// Panics if the name is rejected by the registry. Use [`gauge`] for a
-/// recoverable result.
-/// Register (or get) a gauge named `name`, returning a structured error if the
-/// registry rejects the name.
+/// Returns a structured error if the registry rejects the name.
 pub fn gauge(name: string) -> Result<Gauge, MetricsError> {
     let id = unsafe {
         hew_metric_gauge_register(name)
@@ -223,14 +223,10 @@ pub fn gauge(name: string) -> Result<Gauge, MetricsError> {
 
 /// Register (or get) a histogram named `name`.
 ///
-/// Panics if the name is rejected by the registry. Use [`histogram`] for a
-/// recoverable result.
-///
 /// The histogram records observations; the scrape exposes the running count
 /// and sum as `name_count` / `name_sum`. Custom bucket upper bounds (the
 /// `name_bucket` lines) arrive in a later release.
-/// Register (or get) a histogram named `name`, returning a structured error if
-/// the registry rejects the name.
+/// Returns a structured error if the registry rejects the name.
 pub fn histogram(name: string) -> Result<Histogram, MetricsError> {
     let id = unsafe {
         hew_metric_histogram_register_simple(name)

@@ -31,7 +31,7 @@ actor Pulse {
 }
 
 fn main() {
-    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let _p = spawn Pulse(ready: ready_tx, count: 0);
     let _ = ready_rx.recv();
     sleep(200ms);
@@ -98,7 +98,7 @@ actor Pump {
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let pump = spawn Pump(out: tx);
     pump.go(8);
     var seen: i64 = 0;

@@ -28,7 +28,7 @@
 //! import std.stream;
 //!
 //! fn main() {
-//!     let (sink, input) = stream.pipe(16);
+//!     let (sink, input) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
 //!
 //!     sink.write("hello");
 //!     sink.write("world");
@@ -166,7 +166,10 @@ pub fn to_file(path: string) -> Result<Sink<string>, fs.IoError> {
 ///             let req = server.accept();
 ///             match stream.from_file("data.txt") {
 ///                 .Ok(file) => {
-///                     let body = req.respond_stream(200, "text/plain");
+///                     let body = match req.respond_stream(200, "text/plain") {
+///                         .Ok(body) => body,
+///                         .Err(error) => panic(to_string(error)),
+///                     };
 ///                     stream.forward(file, body);  // streams file directly to HTTP response
 ///                 },
 ///                 .Err(e) => println(e),

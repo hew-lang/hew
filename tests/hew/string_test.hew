@@ -99,60 +99,60 @@ fn test_to_int_parses_signed_decimal_strings() {
 }
 
 #[test]
-fn test_to_int_parses_real_zero_as_some() {
-    // `Some(0)` proves a genuine zero is distinguishable from a failed parse.
+fn test_to_int_parses_real_zero_as_ok() {
+    // `Ok(0)` proves a genuine zero is distinguishable from a failed parse.
     let z = string.to_int("0");
-    testing.assert_true(z.is_some());
+    testing.assert_true(z.is_ok());
     testing.assert_eq(z.unwrap_or(-1), 0);
 }
 
 #[test]
-fn test_to_int_returns_none_for_invalid_and_partial_inputs() {
-    testing.assert_true(string.to_int("").is_none());
-    testing.assert_true(string.to_int("+").is_none());
-    testing.assert_true(string.to_int("42abc").is_none());
+fn test_to_int_returns_error_for_invalid_and_partial_inputs() {
+    testing.assert_true(string.to_int("").is_err());
+    testing.assert_true(string.to_int("+").is_err());
+    testing.assert_true(string.to_int("42abc").is_err());
 }
 
 #[test]
-fn test_try_to_int_accepts_i64_bounds() {
+fn test_to_int_accepts_i64_bounds() {
     assert_int_result_eq(string.to_int("9223372036854775807"), 9223372036854775807);
     assert_int_result_string_eq(string.to_int("-9223372036854775808"), "-9223372036854775808");
 }
 
 #[test]
-fn test_try_to_int_rejects_overflow() {
+fn test_to_int_rejects_overflow() {
     assert_int_result_err(string.to_int("9223372036854775808"), "string.to_int: integer out of range");
     assert_int_result_err(string.to_int("-9223372036854775809"), "string.to_int: integer out of range");
 }
 
 #[test]
-fn test_try_to_int_rejects_sign_only_and_partial_parse_inputs() {
+fn test_to_int_rejects_sign_only_and_partial_parse_inputs() {
     assert_int_result_err(string.to_int("-"), "string.to_int: invalid integer literal");
     assert_int_result_err(string.to_int("12x"), "string.to_int: invalid integer literal");
 }
 
 #[test]
 fn test_to_float_parses_decimal_and_scientific_literals() {
-    testing.assert_true(string.to_float("3.125") == 3.125);
-    testing.assert_true(string.to_float("1.25e3") == 1250.0);
-    testing.assert_true(string.to_float("-2E-2") == -0.02);
+    assert_float_result_eq(string.to_float("3.125"), 3.125);
+    assert_float_result_eq(string.to_float("1.25e3"), 1250.0);
+    assert_float_result_eq(string.to_float("-2E-2"), -0.02);
 }
 
 #[test]
 fn test_to_float_accepts_leading_and_trailing_decimal_forms() {
-    testing.assert_true(string.to_float(".5") == 0.5);
-    testing.assert_true(string.to_float("1.") == 1.0);
-    testing.assert_true(string.to_float("+.75") == 0.75);
+    assert_float_result_eq(string.to_float(".5"), 0.5);
+    assert_float_result_eq(string.to_float("1."), 1.0);
+    assert_float_result_eq(string.to_float("+.75"), 0.75);
 }
 
 #[test]
-fn test_to_float_returns_zero_for_invalid_literals() {
-    testing.assert_true(string.to_float("4.5x") == 0.0);
-    testing.assert_true(string.to_float("+") == 0.0);
+fn test_to_float_returns_error_for_invalid_literals() {
+    assert_float_result_err(string.to_float("4.5x"), "string.to_float: invalid float literal");
+    assert_float_result_err(string.to_float("+"), "string.to_float: invalid float literal");
 }
 
 #[test]
-fn test_try_to_float_accepts_decimal_and_scientific_literals() {
+fn test_to_float_accepts_decimal_and_scientific_literals() {
     assert_float_result_eq(string.to_float("0.5"), 0.5);
     assert_float_result_eq(string.to_float("6e2"), 600.0);
     assert_float_result_eq(string.to_float("7E-1"), 0.7);
@@ -167,7 +167,7 @@ fn test_try_to_float_round_trips_from_float_output() {
 }
 
 #[test]
-fn test_try_to_float_rejects_invalid_literals() {
+fn test_to_float_rejects_invalid_literals() {
     assert_float_result_err(string.to_float("1.2.3"), "string.to_float: invalid float literal");
     assert_float_result_err(string.to_float("9e2ms"), "string.to_float: invalid float literal");
     assert_float_result_err(string.to_float("-"), "string.to_float: invalid float literal");

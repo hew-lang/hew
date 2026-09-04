@@ -7,7 +7,7 @@
 import std.stream;
 
 fn main() -> i64 {
-    let (sink, source) = stream.bytes_pipe(16);
+    let (sink, source) = match stream.bytes_pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
     sink.write(b"hi");
     sink.write(b"abc");
     sink.close();

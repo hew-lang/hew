@@ -135,7 +135,7 @@ actor Reader {
 }
 
 fn main() {
-    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let reader = spawn Reader(ready: ready_tx);
     reader.go(0);
     let _ = ready_rx.recv();
@@ -163,7 +163,7 @@ actor Reader {
     let addr: string;
 
     receive fn go(trigger: i64) -> i64 {
-        let conn = net.connect(addr);
+        let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
         let read_once = |value: string| {
             if trigger >= 0 {
                 panic("crash before child suspend");
@@ -178,7 +178,7 @@ actor Reader {
 
 fn main() {
     let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
-    let listener = net.listen("127.0.0.1:0");
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = listener.local_port();
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     let result = await reader.go(0);
@@ -215,7 +215,7 @@ actor Reader {
     let addr: string;
 
     receive fn go(trigger: i64) -> i64 {
-        let conn = net.connect(addr);
+        let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
         let read_once = |value: string| {
             if trigger >= 0 {
                 panic("crash before child suspend");
@@ -229,7 +229,7 @@ actor Reader {
 }
 
 fn main() {
-    let listener = net.listen("127.0.0.1:0");
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = listener.local_port();
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     let result = await reader.go(0);
@@ -274,7 +274,7 @@ actor Reader {{
     let addr: string;
 
     receive fn go(trigger: i64) -> i64 {{
-        let conn = net.connect(addr);
+        let conn = match net.connect(addr) {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
         let read_once = |value: string| {{
             if trigger >= 0 {{
                 panic("crash before child suspend");
@@ -292,7 +292,7 @@ fn main() {{
         // Keep the endpoint static: formatting the ephemeral port allocates a
         // String per frame, which would test string concatenation rather than
         // the Listener/Connection lifecycle this oracle owns.
-        let listener = net.listen("127.0.0.1:39467");
+        let listener = match net.listen("127.0.0.1:39467") {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
         let reader = spawn Reader(addr: "127.0.0.1:39467");
         let result = await reader.go(0);
         let peer = listener.accept();

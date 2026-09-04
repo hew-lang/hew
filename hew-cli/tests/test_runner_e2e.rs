@@ -320,7 +320,7 @@ fn serial_tests_do_not_overlap() {
     let source = format!(
         "import std.net;\n\n\
          fn hold_port() {{\n\
-             match net.try_listen(\"127.0.0.1:{port}\") {{\n\
+             match net.listen(\"127.0.0.1:{port}\") {{\n\
                  .Ok(listener) => {{\n\
                      sleep(200ms);\n\
                      listener.close();\n\

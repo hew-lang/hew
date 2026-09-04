@@ -20,7 +20,10 @@ import std.stream;
 actor DrainStrings {
     let frames: i64;
     receive fn run(unused: i64) {
-        let (sink, input) = stream.pipe(8);
+        let (sink, input) = match stream.pipe(8) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
         // Send three normal frames, one empty frame between them, then EOF.
         sink.send("frame-0");
         sink.send("");

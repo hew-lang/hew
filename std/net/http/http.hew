@@ -14,7 +14,7 @@
 //!     match http.listen(":8080") {
 //!         .Ok(server) => {
 //!             let req = server.accept();
-//!             req.respond_text(200, "Hello from Hew!");
+//!             req.respond_text(200, "Hello from Hew!").unwrap();
 //!             req.close();
 //!             server.close();
 //!         },
@@ -137,7 +137,7 @@ trait RequestMethods {
     ///     match http.listen(":8080") {
     ///         .Ok(server) => {
     ///             let req = server.accept();
-    ///             req.respond_text(200, "OK");
+    ///             req.respond_text(200, "OK").unwrap();
     ///             req.close();
     ///             server.close();
     ///         },
@@ -323,7 +323,7 @@ pub fn listen_error() -> string {
 /// fn main() {
 ///     match http.listen("127.0.0.1:0") {
 ///         .Ok(server) => server.close(),
-///         .Err(err) => println(f"listen failed: {err}"),
+///         .Err(_) => println(f"listen failed"),
 ///     }
 /// }
 /// ```

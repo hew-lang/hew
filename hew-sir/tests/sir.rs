@@ -2,12 +2,12 @@ use hew_hir::ItemId;
 use hew_parser::ast::BinaryOp;
 use hew_sir::{
     build_def_use, dump_sir, replace_all_uses, replace_use, verify_function_in_module,
-    verify_module, BlockArg, BlockId, CallableId, CallableInstance, Edge, EffectSet,
-    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, OwnKind, Provenance,
-    RewriteError, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
-    SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
-    SirInstanceKey, SuspendInput, SuspendInputMode, SuspendKind, TrapKind, UseSite, ValueDef,
-    ValueId,
+    verify_module, BlockArg, BlockId, BoundaryDecision, BoundaryOperand, CallableId,
+    CallableInstance, Edge, EffectSet, FunctionSourceOrigin, GenericTemplateId, OpId, Operand,
+    OperandSlot, OwnKind, Provenance, RewriteError, SemAbiParam, SemBlock, SemCallConv,
+    SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing,
+    SemSignature, SemTerminator, SirDiagnosticKind, SirInstanceKey, SuspendKind, TrapKind, UseSite,
+    ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy};
 use std::collections::BTreeMap;
@@ -22,6 +22,13 @@ fn definition(id: u32) -> ValueDef {
 
 fn read(value: ValueId) -> Operand {
     Operand { value }
+}
+
+fn copy_argument(value: ValueId) -> BoundaryOperand {
+    BoundaryOperand {
+        operand: read(value),
+        decision: BoundaryDecision::Copy,
+    }
 }
 
 fn callable_for(function: &SemFunction) -> SemCallable {
@@ -636,7 +643,7 @@ fn verifier_checks_resolved_direct_call_signature() {
                 }],
                 kind: SemOpKind::Call {
                     callee: CallableId(0),
-                    args: vec![Operand { value: ValueId(0) }],
+                    args: vec![copy_argument(ValueId(0))],
                 },
                 provenance: Provenance::Synthesized,
             }],
@@ -1392,9 +1399,9 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
                 ops: Vec::new(),
                 terminator: SemTerminator::Suspend {
                     kind: SuspendKind::Await,
-                    inputs: vec![SuspendInput {
+                    inputs: vec![BoundaryOperand {
                         operand: read(ValueId(0)),
-                        mode: SuspendInputMode::Move,
+                        decision: BoundaryDecision::Move,
                     }],
                     resumes: Vec::new(),
                     cancel: Edge {
@@ -1754,7 +1761,7 @@ fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
             results: Vec::new(),
             kind: SemOpKind::Call {
                 callee: CallableId(0),
-                args: vec![read(ValueId(1))],
+                args: vec![copy_argument(ValueId(1))],
             },
             provenance: Provenance::Synthesized,
         },

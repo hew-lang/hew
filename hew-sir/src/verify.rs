@@ -1347,7 +1347,7 @@ fn verify_direct_call_operation(
     function: &SemFunction,
     operation: &SemOp,
     callee: CallableId,
-    args: &[crate::Operand],
+    args: &[crate::BoundaryOperand],
     types: &HashMap<ValueId, ResolvedTy>,
     callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
@@ -1437,7 +1437,7 @@ fn verify_direct_call_operation(
                 diagnostics,
             );
         }
-        if let Some(actual) = types.get(&argument.value) {
+        if let Some(actual) = types.get(&argument.operand.value) {
             if actual != &parameter.ty {
                 invalid_operation(
                     function,

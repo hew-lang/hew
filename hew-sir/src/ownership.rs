@@ -177,32 +177,25 @@ pub enum SuspendKind {
     SleepUntil,
 }
 
-/// How a `Suspend` terminator takes one of its inputs (§1.5).
-///
-/// This is the one place a mode word survives on an operand, and it is legal
-/// because §1.5's `Suspend` struct declares it:
-/// `inputs: Vec<Operand>, // mode ∈ { Borrow, Move }`. It is a terminator-input
-/// mode, not a successor to the deleted operand-mode set: `Read`,
-/// `BorrowShared` and `BorrowMut` are gone and do not come back here.
-///
-/// §1.5's own kind table needs more than these two, and that is a defect in the
-/// section rather than a choice this vocabulary makes:
-///
-/// - Four rows give an input the mode `Snapshot`, which is in rule 5's closed
-///   decided-mode set - `ActorSend`'s args, `Ask`'s args, `StreamSend`'s value,
-///   and the `receive gen fn` `Yield` value.
-/// - Seven rows give an input the mode `(None)`, the §1.2 `OwnKind::None` of a
-///   `BitCopy` scalar, which is neither `Borrow` nor `Move` - `Read`'s and
-///   `Accept`'s deadline, `ChannelRecv`'s and `StreamNext`'s deadline,
-///   `RemoteAsk`'s timeout, `Select`'s `AfterTimer` duration, and the durations
-///   of `ScopeDeadline`, `Sleep` and `SleepUntil`.
-///
-/// The two variants the struct names are landed here; the rows above need more
-/// at P4, when a producer for them exists.
+/// How an owning value crosses an actor or task boundary (§2 rule 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SuspendInputMode {
+pub enum SnapshotDecision {
+    Share,
+    DeepCopy,
+    Transfer,
+}
+
+/// The total ownership decision for one semantic boundary operand.
+///
+/// This is carried only by call and suspension boundary shapes. Plain
+/// [`crate::Operand`] remains a value use with no generic mode field, and
+/// construction has no absent, default, or undecided state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BoundaryDecision {
     Borrow,
+    Copy,
     Move,
+    Snapshot(SnapshotDecision),
 }
 
 /// Function-local identity of one source binding.

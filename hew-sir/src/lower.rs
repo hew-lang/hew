@@ -1664,13 +1664,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     expected.ty.user_facing()
                 ));
             }
-            lowered_args.push(self.lower_read_operand(
-                arg,
-                &format!(
-                    "direct call argument {index} to `{}`",
-                    callee_declaration.full_path()
-                ),
-            )?);
+            lowered_args.push(crate::BoundaryOperand {
+                operand: self.lower_read_operand(
+                    arg,
+                    &format!(
+                        "direct call argument {index} to `{}`",
+                        callee_declaration.full_path()
+                    ),
+                )?,
+                decision: crate::BoundaryDecision::Copy,
+            });
         }
         let kind = SemOpKind::Call {
             callee: callee_id,

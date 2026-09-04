@@ -5,8 +5,8 @@ use hew_parser::ast::Span;
 use hew_types::{DefId, ResolvedTy, TypeFacts, TypeInstanceKey};
 
 use crate::ownership::{
-    Binding, BindingTarget, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, StringLiteralId,
-    SuspendInputMode, SuspendKind, TrapKind,
+    Binding, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl, PlaceId,
+    StringLiteralId, SuspendKind, TrapKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -84,6 +84,17 @@ pub enum FunctionSourceOrigin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Operand {
     pub value: ValueId,
+}
+
+/// One value crossing a semantic call or suspension boundary.
+///
+/// The boundary owns its physical ownership decision. Keeping this wrapper
+/// distinct from [`Operand`] prevents ordinary reads from acquiring a second
+/// ownership authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundaryOperand {
+    pub operand: Operand,
+    pub decision: BoundaryDecision,
 }
 
 /// Stable position of an operand within one operation or terminator.
@@ -531,6 +542,12 @@ impl SemOp {
         self.kind.visit_operands_mut(visit);
     }
 
+    /// Visit only operands whose semantic boundary carries a physical
+    /// ownership decision.
+    pub fn visit_boundary_operands(&self, visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
+        self.kind.visit_boundary_operands(visit);
+    }
+
     /// Replace the value at one concrete operand slot when the slot still
     /// holds the value an analysis saw. Returning `false` makes stale rewrite
     /// sites explicit instead of mutating an unrelated operand after an IR
@@ -639,7 +656,7 @@ pub enum SemOpKind {
     /// observable control/effect behavior.
     Call {
         callee: CallableId,
-        args: Vec<Operand>,
+        args: Vec<BoundaryOperand>,
     },
 
     // --- P1 literal producers (matrix Legend `const.{f,char,unit,duration,str,bytes}`)
@@ -671,7 +688,7 @@ pub enum SemOpKind {
     /// family's FFI ownership row, never from the symbol spelling.
     RtCall {
         family: hew_types::RuntimeCallFamily,
-        args: Vec<Operand>,
+        args: Vec<BoundaryOperand>,
     },
 
     // --- §1.3 ownership operations
@@ -799,7 +816,7 @@ impl SemOpKind {
                         OperandSlot(
                             u32::try_from(index).expect("SIR operation operand count exceeds u32"),
                         ),
-                        argument,
+                        &argument.operand,
                     );
                 }
             }
@@ -861,10 +878,28 @@ impl SemOpKind {
                         OperandSlot(
                             u32::try_from(index).expect("SIR operation operand count exceeds u32"),
                         ),
-                        argument,
+                        &mut argument.operand,
                     );
                 }
             }
+        }
+    }
+
+    /// Visit boundary operands together with their decided ownership action.
+    ///
+    /// # Panics
+    ///
+    /// Panics only when a boundary carries more operands than the module-local
+    /// `u32` operand-slot range can represent.
+    pub fn visit_boundary_operands(&self, mut visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
+        let (Self::Call { args, .. } | Self::RtCall { args, .. }) = self else {
+            return;
+        };
+        for (index, argument) in args.iter().enumerate() {
+            visit(
+                OperandSlot(u32::try_from(index).expect("SIR boundary operand count exceeds u32")),
+                argument,
+            );
         }
     }
 
@@ -981,7 +1016,7 @@ pub enum SemTerminator {
     /// followed by the cancel edge.
     Suspend {
         kind: SuspendKind,
-        inputs: Vec<SuspendInput>,
+        inputs: Vec<BoundaryOperand>,
         /// One edge per outcome: `await` has one, `select` has one per arm,
         /// a deadline form has two, `join` has one.
         resumes: Vec<Edge>,
@@ -996,15 +1031,25 @@ pub enum SemTerminator {
     Unreachable,
 }
 
-/// One input of a [`SemTerminator::Suspend`], with the mode §1.5's struct
-/// declares for it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SuspendInput {
-    pub operand: Operand,
-    pub mode: SuspendInputMode,
-}
-
 impl SemTerminator {
+    /// Visit suspension inputs together with their total boundary decisions.
+    ///
+    /// # Panics
+    ///
+    /// Panics only when a suspension carries more inputs than the module-local
+    /// `u32` operand-slot range can represent.
+    pub fn visit_boundary_operands(&self, mut visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
+        let Self::Suspend { inputs, .. } = self else {
+            return;
+        };
+        for (index, input) in inputs.iter().enumerate() {
+            visit(
+                OperandSlot(u32::try_from(index).expect("SIR boundary operand count exceeds u32")),
+                input,
+            );
+        }
+    }
+
     /// Visit every semantic use carried by this terminator.
     ///
     /// Slots are stable within the terminator shape: a return has slot `0`; a

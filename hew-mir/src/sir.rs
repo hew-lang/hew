@@ -1841,7 +1841,7 @@ impl<'a> RawLowerer<'a> {
     fn lower_call(
         &mut self,
         callee: CallableId,
-        args: &[Operand],
+        args: &[hew_sir::BoundaryOperand],
         results: &[ValueDef],
     ) -> Result<(), SirMirLoweringError> {
         let module = self.module;
@@ -1890,14 +1890,14 @@ impl<'a> RawLowerer<'a> {
         for (index, (argument, parameter)) in
             args.iter().zip(&callable.signature.params).enumerate()
         {
-            let actual = self.value_type(argument.value)?;
+            let actual = self.value_type(argument.operand.value)?;
             if actual != &parameter.ty || parameter.passing != SemParamPassing::ReadOnly {
                 return Err(SirMirLoweringError::unsupported(format!(
                     "SIR call argument {index} does not satisfy `{}` scalar ReadOnly ABI",
                     callable.symbol
                 )));
             }
-            raw_args.push(self.value_place(argument.value)?);
+            raw_args.push(self.value_place(argument.operand.value)?);
         }
 
         let continuation = self.fresh_block()?;
@@ -2387,6 +2387,13 @@ mod tests {
 
     fn operand(id: u32) -> Operand {
         Operand { value: ValueId(id) }
+    }
+
+    fn copy_argument(id: u32) -> hew_sir::BoundaryOperand {
+        hew_sir::BoundaryOperand {
+            operand: operand(id),
+            decision: hew_sir::BoundaryDecision::Copy,
+        }
     }
 
     fn op(id: u32, result: ValueDef, kind: SemOpKind) -> SemOp {
@@ -3408,7 +3415,7 @@ mod tests {
                         definition(1, ResolvedTy::I64),
                         SemOpKind::Call {
                             callee: CallableId(0),
-                            args: vec![operand(0)],
+                            args: vec![copy_argument(0)],
                         },
                     ),
                     // This operation must land in the Call continuation; it
@@ -3623,7 +3630,7 @@ mod tests {
                         1,
                         SemOpKind::Call {
                             callee: CallableId(0),
-                            args: vec![operand(0)],
+                            args: vec![copy_argument(0)],
                         },
                     ),
                 ],

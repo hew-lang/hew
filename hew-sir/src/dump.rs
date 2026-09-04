@@ -167,7 +167,7 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
                 if index != 0 {
                     write!(out, ", ").expect("write to String");
                 }
-                write!(out, "{}", operand(arg)).expect("write to String");
+                write!(out, "{}", boundary_operand(arg)).expect("write to String");
             }
             writeln!(out, ")").expect("write to String");
         }
@@ -195,7 +195,7 @@ fn dump_op(out: &mut String, module: &SemModule, op: &crate::SemOp) {
                 if index != 0 {
                     write!(out, ", ").expect("write to String");
                 }
-                write!(out, "{}", operand(arg)).expect("write to String");
+                write!(out, "{}", boundary_operand(arg)).expect("write to String");
             }
             writeln!(out, ")").expect("write to String");
         }
@@ -282,8 +282,7 @@ fn dump_term(out: &mut String, term: &SemTerminator) {
                 if index != 0 {
                     write!(out, ", ").expect("write to String");
                 }
-                write!(out, "{:?} {}", input.mode, operand(&input.operand))
-                    .expect("write to String");
+                write!(out, "{}", boundary_operand(input)).expect("write to String");
             }
             write!(out, ") resumes [").expect("write to String");
             for (index, edge) in resumes.iter().enumerate() {
@@ -313,4 +312,18 @@ fn operand(operand: &crate::Operand) -> String {
     // An operand has no mode: what a use does to its value is the op it feeds,
     // so the rendering is the value alone.
     format!("%{}", operand.value.0)
+}
+
+fn boundary_operand(input: &crate::BoundaryOperand) -> String {
+    let decision = match input.decision {
+        crate::BoundaryDecision::Borrow => "borrow",
+        crate::BoundaryDecision::Copy => "copy",
+        crate::BoundaryDecision::Move => "move",
+        crate::BoundaryDecision::Snapshot(crate::SnapshotDecision::Share) => "snapshot.share",
+        crate::BoundaryDecision::Snapshot(crate::SnapshotDecision::DeepCopy) => {
+            "snapshot.deep_copy"
+        }
+        crate::BoundaryDecision::Snapshot(crate::SnapshotDecision::Transfer) => "snapshot.transfer",
+    };
+    format!("{decision} {}", operand(&input.operand))
 }

@@ -8,7 +8,7 @@
 //! import std.crypto.jwt;
 //!
 //! fn main() {
-//!     match jwt.try_encode("{\"sub\":\"1234\"}", "secret", "HS256") {
+//!     match jwt.encode("{\"sub\":\"1234\"}", "secret", "HS256") {
 //!         .Ok(token) => println(token),
 //!         .Err(err) => println(err),
 //!     }
@@ -75,7 +75,7 @@ pub fn last_error() -> JwtError {
 ///
 /// Returns `Err(JwtError)` when the payload, key, algorithm, or allocation
 /// path fails.
-pub fn try_encode(payload: string, secret: string, algorithm: string) -> Result<string, JwtError> {
+pub fn encode(payload: string, secret: string, algorithm: string) -> Result<string, JwtError> {
     let algo = algo_to_i32(algorithm);
     let token = unsafe {
         hew_jwt_encode_hew(payload, secret, algo)
@@ -85,26 +85,11 @@ pub fn try_encode(payload: string, secret: string, algorithm: string) -> Result<
         err => Err(err),
     }
 }
-
-/// Encode a JSON payload into a signed JWT string.
-///
-/// Panics on invalid input or verification setup errors. Use `try_encode` for
-/// structured error handling.
-pub fn encode(payload: string, secret: string, algorithm: string) -> string {
-    match try_encode(payload, secret, algorithm) {
-        .Ok(token) => token,
-        .Err(err) => {
-            panic(f"jwt.encode failed: {err}");
-            ""
-        },
-    }
-}
-
 /// Decode and verify a JWT, returning its payload as a JSON string.
 ///
 /// Returns `Err(JwtError)` when the token is malformed, expired, signed with a
 /// different key, or cannot be allocated.
-pub fn try_decode(token: string, secret: string, algorithm: string) -> Result<string, JwtError> {
+pub fn decode(token: string, secret: string, algorithm: string) -> Result<string, JwtError> {
     let algo = algo_to_i32(algorithm);
     let payload = unsafe {
         hew_jwt_decode_hew(token, secret, algo)
@@ -114,20 +99,6 @@ pub fn try_decode(token: string, secret: string, algorithm: string) -> Result<st
         err => Err(err),
     }
 }
-
-/// Decode and verify a JWT, returning its payload as a JSON string.
-///
-/// Panics on invalid tokens. Use `try_decode` for structured error handling.
-pub fn decode(token: string, secret: string, algorithm: string) -> string {
-    match try_decode(token, secret, algorithm) {
-        .Ok(payload) => payload,
-        .Err(err) => {
-            panic(f"jwt.decode failed: {err}");
-            ""
-        },
-    }
-}
-
 /// Decode a JWT without verifying its signature.
 ///
 /// **Warning:** This does not validate the token. Only use for

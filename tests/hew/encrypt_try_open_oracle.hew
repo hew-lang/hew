@@ -1,4 +1,4 @@
-//! Runnable oracle for encrypt.try_open fail-closed behaviour.
+//! Runnable oracle for encrypt.open fail-closed behaviour.
 
 import std.crypto.encrypt;
 
@@ -32,7 +32,7 @@ fn main() {
     let roundtrip_seal_key = test_key();
     let roundtrip_open_key = test_key();
     let roundtrip_ciphertext = encrypt.seal(roundtrip_seal_key, "hew survives");
-    match encrypt.try_open(roundtrip_open_key, roundtrip_ciphertext) {
+    match encrypt.open(roundtrip_open_key, roundtrip_ciphertext) {
         .Ok(plaintext) => testing.assert_eq_str(plaintext, "hew survives"),
         .Err(err) => panic(f"try_open unexpectedly failed: {err}"),
     }
@@ -41,7 +41,7 @@ fn main() {
     let tamper_ciphertext = encrypt.seal(tamper_seal_key, "hew survives tamper");
     let tampered = tamper_last_byte(tamper_ciphertext);
     var survived = false;
-    match encrypt.try_open(tamper_open_key, tampered) {
+    match encrypt.open(tamper_open_key, tampered) {
         .Ok(_) => panic("try_open accepted tampered ciphertext"),
         .Err(err) => {
             match err {
@@ -54,5 +54,5 @@ fn main() {
     }
     testing.assert_true(survived);
     testing.assert_eq(40 + 2, 42);
-    println("encrypt.try_open oracle survived tamper");
+    println("encrypt.open oracle survived tamper");
 }

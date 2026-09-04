@@ -315,7 +315,7 @@ fn test_stream_try_from_file_missing_returns_not_found() {
     // try_from_file on a missing path returns IoError::NotFound.
     let missing_path = "tests/hew/_stream_missing.txt";
     cleanup_file(missing_path);
-    match stream.try_from_file(missing_path) {
+    match stream.from_file(missing_path) {
         .Ok(_) => panic("expected missing stream source"),
         .Err(err) => match err {
             IoError.NotFound(_) => {},
@@ -335,14 +335,14 @@ fn test_stream_try_to_file_send_close_and_try_from_file() {
     // at runtime (stream drop analysis multi-match issue) — tracked v0.5.1.
     let file_path = "tests/hew/_stream_roundtrip.txt";
     cleanup_file(file_path);
-    match stream.try_to_file(file_path) {
+    match stream.to_file(file_path) {
         .Ok(sink) => {
             sink.send("stream");
             sink.close();
         },
         .Err(_) => panic("expected try_to_file to succeed"),
     }
-    match stream.try_from_file(file_path) {
+    match stream.from_file(file_path) {
         .Ok(_) => {}, // stream handle dropped; Ok(file) binding deferred to v0.5.1
         .Err(_) => panic("expected try_from_file to succeed on the written file"),
     }
@@ -358,7 +358,7 @@ fn test_stream_try_to_file_missing_dir_returns_not_found() {
     // platform; before the consumer-side fix this path read only the errno and
     // would misclassify a Windows access-denied open (raw 5) as Other(5).
     let missing_target = "tests/hew/_stream_no_such_dir/child.txt";
-    match stream.try_to_file(missing_target) {
+    match stream.to_file(missing_target) {
         .Ok(_) => panic("expected try_to_file into a missing directory to fail"),
         .Err(err) => match err {
             IoError.NotFound(_) => {},

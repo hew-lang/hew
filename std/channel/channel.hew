@@ -154,35 +154,9 @@ impl ReceiverMethods for Receiver {
 // ── Module-level functions ───────────────────────────────────────────
 /// Create a bounded MPSC channel with the given capacity.
 ///
-/// Returns a `(Sender<T>, Receiver<T>)` pair. The sender can be cloned
-/// for multi-producer use. The element type `T` is inferred from usage.
-///
-/// # Examples
-///
-/// ```
-/// import std.channel.channel;
-///
-/// fn main() {
-///     let (tx, rx) = channel.new(16);
-///     tx.send("hello");       // infers Sender<string>
-///     match rx.recv() {       // infers Receiver<string>
-///         .Some(v) => println(v),  // hello
-///         .None => println("closed"),
-///     }
-/// }
-/// ```
-pub fn new(capacity: i64) -> (Sender, Receiver) {
-    match try_new(capacity) {
-        .Ok(pair) => pair,
-        .Err(err) => panic(err),
-    }
-}
-
-/// Try to create a bounded MPSC channel with the given capacity.
-///
 /// Returns `Err` when the capacity is invalid instead of returning null-backed
 /// sender and receiver handles.
-pub fn try_new(capacity: i64) -> Result<(Sender, Receiver), string> {
+pub fn new(capacity: i64) -> Result<(Sender, Receiver), string> {
     if capacity < 0 {
         return Err(f"channel.new: invalid capacity {capacity} (must be >= 0)");
     }

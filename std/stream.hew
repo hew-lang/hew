@@ -64,19 +64,7 @@ pub type Sink<T> {
 
 // ── Constructors ──────────────────────────────────────────────────────
 /// Create a bounded in-memory string pipe with the given capacity.
-///
-/// This is the convenience text ABI over the same bounded, blocking,
-/// backpressured contract as `bytes_pipe()`.
-/// Returns a `(Sink<string>, Stream<string>)` pair for writing and reading.
-pub fn pipe(capacity: i64) -> (Sink<string>, Stream<string>) {
-    match try_pipe(capacity) {
-        .Ok(pair) => pair,
-        .Err(err) => panic(err),
-    }
-}
-
-/// Try to create a bounded in-memory string pipe.
-pub fn try_pipe(capacity: i64) -> Result<(Sink<string>, Stream<string>), string> {
+pub fn pipe(capacity: i64) -> Result<(Sink<string>, Stream<string>), string> {
     if capacity < 0 {
         return Err(f"stream.pipe: invalid capacity {capacity} (must be >= 0)");
     }
@@ -96,19 +84,8 @@ pub fn try_pipe(capacity: i64) -> Result<(Sink<string>, Stream<string>), string>
     }
 }
 
-/// Create a bounded in-memory bytes pipe with the given capacity.
-///
-/// This is the canonical first-class Stream/Sink foundation for binary items.
-/// Returns a `(Sink<bytes>, Stream<bytes>)` pair for writing and reading.
-pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
-    match try_bytes_pipe(capacity) {
-        .Ok(pair) => pair,
-        .Err(err) => panic(err),
-    }
-}
-
-/// Try to create a bounded in-memory bytes pipe.
-pub fn try_bytes_pipe(capacity: i64) -> Result<(Sink<bytes>, Stream<bytes>), string> {
+/// Create a bounded in-memory bytes pipe.
+pub fn bytes_pipe(capacity: i64) -> Result<(Sink<bytes>, Stream<bytes>), string> {
     if capacity < 0 {
         return Err(f"stream.bytes_pipe: invalid capacity {capacity} (must be >= 0)");
     }
@@ -128,51 +105,13 @@ pub fn try_bytes_pipe(capacity: i64) -> Result<(Sink<bytes>, Stream<bytes>), str
     }
 }
 
-/// Open a file as a readable Stream<string>.
-///
-/// Returns `Err` with the OS error message if the file cannot be opened.
-/// This stage only freezes constructor/open errors; read-time failures after a
-/// stream is opened remain wrapper-specific and out of scope for the core
-/// Stream/Sink contract.
-/// Prefer `try_from_file` for a structured `Result<Stream<string>, fs.IoError>`.
-/// Import `std.fs` as well if you want to match on `IoError` variants.
-///
-/// # Examples
-///
-/// ```
-/// import std.stream;
-///
-/// fn run() -> Result<(), string> {
-///     let file = stream.from_file("data.txt")?;
-///     for await chunk in file { println(chunk); }
-///     Ok(())
-/// }
-///
-/// fn main() {
-///     match run() {
-///         .Ok(()) => {},
-///         .Err(e) => println(e),
-///     }
-/// }
-/// ```
-pub fn from_file(path: string) -> Result<Stream<string>, string> {
-    unsafe {
-        let s = hew_stream_from_file_read(path);
-        if hew_stream_is_valid(s) {
-            Ok(s)
-        } else {
-            Err(hew_stream_last_error())
-        }
-    }
-}
-
 /// Open a file as a readable `Stream<string>`.
 ///
 /// This preserves `from_file`'s runtime behaviour while returning `fs.IoError`
 /// instead of a raw OS message string. Import `std.fs` when matching on the
 /// returned error value so you can use the existing unqualified
 /// `IoError.Variant(...)` constructor/pattern style.
-pub fn try_from_file(path: string) -> Result<Stream<string>, fs.IoError> {
+pub fn from_file(path: string) -> Result<Stream<string>, fs.IoError> {
     unsafe {
         let s = hew_stream_from_file_read(path);
         if hew_stream_is_valid(s) {
@@ -188,52 +127,13 @@ pub fn try_from_file(path: string) -> Result<Stream<string>, fs.IoError> {
     }
 }
 
-/// Open a file as a writable Sink<string>.
-///
-/// Returns `Err` with the OS error message if the file cannot be created.
-/// This stage only freezes constructor/open errors; write-time failures after a
-/// sink is opened remain wrapper-specific and out of scope for the core
-/// Stream/Sink contract.
-/// Prefer `try_to_file` for a structured `Result<Sink<string>, fs.IoError>`.
-/// Import `std.fs` as well if you want to match on `IoError` variants.
-///
-/// # Examples
-///
-/// ```
-/// import std.stream;
-///
-/// fn run() -> Result<(), string> {
-///     let sink = stream.to_file("output.txt")?;
-///     sink.write("hello");
-///     // sink auto-closes when dropped
-///     Ok(())
-/// }
-///
-/// fn main() {
-///     match run() {
-///         .Ok(()) => {},
-///         .Err(e) => println(e),
-///     }
-/// }
-/// ```
-pub fn to_file(path: string) -> Result<Sink<string>, string> {
-    unsafe {
-        let s = hew_stream_from_file_write(path);
-        if hew_sink_is_valid(s) {
-            Ok(s)
-        } else {
-            Err(hew_stream_last_error())
-        }
-    }
-}
-
 /// Open a file as a writable `Sink<string>`.
 ///
 /// This preserves `to_file`'s runtime behaviour while returning `fs.IoError`
 /// instead of a raw OS message string. Import `std.fs` when matching on the
 /// returned error value so you can use the existing unqualified
 /// `IoError.Variant(...)` constructor/pattern style.
-pub fn try_to_file(path: string) -> Result<Sink<string>, fs.IoError> {
+pub fn to_file(path: string) -> Result<Sink<string>, fs.IoError> {
     unsafe {
         let s = hew_stream_from_file_write(path);
         if hew_sink_is_valid(s) {

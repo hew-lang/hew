@@ -12,7 +12,7 @@ import std.testing;
 
 #[test]
 fn test_negative_channel_capacity_is_rejected() {
-    match channel.try_new(-1) {
+    match channel.new(-1) {
         .Ok(_) => panic("expected negative channel capacity to fail"),
         .Err(err) => testing.assert_eq_str(err, "channel.new: invalid capacity -1 (must be >= 0)"),
     }
@@ -28,11 +28,11 @@ fn test_negative_channel_capacity_panics_at_legacy_boundary() {
 
 #[test]
 fn test_negative_stream_capacities_are_rejected() {
-    match stream.try_pipe(-1) {
+    match stream.pipe(-1) {
         .Ok(_) => panic("expected negative string-pipe capacity to fail"),
         .Err(err) => testing.assert_eq_str(err, "stream.pipe: invalid capacity -1 (must be >= 0)"),
     }
-    match stream.try_bytes_pipe(-1) {
+    match stream.bytes_pipe(-1) {
         .Ok(_) => panic("expected negative bytes-pipe capacity to fail"),
         .Err(err) => testing.assert_eq_str(err, "stream.bytes_pipe: invalid capacity -1 (must be >= 0)"),
     }

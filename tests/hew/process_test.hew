@@ -50,7 +50,7 @@ fn test_try_run_argv_preserves_spaced_and_empty_arguments() {
     args.push("hello world");
     args.push("");
     args.push("tail");
-    match process.try_run_argv("printf", args) {
+    match process.run_argv("printf", args) {
         .Ok(output) => {
             testing.assert_true(output.exit_code == 0);
             testing.assert_eq_str(output.stdout, "<hello world>|<>|<tail>");
@@ -62,12 +62,12 @@ fn test_try_run_argv_preserves_spaced_and_empty_arguments() {
 
 #[test]
 fn test_try_run_args_rejects_mismatched_arg_count_with_guidance() {
-    match process.try_run_args("printf", "one two", 1) {
+    match process.run_args("printf", "one two", 1) {
         .Ok(_) => panic("expected arg_count mismatch"),
         .Err(err) => match err {
             ProcessError.InvalidArguments(message) => {
                 testing.assert_true(message.contains("arg_count"));
-                testing.assert_true(message.contains("process.try_run_argv"));
+                testing.assert_true(message.contains("process.run_argv"));
             },
             _ => panic("expected ProcessError::InvalidArguments"),
         },
@@ -89,7 +89,7 @@ fn test_run_argv_replaces_legacy_run_args_usage() {
 #[test]
 fn test_try_run_argv_missing_command_returns_launch_failed() {
     let args: Vec<string> = Vec.new();
-    match process.try_run_argv("hew-process-command-that-does-not-exist", args) {
+    match process.run_argv("hew-process-command-that-does-not-exist", args) {
         .Ok(_) => panic("expected missing command error"),
         .Err(err) => match err {
             ProcessError.LaunchFailed(_) => {},
@@ -101,7 +101,7 @@ fn test_try_run_argv_missing_command_returns_launch_failed() {
 #[test]
 fn test_launch_classification_does_not_trust_attacker_controlled_command_text() {
     let args: Vec<string> = Vec.new();
-    match process.try_run_argv("hew-missing-arg_count-args[0]-command", args) {
+    match process.run_argv("hew-missing-arg_count-args[0]-command", args) {
         .Ok(_) => panic("expected missing command error"),
         .Err(err) => match err {
             ProcessError.LaunchFailed(_) => {},
@@ -119,7 +119,7 @@ fn test_try_run_argv_missing_command_preserves_real_error() {
     // Cross-platform: a nonexistent command fails to launch
     // (ENOENT-equivalent) on every OS, so no Unix-only tool is used.
     let args: Vec<string> = Vec.new();
-    match process.try_run_argv("hew-process-command-that-does-not-exist-2506", args) {
+    match process.run_argv("hew-process-command-that-does-not-exist-2506", args) {
         .Ok(_) => panic("expected missing command to fail to launch"),
         .Err(err) => match err {
             ProcessError.LaunchFailed(message) => {
@@ -160,7 +160,7 @@ fn test_child_drop_reaps_running_process() {
 fn test_try_start_argv_reports_a_missing_executable_as_launch_failed() {
     let args: Vec<string> = Vec.new();
     args.push("--version");
-    match process.try_start_argv("hew-process-executable-that-does-not-exist", args) {
+    match process.start_argv("hew-process-executable-that-does-not-exist", args) {
         .Ok(child) => {
             child.kill();
             panic("expected a missing executable to fail to launch");
@@ -179,7 +179,7 @@ fn test_try_start_argv_reports_a_missing_executable_as_launch_failed() {
 fn test_try_start_argv_returns_a_live_child_for_a_real_executable() {
     let args: Vec<string> = Vec.new();
     args.push("hew-process-start-argv-live");
-    match process.try_start_argv("echo", args) {
+    match process.start_argv("echo", args) {
         .Ok(child) => testing.assert_true(child.wait() == 0),
         .Err(_) => panic("expected echo to launch"),
     }
@@ -187,7 +187,7 @@ fn test_try_start_argv_returns_a_live_child_for_a_real_executable() {
 
 #[test]
 fn test_try_start_returns_a_live_child_for_a_shell_command() {
-    match process.try_start("exit 7") {
+    match process.start("exit 7") {
         .Ok(child) => testing.assert_true(child.wait() == 7),
         .Err(_) => panic("expected the shell command to launch"),
     }

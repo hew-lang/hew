@@ -6,7 +6,7 @@ import hew.testffi;
 import std.string;
 
 fn main() {
-    match string.try_to_int("42") {
+    match string.to_int("42") {
         .Ok(value) => println(value),
         .Err(_) => println("parse failed"),
     }

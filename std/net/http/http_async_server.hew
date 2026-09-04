@@ -354,7 +354,7 @@ fn content_length_of(header_section: string) -> i64 {
     if !string.is_numeric(value) {
         return 0;
     }
-    match string.try_to_int(value) {
+    match string.to_int(value) {
         .Ok(n) => n,
         .Err(_) => MAX_BODY_BYTES + 1,
     }

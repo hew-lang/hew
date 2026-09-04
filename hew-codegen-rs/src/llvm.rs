@@ -34002,6 +34002,20 @@ enum ProcessEntryTarget {
     Wasm,
 }
 
+/// Whether this MIR callable is the checker-selected process entry body.
+///
+/// A synthesized callable inherits its parent declaration identity, so the
+/// selected declaration alone is not enough to identify the one body that
+/// receives the process-entry ABI. The monomorphic instance is that direct
+/// source body; every synthesized child retains its ordinary callable ABI.
+fn is_selected_process_entry(func: &RawMirFunction, plan: &EntryExitPlan) -> bool {
+    plan.entry == func.key.declaration
+        && matches!(
+            &func.key.instance,
+            hew_mir::MirCallableInstance::Monomorphic
+        )
+}
+
 fn declare_function<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -38284,7 +38298,7 @@ fn build_module_for_target<'ctx>(
         let is_process_entry = pipeline
             .entry_exit_plan
             .as_ref()
-            .is_some_and(|plan| plan.entry == func.key.declaration);
+            .is_some_and(|plan| is_selected_process_entry(func, plan));
         let process_entry_target = is_process_entry.then_some(if emit_wasm_entry_alias {
             ProcessEntryTarget::Wasm
         } else {
@@ -38638,7 +38652,7 @@ fn build_module_for_target<'ctx>(
         let process_entry_action = pipeline
             .entry_exit_plan
             .as_ref()
-            .filter(|plan| plan.entry == func.key.declaration)
+            .filter(|plan| is_selected_process_entry(func, plan))
             .map(|plan| &plan.action);
         lower_function(
             ctx,

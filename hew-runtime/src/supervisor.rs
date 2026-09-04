@@ -329,7 +329,7 @@ struct InternalPoolSpec {
     max_members: usize,
     /// Static-child indices backing this pool's members, in member order.
     ///
-    /// A STATIC pool (`pool name: Type(count: N)`) registers its N members as
+    /// A STATIC pool (`pool name: Type count: N`) registers its N members as
     /// ordinary static children in `HewSupervisor.children[]` and records each
     /// member's static-child index here via
     /// [`hew_supervisor_pool_member_add_static`]. The accessor
@@ -10532,7 +10532,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_member_add(
 /// Register a STATIC-backed pool member: a pool member whose actor lives in the
 /// supervisor's `children[]` table at `static_idx`.
 ///
-/// A static pool (`pool name: Type(count: N)`) spawns its N members as ordinary
+/// A static pool (`pool name: Type count: N`) spawns its N members as ordinary
 /// static children, then records each member's static-child index here (in
 /// member order). The accessor [`hew_supervisor_pool_child_get`] resolves member
 /// `i` through the LIVE static slot `children[static_idx]`, so a restarted member
@@ -10686,7 +10686,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
         return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
     }
 
-    // ── Static-backed pool path (`pool name: Type(count: N)`) ────────────────
+    // ── Static-backed pool path (`pool name: Type count: N`) ────────────────
     //
     // A static pool resolves member `i` through the LIVE static child slot, NOT
     // a cached PID. This is the restart re-resolution contract: the restart

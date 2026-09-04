@@ -461,7 +461,7 @@ fn pool_supervisor_emits_layout_with_pool_flag() {
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool worker: Worker(count: 2)
+            pool worker: Worker count: 2
         }
         ",
     );

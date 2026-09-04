@@ -58,7 +58,7 @@ supervisor StaticPool {
     strategy: simple_one_for_one;
     intensity: 2 within 60s;
 
-    pool workers: Worker(count: 1, value: 7);
+    pool workers: Worker(value: 7) count: 1;
 }
 
 type Holder {

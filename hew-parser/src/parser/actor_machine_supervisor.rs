@@ -1349,6 +1349,13 @@ impl Parser<'_> {
                         self.expect(&Token::RightParen)?;
                     }
 
+                    // Pool arity is a clause, not an init field, so a `count:`
+                    // entry in the parenthesised list is the actor's own field.
+                    // On a pool child with no arity clause it is instead the
+                    // retired arity spelling; the decision needs the clause
+                    // loop's result, so remember the position for now.
+                    let paren_count_pos = args.iter().position(|(name, _)| name == "count");
+
                     // A supervisor child accepts restart policy only through the
                     // `restart: <policy>` clause.
                     if matches!(
@@ -1379,7 +1386,9 @@ impl Parser<'_> {
                     //   restart: permanent | transient | temporary
                     //   shutdown: <duration> | brutal_kill | infinity
                     //   wired_to: { param: sibling, bare_sibling }
+                    //   count: <expr>            (pool children only)
                     let mut restart: Option<RestartPolicy> = None;
+                    let mut count: Option<Spanned<Expr>> = None;
                     let mut shutdown: Option<ShutdownDirective> = None;
                     let mut wired_to: Option<std::collections::HashMap<String, String>> = None;
                     loop {
@@ -1480,7 +1489,59 @@ impl Parser<'_> {
                                 self.expect(&Token::RightBrace)?;
                                 wired_to = if map.is_empty() { None } else { Some(map) };
                             }
+                            // `count: <expr>` clause — pool arity. Contextual,
+                            // like `shutdown` and `wired_to`, so `count` stays
+                            // an ordinary identifier everywhere else (including
+                            // as an actor field name inside the init-arg list).
+                            Some(Token::Identifier(s)) if *s == "count" => {
+                                self.advance();
+                                self.expect(&Token::Colon)?;
+                                let count_expr = self.parse_expr()?;
+                                if is_pool {
+                                    count = Some(count_expr);
+                                } else {
+                                    // A static child is one actor, so it has no
+                                    // arity to declare. Refuse rather than
+                                    // accept-and-ignore.
+                                    self.error_with_hint(
+                                        "`count:` is a pool clause; a `child` declaration \
+                                         has no arity"
+                                            .to_string(),
+                                        format!(
+                                            "write `pool {child_name}: {actor_type}(..) \
+                                             count: N;` to declare a pool, or drop `count:`"
+                                        ),
+                                    );
+                                }
+                            }
                             _ => break,
+                        }
+                    }
+
+                    // A pool child that carries `count:` in its parentheses and
+                    // no arity clause is written in the retired spelling. With
+                    // an arity clause present the parenthesised entry is
+                    // unambiguously the actor's own `count` field, which is
+                    // exactly the collision the clause form removes, so it is
+                    // left alone.
+                    if is_pool && count.is_none() {
+                        if let Some(pos) = paren_count_pos {
+                            let (_, count_expr) = args.remove(pos);
+                            self.error_at_with_hint(
+                                "pool arity is a child clause, not an init field: \
+                                 `count:` in the init-arg list is no longer the arity"
+                                    .to_string(),
+                                count_expr.1.clone(),
+                                format!(
+                                    "write `pool {child_name}: {actor_type}(..) count: N;` \
+                                     — the parenthesised list is the actor's own fields"
+                                ),
+                            );
+                            // Carry the expr into the clause slot regardless:
+                            // the refusal above already fails the compile, and a
+                            // well-formed child keeps the checker from stacking
+                            // a missing-arity cascade on top of it.
+                            count = Some(count_expr);
                         }
                     }
 
@@ -1495,6 +1556,7 @@ impl Parser<'_> {
                         wired_to,
                         is_pool,
                         shutdown,
+                        count,
                         span: child_start..self.last_token_end,
                     });
                 }

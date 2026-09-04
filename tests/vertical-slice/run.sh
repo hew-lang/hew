@@ -1975,7 +1975,7 @@ run_accept_expect_status "supervisor_owned_child_init_restart" 10
 # `leaks --atExit` on macOS.
 run_accept_expect_status "supervisor_literal_only_config_param" 0
 
-# v0.6 static supervisor pool (A209/A212): `pool workers: Worker(count: 3)`
+# v0.6 static supervisor pool (A209/A212): `pool workers: Worker count: 3`
 # spawns 3 fungible members into pool_slots[] at bootstrap and the Vec-like
 # accessor reaches them — `sup.workers.len()` is 3 and `sup.workers[i]` round-
 # trips to each Live member. Exit 24 = len(3) + three members × id(7); a wrong
@@ -1986,6 +1986,36 @@ run_accept_expect_status "supervisor_static_pool" 24
 # Safe pool lookup: in-range members produce Some live handles with exact
 # payload values, while the negative and end boundary indices produce None.
 run_accept_expect_stdout "supervisor_pool_get_option"
+
+# Pool arity is a child clause, not an init field (#3253). The pooled actor
+# declares its own field named `count`, set through the parenthesised list,
+# while the clause declares the arity. Exit 20 = len(2) + two members ×
+# count(9); a dropped clause changes the length and a clause read as the field
+# makes each member report 2.
+run_accept_expect_status "supervisor_pool_count_clause" 20
+
+# The retired spelling fails closed with the clause form as its fix-it, instead
+# of passing `count` on as an init field the checker then blames on the actor.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/supervisor_pool_count_init_arg.hew" \
+    "pool arity is a child clause" \
+    "supervisor_pool_count_init_arg"
+echo "PASS supervisor_pool_count_init_arg (reject)"
+
+# The clause is refused on a static child: one actor has no arity.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/supervisor_count_clause_on_static_child.hew" \
+    "\`count:\` is a pool clause" \
+    "supervisor_count_clause_on_static_child"
+echo "PASS supervisor_count_clause_on_static_child (reject)"
+
+# A pool without the clause has no declared size, so the checker fails closed
+# rather than guessing one.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/supervisor_pool_count_clause_missing.hew" \
+    "E_SUPERVISOR_POOL_COUNT_MISSING" \
+    "supervisor_pool_count_clause_missing"
+echo "PASS supervisor_pool_count_clause_missing (reject)"
 
 # Whole-field pool access: bind `let workers = sup.workers`, then route len,
 # trapping index, and safe get through the first-class pool view.

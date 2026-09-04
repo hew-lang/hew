@@ -70,7 +70,7 @@ fn pool_child_gets_pool_slot_index_zero() {
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool worker: Worker(count: 2)
+            pool worker: Worker count: 2
         }
         ",
     );
@@ -81,19 +81,19 @@ fn pool_child_gets_pool_slot_index_zero() {
     assert_eq!(worker.slot_index, 0, "pool child slot index is 0");
 }
 
-/// A `pool worker: Worker(count: 3)` declaration splits the reserved `count`
-/// arg into `pool_count` (the pool size) and leaves it OUT of `init_args` (the
-/// per-member init template). The discriminator carries the count expr so the
+/// A `pool worker: Worker count: 3` declaration lowers the arity clause into
+/// `pool_count` (the pool size) and leaves `init_args` (the per-member init
+/// template) untouched. The discriminator carries the count expr so the
 /// checker and codegen can read it (verify-ast-carries-discriminator).
 #[test]
-fn pool_count_arg_is_extracted_into_pool_count() {
+fn pool_count_clause_lowers_into_pool_count() {
     let output = lower(
         r"
         actor Worker { receive fn ping() {} }
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool worker: Worker(count: 3)
+            pool worker: Worker count: 3
         }
         ",
     );
@@ -107,7 +107,7 @@ fn pool_count_arg_is_extracted_into_pool_count() {
     );
     assert!(
         !worker.init_args.iter().any(|(name, _)| name == "count"),
-        "the reserved `count` arg must NOT appear in the per-member init template"
+        "the arity clause must NOT appear in the per-member init template"
     );
 }
 
@@ -124,7 +124,7 @@ fn pool_count_and_member_init_arg_are_separated() {
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool worker: Worker(count: 4, id: 7)
+            pool worker: Worker(id: 7) count: 4
         }
         ",
     );
@@ -140,9 +140,10 @@ fn pool_count_and_member_init_arg_are_separated() {
     assert_eq!(worker.init_args[0].0, "id");
 }
 
-/// A static child keeps a `count:` arg as an ordinary init field — `count` is
-/// reserved only on POOL declarations (so `spawn Counter(count: 0)` stays a
-/// state field).
+/// An actor field named `count` is an ordinary init field: arity lives in the
+/// child's clause namespace, so the parenthesised list never reserves the
+/// name. Here a static child sets `count: 0` as state, and a pool of the same
+/// actor would too.
 #[test]
 fn static_child_keeps_count_as_init_field() {
     let output = lower(
@@ -168,7 +169,7 @@ fn static_child_keeps_count_as_init_field() {
     assert_eq!(
         counter.init_args.len(),
         1,
-        "the `count` arg stays a per-child init field on a static child"
+        "`count` stays a per-child init field, arity clause or not"
     );
     assert_eq!(counter.init_args[0].0, "count");
 }

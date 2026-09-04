@@ -2106,11 +2106,12 @@ fn fmt_supervisor_pool_keyword_roundtrip() {
 
 #[test]
 fn fmt_supervisor_static_pool_count_roundtrip() {
-    // The static-pool `count:` arg (A212) must round-trip exactly — it rides the
-    // same named-arg slot as per-member init args, so the formatter must not drop
-    // or reorder it (the C4/C5 B3 formatter-drops-new-syntax lesson).
+    // The static-pool `count:` clause must round-trip exactly, outside the
+    // init-arg parentheses and beside the other per-child clauses, so the
+    // formatter neither drops it nor folds it back into the parenthesised
+    // field list (the C4/C5 B3 formatter-drops-new-syntax lesson).
     exact_roundtrip(
-        "supervisor Pool {\n    strategy: simple_one_for_one;\n    intensity: 5 within 60s;\n\n    pool workers: Worker(count: 3, value: 7);\n}\n",
+        "supervisor Pool {\n    strategy: simple_one_for_one;\n    intensity: 5 within 60s;\n\n    pool workers: Worker(value: 7) count: 3;\n}\n",
     );
 }
 

@@ -81,11 +81,18 @@ const overflowKinds = Object.entries(contextual)
     name !== 'overflow' && typeof desc === 'string' && /overflow/i.test(desc))
   .map(([name]) => name);
 
+// Contextual identifiers common enough as ordinary names that a keyword match
+// does more harm than the highlight is worth. `count` is the supervisor
+// pool-arity clause, and also a routine field name and the `.count()` method,
+// so highlighting it paints most of its real uses.
+const BROAD_MATCH_UNSAFE_CONTEXTUAL = ['count'];
+
 // Remaining contextual identifiers: soft keywords that are not reserved and
 // not overflow values (within, intensity, initial, repeated, infinity, ...).
 const contextualKeywords = Object.keys(contextual)
   .filter(name => name !== 'description' && name !== 'self'
-    && !overflowKinds.includes(name));
+    && !overflowKinds.includes(name)
+    && !BROAD_MATCH_UNSAFE_CONTEXTUAL.includes(name));
 
 // -- Category → { group, keywords[] } mapping -----------------------------
 // Each category produces one or more `syn keyword <group> <words...>` lines.

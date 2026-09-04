@@ -532,7 +532,7 @@ fn pool_child_field_and_get_lower_end_to_end() {
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool workers: Worker(count: 2)
+            pool workers: Worker count: 2
         }
 
         fn inspect(sup_pid: LocalPid<Pool>) -> i64 {

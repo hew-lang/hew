@@ -1075,7 +1075,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
     })
 }
 
-/// A static pool (`pool name: Type(count: N)`) now spawns its N members as
+/// A static pool (`pool name: Type count: N`) now spawns its N members as
 /// static children and binds them into a pool slot. For a [pool(count: 2),
 /// static] layout, codegen emits: ONE `pool_add_slot`, TWO member registrations
 /// (`add_child_spec` + `pool_member_add_static`), then ONE more `add_child_spec`

@@ -1223,7 +1223,7 @@ impl SupervisorChildLayout {
     }
 }
 
-/// The size of a static supervisor pool (`pool name: Type(count: N)`).
+/// The size of a static supervisor pool (`pool name: Type count: N`).
 ///
 /// Carried on [`SupervisorChildLayout::pool_count`] so codegen can emit the
 /// member-spawn loop. A literal count is a compile-time constant N; a

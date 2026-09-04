@@ -57,7 +57,7 @@ fn pool_field_access_lowers_as_first_class_view() {
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool workers: Worker(count: 2)
+            pool workers: Worker count: 2
         }
 
         fn inspect(sup: LocalPid<Pool>) -> i64 {

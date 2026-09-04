@@ -320,7 +320,7 @@ fn supervisor_pool_child_permanent_vec_ok() {
 
         supervisor App {
             strategy: simple_one_for_one,
-            pool workers: Worker(count: 2)
+            pool workers: Worker count: 2
         }
         ",
     );
@@ -814,7 +814,7 @@ fn supervisor_pool_child_string_init_arg_exempt() {
 
         supervisor App {
             strategy: simple_one_for_one,
-            pool workers: Worker(count: 2)
+            pool workers: Worker count: 2
         }
         ",
     );
@@ -859,7 +859,7 @@ fn supervisor_pool_count_zero_literal_is_rejected() {
 
         supervisor App {
             strategy: simple_one_for_one,
-            pool workers: Worker(count: 0)
+            pool workers: Worker count: 0
         }
         ",
     );
@@ -881,7 +881,7 @@ fn supervisor_pool_count_negative_literal_is_rejected() {
 
         supervisor App {
             strategy: simple_one_for_one,
-            pool workers: Worker(count: -3)
+            pool workers: Worker count: -3
         }
         ",
     );
@@ -903,7 +903,7 @@ fn supervisor_pool_count_positive_literal_is_accepted() {
 
         supervisor App {
             strategy: simple_one_for_one,
-            pool workers: Worker(count: 5)
+            pool workers: Worker count: 5
         }
         ",
     );
@@ -925,7 +925,7 @@ fn supervisor_pool_count_string_literal_is_rejected() {
 
         supervisor App {
             strategy: simple_one_for_one,
-            pool workers: Worker(count: "five")
+            pool workers: Worker count: "five"
         }
         "#,
     );
@@ -953,7 +953,7 @@ fn supervisor_pool_count_dynamic_config_is_accepted() {
 
         supervisor App(config: AppConfig) {
             strategy: simple_one_for_one,
-            pool workers: Worker(count: config.workers)
+            pool workers: Worker count: config.workers
         }
         ",
     );

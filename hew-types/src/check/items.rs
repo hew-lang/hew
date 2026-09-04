@@ -241,14 +241,10 @@ impl Checker {
         // Pool children now route their per-member init args through the same
         // init-closure thunk path as static children (one shared template,
         // re-run per member), so their init-arg exprs are type-checked here too.
-        // The reserved `count:` arg designates the pool size — it is checked
-        // separately by `check_supervisor_pool_count`, not as a per-member init
-        // field — so it is excluded from the per-member synthesis here.
+        // Pool arity is not an init arg at all — it is the `count:` clause,
+        // synthesised by `check_supervisor_pool_count` below.
         for child in &sd.children {
-            for (arg_name, arg_expr) in &child.args {
-                if child.is_pool && arg_name == "count" {
-                    continue;
-                }
+            for (_arg_name, arg_expr) in &child.args {
                 self.synthesize(&arg_expr.0, &arg_expr.1);
             }
         }
@@ -257,18 +253,18 @@ impl Checker {
         // the config params are still in scope.
         self.check_supervisor_init_args_bitcopy(sd, span);
 
-        // Validate every pool child's reserved `count:` arg (presence, integer
-        // type, positive literal) while config params are still in scope so a
+        // Validate every pool child's `count:` clause (presence, integer type,
+        // positive literal) while config params are still in scope so a
         // `count: config.workers` expr resolves.
         self.check_supervisor_pool_count(sd, span);
 
         self.env.pop_scope();
     }
 
-    /// Validate the reserved `count:` arg on every `pool` child declaration.
+    /// Validate the `count:` clause on every `pool` child declaration.
     ///
-    /// A static pool (`pool workers: Worker(count: N)`) spawns exactly N
-    /// fungible members at bootstrap. The `count` arg is REQUIRED on a pool
+    /// A static pool (`pool workers: Worker(..) count: N`) spawns exactly N
+    /// fungible members at bootstrap. The clause is REQUIRED on a pool
     /// declaration, must type as an integer, and — when a compile-time integer
     /// literal — must be positive. A non-literal expr (`count: config.workers`)
     /// is accepted here (the type resolves through the config record layout),
@@ -285,9 +281,7 @@ impl Checker {
                 continue;
             }
 
-            let count_arg = child.args.iter().find(|(name, _)| name == "count");
-
-            let Some((_, count_expr)) = count_arg else {
+            let Some(count_expr) = child.count.as_ref() else {
                 // A pool declares a fixed-size fleet; without `count:` the size
                 // is undefined. Fail closed rather than defaulting to a silent 1.
                 self.errors.push(TypeError::new(
@@ -297,8 +291,8 @@ impl Checker {
                     span.clone(),
                     format!(
                         "E_SUPERVISOR_POOL_COUNT_MISSING: supervisor `{}` pool child `{}` is \
-                         missing the required `count:` argument; a static pool declares a \
-                         fixed-size fleet, e.g. `pool {}: {}(count: 5)`",
+                         missing the required `count:` clause; a static pool declares a \
+                         fixed-size fleet, e.g. `pool {}: {}(..) count: 5`",
                         sd.name, child.name, child.name, child.actor_type
                     ),
                 ));
@@ -437,13 +431,6 @@ impl Checker {
             };
 
             for (arg_name, _arg_expr) in &child.args {
-                // A pool child's reserved `count:` arg is the pool size, not a
-                // per-member init field — it is validated by
-                // `check_supervisor_pool_count`, not the reproducibility wall.
-                if child.is_pool && arg_name == "count" {
-                    continue;
-                }
-
                 // Find the matching init parameter by name.
                 let Some(param) = init_params.iter().find(|param| param.name == *arg_name) else {
                     // Missing-param errors are reported elsewhere (wired_to check

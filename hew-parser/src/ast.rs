@@ -1511,6 +1511,15 @@ pub struct ChildSpec {
     /// brutal_kill | infinity`.  `None` means the supervisor default applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shutdown: Option<ShutdownDirective>,
+    /// Pool arity, written as the per-child clause `count: <expr>` after the
+    /// init-arg parentheses (`pool ws: Worker(value: 7) count: 2;`). Arity
+    /// lives in the child's clause namespace, never in the parenthesised list,
+    /// so an actor that declares a field named `count` pools like any other.
+    /// Required on a `pool` child (`hew-types` reports
+    /// `E_SUPERVISOR_POOL_COUNT_MISSING` when it is absent) and refused by the
+    /// parser on a `child` declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<Spanned<Expr>>,
     /// Byte span of the whole child declaration, from the `child`/`pool`
     /// keyword through the clause's terminating `;`/`,`. HIR lowering mints a
     /// real `SiteId` registered against this span so MIR diagnostics that have

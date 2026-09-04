@@ -57,16 +57,19 @@ runs:
       run: |
         set -euo pipefail
         version="${{ inputs.version }}"
-        case "${{ runner.os }}-${{ runner.arch }}" in
-          Linux-X64)
+        runner_os="${{ runner.os }}"
+        runner_arch="${{ runner.arch }}"
+        target="${runner_os}-${runner_arch}"
+        case "${target,,}" in
+          linux-x64)
             asset="LLVM-${version}-Linux-X64.tar.xz"
             subdir="LLVM-${version}-Linux-X64"
             ;;
-          Linux-ARM64)
+          linux-arm64)
             asset="LLVM-${version}-Linux-ARM64.tar.xz"
             subdir="LLVM-${version}-Linux-ARM64"
             ;;
-          Windows-X64)
+          windows-x64)
             # The official upstream Windows tarball statically embeds rpmalloc
             # (defines malloc/free/calloc -> duplicate symbols against ucrt at
             # lld-link time) and omits xml2s.lib. Use hew-lang/llvm-toolchain's
@@ -84,7 +87,7 @@ runs:
             subdir="llvm-22"
             ;;
           *)
-            echo "::error::No upstream LLVM binary asset known for ${{ runner.os }}-${{ runner.arch }}"
+            echo "::error::No upstream LLVM binary asset known for ${target}"
             exit 1
             ;;
         esac
@@ -131,7 +134,7 @@ runs:
     - name: Cache extracted LLVM
       id: cache
       if: runner.os != 'macOS'
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ${{ steps.layout.outputs.prefix }}
         key: llvm-${{ runner.os }}-${{ runner.arch }}-${{ steps.layout.outputs.version }}-${{ steps.layout.outputs.sha256 }}

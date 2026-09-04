@@ -2644,3 +2644,90 @@ fn machine_mixed_type_and_const_params_pass_typecheck() {
         "expected no type errors on a mixed-param machine; got: {errs:?}"
     );
 }
+
+/// A body-less transition (`on E: Src => Tgt;`) whose target is a bare
+/// (non-`.`-prefixed) state name must resolve against the machine's own
+/// `state` declarations and type-check cleanly. Regression for #3264: the
+/// desugared body — a bare `Expr::Identifier(Tgt)` checked against the
+/// machine's own type — was wrongly routed through the general bare-variant
+/// fallback and rejected with `E_BARE_VARIANT_EXPR`, even though
+/// HEW-SPEC-2026 §3.11.3 states plainly that state names in target position
+/// are not enum variants.
+#[test]
+fn machine_bare_transition_target_resolves_to_declared_state() {
+    let output = typecheck_isolated(
+        r"
+        machine Light {
+            events {
+                Go;
+            }
+
+            state Idle;
+            state Running;
+
+            on Go: Idle => Running;
+
+            default { state }
+        }
+
+        fn main() {
+            var light: Light = .Idle;
+            light.step(.Go);
+            let _ = light.state_name();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "bare transition target naming a declared state should type-check \
+         with no diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
+/// Negative control for the fix above: a transition target that does NOT
+/// name any of the machine's declared states must still be rejected — but
+/// with an "unknown state" diagnostic, not `E_BARE_VARIANT_EXPR`. Proves the
+/// fix narrows the machine-state carve-out to actual state names rather than
+/// silencing the checker for every bare identifier in transition-target
+/// position.
+#[test]
+fn machine_bare_transition_target_unknown_state_is_rejected() {
+    let output = typecheck_isolated(
+        r"
+        machine Light {
+            events {
+                Go;
+            }
+
+            state Idle;
+            state Running;
+
+            on Go: Idle => Bogus;
+
+            default { state }
+        }
+
+        fn main() {
+            var light: Light = .Idle;
+            light.step(.Go);
+            let _ = light.state_name();
+        }
+        ",
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "a transition target that names no declared state must be rejected"
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::BareVariantExpr),
+        "an unknown transition target must not be reported as \
+         E_BARE_VARIANT_EXPR, got: {:?}",
+        output.errors
+    );
+}

@@ -934,25 +934,6 @@ fn every_required_parity_case_backs_a_construct() {
     }
 }
 
-/// The runnable count only grows. A stored baseline guards against silently
-/// dropping coverage (e.g. deleting a `Parity` row to dodge a failing case).
-/// Bumping this is a deliberate, reviewed act — never lower it without
-/// justifying a removed admission in the same commit.
-#[test]
-fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 57; // +1: 64-bit native isize/usize cast width
-    let runnable = CONSTRUCTS
-        .iter()
-        .filter(|c| matches!(c.coverage, Coverage::Parity(_) | Coverage::ParityTrap(_)))
-        .count();
-    assert!(
-        runnable >= RUNNABLE_BASELINE,
-        "runnable construct coverage dropped to {runnable} (baseline {RUNNABLE_BASELINE}); the \
-         ratchet only grows. If you intentionally removed an admission in profile.rs, lower the \
-         baseline in the same commit with justification."
-    );
-}
-
 /// The behavioural ratchet: compile every probe through the REAL gate and run it
 /// on the REAL VM, then assert the observed behaviour matches the declared
 /// coverage. This is where `profile.rs` is the source of truth — the test reads

@@ -113,6 +113,28 @@ fn main() {
 }
 ";
 
+/// `hew_lexer::lex` emits an entire f-string interpolation as one
+/// `InterpolatedString` token, so the migrator's flat token scan for the
+/// identifier behind a `BareVariantExpr` warning cannot find one whose span
+/// falls inside `{...}` here. Before #3243 that token-lookup miss produced a
+/// hard refusal that aborted the whole migration.
+const FSTRING_INTERPOLATION: &str = r#"enum Choice {
+    Present(i64);
+    Absent;
+}
+
+fn accept(c: Choice) -> i64 {
+    match c {
+        .Present(n) => n,
+        .Absent => 0,
+    }
+}
+
+fn main() {
+    println(f"{accept(Absent)}");
+}
+"#;
+
 fn write_source(dir: &Path, name: &str, source: &str) -> std::path::PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, source).expect("fixture must be writable");
@@ -301,5 +323,37 @@ fn migrate_rewrites_both_spellings_and_is_idempotent() {
         migrate_check.status.success(),
         "`fmt --migrate --check` must be clean on an already-migrated source:\n{}",
         strip_ansi(&String::from_utf8_lossy(&migrate_check.stderr))
+    );
+}
+
+/// A bare-variant warning whose span falls inside an f-string interpolation
+/// must be skipped, not treated as a hard refusal that aborts the whole
+/// file's migration (#3243).
+#[test]
+fn migrate_skips_bare_variant_inside_fstring_interpolation_without_aborting() {
+    let dir = tempdir();
+    let path = write_source(dir.path(), "fstring.hew", FSTRING_INTERPOLATION);
+    let source = path.to_str().expect("UTF-8 path").to_string();
+
+    let migrated = run_hew_in(dir.path(), &["fmt", "--migrate", &source]);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&migrated.stderr));
+    assert!(
+        migrated.status.success(),
+        "migration must not abort on a bare variant inside an f-string interpolation:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("skipping bare-variant migration inside an f-string interpolation"),
+        "migration must report the f-string skip, not a hard token-lookup refusal:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("checker-selected variant has no identifier token"),
+        "the f-string case must not fall through to the generic hard refusal:\n{stderr}"
+    );
+
+    let rewritten = std::fs::read_to_string(&path).expect("migrated source must be readable");
+    assert!(
+        rewritten.contains("f\"{accept(Absent)}\""),
+        "the bare variant inside the f-string interpolation must be left \
+         unrewritten (skip-not-abort, not a silent rewrite):\n{rewritten}"
     );
 }

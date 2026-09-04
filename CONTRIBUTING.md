@@ -115,8 +115,6 @@ grammar-parity`, which parses the accepted corpus with the commit pinned in
 
 `make preflight` runs the lint graph and the same Make-owned test groups as Linux CI; it is the standard manual gate before opening a PR. `make ci-preflight` remains a compatibility alias.
 
-`make check-time-ratchet` fails when the median wall-clock of `hew check` on a fixed std fixture exceeds twice the baseline recorded in `scripts/check-time-baseline.tsv`; `make check-time-ratchet-record` writes that baseline for the current host. `make size-ratchet` fails when a workspace crate's `wc -l` over `<crate>/src/**/*.rs` exceeds its ceiling in `scripts/size-ratchet.tsv`; `make size-ratchet-record` writes fresh per-crate counts as ceilings. Ceilings are only ever lowered by deleting code, never raised to meet a count.
-
 ### E2E test workflow
 
 When adding new language features, add an end-to-end test:

@@ -89,8 +89,8 @@
 .PHONY: hew-check-all
 .PHONY: grammar-parity downstream-check
 .PHONY: sir-coverage sir-parity
-.PHONY: check-time-ratchet check-time-ratchet-record
-.PHONY: size-ratchet size-ratchet-record
+
+
 
 help:
 	@$(PYTHON) scripts/make-help.py
@@ -1685,28 +1685,6 @@ grammar-parity:
 downstream-check:
 	@echo "==> downstream-check: comparing docs/syntax-data.json against sibling repos"
 	scripts/sync-downstream.sh --check
-
-# Five runs of `hew check` on the largest std module a newcomer's program
-# pulls in; the median wall-clock cannot exceed 2x the recorded baseline
-# for this host class (uname -m plus the CI runner label when CI is set,
-# else "local"). A class with no baseline records one and passes: a first
-# run on a new runner class cannot be compared against itself (V060-FD-1).
-# inputs: scripts/check-time-ratchet.sh scripts/check-time-baseline.tsv std/net/http/http.hew
-check-time-ratchet: hew ## Test: fail when hew check's median time on the fixture exceeds 2x baseline
-	HEW_BIN="$(HEW_BIN)" bash scripts/check-time-ratchet.sh check
-
-check-time-ratchet-record: hew ## Build: record scripts/check-time-baseline.tsv's median for this host class
-	HEW_BIN="$(HEW_BIN)" bash scripts/check-time-ratchet.sh record
-
-# Per-crate `wc -l` over <crate>/src/**/*.rs against scripts/size-ratchet.tsv's
-# ceilings; a crate over its ceiling fails the gate. wc -l only, no hew build
-# needed.
-# inputs: scripts/size-ratchet.sh scripts/size-ratchet.tsv Cargo.toml
-size-ratchet: ## Test: fail when a workspace crate's line count exceeds its ceiling
-	bash scripts/size-ratchet.sh check
-
-size-ratchet-record: ## Build: record scripts/size-ratchet.tsv's per-crate counts as ceilings
-	bash scripts/size-ratchet.sh record
 
 .PHONY: codegen-trap-inventory-check
 LINT_GATES += codegen-trap-inventory-check

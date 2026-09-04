@@ -48,6 +48,87 @@ fn direct_calls(
 }
 
 #[test]
+fn call_result_outside_its_normal_edge_is_rejected() {
+    for location in [
+        "argument",
+        "operation",
+        "unwind-edge",
+        "unwind",
+        "continuation",
+    ] {
+        let mut module =
+            lower_source("fn identity(x: i64) -> i64 { x } fn main() -> i64 { identity(41) }")
+                .module;
+        assert!(verify_module(&module).is_empty());
+        let main = module
+            .functions
+            .iter_mut()
+            .find(|f| f.name == "main")
+            .unwrap();
+        let block = main
+            .blocks
+            .iter_mut()
+            .find(|b| matches!(b.terminator, SemTerminator::Call { .. }))
+            .unwrap();
+        let SemTerminator::Call {
+            args,
+            result: CallResult::Value(result),
+            normal,
+            unwind,
+            ..
+        } = &mut block.terminator
+        else {
+            unreachable!()
+        };
+        let value = result.id;
+        let target = match location {
+            "argument" => {
+                args[0].operand.value = value;
+                None
+            }
+            "operation" => {
+                block.ops[0].kind = hew_sir::SemOpKind::Unary {
+                    op: hew_parser::ast::UnaryOp::Negate,
+                    value: hew_sir::Operand { value },
+                };
+                None
+            }
+            "unwind" => {
+                let CallUnwind::Cleanup(edge) = unwind else {
+                    unreachable!()
+                };
+                Some(edge.target)
+            }
+            "unwind-edge" => {
+                let CallUnwind::Cleanup(edge) = unwind else {
+                    unreachable!()
+                };
+                edge.args.push(hew_sir::Operand { value });
+                None
+            }
+            "continuation" => Some(normal.target),
+            _ => unreachable!(),
+        };
+        if let Some(target) = target {
+            main.blocks
+                .iter_mut()
+                .find(|b| b.id == target)
+                .unwrap()
+                .terminator = SemTerminator::Return {
+                value: Some(hew_sir::BoundaryOperand {
+                    operand: hew_sir::Operand { value },
+                    decision: hew_sir::BoundaryDecision::Move,
+                }),
+            };
+        }
+        assert!(verify_module(&module).iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidCallResultUse { value: found, .. } if found == value
+        )), "call result used at {location} must be refused; only normal-edge forwarding defines the continuation value");
+    }
+}
+
+#[test]
 fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
     // `main` is intentionally written before its callee. The callable table
     // is declaration-sorted, while body lowering still handles this forward

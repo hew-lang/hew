@@ -45,3 +45,14 @@
   value cases now print computed values, bytes mutation uses a `var` binding,
   and the runner uses RAII temporary directories with Unicode-safe summaries
   and explicit output-capture read failures.
+
+## Call-result visibility
+
+- Represent call results as normal-edge definitions in the SSA verifier,
+  distinct from block-entry values and ordinary operation results. A result
+  must be forwarded to a continuation argument before the body can use it.
+- The new negative test first demonstrated acceptance of a call result as
+  its own input. It now rejects operation, input, unwind and direct
+  continuation uses while retaining valid normal-edge forwarding.
+- The integrated native acceptance cases pass at O0 and O2; these exercise
+  the existing native route, not a completed ownership cutover or sanitizers.

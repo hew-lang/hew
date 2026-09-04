@@ -117,6 +117,13 @@ pub enum SirDiagnosticKind {
         value: ValueId,
         reason: &'static str,
     },
+    /// Call results must be forwarded through that call's normal edge; the
+    /// continuation uses its block argument, never the edge-local definition.
+    InvalidCallResultUse {
+        value: ValueId,
+        definition: BlockId,
+        use_block: BlockId,
+    },
     /// A source binding naming a value or place this body never defines. §1.6
     /// reads the table to tell a user-facing wall from an internal error, so a
     /// row it cannot resolve would silently drop the user's name.
@@ -472,7 +479,7 @@ pub(crate) fn verify_function_with_context(
             &mut diagnostics,
         );
         types.insert(param.value, param.ty.clone());
-        definitions.insert(param.value, (function.entry, None));
+        definitions.insert(param.value, (function.entry, DefinitionPoint::BlockEntry));
     }
     for block in &function.blocks {
         for arg in &block.args {
@@ -486,7 +493,7 @@ pub(crate) fn verify_function_with_context(
                 &mut diagnostics,
             );
             types.insert(arg.value, arg.ty.clone());
-            definitions.insert(arg.value, (block.id, None));
+            definitions.insert(arg.value, (block.id, DefinitionPoint::BlockEntry));
         }
         for (op_index, op) in block.ops.iter().enumerate() {
             if !operations.insert(op.id) {
@@ -503,7 +510,7 @@ pub(crate) fn verify_function_with_context(
                     &mut diagnostics,
                 );
                 types.insert(result.id, result.ty.clone());
-                definitions.insert(result.id, (block.id, Some(op_index)));
+                definitions.insert(result.id, (block.id, DefinitionPoint::Operation(op_index)));
             }
         }
         if let SemTerminator::Call { id, .. } | SemTerminator::RtCall { id, .. } = &block.terminator
@@ -523,7 +530,7 @@ pub(crate) fn verify_function_with_context(
                 &mut diagnostics,
             );
             types.insert(result.id, result.ty.clone());
-            definitions.insert(result.id, (block.id, None));
+            definitions.insert(result.id, (block.id, DefinitionPoint::CallNormalEdge));
         });
     }
     // §1.6's binding table is read by every user-facing wall, so a row naming
@@ -1578,23 +1585,45 @@ fn verify_terminator_shape(
     }
 }
 
+#[derive(Clone, Copy)]
+enum DefinitionPoint {
+    BlockEntry,
+    Operation(usize),
+    CallNormalEdge,
+}
+
 #[allow(clippy::too_many_arguments, reason = "small verifier transfer helper")]
 fn verify_uses(
     function: &SemFunction,
     dominators: &crate::Dominators,
-    definitions: &HashMap<ValueId, (BlockId, Option<usize>)>,
+    definitions: &HashMap<ValueId, (BlockId, DefinitionPoint)>,
     use_block: BlockId,
     use_index: Option<usize>,
-    uses: Vec<ValueId>,
+    uses: Vec<(ValueId, bool)>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    for value in uses {
+    for (value, on_call_normal_edge) in uses {
         let Some((definition, definition_index)) = definitions.get(&value) else {
             diagnostics.push(diag(function, SirDiagnosticKind::UndefinedValue(value)));
             continue;
         };
+        if matches!(definition_index, DefinitionPoint::CallNormalEdge) {
+            if definition != &use_block || !on_call_normal_edge {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidCallResultUse {
+                        value,
+                        definition: *definition,
+                        use_block,
+                    },
+                ));
+            }
+            continue;
+        }
         if definition == &use_block {
-            if let (Some(definition_index), Some(use_index)) = (definition_index, use_index) {
+            if let (DefinitionPoint::Operation(definition_index), Some(use_index)) =
+                (definition_index, use_index)
+            {
                 if definition_index >= &use_index {
                     diagnostics.push(diag(
                         function,
@@ -1701,15 +1730,25 @@ fn module_diag(kind: SirDiagnosticKind) -> SirDiagnostic {
     }
 }
 
-fn uses_in_op(op: &crate::SemOp) -> Vec<ValueId> {
+fn uses_in_op(op: &crate::SemOp) -> Vec<(ValueId, bool)> {
     let mut uses = Vec::new();
-    op.visit_operands(|_, operand| uses.push(operand.value));
+    op.visit_operands(|_, operand| uses.push((operand.value, false)));
     uses
 }
 
-fn uses_in_terminator(term: &SemTerminator) -> Vec<ValueId> {
+fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
     let mut uses = Vec::new();
-    term.visit_operands(|_, operand| uses.push(operand.value));
+    // The canonical visitor orders call inputs, normal-edge arguments, then
+    // unwind arguments. Only the middle interval can see the call result.
+    let normal_slots = match term {
+        SemTerminator::Call { args, normal, .. } | SemTerminator::RtCall { args, normal, .. } => {
+            args.len()..args.len() + normal.args.len()
+        }
+        _ => 0..0,
+    };
+    term.visit_operands(|slot, operand| {
+        uses.push((operand.value, normal_slots.contains(&(slot.0 as usize))));
+    });
     uses
 }
 

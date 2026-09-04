@@ -22,16 +22,28 @@ fn test_gzip_round_trip() {
     input.push(108); // l
     input.push(108); // l
     input.push(111); // o
-    let compressed = compress.gzip_compress(input);
-    let decompressed = compress.gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
+    let compressed = match compress.gzip_compress(input) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"gzip compression failed: {reason}"),
+    };
+    let decompressed = match compress.gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"gzip decompression failed: {reason}"),
+    };
     assert_bytes_eq(decompressed, input);
 }
 
 #[test]
 fn test_gzip_round_trip_empty() {
     let input: bytes = bytes.new();
-    let compressed = compress.gzip_compress(input);
-    let decompressed = compress.gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
+    let compressed = match compress.gzip_compress(input) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"gzip compression failed: {reason}"),
+    };
+    let decompressed = match compress.gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"gzip decompression failed: {reason}"),
+    };
     assert_bytes_eq(decompressed, input);
 }
 
@@ -43,16 +55,28 @@ fn test_deflate_round_trip() {
     input.push(2);
     input.push(3);
     input.push(255);
-    let compressed = compress.deflate_compress(input);
-    let decompressed = compress.deflate_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
+    let compressed = match compress.deflate_compress(input) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"deflate compression failed: {reason}"),
+    };
+    let decompressed = match compress.deflate_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"deflate decompression failed: {reason}"),
+    };
     assert_bytes_eq(decompressed, input);
 }
 
 #[test]
 fn test_deflate_round_trip_empty() {
     let input: bytes = bytes.new();
-    let compressed = compress.deflate_compress(input);
-    let decompressed = compress.deflate_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
+    let compressed = match compress.deflate_compress(input) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"deflate compression failed: {reason}"),
+    };
+    let decompressed = match compress.deflate_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"deflate decompression failed: {reason}"),
+    };
     assert_bytes_eq(decompressed, input);
 }
 
@@ -62,16 +86,28 @@ fn test_zlib_round_trip() {
     input.push(120); // x
     input.push(121); // y
     input.push(122); // z
-    let compressed = compress.zlib_compress(input);
-    let decompressed = compress.zlib_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
+    let compressed = match compress.zlib_compress(input) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"zlib compression failed: {reason}"),
+    };
+    let decompressed = match compress.zlib_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"zlib decompression failed: {reason}"),
+    };
     assert_bytes_eq(decompressed, input);
 }
 
 #[test]
 fn test_zlib_round_trip_empty() {
     let input: bytes = bytes.new();
-    let compressed = compress.zlib_compress(input);
-    let decompressed = compress.zlib_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
+    let compressed = match compress.zlib_compress(input) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"zlib compression failed: {reason}"),
+    };
+    let decompressed = match compress.zlib_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"zlib decompression failed: {reason}"),
+    };
     assert_bytes_eq(decompressed, input);
 }
 
@@ -86,7 +122,7 @@ fn garbage() -> bytes {
 }
 
 #[test]
-fn test_try_gzip_decompress_reports_a_malformed_stream_as_a_failure() {
+fn test_gzip_decompress_reports_a_malformed_stream_as_a_failure() {
     match compress.gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
         .Ok(out) => panic(f"expected a malformed gzip stream to fail, got {out.len()} bytes"),
         .Err(reason) => testing.assert_gt(reason.len(), 0),
@@ -94,7 +130,7 @@ fn test_try_gzip_decompress_reports_a_malformed_stream_as_a_failure() {
 }
 
 #[test]
-fn test_try_zlib_decompress_reports_a_malformed_stream_as_a_failure() {
+fn test_zlib_decompress_reports_a_malformed_stream_as_a_failure() {
     match compress.zlib_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
         .Ok(out) => panic(f"expected a malformed zlib stream to fail, got {out.len()} bytes"),
         .Err(reason) => testing.assert_gt(reason.len(), 0),
@@ -102,11 +138,14 @@ fn test_try_zlib_decompress_reports_a_malformed_stream_as_a_failure() {
 }
 
 #[test]
-fn test_try_decompress_of_a_valid_empty_payload_is_an_empty_success() {
+fn test_decompress_of_a_valid_empty_payload_is_an_empty_success() {
     // The same zero-byte answer a failure produces, but this one is real; the
     // codec's reason slot is what tells them apart.
     let empty: bytes = bytes.new();
-    let compressed = compress.gzip_compress(empty);
+    let compressed = match compress.gzip_compress(empty) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"gzip compression failed: {reason}"),
+    };
     match compress.gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
         .Ok(out) => testing.assert_eq(out.len(), 0),
         .Err(reason) => panic(f"a valid empty payload must decompress: {reason}"),
@@ -114,9 +153,12 @@ fn test_try_decompress_of_a_valid_empty_payload_is_an_empty_success() {
 }
 
 #[test]
-fn test_try_deflate_decompress_of_a_valid_empty_payload_is_an_empty_success() {
+fn test_deflate_decompress_of_a_valid_empty_payload_is_an_empty_success() {
     let empty: bytes = bytes.new();
-    let compressed = compress.deflate_compress(empty);
+    let compressed = match compress.deflate_compress(empty) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"deflate compression failed: {reason}"),
+    };
     match compress.deflate_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
         .Ok(out) => testing.assert_eq(out.len(), 0),
         .Err(reason) => panic(f"a valid empty payload must decompress: {reason}"),
@@ -124,9 +166,12 @@ fn test_try_deflate_decompress_of_a_valid_empty_payload_is_an_empty_success() {
 }
 
 #[test]
-fn test_try_decompress_rejects_a_negative_output_limit() {
+fn test_decompress_rejects_a_negative_output_limit() {
     let empty: bytes = bytes.new();
-    let compressed = compress.gzip_compress(empty);
+    let compressed = match compress.gzip_compress(empty) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"gzip compression failed: {reason}"),
+    };
     match compress.gzip_decompress(compressed, -1) {
         .Ok(out) => panic(f"expected a negative limit to be rejected, got {out.len()} bytes"),
         .Err(reason) => testing.assert_eq_str(reason, "max output length must be non-negative, got -1"),
@@ -134,12 +179,15 @@ fn test_try_decompress_rejects_a_negative_output_limit() {
 }
 
 #[test]
-fn test_try_decompress_rejects_output_over_the_limit() {
+fn test_decompress_rejects_output_over_the_limit() {
     let input: bytes = bytes.new();
     for _ in 0 .. 64 {
         input.push(65);
     }
-    let compressed = compress.zlib_compress(input);
+    let compressed = match compress.zlib_compress(input) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"zlib compression failed: {reason}"),
+    };
     match compress.zlib_decompress(compressed, 8) {
         .Ok(out) => panic(f"expected the output limit to be enforced, got {out.len()} bytes"),
         .Err(reason) => testing.assert_eq_str(reason, "output exceeded 8 byte limit"),
@@ -154,7 +202,10 @@ fn test_codec_failure_does_not_leak_into_the_next_call() {
     }
     let input: bytes = bytes.new();
     input.push(90);
-    let compressed = compress.gzip_compress(input);
+    let compressed = match compress.gzip_compress(input) {
+        .Ok(value) => value,
+        .Err(reason) => panic(f"gzip compression failed: {reason}"),
+    };
     match compress.gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
         .Ok(out) => testing.assert_eq(out.len(), 1),
         .Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
@@ -162,7 +213,9 @@ fn test_codec_failure_does_not_leak_into_the_next_call() {
 }
 
 #[test]
-#[should_panic]
-fn test_gzip_decompress_panics_at_legacy_boundary_on_a_malformed_stream() {
-    let _ = compress.gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT);
+fn test_gzip_decompress_returns_err_for_a_malformed_stream() {
+    match compress.gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
+        .Ok(_) => panic("malformed gzip unexpectedly succeeded"),
+        .Err(reason) => testing.assert_gt(reason.len(), 0),
+    }
 }

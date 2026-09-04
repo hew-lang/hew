@@ -1908,19 +1908,20 @@ run_accept_expect_status "join_branch_trap" 134
 
 # Reject (§4.11.2 actor-only join branches): `join { rx.recv() }` is NOT a
 # valid join branch — a channel receive is not an actor receive-handler ask.
-# The join-specific branch validator must reject it at CHECK time with
-# `JoinBranchNotActorAsk` (declared but previously never triggered) — never a
-# silent `Unit` lowering, never a late MIR error. Exercises the consumed form.
+# The Result-correct fixture reaches HIR, which must reject it with the exact
+# `JoinBranchNotActorAsk` message — never a silent `Unit` lowering, never a
+# late MIR error. Exercises the consumed form.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/join_branch_not_actor.hew" >"${reject_output}" 2>&1; then
     echo "expected join_branch_not_actor fixture to fail" >&2
     exit 1
 fi
-grep -q 'JoinBranchNotActorAsk' "${reject_output}"
+grep -Fq "E_HIR: join branch must be an actor receive-handler call (\`actor.method(args)\`)" "${reject_output}"
 
 # Regression guard: the join-branch rejection above is join-scoped and must NOT
 # break `select`'s legitimate channel-receive arm. A `select { pat from
 # rx.recv() ... }` still checks OK.
 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/select_recv_guard.hew" >"${accept_output}" 2>&1
+echo 'PASS select_recv_guard'
 
 # Reject (SELECT ship-3, HEW-SPEC §4.11.1): the task-await arm
 # `<id> from await <expr>` is NOT one of the three sealed select forms

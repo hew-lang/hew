@@ -9,7 +9,10 @@ import std.channel.channel;
 
 actor DrainFloats {
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<f64>, channel.Receiver<f64>) = channel.new(4);
+        let (tx, rx): (channel.Sender<f64>, channel.Receiver<f64>) = match channel.new(4) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"channel.new failed: {err}"),
+        };
         tx.send(0.5);
         tx.send(1.25);
         tx.send(-3.75);

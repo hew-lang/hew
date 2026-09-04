@@ -11,7 +11,10 @@ fn helper(rx: channel.Receiver<i64>) -> Result<Option<i64>, TimeoutError> {
 }
 
 fn main() -> i64 {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {
+        .Ok(pair) => pair,
+        .Err(err) => panic(f"channel.new failed: {err}"),
+    };
     let got = helper(rx);
     let _ = tx;
     match got {

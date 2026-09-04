@@ -50,6 +50,7 @@ pub fn hmac_sha256(key: bytes, data: bytes) -> bytes {
         hew_hmac_sha256_hew(key, data)
     }
 }
+
 /// Generate `len` cryptographically random bytes, reporting a request that
 /// could not be served.
 ///

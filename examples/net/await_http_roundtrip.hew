@@ -25,7 +25,10 @@ actor Server {
     let addr: string;
 
     receive fn serve(unused: i64) {
-        let listener = net.listen(addr);
+        let listener = match net.listen(addr) {
+            .Ok(listener) => listener,
+            .Err(err) => panic(f"network setup failed: {err}"),
+        };
         let conn = await listener.accept();
         var raw = "";
         var reads = 0;
@@ -68,7 +71,10 @@ actor Client {
         sleep(300ms);
         let parts = http_async_client.split_address(url);
         let host = http_async_client.host_of(url);
-        let conn = net.connect(parts.0);
+        let conn = match net.connect(parts.0) {
+            .Ok(conn) => conn,
+            .Err(err) => panic(f"network setup failed: {err}"),
+        };
         let _ = conn.write_string(http_async_client.build_get(host, parts.1));
         var raw = "";
         var reads = 0;

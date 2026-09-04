@@ -520,6 +520,7 @@ pub fn parse(src: string) -> Result<Template, TemplateError> {
         .Err(err) => Err(err),
     }
 }
+
 /// Render a compiled template, returning a structured error on failure.
 pub fn render_try(t: Template, ctx: Ctx) -> Result<string, TemplateError> {
     render_segment(t.src, ctx, "", false)

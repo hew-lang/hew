@@ -34,7 +34,10 @@ actor Consumer {
 }
 
 fn main() -> i64 {
-    let (_sink, input) = stream.pipe(4);
+    let (_sink, input) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(_) => return 1,
+    };
     let c = spawn Consumer(input: input);
     c.drain();
     println("done");

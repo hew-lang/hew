@@ -17,7 +17,10 @@ actor Reader {
 
     receive fn go(unused: i64) {
         sleep(200ms);
-        let conn = net.connect(addr);
+        let conn = match net.connect(addr) {
+            .Ok(conn) => conn,
+            .Err(err) => panic(f"network setup failed: {err}"),
+        };
         let read_twice = || {
             let first = await conn.read_string();
             let second = await conn.read_string();
@@ -30,7 +33,10 @@ actor Reader {
 }
 
 fn main() {
-    let listener = net.listen("127.0.0.1:0");
+    let listener = match net.listen("127.0.0.1:0") {
+        .Ok(listener) => listener,
+        .Err(err) => panic(f"network setup failed: {err}"),
+    };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
     };

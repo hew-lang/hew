@@ -295,7 +295,7 @@ pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
 
 /// Generated exact-function rejection classification.
 pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
-    WasmFunctionRejection { module: "std.fs", function: "try_read", feature: WasmUnsupportedFeature::FilesystemStreams },
+    WasmFunctionRejection { module: "std.fs", function: "read", feature: WasmUnsupportedFeature::FilesystemStreams },
 ];
 
 /// Generated native-only module short-names for sandbox and checker consumers.

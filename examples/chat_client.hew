@@ -81,7 +81,10 @@ fn main() {
     println(f"Connected to {addr}");
     println("Type messages and press Enter. Type /quit to exit.");
     let (input, output) = conn.into_stream_sink();
-    let (done_tx, done_rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
+    let (done_tx, done_rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {
+        .Ok(pair) => pair,
+        .Err(err) => panic(f"channel.new failed: {err}"),
+    };
     let reader = spawn ChatReader(input: input, done: done_tx);
     reader.pump();
     loop {

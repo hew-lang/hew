@@ -183,6 +183,52 @@ fn channel_recv_deadline_preserves_await_and_method_occurrences() {
 }
 
 #[test]
+fn channel_result_sites_are_affine_in_hir() {
+    let output = support::checker_pipeline::lower_through_checker_with_modules(
+        r#"
+        import std.channel.channel;
+
+        fn make_channel_result()
+            -> Result<(channel.Sender<i64>, channel.Receiver<i64>), string> {
+            panic("not called")
+        }
+
+        fn main() {
+            let result: Result<(channel.Sender<i64>, channel.Receiver<i64>), string> =
+                make_channel_result();
+            match result {
+                .Ok((_sender, _receiver)) => (),
+                .Err(error) => panic(error),
+            }
+        }
+        "#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let main = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function");
+    let HirStmtKind::Let(_, Some(call)) = &main.body.statements[0].kind else {
+        panic!("expected channel result binding");
+    };
+    let Some(match_expr) = main.body.tail.as_deref() else {
+        panic!("expected match tail");
+    };
+    let HirExprKind::Match { scrutinee, .. } = &match_expr.kind else {
+        panic!("expected Result match");
+    };
+
+    assert_eq!(call.value_class, hew_hir::ValueClass::AffineResource);
+    assert_eq!(scrutinee.value_class, hew_hir::ValueClass::AffineResource);
+}
+
+#[test]
 fn unresolved_symbol_rejects_before_mir() {
     let output = lower("fn main() -> i32 { return missing; }");
     assert!(output

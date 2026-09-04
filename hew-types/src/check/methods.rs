@@ -2317,9 +2317,33 @@ impl Checker {
         }
     }
 
+    /// Attach the shared inferred element type to channel endpoints without
+    /// reconstructing the declaration's surrounding return type.
+    fn instantiate_channel_constructor_return(return_type: &Ty, element: &Ty) -> Ty {
+        match return_type {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } if args.is_empty() => {
+                match (*builtin).or_else(|| crate::builtin_type::lookup_builtin_type(name)) {
+                    Some(kind @ (BuiltinType::Sender | BuiltinType::Receiver)) => Ty::Named {
+                        name: name.clone(),
+                        args: vec![element.clone()],
+                        builtin: Some(kind),
+                    },
+                    _ => return_type.clone(),
+                }
+            }
+            _ => return_type.map_children_pub(&|child| {
+                Self::instantiate_channel_constructor_return(child, element)
+            }),
+        }
+    }
+
     /// Apply exact function policy after a named import has resolved its
     /// declaration owner.  Unlike a bare surface spelling this carries the
-    /// source identity (`std.fs.try_read`) and cannot be captured by a user
+    /// source identity (`std.fs.read`) and cannot be captured by a user
     /// function or a same-leaf module.
     pub(super) fn reject_wasm_native_only_function_identity(
         &mut self,
@@ -8520,21 +8544,14 @@ impl Checker {
                     }
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
-                    // linked through unification.
+                    // linked through unification, while preserving the resolved
+                    // declaration's outer return shape.
                     if canonical_owner == "std.channel" && method == "new" {
                         let t = Ty::Var(TypeVar::fresh());
-                        return Ty::Tuple(vec![
-                            Ty::Named {
-                                name: "std.channel.Sender".to_string(),
-                                args: vec![t.clone()],
-                                builtin: Some(BuiltinType::Sender),
-                            },
-                            Ty::Named {
-                                name: "std.channel.Receiver".to_string(),
-                                args: vec![t],
-                                builtin: Some(BuiltinType::Receiver),
-                            },
-                        ]);
+                        return Self::instantiate_channel_constructor_return(
+                            &applied_sig.return_type,
+                            &t,
+                        );
                     }
                     if let Some(op) = self.intrinsic_math_generic_op_for_signature(&key) {
                         self.record_method_call_rewrite(
@@ -11946,7 +11963,7 @@ mod tests {
         checker
             .canonical_std_module_sources
             .insert("std.fs".to_string());
-        checker.reject_wasm_native_only_function_identity("std.fs.try_read", &span);
+        checker.reject_wasm_native_only_function_identity("std.fs.read", &span);
         assert_eq!(checker.errors.len(), 1, "named-import identity must reject");
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -11954,8 +11971,8 @@ mod tests {
         checker
             .module_import_bindings
             .insert((None, 0, "lookalike".to_string()), "app.fs".to_string());
-        checker.reject_wasm_native_only_module_function("lookalike", "try_read", &span);
-        checker.reject_wasm_native_only_function_identity("app.fs.try_read", &span);
+        checker.reject_wasm_native_only_module_function("lookalike", "read", &span);
+        checker.reject_wasm_native_only_function_identity("app.fs.read", &span);
         assert!(
             checker.errors.is_empty(),
             "a user package with the same leaf must not inherit std.fs policy"

@@ -8,7 +8,10 @@ import std.channel.channel;
 
 actor Inbox {
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"channel.new failed: {err}"),
+        };
         tx.send("ready");
         tx.close();
         match await rx.recv() {

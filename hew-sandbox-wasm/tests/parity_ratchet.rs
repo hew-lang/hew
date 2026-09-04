@@ -92,6 +92,11 @@ enum Coverage {
         /// The expected `Diagnostic::kind` the profile emits for this construct.
         diagnostic_kind: &'static str,
     },
+    /// The parser rejects this surface before the sandbox profile sees an AST.
+    RejectedByParser {
+        /// The expected stable parser diagnostic code.
+        diagnostic_code: &'static str,
+    },
 }
 
 /// The way an admitted-but-not-yet-runnable construct fails in the sandbox.
@@ -617,8 +622,8 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "break-with-value",
         probe: "fn main() {\n    var i = 0;\n    loop {\n        i = i + 1;\n        break i;\n    }\n    println(i);\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "reserved_control_flow",
+        coverage: Coverage::RejectedByParser {
+            diagnostic_code: "E_BREAK_VALUE",
         },
     },
     Construct {
@@ -647,12 +652,11 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "identity comparison (`is`)",
-        // `Vec` handles, not a record: `is` on a record is a checker rejection
-        // (E_IS_VALUE_TYPE, #3108) and would never reach the profile check,
-        // which is what this row pins.
-        probe: "fn same(a: Vec<i64>, b: Vec<i64>) -> bool { a is b }\nfn main() {\n    println(\"x\");\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "reserved_runtime_feature",
+        // Value-shaped operands are rejected by the checker before the sandbox
+        // profile sees the identity-comparison expression.
+        probe: "type Point { x: i64; }\nfn same(a: Point, b: Point) -> bool { a is b }\nfn main() {\n    println(\"x\");\n}\n",
+        coverage: Coverage::RejectedByParser {
+            diagnostic_code: "E_IS_VALUE_TYPE",
         },
     },
     Construct {
@@ -969,6 +973,9 @@ fn live_gate_matches_declared_coverage() {
             Coverage::RejectedByProfile { diagnostic_kind } => {
                 assert_rejected_by_profile(construct, &compiled, diagnostic_kind);
             }
+            Coverage::RejectedByParser { diagnostic_code } => {
+                assert_rejected_by_parser(construct, &compiled, diagnostic_code);
+            }
         }
     }
 }
@@ -1044,6 +1051,23 @@ fn assert_rejected_by_profile(
             .any(|d| d.severity == "error" && d.kind == diagnostic_kind),
         "construct `{}` is classified RejectedByProfile({diagnostic_kind}), but no error diagnostic \
          of that kind was emitted; the profile rejection path changed.\ndiagnostics:\n{}",
+        construct.id,
+        diagnostics_dump(compiled)
+    );
+}
+
+fn assert_rejected_by_parser(
+    construct: &Construct,
+    compiled: &CompileOutput,
+    diagnostic_code: &str,
+) {
+    assert!(
+        compiled.bytecode.is_none()
+            && compiled.diagnostics.iter().any(|diagnostic| {
+                diagnostic.severity == "error" && diagnostic.message.contains(diagnostic_code)
+            }),
+        "construct `{}` is classified RejectedByParser({diagnostic_code}), but the parser did not \
+         emit that error without bytecode.\ndiagnostics:\n{}",
         construct.id,
         diagnostics_dump(compiled)
     );

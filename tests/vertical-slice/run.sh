@@ -510,6 +510,12 @@ compile_accept "machine_fork_args_spawn"
 # type is normalised before the enum-layout probe so the bare-name view is found.
 run_accept_expect_status "machine_generic_record_field" 0
 
+# A struct-variant transition body written with the contextual dotted spelling
+# (#3241). Both the entry transition and the `reenter` self-transition build
+# `.StateB { ... }`, so the lowered bodies must keep the checker's consumed
+# children as source anchors rather than dropping the occurrence.
+run_accept_expect_stdout "machine_dotted_struct_variant_body"
+
 # Reject: negative control for #3149. A machine's own transition body resolves
 # the contextual `.Variant` spelling against the machine while the declaring
 # file is an imported dependency; a variant the machine never declared is still

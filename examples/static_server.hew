@@ -44,15 +44,27 @@ fn serve_forever(root: string, server: Server) {
 fn serve_request(root: string, req: Request) {
     let request_path = req.path();
     if request_path.contains("..") {
-        req.respond_text(403, "403 Forbidden").unwrap();
+        match req.respond_text(403, "403 Forbidden") {
+            .Ok(_) => {},
+            .Err(_) => panic("failed to send forbidden response"),
+        }
     } else {
         let file_path = resolve_path(root, request_path);
         if fs.exists(file_path) {
-            let body = fs.read(file_path).unwrap();
+            let body = match fs.read(file_path) {
+                .Ok(body) => body,
+                .Err(_) => panic("failed to read requested file"),
+            };
             let content_type = mime.from_path(file_path);
-            req.respond(200, content_type, body).unwrap();
+            match req.respond(200, content_type, body) {
+                .Ok(_) => {},
+                .Err(_) => panic("failed to send file response"),
+            }
         } else {
-            req.respond_text(404, "404 Not Found").unwrap();
+            match req.respond_text(404, "404 Not Found") {
+                .Ok(_) => {},
+                .Err(_) => panic("failed to send not-found response"),
+            }
         }
     }
     req.close();
@@ -64,19 +76,13 @@ fn main() {
     let arguments = os.args();
     let argc = arguments.len();
     if argc > 1 {
-        match arguments.get(1) {
-            .Some(value) => {
-                port = value;
-            },
-            .None => {},
+        if let .Some(value) = arguments.get(1) {
+            port = value;
         }
     }
     if argc > 2 {
-        match arguments.get(2) {
-            .Some(value) => {
-                root = value;
-            },
-            .None => {},
+        if let .Some(value) = arguments.get(2) {
+            root = value;
         }
     }
     let addr = f"0.0.0.0:{port}";

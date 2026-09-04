@@ -21,7 +21,10 @@ fn main() {
     tags.push("docs");
     template.ctx_set_list(ctx, "tags", tags);
     let src = "Hi {{.name}} — {{.commits}} commits{{if .member}} (core member){{end}}.\nTags:{{range .tags}} #{{.}}{{end}}";
-    let tmpl = template.parse(src);
+    let tmpl = match template.parse(src) {
+        .Ok(template) => template,
+        .Err(_) => panic("template parse failed"),
+    };
     match template.render_try(tmpl, ctx) {
         .Ok(rendered) => println(rendered),
         .Err(_) => println("template render failed"),

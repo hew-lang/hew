@@ -9,7 +9,10 @@
 //! import std.encoding.toml;
 //!
 //! fn main() {
-//!     let doc = toml.parse("[package]\nname = \"hew\"");
+//!     let doc = match toml.parse("[package]\nname = \"hew\"") {
+//!         .Ok(value) => value,
+//!         .Err(_) => panic("invalid TOML"),
+//!     };
 //!     let pkg = doc.get_field("package");
 //!     let name = pkg.get_field("name");
 //!     println(name.get_string());  // "hew"

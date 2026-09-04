@@ -194,7 +194,10 @@ fn last_io_error() -> IoError {
 /// import std.fs;
 ///
 /// fn main() {
-///     let src = fs.read("main.hew").unwrap();
+///     match fs.read("main.hew") {
+///         .Ok(src) => println(src),
+///         .Err(_) => println("could not read main.hew"),
+///     }
 /// }
 /// ```
 pub fn read(file_path: string) -> Result<string, IoError> {

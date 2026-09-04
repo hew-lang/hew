@@ -100,11 +100,8 @@ fn main() {
     let arguments = os.args();
     let argc = arguments.len();
     if argc > 1 {
-        match arguments.get(1) {
-            .Some(value) => {
-                port = value;
-            },
-            .None => {},
+        if let .Some(value) = arguments.get(1) {
+            port = value;
         }
     }
     let addr = f"0.0.0.0:{port}";

@@ -173,12 +173,10 @@ fn main() {
         body = full_response;
     }
     // Write body to file
-    let write_result = fs.write(outfile, body);
-    if write_result == 0 {
-        let body_len = body.len();
-        println(f"  Saved {body_len} bytes to {outfile}");
-    } else {
-        println(f"  Error: failed to write {outfile}");
+    let body_len = body.len();
+    match fs.write(outfile, body) {
+        .Ok(_) => println(f"  Saved {body_len} bytes to {outfile}"),
+        .Err(_) => println(f"  Error: failed to write {outfile}"),
     }
     conn.close();
     println("  Done!");

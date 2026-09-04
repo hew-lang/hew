@@ -9,7 +9,10 @@
 //! import std.encoding.json;
 //!
 //! fn main() {
-//!     let val = json.parse("{\"name\": \"Hew\", \"version\": 1}");
+//!     let val = match json.parse("{\"name\": \"Hew\", \"version\": 1}") {
+//!         .Ok(value) => value,
+//!         .Err(_) => panic("invalid JSON"),
+//!     };
 //!     let name = val.get_field("name");
 //!     println(name.get_string());
 //!     name.free();

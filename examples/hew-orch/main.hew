@@ -82,7 +82,10 @@ fn extract_ids_in_line(line: string, out: Vec<string>) {
 // `fs.is_dir` predicate (dialect authority §4 / std/fs.hew:495). No more
 // false negatives on README, Makefile, etc.
 fn collect_md_files(dir: string, out: Vec<string>) {
-    let entries = fs.list_dir(dir).unwrap();
+    let entries = match fs.list_dir(dir) {
+        .Ok(entries) => entries,
+        .Err(_) => panic("failed to list orchestration directory"),
+    };
     for name in entries {
         let full = dir + "/" + name;
         if fs.is_dir(full) {
@@ -107,7 +110,10 @@ fn collect_md_files(dir: string, out: Vec<string>) {
 // i32>". Closed by W3.4. We use `get` + `insert` and match on the
 // `Option<i32>` returned by `get`.
 fn ingest_file(path: string, index: HashMap<string, i32>) {
-    let content = fs.read(path).unwrap();
+    let content = match fs.read(path) {
+        .Ok(content) => content,
+        .Err(_) => panic("failed to read orchestration document"),
+    };
     let ids: Vec<string> = Vec.new();
     for line in content.lines() {
         extract_ids_in_line(line, ids);

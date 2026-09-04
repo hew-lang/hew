@@ -65,13 +65,17 @@ fn main() {
     let argc = arguments.len();
     if argc > 1 {
         match arguments.get(1) {
-            .Some(value) => port = value,
+            .Some(value) => {
+                port = value;
+            },
             .None => {},
         }
     }
     if argc > 2 {
         match arguments.get(2) {
-            .Some(value) => root = value,
+            .Some(value) => {
+                root = value;
+            },
             .None => {},
         }
     }

@@ -562,8 +562,6 @@ const SYNTHETIC_CRASH_ACTION_ITEM: ItemId = ItemId(u32::MAX - 1007);
 const SYNTHETIC_CRASH_KIND_ITEM: ItemId = ItemId(u32::MAX - 1008);
 const SYNTHETIC_MONITOR_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1009);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
-const OPTION_HEW_SOURCE: &str = include_str!("../../std/option.hew");
-const RESULT_HEW_SOURCE: &str = include_str!("../../std/result.hew");
 
 /// One compiler-owned cursor record admitted at the HIR layout boundary.
 ///
@@ -2113,31 +2111,14 @@ fn builtin_callable_impl_program() -> Option<Program> {
     if !parsed.errors.is_empty() {
         return None;
     }
-    let mut items = parsed
+    let items = parsed
         .program
         .items
         .into_iter()
         .filter(|(item, _)| {
             matches!(item, Item::Trait(_) | Item::TypeDecl(_)) || is_builtin_callable_impl(item)
         })
-        .collect::<Vec<_>>();
-    for source in [RESULT_HEW_SOURCE, OPTION_HEW_SOURCE] {
-        let parsed = hew_parser::parse(source);
-        debug_assert!(
-            parsed.errors.is_empty(),
-            "stdlib callable source failed to parse"
-        );
-        if !parsed.errors.is_empty() {
-            return None;
-        }
-        items.extend(
-            parsed
-                .program
-                .items
-                .into_iter()
-                .filter(|(item, _)| is_builtin_callable_impl(item)),
-        );
-    }
+        .collect();
     Some(Program {
         items,
         module_doc: None,
@@ -2233,16 +2214,6 @@ fn is_builtin_receiver_impl(item: &Item) -> bool {
 fn is_builtin_callable_impl(item: &Item) -> bool {
     matches!(item, Item::Impl(impl_decl) if impl_decl.trait_bound.is_some())
         || is_builtin_duration_ctor_impl(item)
-        || matches!(item, Item::Impl(impl_decl) if impl_decl.trait_bound.is_none()
-            && matches!(&impl_decl.target_type.0, TypeExpr::Named { name, .. } if name == "Result" || name == "Option"))
-}
-
-fn builtin_callable_impl_module_owner(name: &str) -> &str {
-    match name {
-        "Result" => "std.result",
-        "Option" => "std.option",
-        _ => "std.builtins",
-    }
 }
 
 fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
@@ -4678,10 +4649,7 @@ pub fn lower_program_with_mono_cap(
                     let symbol_owner = if receiver_specific {
                         injected_builtin_impl_symbol_owner(name).to_string()
                     } else {
-                        imported_impl_symbol_self_name(
-                            builtin_callable_impl_module_owner(name),
-                            name,
-                        )
+                        imported_impl_symbol_self_name("std.builtins", name)
                     };
                     let impl_type_params = impl_type_param_names(impl_decl);
                     for method in &impl_decl.methods {
@@ -5719,10 +5687,7 @@ pub fn lower_program_with_mono_cap(
                         let symbol_owner = if receiver_specific {
                             injected_builtin_impl_symbol_owner(name).to_string()
                         } else {
-                            imported_impl_symbol_self_name(
-                                builtin_callable_impl_module_owner(name),
-                                name,
-                            )
+                            imported_impl_symbol_self_name("std.builtins", name)
                         };
                         let skipped_methods: HashSet<String> = impl_decl
                             .methods

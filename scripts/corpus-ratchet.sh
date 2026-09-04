@@ -705,7 +705,7 @@ hew_suite_tail() {
 # ── Corpus: stdlib ────────────────────────────────────────────────────────────
 
 run_stdlib() {
-    local stdlib_dir total relpath f check_status
+    local stdlib_dir total relpath f check_status check_log
 
     stdlib_dir="$REPO_ROOT/std"
     require_hew_bin
@@ -722,10 +722,10 @@ run_stdlib() {
         relpath="${f#"$REPO_ROOT"/}"
         RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${relpath}"$'\n'
         check_status=0
-        "$HEW_BIN" check "$f" >/dev/null 2>&1 || check_status=$?
+        check_log="$("$HEW_BIN" check "$f" 2>&1)" || check_status=$?
         if ((check_status != 0)); then
             ACTUAL_STR="${ACTUAL_STR}${relpath}"$'\n'
-            record_expected_refusal_status "$relpath" "$check_status"
+            record_expected_refusal_status "$relpath" "$check_status" "$check_log"
         else
             RATCHET_PASSED_STR="${RATCHET_PASSED_STR}${relpath}"$'\n'
         fi
@@ -1199,7 +1199,7 @@ doc_fence_read_expected() {
 
 run_doc_fences() {
     local entry doc_path prefix full_path total_fences
-    local pass=0 fail=0 skip=0 idx fence_id is_skip outfile check_rc
+    local pass=0 fail=0 skip=0 idx fence_id is_skip outfile check_rc check_log
 
     DOC_FENCE_OUTDIR="${OUTDIR_ARG:-$REPO_ROOT/.tmp/doc-fences}"
 
@@ -1252,7 +1252,7 @@ run_doc_fences() {
         fi
 
         check_rc=0
-        "$HEW_BIN" check "$outfile" >/dev/null 2>&1 || check_rc=$?
+        check_log="$("$HEW_BIN" check "$outfile" 2>&1)" || check_rc=$?
 
         if [[ "$check_rc" == "0" ]]; then
             pass=$((pass + 1))
@@ -1260,7 +1260,7 @@ run_doc_fences() {
         else
             fail=$((fail + 1))
             ACTUAL_STR="${ACTUAL_STR}${fence_id}"$'\n'
-            record_expected_refusal_status "$fence_id" "$check_rc"
+            record_expected_refusal_status "$fence_id" "$check_rc" "$check_log"
         fi
     done
 

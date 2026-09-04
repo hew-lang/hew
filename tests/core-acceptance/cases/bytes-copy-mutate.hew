@@ -1,0 +1,15 @@
+// Assignment produces independently mutable ordinary bytes values.
+fn main() -> i64 {
+    let original = "A".to_bytes();
+    var copy = original;
+    copy.push(66);
+
+    if original.len() != 1 || original[0] != 65 {
+        return 1;
+    }
+    if copy.len() != 2 || copy[0] != 65 || copy[1] != 66 {
+        return 2;
+    }
+    println(f"original={original[0]};copy={copy[0]},{copy[1]}");
+    0
+}

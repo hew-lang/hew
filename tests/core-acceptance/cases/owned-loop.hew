@@ -1,0 +1,16 @@
+// A loop carries an owned value through repeated call-and-reassignment.
+fn append_mark(value: string) -> string {
+    value + "!"
+}
+
+fn main() -> i64 {
+    var label = "core".to_upper();
+    for i in 0 .. 3 {
+        label = append_mark(label);
+    }
+    if label != "CORE!!!" {
+        return 1;
+    }
+    println(label);
+    0
+}

@@ -351,11 +351,14 @@ fn scan(xml: &str) -> Result<Report> {
             Ok(Event::Start(event)) => scanner.open(&event, false)?,
             Ok(Event::Empty(event)) => scanner.open(&event, true)?,
             Ok(Event::End(_)) => scanner.close()?,
-            Ok(Event::Text(event)) if !event.as_ref().iter().all(u8::is_ascii_whitespace) => {
-                if !matches!(
-                    scanner.stack.last().copied(),
-                    Some(Role::Status | Role::Other)
-                ) {
+            Ok(Event::Text(event)) => {
+                let bytes: &[u8] = event.as_ref();
+                if !bytes.iter().all(u8::is_ascii_whitespace)
+                    && !matches!(
+                        scanner.stack.last().copied(),
+                        Some(Role::Status | Role::Other)
+                    )
+                {
                     return Err("text is not allowed at this JUnit level".to_string());
                 }
             }
@@ -367,7 +370,7 @@ fn scan(xml: &str) -> Result<Report> {
                     return Err("content is not allowed at this JUnit level".to_string());
                 }
             }
-            Ok(Event::Text(_) | Event::Decl(_) | Event::Comment(_)) => {}
+            Ok(Event::Decl(_) | Event::Comment(_)) => {}
             Ok(Event::PI(_) | Event::DocType(_)) => {
                 return Err("processing instructions and DTDs are not accepted".to_string());
             }

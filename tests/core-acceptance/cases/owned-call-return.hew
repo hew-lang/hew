@@ -1,0 +1,17 @@
+// A caller retains its ordinary value while a by-value call returns one.
+fn echo(value: string) -> string {
+    value
+}
+
+fn main() -> i64 {
+    let source = "core".to_upper();
+    let returned = echo(source);
+    if source != "CORE" {
+        return 1;
+    }
+    if returned != "CORE" {
+        return 2;
+    }
+    println(f"source={source};returned={returned}");
+    0
+}

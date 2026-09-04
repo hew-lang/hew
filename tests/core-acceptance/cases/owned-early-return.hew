@@ -1,0 +1,21 @@
+// Returning early does not invalidate the independently owned fallback path.
+fn choose(prefer_early: bool) -> string {
+    let fallback = "fallback".to_upper();
+    if prefer_early {
+        return "early".to_upper();
+    }
+    fallback
+}
+
+fn main() -> i64 {
+    let early = choose(true);
+    let fallback = choose(false);
+    if early != "EARLY" {
+        return 1;
+    }
+    if fallback != "FALLBACK" {
+        return 2;
+    }
+    println(f"early={early};fallback={fallback}");
+    0
+}

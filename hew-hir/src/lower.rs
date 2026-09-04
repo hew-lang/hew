@@ -13258,9 +13258,19 @@ impl LowerCtx {
         // User-source inherent impls on VecIter still take the guard below.
         let is_std_iter_vec_iter_extension = builtin_impl_kind == Some(BuiltinType::VecIter)
             && self.current_module_name.as_deref() == Some("std.iter");
+        let is_compiler_owned_std_impl = self
+            .current_module_name
+            .as_deref()
+            .is_some_and(|module| module.starts_with("std."))
+            && decl.methods.iter().all(|method| {
+                let symbol =
+                    crate::node::HirImplBlock::method_symbol(&symbol_self_name, &method.name);
+                self.impl_method_declaration_ids.contains_key(&symbol)
+            });
         if !target_is_alias
             && !is_duration_ctor_block
             && !is_std_iter_vec_iter_extension
+            && !is_compiler_owned_std_impl
             && decl.trait_bound.is_none()
             && builtin_impl_kind.is_some()
         {

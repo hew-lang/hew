@@ -23,6 +23,7 @@ pub(crate) trait CommandDispatcher {
     fn sir_coverage(&mut self, args: &args::SirCoverageArgs);
     fn completions(&mut self, args: &args::CompletionsArgs);
     fn version(&mut self);
+    fn env(&mut self);
     fn help(&mut self);
     fn observe(&mut self, args: &args::ObserveArgs);
     fn lsp(&mut self, args: &args::LspArgs);
@@ -103,6 +104,10 @@ impl CommandDispatcher for MainCommandDispatcher {
         crate::cmd_version();
     }
 
+    fn env(&mut self) {
+        crate::cmd_env();
+    }
+
     fn help(&mut self) {
         // No subcommand — shouldn't normally happen since clap shows help,
         // but handle gracefully.
@@ -153,6 +158,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         },
         Some(Command::Completions(args)) => dispatcher.completions(args),
         Some(Command::Version) => dispatcher.version(),
+        Some(Command::Env) => dispatcher.env(),
         Some(Command::Observe(args)) => dispatcher.observe(args),
         Some(Command::Lsp(args)) => dispatcher.lsp(args),
         Some(Command::Pkg(cmd)) => dispatcher.pkg(cmd),
@@ -577,6 +583,10 @@ mod tests {
 
         fn version(&mut self) {
             self.calls.push("version".to_string());
+        }
+
+        fn env(&mut self) {
+            self.calls.push("env".to_string());
         }
 
         fn help(&mut self) {

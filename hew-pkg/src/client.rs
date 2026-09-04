@@ -755,7 +755,14 @@ fn percent_encode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    // Serialize env-var–mutating tests: `std::env::set_var` / `remove_var`
+    // are not thread-safe when multiple tests share the same process, and
+    // `client_default_url` below pins the env-free default.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn package_urls_preserve_dotted_names() {
@@ -768,9 +775,20 @@ mod tests {
 
     #[test]
     fn client_default_url() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("HEW_REGISTRY");
         let client = RegistryClient::new_with_config(&config::PkgConfig::default());
         assert_eq!(client.api_url, config::DEFAULT_REGISTRY_API);
         assert!(client.token.is_none());
+    }
+
+    #[test]
+    fn client_honours_hew_registry_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("HEW_REGISTRY", "https://registry.internal.example/api/v1");
+        let client = RegistryClient::new_with_config(&config::PkgConfig::default());
+        std::env::remove_var("HEW_REGISTRY");
+        assert_eq!(client.api_url, "https://registry.internal.example/api/v1");
     }
 
     #[test]

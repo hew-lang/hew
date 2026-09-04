@@ -3095,6 +3095,34 @@ fn cmd_version() {
     println!("hew {}", env!("HEW_VERSION"));
 }
 
+/// `hew env`: print the resolved package-manager environment, one
+/// `NAME=value` line per variable, `(default)` appended when the variable
+/// itself is unset and a compiled-in default is in effect.
+fn cmd_env() {
+    let hew_home = hew_pkg::config::hew_home();
+    let hew_home_set = std::env::var("HEW_HOME").is_ok();
+    println!(
+        "HEW_HOME={}{}",
+        hew_home.display(),
+        if hew_home_set { "" } else { " (default)" }
+    );
+
+    let registry = hew_pkg::config::discover_registry();
+    let registry_set = std::env::var("HEW_REGISTRY").is_ok();
+    println!(
+        "HEW_REGISTRY={}{}",
+        registry.api,
+        if registry_set { "" } else { " (default)" }
+    );
+
+    // HEW_CC has no reader yet (V060-FD-3): report the raw env value, with
+    // no resolved default to fall back to.
+    match std::env::var("HEW_CC") {
+        Ok(value) => println!("HEW_CC={value}"),
+        Err(_) => println!("HEW_CC= (default)"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Observe / LSP — sibling binary delegation
 // ---------------------------------------------------------------------------

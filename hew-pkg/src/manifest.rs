@@ -30,13 +30,36 @@ pub fn default_edition() -> String {
 
 /// A dependency can be specified as a bare version string or as a table with
 /// additional options.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum DepSpec {
     /// Shorthand: `"^1.0"`.
     Version(String),
     /// Table: `{ version = "^1.0", optional = true, features = ["tls"] }`.
     Table(DepTable),
+}
+
+impl<'de> Deserialize<'de> for DepSpec {
+    /// Hand-written rather than `#[serde(untagged)]`: an untagged enum
+    /// buffers the input and discards each variant's own error on failure,
+    /// so a malformed table (e.g. the unquoted dotted key
+    /// `hew.math.stats = "0.3"` nesting a bogus `math` field under
+    /// `[dev-dependencies]`) surfaces only "data did not match any variant
+    /// of untagged enum `DepSpec`" — it swallows `DepTable`'s
+    /// `deny_unknown_fields` message entirely. Trying the string form
+    /// first, then deserializing the table form directly, preserves that
+    /// message instead of discarding it.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match toml::Value::deserialize(deserializer)? {
+            toml::Value::String(s) => Ok(Self::Version(s)),
+            other => DepTable::deserialize(other)
+                .map(Self::Table)
+                .map_err(serde::de::Error::custom),
+        }
+    }
 }
 
 impl PartialEq<&str> for DepSpec {
@@ -67,6 +90,7 @@ impl fmt::Display for DepSpec {
 
 /// Table form of a dependency specification.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct DepTable {
     /// Semver version requirement (defaults to `"*"` for path dependencies).
     #[serde(default = "default_dependency_version")]
@@ -78,7 +102,11 @@ pub struct DepTable {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub features: Option<Vec<String>>,
     /// Whether to include the dependency's default features (default: `true`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "default-features",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_features: Option<bool>,
     /// Non-default registry name for this dependency.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -156,6 +184,7 @@ impl From<toml::ser::Error> for ManifestError {
 
 /// The `[package]` section of a `hew.toml` manifest.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Package {
     /// Package name (required).
     pub name: String,
@@ -229,6 +258,7 @@ impl Package {
 /// the compiler links the produced `lib<lib>.a` (or `.dylib`) when the package is
 /// built or imported, so consumers never pass `--link-lib` manually.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct NativeLib {
     /// Path to the Cargo crate directory, relative to `hew.toml` (default `"."`).
     #[serde(rename = "crate", default = "default_native_crate")]
@@ -297,6 +327,7 @@ pub fn package_root_source(package_name: &str) -> String {
 
 /// A parsed `hew.toml` manifest.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HewManifest {
     /// `[package]` metadata.
     pub package: Package,
@@ -929,6 +960,92 @@ mod tests {
         assert_eq!(m.dependencies.len(), 1);
         assert_eq!(m.dev_dependencies.len(), 1);
         assert_eq!(m.dev_dependencies["testing::assert"].version_req(), "^1.0");
+    }
+
+    /// The unquoted dotted key `hew.math.stats = "0.3"` under
+    /// `[dev-dependencies]` parses as a nested TOML table
+    /// (`dev-dependencies.hew = { math = { stats = "0.3" } }`), which
+    /// silently produced a default-valued `DepTable` for `hew` before
+    /// `deny_unknown_fields` — the unrecognized `math` field was dropped
+    /// rather than rejected. `DepTable`'s `deny_unknown_fields` is what
+    /// catches this, since `dev_dependencies`'s own key (`hew`) is an
+    /// arbitrary map key, not a struct field.
+    #[test]
+    fn dev_dependencies_typo_rejected_by_dep_table() {
+        let f = write_temp(concat!(
+            "[package]\n",
+            "name = \"typo\"\n",
+            "version = \"0.1.0\"\n",
+            "\n[dev-dependencies]\n",
+            "hew.math.stats = \"0.3\"\n",
+        ));
+        let error = parse_manifest(f.path()).expect_err("unknown field must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("math"),
+            "error should name the unrecognized field: {message}"
+        );
+    }
+
+    #[test]
+    fn hew_manifest_rejects_unknown_top_level_field() {
+        let f = write_temp(concat!(
+            "[package]\n",
+            "name = \"unknownfield\"\n",
+            "version = \"0.1.0\"\n",
+            "\nunknown-section-value = true\n",
+        ));
+        let error = parse_manifest(f.path()).expect_err("unknown top-level field must be rejected");
+        assert!(
+            error.to_string().contains("unknown-section-value"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn package_rejects_unknown_field() {
+        let f = write_temp(concat!(
+            "[package]\n",
+            "name = \"unknownpkgfield\"\n",
+            "version = \"0.1.0\"\n",
+            "typo-field = \"oops\"\n",
+        ));
+        let error = parse_manifest(f.path()).expect_err("unknown package field must be rejected");
+        assert!(error.to_string().contains("typo-field"), "{error}");
+    }
+
+    #[test]
+    fn native_lib_rejects_unknown_field() {
+        let f = write_temp(concat!(
+            "[package]\n",
+            "name = \"unknownnativefield\"\n",
+            "version = \"0.1.0\"\n",
+            "edition = \"2026\"\n",
+            "\n[native]\n",
+            "lib = \"foo\"\n",
+            "typo = \"oops\"\n",
+        ));
+        let error = parse_manifest(f.path()).expect_err("unknown native field must be rejected");
+        assert!(error.to_string().contains("typo"), "{error}");
+    }
+
+    /// The cargo-conventional `default-features` spelling is the accepted
+    /// one (`DepTable::default_features` is `#[serde(rename =
+    /// "default-features")]`); the underscore spelling is now unknown.
+    #[test]
+    fn dep_table_accepts_hyphenated_default_features() {
+        let f = write_temp(concat!(
+            "[package]\n",
+            "name = \"defaultfeatures\"\n",
+            "version = \"0.1.0\"\n",
+            "\n[dependencies]\n",
+            "pkg = { version = \"^1.0\", default-features = false }\n",
+        ));
+        let m = parse_manifest(f.path()).unwrap();
+        let DepSpec::Table(dep) = &m.dependencies["pkg"] else {
+            panic!("expected table dependency");
+        };
+        assert_eq!(dep.default_features, Some(false));
     }
 
     #[test]

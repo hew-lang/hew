@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::paths::home_dir;
+pub use crate::paths::{hew_home, home_dir};
 
 /// Top-level configuration loaded from `~/.hew/config.toml`.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -162,11 +162,14 @@ pub struct RegistryEndpoints {
     pub fallback_api: Option<String>,
 }
 
-/// Return the compiled-in registry endpoints.
+/// Return the registry endpoints: `HEW_REGISTRY` overrides the compiled-in
+/// default API URL when set (the CDN and fallback stay compiled-in — a
+/// registry override has no way to name its own CDN or mirror).
 #[must_use]
 pub fn discover_registry() -> RegistryEndpoints {
+    let api = std::env::var("HEW_REGISTRY").unwrap_or_else(|_| DEFAULT_REGISTRY_API.to_string());
     RegistryEndpoints {
-        api: DEFAULT_REGISTRY_API.to_string(),
+        api,
         cdn: DEFAULT_REGISTRY_CDN.to_string(),
         fallback_api: DEFAULT_FALLBACK_API.map(std::string::ToString::to_string),
     }

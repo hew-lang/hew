@@ -112,6 +112,10 @@ pub enum Command {
     Completions(CompletionsArgs),
     /// Print version info.
     Version,
+    /// Print resolved package-manager environment (`HEW_HOME`,
+    /// `HEW_REGISTRY`, `HEW_CC`), naming which are set and which fall back
+    /// to their default.
+    Env,
     /// Launch the TUI actor observer (`hew-observe`).
     ///
     /// Forwards all arguments to `hew-observe`. Requires the `hew-observe`

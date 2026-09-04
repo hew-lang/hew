@@ -29,7 +29,9 @@ import std.net;
 /// Note: DNS has no OS errno channel; the errno payload is always 0.
 /// A follow-up issue will wire errno once hew_dns_resolve exposes it.
 pub fn resolve(hostname: string) -> Result<Vec<string>, net.NetError> {
-    let addrs = unsafe { hew_dns_resolve(hostname) };
+    let addrs = unsafe {
+        hew_dns_resolve(hostname)
+    };
     if addrs.len() == 0 {
         Err(net.net_error_from_errno(0))
     } else {
@@ -46,7 +48,9 @@ pub fn resolve(hostname: string) -> Result<Vec<string>, net.NetError> {
 /// Note: DNS has no OS errno channel; the errno payload is always 0.
 /// A follow-up issue will wire errno once hew_dns_lookup_host exposes it.
 pub fn lookup_host(hostname: string) -> Result<string, net.NetError> {
-    let ip = unsafe { hew_dns_lookup_host(hostname) };
+    let ip = unsafe {
+        hew_dns_lookup_host(hostname)
+    };
     if ip == "" {
         Err(net.net_error_from_errno(0))
     } else {

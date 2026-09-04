@@ -45,8 +45,8 @@ fn main() {
 
     // A parse failure returns no parent owner to mutate or free.
     match toml.parse("=") {
-        .Ok(value) => {
-            value.free();
+        .Ok(parsed) => {
+            parsed.free();
             panic("malformed TOML unexpectedly parsed");
         },
         .Err(_) => {},

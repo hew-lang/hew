@@ -16,8 +16,6 @@ import std.os;
 
 import std.net.mime;
 
-import std.net;
-
 fn resolve_path(root: string, url_path: string) -> string {
     let path = root + url_path;
     if url_path.ends_with("/") {

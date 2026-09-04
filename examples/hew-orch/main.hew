@@ -163,12 +163,9 @@ fn main() {
     };
     for k in 0 .. limit {
         let id = keys[k];
-        match index.get(id) {
-            .Some(c) => {
-                println(id);
-                println(c);
-            },
-            .None => {},
+        if let .Some(c) = index.get(id) {
+            println(id);
+            println(c);
         }
     }
 }

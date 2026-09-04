@@ -49,8 +49,8 @@ fn main() {
 
     // A parse failure returns no parent owner to mutate or free.
     match json.parse("{") {
-        .Ok(value) => {
-            value.free();
+        .Ok(parsed) => {
+            parsed.free();
             panic("malformed JSON unexpectedly parsed");
         },
         .Err(_) => {},

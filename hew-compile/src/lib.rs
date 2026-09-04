@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use serde::{de::DeserializeOwned, Deserialize};
@@ -206,10 +208,19 @@ pub enum FrontendDiagnosticKind {
 
 /// A frontend failure that has no parser/type/HIR payload but still needs a
 /// stable machine-readable identity (for example package-module resolution).
+///
+/// `span`/`source` are `None` for the ordinary message-only sites (the code
+/// carries the identity, but there is nowhere in the source to point at —
+/// `E_IMPORT_AMBIGUOUS` spans two files, `E_PACKAGE_ROOT_MISSING` names a
+/// missing file on disk). A site that *does* have a location — today just
+/// `E_MODULE_NOT_FOUND`, pointing at the offending `import` — sets both so
+/// the renderers can locate it instead of falling back to a zero span.
 #[derive(Debug, Clone)]
 pub struct FrontendMessageDiagnostic {
     pub code: String,
     pub message: String,
+    pub span: Option<Range<usize>>,
+    pub source: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +242,8 @@ impl FrontendDiagnostic {
             kind: FrontendDiagnosticKind::Message(FrontendMessageDiagnostic {
                 code: "E_MESSAGE".to_string(),
                 message: message.into(),
+                span: None,
+                source: None,
             }),
         }
     }
@@ -243,6 +256,35 @@ impl FrontendDiagnostic {
             kind: FrontendDiagnosticKind::Message(FrontendMessageDiagnostic {
                 code: code.to_string(),
                 message: message.into(),
+                span: None,
+                source: None,
+            }),
+        }
+    }
+
+    /// A coded message that also locates itself in source — the one shape
+    /// [`FrontendMessageDiagnostic`] needs to render like a `Parse`/`Type`
+    /// diagnostic instead of a zero-span message. `filename` lands on the
+    /// existing outer field (the same one `parse`/`type_` already populate)
+    /// rather than a new one, so the renderers' `(source, filename)` pattern
+    /// keeps working unchanged. See [`FrontendFailure::coded_message_at`],
+    /// its only caller.
+    fn coded_message_at(
+        code: &str,
+        message: impl Into<String>,
+        span: Range<usize>,
+        source: &str,
+        filename: &str,
+    ) -> Self {
+        Self {
+            source: None,
+            filename: Some(filename.to_string()),
+            note_sources: Vec::new(),
+            kind: FrontendDiagnosticKind::Message(FrontendMessageDiagnostic {
+                code: code.to_string(),
+                message: message.into(),
+                span: Some(span),
+                source: Some(Arc::from(source)),
             }),
         }
     }
@@ -317,6 +359,26 @@ impl FrontendFailure {
         Self::new(
             message.clone(),
             vec![FrontendDiagnostic::coded_message(code, message)],
+        )
+    }
+
+    /// [`FrontendFailure::coded_message`], but the diagnostic also carries a
+    /// span and the source it indexes into, so a renderer can point at it
+    /// instead of showing a bare message. Used only by `E_MODULE_NOT_FOUND`,
+    /// which can locate the offending `import` statement.
+    fn coded_message_at(
+        code: &str,
+        message: impl Into<String>,
+        span: Range<usize>,
+        source: &str,
+        filename: &str,
+    ) -> Self {
+        let message = message.into();
+        Self::new(
+            message.clone(),
+            vec![FrontendDiagnostic::coded_message_at(
+                code, message, span, source, filename,
+            )],
         )
     }
 }
@@ -522,6 +584,91 @@ fn is_builtin_module(module_path: &str) -> bool {
     module_path.starts_with("std::")
         || module_path.starts_with("hew::")
         || module_path.starts_with("ecosystem::")
+}
+
+/// The last dotted segment of a full module path (`std.net.http` -> `http`).
+fn module_leaf(full: &str) -> &str {
+    full.rsplit('.').next().unwrap_or(full)
+}
+
+/// The closest existing `std` module to a mistyped import's last path
+/// segment: an exact leaf match (`std.http` -> `std.net.http`, a missed or
+/// mis-nested path segment) when one exists, else a near-miss typo
+/// (`std.htp` -> `std.net.http`).
+///
+/// Near-miss matching compares leaf names (the last dotted segment), not
+/// full dotted paths: `std.htp` and `std.net.http` differ by far more than
+/// [`hew_types::error::find_similar`]'s length-scaled Levenshtein threshold
+/// allows, but `htp` and `http` — the part the user actually mistyped — are
+/// one edit apart. An exact leaf match is checked first because
+/// `find_similar` filters exact matches out entirely (it exists to catch
+/// spelling, not path mistakes) — without this, the single most likely
+/// real-world slip (the right module name, wrong or missing nesting) would
+/// get no suggestion at all. Returns `None` when neither finds anything.
+fn nearest_std_module(leaf: &str, search_paths: &[PathBuf]) -> Option<String> {
+    let mut modules = Vec::new();
+    for root in search_paths {
+        let std_dir = root.join("std");
+        if std_dir.is_dir() {
+            collect_std_module_names(&std_dir, &mut modules);
+        }
+    }
+    if let Some(exact) = modules.iter().find(|full| module_leaf(full) == leaf) {
+        return Some(exact.clone());
+    }
+    let leaves: Vec<&str> = modules.iter().map(|full| module_leaf(full)).collect();
+    let best_leaf = hew_types::error::find_similar(leaf, leaves.iter().copied())
+        .into_iter()
+        .next()?;
+    modules
+        .into_iter()
+        .find(|full| module_leaf(full) == best_leaf)
+}
+
+/// Recursively collect every dotted `std.…` module name reachable under
+/// `std_dir` into `out`.
+///
+/// Mirrors the two entry-file shapes the import resolver's own per-import
+/// candidate list already assumes (`dir_path`/`rel_path` above: a directory
+/// names its module through a same-named `<dir>/<dir-name>.hew`, or a flat
+/// `<name>.hew` file sits directly at that path) — this walks the whole
+/// tree once instead of probing one path, so "did you mean" has a full
+/// candidate list to compare a typo against. Cold path (only runs once
+/// import resolution has already failed), so no caching: the stdlib tree is
+/// a few hundred files, and this only walks it on a diagnostic.
+fn collect_std_module_names(std_dir: &Path, out: &mut Vec<String>) {
+    let mut segments = vec!["std".to_string()];
+    collect_module_names_at(std_dir, &mut segments, out);
+}
+
+fn collect_module_names_at(dir: &Path, segments: &mut Vec<String>, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+                continue;
+            };
+            segments.push(name.to_string());
+            collect_module_names_at(&path, segments, out);
+            segments.pop();
+        } else if path.extension().is_some_and(|ext| ext == "hew") {
+            let Some(stem) = path.file_stem().and_then(std::ffi::OsStr::to_str) else {
+                continue;
+            };
+            if segments.last().map(String::as_str) == Some(stem) {
+                // `<dir>/<dir-name>.hew` — the directory's own canonical entry.
+                out.push(segments.join("."));
+            } else {
+                // A flat file: its own name is the trailing path segment.
+                segments.push(stem.to_string());
+                out.push(segments.join("."));
+                segments.pop();
+            }
+        }
+    }
 }
 
 fn load_project_context(
@@ -1682,10 +1829,32 @@ fn resolve_file_imports_internal(
                     } else {
                         ""
                     };
-                    return Err(FrontendFailure::coded_message(
-                        "E_MODULE_NOT_FOUND",
-                        format!("Error: module `{source_module}` not found (tried: {tried}){hint}"),
-                    ));
+                    let suggestion = if is_std_import {
+                        nearest_std_module(last, search_paths)
+                            .map(|nearest| format!("\n  did you mean `{nearest}`?"))
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    // No leading "Error: " here (unlike the sibling messages
+                    // above): this one now renders with a real
+                    // `file:line:col: error:` header, and the plain-text
+                    // fallback below only fires if `source_file` cannot be
+                    // re-read, which never happens on the path that just
+                    // parsed it.
+                    let message = format!(
+                        "module `{source_module}` not found (tried: {tried}){hint}{suggestion}"
+                    );
+                    return Err(match std::fs::read_to_string(source_file) {
+                        Ok(module_source) => FrontendFailure::coded_message_at(
+                            "E_MODULE_NOT_FOUND",
+                            message,
+                            items[*idx].1.clone(),
+                            &module_source,
+                            &source_file.display().to_string(),
+                        ),
+                        Err(_) => FrontendFailure::coded_message("E_MODULE_NOT_FOUND", message),
+                    });
                 }
             }
             _ => continue,

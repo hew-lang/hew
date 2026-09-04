@@ -307,6 +307,54 @@ impl Parser<'_> {
         let stmt = match self.peek() {
             Some(Token::Let) => {
                 self.advance();
+
+                // `let mut x = …` is the single most common Rust-shaped typo:
+                // Hew spells mutability `var`, not `mut`. Recognizing it here,
+                // before the pattern parse, lets the whole statement recover
+                // as `var name = …` behind one diagnostic. Left to fall
+                // through to `parse_pattern`, `mut` matches none of the
+                // pattern-start arms — it lands in `error_invalid_pattern`'s
+                // reserved-word branch (which tells the user to rename `mut`
+                // itself, nonsensically), aborts the `let` parse without
+                // consuming `mut`, and the block-statement loop then cascades
+                // two more errors resyncing token-by-token.
+                if self.peek() == Some(&Token::Mut) {
+                    let mut_span = self.peek_span();
+                    self.advance();
+                    let hint = match self.peek() {
+                        Some(Token::Identifier(name)) => {
+                            format!(
+                                "delete `mut` and change `let` to `var`: write `var {name} = …`"
+                            )
+                        }
+                        _ => "delete `mut` and change `let` to `var`".to_string(),
+                    };
+                    self.error_at_with_hint(
+                        "Hew spells mutability `var`, not `let mut`".to_string(),
+                        mut_span,
+                        hint,
+                    );
+
+                    let name = self.expect_ident()?;
+
+                    let ty = if self.eat(&Token::Colon) {
+                        Some(self.parse_type()?)
+                    } else {
+                        None
+                    };
+
+                    let value = if self.eat(&Token::Equal) {
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+
+                    self.expect(&Token::Semicolon)?;
+
+                    let end = self.peek_span().start;
+                    return Some((Stmt::Var { name, ty, value }, start..end));
+                }
+
                 let pattern = self.parse_pattern()?;
 
                 // `let r? = expr;` is syntactic sugar for `let r = expr?;`.

@@ -305,3 +305,68 @@ fn compile_mir_gate_failure_text_has_no_debug_payload() {
         "compile MIR diagnostic should be source-attributed; got:\n{stderr}",
     );
 }
+
+/// `E_MODULE_NOT_FOUND` locates itself at the offending `import` (not a zero
+/// span) and, for a std-module typo close to a real module, names the fix.
+#[test]
+fn module_not_found_has_span_and_suggestion() {
+    let (_dir, path) = write_fixture("import std.htp;\nfn main() { }\n");
+    let output = run(&["check", "--format", "json", path.to_str().unwrap()]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "module-not-found must exit 1\n{}",
+        describe_output(&output),
+    );
+
+    let diagnostics = parse_json_array(&output);
+    let not_found = diagnostics
+        .iter()
+        .find(|d| d["code"] == "E_MODULE_NOT_FOUND")
+        .unwrap_or_else(|| panic!("expected an E_MODULE_NOT_FOUND diagnostic: {diagnostics:?}"));
+
+    let span = &not_found["span"];
+    assert!(
+        span["start_line"].as_u64().unwrap_or(0) > 0,
+        "module-not-found must carry the import's own span, not a zero span: {span}",
+    );
+    assert_eq!(
+        span["start_line"], 1,
+        "the bad `import` is on line 1 of the fixture: {span}",
+    );
+    assert!(
+        not_found["message"]
+            .as_str()
+            .unwrap()
+            .contains("std.net.http"),
+        "a std-module typo close to `std.net.http` must suggest it: {not_found}",
+    );
+    assert!(
+        not_found["file"].as_str().unwrap().ends_with("main.hew"),
+        "file field must name the source: {not_found}",
+    );
+}
+
+/// The right module name at the wrong nesting (`std.http` for `std.net.http`)
+/// is the single likeliest real mistake — not a typo `find_similar` would
+/// catch (the leaf spelling is exactly right), so it needs its own exact-leaf
+/// match ahead of the fuzzy fallback.
+#[test]
+fn module_not_found_suggests_an_exact_leaf_match_at_the_wrong_nesting() {
+    let (_dir, path) = write_fixture("import std.http;\nfn main() { }\n");
+    let output = run(&["check", "--format", "json", path.to_str().unwrap()]);
+
+    let diagnostics = parse_json_array(&output);
+    let not_found = diagnostics
+        .iter()
+        .find(|d| d["code"] == "E_MODULE_NOT_FOUND")
+        .unwrap_or_else(|| panic!("expected an E_MODULE_NOT_FOUND diagnostic: {diagnostics:?}"));
+    assert!(
+        not_found["message"]
+            .as_str()
+            .unwrap()
+            .contains("std.net.http"),
+        "the right leaf name at the wrong nesting must still suggest `std.net.http`: {not_found}",
+    );
+}

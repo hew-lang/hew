@@ -33,10 +33,6 @@ day-one.11	V060-FD-5	hew new --actor: unrecognized subcommand
 day-one.12	V060-FD-5	hew new --actor does not exist; actor scaffold never created
 day-one.13	V060-FD-5	hew new --lib: unrecognized subcommand
 day-one.14	V060-FD-5	hew new --lib does not exist; lib scaffold never created
-day-one.16	V060-FD-4	let mut error text says "rename this binding", not "var x"
-day-one.17	V060-FD-4	let mut is a three-error cascade, not one error
-day-one.20	V060-FD-4	module-not-found JSON carries a zero span (start_line: 0)
-day-one.21	V060-FD-4	module-not-found JSON carries no nearest-module suggestion
 day-one.22	V060-FD-3	HEW_CC has no reader in the compiler (grep -rn HEW_CC --include=*.rs is empty); the env var is silently ignored and build falls through to system cc, exit 0
 day-one.23	V060-FD-3	HEW_CC unimplemented (see day-one.22): no error output naming the bad path
 day-one.24	V060-FD-3	HEW_CC unimplemented (see day-one.22): no error output naming a package to install

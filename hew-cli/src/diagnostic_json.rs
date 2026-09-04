@@ -268,6 +268,26 @@ pub(crate) fn coded_message_diagnostic(
     }
 }
 
+/// Build a [`JsonDiagnostic`] from a coded frontend message that carries its
+/// own span and source text (today, only `E_MODULE_NOT_FOUND`, which locates
+/// the offending `import`). Falls back to [`coded_message_diagnostic`]'s zero
+/// span when either half is missing, matching every other coded-message site
+/// that never attached one. `filename` is the enclosing `FrontendDiagnostic`'s
+/// (the same field `Parse`/`Type` diagnostics use), not a new one.
+pub(crate) fn from_coded_message_diagnostic(
+    diagnostic: &hew_compile::FrontendMessageDiagnostic,
+    filename: Option<&str>,
+) -> JsonDiagnostic {
+    match (&diagnostic.span, diagnostic.source.as_deref()) {
+        (Some(span), Some(source)) => JsonDiagnostic {
+            span: JsonSpan::from_range(source, span),
+            file: filename.unwrap_or_default().to_string(),
+            ..coded_message_diagnostic(&diagnostic.code, &diagnostic.message, DiagChannel::User)
+        },
+        _ => coded_message_diagnostic(&diagnostic.code, &diagnostic.message, DiagChannel::User),
+    }
+}
+
 /// Build a [`JsonDiagnostic`] from a parser diagnostic.
 pub(crate) fn from_parse_error(
     source: &str,

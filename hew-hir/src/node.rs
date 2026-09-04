@@ -45,9 +45,9 @@ pub struct HirModule {
     /// producer missing from `diagnostic_source_modules` cannot leak a false
     /// root caret — it simply is not in this set.
     pub root_item_ids: HashSet<ItemId>,
-    /// Checker-selected process entry and its complete typed exit contract.
-    /// Downstream layers join on the plan's declaration identity and execute
-    /// its action without rediscovering either fact.
+    /// Checker-selected process entry, any displaced authored entry, and the
+    /// complete typed exit contract. Downstream layers join on declaration
+    /// identity and execute the action without rediscovering any fact.
     pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
     /// Parameters whose resolved type has a checker-proven projection into
     /// caller-visible storage, keyed by stable function item id and parameter

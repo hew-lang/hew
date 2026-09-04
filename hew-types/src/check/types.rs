@@ -260,6 +260,10 @@ pub enum EntryExitAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryExitPlan {
     pub entry: crate::DefId,
+    /// Authored process entry displaced by an explicit frontend selection.
+    /// This keeps the process ABI symbol available for the selected adapter
+    /// without downstream name-based rediscovery.
+    pub displaced_entry: Option<crate::DefId>,
     pub action: EntryExitAction,
 }
 

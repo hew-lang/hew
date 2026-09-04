@@ -1266,6 +1266,37 @@ impl Checker {
             })
     }
 
+    fn authored_entry_item(program: &Program) -> Option<(usize, &std::ops::Range<usize>)> {
+        program
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(item_index, (item, span))| match item {
+                Item::Function(declaration)
+                    if declaration.name == "main"
+                        && declaration.type_params.as_ref().is_none_or(Vec::is_empty) =>
+                {
+                    Some((item_index, span))
+                }
+                _ => None,
+            })
+    }
+
+    fn entry_declaration(
+        &self,
+        item_index: usize,
+        span: &std::ops::Range<usize>,
+    ) -> Option<crate::DefId> {
+        let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+            self.identity.root_module(),
+            span,
+            item_index,
+            crate::DeclarationKind::Function,
+            0,
+        );
+        self.identity.declaration(occurrence).cloned()
+    }
+
     fn classify_entry_exit_action(
         &mut self,
         return_type: Ty,
@@ -1340,30 +1371,18 @@ impl Checker {
         program: &Program,
         resolved_fn_sigs: &HashMap<String, FnSig>,
     ) -> Option<EntryExitPlan> {
-        let (item_index, span) =
-            if self.entry_selection.is_some() {
-                self.selected_entry_item(program)?
-            } else {
-                program.items.iter().enumerate().find_map(
-                    |(item_index, (item, span))| match item {
-                        Item::Function(declaration)
-                            if declaration.name == "main"
-                                && declaration.type_params.as_ref().is_none_or(Vec::is_empty) =>
-                        {
-                            Some((item_index, span))
-                        }
-                        _ => None,
-                    },
-                )?
-            };
-        let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-            self.identity.root_module(),
-            span,
-            item_index,
-            crate::DeclarationKind::Function,
-            0,
-        );
-        let entry = self.identity.declaration(occurrence)?.clone();
+        let authored_entry_item = Self::authored_entry_item(program);
+        let (item_index, span) = if self.entry_selection.is_some() {
+            self.selected_entry_item(program)?
+        } else {
+            authored_entry_item?
+        };
+        let entry = self.entry_declaration(item_index, span)?;
+        let displaced_entry = self
+            .entry_selection
+            .and(authored_entry_item)
+            .and_then(|(item_index, span)| self.entry_declaration(item_index, span))
+            .filter(|authored_entry| authored_entry != &entry);
         let Some(return_type) = resolved_fn_sigs
             .get(entry.full_path())
             .map(|signature| signature.return_type.clone())
@@ -1380,7 +1399,11 @@ impl Checker {
         };
         let action = self.classify_entry_exit_action(return_type, span)?;
 
-        Some(EntryExitPlan { entry, action })
+        Some(EntryExitPlan {
+            entry,
+            displaced_entry,
+            action,
+        })
     }
 
     #[expect(

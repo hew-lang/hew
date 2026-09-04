@@ -33997,9 +33997,10 @@ fn param_is_aliasable_representation_loan(func: &RawMirFunction, param_idx: usiz
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-enum ProcessEntryTarget {
+enum ProcessEntrySymbolRole {
     Native,
     Wasm,
+    Displaced,
 }
 
 fn declare_function<'ctx>(
@@ -34009,9 +34010,9 @@ fn declare_function<'ctx>(
     func: &RawMirFunction,
     record_layouts: &RecordLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
-    process_entry_target: Option<ProcessEntryTarget>,
+    process_entry_role: Option<ProcessEntrySymbolRole>,
 ) -> CodegenResult<FnSymbol<'ctx>> {
-    let linkage = if process_entry_target.is_some() {
+    let linkage = if process_entry_role.is_some() {
         Some(Linkage::External)
     } else {
         Some(Linkage::Internal)
@@ -34142,14 +34143,15 @@ fn declare_function<'ctx>(
         BasicTypeEnum::VectorType(v) => v.fn_type(&param_tys, false),
         BasicTypeEnum::ScalableVectorType(v) => v.fn_type(&param_tys, false),
     };
-    let symbol_name = match process_entry_target {
-        Some(ProcessEntryTarget::Wasm) => WASM_MAIN_BODY_SYMBOL,
-        Some(ProcessEntryTarget::Native) => NATIVE_MAIN_BODY_SYMBOL,
+    let symbol_name = match process_entry_role {
+        Some(ProcessEntrySymbolRole::Wasm) => WASM_MAIN_BODY_SYMBOL,
+        Some(ProcessEntrySymbolRole::Native) => NATIVE_MAIN_BODY_SYMBOL,
+        Some(ProcessEntrySymbolRole::Displaced) => DISPLACED_ENTRY_BODY_SYMBOL,
         None => &func.name,
     };
     // The native entry body is reached only through the runtime's catch
     // boundary, so it is not part of the module's external surface.
-    let linkage = if process_entry_target.is_some() {
+    let linkage = if process_entry_role.is_some() {
         Some(Linkage::Internal)
     } else {
         linkage
@@ -34211,6 +34213,11 @@ const NATIVE_MAIN_BODY_SYMBOL: &str = "__hew_main_body";
 /// The exported `main` there is the export wrapper emitted by
 /// [`emit_direct_process_entry_adapter`].
 const WASM_MAIN_BODY_SYMBOL: &str = "__original_main";
+
+/// Private body symbol for an authored entry displaced by a frontend-selected
+/// process entry. The checker identifies the displaced declaration; codegen
+/// never rediscovers it from the source or emitted name.
+const DISPLACED_ENTRY_BODY_SYMBOL: &str = "__hew_displaced_entry_body";
 
 /// The symbol carrying the program entry's own body on a given target.
 ///
@@ -38281,14 +38288,18 @@ fn build_module_for_target<'ctx>(
                 func.name
             )));
         }
-        let is_process_entry = pipeline
-            .entry_exit_plan
-            .as_ref()
-            .is_some_and(|plan| plan.entry == func.key.declaration);
-        let process_entry_target = is_process_entry.then_some(if emit_wasm_entry_alias {
-            ProcessEntryTarget::Wasm
-        } else {
-            ProcessEntryTarget::Native
+        let process_entry_role = pipeline.entry_exit_plan.as_ref().and_then(|plan| {
+            if plan.entry == func.key.declaration {
+                Some(if emit_wasm_entry_alias {
+                    ProcessEntrySymbolRole::Wasm
+                } else {
+                    ProcessEntrySymbolRole::Native
+                })
+            } else if plan.displaced_entry.as_ref() == Some(&func.key.declaration) {
+                Some(ProcessEntrySymbolRole::Displaced)
+            } else {
+                None
+            }
         });
         let sym = declare_function(
             ctx,
@@ -38297,7 +38308,7 @@ fn build_module_for_target<'ctx>(
             func,
             &record_layouts,
             &pipeline.enum_layouts,
-            process_entry_target,
+            process_entry_role,
         )
         // Attach the function's own source span to a fail-closed declaration
         // error ONLY when the function's body provably indexes the root

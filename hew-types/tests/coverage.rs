@@ -15,8 +15,6 @@ mod active_mode_handler_coercion;
 mod builtin_type_discriminator;
 #[path = "coverage/char_cast.rs"]
 mod char_cast;
-#[path = "coverage/checked_mir_corpus_coverage.rs"]
-mod checked_mir_corpus_coverage;
 #[path = "coverage/clone_expression.rs"]
 mod clone_expression;
 #[path = "coverage/generic_enum_variants.rs"]

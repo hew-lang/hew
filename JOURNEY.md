@@ -113,3 +113,14 @@
   import-free helper policy while exercising the real `std.channel` module.
 - Checker, HIR and compile-session consumers remain untouched for the combined
   S10 continuation after the entry-identity work integrates.
+
+## Checked-MIR golden retirement
+
+- Retired the exact raw/elaborated dump snapshots and their manifest. The
+  executable checked-MIR corpus, transcript expectations, timeout, actor-leak
+  counterfactual and shared structured-refusal authority remain the gate.
+- Replaced the only dump-only concrete Vec ABI matrix coverage with a
+  source-to-MIR test that checks typed runtime family selection and call arity
+  while allowing incidental MIR presentation changes.
+- The known `actor_link_monitor` refusal remains reported by
+  `make checked-mir-run`; it is not converted into a passing transcript.

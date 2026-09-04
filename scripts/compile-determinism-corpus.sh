@@ -11,10 +11,9 @@
 #
 # Ownership facts are collected through hashed maps and sets, and diagnostics
 # are accumulated across passes; either can acquire an iteration-order
-# dependency that no single-run golden can see.  `ll-diff` and
-# `checked-mir-verify` compare one run against a committed golden, so a compiler
-# that emits a different-but-plausible order on every invocation passes both.
-# This gate is the one that fails closed on it.
+# dependency that a single compilation cannot see. `ll-diff` compares one run
+# with a committed output, so a compiler that emits a different-but-plausible
+# order on every invocation can still pass it. This gate fails closed on that.
 #
 # This assertion set was previously carried by scripts/sir-shadow-corpus.sh and
 # outlived the shadow lane it was bolted to; nothing here depends on SIR.

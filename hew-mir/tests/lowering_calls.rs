@@ -38,3 +38,5 @@ mod user_fn_call;
 mod vec_iter_clone_out;
 #[path = "lowering_calls/vec_resolved_impl_call.rs"]
 mod vec_resolved_impl_call;
+#[path = "lowering_calls/vec_runtime_family_abi.rs"]
+mod vec_runtime_family_abi;

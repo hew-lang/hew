@@ -1,27 +1,11 @@
 #!/usr/bin/env bash
-# Golden MIR corpus driver for examples/v05/checked-mir/.
+# Checked-MIR execution corpus driver for examples/v05/checked-mir/.
 #
-# The corpus pins the textual `--dump-mir` output (raw + elab stages) for
-# one fixture per compiler-known runtime-call family cluster. It is the
-# behavioural oracle for internal retyping work: a refactor that claims
-# "zero behaviour change" must leave every golden dump byte-identical.
-# An INTENTIONAL dump change (e.g. a MIR carrier gaining a typed field
-# that the Debug rendering prints) regenerates the golden in the same
-# commit, with the diff justified in the commit body.
-#
-# Regeneration visibility: `golden` never overwrites silently. It diffs
-# every dump against the committed golden first and prints a per-file
-# CHANGED/NEW report with line counts, then rewrites
-# `golden/MANIFEST.sha256`. `verify` re-checks that manifest against the
-# goldens on disk, so a regeneration cannot land without touching one
-# central, small, line-per-golden file that shows a reviewer exactly
-# which goldens moved and how many — even when the .mir diffs themselves
-# are collapsed.
-#
-# Dumping is not running. A fixture can segfault on every execution while
-# every golden stays byte-identical, so `run` builds and executes the
-# corpus and diffs a rendered transcript — exit status plus verbatim
-# stdout — against the fixture's committed `<name>.expected` sibling.
+# `run` compiles and executes every runnable fixture, then compares its
+# exit status and verbatim stdout with the committed `<name>.expected`
+# transcript. This is the semantic and native-runtime oracle: a fixture can
+# retain the same internal MIR presentation while crashing or returning a
+# different answer, so dump text is intentionally not a gate here.
 #
 # Which fixtures run is decided by the compiler, not by a list: a fixture
 # is runnable exactly when its raw MIR declares a `main` entry point.
@@ -31,8 +15,6 @@
 # classification after it grows a `main`.
 #
 # Usage:
-#   scripts/checked-mir-corpus.sh golden   # (re)capture golden dumps
-#   scripts/checked-mir-corpus.sh verify   # re-dump and diff against golden
 #   scripts/checked-mir-corpus.sh run      # build + execute, diff transcripts
 #   scripts/checked-mir-corpus.sh expect   # (re)capture .expected transcripts
 #
@@ -48,11 +30,8 @@ source "$ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/lib/diagnostic-code-set.sh"
 CORPUS="$ROOT/examples/v05/checked-mir"
-GOLDEN="$CORPUS/golden"
-MANIFEST="$GOLDEN/MANIFEST.sha256"
 HEW_BIN="${HEW_BIN:-$ROOT/target/debug/hew}"
-MODE="${1:-verify}"
-STAGES=(raw elab)
+MODE="${1:-run}"
 HEW_CORPUS_EXPECTED_FAILURES="$ROOT/scripts/hew-corpus-expected-failures.txt"
 # Wall-clock cap per fixture. A fixture that stops terminating must fail
 # the gate rather than hang the build; 124/137 land in the transcript and
@@ -106,55 +85,6 @@ report_unexpected_dump_failure() {
         echo "  expected structured refusal: $EXPECTED_REFUSAL_CODE (exit 1)" >&2
     fi
     head -20 "$error" >&2
-}
-
-# sha256 over stdin-named files; `sha256sum` on Linux, `shasum -a 256` on
-# macOS. Both print `<hash>  <name>`, so the manifest format is identical.
-sha256_of() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$@"
-    else
-        shasum -a 256 "$@"
-    fi
-}
-
-# A refused fixture has no fresh MIR with which to validate its snapshots. Its
-# raw and elaborated files must therefore still match the manifest that existed
-# before regeneration began. This prevents `golden` from rehashing arbitrary
-# working-tree edits into an unverifiable new baseline.
-verify_preserved_golden_pair() {
-    local name="$1" stage golden_file base recorded_hash actual_hash
-    if [[ ! -f "$MANIFEST" ]]; then
-        echo "CANNOT PRESERVE: $name has a known refusal but $MANIFEST is missing" >&2
-        return 1
-    fi
-    for stage in "${STAGES[@]}"; do
-        golden_file="$GOLDEN/$name.$stage.mir"
-        base="$name.$stage.mir"
-        if [[ ! -f "$golden_file" ]]; then
-            echo "CANNOT PRESERVE: missing last-good golden $base" >&2
-            return 1
-        fi
-        recorded_hash="$(awk -v file="$base" '$2 == file { print $1 }' "$MANIFEST")"
-        actual_hash="$(sha256_of "$golden_file" | awk '{ print $1 }')"
-        if [[ -z "$recorded_hash" || "$recorded_hash" != "$actual_hash" ]]; then
-            echo "CANNOT PRESERVE: $base does not match the prior manifest" >&2
-            echo "  restore or review the last-good pair before regenerating" >&2
-            return 1
-        fi
-    done
-}
-
-# Manifest lines for every committed golden, sorted byte-wise so the file
-# is stable across platforms and locales.
-render_manifest() {
-    (
-        cd "$GOLDEN"
-        shopt -s nullglob
-        local names=(*.mir)
-        [[ ${#names[@]} -eq 0 ]] && return 0
-        sha256_of "${names[@]}" | LC_ALL=C sort -k2
-    )
 }
 
 if [[ ! -x "$HEW_BIN" ]]; then
@@ -333,160 +263,10 @@ if [[ ${#fixtures[@]} -eq 0 ]]; then
     exit 2
 fi
 
-# The stale-golden check below catches a fixture deleted on its own, but a
-# fixture deleted TOGETHER with its goldens leaves a smaller corpus that still
-# verifies clean. Reject an empty enumeration before comparing the survivors.
+# Reject an empty enumeration before running the survivors.
 corpus_nonempty_assert "checked-mir-fixtures" "${#fixtures[@]}" || exit 1
 
 case "$MODE" in
-golden)
-    mkdir -p "$GOLDEN"
-    tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' EXIT
-    changed=()
-    added=()
-    staged=()
-    unchanged=0
-    known_refusals=0
-
-    # Stage the complete corpus before touching a committed golden. A compiler
-    # failure in any later fixture or in either stage therefore cannot leave a
-    # half-refreshed raw/elab pair (or a partially refreshed corpus) behind.
-    for f in "${fixtures[@]}"; do
-        name="$(basename "$f" .hew)"
-        refused=0
-        for stage in "${STAGES[@]}"; do
-            fresh="$tmpdir/$name.$stage.mir"
-            error="$tmpdir/$name.$stage.err"
-            run_dump "$stage" "$f" "$fresh" "$error"
-            if [[ "$LAST_DUMP_STATUS" -ne 0 ]]; then
-                if dump_is_expected_refusal \
-                    "$f" "$LAST_DUMP_STATUS" "$error"; then
-                    verify_preserved_golden_pair "$name" || exit 1
-                    echo "  KNOWN   $name ($stage refusal $EXPECTED_REFUSAL_CODE; preserving manifest-verified last-good pair)"
-                    known_refusals=$((known_refusals + 1))
-                    refused=1
-                    break
-                fi
-                report_unexpected_dump_failure \
-                    "$f" "$name" "$stage" "$LAST_DUMP_STATUS" "$error"
-                exit 1
-            fi
-        done
-        [[ "$refused" -eq 1 ]] && continue
-        staged+=("$name")
-    done
-
-    for name in "${staged[@]}"; do
-        for stage in "${STAGES[@]}"; do
-            golden_file="$GOLDEN/$name.$stage.mir"
-            fresh="$tmpdir/$name.$stage.mir"
-            if [[ ! -f "$golden_file" ]]; then
-                added+=("$name.$stage.mir")
-            elif cmp -s "$golden_file" "$fresh"; then
-                unchanged=$((unchanged + 1))
-                continue
-            else
-                plus="$(diff "$golden_file" "$fresh" | grep -c '^>' || true)"
-                minus="$(diff "$golden_file" "$fresh" | grep -c '^<' || true)"
-                changed+=("$name.$stage.mir (+$plus -$minus)")
-            fi
-            cp "$fresh" "$golden_file"
-        done
-    done
-    render_manifest >"$MANIFEST"
-    # The regeneration report: a golden corpus that moves silently is a
-    # corpus that cannot fail for the change regenerating it, so every
-    # recapture states what moved before the commit is written.
-    echo "checked-mir-golden: ${#changed[@]} changed, ${#added[@]} new, $unchanged unchanged, $known_refusals known refusal(s)"
-    for entry in ${added[@]+"${added[@]}"}; do
-        echo "  NEW     $entry"
-    done
-    for entry in ${changed[@]+"${changed[@]}"}; do
-        echo "  CHANGED $entry"
-    done
-    if [[ ${#changed[@]} -gt 0 || ${#added[@]} -gt 0 ]]; then
-        echo "checked-mir-golden: quote this report in the commit body." >&2
-    fi
-    ;;
-verify)
-    fail=0
-    verified=0
-    known_refusals=0
-    tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' EXIT
-    for f in "${fixtures[@]}"; do
-        name="$(basename "$f" .hew)"
-        dump_refused=0
-        for stage in "${STAGES[@]}"; do
-            golden_file="$GOLDEN/$name.$stage.mir"
-            if [[ ! -f "$golden_file" ]]; then
-                echo "MISSING GOLDEN: $name.$stage.mir (run: make checked-mir-golden)" >&2
-                fail=1
-                continue
-            fi
-            fresh="$tmpdir/$name.$stage.mir"
-            error="$tmpdir/$name.$stage.err"
-            run_dump "$stage" "$f" "$fresh" "$error"
-            if [[ "$LAST_DUMP_STATUS" -ne 0 ]]; then
-                if dump_is_expected_refusal \
-                    "$f" "$LAST_DUMP_STATUS" "$error"; then
-                    if ! verify_preserved_golden_pair "$name"; then
-                        fail=1
-                    fi
-                    echo "KNOWN REFUSAL: $name ($stage stage; $EXPECTED_REFUSAL_CODE; manifest-verified last-good pair preserved)"
-                    known_refusals=$((known_refusals + 1))
-                else
-                    report_unexpected_dump_failure \
-                        "$f" "$name" "$stage" "$LAST_DUMP_STATUS" "$error"
-                    fail=1
-                fi
-                dump_refused=1
-                break
-            fi
-            if ! diff -u "$golden_file" "$fresh" >"$tmpdir/$name.$stage.diff"; then
-                echo "DUMP DRIFT: $name ($stage stage) — first 40 diff lines:" >&2
-                head -40 "$tmpdir/$name.$stage.diff" >&2
-                fail=1
-            fi
-        done
-        if [[ "$dump_refused" -eq 0 ]]; then
-            verified=$((verified + 1))
-        fi
-    done
-    # Stale goldens (golden exists, fixture removed) are an error too:
-    # they silently shrink the oracle's coverage.
-    for g in "$GOLDEN"/*.mir; do
-        [[ -e "$g" ]] || continue
-        base="$(basename "$g")"
-        name="${base%.*.mir}"
-        if [[ ! -f "$CORPUS/$name.hew" ]]; then
-            echo "STALE GOLDEN: $base has no fixture $name.hew" >&2
-            fail=1
-        fi
-    done
-    # The manifest is the reviewer-visible record of which goldens a commit
-    # regenerated. Checking it here keeps it honest in both directions: a
-    # golden edited without recapturing, and a manifest edited without
-    # moving the golden, both fail.
-    if [[ ! -f "$MANIFEST" ]]; then
-        echo "MISSING MANIFEST: $MANIFEST (run: make checked-mir-golden)" >&2
-        fail=1
-    else
-        render_manifest >"$tmpdir/MANIFEST.sha256"
-        if ! diff -u "$MANIFEST" "$tmpdir/MANIFEST.sha256" >"$tmpdir/manifest.diff"; then
-            echo "MANIFEST DRIFT: golden/MANIFEST.sha256 does not match the goldens on disk" >&2
-            echo "(run: make checked-mir-golden)" >&2
-            head -40 "$tmpdir/manifest.diff" >&2
-            fail=1
-        fi
-    fi
-    if [[ $fail -ne 0 ]]; then
-        echo "checked-mir-verify: FAILED" >&2
-        exit 1
-    fi
-    echo "checked-mir-verify: OK ($verified fixtures x ${#STAGES[@]} stages byte-identical, $known_refusals known refusal(s), manifest in sync)"
-    ;;
 run)
     TIMEOUT_BIN="$(resolve_timeout)"
     fail=0
@@ -510,10 +290,6 @@ run)
         if [[ "$classification" -eq 2 ]]; then
             if dump_is_expected_refusal \
                 "$f" "$LAST_DUMP_STATUS" "$tmpdir/$name.raw.mir.err"; then
-                if ! verify_preserved_golden_pair "$name"; then
-                    fail=1
-                    continue
-                fi
                 echo "KNOWN    $name ($EXPECTED_REFUSAL_CODE; tracked by shared hew-corpus ratchet)"
                 known_refusals=$((known_refusals + 1))
                 continue
@@ -643,7 +419,7 @@ expect)
     done
     ;;
 *)
-    echo "usage: $0 {golden|verify|run|expect}" >&2
+    echo "usage: $0 {run|expect}" >&2
     exit 2
     ;;
 esac

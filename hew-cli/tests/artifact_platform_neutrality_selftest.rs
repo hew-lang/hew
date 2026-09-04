@@ -31,9 +31,8 @@ use std::process::Command;
 ///   (`*.mir`) and their `manifest.tsv` (funcupdate/reassign interface pin,
 ///   `hew-cli/tests/funcupdate_mir_baselines.rs`).
 /// - `hew-cli/tests/fixtures`: `.hew` compile fixtures and package fixtures.
-/// - `examples/v05/checked-mir`: checked-MIR goldens (`*.expected`) and
-///   their `golden/MANIFEST.sha256` byte-diff manifest
-///   (`scripts/checked-mir-corpus.sh`).
+/// - `examples/v05/checked-mir`: checked-MIR execution transcripts
+///   (`*.expected`, `scripts/checked-mir-corpus.sh`).
 const ARTIFACT_ROOTS: &[&str] = &[
     "tests/mir-baselines",
     "hew-cli/tests/fixtures",

@@ -85,7 +85,7 @@
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: dogfood-compile-measure bench-mir
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
-.PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
+.PHONY: checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
 .PHONY: grammar-parity downstream-check
 .PHONY: sir-coverage sir-parity
@@ -665,7 +665,7 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 
 ci-shard-3: grammar-parity downstream-check mqtt-broker-e2e sandbox-parity \
 	fuzz-oracle fuzz-oracle-selftest test-package-install \
-	checked-mir-verify checked-mir-run \
+	checked-mir-run \
 	test-core-matrix test-stdlib-ratchet \
 	test-surface-examples forced-cancel-composite-check hew-check-all
 
@@ -1121,24 +1121,9 @@ test-pkg-import: hew-native
 test-package-install: hew-native ## Test: prove installed packages import and execute
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/package-install/run.sh
 
-# Golden MIR corpus (examples/v05/checked-mir): byte-identical --dump-mir
-# oracle for internal retyping work. `checked-mir-verify` re-dumps every
-# fixture and diffs against the committed goldens; `checked-mir-golden`
-# recaptures them (only in a commit that justifies the dump change).
-checked-mir-verify: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh verify
-
-# Regenerate explicitly with `make checked-mir-golden`.
-
-checked-mir-golden: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh golden
-
-# Execution gate for the same corpus: build and run every fixture and diff
+# Execution gate for examples/v05/checked-mir: build and run every fixture and diff
 # a transcript (exit status + verbatim stdout) against its committed
-# `<name>.expected` sibling.  Dumping is not running — a fixture can
-# segfault on every execution while every golden stays byte-identical, so
-# checked-mir-verify alone is not evidence that a drop-elaboration or
-# codegen change is correct.  Runnability is read back from the compiler
+# `<name>.expected` sibling. Runnability is read back from the compiler
 # (a fixture is runnable exactly when its raw MIR declares `main`), and
 # the expectation set is closed both ways: a fixture with `main` and no
 # expectation fails, an expectation for a fixture without `main` fails.
@@ -1155,9 +1140,8 @@ checked-mir-expect: hew-native
 # Repeated-compile determinism over the LL-oracle corpus: the same input
 # compiled several times must produce the same exit status, the same
 # `ownership EdgeCarry` ordering in raw MIR, and byte-identical stderr.
-# checked-mir-verify compares a single run against a committed golden, so it
-# cannot see a compiler that reorders hashed ownership facts or
-# accumulated diagnostics from run to run.  This gate is the one that can.
+# This gate detects a compiler that reorders hashed ownership facts or
+# accumulated diagnostics from run to run.
 # inputs: tests/ll-oracle/corpus/*.hew scripts/compile-determinism-corpus.sh
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-cli/src/*.rs
 compile-determinism-verify: hew-native

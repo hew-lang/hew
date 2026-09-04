@@ -361,7 +361,7 @@ def wasm_public_programs(
             (
                 (
                     "internal-wrapper",
-                    "import std.channel;\n"
+                    "import std.channel.channel;\n"
                     f'fn main() {{ let result: Result<(channel.Sender<i64>, channel.Receiver<i64>), string> = channel.new(1); match result {{ .Ok((sender, receiver)) => println("{witness}"), .Err(error) => panic(error), }} }}\n',
                 ),
             ),

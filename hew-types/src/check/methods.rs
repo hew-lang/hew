@@ -2319,7 +2319,7 @@ impl Checker {
 
     /// Apply exact function policy after a named import has resolved its
     /// declaration owner.  Unlike a bare surface spelling this carries the
-    /// source identity (`std.fs.try_read`) and cannot be captured by a user
+    /// source identity (`std.fs.read`) and cannot be captured by a user
     /// function or a same-leaf module.
     pub(super) fn reject_wasm_native_only_function_identity(
         &mut self,
@@ -11946,7 +11946,7 @@ mod tests {
         checker
             .canonical_std_module_sources
             .insert("std.fs".to_string());
-        checker.reject_wasm_native_only_function_identity("std.fs.try_read", &span);
+        checker.reject_wasm_native_only_function_identity("std.fs.read", &span);
         assert_eq!(checker.errors.len(), 1, "named-import identity must reject");
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -11954,8 +11954,8 @@ mod tests {
         checker
             .module_import_bindings
             .insert((None, 0, "lookalike".to_string()), "app.fs".to_string());
-        checker.reject_wasm_native_only_module_function("lookalike", "try_read", &span);
-        checker.reject_wasm_native_only_function_identity("app.fs.try_read", &span);
+        checker.reject_wasm_native_only_module_function("lookalike", "read", &span);
+        checker.reject_wasm_native_only_function_identity("app.fs.read", &span);
         assert!(
             checker.errors.is_empty(),
             "a user package with the same leaf must not inherit std.fs policy"

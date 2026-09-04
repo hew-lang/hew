@@ -5,7 +5,7 @@ use super::discovery::TestCase;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
 const MAX_DEFAULT_JOBS: usize = 8;
@@ -273,26 +273,7 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
         }
     }
 
-    for (file, file_tests) in by_file {
-        let source = match std::fs::read_to_string(file) {
-            Ok(s) => s,
-            Err(e) => {
-                for test in &file_tests {
-                    failed += 1;
-                    results.push(TestResult {
-                        test: (*test).clone(),
-                        outcome: TestOutcome::failed(
-                            TestFailureKind::Compile,
-                            format!("cannot read {file}: {e}"),
-                        ),
-                        output: String::new(),
-                        duration: Duration::ZERO,
-                    });
-                }
-                continue;
-            }
-        };
-
+    for (_, file_tests) in by_file {
         for test in file_tests {
             if test.ignored && !options.include_ignored {
                 ignored += 1;
@@ -306,7 +287,6 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
             }
 
             let result = run_single_test(
-                &source,
                 test,
                 options.ffi_lib,
                 options.compile_paths,
@@ -332,7 +312,6 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
 
 struct TestTask {
     result_index: usize,
-    source: Arc<str>,
     test: TestCase,
 }
 
@@ -365,26 +344,7 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
     let mut tasks = Vec::new();
     let mut result_index = 0;
 
-    for (file, file_tests) in by_file {
-        let source = match std::fs::read_to_string(file) {
-            Ok(source) => Some(Arc::<str>::from(source)),
-            Err(error) => {
-                for test in file_tests {
-                    result_slots[result_index] = Some(TestResult {
-                        test: test.clone(),
-                        outcome: TestOutcome::failed(
-                            TestFailureKind::Compile,
-                            format!("cannot read {file}: {error}"),
-                        ),
-                        output: String::new(),
-                        duration: Duration::ZERO,
-                    });
-                    result_index += 1;
-                }
-                continue;
-            }
-        };
-
+    for (_, file_tests) in by_file {
         for test in file_tests {
             if test.ignored && !options.include_ignored {
                 result_slots[result_index] = Some(TestResult {
@@ -396,7 +356,6 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
             } else {
                 tasks.push(TestTask {
                     result_index,
-                    source: Arc::clone(source.as_ref().expect("source was read")),
                     test: test.clone(),
                 });
             }
@@ -424,7 +383,6 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         run_single_test(
-                            &task.source,
                             &task.test,
                             options.ffi_lib,
                             options.compile_paths,
@@ -433,7 +391,6 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                         )
                     } else {
                         run_single_test(
-                            &task.source,
                             &task.test,
                             options.ffi_lib,
                             options.compile_paths,
@@ -484,21 +441,12 @@ struct CompiledTestArtifact {
     binary_path: PathBuf,
 }
 
-/// Compile a synthetic test program to a native binary.
 fn compile_test(
-    source: &str,
     test: &TestCase,
     ffi_lib: Option<&str>,
     compile_paths: &TestCompilePaths,
     sir_mode: crate::compile::SirMode,
 ) -> Result<CompiledTestArtifact, String> {
-    let synthetic = format!(
-        "{source}\n\nfn main() {{\n    {name}();\n}}\n",
-        name = test.name,
-    );
-
-    let parsed = hew_parser::parse(&synthetic);
-
     let emit_dir = tempfile::Builder::new()
         .prefix("hew_test_emit_")
         .tempdir_in(std::env::temp_dir())
@@ -514,22 +462,39 @@ fn compile_test(
         .executable_path(emit_dir.path(), binary_name);
     let extra_libs = ffi_lib.into_iter().map(str::to_owned).collect::<Vec<_>>();
 
+    let options = crate::compile::CompileOptions {
+        project_dir: Some(compile_paths.paths.project_dir.clone()),
+        sir_mode,
+        ..crate::compile::CompileOptions::default()
+    };
+    let mut frontend_options = crate::compile::frontend_options(&compile_paths.target, &options);
+    frontend_options.module_search_paths = Some(compile_paths.paths.module_search_paths.clone());
+
     crate::diagnostic::start_diagnostic_capture();
-    // Compile the synthetic program in memory while retaining the real test
-    // path for file-relative imports and the invocation root for package imports.
-    let compile_result = crate::compile_native_from_program_with_paths(
-        parsed.program,
-        &synthetic,
-        &test.file,
-        &binary_path,
-        &crate::compile::CompileOptions {
-            project_dir: Some(compile_paths.paths.project_dir.clone()),
-            sir_mode,
-            ..crate::compile::CompileOptions::default()
-        },
-        Some(&compile_paths.paths),
-        &extra_libs,
-    );
+    let compile_result = (|| -> Result<(), String> {
+        let state = hew_compile::run_file_frontend_to_typecheck_with_selection(
+            &test.file,
+            &frontend_options,
+            Some(test.occurrence),
+            test.companion.as_deref().map(Path::new),
+        )
+        .map_err(|failure| {
+            crate::compile::render_frontend_diagnostics(&failure.diagnostics);
+            if failure.diagnostics.is_empty() {
+                eprintln!("Error: {}", failure.message);
+            }
+            failure.message
+        })?;
+        crate::compile_native_from_file_frontend_with_paths(
+            &state,
+            &test.file,
+            &binary_path,
+            &options,
+            Some(&compile_paths.paths),
+            &extra_libs,
+        )
+        .map_err(|_| "in-process compilation failed".to_string())
+    })();
     let diagnostics = crate::diagnostic::finish_diagnostic_capture();
     if compile_result.is_err() {
         return Err(if diagnostics.is_empty() {
@@ -545,10 +510,7 @@ fn compile_test(
     })
 }
 
-/// Build a synthetic program that calls the test function, compile it natively,
-/// and execute the resulting binary.
 fn run_single_test(
-    source: &str,
     test: &TestCase,
     ffi_lib: Option<&str>,
     compile_paths: &TestCompilePaths,
@@ -557,7 +519,7 @@ fn run_single_test(
 ) -> TestResult {
     let start = std::time::Instant::now();
 
-    let artifact = match compile_test(source, test, ffi_lib, compile_paths, sir_mode) {
+    let artifact = match compile_test(test, ffi_lib, compile_paths, sir_mode) {
         Ok(artifact) => artifact,
         Err(msg) => {
             let outcome = if test.should_panic {
@@ -873,7 +835,7 @@ fn selected_test() {
         let dir = tempfile::tempdir().expect("create peer fixture directory");
         std::fs::write(
             dir.path().join("peer.hew"),
-            "fn peer_value() -> bool { true }\n",
+            "pub fn peer_value() -> bool { true }\n",
         )
         .expect("write production peer");
         let test_path = dir.path().join("peer_test.hew");
@@ -882,6 +844,26 @@ fn selected_test() {
             "#[test]\nfn uses_peer() { assert(peer_value()); }\n",
         )
         .expect("write test peer");
+
+        let summary = run_discovered_file(&test_path);
+
+        assert_eq!(summary.passed, 1, "{}", describe(&summary));
+    }
+
+    #[test]
+    fn unrelated_sibling_is_not_loaded() {
+        if !require_codegen() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("create sibling fixture directory");
+        std::fs::write(
+            dir.path().join("unrelated.hew"),
+            "fn invalid_helper() { missing_symbol(); }\n",
+        )
+        .expect("write unrelated sibling");
+        let test_path = dir.path().join("isolated_test.hew");
+        std::fs::write(&test_path, "#[test]\nfn isolated() { assert(true); }\n")
+            .expect("write isolated test");
 
         let summary = run_discovered_file(&test_path);
 
@@ -1064,6 +1046,13 @@ fn test_timeout() {
             TestCase {
                 name: "alpha".into(),
                 file: "alpha_test.hew".into(),
+                occurrence: hew_types::DeclarationOccurrence::new(
+                    None,
+                    &(0..0),
+                    hew_types::DeclarationKind::Function,
+                    0,
+                ),
+                companion: None,
                 ignored: true,
                 should_panic: false,
                 serial: false,
@@ -1071,6 +1060,13 @@ fn test_timeout() {
             TestCase {
                 name: "beta".into(),
                 file: "nested/beta_test.hew".into(),
+                occurrence: hew_types::DeclarationOccurrence::new(
+                    None,
+                    &(0..0),
+                    hew_types::DeclarationKind::Function,
+                    0,
+                ),
+                companion: None,
                 ignored: true,
                 should_panic: false,
                 serial: false,
@@ -1078,6 +1074,13 @@ fn test_timeout() {
             TestCase {
                 name: "gamma".into(),
                 file: "tests/gamma.hew".into(),
+                occurrence: hew_types::DeclarationOccurrence::new(
+                    None,
+                    &(0..0),
+                    hew_types::DeclarationKind::Function,
+                    0,
+                ),
+                companion: None,
                 ignored: true,
                 should_panic: false,
                 serial: false,

@@ -2797,6 +2797,8 @@ pub struct Checker {
     /// Source-order discriminator used only for source-less AST inventories
     /// whose top-level declarations all carry the synthetic `0..0` span.
     pub(super) current_item_ordinal: usize,
+    /// Exact source occurrence selected as process entry by a file frontend.
+    pub(super) entry_selection: Option<crate::DeclarationOccurrence>,
     /// Type names declared per source FILE (populated during type
     /// collection from per-item attribution). This is the lexical authority
     /// behind extern-signature nominal identity: a bare name in an extern
@@ -3932,6 +3934,7 @@ impl Checker {
             source_file_span_indices: HashMap::new(),
             current_item_source: None,
             current_item_ordinal: 0,
+            entry_selection: None,
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             protected_prelude_declaration_collisions: HashSet::new(),

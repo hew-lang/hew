@@ -965,9 +965,44 @@ pub(crate) fn compile_native_from_program_with_paths(
         }
         channel.unwrap_or(DiagChannel::User)
     })?;
+    let state = hew_compile::FileFrontendState {
+        program: state.program,
+        diagnostics: state.diagnostics,
+        typecheck_result: state.typecheck_result,
+        source: state.source,
+        entry_selection: None,
+        companion: None,
+    };
+    compile_native_from_file_frontend_with_paths(
+        &state,
+        source_label,
+        output_path,
+        options,
+        paths,
+        extra_libs,
+    )
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive frontend->MIR->emit->link pipeline already at the line boundary; \\
+              splitting it would obscure the linear flow"
+)]
+pub(crate) fn compile_native_from_file_frontend_with_paths(
+    state: &hew_compile::FileFrontendState,
+    source_label: &str,
+    output_path: &Path,
+    options: &compile::CompileOptions,
+    paths: Option<&NativeBuildPaths>,
+    extra_libs: &[String],
+) -> Result<(), DiagChannel> {
+    let target = target::TargetSpec::from_requested(options.target.as_deref()).map_err(|e| {
+        eprintln!("Error: {e}");
+        DiagChannel::User
+    })?;
     compile::render_frontend_diagnostics(&state.diagnostics);
 
-    let tco = state.typecheck_result.tco.ok_or_else(|| {
+    let tco = state.typecheck_result.tco.as_ref().ok_or_else(|| {
         eprintln!(
             "Error: eval compilation requires a type-checked program; \
              this path should be unreachable (no_typecheck = false)"
@@ -977,7 +1012,7 @@ pub(crate) fn compile_native_from_program_with_paths(
 
     let lower_output = hew_hir::lower_program(
         &state.program,
-        &tco,
+        tco,
         &hew_hir::ResolutionCtx,
         hir_target_arch(&target),
     );
@@ -1002,7 +1037,7 @@ pub(crate) fn compile_native_from_program_with_paths(
     }
 
     let (pipeline, sir_report) =
-        lower_verified_hir_to_pipeline(&lower_output.module, &tco, &target, options.sir_mode)?;
+        lower_verified_hir_to_pipeline(&lower_output.module, tco, &target, options.sir_mode)?;
     if let Some(report) = sir_report.as_ref() {
         report_sir_lane(report);
     }

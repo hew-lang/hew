@@ -734,6 +734,11 @@ fn declaration_walk_terminates(
 }
 
 impl Checker {
+    /// Select one exact root declaration for the process entry plan.
+    pub fn set_entry_selection(&mut self, selection: crate::DeclarationOccurrence) {
+        self.entry_selection = Some(selection);
+    }
+
     /// Build the §6.3 fact table over every concrete accepted expression type.
     ///
     /// The walk is closed under a type's own components so a `Vec<Conn>` row is
@@ -1242,54 +1247,36 @@ impl Checker {
         None
     }
 
-    fn classify_entry_exit_plan(
-        &mut self,
-        program: &Program,
-        resolved_fn_sigs: &HashMap<String, FnSig>,
-    ) -> Option<EntryExitPlan> {
-        let (item_index, span) =
-            program
-                .items
-                .iter()
-                .enumerate()
-                .find_map(|(item_index, (item, span))| match item {
-                    Item::Function(declaration)
-                        if declaration.name == "main"
-                            && declaration.type_params.as_ref().is_none_or(Vec::is_empty) =>
-                    {
-                        Some((item_index, span))
-                    }
-                    _ => None,
-                })?;
-        let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-            self.identity.root_module(),
-            span,
-            item_index,
-            crate::DeclarationKind::Function,
-            0,
-        );
-        let entry = self.identity.declaration(occurrence)?.clone();
-        let Some(return_type) = resolved_fn_sigs
-            .get(entry.full_path())
-            .map(|signature| signature.return_type.clone())
-        else {
-            self.errors.push(TypeError::new(
-                TypeErrorKind::InvalidOperation,
-                span.clone(),
-                format!(
-                    "checker has no resolved signature for process entry `{}`",
-                    entry.display_name()
-                ),
-            ));
-            return None;
-        };
+    fn selected_entry_item<'a>(
+        &self,
+        program: &'a Program,
+    ) -> Option<(usize, &'a std::ops::Range<usize>)> {
+        let selected_entry = self.entry_selection?;
+        program
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(item_index, (item, span))| {
+                let Item::Function(_) = item else {
+                    return None;
+                };
+                (selected_entry.kind() == crate::DeclarationKind::Function
+                    && selected_entry.span() == *span)
+                    .then_some((item_index, span))
+            })
+    }
 
+    fn classify_entry_exit_action(
+        &mut self,
+        return_type: Ty,
+        span: &std::ops::Range<usize>,
+    ) -> Option<EntryExitAction> {
         let resolved_return_type = ResolvedTy::from_ty(&return_type).ok();
-        let action = match return_type {
-            Ty::Unit => EntryExitAction::Unit,
-            integer if EntryIntegerType::from_ty(&integer).is_some() => {
-                EntryExitAction::Integer(EntryIntegerType::from_ty(&integer)?)
-            }
+        match return_type {
+            Ty::Unit => Some(EntryExitAction::Unit),
+            integer if EntryIntegerType::from_ty(&integer).is_some() => Some(
+                EntryExitAction::Integer(EntryIntegerType::from_ty(&integer)?),
+            ),
             Ty::Named {
                 builtin: Some(crate::BuiltinType::Result),
                 args,
@@ -1325,14 +1312,14 @@ impl Checker {
                     ResolvedTy::Named { args, .. } => args.clone(),
                     _ => Vec::new(),
                 };
-                EntryExitAction::Result {
+                Some(EntryExitAction::Result {
                     result_ty: resolved_return_type?,
                     error_ty: resolved_error_ty,
                     display: EntryDisplayTarget {
                         declaration: display_declaration,
                         type_args,
                     },
-                }
+                })
             }
             unsupported => {
                 self.errors.push(TypeError::new(
@@ -1343,9 +1330,55 @@ impl Checker {
                         unsupported.user_facing()
                     ),
                 ));
-                return None;
+                None
             }
+        }
+    }
+
+    fn classify_entry_exit_plan(
+        &mut self,
+        program: &Program,
+        resolved_fn_sigs: &HashMap<String, FnSig>,
+    ) -> Option<EntryExitPlan> {
+        let (item_index, span) =
+            if self.entry_selection.is_some() {
+                self.selected_entry_item(program)?
+            } else {
+                program.items.iter().enumerate().find_map(
+                    |(item_index, (item, span))| match item {
+                        Item::Function(declaration)
+                            if declaration.name == "main"
+                                && declaration.type_params.as_ref().is_none_or(Vec::is_empty) =>
+                        {
+                            Some((item_index, span))
+                        }
+                        _ => None,
+                    },
+                )?
+            };
+        let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+            self.identity.root_module(),
+            span,
+            item_index,
+            crate::DeclarationKind::Function,
+            0,
+        );
+        let entry = self.identity.declaration(occurrence)?.clone();
+        let Some(return_type) = resolved_fn_sigs
+            .get(entry.full_path())
+            .map(|signature| signature.return_type.clone())
+        else {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "checker has no resolved signature for process entry `{}`",
+                    entry.display_name()
+                ),
+            ));
+            return None;
         };
+        let action = self.classify_entry_exit_action(return_type, span)?;
 
         Some(EntryExitPlan { entry, action })
     }
@@ -2693,6 +2726,7 @@ impl Checker {
         let consume_receiver_methods = std::mem::take(&mut self.consume_receiver_methods);
         let lint_levels = self.lint_levels.clone();
         let lint_sources = self.lint_sources.clone();
+        let entry_selection = self.entry_selection;
 
         *self = Self::new(module_registry);
         self.wasm_target = wasm_target;
@@ -2703,6 +2737,7 @@ impl Checker {
         self.consume_receiver_methods = consume_receiver_methods;
         self.lint_levels = lint_levels;
         self.lint_sources = lint_sources;
+        self.entry_selection = entry_selection;
     }
 
     /// The canonical prelude is an import-only authority manifest: its imports

@@ -773,22 +773,23 @@ fn import_directory_module_entry_for_peer(
     let Some(entry_name) = directory_module_entry_for_peer(program, input, mode) else {
         return;
     };
-    program.items.insert(
-        0,
-        (
-            Item::Import(ImportDecl {
-                path: Vec::new(),
-                spec: None,
-                selection_trailing_comma: false,
-                module_alias: None,
-                file_path: Some(entry_name),
-                resolved_items: None,
-                resolved_item_source_paths: Vec::new(),
-                resolved_source_paths: Vec::new(),
-            }),
-            0..0,
-        ),
-    );
+    program.items.insert(0, file_import(entry_name));
+}
+
+fn file_import(file_path: String) -> Spanned<Item> {
+    (
+        Item::Import(ImportDecl {
+            path: Vec::new(),
+            spec: None,
+            selection_trailing_comma: false,
+            module_alias: None,
+            file_path: Some(file_path),
+            resolved_items: None,
+            resolved_item_source_paths: Vec::new(),
+            resolved_source_paths: Vec::new(),
+        }),
+        0..0,
+    )
 }
 
 fn project_context_for_program(
@@ -1029,6 +1030,7 @@ fn typecheck_program_with_diagnostics(
     input: &str,
     options: &FrontendOptions,
     mode: FrontendParseMode,
+    entry_selection: Option<hew_types::DeclarationOccurrence>,
 ) -> Result<(TypeCheckResult, Vec<FrontendDiagnostic>), FrontendFailure> {
     let search_paths = checker_search_paths(options, input);
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
@@ -1052,6 +1054,9 @@ fn typecheck_program_with_diagnostics(
     }
     if mode == FrontendParseMode::Migration {
         checker.set_migration_mode();
+    }
+    if let Some(entry_selection) = entry_selection {
+        checker.set_entry_selection(entry_selection);
     }
     checker.set_lint_levels(options.lint_levels.clone());
     // Install source text so the lint sweep can resolve in-source
@@ -1108,8 +1113,15 @@ pub fn typecheck_program(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
-    typecheck_program_with_diagnostics(program, source, input, options, FrontendParseMode::Strict)
-        .map(|(result, _)| result)
+    typecheck_program_with_diagnostics(
+        program,
+        source,
+        input,
+        options,
+        FrontendParseMode::Strict,
+        None,
+    )
+    .map(|(result, _)| result)
 }
 
 /// Resolve imports and type-check an already-parsed in-memory program.
@@ -1153,6 +1165,7 @@ pub fn check_program(
         source_label,
         options,
         FrontendParseMode::Strict,
+        None,
     ) {
         Ok((tcr, type_diagnostics)) => {
             diagnostics.extend(type_diagnostics);
@@ -2138,6 +2151,8 @@ pub struct FileFrontendState {
     pub diagnostics: Vec<FrontendDiagnostic>,
     pub typecheck_result: TypeCheckResult,
     pub source: String,
+    pub entry_selection: Option<hew_types::DeclarationOccurrence>,
+    pub companion: Option<PathBuf>,
 }
 
 #[allow(
@@ -2170,7 +2185,29 @@ pub fn run_file_frontend_to_typecheck(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
-    run_file_frontend_to_typecheck_with_mode(input, options, FrontendParseMode::Strict)
+    run_file_frontend_to_typecheck_with_selection(input, options, None, None)
+}
+
+/// Run the shared file frontend with an exact process-entry selection and one
+/// canonical file companion.
+///
+/// # Errors
+///
+/// Returns [`FrontendFailure`] when project loading, parsing, import
+/// resolution, or type-checking fails.
+pub fn run_file_frontend_to_typecheck_with_selection(
+    input: &str,
+    options: &FrontendOptions,
+    entry_selection: Option<hew_types::DeclarationOccurrence>,
+    companion: Option<&Path>,
+) -> Result<FileFrontendState, FrontendFailure> {
+    run_file_frontend_to_typecheck_with_mode(
+        input,
+        options,
+        FrontendParseMode::Strict,
+        entry_selection,
+        companion,
+    )
 }
 
 /// Run the shared file frontend for the checker-backed syntax migrator.
@@ -2188,18 +2225,31 @@ pub fn run_file_frontend_to_typecheck_for_migration(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
-    run_file_frontend_to_typecheck_with_mode(input, options, FrontendParseMode::Migration)
+    run_file_frontend_to_typecheck_with_mode(
+        input,
+        options,
+        FrontendParseMode::Migration,
+        None,
+        None,
+    )
 }
 
 fn run_file_frontend_to_typecheck_with_mode(
     input: &str,
     options: &FrontendOptions,
     mode: FrontendParseMode,
+    entry_selection: Option<hew_types::DeclarationOccurrence>,
+    companion: Option<&Path>,
 ) -> Result<FileFrontendState, FrontendFailure> {
     let project = load_project_context(input, Some(options))?;
     let (mut program, parse_diagnostics) =
         parse_source_with_diagnostics(&project.source, input, mode)?;
     import_directory_module_entry_for_peer(&mut program, Path::new(input), mode);
+    if let Some(companion) = companion {
+        program
+            .items
+            .push(file_import(companion.display().to_string()));
+    }
     let mut diagnostics = parse_diagnostics;
 
     if let Err(failure) = resolve_imports_internal(
@@ -2214,14 +2264,20 @@ fn run_file_frontend_to_typecheck_with_mode(
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
 
-    let typecheck_result =
-        match typecheck_program_with_diagnostics(&program, &project.source, input, options, mode) {
-            Ok((result, type_diagnostics)) => {
-                diagnostics.extend(type_diagnostics);
-                result
-            }
-            Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
-        };
+    let typecheck_result = match typecheck_program_with_diagnostics(
+        &program,
+        &project.source,
+        input,
+        options,
+        mode,
+        entry_selection,
+    ) {
+        Ok((result, type_diagnostics)) => {
+            diagnostics.extend(type_diagnostics);
+            result
+        }
+        Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
+    };
 
     flatten_file_import_items(&mut program);
     let stdlib_roots = configured_stdlib_roots(options);
@@ -2232,6 +2288,8 @@ fn run_file_frontend_to_typecheck_with_mode(
         diagnostics,
         typecheck_result,
         source: project.source,
+        entry_selection,
+        companion: companion.map(Path::to_path_buf),
     })
 }
 
@@ -2272,6 +2330,7 @@ pub fn run_program_frontend_to_typecheck(
         source_label,
         options,
         FrontendParseMode::Strict,
+        None,
     ) {
         Ok((result, type_diagnostics)) => {
             diagnostics.extend(type_diagnostics);
@@ -2517,7 +2576,8 @@ mod tests {
         check_file, check_file_with_state, check_program, checker_search_paths,
         hir_diagnostics_to_frontend, load_dependencies, load_lockfile, load_package_name,
         parse_source, retain_user_facing_diagnostics, run_file_frontend_to_typecheck,
-        run_file_frontend_to_typecheck_for_migration, FrontendDiagnostic, FrontendDiagnosticKind,
+        run_file_frontend_to_typecheck_for_migration,
+        run_file_frontend_to_typecheck_with_selection, FrontendDiagnostic, FrontendDiagnosticKind,
         FrontendOptions,
     };
     use hew_parser::ast::Item;
@@ -2541,6 +2601,59 @@ mod tests {
         file.write_all(content.as_bytes())
             .expect("write source file");
         path.display().to_string()
+    }
+
+    #[test]
+    fn selected_occurrence_never_falls_back_to_authored_main() {
+        let dir = tempfile::tempdir().expect("create selected-entry fixture");
+        let source = "fn main() {}\n\n#[test]\nfn selected_test() {}\n";
+        let input = write_source(dir.path(), "entry_test.hew", source);
+        let program = parse_source(source, &input).expect("parse selected-entry fixture");
+        let selection = program
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(item_ordinal, (item, span))| match item {
+                Item::Function(function)
+                    if function
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute.name == "test") =>
+                {
+                    Some(
+                        hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                            None,
+                            span,
+                            item_ordinal,
+                            hew_types::DeclarationKind::Function,
+                            0,
+                        ),
+                    )
+                }
+                _ => None,
+            })
+            .expect("selected test occurrence");
+
+        let state = run_file_frontend_to_typecheck_with_selection(
+            &input,
+            &FrontendOptions::default(),
+            Some(selection),
+            None,
+        )
+        .expect("selected-entry fixture must type-check");
+
+        assert_eq!(
+            state
+                .typecheck_result
+                .tco
+                .expect("typecheck output")
+                .entry_exit_plan
+                .expect("selected entry plan")
+                .entry
+                .display_name(),
+            "selected_test",
+            "a present selection must not fall back to authored main"
+        );
     }
 
     /// The checker's module search paths must anchor Tier 2 in-worktree

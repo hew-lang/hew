@@ -53,7 +53,7 @@ actor ClientHandler {
     receive fn start(unused: i32) {
         match conn.write_string(f"[server] welcome {name}") {
             .Ok(_) => {},
-            .Err(err) => println(f"[server] welcome write failed: {err}"),
+            .Err(_) => println("[server] welcome write failed"),
         }
         var running = true;
         while running {
@@ -66,7 +66,7 @@ actor ClientHandler {
                         room.unregister(name);
                         match conn.write_string("__HEW_TCP_DISCONNECT__") {
                             .Ok(_) => {},
-                            .Err(err) => println(f"[server] disconnect write failed: {err}"),
+                            .Err(_) => println("[server] disconnect write failed"),
                         }
                         running = false;
                     } else {
@@ -77,8 +77,8 @@ actor ClientHandler {
                         room.broadcast(name, line);
                     }
                 },
-                .Err(err) => {
-                    println(f"[server] client read failed: {err}");
+                .Err(_) => {
+                    println("[server] client read failed");
                     room.unregister(name);
                     running = false;
                 },
@@ -90,7 +90,7 @@ actor ClientHandler {
         // the message rather than applying per-client flow control.
         match conn.write_string(msg) {
             .Ok(_) => {},
-            .Err(err) => println(f"[server] client write failed: {err}"),
+            .Err(_) => println("[server] client write failed"),
         }
     }
 }
@@ -110,7 +110,7 @@ fn main() {
     let addr = f"0.0.0.0:{port}";
     let listener = match net.listen(addr) {
         .Ok(listener) => listener,
-        .Err(err) => panic(f"[server] listen on {addr} failed: {err}"),
+        .Err(_) => panic(f"[server] listen on {addr} failed"),
     };
     println("=== Hew TCP Chat Server ===");
     println(f"Listening on {addr}");

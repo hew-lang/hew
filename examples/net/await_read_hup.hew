@@ -16,7 +16,7 @@ actor Reader {
         // way the await must resume with an empty result, not hang.
         let conn = match net.connect("127.0.0.1:9") {
             .Ok(conn) => conn,
-            .Err(err) => panic(f"network setup failed: {err}"),
+            .Err(_) => panic(f"network setup failed"),
         };
         let body = await conn.read();
         println(f"read {body.len()} bytes");

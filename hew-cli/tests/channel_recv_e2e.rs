@@ -137,7 +137,7 @@ fn actor_await_recv_flips_to_suspending_channel_recv() {
         "import std.channel.channel;\n\
          actor Worker {\n\
          \x20   receive fn run(unused: i64) {\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4).expect(\"channel allocation failed\");\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       tx.send(\"x\");\n\
          \x20       tx.close();\n\
          \x20       match await rx.recv() { .Some(v) => {}, .None => {}, }\n\
@@ -159,7 +159,7 @@ fn main_await_recv_does_not_flip() {
     let dump = mir_checked_dump(
         "import std.channel.channel;\n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4).expect(\"channel allocation failed\");\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.send(7);\n\
          \x20   tx.close();\n\
          \x20   match await rx.recv() { .Some(v) => {}, .None => {}, }\n\
@@ -181,7 +181,7 @@ fn main_for_await_receiver_compiles_through_blocking_recv_abi() {
     let dump = mir_checked_dump(
         "import std.channel.channel;\n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).expect(\"channel allocation failed\");\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.send(\"ready\");\n\
          \x20   tx.close();\n\
          \x20   for await item in rx { println(item); }\n\
@@ -201,7 +201,7 @@ fn parked_forawait_receiver_plan_closes_cursor_and_sender_once() {
     let source = "import std.channel.channel;\n\
          actor Drain {\n\
          \x20   receive fn run() {\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).expect(\"channel allocation failed\");\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       tx.send(\"ready\");\n\
          \x20       for await item in rx { println(item); }\n\
          \x20   }\n\

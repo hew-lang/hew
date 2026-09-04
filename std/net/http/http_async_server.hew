@@ -25,7 +25,7 @@
 //! actor Server {
 //!     let addr: string;   // "127.0.0.1:8080"
 //!     receive fn serve(unused: i64) {
-//!         let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
+//!         let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
 //!         let conn = await listener.accept();         // suspends on readiness
 //!         var raw = "";
 //!         var reads = 0;

@@ -9,7 +9,7 @@ fn channel_new_result_preserves_endpoint_type_parameter() {
     for (element_source, element_type) in [("i64", Ty::I64), ("string", Ty::String)] {
         let source = format!(
             r"
-            import std.channel.channel;
+            import std.channel;
 
             fn main() {{
                 let _result: Result<(channel.Sender<{element_source}>, channel.Receiver<{element_source}>), string> =
@@ -49,7 +49,7 @@ fn channel_new_result_preserves_endpoint_type_parameter() {
 fn channel_new_result_does_not_coerce_to_endpoint_tuple() {
     let output = check_source(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
             let _pair: (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);

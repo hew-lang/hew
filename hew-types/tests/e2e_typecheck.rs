@@ -1337,7 +1337,7 @@ fn for_await_receiver_container_element_errors() {
 
         fn main() {
             let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) =
-                channel.new(4);
+                match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             for await item in rx {
                 println(item.len());
             }

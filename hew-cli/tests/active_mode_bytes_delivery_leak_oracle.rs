@@ -67,7 +67,7 @@ fn server_source(port: u16, deliveries: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let listener = net.listen(\"127.0.0.1:{port}\").expect(\"network setup failed\");\n\
+         \x20   let listener = match net.listen(\"127.0.0.1:{port}\") {{ .Ok(value) => value, .Err(_) => panic(\"network setup failed\"), }};\n\
          \x20   var accepted: i64 = 0;\n\
          \x20   while accepted < {deliveries} {{\n\
          \x20       let conn = listener.accept();\n\

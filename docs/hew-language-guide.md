@@ -1723,7 +1723,7 @@ actor Server {
     let addr: string;
 
     receive fn serve() {
-        let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
+        let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
         loop {
             let conn = await listener.accept();
             let _data = await conn.read();

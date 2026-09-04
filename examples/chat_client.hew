@@ -77,8 +77,8 @@ fn main() {
     let connect_timeout_usec: i64 = 0;
     let conn = match net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec) {
         .Ok(conn) => conn,
-        .Err(err) => {
-            panic(f"[client] connect to {addr} failed: {err}");
+        .Err(_) => {
+            panic(f"[client] connect to {addr} failed");
         },
     };
     match conn.set_read_timeout(-1) {
@@ -94,7 +94,7 @@ fn main() {
     let (input, output) = conn.into_stream_sink();
     let (done_tx, done_rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {
         .Ok(pair) => pair,
-        .Err(err) => panic(f"channel.new failed: {err}"),
+        .Err(_) => panic("channel.new failed"),
     };
     let reader = spawn ChatReader(input: input, done: done_tx);
     reader.pump();

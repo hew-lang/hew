@@ -54,9 +54,15 @@ fn all_measured_wrappers() -> i64 {
         },
         .Err(error) => to_string(error).len(),
     };
-    let dns_direct = dns.lookup_host("127.0.0.1");
-    let dns_timed = dns.lookup_host_timed("127.0.0.1", 1000);
-    let compressed_reason = match compress.try_gzip_decompress("not-a-gzip".to_bytes(), 1024) {
+    let dns_direct = match dns.lookup_host("127.0.0.1") {
+        .Ok(value) => value,
+        .Err(_) => return 2,
+    };
+    let dns_timed = match dns.lookup_host_timed("127.0.0.1", 1000) {
+        .Ok(value) => value,
+        .Err(_) => return 3,
+    };
+    let compressed_reason = match compress.gzip_decompress("not-a-gzip".to_bytes(), 1024) {
         .Ok(data) => data.len(),
         .Err(reason) => reason.len(),
     };

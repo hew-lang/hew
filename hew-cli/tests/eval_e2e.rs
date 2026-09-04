@@ -1917,7 +1917,7 @@ fn compile_wasm_rejects_for_await_receiver_before_link() {
         concat!(
             "import std.channel.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1).expect(\"channel allocation failed\");\n",
+            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
             "    for await item in rx {\n",

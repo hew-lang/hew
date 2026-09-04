@@ -89,10 +89,9 @@ fn main() {
         .Ok(srv) => {
             serve_forever(root, srv);
         },
-        .Err(err) => {
-            let reason = to_string(err);
+        .Err(_) => {
             let detail = http.listen_error();
-            println(f"cannot listen on {addr}: {reason} - {detail}");
+            println(f"cannot listen on {addr}: {detail}");
         },
     }
 }

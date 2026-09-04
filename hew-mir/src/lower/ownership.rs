@@ -2931,7 +2931,7 @@ impl Builder {
     /// #2648 S2b — the caller-side argument scan for a `ParamsOnly` callee
     /// (plan Fix-design (2), pulled forward from S4b by the ratchet evidence:
     /// the interim PARAM-present reject falsely rejected genuine `ParamsOnly`
-    /// stdlib callers — `template.try_parse("…")` and friends). True iff EVERY
+    /// stdlib callers — `template.parse("…")` and friends). True iff EVERY
     /// argument is provably fresh, in which case the callee's `PARAM`-aliasing
     /// return can only alias fresh inputs — a fresh sole owner.
     ///

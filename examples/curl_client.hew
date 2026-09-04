@@ -114,7 +114,7 @@ fn main() {
     let connect_timeout_usec: i64 = 0;
     let conn = match net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec) {
         .Ok(conn) => conn,
-        .Err(err) => panic(f"network setup failed: {err}"),
+        .Err(_) => panic("network setup failed"),
     };
     match conn.set_read_timeout(-1) {
         .Ok(_) => {},
@@ -127,8 +127,8 @@ fn main() {
     let request = f"GET {path} HTTP/1.0\nHost: {host}\nUser-Agent: hew-curl/1.0\nAccept: */*\nConnection: close\n\n";
     match conn.write_string(request) {
         .Ok(_) => {},
-        .Err(e) => {
-            let err = f"  Error: failed to send request to {addr}: {e}";
+        .Err(_) => {
+            let err = f"  Error: failed to send request to {addr}";
             panic(err);
         },
     }

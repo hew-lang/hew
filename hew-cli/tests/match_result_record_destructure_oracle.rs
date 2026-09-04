@@ -1,6 +1,6 @@
 //! Match-result record ownership oracle for the panic-sibling join shape.
 //!
-//! `let Endpoint { host, port } = match try_parse_endpoint(...) { .Ok(e) => e,
+//! `let Endpoint { host, port } = match parse_endpoint(...) { .Ok(e) => e,
 //! .Err(_) => panic(...) }` moves a heap-owning record payload out of a fresh
 //! call carrier while the sibling arm diverges through `hew_panic_msg`. The
 //! panic shim's poison continuation is structurally reachable (a
@@ -51,7 +51,7 @@ import std.net;\n\
 \n\
 fn main() {\n\
 \x20   let addr = \"10.11.12.13:8080\".to_upper();\n\
-\x20   let Endpoint { host, port } = match net.try_parse_endpoint(\"oracle\", addr) {\n\
+\x20   let Endpoint { host, port } = match net.parse_endpoint(\"oracle\", addr) {\n\
 \x20       Ok(e) => e,\n\
 \x20       Err(err) => { panic(f\"bad: {err}\"); }\n\
 \x20   };\n\
@@ -69,7 +69,7 @@ import std.net;\n\
 \n\
 fn main() {\n\
 \x20   let addr = \"10.11.12.13:8080\".to_upper();\n\
-\x20   let e = match net.try_parse_endpoint(\"oracle\", addr) {\n\
+\x20   let e = match net.parse_endpoint(\"oracle\", addr) {\n\
 \x20       Ok(x) => x,\n\
 \x20       Err(err) => { panic(f\"bad: {err}\"); }\n\
 \x20   };\n\
@@ -88,7 +88,7 @@ fn parse_destructure_loop_source(frames: usize) -> String {
          \n\
          fn cycle() -> i64 {{\n\
          \x20   let addr = \"10.0.0.1:8080\".to_upper();\n\
-         \x20   let Endpoint {{ host, port }} = match net.try_parse_endpoint(\"oracle\", addr) {{\n\
+         \x20   let Endpoint {{ host, port }} = match net.parse_endpoint(\"oracle\", addr) {{\n\
          \x20       Ok(e) => e,\n\
          \x20       Err(err) => {{ panic(\"bad\"); }}\n\
          \x20   }};\n\

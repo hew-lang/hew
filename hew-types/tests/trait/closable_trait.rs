@@ -140,7 +140,7 @@ fn child_drop_not_in_consume_receiver_set() {
         import std.process;
 
         fn main() {
-            let child = match process.start("sleep 1") { .Ok(child) => child, .Err(error) => panic(to_string(error)), };
+            let child = match process.start("sleep 1") { .Ok(child) => child, .Err(error) => panic("process start failed"), };
             child.drop();
             let _ = child.kill();
         }

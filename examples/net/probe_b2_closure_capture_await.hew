@@ -11,7 +11,7 @@ actor Reader {
         sleep(200ms);
         let conn = match net.connect(addr) {
             .Ok(conn) => conn,
-            .Err(err) => panic(f"network setup failed: {err}"),
+            .Err(_) => panic(f"network setup failed"),
         };
         let read_once = || {
             await conn.read_string()
@@ -25,7 +25,7 @@ actor Reader {
 fn main() {
     let listener = match net.listen("127.0.0.1:0") {
         .Ok(listener) => listener,
-        .Err(err) => panic(f"network setup failed: {err}"),
+        .Err(_) => panic(f"network setup failed"),
     };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)

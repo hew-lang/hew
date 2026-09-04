@@ -239,7 +239,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.channel.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1).expect(\"channel allocation failed\");\n",
+            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    let _ = rx.try_recv();\n",
             "    tx.close();\n",
@@ -291,7 +291,7 @@ mod wasm_rejects {
             "import std.channel.channel;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
-            "        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).expect(\"channel allocation failed\");\n",
+            "        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "        tx.send(\"hello\");\n",
             "        tx.close();\n",
             "        let _ = await rx.recv();\n",
@@ -332,7 +332,7 @@ mod wasm_rejects {
             "import std.channel.channel;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
-            "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1).expect(\"channel allocation failed\");\n",
+            "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "        let _ = rx.recv();\n",
             "        rx.close();\n",
             "    }\n",
@@ -365,7 +365,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.channel.channel;\n",
             "fn main() {\n",
-            "    let (_tx, rx) = channel.new(1).expect(\"channel allocation failed\");\n",
+            "    let (_tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    let _ = rx.recv();\n",
             "}\n",
         );
@@ -395,7 +395,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.channel.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1).expect(\"channel allocation failed\");\n",
+            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
             "    for await item in rx {\n",
@@ -429,7 +429,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.stream;\n",
             "fn main() {\n",
-            "    let (sink, input) = stream.bytes_pipe(1).expect(\"stream allocation failed\");\n",
+            "    let (sink, input) = match stream.bytes_pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    sink.close();\n",
             "    for await item in input {\n",
             "        println(item.to_string());\n",
@@ -462,7 +462,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.channel.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1).expect(\"channel allocation failed\");\n",
+            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
             "    for await item in rx {\n",
@@ -930,27 +930,6 @@ mod wasm_rejects {
         assert!(
             platform_error_contains(&output, "std.os"),
             "error message should mention OS feature; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_crypto_try_random_bytes() {
-        // The fallible twin draws from the same native-only entropy source, so
-        // it must not become a way around the fail-closed wasm32 rejection.
-        let source = concat!(
-            "import std.crypto.crypto;\n",
-            "fn main() { crypto.try_random_bytes(16); }\n",
-        );
-        let output = check_wasm_with_registry(source);
-        assert!(
-            has_platform_limitation_error(&output),
-            "crypto.try_random_bytes should be a compile-time error on WASM; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "random_bytes"),
-            "error message should mention crypto.random_bytes; got: {:?}",
             output.errors
         );
     }

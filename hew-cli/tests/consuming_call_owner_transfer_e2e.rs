@@ -62,9 +62,9 @@ import std.net;
 import std.stream.{Sink, Stream};
 
 fn main() {
-    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = listener.local_port();
-    let peer = match net.connect(f"127.0.0.1:{port as i64}") { .Ok(value) => value, .Err(error) => panic(to_string(error)), };
+    let peer = match net.connect(f"127.0.0.1:{port as i64}") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let server = listener.accept();
     let (input, sink): (Stream<bytes>, Sink<bytes>) = server.into_stream_sink();
     sink.close();

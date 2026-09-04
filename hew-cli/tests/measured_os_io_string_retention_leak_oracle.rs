@@ -31,7 +31,7 @@ fn one_frame() -> i64 {
         .Ok(output) => output.stdout.len() + output.stderr.len(),
         .Err(_) => 0,
     };
-    let codec_len = match compress.try_gzip_decompress("not-a-gzip".to_bytes(), 1024) {
+    let codec_len = match compress.gzip_decompress("not-a-gzip".to_bytes(), 1024) {
         .Ok(data) => data.len(),
         .Err(reason) => reason.len(),
     };
@@ -39,7 +39,7 @@ fn one_frame() -> i64 {
         .Ok(_) => 1,
         .Err(_) => 0,
     };
-    let codec_discard = match compress.try_gzip_decompress("not-a-gzip".to_bytes(), 1024) {
+    let codec_discard = match compress.gzip_decompress("not-a-gzip".to_bytes(), 1024) {
         .Ok(_) => 0,
         .Err(_) => 1,
     };

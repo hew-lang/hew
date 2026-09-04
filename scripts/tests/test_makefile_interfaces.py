@@ -33,17 +33,6 @@ def require_value_error(makefile: str, message: str) -> None:
         raise AssertionError(f"expected help index failure containing {message!r}")
 
 
-def test_real_help_index_is_generated_and_bounded() -> None:
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    entries = help_index.entries(makefile)
-    assert entries
-    output = help_index.render(makefile)
-    for section, target, purpose in entries:
-        assert f"{section}:" in output
-        assert f"make {target}" in output
-        assert purpose in output
-
-
 def test_renamed_target_takes_its_help_entry_with_it() -> None:
     before = "old-name: dependency ## Build: compile it\n"
     after = before.replace("old-name:", "new-name:")

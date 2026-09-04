@@ -810,6 +810,24 @@ mod tests {
         summary
     }
 
+    fn run_discovered_file(path: &Path) -> TestSummary {
+        let discovered =
+            discovery::discover_tests_in_file(path.to_str().expect("test fixture path is utf-8"))
+                .expect("discover test fixture");
+        run_tests(
+            &discovered.tests,
+            TestRunOptions {
+                filter: None,
+                include_ignored: false,
+                ffi_lib: None,
+                compile_paths: cargo_test_compile_paths(),
+                timeout: DEFAULT_TEST_TIMEOUT,
+                jobs: 1,
+                sir_mode: crate::compile::SirMode::Disabled,
+            },
+        )
+    }
+
     #[test]
     fn passing_test() {
         if !require_codegen() {
@@ -825,6 +843,49 @@ fn test_pass() {
         );
         assert_eq!(summary.passed, 1, "{}", describe(&summary));
         assert_eq!(summary.failed, 0, "{}", describe(&summary));
+    }
+
+    #[test]
+    fn selected_test_runs_instead_of_authored_main() {
+        if !require_codegen() {
+            return;
+        }
+        let summary = run_inline(
+            r"
+fn main() {
+    assert(false);
+}
+
+#[test]
+fn selected_test() {
+    assert(true);
+}
+",
+        );
+        assert_eq!(summary.passed, 1, "{}", describe(&summary));
+    }
+
+    #[test]
+    fn matched_production_peer_supplies_test_symbols() {
+        if !require_codegen() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("create peer fixture directory");
+        std::fs::write(
+            dir.path().join("peer.hew"),
+            "fn peer_value() -> bool { true }\n",
+        )
+        .expect("write production peer");
+        let test_path = dir.path().join("peer_test.hew");
+        std::fs::write(
+            &test_path,
+            "#[test]\nfn uses_peer() { assert(peer_value()); }\n",
+        )
+        .expect("write test peer");
+
+        let summary = run_discovered_file(&test_path);
+
+        assert_eq!(summary.passed, 1, "{}", describe(&summary));
     }
 
     #[test]

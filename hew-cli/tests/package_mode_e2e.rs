@@ -279,6 +279,42 @@ fn native_prerequisite_failure_stops_the_build() {
     );
 }
 
+#[test]
+fn native_prerequisite_with_matching_toolchain_builds_and_links() {
+    require_codegen();
+    let dir = workspace();
+    write_package(
+        dir.path(),
+        "withnativeok",
+        "main.hew",
+        "\n[native]\nlib = \"withnativeok_native\"\ncrate = \"native\"\n",
+    );
+    let native_dir = dir.path().join("native");
+    std::fs::create_dir_all(native_dir.join("src")).expect("create native crate dir");
+    // Make the fixture its own Cargo workspace.
+    std::fs::write(
+        native_dir.join("Cargo.toml"),
+        "[workspace]\n\n\
+         [package]\nname = \"withnativeok_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+         [lib]\ncrate-type = [\"staticlib\"]\n",
+    )
+    .expect("write native Cargo.toml");
+    std::fs::write(native_dir.join("src/lib.rs"), "").expect("write native lib.rs");
+
+    let output = Command::new(hew_binary())
+        .arg("build")
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew build");
+
+    assert!(
+        output.status.success(),
+        "a package whose [native] crate matches the runtime's rustc must build\n{}",
+        describe_output(&output),
+    );
+    assert_prints_greeting(&binary_in(dir.path(), "withnativeok"));
+}
+
 /// Outside any package, the file-less form is a usage error naming the search
 /// origin and the way out.
 #[test]

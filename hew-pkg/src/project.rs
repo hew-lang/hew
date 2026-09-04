@@ -210,7 +210,8 @@ fn absolute_normalized_path(path: &Path) -> Result<PathBuf, ResolveError> {
 ///
 /// Returns the underlying cargo build failure message.
 pub fn build_native_lib(root: &Path) -> Result<Option<PathBuf>, String> {
-    let Some(artifact) = crate::native::build_native(root)? else {
+    let expected = crate::native::embedded_rustc_identity();
+    let Some(artifact) = crate::native::build_native(root, &expected)? else {
         return Ok(None);
     };
     Ok(Some(artifact.path))

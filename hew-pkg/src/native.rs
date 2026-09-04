@@ -19,6 +19,80 @@ pub struct NativeArtifact {
     pub path: PathBuf,
 }
 
+/// The release and host identity of a rustc toolchain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustcIdentity {
+    pub release: String,
+    pub host: String,
+}
+
+impl std::fmt::Display for RustcIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rustc {} ({})", self.release, self.host)
+    }
+}
+
+impl RustcIdentity {
+    /// Parse the `<release> <host>` stamp `hew-pkg/build.rs` embeds via
+    /// `cargo:rustc-env=HEW_RUNTIME_RUSTC`.
+    fn parse_stamp(text: &str) -> Option<Self> {
+        let (release, host) = text.trim().split_once(' ')?;
+        Some(Self {
+            release: release.to_string(),
+            host: host.to_string(),
+        })
+    }
+
+    /// Parse the `release:`/`host:` lines out of full `rustc -vV` output.
+    fn parse_verbose(text: &str) -> Option<Self> {
+        let field = |name: &str| -> Option<String> {
+            let prefix = format!("{name}: ");
+            text.lines()
+                .find_map(|line| line.strip_prefix(prefix.as_str()))
+                .map(str::trim)
+                .map(str::to_string)
+        };
+        Some(Self {
+            release: field("release")?,
+            host: field("host")?,
+        })
+    }
+}
+
+/// The rustc identity embedded while building the Hew runtime.
+///
+/// # Panics
+///
+/// Panics if the build stamp is malformed.
+#[must_use]
+pub fn embedded_rustc_identity() -> RustcIdentity {
+    RustcIdentity::parse_stamp(env!("HEW_RUNTIME_RUSTC")).unwrap_or_else(|| {
+        panic!(
+            "HEW_RUNTIME_RUSTC={:?} embedded by hew-pkg/build.rs is malformed",
+            env!("HEW_RUNTIME_RUSTC")
+        )
+    })
+}
+
+/// Query the rustc selected for a native crate directory.
+fn crate_rustc_identity(crate_dir: &Path) -> Result<RustcIdentity, String> {
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .current_dir(crate_dir)
+        .output()
+        .map_err(|e| format!("failed to run `rustc -vV`: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`rustc -vV` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let text = String::from_utf8(output.stdout)
+        .map_err(|e| format!("`rustc -vV` produced non-UTF-8 output: {e}"))?;
+    RustcIdentity::parse_verbose(&text)
+        .ok_or_else(|| format!("could not parse `rustc -vV` output:\n{text}"))
+}
+
 /// Platform-specific file name for a built library of the given `kind`.
 fn artifact_file_name(lib: &str, kind: &str) -> String {
     if kind == "cdylib" {
@@ -43,11 +117,19 @@ fn artifact_file_name(lib: &str, kind: &str) -> String {
 /// static libraries and locates the produced artifact.
 /// Returns `Ok(None)` when the manifest has no `[native]` section.
 ///
+/// `expected` is the rustc identity `libhew.a` was built with — callers pass
+/// [`embedded_rustc_identity`] in production; tests pass a deliberately
+/// mismatching value directly, with no env var involved.
+///
 /// # Errors
 ///
-/// Returns an error when the manifest can't be read, the crate fails to build,
+/// Returns an error when the manifest can't be read, the crate's rustc
+/// doesn't match `expected` (`E_NATIVE_TOOLCHAIN`), the crate fails to build,
 /// or the built artifact can't be located.
-pub fn build_native(manifest_dir: &Path) -> Result<Option<NativeArtifact>, String> {
+pub fn build_native(
+    manifest_dir: &Path,
+    expected: &RustcIdentity,
+) -> Result<Option<NativeArtifact>, String> {
     let manifest_path = manifest_dir.join("hew.toml");
     let m = manifest::parse_manifest(&manifest_path).map_err(|e| e.to_string())?;
     let Some(native) = m.native else {
@@ -60,6 +142,20 @@ pub fn build_native(manifest_dir: &Path) -> Result<Option<NativeArtifact>, Strin
         return Err(format!(
             "[native] crate at {} has no Cargo.toml",
             crate_dir.display()
+        ));
+    }
+
+    // Refuse before cargo builds a static library with an incompatible libstd.
+    let actual = crate_rustc_identity(&crate_dir)?;
+    if actual != *expected {
+        return Err(format!(
+            "error[E_NATIVE_TOOLCHAIN]: [native] crate at {} would build with {actual}, \
+             but the Hew runtime (libhew.a) was built with {expected}. A mismatched rustc \
+             embeds an incompatible libstd, and the final link would fail on a duplicate \
+             `rust_eh_personality` symbol. Fix: pin {}/rust-toolchain.toml to release {}.",
+            crate_dir.display(),
+            crate_dir.display(),
+            expected.release,
         ));
     }
 
@@ -168,6 +264,74 @@ mod tests {
             "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
         )
         .unwrap();
-        assert!(build_native(dir.path()).unwrap().is_none());
+        assert!(build_native(dir.path(), &embedded_rustc_identity())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn rustc_identity_display_names_release_and_host() {
+        let id = RustcIdentity {
+            release: "1.82.0".to_string(),
+            host: "x86_64-unknown-linux-gnu".to_string(),
+        };
+        assert_eq!(id.to_string(), "rustc 1.82.0 (x86_64-unknown-linux-gnu)");
+    }
+
+    #[test]
+    fn rustc_identity_parses_verbose_output() {
+        let text = "rustc 1.82.0 (f6e511eec 2024-10-15)\n\
+                     binary: rustc\n\
+                     commit-hash: f6e511eec5f43ba5e5e2b60eb1a35d4f1a35e97a\n\
+                     commit-date: 2024-10-15\n\
+                     host: x86_64-unknown-linux-gnu\n\
+                     release: 1.82.0\n\
+                     LLVM version: 19.1.1\n";
+        let id = RustcIdentity::parse_verbose(text).expect("parses");
+        assert_eq!(id.release, "1.82.0");
+        assert_eq!(id.host, "x86_64-unknown-linux-gnu");
+    }
+
+    #[test]
+    fn rustc_identity_parse_verbose_rejects_output_missing_fields() {
+        assert!(RustcIdentity::parse_verbose("binary: rustc\n").is_none());
+    }
+
+    #[test]
+    fn build_native_refuses_mismatched_rustc() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("hew.toml"),
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\
+             [native]\nlib = \"p_native\"\ncrate = \"native\"\n",
+        )
+        .unwrap();
+        let native_dir = dir.path().join("native");
+        std::fs::create_dir_all(&native_dir).unwrap();
+        std::fs::write(
+            native_dir.join("Cargo.toml"),
+            "[package]\nname = \"p_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             [lib]\ncrate-type = [\"staticlib\"]\n",
+        )
+        .unwrap();
+
+        let mismatching = RustcIdentity {
+            release: "0.0.0-does-not-exist".to_string(),
+            host: "nowhere".to_string(),
+        };
+        let error = build_native(dir.path(), &mismatching).unwrap_err();
+
+        assert!(
+            error.contains("E_NATIVE_TOOLCHAIN"),
+            "must carry the toolchain-mismatch code: {error}"
+        );
+        assert!(
+            error.contains("0.0.0-does-not-exist"),
+            "must name the expected (libhew.a) rustc: {error}"
+        );
+        assert!(
+            !error.contains("cargo build failed"),
+            "must fail before ever invoking cargo: {error}"
+        );
     }
 }

@@ -82,7 +82,7 @@ fn extract_ids_in_line(line: string, out: Vec<string>) {
 // `fs.is_dir` predicate (dialect authority §4 / std/fs.hew:495). No more
 // false negatives on README, Makefile, etc.
 fn collect_md_files(dir: string, out: Vec<string>) {
-    let entries = fs.list_dir(dir);
+    let entries = fs.list_dir(dir).expect("failed to list orchestration directory");
     for name in entries {
         let full = dir + "/" + name;
         if fs.is_dir(full) {
@@ -107,7 +107,7 @@ fn collect_md_files(dir: string, out: Vec<string>) {
 // i32>". Closed by W3.4. We use `get` + `insert` and match on the
 // `Option<i32>` returned by `get`.
 fn ingest_file(path: string, index: HashMap<string, i32>) {
-    let content = fs.read(path);
+    let content = fs.read(path).expect("failed to read orchestration document");
     let ids: Vec<string> = Vec.new();
     for line in content.lines() {
         extract_ids_in_line(line, ids);
@@ -128,10 +128,8 @@ fn ingest_file(path: string, index: HashMap<string, i32>) {
 // main
 //
 // CLI surface: `hew run examples/hew-orch/main.hew -- <dir>`.
-// `os.args().get(i)` returns `string` (dialect authority §1 stdlib survey),
-// `os.args().len() -> i64`. A247 #11's preferred `os.args() -> Vec<string>`
-// surface does not exist today; rather than fabricate it, we accept the
-// current surface and default to `.tmp/orchestration` when no arg is given.
+// `os.args()` returns `Vec<string>`; this focused example keeps its fixed
+// `.tmp/orchestration` input so the indexing pass remains deterministic.
 fn main() {
     let dir = ".tmp/orchestration";
     println(f"hew-orch ingest {dir}");

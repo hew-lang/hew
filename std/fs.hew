@@ -194,7 +194,7 @@ fn last_io_error() -> IoError {
 /// import std.fs;
 ///
 /// fn main() {
-///     let src = fs.read("main.hew");
+///     let src = fs.read("main.hew").expect("failed to read main.hew");
 /// }
 /// ```
 pub fn read(file_path: string) -> Result<string, IoError> {
@@ -287,7 +287,7 @@ pub fn size(path: string) -> i64 {
 /// import std.fs;
 ///
 /// fn main() {
-///     let data = fs.read_bytes("image.png");
+///     let data = fs.read_bytes("image.png").expect("failed to read image.png");
 ///     println(data.len());
 /// }
 /// ```
@@ -360,7 +360,7 @@ pub fn mkdir_all(dir_path: string) -> Result<(), IoError> {
 /// import std.fs;
 ///
 /// fn main() {
-///     let entries = fs.list_dir("/tmp");
+///     let entries = fs.list_dir("/tmp").expect("failed to list /tmp");
 ///     for entry in entries {
 ///         println(entry);
 ///     }

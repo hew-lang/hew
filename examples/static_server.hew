@@ -44,15 +44,15 @@ fn serve_forever(root: string, server: Server) {
 fn serve_request(root: string, req: Request) {
     let request_path = req.path();
     if request_path.contains("..") {
-        req.respond_text(403, "403 Forbidden");
+        req.respond_text(403, "403 Forbidden").expect("failed to send HTTP response");
     } else {
         let file_path = resolve_path(root, request_path);
         if fs.exists(file_path) {
-            let body = fs.read(file_path);
+            let body = fs.read(file_path).expect("failed to read requested file");
             let content_type = mime.from_path(file_path);
-            req.respond(200, content_type, body);
+            req.respond(200, content_type, body).expect("failed to send HTTP response");
         } else {
-            req.respond_text(404, "404 Not Found");
+            req.respond_text(404, "404 Not Found").expect("failed to send HTTP response");
         }
     }
     req.close();

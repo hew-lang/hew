@@ -11,7 +11,7 @@
 //! fn main() {
 //!     let dir = path.dirname("/home/user/file.txt");
 //!     let ext = path.extension("photo.jpg");
-//!     let result = path.glob("*.hew");
+//!     let result = path.glob("*.hew").expect("failed to expand glob");
 //!     for i in 0..result.len() {
 //!         println(result.get(i));
 //!     }
@@ -120,7 +120,7 @@ impl GlobResult {
 /// import std.path;
 ///
 /// fn main() {
-///     let files = path.glob("src/**/*.hew");
+///     let files = path.glob("src/**/*.hew").expect("failed to expand glob");
 /// }
 /// ```
 /// Expand a glob pattern, reporting expansion failure separately from a

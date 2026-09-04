@@ -11,7 +11,7 @@
 //! import std.io.closable;
 //!
 //! fn serve_one(addr: string) -> Result<(), closable.CloseError> {
-//!     let listener = net.listen(addr);
+//!     let listener = net.listen(addr).expect("network setup failed");
 //!     let conn = listener.accept();
 //!     let _ = conn.write_string("hello\n");
 //!     listener.close()

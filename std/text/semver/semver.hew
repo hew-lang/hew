@@ -101,8 +101,8 @@ impl VersionMethods for Version {
 // sentinel. `to_string`, `compare`, and `matches` never narrow.
 fn component_as_i64(name: string, digits: string) -> i64 {
     match string.to_int(digits) {
-        .Some(value) => value,
-        .None => {
+        .Ok(value) => value,
+        .Err(_) => {
             panic(f"semver.Version.{name}: component does not fit in i64");
             0
         },

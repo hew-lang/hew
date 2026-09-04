@@ -16,7 +16,7 @@ fn search_file(filename: string, pattern: string, nl: string) -> i32 {
         println(f"hew_grep: {filename}: No such file");
         return 0;
     }
-    let content = fs.read(filename);
+    let content = fs.read(filename).expect("failed to read search input");
     let total_len = content.len();
     var matches: i32 = 0;
     var pos = 0;

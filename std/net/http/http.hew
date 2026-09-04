@@ -14,7 +14,7 @@
 //!     match http.listen(":8080") {
 //!         .Ok(server) => {
 //!             let req = server.accept();
-//!             req.respond_text(200, "Hello from Hew!");
+//!             req.respond_text(200, "Hello from Hew!").expect("failed to send response");
 //!             req.close();
 //!             server.close();
 //!         },
@@ -137,7 +137,7 @@ trait RequestMethods {
     ///     match http.listen(":8080") {
     ///         .Ok(server) => {
     ///             let req = server.accept();
-    ///             req.respond_text(200, "OK");
+    ///             req.respond_text(200, "OK").expect("failed to send response");
     ///             req.close();
     ///             server.close();
     ///         },

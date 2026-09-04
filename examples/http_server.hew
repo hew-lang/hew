@@ -25,7 +25,7 @@ fn serve_forever(root: string, srv: Server) {
 fn serve_request(root: string, req: Request) {
     let request_path = req.path();
     if request_path.contains("..") {
-        req.respond_text(403, "403 Forbidden");
+        req.respond_text(403, "403 Forbidden").expect("failed to send HTTP response");
     } else {
         var file_path = root + request_path;
         if request_path.ends_with("/") {
@@ -35,10 +35,10 @@ fn serve_request(root: string, req: Request) {
             match fs.read(file_path) {
                 .Ok(body) => {
                     let content_type = mime.from_path(file_path);
-                    req.respond(200, content_type, body);
+                    req.respond(200, content_type, body).expect("failed to send HTTP response");
                 },
                 .Err(_) => {
-                    req.respond_text(500, "500 Internal Server Error");
+                    req.respond_text(500, "500 Internal Server Error").expect("failed to send HTTP response");
                 },
             }
         } else {
@@ -47,14 +47,14 @@ fn serve_request(root: string, req: Request) {
                 match fs.read(index_path) {
                     .Ok(body) => {
                         let content_type = mime.from_path(index_path);
-                        req.respond(200, content_type, body);
+                        req.respond(200, content_type, body).expect("failed to send HTTP response");
                     },
                     .Err(_) => {
-                        req.respond_text(500, "500 Internal Server Error");
+                        req.respond_text(500, "500 Internal Server Error").expect("failed to send HTTP response");
                     },
                 }
             } else {
-                req.respond_text(404, "404 Not Found");
+                req.respond_text(404, "404 Not Found").expect("failed to send HTTP response");
             }
         }
     }

@@ -1078,7 +1078,7 @@ match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
     },
     .Err(_err) => println(f"listen failed: {http.listen_error()}"),
 }
-let content = fs.read("config.toml");
+let content = fs.read("config.toml").expect("failed to read config.toml");
 let exists = fs.exists("output.txt");       // Returns bool
 let line = io.read_line();                  // Preferred stdin surface
 let re = regex.new("[a-z]+");
@@ -3018,7 +3018,7 @@ Every acquisition and every operation that can fail reports it as a `Result`
 | Type             | Created by                                 | Methods                                                                                                                              |
 | ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `Result<http.Request, NetError>`, `.close()`                                                                       |
-| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
+| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, content_type, body)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
 | `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()` |
 | `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `Result<bytes, net.NetError>`, `.read_string()` → `Result<string, net.NetError>`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)` → `Result<(), net.NetError>`, `.write_string(data)` → `Result<(), net.NetError>`, `.close()` |
 | `process.Child`  | `process.start(cmd) -> Result<Child, ProcessError>`, `process.start_argv(cmd, argv) -> Result<Child, ProcessError>` | `.wait()`, `.kill()`                     |
@@ -4693,10 +4693,10 @@ Both handle types are `Send` (safe to pass to other actors), opaque (backed by a
 import std.stream;
 
 // Canonical in-memory bounded bytes pipe
-let (bytes_sink, bytes_stream) = stream.bytes_pipe(16);
+let (bytes_sink, bytes_stream) = stream.bytes_pipe(16).expect("stream allocation failed");
 
 // Convenience text pipe
-let (text_sink, text_stream) = stream.pipe(16);
+let (text_sink, text_stream) = stream.pipe(16).expect("stream allocation failed");
 
 // Current file helpers remain text-only in this slice
 let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<string>, string>

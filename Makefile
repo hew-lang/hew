@@ -1325,7 +1325,7 @@ o2-differential-selftest:
 
 test-stdlib-ratchet: hew-native ## Test: type-check the standard library against its ratchet
 	@echo "==> Type-checking stdlib (ratcheted)"
-	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib --expected-failures /dev/null
+	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib
 
 # Every stdlib source must stay clean in isolation, and every module must stay
 # silent when checked and built through a temporary user package.

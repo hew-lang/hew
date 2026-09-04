@@ -15,14 +15,7 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
 #[test]
 fn simple_function_lowers_with_stable_sites() {
     let output = lower("fn main() -> i64 { let x = 1 + 2; return x; }");
-    assert!(
-        !output.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { .. }
-        )),
-        "unexpected checker boundary diagnostics: {:?}",
-        output.diagnostics
-    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let verify = verify_hir(&output.module);
     assert!(verify.is_empty(), "{verify:?}");
 

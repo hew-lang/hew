@@ -2,7 +2,7 @@ import std.io.closable.{Closable, CloseError};
 import std.io.closable;
 
 type TestHandle {
-    id: i64;
+    id: i64,
 }
 
 impl Closable for TestHandle {

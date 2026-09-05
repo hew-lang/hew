@@ -6,8 +6,8 @@
 import helpers;
 
 type Op {
-    f: fn(i64) -> i64;
-    tag: i64;
+    f: fn(i64) -> i64,
+    tag: i64,
 }
 
 fn apply(f: fn(i64) -> i64, x: i64) -> i64 {

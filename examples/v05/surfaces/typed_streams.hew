@@ -23,7 +23,7 @@
 import std.stream;
 
 actor Drainer {
-    let input: stream.Stream<bytes>;
+    let input: stream.Stream<bytes>,
     receive fn run() {
 
         // Consumer: each recv suspends until a frame is ready; None == EOF.

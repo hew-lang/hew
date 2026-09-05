@@ -1,5 +1,5 @@
 type HoldsMap {
-    values: HashMap<string, i64>;
+    values: HashMap<string, i64>,
 }
 
 fn main() {

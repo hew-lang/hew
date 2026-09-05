@@ -50,7 +50,7 @@ trait Describe {
 
 // Record with an owned-heap `string` field (D2 Mode A).
 type Person {
-    tag: string;
+    tag: string,
 }
 
 impl Person {
@@ -65,7 +65,7 @@ fn inspect_named(value: dyn Named) -> i64 {
 
 // Record with an owned-heap `Vec` field (D2 Mode A).
 type Bag {
-    items: Vec<i64>;
+    items: Vec<i64>,
 }
 
 impl Bag {
@@ -77,8 +77,8 @@ impl Bag {
 // Enum with an owned-heap (`string`) variant payload AND a BitCopy variant
 // (D2 Mode B — every enum concrete was previously unclassifiable).
 enum Status {
-    Active(string);
-    Inactive(i64);
+    Active(string),
+    Inactive(i64),
 }
 
 impl Status {

@@ -389,8 +389,8 @@ fn skipped_indirect_enum_field_emits_field_drop_in_place_mir() {
 
     let source = "\
 indirect enum Chain {\n\
-\x20   End;\n\
-\x20   Link(string, Chain);\n\
+\x20   End,\n\
+\x20   Link(string, Chain),\n\
 }\n\
 \n\
 type Holder {\n\

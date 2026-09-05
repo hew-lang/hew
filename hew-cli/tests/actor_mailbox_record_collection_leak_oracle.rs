@@ -44,7 +44,7 @@ fn mailbox_record_collection_loop_source(frames: usize) -> String {
         "type Boxed {{ payload: [i64] }}\n\
          \n\
          actor ProbeSink {{\n\
-         \x20   var seen: i64;\n\
+         \x20   var seen: i64,\n\
          \x20   receive fn take(b: Boxed) {{\n\
          \x20       var s: i64 = 0;\n\
          \x20       for v in b.payload {{ s = s + v; }}\n\
@@ -73,10 +73,10 @@ fn mailbox_record_collection_loop_source(frames: usize) -> String {
 /// delivered message.
 fn mailbox_record_two_collections_loop_source(frames: usize) -> String {
     format!(
-        "type Boxed {{ payload: [i64]; extra: [i64] }}\n\
+        "type Boxed {{ payload: [i64], extra: [i64] }}\n\
          \n\
          actor ProbeSink {{\n\
-         \x20   var seen: i64;\n\
+         \x20   var seen: i64,\n\
          \x20   receive fn take(b: Boxed) {{\n\
          \x20       var s: i64 = 0;\n\
          \x20       for v in b.payload {{ s = s + v; }}\n\
@@ -114,7 +114,7 @@ fn mailbox_record_borrow_only_slice_source(frames: usize) -> String {
         "type Boxed {{ payload: [i64] }}\n\
          \n\
          actor ProbeSink {{\n\
-         \x20   var seen: i64;\n\
+         \x20   var seen: i64,\n\
          \x20   receive fn take(b: Boxed) {{\n\
          \x20       seen = seen + b.payload.len();\n\
          \x20   }}\n\
@@ -146,7 +146,7 @@ fn mailbox_record_borrow_only_vec_source(frames: usize) -> String {
         "type Boxed {{ payload: Vec<i64> }}\n\
          \n\
          actor ProbeSink {{\n\
-         \x20   var seen: i64;\n\
+         \x20   var seen: i64,\n\
          \x20   receive fn take(b: Boxed) {{\n\
          \x20       seen = seen + b.payload.len();\n\
          \x20   }}\n\
@@ -182,8 +182,8 @@ fn mailbox_record_retained_into_state_source(frames: usize) -> String {
         "type Boxed {{ payload: Vec<i64> }}\n\
          \n\
          actor ProbeSink {{\n\
-         \x20   var seen: i64;\n\
-         \x20   var store: Vec<i64>;\n\
+         \x20   var seen: i64,\n\
+         \x20   var store: Vec<i64>,\n\
          \x20   receive fn take(b: Boxed) {{\n\
          \x20       store = b.payload;\n\
          \x20       seen = seen + store.len();\n\
@@ -217,7 +217,7 @@ fn mailbox_record_retained_into_state_source(frames: usize) -> String {
 const MAILBOX_RETAINED_CONTENT_SOURCE: &str = "type Boxed { payload: Vec<i64> }\n\
      \n\
      actor ProbeSink {\n\
-     \x20   var store: Vec<i64>;\n\
+     \x20   var store: Vec<i64>,\n\
      \x20   receive fn take(b: Boxed) {\n\
      \x20       store = b.payload;\n\
      \x20   }\n\

@@ -43,20 +43,20 @@
 /// `net.NetError` in `std.net`.
 pub enum IoError {
     /// The target path does not exist.
-    NotFound(i64);
+    NotFound(i64),
     /// The process lacks permission for the operation.
-    PermissionDenied(i64);
+    PermissionDenied(i64),
     /// A file or directory already exists at the target path.
-    AlreadyExists(i64);
+    AlreadyExists(i64),
     /// The operation timed out (e.g. the blocking pool exceeded its deadline).
-    TimedOut(i64);
+    TimedOut(i64),
     /// Operation was cancelled (e.g., the blocking pool was shut down mid-call).
     ///
     /// Distinct from `TimedOut`: `TimedOut` means the deadline expired; `Cancelled`
     /// means the operation was abandoned for another reason.
-    Cancelled(i64);
+    Cancelled(i64),
     /// Any other OS-level I/O failure.
-    Other(i64);
+    Other(i64),
 }
 
 // WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.

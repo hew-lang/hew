@@ -83,9 +83,9 @@ pub const CLIENT_MAX_READS: i64 = 8192;
 /// between the status line and the blank line, CRLF-separated), parsed on demand
 /// by [`AsyncResponse.header`].
 pub type AsyncResponse {
-    code: i64;
-    body_text: string;
-    header_section: string;
+    code: i64,
+    body_text: string,
+    header_section: string,
 }
 
 /// Methods on [`AsyncResponse`] — byte-identical surface to the blocking

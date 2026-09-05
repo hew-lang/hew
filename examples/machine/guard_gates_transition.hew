@@ -15,11 +15,11 @@
 // Gate: stdout must match `guard_gates_transition.expected` exactly.
 machine Latch {
     events {
-        Try;
+        Try,
     }
 
-    state Closed { code: i64; }
-    state Open;
+    state Closed { code: i64, },
+    state Open,
 
     on Try: Closed => Open when self.code == 42 {
         Latch.Open

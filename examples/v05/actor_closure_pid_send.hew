@@ -3,7 +3,7 @@
 // retains nor releases the actor — its lifetime stays runtime-owned and
 // the parent binding remains usable alongside the closure.
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn increment(n: i64) {
         count = count + n;
     }

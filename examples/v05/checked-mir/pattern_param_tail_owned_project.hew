@@ -3,8 +3,8 @@
 // position; wildcard-only helpers borrow so their caller can reuse and drop the
 // original composite once.
 type Packet {
-    tag: string;
-    body: string;
+    tag: string,
+    body: string,
 }
 
 fn record_tail(p: Packet) -> i64 {

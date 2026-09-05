@@ -14,7 +14,7 @@ fn lambda_pid_actor_state_runs_and_tears_down() {
         &source,
         r#"
 actor Holder {
-    let pid: LambdaPid<i64, ()>;
+    let pid: LambdaPid<i64, ()>,
 
     receive fn ping() -> i64 {
         1

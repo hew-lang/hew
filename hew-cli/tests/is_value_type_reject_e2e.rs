@@ -25,8 +25,8 @@ use support::{hew_binary, repo_root, strip_ansi, tempdir};
 
 /// Two records compared with `is` — the repro from #3108.
 const RECORD_IS: &str = "type Point {\n\
-     x: i64;\n\
-     y: i64;\n\
+     x: i64,\n\
+     y: i64,\n\
      }\n\
      \n\
      fn main() {\n\
@@ -38,8 +38,8 @@ const RECORD_IS: &str = "type Point {\n\
 
 /// The same program written with `==`, the operator the diagnostic points at.
 const RECORD_EQ: &str = "type Point {\n\
-     x: i64;\n\
-     y: i64;\n\
+     x: i64,\n\
+     y: i64,\n\
      }\n\
      \n\
      fn main() {\n\
@@ -52,7 +52,7 @@ const RECORD_EQ: &str = "type Point {\n\
 /// Negative control: `is` on an actor handle stays accepted end to end, so
 /// the rejection above is about the value class and not about `is` itself.
 const ACTOR_IS: &str = "actor Worker {\n\
-     let _id: i64;\n\
+     let _id: i64,\n\
      receive fn ping() {}\n\
      }\n\
      \n\
@@ -100,8 +100,8 @@ const BYTES_IS: &str = "fn main() {\n\
 
 /// A fieldless enum — the #3134 repro.
 const ENUM_IS: &str = "enum Colour {\n\
-     Red;\n\
-     Green;\n\
+     Red,\n\
+     Green,\n\
      }\n\
      \n\
      fn main() {\n\
@@ -113,8 +113,8 @@ const ENUM_IS: &str = "enum Colour {\n\
 
 /// A payload enum: carrying fields does not give a tagged value an address.
 const PAYLOAD_ENUM_IS: &str = "enum Shape {\n\
-     Circle(f64);\n\
-     Square(f64);\n\
+     Circle(f64),\n\
+     Square(f64),\n\
      }\n\
      \n\
      fn main() {\n\
@@ -129,8 +129,8 @@ const PAYLOAD_ENUM_IS: &str = "enum Shape {\n\
 /// this is rejected like every other enum rather than answering from the
 /// box's address.
 const INDIRECT_ENUM_IS: &str = "indirect enum Expr {\n\
-     Lit(i64);\n\
-     Neg(Expr);\n\
+     Lit(i64),\n\
+     Neg(Expr),\n\
      }\n\
      \n\
      fn main() {\n\
@@ -143,11 +143,11 @@ const INDIRECT_ENUM_IS: &str = "indirect enum Expr {\n\
 /// A two-state machine value.
 const MACHINE_IS: &str = "machine Tank {\n\
      events {\n\
-     Fill;\n\
+     Fill,\n\
      }\n\
      \n\
-     state Filling;\n\
-     state Draining;\n\
+     state Filling,\n\
+     state Draining,\n\
      \n\
      on Fill: Filling => Draining {\n\
      Tank.Draining\n\
@@ -170,8 +170,8 @@ const MACHINE_IS: &str = "machine Tank {\n\
 /// parameters was the difference between a user diagnostic and the span-less
 /// codegen-front message.
 const INFERRED_LAMBDA_ENUM_IS: &str = "enum Colour {\n\
-     Red;\n\
-     Green;\n\
+     Red,\n\
+     Green,\n\
      }\n\
      \n\
      fn main() {\n\
@@ -182,7 +182,7 @@ const INFERRED_LAMBDA_ENUM_IS: &str = "enum Colour {\n\
 /// The same inference shape over the #3108 record, so the record answer is
 /// not reachable through a closure either.
 const INFERRED_LAMBDA_RECORD_IS: &str = "type Point {\n\
-     x: i64;\n\
+     x: i64,\n\
      }\n\
      \n\
      fn main() {\n\
@@ -194,7 +194,7 @@ const INFERRED_LAMBDA_RECORD_IS: &str = "type Point {\n\
 /// handles stays accepted, so the deferred decision rejects the value class
 /// rather than every inferred operand.
 const INFERRED_LAMBDA_ACTOR_IS: &str = "actor Worker {\n\
-     let _id: i64;\n\
+     let _id: i64,\n\
      receive fn ping() {}\n\
      }\n\
      \n\

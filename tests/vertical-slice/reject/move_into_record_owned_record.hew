@@ -1,5 +1,5 @@
-type Owned { value: string; }
-type Holder { item: Owned; }
+type Owned { value: string, }
+type Holder { item: Owned, }
 
 fn main() -> string {
     let item = Owned { value: "hello" };

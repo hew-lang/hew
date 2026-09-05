@@ -132,7 +132,7 @@ fn user_type_in_return_position_not_mis_stamped_as_builtin() {
     let output = lower(
         r"
         pub type Wrapper {
-            v: i64;
+            v: i64,
         }
 
         fn make() -> Wrapper {

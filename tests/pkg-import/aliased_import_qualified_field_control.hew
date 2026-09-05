@@ -12,7 +12,7 @@
 import hew.aliassrc;
 
 type Boxed {
-    item: aliassrc.Payload;
+    item: aliassrc.Payload,
 }
 
 fn main() {

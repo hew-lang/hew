@@ -10,7 +10,7 @@ fn worker(x: i64) {}
 
 machine M {
     events {
-        Tick;
+        Tick,
     }
 
     state Idle {
@@ -20,8 +20,8 @@ machine M {
                 await child;
             }
         }
-    }
-    state Done;
+    },
+    state Done,
 
     on Tick: Idle => Done {
         .Done

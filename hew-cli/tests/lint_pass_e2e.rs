@@ -294,13 +294,13 @@ fn len_zero_comparison_inline_directive_suppresses() {
 // ── receive-handler lint: sleep_loop_blocks_mailbox ───────────────────
 
 const SLEEP_LOOP_BLOCKS_MAILBOX: &str = "actor Worker {\n\
-     var running: bool = true;\n\
+     var running: bool = true,\n\
      receive fn run() { while running { sleep(10ms); } }\n\
      receive fn stop() { running = false; }\n\
      }\n";
 
 const SLEEP_LOOP_BLOCKS_MAILBOX_SUPPRESSED: &str = "actor Worker {\n\
-     var running: bool = true;\n\
+     var running: bool = true,\n\
      receive fn run() {\n\
      // hew:allow(sleep_loop_blocks_mailbox)\n\
      while running { sleep(10ms); }\n\
@@ -357,7 +357,7 @@ fn sleep_loop_blocks_mailbox_inline_directive_suppresses() {
 // ── receive-handler lint: actor_handle_builtin_shadow ─────────────────
 
 const ACTOR_HANDLE_BUILTIN_SHADOW: &str = "actor Counter {\n\
-     var count: i64;\n\
+     var count: i64,\n\
      receive fn send(n: i64) { count = count + n; }\n\
      }\n\
      fn main() {\n\
@@ -366,7 +366,7 @@ const ACTOR_HANDLE_BUILTIN_SHADOW: &str = "actor Counter {\n\
      }\n";
 
 const ACTOR_HANDLE_BUILTIN_SHADOW_SUPPRESSED: &str = "actor Counter {\n\
-     var count: i64;\n\
+     var count: i64,\n\
      // hew:allow(actor_handle_builtin_shadow)\n\
      receive fn send(n: i64) { count = count + n; }\n\
      }\n\

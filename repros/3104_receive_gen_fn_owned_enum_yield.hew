@@ -8,8 +8,8 @@
 // correctly suppressed; releasing the destructured arm binding per iteration
 // is the match-arm consume-side discipline, tracked separately).
 enum Note {
-    Text(string);
-    Number(i64);
+    Text(string),
+    Number(i64),
 }
 
 actor Maker {

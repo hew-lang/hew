@@ -24,7 +24,7 @@
 
 #[resource]
 type R {
-    id: i64;
+    id: i64,
 }
 
 impl R {

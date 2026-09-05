@@ -15,7 +15,7 @@ fn has_marker(output: &hew_types::TypeCheckOutput, method: OptionResultMethod) -
 #[test]
 fn option_result_methods_record_structured_generic_markers() {
     let source = r#"
-        type Point { x: i64; y: i64; }
+        type Point { x: i64, y: i64, }
 
         fn exercise_option(opt_i64: Option<i64>, opt_str: Option<string>, opt_point: Option<Point>) {
             let _: bool = opt_point.is_some();

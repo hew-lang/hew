@@ -7,7 +7,7 @@
 // supervisor_stop is present; returning 42 proves cleanup preserves the program
 // result and does not wait for supervisor actors to become idle.
 actor Worker {
-    var value: i64;
+    var value: i64,
 
     receive fn get() -> i64 {
         value
@@ -15,12 +15,12 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child first: Worker(value: 42);
-    child second: Worker(value: 7);
-    child third: Worker(value: 9);
+    child first: Worker(value: 42),
+    child second: Worker(value: 7),
+    child third: Worker(value: 9),
 }
 
 fn main() -> i64 {

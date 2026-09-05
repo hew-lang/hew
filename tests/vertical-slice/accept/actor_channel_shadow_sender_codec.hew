@@ -14,7 +14,7 @@ type Receiver {
 }
 
 actor TestSink {
-    var total: i64;
+    var total: i64,
 
     receive fn accept_sender(msg: Sender) {
         total = total + msg.x;

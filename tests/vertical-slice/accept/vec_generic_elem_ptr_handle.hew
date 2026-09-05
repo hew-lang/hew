@@ -5,7 +5,7 @@
 // survive the round-trip: the retrieved pid bumps and reports the same actor.
 
 actor Counter {
-    var n: i64 = 0;
+    var n: i64 = 0,
     receive fn bump() { n = n + 1; }
     receive fn report() { println(n); }
 }

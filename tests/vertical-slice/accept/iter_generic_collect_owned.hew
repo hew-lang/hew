@@ -12,7 +12,7 @@
 //! (3 × 4). A wrong length or count returns a distinct code.
 
 type Words {
-    n: i64;
+    n: i64,
 }
 
 impl Iterator for Words {

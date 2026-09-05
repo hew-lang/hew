@@ -11,7 +11,7 @@ trait Labeled {
 }
 
 type Person {
-    label: string;
+    label: string,
 }
 
 impl Person {
@@ -21,7 +21,7 @@ impl Person {
 }
 
 type Parcel {
-    label: string;
+    label: string,
 }
 
 impl Parcel {

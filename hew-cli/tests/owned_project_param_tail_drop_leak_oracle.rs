@@ -100,7 +100,7 @@ fn guard_branch_around_source(frames: usize) -> String {
 /// prints a third close line).
 fn partitioned_consume_source(frames: usize) -> String {
     format!(
-        "#[resource] type Conn {{ fd: i64; }}\n\
+        "#[resource] type Conn {{ fd: i64, }}\n\
          impl Conn {{ fn close(self) {{ println(\"closed-\" + self.fd.fmt()); }} }}\n\
          type Wire {{ conn: Conn }}\n\
          type Packet {{ tag: string, body: string }}\n\

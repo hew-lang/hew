@@ -1232,7 +1232,7 @@ mod tests {
         let user_source = user_channel_dir.join("channel.hew");
         fs::write(
             &user_source,
-            "pub type Sender { marker: i64; }\npub type Receiver { marker: i64; }\n",
+            "pub type Sender { marker: i64, }\npub type Receiver { marker: i64, }\n",
         )
         .expect("write user channel lookalike");
 
@@ -1631,7 +1631,7 @@ mod tests {
         fs::create_dir_all(&channel_dir).expect("create user channel path");
         fs::write(
             channel_dir.join("channel.hew"),
-            "pub type Sender { marker: i64; }\n",
+            "pub type Sender { marker: i64, }\n",
         )
         .expect("write user channel lookalike");
         fs::write(
@@ -1815,7 +1815,7 @@ mod tests {
     #[test]
     fn same_legacy_receiver_spelling_never_cross_wires_loaded_modules() {
         fn shared_info(c_symbol: &str, dispatch_through_impl: bool) -> ModuleInfo {
-            let parsed = hew_parser::parse("pub type Pattern { value: i32; }\n");
+            let parsed = hew_parser::parse("pub type Pattern { value: i32, }\n");
             assert!(parsed.errors.is_empty());
             ModuleInfo {
                 source_path: None,

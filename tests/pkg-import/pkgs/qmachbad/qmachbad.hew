@@ -6,11 +6,11 @@
 
 pub machine Gate {
     events {
-        Open;
+        Open,
     }
 
-    state Closed;
-    state Opened;
+    state Closed,
+    state Opened,
 
     on Open: Closed => Opened {
         .Nope

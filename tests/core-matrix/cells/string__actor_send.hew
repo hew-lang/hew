@@ -1,5 +1,5 @@
 actor Sink {
-    var hits: i64;
+    var hits: i64,
 
     receive fn take(v: string) -> i64 {
         println(f"{v}");

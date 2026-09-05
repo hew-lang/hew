@@ -5,7 +5,7 @@
 //
 // Expected stdout:
 //   5
-pub type Builder { n: i64; }
+pub type Builder { n: i64, }
 impl Builder {
     fn build(consuming self) -> i64 { self.n }
 }

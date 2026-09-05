@@ -20,12 +20,12 @@
 import hew.lmonobox;
 
 type Holder<T> {
-    item: T;
+    item: T,
 }
 
 enum Slot<T> {
-    Filled(T);
-    Empty;
+    Filled(T),
+    Empty,
 }
 
 fn hold<T>(x: T) -> Holder<T> {

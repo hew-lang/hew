@@ -7,7 +7,7 @@ pub(super) use super::*;
 #[test]
 fn typecheck_match_statement_exhaustive_enum_ok() {
     let (errors, _) = parse_and_check(concat!(
-        "enum Light { Red; Green; }\n",
+        "enum Light { Red, Green, }\n",
         "fn main() { let v: Light = .Red; match v { .Red => 1, .Green => 2, } let _done = 0; }\n",
     ));
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
@@ -16,7 +16,7 @@ fn typecheck_match_statement_exhaustive_enum_ok() {
 #[test]
 fn typecheck_match_statement_missing_variant_errors() {
     let (errors, warnings) = parse_and_check(concat!(
-        "enum Light { Red; Green; }\n",
+        "enum Light { Red, Green, }\n",
         "fn main() { let v: Light = .Red; match v { Red => 1, } let _done = 0; }\n",
     ));
     assert!(
@@ -158,8 +158,8 @@ fn typecheck_integer_literal_with_catchall_is_exhaustive() {
 fn unsupported_payload_subpattern_suppresses_non_exhaustive_follow_on() {
     let (errors, warnings) = parse_and_check(
         r"
-enum Color { Red; Blue }
-enum Packet { Data { value: Color }; Empty }
+enum Color { Red, Blue }
+enum Packet { Data { value: Color }, Empty }
 fn f(p: Packet) -> i64 {
     match p {
         Packet.Data { value: .Red } => 1,
@@ -373,8 +373,8 @@ fn typecheck_struct_pattern_unknown_field_errors() {
 fn typecheck_match_wrong_enum_variant_errors() {
     // Matching a Colour scrutinee with a Shape variant should be an error.
     let (errors, _) = parse_and_check(concat!(
-        "enum Colour { Red; Green; Blue; }\n",
-        "enum Shape { Circle(i32); Rectangle(i32); }\n",
+        "enum Colour { Red, Green, Blue, }\n",
+        "enum Shape { Circle(i32), Rectangle(i32), }\n",
         "fn describe(c: Colour) -> i32 {\n",
         "    match c {\n",
         "        Circle(r) => r,\n",
@@ -528,7 +528,7 @@ fn typecheck_or_pattern_unit_variants_bind_nothing_ok() {
     // identifiers are no longer over-defined as env bindings, the env delta for
     // each branch is empty and no spurious mismatch is raised.
     let (errors, _) = parse_and_check(concat!(
-        "enum Color { Red; Green; Blue }\n",
+        "enum Color { Red, Green, Blue }\n",
         "fn f(c: Color) -> i64 {\n",
         "    match c {\n",
         "        Red | Green => 1,\n",
@@ -552,7 +552,7 @@ fn typecheck_or_pattern_constructor_vs_binder_inconsistent_error() {
     // This proves the classification is resolution-driven on BOTH sides: `Red`
     // resolves as a variant (no binder) while `x` does not (a binder).
     let (errors, _) = parse_and_check(concat!(
-        "enum Color { Red; Green; Blue }\n",
+        "enum Color { Red, Green, Blue }\n",
         "fn f(c: Color) -> i64 {\n",
         "    match c {\n",
         "        Red | x => 1,\n",
@@ -632,7 +632,7 @@ fn typecheck_or_pattern_error_scrutinee_no_cascade() {
     // OrPatternBindingMismatch is piled on, even though `Red` and `Green` would
     // otherwise look like two distinct binders against an unknown type.
     let (errors, _) = parse_and_check(concat!(
-        "enum Colour { Red; Green }\n",
+        "enum Colour { Red, Green }\n",
         "fn main() {\n",
         "    let _ = match missing() {\n",
         "        Red | Green => 0,\n",
@@ -703,7 +703,7 @@ fn borrowed_param_escape_lowercase_variant_constructor_flagged() {
     // returned aggregate must raise BorrowedParamReturn.  The old uppercase-first
     // heuristic dropped this, letting a returned reference outlive its owner.
     let (errors, _) = parse_and_check(concat!(
-        "enum Holder { wrap(Rc<i64>); empty }\n",
+        "enum Holder { wrap(Rc<i64>), empty }\n",
         "fn f(r: Rc<i64>) -> Holder { Holder.wrap(r) }\n",
     ));
     assert!(
@@ -720,7 +720,7 @@ fn borrowed_param_escape_uppercase_variant_constructor_flagged() {
     // The uppercase variant spelling was already caught and must stay caught —
     // proves the fix does not regress the originally-handled direction.
     let (errors, _) = parse_and_check(concat!(
-        "enum Holder { Wrap(Rc<i64>); Empty }\n",
+        "enum Holder { Wrap(Rc<i64>), Empty }\n",
         "fn f(r: Rc<i64>) -> Holder { Holder.Wrap(r) }\n",
     ));
     assert!(
@@ -751,7 +751,7 @@ fn borrowed_param_escape_qualified_path_constructor_flagged() {
     // A `Type.Variant` qualified path constructor must remain classified as an
     // aggregate constructor, including static calls such as `Rc.new`.
     let (errors, _) = parse_and_check(concat!(
-        "enum Holder { V(Rc<i64>); E }\n",
+        "enum Holder { V(Rc<i64>), E }\n",
         "fn f(r: Rc<i64>) -> Holder { Holder.V(r) }\n",
     ));
     assert!(
@@ -778,7 +778,7 @@ fn borrowed_param_escape_match_arm_variant_collision_flagged() {
     // regress to a missed escape on the colliding arm if the binder-vs-
     // constructor decision were re-derived locally again.
     let (errors, _) = parse_and_check(concat!(
-        "enum Color { red; green; }\n",
+        "enum Color { red, green, }\n",
         "fn leak(red: Rc<i64>, color: Color) -> Rc<i64> {\n",
         "    match color { red => red, green => red }\n",
         "}\n",
@@ -802,7 +802,7 @@ fn borrowed_param_escape_or_pattern_variant_collision_flagged() {
     // and returning it must raise BorrowedParamReturn — not a confusing
     // InitialisedBeforeUse / MIR-decision-map diagnostic from a sibling pass.
     let (errors, _) = parse_and_check(concat!(
-        "enum Color { red; green; }\n",
+        "enum Color { red, green, }\n",
         "fn leak(red: Rc<i64>, color: Color) -> Rc<i64> {\n",
         "    match color { red | green => red }\n",
         "}\n",
@@ -878,7 +878,7 @@ fn borrowed_param_escape_let_else_unit_variant_collision_flagged() {
     // escape; it surfaced only later (confusingly) as a sibling MIR
     // `DecisionMapTotal` / HIR no-binding error.
     let (errors, _) = parse_and_check(concat!(
-        "enum Color { red; green; }\n",
+        "enum Color { red, green, }\n",
         "fn leak(red: Rc<i64>, color: Color) -> Rc<i64> {\n",
         "    let red = color else { panic(\"no\") };\n",
         "    red\n",
@@ -902,7 +902,7 @@ fn borrowed_param_escape_let_else_intermediate_binding_flagged() {
     // flagged. Exercises both the unit-variant skip AND the genuine-binder
     // danger-propagation path in the same function.
     let (errors, _) = parse_and_check(concat!(
-        "enum Color { red; green; }\n",
+        "enum Color { red, green, }\n",
         "fn leak(red: Rc<i64>, color: Color) -> Rc<i64> {\n",
         "    let red = color else { panic(\"no\") };\n",
         "    let x = red;\n",
@@ -925,7 +925,7 @@ fn borrowed_param_escape_while_let_unit_variant_collision_flagged() {
     // records no binder, so `return red` inside the loop resolves to the borrow
     // param and is flagged. Locks that consistency in alongside the let-else fix.
     let (errors, _) = parse_and_check(concat!(
-        "enum Color { red; green; }\n",
+        "enum Color { red, green, }\n",
         "fn leak(red: Rc<i64>, color: Color) -> Rc<i64> {\n",
         "    while let red = color {\n",
         "        return red;\n",
@@ -975,7 +975,7 @@ fn var_named_like_unit_variant_still_binds() {
     // not, so treating the var name as a binder can never disagree with the
     // checker.
     let (errors, _) = parse_and_check(concat!(
-        "enum E { a; b; }\n",
+        "enum E { a, b, }\n",
         "fn f() -> i64 {\n",
         "    var a = 0;\n",
         "    a = a + 1;\n",
@@ -1222,7 +1222,7 @@ fn typecheck_error_scrutinee_skips_exhaustiveness_follow_on() {
 #[test]
 fn typecheck_generic_enum_constructor_infers_type_args() {
     let output = check_source_allowing_prelude_redeclaration(concat!(
-        "enum Option<T> { Some(T); None; }\n",
+        "enum Option<T> { Some(T), None, }\n",
         "fn take_int(x: Option<i64>) -> Option<i64> { x }\n",
         "fn take_string(x: Option<string>) -> Option<string> { x }\n",
         "fn main() { take_int(Option.Some(42)); take_string(Option.Some(\"hello\")); }\n",
@@ -1237,7 +1237,7 @@ fn typecheck_generic_enum_constructor_infers_type_args() {
 #[test]
 fn generic_enum_constructor_expected_context_coerces_payload_literal() {
     let source = concat!(
-        "enum Option<T> { Some(T); None; }\n",
+        "enum Option<T> { Some(T), None, }\n",
         "fn take_int(x: Option<i64>) -> Option<i64> { x }\n",
         "fn main() { take_int(Option.Some(42)); }\n",
     );
@@ -1555,7 +1555,7 @@ fn main() {
 fn typecheck_struct_variant_tuple_field_destructure_is_exhaustive() {
     let (errors, _) = parse_and_check(
         r"
-enum Packet { Data { value: (i64, i64) }; Empty }
+enum Packet { Data { value: (i64, i64) }, Empty }
 fn main() {
     let p: Packet = Data { value: (1, 2) };
     let r = match p {
@@ -1578,7 +1578,7 @@ fn main() {
 fn typecheck_struct_variant_tuple_field_with_literal_still_non_exhaustive() {
     let (errors, warnings) = parse_and_check(
         r"
-enum Packet { Data { value: (i64, i64) }; Empty }
+enum Packet { Data { value: (i64, i64) }, Empty }
 fn main() {
     let p: Packet = Data { value: (1, 2) };
     match p {

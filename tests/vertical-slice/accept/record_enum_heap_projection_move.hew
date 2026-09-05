@@ -1,4 +1,4 @@
-enum EnumHeapMoveChoice { Pair(string, i64); }
+enum EnumHeapMoveChoice { Pair(string, i64), }
 type EnumHeapMoveCarrier {
     choice: EnumHeapMoveChoice,
     sibling: string,

@@ -3,7 +3,7 @@ trait Resource {
 }
 
 type FileHandle {
-    fd: i64;
+    fd: i64,
 }
 
 impl Resource for FileHandle {
@@ -14,13 +14,13 @@ impl Resource for FileHandle {
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
-        Started;
+        Start { handle: T, }
+        ,Stop,
+        Started,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
     on Start: Idle => Active {
         emit Started {};

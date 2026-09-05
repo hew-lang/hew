@@ -1,5 +1,5 @@
 actor Counter {
-    var n: i64;
+    var n: i64,
 
     receive fn bump() -> i64 {
         n = n + 1;

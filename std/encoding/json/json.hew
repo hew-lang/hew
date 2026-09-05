@@ -30,7 +30,7 @@ import std.encoding.wire.value_trait;
 /// `ParseError.Invalid(message)` constructor/pattern style.
 pub enum ParseError {
     /// The input was not valid JSON. Carries the native parser message.
-    Invalid(string);
+    Invalid(string),
 }
 
 impl Display for ParseError {

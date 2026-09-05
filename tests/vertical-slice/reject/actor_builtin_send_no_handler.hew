@@ -6,7 +6,7 @@
 // Distinct from `actor_receive_fn_named_send.hew` (accept): a same-named
 // handler is concrete actor dispatch and takes precedence.
 actor Adder {
-    var count: i64;
+    var count: i64,
     receive fn increment(n: i64) {
         count = count + n;
     }

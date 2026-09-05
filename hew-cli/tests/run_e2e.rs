@@ -253,7 +253,7 @@ fn qualified_variant_tuple_payload_binds_nested_values() {
     std::fs::write(
         &path,
         r"
-enum Pair { Both((i64, i64)); None }
+enum Pair { Both((i64, i64)), None }
 
 fn main() {
     let pair = Pair.Both((19, 23));
@@ -423,7 +423,7 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
         &path,
         r#"
         actor Counter {
-            var count: i64;
+            var count: i64,
             receive fn increment(n: i64) { count = count + n; }
         }
 
@@ -662,8 +662,8 @@ fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
         &path,
         r"
         type Counter {
-            cur: i64;
-            end: i64;
+            cur: i64,
+            end: i64,
         }
 
         impl Iterator for Counter {
@@ -1170,7 +1170,7 @@ fn var_self_countdown_loop_writes_receiver_back() {
     std::fs::write(
         &source,
         r"
-pub type Countdown { n: i64; }
+pub type Countdown { n: i64, }
 
 impl Iterator for Countdown {
     type Item = i64;
@@ -1222,7 +1222,7 @@ fn var_self_direct_second_next_observes_mutated_receiver() {
     std::fs::write(
         &source,
         r"
-pub type Counter { n: i64; }
+pub type Counter { n: i64, }
 
 impl Iterator for Counter {
     type Item = i64;
@@ -1302,7 +1302,7 @@ fn var_self_nested_block_value_does_not_get_abi_wrapped() {
     std::fs::write(
         &source,
         r"
-pub type Counter { n: i64; }
+pub type Counter { n: i64, }
 
 impl Iterator for Counter {
     type Item = i64;
@@ -1392,7 +1392,7 @@ fn var_self_generic_impl_direct_second_next_resolves_monomorphized_callee() {
     std::fs::write(
         &source,
         r"
-pub type Slot<T> { x: T; n: i64; }
+pub type Slot<T> { x: T, n: i64, }
 
 trait Tick {
     type Item;
@@ -1441,7 +1441,7 @@ fn var_self_generic_method_direct_resolves_impl_and_method_type_args() {
     std::fs::write(
         &source,
         r"
-pub type Slot<T> { x: T; }
+pub type Slot<T> { x: T, }
 
 trait Tick {
     fn take<U>(var self, u: U) -> U;
@@ -2927,7 +2927,7 @@ fn run_fstring_dispatches_user_defined_display() {
         &hew_src,
         "import std.io;\n\
          \n\
-         type Point { x: i64; }\n\
+         type Point { x: i64, }\n\
          \n\
          impl Display for Point {\n\
          \x20   fn fmt(p: Point) -> string { f\"Point({p.x})\" }\n\
@@ -4135,8 +4135,8 @@ fn owned_record_string_field_by_value_round_trips() {
         &path,
         r#"
         type CommandOutput {
-            stdout: string;
-            code: i64;
+            stdout: string,
+            code: i64,
         }
 
         fn run() -> CommandOutput {
@@ -4175,8 +4175,8 @@ fn owned_record_vec_field_by_value_round_trips() {
         &path,
         r"
         type Histogram {
-            counts: Vec<i64>;
-            total: i64;
+            counts: Vec<i64>,
+            total: i64,
         }
 
         fn build() -> Histogram {
@@ -4218,12 +4218,12 @@ fn owned_nested_record_by_value_round_trips() {
         &path,
         r#"
         type User {
-            name: string;
+            name: string,
         }
 
         type Boxed {
-            user: User;
-            tag: i64;
+            user: User,
+            tag: i64,
         }
 
         fn wrap(n: i64) -> Boxed {
@@ -4715,7 +4715,7 @@ fn suspending_listener_accept_flip_in_execution_context() {
     let dump = mir_checked_dump(
         "import std.net;\n\
          actor Acceptor {\n\
-         \x20   let addr: string;\n\
+         \x20   let addr: string,\n\
          \x20   receive fn go(unused: i64) {\n\
          \x20       let listener = match net.listen(addr) { .Ok(value) => value, .Err(_) => panic(\"network setup failed\"), };\n\
          \x20       let conn = await listener.accept();\n\
@@ -5468,7 +5468,7 @@ fn clone_string_survives_consuming_send() {
     let path = dir.path().join("clone_string_send.hew");
     std::fs::write(
         &path,
-        "actor ProbeSink { let id: i64; receive fn take(s: string) -> i64 { s.len() } }\n\
+        "actor ProbeSink { let id: i64, receive fn take(s: string) -> i64 { s.len() } }\n\
          fn main() {\n\
          \x20   let s: string = \"hello\";\n\
          \x20   let dup = clone s;\n\
@@ -5679,7 +5679,7 @@ fn run_file_imported_actor_spawns_and_calls() {
     std::fs::write(
         dir.path().join("counter.hew"),
         "pub actor Counter {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn bump() -> i64 {\n\
          \x20       n = n + 1;\n\
          \x20       n\n\
@@ -5836,7 +5836,7 @@ fn run_file_imported_actor_closure_and_range_body_runs() {
     std::fs::write(
         dir.path().join("summer.hew"),
         "pub actor Summer {\n\
-         \x20   var total: i64 = 0;\n\
+         \x20   var total: i64 = 0,\n\
          \x20   receive fn add_doubled(n: i64) -> i64 {\n\
          \x20       let f = |x: i64| -> i64 { x * 2 };\n\
          \x20       var sum: i64 = 0;\n\
@@ -5907,7 +5907,7 @@ fn run_package_module_actor_spawns_and_calls() {
          }\n\
          \n\
          pub actor Account {\n\
-         \x20   var balance: i64 = 0;\n\
+         \x20   var balance: i64 = 0,\n\
          \x20   init(opening: i64) {\n\
          \x20       balance = clamp_nonneg(opening);\n\
          \x20   }\n\
@@ -5989,7 +5989,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
          }\n\
          \n\
          pub actor Outer {\n\
-         \x20   let inner: Inner;\n\
+         \x20   let inner: Inner,\n\
          \x20   receive fn go() -> i64 {\n\
          \x20       match await inner.ping() {\n\
          \x20           .Ok(v) => v + 1,\n\
@@ -6058,7 +6058,7 @@ fn run_local_record_shadows_imported_actor_short_name() {
          type Inner { x: i64 }\n\
          \n\
          actor Holder {\n\
-         \x20   let inner: Inner;\n\
+         \x20   let inner: Inner,\n\
          \x20   receive fn get() -> i64 { inner.x }\n\
          }\n\
          \n\
@@ -6099,7 +6099,7 @@ fn run_non_pub_imported_actor_fails_closed() {
     std::fs::write(
         pkg_dir.join("secret.hew"),
         "actor Hidden {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn bump() -> i64 {\n\
          \x20       n = n + 1;\n\
          \x20       n\n\
@@ -6158,7 +6158,7 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
                 "pub actor Account {{\n\
-                 \x20   var n: i64 = 0;\n\
+                 \x20   var n: i64 = 0,\n\
                  \x20   receive fn who() -> i64 {{ {tag} }}\n\
                  }}\n"
             ),
@@ -6214,7 +6214,7 @@ fn run_root_and_package_same_actor_name_route_independently() {
     std::fs::write(
         pkg_dir.join("bank.hew"),
         "pub actor Account {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn who() -> i64 { 999 }\n\
          }\n",
     )
@@ -6224,7 +6224,7 @@ fn run_root_and_package_same_actor_name_route_independently() {
         &main,
         "import hew.bank;\n\
          actor Account {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn who() -> i64 { 111 }\n\
          }\n\
          fn main() {\n\
@@ -6275,7 +6275,7 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
                 "pub actor Account {{\n\
-                 \x20   var n: i64 = 0;\n\
+                 \x20   var n: i64 = 0,\n\
                  \x20   receive fn who() -> i64 {{ {tag} }}\n\
                  \x20   receive fn boom() {{ panic(\"{pkg} crash\"); }}\n\
                  }}\n"
@@ -6289,11 +6289,11 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
         "import hew.bank;\n\
          import hew.store;\n\
          supervisor Pair {\n\
-         \x20   strategy: one_for_one;\n\
-         \x20   intensity: 5 within 60s;\n\
+         \x20   strategy: one_for_one,\n\
+         \x20   intensity: 5 within 60s,\n\
          \n\
-         \x20   child b: bank.Account;\n\
-         \x20   child s: store.Account;\n\
+         \x20   child b: bank.Account,\n\
+         \x20   child s: store.Account,\n\
          }\n\
          fn main() {\n\
          \x20   let p = spawn Pair;\n\
@@ -6357,8 +6357,8 @@ fn run_fungible_child_binding_joins_after_observed_restart() {
         &main,
         r#"
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 fn tree_sum(tree: Tree) -> i64 {
@@ -6379,9 +6379,9 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child worker: Worker;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child worker: Worker,
 }
 
 extern "C" {
@@ -6504,7 +6504,7 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
     std::fs::write(
         pkg_dir.join("secret.hew"),
         "actor Account {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn id() -> i64 { 999 }\n\
          }\n",
     )
@@ -6514,7 +6514,7 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
         &main,
         "import hew.secret;\n\
          actor Account {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn id() -> i64 { 111 }\n\
          }\n\
          fn main() {\n\
@@ -6579,7 +6579,7 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
         &main,
         "import hew.secret;\n\
          actor Account {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn id() -> i64 { 111 }\n\
          }\n\
          fn main() {\n\
@@ -6737,8 +6737,8 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
          \x20   fn hew_actor_self_stop();\n\
          }\n\
          actor Child {\n\
-         \x20   let label: string;\n\
-         \x20   let marker: Marker;\n\
+         \x20   let label: string,\n\
+         \x20   let marker: Marker,\n\
          \x20   receive fn stop() { unsafe { hew_actor_self_stop() }; }\n\
          }\n\
          actor Maker {\n\

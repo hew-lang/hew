@@ -40,7 +40,7 @@ use support::{describe_output, require_codegen};
 /// (`r.name.to_upper()`), borrow-only final use, printing `"m"`. The scribble
 /// correctness pin for the cloned-field arm.
 const MATCH_FIELD_CLONE_SCRIBBLE_SOURCE: &str = "\
-type Row { name: string; }\n\
+type Row { name: string, }\n\
 \n\
 fn make(n: i64) -> Option<Row> {\n\
 \x20   if n > 0 { Some(Row { name: \"g64-fieldload-heap\".to_upper() }) } else { None }\n\
@@ -63,7 +63,7 @@ fn main() {\n\
 /// retained share drops on scope-close. Borrow-only final use; must run clean
 /// (no double-free) under the poisoned allocator.
 const MATCH_FIELD_BARE_SCRIBBLE_SOURCE: &str = "\
-type Row { name: string; }\n\
+type Row { name: string, }\n\
 \n\
 fn make(n: i64) -> Option<Row> {\n\
 \x20   if n > 0 { Some(Row { name: \"g64-bare-fieldload\".to_upper() }) } else { None }\n\
@@ -88,7 +88,7 @@ fn main() {\n\
 /// leaks one buffer per iteration.
 fn match_field_clone_loop_source(frames: usize) -> String {
     format!(
-        "type Row {{ name: string; }}\n\
+        "type Row {{ name: string, }}\n\
          \n\
          fn make(n: i64) -> Option<Row> {{\n\
          \x20   if n > 0 {{ Some(Row {{ name: \"g64-fieldload-heap\".to_upper() }}) }} else {{ None }}\n\

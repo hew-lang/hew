@@ -24,11 +24,11 @@ import std.string;
 
 /// A parsed semantic version.
 type Version {
-    pre_release: string;
-    build_meta: string;
-    maj: string;
-    min: string;
-    pat: string;
+    pre_release: string,
+    build_meta: string,
+    maj: string,
+    min: string,
+    pat: string,
 }
 
 /// Methods available on a parsed `Version`.

@@ -8,7 +8,7 @@ actor FastText {
 }
 
 actor Selector {
-    let fast: LocalPid<FastText>;
+    let fast: LocalPid<FastText>,
 
     receive fn run(trigger: i64) -> i64 {
         let selected = select {

@@ -1,7 +1,7 @@
 // Regression guard for `Vec<Record>.contains` on equality-eligible Copy records.
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn main() {

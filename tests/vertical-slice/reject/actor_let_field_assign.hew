@@ -2,7 +2,7 @@
 // write must be rejected at check time with a diagnostic that names the
 // declaration site and the `var` fix.
 actor Counter {
-    let count: i64;
+    let count: i64,
 
     receive fn increment(n: i64) {
         count = count + n;

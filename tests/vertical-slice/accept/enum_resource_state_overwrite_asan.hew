@@ -1,13 +1,13 @@
 import std.encoding.xml;
 
 enum DocState {
-    Empty;
-    Loaded(xml.Node);
-    Broken(string);
+    Empty,
+    Loaded(xml.Node),
+    Broken(string),
 }
 
 actor DocHolder {
-    var doc: DocState;
+    var doc: DocState,
 
     receive fn load(s: string) -> i64 {
         match xml.parse(s) {

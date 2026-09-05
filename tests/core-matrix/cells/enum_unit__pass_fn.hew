@@ -1,6 +1,6 @@
 enum Colour {
-    Red;
-    Green;
+    Red,
+    Green,
 }
 
 fn use_it(v: Colour) {

@@ -1,4 +1,4 @@
-enum Colour { Red; Green; Blue; }
+enum Colour { Red, Green, Blue, }
 
 fn tag(c: Colour) -> i64 {
     match c {

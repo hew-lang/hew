@@ -7,7 +7,7 @@ use hew_types::error::{Severity, TypeErrorKind};
 fn test_non_exhaustive_match() {
     let output = typecheck(
         r"
-        enum Colour { Red; Green; Blue; }
+        enum Colour { Red, Green, Blue, }
         fn check(c: Colour) -> i64 {
             match c {
                 .Red => 1,
@@ -41,7 +41,7 @@ fn test_non_exhaustive_match() {
 fn test_non_exhaustive_match_stmt() {
     let output = typecheck(
         r"
-        enum Colour { Red; Green; Blue; }
+        enum Colour { Red, Green, Blue, }
         fn main() {
             let colour: Colour = Red;
             match colour {
@@ -151,9 +151,9 @@ fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
     let output = typecheck(
         r"
         enum Packet {
-            Empty;
-            Value(i64);
-            Named { count: i64 };
+            Empty,
+            Value(i64),
+            Named { count: i64 },
         }
 
         fn label(packet: Packet) -> i64 {
@@ -214,7 +214,7 @@ fn test_exhaustive_or_result_match() {
 fn test_exhaustive_or_enum_match() {
     let output = typecheck(
         r"
-        enum Colour { Red; Green; Blue; }
+        enum Colour { Red, Green, Blue, }
         fn check(c: Colour) -> i64 {
             match c {
                 .Red | .Green | .Blue => 1,
@@ -390,7 +390,7 @@ fn test_lambda_arity_mismatch() {
 fn test_receiver_param_rejects_mismatched_generics() {
     let output = typecheck(
         r"
-        type Box<T> { value: T; }
+        type Box<T> { value: T, }
         impl Box<i64> {
             fn bad(b: Box<string>) -> i64 { 0 }
         }
@@ -420,7 +420,7 @@ fn test_receiver_param_rejects_mismatched_generics() {
 fn test_non_receiver_param_same_type_not_flagged() {
     let output = typecheck(
         r"
-        type Box { value: i64; }
+        type Box { value: i64, }
         impl Box {
             fn combine(b: Box, var other: Box) -> i64 { b.value + other.value }
         }

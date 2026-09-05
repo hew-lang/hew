@@ -9,7 +9,7 @@
 // and a user-authored clone-total `CursorRef` that shadows the builtin):
 // the loop runs exactly once per element for each (`3`, `4`, `2`, `1`).
 
-type Point { x: i64; y: i64 }
+type Point { x: i64, y: i64 }
 
 // The builtin `CursorRef` is an affine resource and must fail generic
 // VecIter clone-out. This source declaration is a distinct clone-total nominal,

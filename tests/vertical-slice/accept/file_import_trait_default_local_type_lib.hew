@@ -6,8 +6,8 @@
 // copy of this body must name-resolve trait-file-local declarations even
 // though it is lowered at an impl site in the importing file.
 type Badge {
-    code: i64;
-    tag: string;
+    code: i64,
+    tag: string,
 }
 
 fn badge_tag(b: Badge) -> string {

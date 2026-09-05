@@ -7,7 +7,7 @@
 // program. A bounded run completing with the correct value is the proof that
 // every park is matched by exactly one resume across the chain.
 actor Bottom {
-    let base: i64;
+    let base: i64,
     receive fn leaf(n: i64) -> i64 {
         n + base
     }
@@ -16,7 +16,7 @@ actor Bottom {
 actor Mid {
 
     // leaf(5) = 15; step doubles -> 30; run adds 1 -> 31.
-    let bottom: LocalPid<Bottom>;
+    let bottom: LocalPid<Bottom>,
     receive fn step(n: i64) -> i64 {
         let r = await bottom.leaf(n);
         match r {
@@ -27,7 +27,7 @@ actor Mid {
 }
 
 actor Top {
-    let mid: LocalPid<Mid>;
+    let mid: LocalPid<Mid>,
     receive fn run(n: i64) -> i64 {
         let r = await mid.step(n);
         match r {

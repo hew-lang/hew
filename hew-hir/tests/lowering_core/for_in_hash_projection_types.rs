@@ -227,10 +227,10 @@ fn assert_hashmap_into_iter_field(output: &hew_hir::LowerOutput) {
 fn hashset_for_in_preserves_receiver_and_projection_types_across_place_shapes() {
     let output = lower(
         r"
-type SetBox { s: HashSet<i64>; }
-type Outer { inner: SetBox; }
-type OwnedBox { s: HashSet<string>; }
-type MapBox { m: HashMap<i64, i64>; }
+type SetBox { s: HashSet<i64>, }
+type Outer { inner: SetBox, }
+type OwnedBox { s: HashSet<string>, }
+type MapBox { m: HashMap<i64, i64>, }
 
 fn direct(s: HashSet<i64>) {
     for x in s { let _ = x; }

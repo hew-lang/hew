@@ -5,11 +5,11 @@
 //! free-thunk sites.
 
 pub type Summary {
-    counts: Vec<i64>;
+    counts: Vec<i64>,
 }
 
 pub type Flat {
-    n: i64;
+    n: i64,
 }
 
 pub fn summary_new(a: i64, b: i64) -> Summary {

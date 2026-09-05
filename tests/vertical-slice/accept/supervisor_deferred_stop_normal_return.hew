@@ -26,11 +26,11 @@ actor Stopper {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child busy: Busy;
-    child stopper: Stopper;
+    child busy: Busy,
+    child stopper: Stopper,
 }
 
 fn main() -> i64 {

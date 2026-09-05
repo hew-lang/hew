@@ -27,7 +27,7 @@ type PatternHandle {
 
 #[resource]
 pub type Pattern {
-    handle: PatternHandle;
+    handle: PatternHandle,
 }
 
 /// Flat row-major capture results for `captures` and `find_all_submatch`.
@@ -35,8 +35,8 @@ pub type Pattern {
 /// Each match row has `group_count` entries. Group 0 is the whole match and
 /// groups 1..n are capture groups. Missing optional groups are stored as "".
 pub type CaptureMatches {
-    groups: Vec<string>;
-    group_count: i64;
+    groups: Vec<string>,
+    group_count: i64,
 }
 
 /// Methods available on a compiled `Pattern`.

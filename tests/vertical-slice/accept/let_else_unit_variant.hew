@@ -13,8 +13,8 @@
 //! propagated error on the mismatch path, then exits 0.
 
 enum E {
-    A;
-    B(i64);
+    A,
+    B(i64),
 }
 
 fn make_e(good: bool) -> E {

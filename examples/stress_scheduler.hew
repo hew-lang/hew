@@ -13,7 +13,7 @@ fn fib(n: i32) -> i32 {
 }
 
 actor Worker {
-    let id: i32;
+    let id: i32,
     receive fn process(x: i32) {
 
         // Do some real computation to exercise the scheduler
@@ -23,7 +23,7 @@ actor Worker {
 }
 
 actor Collector {
-    var count: i32;
+    var count: i32,
     receive fn tick() {
         count = count + 1;
     }

@@ -9,10 +9,10 @@
 import std.testing;
 
 type Rect {
-    x: i64;
-    y: i64;
-    w: i64;
-    h: i64;
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
 }
 
 /// Destructuring a four-field record yields exact values for every binding.

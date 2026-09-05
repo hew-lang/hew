@@ -1,5 +1,5 @@
 actor Holder {
-    var ready: bool;
+    var ready: bool,
 
     receive fn hold(v: (i64, string)) -> i64 {
         sleep(2ms);

@@ -9,5 +9,5 @@
 
 /// Narrow `Widget`: a single `i8` field.
 pub type Widget {
-    v: i8;
+    v: i8,
 }

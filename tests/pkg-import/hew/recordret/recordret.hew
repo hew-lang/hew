@@ -6,42 +6,42 @@
 
 /// 24-byte, Indirect (sret) on every target — the headline class.
 pub type Big {
-    a: i64;
-    b: i64;
-    c: i64;
+    a: i64,
+    b: i64,
+    c: i64,
 }
 
 /// Same 24-byte Indirect shape, produced from `(i32, i64)` params so the
 /// caller's sret param-index shift is exercised: `a = hi`, `b = lo`,
 /// `c = hi + lo`.
 pub type BigMixed {
-    a: i64;
-    b: i64;
-    c: i64;
+    a: i64,
+    b: i64,
+    c: i64,
 }
 
 /// 16-byte RegisterPair with a packed second eightbyte (`{i64,i32,i32}`).
 pub type Packed {
-    p: i64;
-    x: i32;
-    y: i32;
+    p: i64,
+    x: i32,
+    y: i32,
 }
 
 /// 16-byte RegisterPair, one field per eightbyte.
 pub type Mid {
-    s: i32;
-    t: i64;
+    s: i32,
+    t: i64,
 }
 
 /// 8-byte Direct multi-field aggregate.
 pub type Small {
-    a: i32;
-    b: i32;
+    a: i32,
+    b: i32,
 }
 
 /// 8-byte Direct single-field aggregate — the control that must stay green.
 pub type One {
-    h: i64;
+    h: i64,
 }
 
 /// Indirect (sret) return — segfaults today (x8/indirect-result unset).

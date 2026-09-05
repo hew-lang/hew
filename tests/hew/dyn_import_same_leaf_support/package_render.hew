@@ -3,7 +3,7 @@ pub trait Render {
 }
 
 pub type Box {
-    label: string;
+    label: string,
 }
 
 impl Render for Box {

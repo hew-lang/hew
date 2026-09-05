@@ -6,8 +6,8 @@
 //! arm, a struct-variant arm, a unit arm, and a `let`-position tag test.
 
 enum Choice {
-    Present(i64);
-    Absent;
+    Present(i64),
+    Absent,
     Named { count: i64 }
 }
 

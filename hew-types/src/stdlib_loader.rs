@@ -2134,7 +2134,7 @@ mod tests {
         // register; `good` (forwarding the receiver's own field) is the control.
         let result = parse(
             "#[resource]\n\
-             pub type Wrap { handle: i64; }\n\
+             pub type Wrap { handle: i64, }\n\
              impl Wrap {\n\
              \x20   fn good(w: Wrap) -> i64 { unsafe { c_use(w.handle) } }\n\
              \x20   fn bad(w: Wrap, other: Wrap) -> i64 { unsafe { c_use(other.handle) } }\n\
@@ -2170,7 +2170,7 @@ mod tests {
              #[opaque]\n\
              type RequestHandle {}\n\
              #[resource]\n\
-             pub type Request { handle: RequestHandle; }\n\
+             pub type Request { handle: RequestHandle, }\n\
              impl Server {\n\
              \x20   fn accept(server: Server) -> Request {\n\
              \x20       unsafe { Request { handle: c_accept(server) } }\n\
@@ -2201,8 +2201,8 @@ mod tests {
         // `good` (constructing `Wrap`) is the control.
         let result = parse(
             "#[resource]\n\
-             pub type Wrap { handle: i64; }\n\
-             pub type Other { handle: i64; }\n\
+             pub type Wrap { handle: i64, }\n\
+             pub type Other { handle: i64, }\n\
              impl Wrap {\n\
              \x20   fn good(w: Wrap) -> Wrap { unsafe { Wrap { handle: c_clone(w.handle) } } }\n\
              \x20   fn bad(w: Wrap) -> Other { unsafe { Other { handle: c_clone(w.handle) } } }\n\
@@ -2237,7 +2237,7 @@ mod tests {
         // control.
         let result = parse(
             "#[resource]\n\
-             pub type Wrap { handle: i64; }\n\
+             pub type Wrap { handle: i64, }\n\
              impl Wrap {\n\
              \x20   fn good(w: Wrap) -> i64 { unsafe { c_use(w.handle) } }\n\
              \x20   fn bad(w: Wrap) -> i64 { helper(w.handle) }\n\
@@ -2270,7 +2270,7 @@ mod tests {
     fn guarded_wrapper_forward_requires_single_early_return_guard() {
         let result = parse(
             "#[resource]\n\
-             pub type Wrap { handle: i64; }\n\
+             pub type Wrap { handle: i64, }\n\
              impl Wrap {\n\
              \x20   fn good(w: Wrap, status: i64) -> i64 {\n\
              \x20       if status < 0 { return -1; }\n\

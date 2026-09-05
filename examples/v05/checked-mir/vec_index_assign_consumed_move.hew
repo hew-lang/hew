@@ -4,7 +4,7 @@
 // suppressed. The store must therefore use `hew_vec_set_owned_move`: COPY-IN
 // would clone into the slot and orphan `h`'s original nested Vec heap.
 type Holder {
-    items: Vec<string>;
+    items: Vec<string>,
 }
 
 fn mkItems() -> Vec<string> {

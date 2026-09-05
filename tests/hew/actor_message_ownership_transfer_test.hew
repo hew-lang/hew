@@ -16,7 +16,7 @@ import std.testing;
 
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {
@@ -28,7 +28,7 @@ impl Socket {
 
 #[linear]
 type Ticket {
-    id: i64;
+    id: i64,
 }
 
 impl Ticket {
@@ -62,7 +62,7 @@ actor Leaf {
 }
 
 actor Peer {
-    let leaf: LocalPid<Leaf>;
+    let leaf: LocalPid<Leaf>,
     receive fn relay(n: i64) -> i64 {
         match await leaf.value(n) {
             .Ok(v) => {
@@ -76,12 +76,12 @@ actor Peer {
 }
 
 type Holder {
-    socket: Socket;
+    socket: Socket,
 }
 
 actor Racer {
-    let left: LocalPid<TestSink>;
-    let right: LocalPid<TestSink>;
+    let left: LocalPid<TestSink>,
+    let right: LocalPid<TestSink>,
 
     // Two DISTINCT resources, one per arm: each arm's source is issued before
     // dispatch, so each socket is transferred exactly once. The winner's exact

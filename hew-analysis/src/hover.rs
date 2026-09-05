@@ -1675,7 +1675,7 @@ mod tests {
 
     #[test]
     fn hover_finds_type_def() {
-        let source = "type Point {\n    x: f64;\n    y: f64;\n}";
+        let source = "type Point {\n    x: f64,\n    y: f64,\n}";
         let pr = hew_parser::parse(source);
         let mut type_defs = HashMap::new();
         type_defs.insert(
@@ -1763,7 +1763,7 @@ mod tests {
     #[test]
     fn hover_shows_struct_field_declaration_type() {
         let source =
-            "type Point {\n    x: i32;\n    y: i32;\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32,\n    y: i32,\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("x: i32").unwrap();
@@ -1782,7 +1782,7 @@ mod tests {
     #[test]
     fn hover_shows_struct_field_access_type() {
         let source =
-            "type Point {\n    x: i32;\n    y: i32;\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32,\n    y: i32,\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.rfind("p.x").unwrap() + 2;
@@ -2340,10 +2340,10 @@ mod tests {
         let source = concat!(
             "machine Counter {\n",
             "    events {\n",
-            "        Start;\n",
+            "        Start,\n",
             "    }\n",
-            "    state Idle;\n",
-            "    state Running;\n",
+            "    state Idle,\n",
+            "    state Running,\n",
             "    on Start: Idle => Running { Idle }\n",
             "}\n",
         );
@@ -2373,9 +2373,9 @@ mod tests {
             "fn compute() -> i64 { 42 }\n",
             "machine Counter {\n",
             "    events {\n",
-            "        Tick;\n",
+            "        Tick,\n",
             "    }\n",
-            "    state Idle;\n",
+            "    state Idle,\n",
             "    on Tick: Idle => Idle {\n",
             "        let result = compute();\n",
             "        result\n",
@@ -2417,7 +2417,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker();\n",
+            "    child w: Worker(),\n",
             "}\n",
         );
         let pr = hew_parser::parse(source);

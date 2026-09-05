@@ -9,11 +9,11 @@ import std.channel.channel;
 
 machine M {
     events {
-        Tick;
+        Tick,
     }
 
-    state Idle;
-    state Done;
+    state Idle,
+    state Done,
 
     on Tick: Idle => Done {
         match channel.new(8) {

@@ -1,8 +1,8 @@
 // Exercises structural equality and inequality on payload-bearing enums.
 enum Shape {
-    Circle(i64);
-    Rect(i64, i64);
-    Empty;
+    Circle(i64),
+    Rect(i64, i64),
+    Empty,
 }
 
 fn main() {

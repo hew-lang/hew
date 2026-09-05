@@ -5,7 +5,7 @@
 import hew.testffi;
 
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn bump() -> i64 {
         count = count + 1;
         count

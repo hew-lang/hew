@@ -121,7 +121,7 @@ fn whole_value_bytes_guard_return_source(frames: usize) -> String {
 /// Pre-fix: two leaked strings per bail call.
 fn returned_record_member_guard_return_source(frames: usize) -> String {
     format!(
-        "type Parsed {{ pre: string; build: string; n: i64; }}\n\
+        "type Parsed {{ pre: string, build: string, n: i64, }}\n\
          \n\
          fn parse_or_bail(bail: bool, seed: string) -> Parsed {{\n\
          \x20   let pre = seed + \"-pre\";\n\
@@ -173,7 +173,7 @@ fn decode_or_reject(reject: bool) -> bytes {\n\
 \x20   out\n\
 }\n\
 \n\
-type Parsed { pre: string; build: string; n: i64; }\n\
+type Parsed { pre: string, build: string, n: i64, }\n\
 \n\
 fn parse_or_bail(bail: bool, seed: string) -> Parsed {\n\
 \x20   let pre = seed + \"-pre\";\n\

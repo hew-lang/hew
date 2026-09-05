@@ -86,7 +86,7 @@ pub trait Closable {
 /// ```
 pub enum CloseError {
     /// The close failed with an underlying I/O error.
-    Io(fs.IoError);
+    Io(fs.IoError),
     /// The resource was already closed before this call.
     ///
     /// This variant is returned only in rare cases where the static
@@ -94,7 +94,7 @@ pub enum CloseError {
     /// shared handle released by a peer). In the common case, calling
     /// `close()` on an already-moved value is a compile error, not a
     /// runtime `AlreadyClosed`.
-    AlreadyClosed;
+    AlreadyClosed,
 }
 
 impl Display for CloseError {

@@ -16,7 +16,7 @@ actor WebSocketHandlerProbe {
 }
 
 actor WebSocketPeer {
-    let url: string;
+    let url: string,
 
     receive fn connect_and_hold() {
         match websocket.connect(url) {

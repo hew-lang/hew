@@ -50,7 +50,7 @@ type RequestHandle {
 
 #[resource]
 pub type Request {
-    handle: RequestHandle;
+    handle: RequestHandle,
 }
 
 // ── Server methods ────────────────────────────────────────────────────

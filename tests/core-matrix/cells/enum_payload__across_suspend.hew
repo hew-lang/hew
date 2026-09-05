@@ -1,11 +1,11 @@
 enum Shape {
-    Empty;
-    Circle(i64);
-    Rect { w: i64; h: i64 }
+    Empty,
+    Circle(i64),
+    Rect { w: i64, h: i64 }
 }
 
 actor Holder {
-    var ready: bool;
+    var ready: bool,
 
     receive fn hold(v: Shape) -> i64 {
         sleep(2ms);

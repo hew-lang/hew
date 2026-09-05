@@ -18,13 +18,13 @@ fn multi_child_with_wired_to_accepted() {
         actor MessageCache {}
 
         supervisor ChatApp {
-            strategy: one_for_one
-            intensity: 5 within 60s
+            strategy: one_for_one,
+            intensity: 5 within 60s,
 
-            child db: DbSupervisor
-            child broadcaster: Broadcaster
-            child worker_pool: WorkerPool
-            child acceptor: ConnectionAcceptor wired_to: { workers: worker_pool, broadcaster: broadcaster }
+            child db: DbSupervisor,
+            child broadcaster: Broadcaster,
+            child worker_pool: WorkerPool,
+            child acceptor: ConnectionAcceptor wired_to: { workers: worker_pool, broadcaster: broadcaster },
             child cache: MessageCache restart: transient
         }
 
@@ -50,8 +50,8 @@ fn simple_one_for_one_with_pool_accepted() {
         actor Worker {}
 
         supervisor WorkerPool {
-            strategy: simple_one_for_one
-            intensity: 10 within 60s
+            strategy: simple_one_for_one,
+            intensity: 10 within 60s,
 
             pool worker: Worker count: 3
         }
@@ -84,8 +84,8 @@ fn await_restart_on_static_child_accepted() {
         }
 
         supervisor App {
-            strategy: one_for_one
-            intensity: 3 within 60s
+            strategy: one_for_one,
+            intensity: 3 within 60s,
 
             child w: Worker
         }
@@ -119,8 +119,8 @@ fn await_restart_on_pool_member_rejected() {
         }
 
         supervisor Pool {
-            strategy: simple_one_for_one
-            intensity: 10 within 60s
+            strategy: simple_one_for_one,
+            intensity: 10 within 60s,
 
             pool worker: Worker count: 3
         }
@@ -177,7 +177,7 @@ fn wired_to_unknown_sibling_rejected() {
         actor WorkerPool {}
 
         supervisor App {
-            strategy: one_for_one
+            strategy: one_for_one,
 
             child acceptor: ConnectionAcceptor wired_to: { workers: nonexistent_sibling }
         }
@@ -209,9 +209,9 @@ fn wired_to_type_mismatch_rejected() {
         }
 
         supervisor App {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child db_pool: DbPool
+            child db_pool: DbPool,
             child acceptor: ConnectionAcceptor wired_to: { workers: db_pool }
         }
 
@@ -243,9 +243,9 @@ fn wired_to_cycle_rejected() {
         }
 
         supervisor CycleApp {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child a: ActorA wired_to: { dep: b }
+            child a: ActorA wired_to: { dep: b },
             child b: ActorB wired_to: { dep: a }
         }
 
@@ -273,9 +273,9 @@ fn simple_one_for_one_with_child_decl_rejected() {
         actor Helper {}
 
         supervisor BadPool {
-            strategy: simple_one_for_one
+            strategy: simple_one_for_one,
 
-            child helper: Helper
+            child helper: Helper,
             pool worker: Worker count: 3
         }
 
@@ -302,7 +302,7 @@ fn one_for_one_with_pool_decl_rejected() {
         actor Worker {}
 
         supervisor StaticApp {
-            strategy: one_for_one
+            strategy: one_for_one,
 
             pool worker: Worker count: 3
         }
@@ -330,9 +330,9 @@ fn duplicate_child_name_rejected() {
         actor Worker {}
 
         supervisor DupApp {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child worker: Worker
+            child worker: Worker,
             child worker: Worker
         }
 
@@ -361,7 +361,7 @@ fn wired_to_self_reference_rejected() {
         }
 
         supervisor SelfLoop {
-            strategy: one_for_one
+            strategy: one_for_one,
 
             child looper: LoopActor wired_to: { dep: looper }
         }
@@ -394,9 +394,9 @@ fn wired_to_no_init_sibling_accepted() {
         }
 
         supervisor App {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child no_init: NoInit
+            child no_init: NoInit,
             child consumer: Consumer wired_to: { dep: no_init }
         }
 
@@ -426,9 +426,9 @@ fn wired_to_dependent_has_no_init_rejected() {
         actor NoInitConsumer {}
 
         supervisor App {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child helper: Helper
+            child helper: Helper,
             child consumer: NoInitConsumer wired_to: { dep: helper }
         }
 

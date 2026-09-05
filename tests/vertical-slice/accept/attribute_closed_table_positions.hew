@@ -6,7 +6,7 @@
 #[resource]
 type Handle {
     #[wire]
-    id: i64;
+    id: i64,
 }
 
 impl Handle {
@@ -16,7 +16,7 @@ impl Handle {
 
 #[linear]
 type Ticket {
-    id: i64;
+    id: i64,
 }
 
 impl Ticket {
@@ -30,12 +30,12 @@ type Blob {
 
 #[deprecated]
 type OldShape {
-    value: i64;
+    value: i64,
 }
 
 #[max_heap(4096)]
 actor Worker {
-    let count: i64;
+    let count: i64,
 
     #[on(start)]
     fn setup() {

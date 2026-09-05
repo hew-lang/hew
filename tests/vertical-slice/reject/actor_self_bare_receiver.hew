@@ -3,7 +3,7 @@
 // the actor handle, which is what `this` is for — so binding it must still
 // fail closed.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn bump() {
         let held = self;

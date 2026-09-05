@@ -52,7 +52,7 @@ use support::{describe_output, require_codegen};
 /// shallow/garbage element changes the output verbatim.
 const VEC_BOXED_ARRAY_LITERAL_SOURCE: &str = "\
 type Boxed {\n\
-\x20   payload: [i64];\n\
+\x20   payload: [i64],\n\
 }\n\
 \n\
 fn main() {\n\
@@ -73,7 +73,7 @@ const VEC_BOXED_ARRAY_LITERAL_EXPECTED: &str = "10|20|30|40OK";
 fn vec_boxed_drop_loop_source(frames: usize) -> String {
     format!(
         "type Boxed {{\n\
-         \x20   payload: [i64];\n\
+         \x20   payload: [i64],\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\

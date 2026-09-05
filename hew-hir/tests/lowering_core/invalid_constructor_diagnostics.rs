@@ -38,9 +38,9 @@ fn enum_constructor_mistakes_are_structured_user_errors() {
     let output = lower_through_checker(
         r"
 enum Shape {
-    Pair(i64, i64);
-    Record { left: i64; right: i64 };
-    Unit;
+    Pair(i64, i64),
+    Record { left: i64, right: i64 },
+    Unit,
 }
 
 fn main() {

@@ -62,7 +62,7 @@ fn iterator_impl_on_user_nominal_lowers_method_and_metadata() {
     let output = lower(
         r"
         pub type VecIter<T> {
-            idx: i64;
+            idx: i64,
         }
 
         impl<T> Iterator for VecIter<T> {
@@ -139,7 +139,7 @@ fn inherent_impl_on_user_nominal_lowers_methods() {
     let output = lower(
         r"
         pub type Counter {
-            n: i64;
+            n: i64,
         }
 
         impl Counter {
@@ -190,7 +190,7 @@ fn index_impl_still_lowers_unchanged() {
     let output = lower(
         r"
         type Grid {
-            bias: i32;
+            bias: i32,
         }
 
         impl Index for Grid {
@@ -226,7 +226,7 @@ fn impl_block_with_single_bound_where_clause_lowers() {
         }
 
         pub type Wrap<T> {
-            inner: T;
+            inner: T,
         }
 
         impl<T> Wrap<T> where T: Eq {
@@ -279,7 +279,7 @@ fn impl_block_with_multi_bound_where_clause_lowers() {
         }
 
         pub type Wrap<T> {
-            inner: T;
+            inner: T,
         }
 
         impl<T> Wrap<T> where T: Eq + Ord {
@@ -327,7 +327,7 @@ fn impl_block_with_where_clause_on_non_type_param_emits_fail_closed_shape_diagno
         }
 
         pub type Wrap<T> {
-            inner: T;
+            inner: T,
         }
 
         impl<T> Wrap<T> where Wrap<T>: Eq {

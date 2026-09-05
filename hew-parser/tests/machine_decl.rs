@@ -5,11 +5,11 @@ fn parse_simple_machine() {
     let source = r"
 machine Light {
     events {
-        Toggle;
+        Toggle,
     }
 
-    state Off;
-    state On;
+    state Off,
+    state On,
 
     on Toggle: Off => On {
         On
@@ -54,14 +54,14 @@ fn parse_machine_transition_with_contextual_target_state() {
     let source = r"
 machine Light {
     events {
-        Toggle;
+        Toggle,
     }
 
-    state Off;
-    state On;
+    state Off,
+    state On,
 
-    on Toggle: Off => .On;
-    on Toggle: On => Off;
+    on Toggle: Off => .On,
+    on Toggle: On => Off,
 }
 ";
     let result = hew_parser::parse(source);
@@ -97,7 +97,7 @@ fn parse_machine_implicit_body_spans_the_target_token() {
     // The synthesized implicit body must be spanned on the target state, not
     // on the token after the `;` — diagnostics on it (the bare-variant fix-it)
     // are only appliable if they point at the target text.
-    let source = "machine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n}\n";
+    let source = "machine Light {\n    events { Toggle, }\n    state Off,\n    state On,\n    on Toggle: Off => On,\n}\n";
     let result = hew_parser::parse(source);
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     let hew_parser::ast::Item::Machine(machine) = &result.program.items[0].0 else {
@@ -185,12 +185,12 @@ fn parse_machine_with_fields() {
     let source = r"
 machine Counter {
     events {
-        Increment;
-        Reset;
+        Increment,
+        Reset,
     }
 
-    state Idle;
-    state Running { count: Int; }
+    state Idle,
+    state Running { count: Int, },
 
     on Increment: Idle => Running {
         Running { count: 1 }
@@ -232,12 +232,12 @@ fn parse_machine_with_event_payload() {
     let source = r"
 machine Tcp {
     events {
-        Connect { port: Int; }
-        Disconnect;
+        Connect { port: Int, }
+        ,Disconnect,
     }
 
-    state Closed;
-    state Open { port: Int; }
+    state Closed,
+    state Open { port: Int, },
 
     on Connect: Closed => Open {
         Open { port: port }
@@ -272,11 +272,11 @@ fn parse_machine_event_head_binding() {
     let source = r"
 machine Tcp {
     events {
-        Connect { port: Int; }
+        Connect { port: Int, }
     }
 
-    state Closed;
-    state Open { port: Int; }
+    state Closed,
+    state Open { port: Int, },
 
     on Connect(port): Closed => Open {
         Open { port: port }
@@ -327,11 +327,11 @@ fn machine_event_head_binding_round_trips_through_formatter() {
     // form again (not the desugar).
     let source = r"machine Tcp {
     events {
-        Connect { port: Int; }
+        Connect { port: Int, }
     }
 
-    state Closed;
-    state Open { port: Int; }
+    state Closed,
+    state Open { port: Int, },
 
     on Connect(port): Closed => Open { Open { port: port } }
 }
@@ -371,11 +371,11 @@ fn parse_machine_wildcard_both() {
     let source = r"
 machine Noop {
     events {
-        Ping;
+        Ping,
     }
 
-    state A;
-    state B;
+    state A,
+    state B,
 
     on Ping: _ => _ {
         self
@@ -402,18 +402,18 @@ fn parse_state_with_entry_exit_blocks() {
     let source = r"
 machine Traffic {
     events {
-        Tick;
+        Tick,
     }
 
     state Red {
         entry { log(entering_red); }
         exit { log(leaving_red); }
-    }
+    },
 
-    state Green;
+    state Green,
 
-    on Tick: Red => Green;
-    on Tick: Green => Red;
+    on Tick: Red => Green,
+    on Tick: Green => Red,
 }
 ";
     let result = hew_parser::parse(source);
@@ -442,13 +442,13 @@ fn parse_emit_in_transition_body() {
     let source = r"
 machine Counter {
     events {
-        Start;
-        Tick;
-        Overflow;
+        Start,
+        Tick,
+        Overflow,
     }
 
-    state Idle;
-    state Running { count: Int; }
+    state Idle,
+    state Running { count: Int, },
 
     on Start: Idle => Running {
         emit Overflow { code: 0 };
@@ -481,16 +481,16 @@ fn parse_machine_emits_manifest() {
     let source = r"
 machine Signal {
     events {
-        Start;
-        Ready;
+        Start,
+        Ready,
     }
 
     emits {
-        Ready;
+        Ready,
     }
 
-    state Idle;
-    state Active;
+    state Idle,
+    state Active,
 
     on Start: Idle => Active {
         emit Ready {};
@@ -520,10 +520,10 @@ fn parse_machine_transition_with_reenter_keyword() {
     let source = r"
 machine Counter {
     events {
-        Inc;
+        Inc,
     }
 
-    state Active { n: Int; }
+    state Active { n: Int, },
 
     on Inc: Active => Active reenter {
         Active { n: self.n + 1 }
@@ -583,19 +583,19 @@ fn composite_parent_rule_expands_to_concrete_source_transitions() {
     let source = r"
 machine Conn {
     events {
-        Disconnect;
-        Connect;
+        Disconnect,
+        Connect,
     }
 
-    state Disconnected;
+    state Disconnected,
 
     state Connected {
-        initial state Authenticating;
-        state Active;
-        state Draining;
+        initial state Authenticating,
+        state Active,
+        state Draining,
 
-        on Disconnect: _ => Disconnected;
-    }
+        on Disconnect: _ => Disconnected,
+    },
 
     on Connect: Disconnected => Authenticating { Authenticating }
     on Connect: _ => _ { state }
@@ -658,18 +658,18 @@ fn composite_block_round_trips_through_formatter() {
     // block from the grouping side-table.
     let source = r"machine Conn {
     events {
-        Disconnect;
-        Connect;
+        Disconnect,
+        Connect,
     }
 
-    state Disconnected;
+    state Disconnected,
 
     state Connected {
-        initial state Authenticating;
-        state Active;
+        initial state Authenticating,
+        state Active,
 
-        on Disconnect: _ => Disconnected;
-    }
+        on Disconnect: _ => Disconnected,
+    },
 
     on Connect: Disconnected => Authenticating { Authenticating }
     on Connect: _ => _ { state }
@@ -785,11 +785,11 @@ fn machine_generic_decl() {
     let source = r"
 machine Light {
     events {
-        Toggle;
+        Toggle,
     }
 
-    state Off;
-    state On;
+    state Off,
+    state On,
 
     on Toggle: Off => On { On }
     on Toggle: On => Off { Off }
@@ -797,11 +797,11 @@ machine Light {
 
 machine Lifecycle<T> {
     events {
-        Start;
+        Start,
     }
 
-    state Created;
-    state Running;
+    state Created,
+    state Running,
 
     on Start: Created => Running {
         Running
@@ -810,11 +810,11 @@ machine Lifecycle<T> {
 
 machine Triple<T, U, V> {
     events {
-        Insert;
+        Insert,
     }
 
-    state Empty;
-    state Filled;
+    state Empty,
+    state Filled,
 
     on Insert: Empty => Filled {
         Filled
@@ -822,7 +822,7 @@ machine Triple<T, U, V> {
 }
 
 machine Collision<T> {
-    state T;
+    state T,
 }
 ";
     let result = hew_parser::parse(source);
@@ -905,12 +905,12 @@ trait Display {
 
 machine Bounded<T: Resource, U: Resource + Display> {
     events {
-        Start { handle: T; meta: U; }
-        Stop;
+        Start { handle: T, meta: U, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; meta: U; }
+    state Idle,
+    state Active { handle: T, meta: U, },
 
     on Start: Idle => Active { Active { handle: event.handle, meta: event.meta } }
     on Stop: Active => Idle { Idle }
@@ -956,12 +956,12 @@ fn machine_trait_bounds_round_trip_through_formatter() {
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
     on Start: Idle => Active { Active { handle: event.handle } }
     on Stop: Active => Idle { Idle }
@@ -1004,12 +1004,12 @@ trait Resource {
 
 machine Container<T> where T: Resource {
     events {
-        Start { item: T; }
-        Stop;
+        Start { item: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { item: T; }
+    state Idle,
+    state Active { item: T, },
 
     on Start: Idle => Active { Active { item: event.item } }
     on Stop: Active => Idle { Idle }
@@ -1065,12 +1065,12 @@ trait Display {
 
 machine Combined<T: Resource> where T: Display {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
     on Start: Idle => Active { Active { handle: event.handle } }
     on Stop: Active => Idle { Idle }
@@ -1128,12 +1128,12 @@ trait Send {
 
 machine Multi<T, U> where T: Resource, U: Display + Send {
     events {
-        Start { left: T; right: U; }
-        Stop;
+        Start { left: T, right: U, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { left: T; right: U; }
+    state Idle,
+    state Active { left: T, right: U, },
 
     on Start: Idle => Active { Active { left: event.left, right: event.right } }
     on Stop: Active => Idle { Idle }
@@ -1183,12 +1183,12 @@ trait Display {
 
 machine Combined<T: Resource> where T: Display {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
     on Start: Idle => Active { Active { handle: event.handle } }
     on Stop: Active => Idle { Idle }
@@ -1243,10 +1243,10 @@ fn first_machine_named<'a>(
 fn machine_const_param_minimal_parses() {
     let src = r"machine M<const N: usize> {
     events {
-        E;
+        E,
     }
 
-    state S;
+    state S,
 
     on E: S => S { S }
 }
@@ -1268,10 +1268,10 @@ fn machine_const_param_minimal_parses() {
 fn machine_const_param_with_default_parses() {
     let src = r"machine M<const N: usize = 16> {
     events {
-        E;
+        E,
     }
 
-    state S;
+    state S,
 
     on E: S => S { S }
 }
@@ -1287,10 +1287,10 @@ fn machine_const_param_with_default_parses() {
 fn machine_mixed_type_and_const_params_parses() {
     let src = r"machine M<T, const N: usize> {
     events {
-        E;
+        E,
     }
 
-    state S { val: T; }
+    state S { val: T, },
 
     on E: S => S { S { val: event.val } }
 }
@@ -1351,10 +1351,10 @@ fn machine_const_param_rejects_const_before_type_param() {
 fn machine_const_param_round_trips_through_formatter() {
     let src = r"machine M<T, const N: usize = 16> {
     events {
-        E;
+        E,
     }
 
-    state S { val: T; }
+    state S { val: T, },
 
     on E: S => S { S { val: event.val } }
 }

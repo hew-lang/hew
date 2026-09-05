@@ -3,19 +3,19 @@
 import std.testing;
 
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 type Line {
-    a: Point;
-    b: Point;
+    a: Point,
+    b: Point,
 }
 
 enum Shape {
-    Circle(i64);
-    Rect(i64, i64);
-    Empty;
+    Circle(i64),
+    Rect(i64, i64),
+    Empty,
 }
 
 #[test]

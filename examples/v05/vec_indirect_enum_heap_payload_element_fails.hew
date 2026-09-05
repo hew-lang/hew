@@ -13,8 +13,8 @@
 // then leaked. Once the per-element release is wired this fixture compiles —
 // delete its entry from hew-corpus-expected-failures.txt then.
 indirect enum Foo {
-    A(string);
-    B;
+    A(string),
+    B,
 }
 
 fn main() {

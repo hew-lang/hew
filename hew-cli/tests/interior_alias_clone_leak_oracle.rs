@@ -70,7 +70,7 @@ use support::{describe_output, require_codegen};
 /// expected uppercased string). The exact-string equality plus clean exit pin
 /// both directions.
 const INTERIOR_CLONE_CONTENTS_SOURCE: &str = "\
-type Row { name: string; }\n\
+type Row { name: string, }\n\
 \n\
 fn run() {\n\
 \x20   let rows: Vec<Row> = [ Row { name: \"interior-clone-ok\".to_upper() } ];\n\
@@ -98,7 +98,7 @@ const INTERIOR_CLONE_CONTENTS_EXPECTED: &str = "INTERIOR-CLONE-OK";
 /// would free the same buffer twice. The interior-alias taint
 /// (`compute_collection_interior_alias_taint`) must keep `r` excluded.
 const INTERIOR_ALIAS_NEG_CONTROL_SOURCE: &str = "\
-type Row { name: string; }\n\
+type Row { name: string, }\n\
 \n\
 fn run() {\n\
 \x20   let rows: Vec<Row> = [ Row { name: \"neg-alias-heap-name\".to_upper() } ];\n\
@@ -118,7 +118,7 @@ fn main() {\n\
 /// share leaks one node per iteration.
 fn interior_clone_loop_source(frames: usize) -> String {
     format!(
-        "type Row {{ name: string; }}\n\
+        "type Row {{ name: string, }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
          \x20   let rows: Vec<Row> = [ Row {{ name: \"interior-clone-heap-name\".to_upper() }} ];\n\
@@ -148,7 +148,7 @@ fn interior_clone_loop_source(frames: usize) -> String {
 /// independent per-iteration release (no leak, no double-free).
 fn interior_neg_control_loop_source(frames: usize) -> String {
     format!(
-        "type Row {{ name: string; }}\n\
+        "type Row {{ name: string, }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
          \x20   let rows: Vec<Row> = [ Row {{ name: \"neg-alias-heap-name\".to_upper() }} ];\n\

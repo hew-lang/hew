@@ -1,7 +1,7 @@
 import std.encoding.json;
 
 actor Holder {
-    let val: json.Value;
+    let val: json.Value,
 
     receive fn ping(unused: i64) {
         println("holder-ping");

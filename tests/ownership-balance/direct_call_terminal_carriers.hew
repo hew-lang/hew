@@ -1,4 +1,4 @@
-enum ProbeError { Failed(string); }
+enum ProbeError { Failed(string), }
 type Envelope { message: string }
 
 fn unit_result(ok: bool) -> Result<(), string> {

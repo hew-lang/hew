@@ -3,7 +3,7 @@
 import std.testing;
 
 type VecIndexName {
-    label: string;
+    label: string,
 }
 
 fn generic_at<T>(xs: Vec<T>, idx: i64) -> T {

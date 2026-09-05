@@ -10,7 +10,7 @@ impl Tok {
 }
 
 type ResRec {
-    t: Tok;
+    t: Tok,
 }
 
 fn run(early: bool) -> i64 {

@@ -110,7 +110,7 @@ const FIELD_LOAD_COUNT: i64 = 8;
 /// checksum is the exact-value assertion (`assert-distinguishes-garbage`).
 fn transient_field_read_source() -> String {
     let mut body = String::new();
-    body.push_str("type Box { key: string; n: i64; }\n");
+    body.push_str("type Box { key: string, n: i64, }\n");
     body.push_str("fn main() {\n");
     body.push_str("    var total: i64 = 0;\n");
     body.push_str("    var i: i64 = 0;\n");
@@ -142,7 +142,7 @@ fn transient_field_read_source() -> String {
 /// double/triple-free at teardown. The `MallocScribble` sentinel aborts on it.
 const FIELD_LOAD_INTO_CONSUME_SOURCE: &str = "\
 import std.string;\n\
-type Row { category: string; score: i64; }\n\
+type Row { category: string, score: i64, }\n\
 fn parse_row(line: string, sc: i64) -> Row {\n\
 \x20   let parts: Vec<string> = line.split(\",\");\n\
 \x20   Row { category: parts[0], score: sc }\n\

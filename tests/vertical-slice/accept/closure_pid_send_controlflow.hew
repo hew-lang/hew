@@ -4,7 +4,7 @@
 // change the routing. bump(39) takes the if-branch (one send of 39);
 // bump(3) takes the loop branch (three sends of 1): 39 + 3 = 42.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn increment(n: i64) {
         count = count + n;

@@ -4,7 +4,7 @@
 // bare-`self` diagnostic, and never let the receiver be synthesised as a
 // value on the way to reporting.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn bump() {
         self.counts = 1;

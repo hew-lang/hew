@@ -17,7 +17,7 @@
 //! header sentinel at teardown.
 
 actor Echoer {
-    var last: string;
+    var last: string,
 
     receive fn note(label: string) {
         last = label;

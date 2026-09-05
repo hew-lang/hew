@@ -30,7 +30,7 @@ fn closable_close_triggers_use_after_move_on_second_call() {
         r#"
         import std.io.closable;
 
-        type Widget { name: string; }
+        type Widget { name: string, }
 
         impl Closable for Widget {
             fn close(w: Widget) -> Result<(), closable.CloseError> {
@@ -64,7 +64,7 @@ fn closable_single_close_typechecks_cleanly() {
         r#"
         import std.io.closable;
 
-        type Widget { name: string; }
+        type Widget { name: string, }
 
         impl Closable for Widget {
             fn close(w: Widget) -> Result<(), closable.CloseError> {
@@ -93,7 +93,7 @@ fn closable_close_records_per_call_site_flag_via_stdlib() {
         r#"
         import std.io.closable;
 
-        type Pipe { tag: string; }
+        type Pipe { tag: string, }
 
         impl Closable for Pipe {
             fn close(p: Pipe) -> Result<(), closable.CloseError> {

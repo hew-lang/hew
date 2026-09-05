@@ -3,17 +3,17 @@ type Label = string;
 type AppConfig { label: Label }
 
 actor Tagged {
-    var name: Label;
+    var name: Label,
     receive fn name_len() -> i64 {
         name.len()
     }
 }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child t: Tagged(name: config.label);
+    child t: Tagged(name: config.label),
 }
 
 fn main() {

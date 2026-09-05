@@ -137,7 +137,7 @@ fn captures_record_loop_source(frames: usize) -> String {
     let expected_total = frames * 2 + frames * frames.saturating_sub(1) / 2;
     format!(
         "type Holder {{\n\
-         \x20   counts: Vec<i64>;\n\
+         \x20   counts: Vec<i64>,\n\
          }}\n\
          fn make_holder(n: i64) -> fn() -> i64 {{\n\
          \x20   let counts: Vec<i64> = Vec.new();\n\
@@ -170,8 +170,8 @@ fn captures_enum_loop_source(frames: usize) -> String {
     let expected_total = frames + frames * frames.saturating_sub(1) / 2;
     format!(
         "enum Tag {{\n\
-         \x20   Named(string);\n\
-         \x20   Anon;\n\
+         \x20   Named(string),\n\
+         \x20   Anon,\n\
          }}\n\
          fn make_tagger(n: i64) -> fn() -> i64 {{\n\
          \x20   let t = Tag.Named(\"row-payload-seed\".to_upper());\n\
@@ -202,8 +202,8 @@ fn stack_env_record_field_loop_source(frames: usize) -> String {
     let expected_total = frames * (left_len + right_len) + frames * frames.saturating_sub(1) / 2;
     format!(
         "type Holder {{\n\
-         \x20   left: string;\n\
-         \x20   right: string;\n\
+         \x20   left: string,\n\
+         \x20   right: string,\n\
          }}\n\
          fn run_loop(frames: i64) -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
@@ -230,8 +230,8 @@ fn parameter_record_one_field_loop_source(frames: usize) -> String {
     let expected_total = frames * left_len + frames * frames.saturating_sub(1) / 2;
     format!(
         "type Holder {{\n\
-         \x20   left: string;\n\
-         \x20   right: string;\n\
+         \x20   left: string,\n\
+         \x20   right: string,\n\
          }}\n\
          fn make_reader(h: Holder, n: i64) -> fn() -> i64 {{\n\
          \x20   || h.left.len() + n\n\
@@ -262,8 +262,8 @@ fn parameter_record_both_fields_loop_source(frames: usize) -> String {
     let expected_total = frames * (left_len + right_len) + frames * frames.saturating_sub(1) / 2;
     format!(
         "type Holder {{\n\
-         \x20   left: string;\n\
-         \x20   right: string;\n\
+         \x20   left: string,\n\
+         \x20   right: string,\n\
          }}\n\
          fn make_reader(h: Holder, n: i64) -> fn() -> i64 {{\n\
          \x20   || h.left.len() + h.right.len() + n\n\
@@ -415,8 +415,8 @@ fn borrow_capture_record_read_after_loop_source(frames: usize) -> String {
     let expected_total = frames * (1 + item_len) + frames * frames.saturating_sub(1) / 2;
     format!(
         "type Claim {{\n\
-         \x20   item: string;\n\
-         \x20   run_id: string;\n\
+         \x20   item: string,\n\
+         \x20   run_id: string,\n\
          }}\n\
          fn make_probe(n: i64) -> fn() -> i64 {{\n\
          \x20   let claim = Claim {{ item: \"row-item\".to_upper(), run_id: \"row-run\".to_upper() }};\n\
@@ -463,8 +463,8 @@ fn borrow_capture_record_iter_any_loop_source(frames: usize) -> String {
     format!(
         "import std.iter;\n\
          pub type Claim {{\n\
-         \x20   item: string;\n\
-         \x20   run_id: string;\n\
+         \x20   item: string,\n\
+         \x20   run_id: string,\n\
          }}\n\
          fn probe() -> i64 {{\n\
          \x20   let claim = Claim {{ item: \"row-item\".to_upper(), run_id: \"row-run\".to_upper() }};\n\
@@ -494,8 +494,8 @@ fn borrow_capture_record_iter_any_loop_source(frames: usize) -> String {
 
 fn shared_source_two_closures_source() -> String {
     "type PairFns {\n\
-     \x20   a: fn() -> i64;\n\
-     \x20   b: fn() -> i64;\n\
+     \x20   a: fn() -> i64,\n\
+     \x20   b: fn() -> i64,\n\
      }\n\
      fn make_pair(n: i64) -> PairFns {\n\
      \x20   let label: string = \"row-payload-seed\".to_upper();\n\
@@ -512,8 +512,8 @@ fn shared_source_two_closures_source() -> String {
 
 fn shared_source_closure_plus_original_store_source() -> String {
     "type ClosureAndLabel {\n\
-     \x20   f: fn() -> i64;\n\
-     \x20   label: string;\n\
+     \x20   f: fn() -> i64,\n\
+     \x20   label: string,\n\
      }\n\
      fn make_pair(n: i64) -> ClosureAndLabel {\n\
      \x20   let label: string = \"row-payload-seed\".to_upper();\n\

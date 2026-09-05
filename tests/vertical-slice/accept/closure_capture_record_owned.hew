@@ -6,7 +6,7 @@
 // callable across calls; the captured Vec is released exactly once at the
 // pair's drop (leak-oracle-pinned in closure_capture_owned_leak_oracle.rs).
 type Holder {
-    counts: Vec<i64>;
+    counts: Vec<i64>,
 }
 
 fn make() -> fn() -> i64 {

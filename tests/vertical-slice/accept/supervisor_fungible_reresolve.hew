@@ -17,7 +17,7 @@
 // makes the ordering deterministic — no sleep_ms race. Exit 7 proves the held,
 // pre-crash handle re-resolved to the restarted child whose init value is 7.
 actor Worker {
-    var value: i64;
+    var value: i64,
     receive fn get_value() -> i64 {
         value
     }
@@ -27,10 +27,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child w1: Worker(value: 7);
+    child w1: Worker(value: 7),
 }
 
 extern "C" {

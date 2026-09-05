@@ -24,13 +24,13 @@ import std.testing;
 
 // ── SF2-shape: transitively-nested `Option<string>`, never exercised. ──
 type CSlot {
-    generation: i64;
-    value: Option<string>;
+    generation: i64,
+    value: Option<string>,
 }
 
 type CArena {
-    slots: Vec<CSlot>;
-    free: Vec<i64>;
+    slots: Vec<CSlot>,
+    free: Vec<i64>,
 }
 
 fn _cnew() -> CArena {
@@ -49,12 +49,12 @@ fn _constructs_record_with_unexercised_nested_option_field() {
 
 // ── Nested-enum coverage: `Result<i64, string>`, never exercised. ──
 type RSlot {
-    code: i64;
-    outcome: Result<i64, string>;
+    code: i64,
+    outcome: Result<i64, string>,
 }
 
 type RBox {
-    slots: Vec<RSlot>;
+    slots: Vec<RSlot>,
 }
 
 fn _rnew() -> RBox {
@@ -69,18 +69,18 @@ fn _constructs_record_with_unexercised_nested_result_field() {
 
 // ── Nested generic-enum-of-user-enum: `Option<Colour>`, never exercised. ──
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 type Pixel {
-    id: i64;
-    tint: Option<Colour>;
+    id: i64,
+    tint: Option<Colour>,
 }
 
 type Canvas {
-    pixels: Vec<Pixel>;
+    pixels: Vec<Pixel>,
 }
 
 fn _canvas_new() -> Canvas {
@@ -95,12 +95,12 @@ fn _constructs_record_with_unexercised_nested_generic_enum_field() {
 
 // ── Regression pin: the matched-Option path still round-trips its value. ──
 type XSlot {
-    generation: i64;
-    value: Option<string>;
+    generation: i64,
+    value: Option<string>,
 }
 
 type XArena {
-    slots: Vec<XSlot>;
+    slots: Vec<XSlot>,
 }
 
 fn _xnew() -> XArena {

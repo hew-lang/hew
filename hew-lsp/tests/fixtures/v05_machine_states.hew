@@ -1,16 +1,16 @@
 machine Traffic {
     events {
-        Start;
-        Stop;
-        Started;
-        Stopped;
+        Start,
+        Stop,
+        Started,
+        Stopped,
     }
 
     state Idle {
         entry {
             emit Stopped {};
         }
-    }
+    },
     state Running {
         entry {
             emit Started {};
@@ -18,7 +18,7 @@ machine Traffic {
         exit {
             emit Stopped {};
         }
-    }
+    },
 
     on Start: Idle => Running {
         emit Started {};

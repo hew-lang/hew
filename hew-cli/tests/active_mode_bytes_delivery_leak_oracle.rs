@@ -182,7 +182,7 @@ actor ProbeSink {
     receive fn take(data: bytes) { println("FORWARDED"); }
 }
 actor Router {
-    let sink: LocalPid<ProbeSink>;
+    let sink: LocalPid<ProbeSink>,
     receive fn route(data: bytes, forward: bool) {
         if forward {
             sink.take(data);

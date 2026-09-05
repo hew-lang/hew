@@ -4,7 +4,7 @@
 // Test: Actors and Messaging
 // Exercises: actor definition, receive fn, spawn, message send, actor state, stop
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn increment(amount: i64) {
         count = count + amount;
     }
@@ -17,7 +17,7 @@ actor Counter {
 }
 
 actor Printer {
-    let prefix: i64;
+    let prefix: i64,
     receive fn print_msg(value: i64) -> i64 {
         println(f"  [Printer {prefix}] got: {value}");
         value

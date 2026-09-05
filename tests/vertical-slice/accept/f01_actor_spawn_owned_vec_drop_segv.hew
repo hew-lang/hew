@@ -21,12 +21,12 @@
 // field.
 
 type WorkItem {
-    name: string;
-    priority: i64;
+    name: string,
+    priority: i64,
 }
 
 actor TaskQueue {
-    var tasks: Vec<WorkItem>;
+    var tasks: Vec<WorkItem>,
 
     receive fn enqueue(item: WorkItem) {
         tasks.push(item);

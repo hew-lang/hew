@@ -1142,7 +1142,7 @@ mod tests {
 
     #[test]
     fn find_refs_struct_field_from_declaration() {
-        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let source = "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
         let pr = parse(source);
         let offset = source
             .find("x: i32")
@@ -1169,7 +1169,7 @@ mod tests {
 
     #[test]
     fn find_refs_struct_field_from_access() {
-        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let source = "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
         let pr = parse(source);
         let offset = source.find("p.x").expect("field access should exist") + 2;
         let result =
@@ -1329,7 +1329,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker(init: make_config());\n",
+            "    child w: Worker(init: make_config()),\n",
             "}",
         );
         let pr = parse(source);
@@ -1366,7 +1366,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker(init: make_config());\n",
+            "    child w: Worker(init: make_config()),\n",
             "}",
         );
         let pr = parse(source);
@@ -1406,10 +1406,10 @@ mod tests {
             "fn compute() -> Int { 0 }\n",
             "machine Counter {\n",
             "    events {\n",
-            "        Start;\n",
+            "        Start,\n",
             "    }\n",
-            "    state Idle;\n",
-            "    state Running;\n",
+            "    state Idle,\n",
+            "    state Running,\n",
             "    on Start: Idle => Running { compute() }\n",
             "}",
         );
@@ -1444,10 +1444,10 @@ mod tests {
             "const flag: Bool = true;\n",
             "machine Gate {\n",
             "    events {\n",
-            "        Try;\n",
+            "        Try,\n",
             "    }\n",
-            "    state Locked;\n",
-            "    state Open;\n",
+            "    state Locked,\n",
+            "    state Open,\n",
             "    on Try: Locked => Open when flag { Open }\n",
             "}",
         );

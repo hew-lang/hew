@@ -213,8 +213,8 @@ fn enum_payload_nested_destructure_source(frames: usize) -> String {
          }}\n\
          \n\
          enum Wrap {{\n\
-         \x20   Item(Inner);\n\
-         \x20   Nothing;\n\
+         \x20   Item(Inner),\n\
+         \x20   Nothing,\n\
          }}\n\
          \n\
          fn make_wrap(k: i64) -> Wrap {{\n\

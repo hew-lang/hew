@@ -76,9 +76,9 @@ import std.io;
 /// How the scanner tokenises its source.
 pub enum SplitMode {
     /// Lines split on `\n`; a leading `\r` before `\n` is stripped.
-    SplitLines;
+    SplitLines,
     /// Tokens split on any run of ASCII whitespace (space, tab, `\r`, `\n`).
-    SplitWords;
+    SplitWords,
 }
 
 // ── Scanner state ─────────────────────────────────────────────────────
@@ -87,19 +87,19 @@ pub enum SplitMode {
 /// Hold a `var sc: Scanner` and drive it with `scan()`; see module docs
 /// for full usage.
 pub type Scanner {
-    source: string;
+    source: string,
     /// Byte position of the next unconsumed character.
-    pos: i64;
+    pos: i64,
     /// Text of the current token.  Valid after `scan()` when `has_next()`
     /// is true; empty string before the first `scan()` or after exhaustion.
-    current: string;
+    current: string,
     /// True when the last scan produced a token. Required so a real empty
     /// line (`"\n"`) remains distinguishable from EOF.
-    valid: bool;
+    valid: bool,
     /// True when all tokens have been emitted.
-    done: bool;
+    done: bool,
     /// Token split mode; fixed at construction or changed via `with_split`.
-    mode: SplitMode;
+    mode: SplitMode,
 }
 
 // ── Constructors ──────────────────────────────────────────────────────

@@ -215,7 +215,7 @@ fn opt_string_escape_loop_source(frames: usize) -> String {
 /// interior owned field through the same one release.
 fn opt_record_escape_loop_source(frames: usize) -> String {
     format!(
-        "type Row {{ name: string; id: i64; }}\n\
+        "type Row {{ name: string, id: i64, }}\n\
          \n\
          actor Maker {{\n\
          \x20   receive fn make(n: i64) -> Option<Row> {{\n\
@@ -247,7 +247,7 @@ fn opt_record_escape_loop_source(frames: usize) -> String {
 /// once on the loop-body edge; a suppressed drop re-opens a per-iteration leak.
 fn record_unused_binding_loop_source(frames: usize) -> String {
     format!(
-        "type Row {{ name: string; id: i64; }}\n\
+        "type Row {{ name: string, id: i64, }}\n\
          \n\
          actor Maker {{\n\
          \x20   receive fn make(n: i64) -> Row {{\n\

@@ -10,7 +10,7 @@ impl Tok {
 }
 
 actor Sink {
-    var hits: i64;
+    var hits: i64,
 
     receive fn take(v: Tok) -> i64 {
         let v_i = v.id;

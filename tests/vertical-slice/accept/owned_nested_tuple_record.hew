@@ -1,5 +1,5 @@
 type Rec {
-    s: string;
+    s: string,
 }
 
 fn main() {

@@ -52,7 +52,7 @@ fn assert_check_clean(source: &str) {
 fn issue_2810_reproducer_is_rejected() {
     assert_ineffective(
         concat!(
-            "type Account { balance: i64; }\n",
+            "type Account { balance: i64, }\n",
             "fn withdraw(var acc: Account, amount: i64) -> i64 {\n",
             "    acc.balance = acc.balance - amount;\n",
             "    return acc.balance;\n",
@@ -66,7 +66,7 @@ fn issue_2810_reproducer_is_rejected() {
 fn record_of_scalars_is_rejected() {
     assert_ineffective(
         concat!(
-            "type Point { x: i64; y: i64; }\n",
+            "type Point { x: i64, y: i64, }\n",
             "fn shift(var p: Point) { p.x = p.x + 1; }\n",
         ),
         "`var p` on a by-value parameter of type `Point` has no caller-visible effect",
@@ -79,7 +79,7 @@ fn record_of_scalars_is_rejected() {
 fn record_with_owned_field_is_still_rejected() {
     assert_ineffective(
         concat!(
-            "type Counter { count: i64; label: string; }\n",
+            "type Counter { count: i64, label: string, }\n",
             "fn bump(var c: Counter) -> Counter { c.count = c.count + 1; return c; }\n",
         ),
         "`var c` on a by-value parameter of type `Counter` has no caller-visible effect",
@@ -90,8 +90,8 @@ fn record_with_owned_field_is_still_rejected() {
 fn nested_record_of_scalars_is_rejected() {
     assert_ineffective(
         concat!(
-            "type Inner { x: i64; }\n",
-            "type Outer { inner: Inner; }\n",
+            "type Inner { x: i64, }\n",
+            "type Outer { inner: Inner, }\n",
             "fn shift(var o: Outer) { o.inner.x = 9; }\n",
         ),
         "`var o` on a by-value parameter of type `Outer` has no caller-visible effect",
@@ -103,8 +103,8 @@ fn enum_with_payload_is_rejected() {
     assert_ineffective(
         concat!(
             "enum Shape {\n",
-            "    Circle(i64);\n",
-            "    Square(i64);\n",
+            "    Circle(i64),\n",
+            "    Square(i64),\n",
             "}\n",
             "fn resize(var s: Shape) { s = Shape.Square(9); }\n",
         ),
@@ -143,7 +143,7 @@ fn fixed_array_of_scalars_is_rejected() {
 fn generic_aggregate_at_a_concrete_type_is_rejected() {
     assert_ineffective(
         concat!(
-            "type Pair<T> { a: T; b: T; }\n",
+            "type Pair<T> { a: T, b: T, }\n",
             "fn set(var p: Pair<i64>) { p.a = 9; }\n",
         ),
         "`var p` on a by-value parameter of type `Pair<i64>` has no caller-visible effect",
@@ -154,7 +154,7 @@ fn generic_aggregate_at_a_concrete_type_is_rejected() {
 fn generic_aggregate_over_a_type_param_is_still_rejected() {
     assert_ineffective(
         concat!(
-            "type Pair<T> { a: T; b: T; }\n",
+            "type Pair<T> { a: T, b: T, }\n",
             "fn set<T>(var p: Pair<T>, v: T) { p.a = v; }\n",
         ),
         "`var p` on a by-value parameter of type `Pair<T>` has no caller-visible effect",
@@ -168,7 +168,7 @@ fn resource_record_is_rejected() {
     assert_ineffective(
         concat!(
             "#[resource]\n",
-            "type Conn { fd: i64; }\n",
+            "type Conn { fd: i64, }\n",
             "impl Conn { fn close(c: Conn) { println(c.fd); } }\n",
             "fn retag(var c: Conn) { c.fd = 9; }\n",
         ),
@@ -182,7 +182,7 @@ fn resource_record_is_rejected() {
 fn issue_2821_option_of_value_aggregate_is_rejected() {
     assert_ineffective(
         concat!(
-            "type Account { balance: i64; }\n",
+            "type Account { balance: i64, }\n",
             "fn withdraw(var acc: Option<Account>, amount: i64) -> i64 {\n",
             "    let current = acc.unwrap();\n",
             "    acc = Some(Account { balance: current.balance - amount });\n",
@@ -197,7 +197,7 @@ fn issue_2821_option_of_value_aggregate_is_rejected() {
 fn result_of_value_aggregate_is_rejected() {
     assert_ineffective(
         concat!(
-            "type Account { balance: i64; }\n",
+            "type Account { balance: i64, }\n",
             "fn replace(var acc: Result<Account, string>) {\n",
             "    acc = Ok(Account { balance: 60 });\n",
             "}\n",
@@ -210,7 +210,7 @@ fn result_of_value_aggregate_is_rejected() {
 fn nested_option_result_value_aggregate_is_rejected() {
     assert_ineffective(
         concat!(
-            "type Account { balance: i64; }\n",
+            "type Account { balance: i64, }\n",
             "fn replace(var acc: Option<Result<(Account, i64), string>>) {\n",
             "    acc = Some(Ok((Account { balance: 60 }, 1)));\n",
             "}\n",
@@ -245,7 +245,7 @@ fn hashset_param_is_not_flagged() {
 fn actor_handle_param_is_not_flagged() {
     assert_no_ineffective_diagnostic(concat!(
         "actor Probe {\n",
-        "    var n: i64 = 0;\n",
+        "    var n: i64 = 0,\n",
         "    receive fn bump() { self.n = self.n + 1; }\n",
         "}\n",
         "fn poke(var p: LocalPid<Probe>) { p.bump(); }\n",
@@ -256,10 +256,10 @@ fn actor_handle_param_is_not_flagged() {
 fn record_local_pid_field_projection_is_not_flagged() {
     assert_check_clean(concat!(
         "actor Probe {\n",
-        "    var n: i64 = 0;\n",
+        "    var n: i64 = 0,\n",
         "    receive fn bump() { n = n + 1; }\n",
         "}\n",
-        "type Holder { pid: LocalPid<Probe>; }\n",
+        "type Holder { pid: LocalPid<Probe>, }\n",
         "fn poke(var holder: Holder) { holder.pid.bump(); }\n",
     ));
 }
@@ -267,7 +267,7 @@ fn record_local_pid_field_projection_is_not_flagged() {
 #[test]
 fn record_sender_field_projection_is_not_flagged() {
     assert_check_clean(concat!(
-        "type Holder { tx: channel.Sender<i64>; }\n",
+        "type Holder { tx: channel.Sender<i64>, }\n",
         "fn send(var holder: Holder) { holder.tx.send(7); }\n",
     ));
 }
@@ -275,7 +275,7 @@ fn record_sender_field_projection_is_not_flagged() {
 #[test]
 fn record_receiver_field_projection_is_not_flagged() {
     assert_check_clean(concat!(
-        "type Holder { rx: channel.Receiver<i64>; }\n",
+        "type Holder { rx: channel.Receiver<i64>, }\n",
         "fn poll(var holder: Holder) { let _ = holder.rx.try_recv(); }\n",
     ));
 }
@@ -283,7 +283,7 @@ fn record_receiver_field_projection_is_not_flagged() {
 #[test]
 fn record_vec_field_index_projection_is_not_flagged() {
     assert_check_clean(concat!(
-        "type Holder { items: Vec<i64>; }\n",
+        "type Holder { items: Vec<i64>, }\n",
         "fn set_first(var holder: Holder) { holder.items[0] = 9; }\n",
     ));
 }
@@ -291,7 +291,7 @@ fn record_vec_field_index_projection_is_not_flagged() {
 #[test]
 fn record_hashmap_field_mutation_is_not_flagged() {
     assert_check_clean(concat!(
-        "type Holder { items: HashMap<string, i64>; }\n",
+        "type Holder { items: HashMap<string, i64>, }\n",
         "fn put(var holder: Holder) { holder.items.insert(\"k\", 9); }\n",
     ));
 }
@@ -301,7 +301,7 @@ fn record_hashmap_field_mutation_is_not_flagged() {
 #[test]
 fn record_handle_sibling_value_projection_is_rejected() {
     let (errors, _) = parse_and_check(concat!(
-        "type Holder { items: Vec<i64>; count: i64; }\n",
+        "type Holder { items: Vec<i64>, count: i64, }\n",
         "fn retag(var holder: Holder) { holder.count = 9; }\n",
     ));
     assert!(
@@ -319,7 +319,7 @@ fn record_handle_sibling_value_projection_is_rejected() {
 fn record_handle_mutable_receiver_call_is_rejected_fail_closed() {
     let (errors, _) = parse_and_check(concat!(
         "trait Retag { fn retag(var self); }\n",
-        "type Holder { items: Vec<i64>; count: i64; }\n",
+        "type Holder { items: Vec<i64>, count: i64, }\n",
         "impl Retag for Holder {\n",
         "    fn retag(var self) { self.count = 9; }\n",
         "}\n",
@@ -373,7 +373,7 @@ fn bytes_param_root_replacement_is_not_flagged() {
 #[test]
 fn mutable_receiver_is_not_flagged() {
     assert_no_ineffective_diagnostic(concat!(
-        "type Counter { count: i64; }\n",
+        "type Counter { count: i64, }\n",
         "impl Counter { fn bump(var self) -> i64 { self.count = self.count + 1; return self.count; } }\n",
     ));
 }
@@ -382,7 +382,7 @@ fn mutable_receiver_is_not_flagged() {
 #[test]
 fn immutable_aggregate_param_is_not_flagged() {
     assert_no_ineffective_diagnostic(concat!(
-        "type Account { balance: i64; }\n",
+        "type Account { balance: i64, }\n",
         "fn peek(acc: Account) -> i64 { return acc.balance; }\n",
     ));
 }
@@ -408,7 +408,7 @@ fn mutability_suggestions(source: &str, name: &str) -> Vec<String> {
 fn value_param_assignment_does_not_suggest_var() {
     let suggestions = mutability_suggestions(
         concat!(
-            "type Account { balance: i64; }\n",
+            "type Account { balance: i64, }\n",
             "fn withdraw(acc: Account, amount: i64) -> i64 {\n",
             "    acc.balance = acc.balance - amount;\n",
             "    return acc.balance;\n",
@@ -447,7 +447,7 @@ fn local_assignment_still_suggests_var() {
 fn local_of_aggregate_type_still_suggests_var() {
     let suggestions = mutability_suggestions(
         concat!(
-            "type Account { balance: i64; }\n",
+            "type Account { balance: i64, }\n",
             "fn main() { let a = Account { balance: 1 }; a.balance = 2; println(a.balance); }\n",
         ),
         "a",
@@ -473,7 +473,7 @@ fn handle_param_assignment_still_suggests_var() {
 fn option_value_param_assignment_does_not_suggest_var() {
     let suggestions = mutability_suggestions(
         concat!(
-            "type Account { balance: i64; }\n",
+            "type Account { balance: i64, }\n",
             "fn replace(acc: Option<Account>) {\n",
             "    acc = Some(Account { balance: 60 });\n",
             "}\n",
@@ -497,7 +497,7 @@ fn option_value_param_assignment_does_not_suggest_var() {
 fn record_handle_private_projection_does_not_suggest_var() {
     let suggestions = mutability_suggestions(
         concat!(
-            "type Holder { items: Vec<i64>; count: i64; }\n",
+            "type Holder { items: Vec<i64>, count: i64, }\n",
             "fn retag(holder: Holder) { holder.count = 9; }\n",
         ),
         "holder",
@@ -514,7 +514,7 @@ fn record_handle_private_projection_does_not_suggest_var() {
 fn record_handle_shared_projection_still_suggests_var() {
     let suggestions = mutability_suggestions(
         concat!(
-            "type Holder { items: Vec<i64>; }\n",
+            "type Holder { items: Vec<i64>, }\n",
             "fn set_first(holder: Holder) { holder.items[0] = 9; }\n",
         ),
         "holder",

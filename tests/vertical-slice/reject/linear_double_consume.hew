@@ -2,7 +2,7 @@
 // inherent consuming method moves the receiver, so a second consume reads a
 // moved-out value.
 #[linear]
-type Tx { id: i64; }
+type Tx { id: i64, }
 impl Tx {
     fn commit(consuming self) { println(f"commit {self.id}"); }
 }

@@ -973,7 +973,7 @@ mod assoc_types_slice1 {
             }
 
             type Holder<T> {
-                value: T;
+                value: T,
             }
 
             impl<T: Display> Show for Holder<T> {
@@ -1036,7 +1036,7 @@ mod assoc_types_slice1 {
             }
 
             type Counter {
-                value: i64;
+                value: i64,
             }
 
             impl Iterator for Counter {
@@ -1166,7 +1166,7 @@ mod assoc_types_slice1 {
             }
 
             type Container<T> {
-                value: T;
+                value: T,
             }
 
             impl<T: Display> Show for Container<T> {
@@ -1246,7 +1246,7 @@ mod assoc_types_slice2 {
             }
 
             type Counter {
-                value: i64;
+                value: i64,
             }
 
             impl Iterator for Counter {
@@ -1436,7 +1436,7 @@ mod assoc_types_slice2 {
     fn unknown_trait_bound_shape_rejected_for_impl_inline_type_param_bound() {
         let output = check_source(
             r"
-            type Foo<T> { value: T; }
+            type Foo<T> { value: T, }
             impl<T: Eq<U>, U> Foo<T> { }
             fn main() {}
             ",
@@ -1458,7 +1458,7 @@ mod assoc_types_slice2 {
     fn unknown_trait_bound_shape_rejected_for_impl_where_clause_bound() {
         let output = check_source(
             r"
-            type Foo<T> { value: T; }
+            type Foo<T> { value: T, }
             impl<T, U> Foo<T> where T: Eq<U> { }
             fn main() {}
             ",
@@ -1937,7 +1937,7 @@ mod assoc_types_slice2 {
         let output = check_source(
             r"
             actor Counter {
-                count: i32;
+                count: i32,
                 receive fn tick() {
                     let _g = gen { count = count + 1; };
                 }
@@ -2033,7 +2033,7 @@ mod assoc_types_slice2 {
         let output = check_source(
             r"
             actor Counter {
-                count: i32;
+                count: i32,
                 receive fn tick() {
                     let _g = gen { };
                 }
@@ -2067,11 +2067,11 @@ mod assoc_types_slice2 {
             r"
             machine Door {
                 events {
-                    Toggle;
+                    Toggle,
                 }
 
-                state Closed;
-                state Open;
+                state Closed,
+                state Open,
 
 
                 on Toggle: Closed => Open {
@@ -2100,11 +2100,11 @@ mod assoc_types_slice2 {
             r"
             machine Door {
                 events {
-                    Toggle;
+                    Toggle,
                 }
 
-                state Closed;
-                state Open;
+                state Closed,
+                state Open,
 
 
                 on Toggle: Closed => Open {

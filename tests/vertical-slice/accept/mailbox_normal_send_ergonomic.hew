@@ -1,5 +1,5 @@
 actor ReliableWorker {
-    var seen: i64 = 0;
+    var seen: i64 = 0,
 
     receive fn work(value: i64) {
         seen = value;

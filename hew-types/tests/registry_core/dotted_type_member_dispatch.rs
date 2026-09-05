@@ -6,9 +6,9 @@ fn dotted_type_members_share_canonical_dispatch() {
     let output = typecheck_isolated(
         r#"
 machine Lifecycle {
-    events { Reset; }
-    state Start;
-    state Running { value: i64; }
+    events { Reset, }
+    state Start,
+    state Running { value: i64, },
     on Reset: Running => .Start { .Start }
     default { state }
 }
@@ -67,9 +67,9 @@ fn bare_type_without_member_remains_an_error() {
     let output = typecheck_isolated(
         r"
 machine Lifecycle {
-    events { Reset; }
-    state Start;
-    state Running;
+    events { Reset, }
+    state Start,
+    state Running,
     on Reset: Running => .Start { .Start }
     default { state }
 }

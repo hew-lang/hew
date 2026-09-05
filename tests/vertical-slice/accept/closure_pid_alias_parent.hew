@@ -5,7 +5,7 @@
 // reject the parent's send; a capture that double-managed the handle
 // would double-release at scope exit.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn increment(n: i64) {
         count = count + n;

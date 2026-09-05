@@ -4,7 +4,7 @@
 // sibling inherent-impl block.
 #[linear]
 type Tx {
-    id: i64;
+    id: i64,
     fn commit(consuming self) { println(f"commit {self.id}"); }
 }
 

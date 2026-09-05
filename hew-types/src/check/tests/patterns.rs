@@ -8,8 +8,8 @@ pub(super) use super::*;
 fn same_leaf_qualified_unit_variant_cannot_cover_foreign_enum() {
     let (errors, _) = parse_and_check(
         r"
-enum Left { Same; Other }
-enum Right { Same; Other }
+enum Left { Same, Other }
+enum Right { Same, Other }
 fn inspect(value: Left) -> i64 {
     match value {
         Right.Same => 1,
@@ -37,8 +37,8 @@ fn inspect(value: Left) -> i64 {
 fn same_leaf_qualified_tuple_variant_cannot_cover_foreign_enum() {
     let (errors, _) = parse_and_check(
         r"
-enum Left { Same(i64); Other }
-enum Right { Same(i64); Other }
+enum Left { Same(i64), Other }
+enum Right { Same(i64), Other }
 fn inspect(value: Left) -> i64 {
     match value {
         Right.Same(v) => v,
@@ -66,8 +66,8 @@ fn inspect(value: Left) -> i64 {
 fn same_leaf_qualified_struct_variant_cannot_cover_or_construct_foreign_enum() {
     let (pattern_errors, _) = parse_and_check(
         r"
-enum Left { Same { value: i64 }; Other }
-enum Right { Same { value: i64 }; Other }
+enum Left { Same { value: i64 }, Other }
+enum Right { Same { value: i64 }, Other }
 fn inspect(value: Left) -> i64 {
     match value {
         Right.Same { value } => value,
@@ -92,8 +92,8 @@ fn inspect(value: Left) -> i64 {
 
     let (init_errors, _) = parse_and_check(
         r"
-enum Left { Same { value: i64 }; Other }
-enum Right { Same { value: i64 }; Other }
+enum Left { Same { value: i64 }, Other }
+enum Right { Same { value: i64 }, Other }
 fn make() -> Left {
     Right.Same { value: 1 }
 }
@@ -340,7 +340,7 @@ fn foo(r: Result<i64, string>) -> i64 {
     fn user_enum_unit_variant_records_variant_ctor_no_payload() {
         let resolutions = pattern_resolutions(
             r"
-enum Color { Red; Green; Blue }
+enum Color { Red, Green, Blue }
 fn foo(c: Color) {
     match c {
         .Red => {},
@@ -362,7 +362,7 @@ fn foo(c: Color) {
     fn user_enum_tuple_variant_records_payload_bindings() {
         let resolutions = pattern_resolutions(
             r"
-enum Shape { Circle(i64); Square(i64) }
+enum Shape { Circle(i64), Square(i64) }
 fn foo(s: Shape) -> i64 {
     match s {
         .Circle(r) => r,
@@ -390,7 +390,7 @@ fn foo(s: Shape) -> i64 {
     fn dotted_tuple_variant_resolves_from_path_segments() {
         let resolutions = pattern_resolutions(
             r"
-enum Shape { Circle(i64); Square(i64) }
+enum Shape { Circle(i64), Square(i64) }
 fn foo(s: Shape) -> i64 {
     match s {
         Shape.Circle(radius) => radius,
@@ -493,8 +493,8 @@ fn foo(w: Weird) -> i64 {
         let resolutions = pattern_resolutions(
             r"
 enum Packet {
-    Data { a: string, b: string };
-    Empty;
+    Data { a: string, b: string },
+    Empty,
 }
 
 fn probe(packet: Packet) -> i64 {
@@ -587,8 +587,8 @@ fn foo(p: Point) -> i64 {
         let output = check_source(
             r#"
 enum State {
-    Loaded { label: string };
-    Empty;
+    Loaded { label: string },
+    Empty,
 }
 
 fn label(state: State) -> string {
@@ -797,7 +797,7 @@ fn foo(opt: Option<i64>) -> i64 {
         // position of "a" among ["a","b","c"]).
         let resolutions = pattern_resolutions(
             r"
-enum Tri { Bar { c: i64; a: i64; b: i64 } }
+enum Tri { Bar { c: i64, a: i64, b: i64 } }
 fn foo(t: Tri) -> i64 {
     match t {
         Tri.Bar { a } => a,
@@ -971,7 +971,7 @@ fn record_case(p: Point) -> i64 {
         // `UnsupportedPayloadSubpattern` error for this shape.
         let output = check_source(
             r"
-enum Packet { Data { value: i64 }; Empty }
+enum Packet { Data { value: i64 }, Empty }
 fn f(p: Packet) -> i64 {
     match p {
         Packet.Data { value: MAX } => MAX,
@@ -994,8 +994,8 @@ fn f(p: Packet) -> i64 {
         // must remain an `UnsupportedPayloadSubpattern` error.
         let output = check_source(
             r"
-enum Color { Red; Blue }
-enum Packet { Data { value: Color }; Empty }
+enum Color { Red, Blue }
+enum Packet { Data { value: Color }, Empty }
 fn f(p: Packet) -> i64 {
     match p {
         Packet.Data { value: .Red } => 1,
@@ -1027,7 +1027,7 @@ fn f(p: Packet) -> i64 {
         // is always a constructor path regardless of resolution.
         let output = check_source(
             r"
-enum Packet { Data { value: i64 }; Empty }
+enum Packet { Data { value: i64 }, Empty }
 fn f(p: Packet) -> i64 {
     match p {
         Packet.Data { value: Packet.Empty } => 0,
@@ -1055,7 +1055,7 @@ fn f(p: Packet) -> i64 {
         // a field subpattern position must also be accepted after the casing fix.
         let output = check_source(
             r"
-type Point { x: i64; y: i64 }
+type Point { x: i64, y: i64 }
 fn f(p: Point) -> i64 {
     match p {
         Point { x: MAX, y: _ } => MAX,
@@ -1095,7 +1095,7 @@ fn f(pair: (i64, i64)) -> i64 {
         // An uppercase binder must NOT make an otherwise non-exhaustive match pass.
         let output = check_source(
             r"
-enum Packet { Data { value: i64 }; Empty }
+enum Packet { Data { value: i64 }, Empty }
 fn f(p: Packet) -> i64 {
     match p {
         Packet.Data { value: MAX } => MAX,
@@ -1127,7 +1127,7 @@ fn f(p: Packet) -> i64 {
 fn constructor_payload_literal_is_accepted() {
     let output = check_source(
         r"
-enum Shape { Line(i64); Square(i64) }
+enum Shape { Line(i64), Square(i64) }
 fn main() -> i64 {
     let s = Shape.Line(2);
     match s {
@@ -1156,8 +1156,8 @@ fn main() -> i64 {
 fn constructor_payload_nested_ctor_is_accepted_and_recorded() {
     let output = check_source(
         r"
-enum Color { Red; Green }
-enum Shape { Line(Color); Square(i64) }
+enum Color { Red, Green }
+enum Shape { Line(Color), Square(i64) }
 fn main() -> i64 {
     let s = Shape.Line(Color.Red);
     match s {
@@ -1228,7 +1228,7 @@ fn main() -> i64 {
 fn constructor_payload_tuple_destructure_is_accepted() {
     let output = check_source(
         r"
-enum Pair { Both((i64, i64)); None }
+enum Pair { Both((i64, i64)), None }
 fn main() -> i64 {
     let p = Pair.Both((1, 2));
     match p {
@@ -1251,7 +1251,7 @@ fn main() -> i64 {
 fn constructor_payload_binding_and_wildcard_are_accepted() {
     let output = check_source(
         r"
-enum Shape { Line(i64); Square(i64) }
+enum Shape { Line(i64), Square(i64) }
 fn foo(s: Shape) -> i64 {
     match s {
         Shape.Line(x) => x,
@@ -1277,17 +1277,17 @@ fn composite_machine_transition_accepts_contextual_target() {
     let output = check_source(
         r"
         machine Connection {
-            events { Connect; }
+            events { Connect, }
 
-            state Disconnected;
+            state Disconnected,
             state Connected {
-                initial state Authenticating;
-                state Active;
-            }
+                initial state Authenticating,
+                state Active,
+            },
 
-            on Connect: Disconnected => .Authenticating;
-            on Connect: Authenticating => .Active;
-            on Connect: Active => .Disconnected;
+            on Connect: Disconnected => .Authenticating,
+            on Connect: Authenticating => .Active,
+            on Connect: Active => .Disconnected,
         }
         fn main() {}
         ",
@@ -1307,13 +1307,13 @@ fn machine_transition_contextual_target_rejects_unknown_state() {
     let output = check_source(
         r"
         machine Switch {
-            events { Toggle; }
+            events { Toggle, }
 
-            state Off;
-            state On;
+            state Off,
+            state On,
 
-            on Toggle: Off => .Nope;
-            on Toggle: On => .Off;
+            on Toggle: Off => .Nope,
+            on Toggle: On => .Off,
         }
         fn main() {}
         ",
@@ -1336,11 +1336,11 @@ fn generic_machine_struct_state_bare_constructor_infers() {
         r"
         machine Work<T> {
             events {
-                Crash { code: i64; }
+                Crash { code: i64, }
             }
 
-            state Running { handle: T; }
-            state Faulted { code: i64; }
+            state Running { handle: T, },
+            state Faulted { code: i64, },
 
 
             on Crash: Running => .Faulted {
@@ -1369,11 +1369,11 @@ fn generic_machine_struct_state_qualified_constructor_infers() {
         r"
         machine Work<T> {
             events {
-                Crash { code: i64; }
+                Crash { code: i64, }
             }
 
-            state Running { handle: T; }
-            state Faulted { code: i64; }
+            state Running { handle: T, },
+            state Faulted { code: i64, },
 
 
             on Crash: Running => .Faulted {
@@ -1402,12 +1402,12 @@ fn non_generic_machine_struct_state_constructor_regression_free() {
         r"
         machine Door {
             events {
-                OpenDoor { id: i64; }
-                CloseDoor;
+                OpenDoor { id: i64, }
+                ,CloseDoor,
             }
 
-            state Closed;
-            state Opened { handle: i64; }
+            state Closed,
+            state Opened { handle: i64, },
 
 
             on OpenDoor: Closed => .Opened {
@@ -1440,12 +1440,12 @@ fn machine_transition_self_field_reads_source_payload() {
         r"
         machine Counter {
             events {
-                Inc;
-                Reset;
+                Inc,
+                Reset,
             }
 
-            state Zero;
-            state NonZero { value: i64; }
+            state Zero,
+            state NonZero { value: i64, },
 
 
             on Inc: Zero => .NonZero {
@@ -1478,11 +1478,11 @@ fn machine_transition_bare_self_remains_rejected() {
         r"
         machine Counter {
             events {
-                Reset;
+                Reset,
             }
 
-            state Zero;
-            state NonZero { value: i64; }
+            state Zero,
+            state NonZero { value: i64, },
 
             on Reset: NonZero => .Zero {
                 self
@@ -1514,12 +1514,12 @@ fn generic_machine_step_bare_event_propagates_receiver_args() {
         r"
         machine Work<T> {
             events {
-                Initialise;
-                Started { handle: T; }
+                Initialise,
+                Started { handle: T, }
             }
 
-            state Created;
-            state Running { handle: T; }
+            state Created,
+            state Running { handle: T, },
 
 
             on Initialise: Created => .Created {
@@ -1558,15 +1558,15 @@ fn machine_transition_block_body_types_let_binding_and_contextual_tail() {
     let source = concat!(
         "fn compute() -> i64 { 42 }\n",
         "machine Counter {\n",
-        "    events { Tick; }\n",
-        "    state Idle;\n",
-        "    state Busy;\n",
+        "    events { Tick, }\n",
+        "    state Idle,\n",
+        "    state Busy,\n",
         "    on Tick: Idle => .Busy {\n",
         "        let step = compute();\n",
         "        let _ = step;\n",
         "        .Busy\n",
         "    }\n",
-        "    on Tick: Busy => .Idle;\n",
+        "    on Tick: Busy => .Idle,\n",
         "}\n",
         "fn main() {}\n",
     );
@@ -1607,14 +1607,14 @@ fn machine_transition_block_body_publishes_tail_type_not_error_placeholder() {
     let source = concat!(
         "fn compute() -> i64 { 42 }\n",
         "machine Counter {\n",
-        "    events { Tick; }\n",
-        "    state Idle;\n",
-        "    state Busy;\n",
+        "    events { Tick, }\n",
+        "    state Idle,\n",
+        "    state Busy,\n",
         "    on Tick: Idle => .Idle {\n",
         "        let result = compute();\n",
         "        result\n",
         "    }\n",
-        "    on Tick: Busy => .Idle;\n",
+        "    on Tick: Busy => .Idle,\n",
         "}\n",
         "fn main() {}\n",
     );

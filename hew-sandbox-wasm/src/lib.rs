@@ -589,7 +589,7 @@ mod tests {
     fn actor_self_field_emits_the_bare_field_bytecode() {
         let receiver = r"
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn bump(n: i64) {
         self.count = self.count + n;
         self.count += 1;
@@ -606,7 +606,7 @@ fn main() {
 ";
         let bare = r"
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn bump(n: i64) {
         count = count + n;
         count += 1;
@@ -713,7 +713,7 @@ fn main() {
     fn match_arm_guard_gates_arm_body() {
         set_test_hewpath();
         let source = r#"
-enum Score { High(i64); Low(i64); Zero; }
+enum Score { High(i64), Low(i64), Zero, }
 
 fn classify(s: Score) -> string {
     match s {
@@ -772,7 +772,7 @@ fn main() {
     fn guarded_catch_all_guard_failure_falls_through_to_next_check() {
         set_test_hewpath();
         let source = r#"
-enum Score { High(i64); Low(i64); }
+enum Score { High(i64), Low(i64), }
 
 fn classify(s: Score) -> string {
     match s {
@@ -1014,7 +1014,7 @@ fn main() {
         set_test_hewpath();
         let source = r#"
 type Pattern {
-    value: string;
+    value: string,
 }
 
 impl Pattern {
@@ -1050,7 +1050,7 @@ fn main() {
         set_test_hewpath();
         let source = r"
 type Regex {
-    value: i64;
+    value: i64,
 }
 
 fn main() {
@@ -1088,7 +1088,7 @@ fn main() {
 import std.text.regex;
 
 type Regex {
-    value: i64;
+    value: i64,
 }
 
 fn main() {
@@ -1135,7 +1135,7 @@ fn main() {
         set_test_hewpath();
         let source = r#"
 type Regex {
-    value: string;
+    value: string,
 }
 
 impl Regex {
@@ -1332,7 +1332,7 @@ fn main() {
         // specific stdlib module short-names and NOT a user-declared type, so
         // legitimate field access on user records must continue to compile.
         let source = r"
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 
 fn main() {
     let p = Point { x: 3, y: 7 };
@@ -1364,7 +1364,7 @@ fn main() {
         // Over-reject regression: the previous `is_user_local` guard only tracked
         // top-level declarations and would have falsely rejected `net.connect` here.
         let source = r"
-type Conn { connect: i64; }
+type Conn { connect: i64, }
 
 fn main() {
     let net = Conn { connect: 42 };
@@ -1389,7 +1389,7 @@ fn main() {
     fn sandbox_admits_local_binding_named_stream() {
         // Same regression check for `stream` (another common collision name).
         let source = r"
-type Packet { value: i64; }
+type Packet { value: i64, }
 
 fn process(stream: Packet) -> i64 {
     stream.value
@@ -1418,7 +1418,7 @@ fn main() {
     fn sandbox_admits_local_binding_named_os() {
         // Same regression check for `os`.
         let source = r"
-type Cfg { name: i64; }
+type Cfg { name: i64, }
 
 fn main() {
     let os = Cfg { name: 1 };
@@ -1538,7 +1538,7 @@ fn main() {
         // `lower_binary` emits `cmp.eq`/`cmp.ne`; the VM's `canonicalComparable`
         // handles these structurally.
         let record_source = r"
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 
 fn main() {
     let a = Point { x: 1, y: 2 };
@@ -1562,8 +1562,8 @@ fn main() {
 
         let enum_source = r"
 enum Shape {
-    Circle(i64);
-    Empty;
+    Circle(i64),
+    Empty,
 }
 
 fn main() {
@@ -1662,12 +1662,12 @@ fn main() {
             r#"
 machine Boxed<T> {
     events {
-        Store;
+        Store,
     }
-    state Idle;
-    state Full;
-    on Store: Idle => .Full;
-    on Store: Full => .Full;
+    state Idle,
+    state Full,
+    on Store: Idle => .Full,
+    on Store: Full => .Full,
 }
 
 fn main() {
@@ -1750,7 +1750,7 @@ fn main() {
     // Source matches hew-lsp/tests/fixtures/v05_impl_where_clause.hew.
     const IMPL_WHERE_SOURCE: &str = r"
 type Holder<T> {
-    value: T;
+    value: T,
 }
 
 impl<T> Holder<T> where T: Display {
@@ -1897,14 +1897,14 @@ fn main() {
         set_test_hewpath();
         let source = r"
 actor Bounds {
-    let max: i64;
-    let min: i64;
+    let max: i64,
+    let min: i64,
 }
 
 supervisor BoundsTree {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
-    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808);
+    strategy: one_for_one,
+    intensity: 1 within 60s,
+    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808),
 }
 
 fn main() {
@@ -2105,7 +2105,7 @@ fn main() {
         // `lower_stmt_if_let` lowers into a tag check + branch.
         assert_admits_with_branches(
             r"
-enum Wrapped { Value(i64); Empty; }
+enum Wrapped { Value(i64), Empty, }
 fn main() {
     let w: Wrapped = .Value(7);
     if let .Value(n) = w {
@@ -2181,7 +2181,7 @@ fn main() {
         set_test_hewpath();
         let source = r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn bump(n: i64) -> i64 { return n; }
     receive fn get() -> i64 { return count; }
 }
@@ -2259,8 +2259,8 @@ fn main() {
         set_test_hewpath();
         let source = r"
 actor Pair {
-    var a: i64;
-    let b: i64;
+    var a: i64,
+    let b: i64,
     receive fn set_a_return_b(x: i64) -> i64 {
         a = x;
         return b;
@@ -2327,7 +2327,7 @@ fn main() {
         // cover is exercised by the dotted positive control below.
         set_test_hewpath();
         let source = r#"
-enum Op { Add; Sub; }
+enum Op { Add, Sub, }
 fn apply(op: Op, x: i64, y: i64) -> i64 {
     match op {
         .Add => x + y,
@@ -2364,7 +2364,7 @@ fn main() {
         // path the retired bare-form regression test used to cover.
         set_test_hewpath();
         let source = r#"
-enum Op { Add; Sub; }
+enum Op { Add, Sub, }
 fn apply(op: Op, x: i64, y: i64) -> i64 {
     match op {
         .Add => x + y,

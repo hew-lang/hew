@@ -5,7 +5,7 @@
 // Expected stdout:
 //   commit 1
 #[linear]
-type Tx { id: i64; }
+type Tx { id: i64, }
 impl Tx {
     fn commit(consuming self) { println(f"commit {self.id}"); }
 }

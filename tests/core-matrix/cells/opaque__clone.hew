@@ -4,8 +4,8 @@ type DqH {
 
 #[resource]
 type Dq {
-    handle: DqH;
-    tag: i64;
+    handle: DqH,
+    tag: i64,
 }
 
 impl Dq {

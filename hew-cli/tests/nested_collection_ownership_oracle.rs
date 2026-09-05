@@ -62,7 +62,7 @@ fn main() -> i64 {
 // state drop. Runs under the scribble allocator so any double-free aborts.
 const ACTOR_SINGLE_INNER_SOURCE: &str = "\
 actor Holder {
-    var rows: Vec<Vec<i64>>;
+    var rows: Vec<Vec<i64>>,
 
     receive fn count() -> i64 {
         rows.len()
@@ -87,7 +87,7 @@ fn main() -> i64 {
 fn actor_nested_vec_source(rows: usize) -> String {
     format!(
         "actor Buckets {{\n\
-         \x20   var rows: Vec<Vec<i64>>;\n\
+         \x20   var rows: Vec<Vec<i64>>,\n\
          \n\
          \x20   receive fn count() -> i64 {{\n\
          \x20       rows.len()\n\
@@ -120,7 +120,7 @@ fn actor_nested_vec_source(rows: usize) -> String {
 fn actor_nested_vec_iterate_source(rows: usize) -> String {
     format!(
         "actor Buckets {{\n\
-         \x20   var rows: Vec<Vec<i64>>;\n\
+         \x20   var rows: Vec<Vec<i64>>,\n\
          \n\
          \x20   receive fn sum_firsts() -> i64 {{\n\
          \x20       var s: i64 = 0;\n\
@@ -155,7 +155,7 @@ fn actor_nested_vec_iterate_source(rows: usize) -> String {
 fn actor_nested_hashmap_source(rows: usize) -> String {
     format!(
         "actor Registry {{\n\
-         \x20   var buckets: Vec<HashMap<string, i64>>;\n\
+         \x20   var buckets: Vec<HashMap<string, i64>>,\n\
          \n\
          \x20   receive fn total() -> i64 {{\n\
          \x20       buckets.len()\n\

@@ -52,10 +52,10 @@ actor Sleeper {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child sleeper: Sleeper;
+    child sleeper: Sleeper,
 }
 
 fn main() {
@@ -89,10 +89,10 @@ actor Sleeper {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child sleeper: Sleeper;
+    child sleeper: Sleeper,
 }
 
 fn main() {
@@ -122,10 +122,10 @@ actor Mover {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child mover: Mover;
+    child mover: Mover,
 }
 
 fn main() {
@@ -157,10 +157,10 @@ actor Sleeper {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child sleeper: Sleeper;
+    child sleeper: Sleeper,
 }
 
 fn main() {
@@ -193,10 +193,10 @@ actor Sleeper {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child sleeper: Sleeper;
+    child sleeper: Sleeper,
 }
 
 fn main() {
@@ -213,8 +213,8 @@ fn main() {
 /// must run the suspend plan's flag-gated binder drop exactly once.
 const OVERWRITTEN_ENUM_BINDER_ACROSS_SUSPEND: &str = r#"
 enum Box {
-    Full(string);
-    Empty;
+    Full(string),
+    Empty,
 }
 
 actor Sleeper {
@@ -232,10 +232,10 @@ actor Sleeper {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child sleeper: Sleeper;
+    child sleeper: Sleeper,
 }
 
 fn main() {

@@ -19,7 +19,7 @@ actor Recipient {
 }
 
 actor Forwarder {
-    let recipient: LocalPid<Recipient>;
+    let recipient: LocalPid<Recipient>,
 
     receive fn forward(data: bytes, flag: bool) -> bytes {
         if flag {

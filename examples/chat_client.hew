@@ -21,8 +21,8 @@ import std.os;
 import std.stream;
 
 actor ChatReader {
-    let input: stream.Stream<bytes>;
-    let done: channel.Sender<string>;
+    let input: stream.Stream<bytes>,
+    let done: channel.Sender<string>,
     /// The terminal path publishes completion and returns. `main` remains in
     /// its stdin loop until `/quit`, then closes the sink, waits for this
     /// status, and exits; runtime teardown closes both handles exactly once.

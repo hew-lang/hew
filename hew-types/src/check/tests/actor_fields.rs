@@ -11,7 +11,7 @@ fn non_send_actor_state_points_to_the_owning_actor_pattern() {
     let output = check_source(
         r"
 actor Holder {
-    let value: Rc<i64>;
+    let value: Rc<i64>,
     receive fn count() -> i64 { value.strong_count() }
 }
 
@@ -34,7 +34,7 @@ fn sendable_actor_state_has_no_owning_actor_help() {
     let output = check_source(
         r"
 actor Holder {
-    let value: i64;
+    let value: i64,
     receive fn get() -> i64 { value }
 }
 
@@ -76,7 +76,7 @@ fn let_field_assignment_in_receive_fn_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn bump() {
         count = count + 1;
     }
@@ -114,7 +114,7 @@ fn bare_field_assignment_in_receive_fn_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    count: i64;
+    count: i64,
     receive fn bump() {
         count = count + 1;
     }
@@ -134,7 +134,7 @@ fn compound_assignment_to_let_field_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn bump() {
         count += 1;
     }
@@ -154,7 +154,7 @@ fn let_field_assignment_in_actor_method_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn poke() {
         bump();
     }
@@ -184,7 +184,7 @@ fn pid_call_to_plain_actor_method_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    var n: i64 = 0;
+    var n: i64 = 0,
     fn bump() { n = n + 1; }
     receive fn get() -> i64 { n }
 }
@@ -225,7 +225,7 @@ fn pid_call_to_plain_send_method_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    var n: i64 = 0;
+    var n: i64 = 0,
     fn send() { n = n + 1; }
 }
 fn main() {
@@ -281,7 +281,7 @@ fn plain_method_self_call_from_receive_fn_does_not_gain_undefined_method() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn poke() {
         bump();
     }
@@ -313,7 +313,7 @@ fn bare_call_to_sibling_actor_method_resolves() {
     let output = check_source(
         r"
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn helper() -> i64 { count + 1 }
     receive fn bump() { count = helper(); }
 }
@@ -335,7 +335,7 @@ fn bare_call_to_actor_method_prefers_a_free_function_of_the_same_name() {
         r#"
 fn helper() -> string { "free" }
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn helper() -> i64 { count + 1 }
     receive fn bump() { let picked: string = helper(); println(picked); }
 }
@@ -353,11 +353,11 @@ fn bare_call_to_another_actors_method_is_undefined() {
     let output = check_source(
         r"
 actor Other {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn helper() -> i64 { count + 1 }
 }
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn bump() { count = helper(); }
 }
 ",
@@ -377,7 +377,7 @@ fn qualified_actor_method_call_from_main_is_refused_on_the_user_channel() {
     let output = check_source(
         r"
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn helper() -> i64 { count + 1 }
     receive fn bump() { count = helper(); }
 }
@@ -411,11 +411,11 @@ fn qualified_actor_method_call_from_a_different_actor_is_refused() {
     let output = check_source(
         r"
 actor Other {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn helper() -> i64 { count + 1 }
 }
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn bump() { count = Other.helper(); }
 }
 ",
@@ -438,7 +438,7 @@ fn bare_call_to_a_lifecycle_hook_stays_undefined() {
     let output = check_source(
         r"
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     #[on(start)]
     fn started() { count = 1; }
     receive fn bump() { started(); }
@@ -460,7 +460,7 @@ fn let_field_assignment_in_on_stop_hook_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn poke() {}
     #[on(stop)]
     fn drain() {
@@ -482,7 +482,7 @@ fn let_field_assignment_in_init_is_accepted() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     init(initial: i64) {
         count = initial;
     }
@@ -504,7 +504,7 @@ fn var_field_assignment_in_receive_fn_is_accepted() {
     let output = check_source(
         r"
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn bump() {
         count = count + 1;
     }
@@ -523,8 +523,8 @@ fn let_field_read_in_receive_fn_is_accepted() {
     let output = check_source(
         r"
 actor Counter {
-    let step: i64;
-    var count: i64;
+    let step: i64,
+    var count: i64,
     receive fn bump() {
         count = count + step;
     }
@@ -570,7 +570,7 @@ mod every_attribute {
     #[test]
     fn valid_millisecond_interval_accepted() {
         let output = check_source(
-            "actor Ticker { var count: i64 = 0; #[every(50ms)] receive fn tick() { count += 1; } } fn main() {}",
+            "actor Ticker { var count: i64 = 0, #[every(50ms)] receive fn tick() { count += 1; } } fn main() {}",
         );
         assert!(
             output.errors.is_empty(),
@@ -668,7 +668,7 @@ mod every_attribute {
             }
 
             supervisor App {
-                child hb: Heartbeat;
+                child hb: Heartbeat,
             }
 
             fn main() {}
@@ -690,7 +690,7 @@ mod every_attribute {
             }
 
             supervisor App {
-                child w: Worker;
+                child w: Worker,
             }
 
             fn main() {}
@@ -764,7 +764,7 @@ mod every_attribute {
         // `let Point { x, y } = p;` — irrefutable product type in let position.
         // Must emit zero checker errors; binders x and y must resolve.
         let output = check_source(
-            "type Point { x: i64; y: i64; }
+            "type Point { x: i64, y: i64, }
              fn main() -> i64 { let p = Point { x: 1, y: 2 }; let Point { x, y } = p; x + y }",
         );
         assert!(
@@ -902,7 +902,7 @@ mod every_attribute {
         // pattern resolution must be recorded so HIR lowering does not cascade
         // into "pattern has no resolution" / verifier leakage.
         let output = check_source(
-            "enum E { A; B(i64); }
+            "enum E { A, B(i64), }
              fn make_e(g: bool) -> E { if g { E.A } else { E.B(3) } }
              fn f(g: bool) -> Result<i64, string> { let E.A = make_e(g) else { return Err(\"x\") }; Ok(1) }",
         );
@@ -1069,7 +1069,7 @@ mod every_attribute {
         // `let { x, y } = p` — shorthand with no type name must bind both
         // fields with zero checker errors.
         let output = check_source(
-            "type Point { x: i64; y: i64; }
+            "type Point { x: i64, y: i64, }
              fn main() -> i64 { let p = Point { x: 1, y: 2 }; let { x, y } = p; x + y }",
         );
         assert!(
@@ -1084,7 +1084,7 @@ mod every_attribute {
         // `let { x, z } = p` where `z` does not exist on `Point` must emit
         // exactly one UndefinedField error (not cascade into UnresolvedSymbol).
         let output = check_source(
-            "type Point { x: i64; y: i64; }
+            "type Point { x: i64, y: i64, }
              fn main() -> i64 { let p = Point { x: 1, y: 2 }; let { x, z } = p; x }",
         );
         let undef_field: Vec<_> = output
@@ -1273,7 +1273,7 @@ mod every_attribute {
         // A plain struct (not `#[opaque]`) must still construct without error.
         let output = check_source(
             r"
-            type Point { x: i64; y: i64; }
+            type Point { x: i64, y: i64, }
 
             fn main() -> i64 {
                 let p = Point { x: 1, y: 2 };
@@ -1657,9 +1657,9 @@ mod reserved_names {
         let output = check_source(
             r#"
             enum AppError {
-                NotFound(string);
-                Timeout;
-                Forbidden;
+                NotFound(string),
+                Timeout,
+                Forbidden,
             }
 
             fn get_error() -> AppError {
@@ -1689,8 +1689,8 @@ mod reserved_names {
         let output = check_source(
             r"
             enum Status {
-                Timeout;
-                Ready;
+                Timeout,
+                Ready,
             }
 
             fn check_timeout(s: Status) -> bool {
@@ -1756,8 +1756,8 @@ mod reserved_names {
         // to whichever won the slot — no type error.
         let output = check_source(
             r"
-            enum A { Conflict; }
-            enum B { Conflict; }
+            enum A { Conflict, }
+            enum B { Conflict, }
 
             fn main() {
                 let _x = Conflict;
@@ -1786,8 +1786,8 @@ mod reserved_names {
         let output = check_source_allowing_prelude_redeclaration(
             r#"
             enum Task {
-                Pending;
-                Done;
+                Pending,
+                Done,
             }
 
             fn describe(t: Task) -> string {

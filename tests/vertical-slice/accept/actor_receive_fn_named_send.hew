@@ -4,7 +4,7 @@
 // Counter.send accumulates n into count; Counter.get returns count.
 // main: send(10) + send(32) = 42 → exit 42.
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn send(n: i64) {
         count = count + n;
     }

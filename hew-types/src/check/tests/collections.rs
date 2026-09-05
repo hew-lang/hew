@@ -362,8 +362,8 @@ fn hashset_clear_no_args_typechecks() {
 #[test]
 fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() {
     let source = r"
-        type SetBox { s: HashSet<i64>; }
-        type Outer { inner: SetBox; }
+        type SetBox { s: HashSet<i64>, }
+        type Outer { inner: SetBox, }
 
         fn direct(s: HashSet<i64>) {
             for x in s { let _ = x; }
@@ -1583,9 +1583,9 @@ fn vec_self_recursive_enum_push_routes_to_owned_abi() {
     let output = check_source(
         r"
         enum RedisReply {
-            Nil;
-            Int(i64);
-            Array(Vec<RedisReply>);
+            Nil,
+            Int(i64),
+            Array(Vec<RedisReply>),
         }
 
         fn main() {
@@ -1657,9 +1657,9 @@ fn vec_iter_admits_recursive_enum_through_its_vec_field() {
     let output = check_source(
         r"
         enum RedisReply {
-            Nil;
-            Int(i64);
-            Array(Vec<RedisReply>);
+            Nil,
+            Int(i64),
+            Array(Vec<RedisReply>),
         }
 
         fn main() {
@@ -2099,7 +2099,7 @@ fn vec_iter_clone_totality_defers_genuine_function_type_parameter() {
 fn user_vec_iter_name_does_not_bypass_into_iterator() {
     let output = check_source(
         r"
-        type VecIter<T> { value: T; }
+        type VecIter<T> { value: T, }
 
         fn main() {
             let iter = VecIter { value: 1 };
@@ -2267,7 +2267,7 @@ fn vec_iter_clone_totality_rejects_marked_resource_direct_and_wrapped() {
 fn vec_clone_growing_recursive_generic_terminates_and_names_the_refusal() {
     let output = check_source(
         r"
-        enum Grow<T> { Node(Vec<Grow<Vec<T>>>); Leaf(T); }
+        enum Grow<T> { Node(Vec<Grow<Vec<T>>>), Leaf(T), }
         fn main() { let xs: Vec<Grow<i64>> = []; let _ys = xs.clone(); }
     ",
     );
@@ -2375,8 +2375,8 @@ fn vec_indirect_enum_element_rejected_at_checker_boundary() {
     let output = check_source(
         r"
         indirect enum StrNode {
-            Str(string);
-            Empty;
+            Str(string),
+            Empty,
         }
 
         fn main() {
@@ -2717,7 +2717,7 @@ fn user_method_on_builtin_result_wrapper_is_rejected() {
     // `UndefinedMethod` diagnostic naming the builtin `Result<...>` receiver.
     let output = check_source(
         r#"
-        type Result { handle: i64; }
+        type Result { handle: i64, }
         impl Result {
             fn free(self) {}
         }
@@ -2775,7 +2775,7 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
     // ALL method names.
     let output = check_source_allowing_prelude_redeclaration(
         r"
-        type Result { handle: i64; }
+        type Result { handle: i64, }
         impl Result {
             fn is_ok(self) -> i64 { self.handle }
         }
@@ -2866,11 +2866,11 @@ fn builtin_option_extractors_consume_the_receiver() {
 fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
     let output = check_source_allowing_prelude_redeclaration(
         r"
-        type Option { value: i64; }
+        type Option { value: i64, }
         impl Option {
             fn is_some(self) -> i64 { self.value }
         }
-        type Result { value: i64; }
+        type Result { value: i64, }
         impl Result {
             fn is_ok(self) -> i64 { self.value }
         }
@@ -2902,7 +2902,7 @@ fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
 fn user_generic_option_variant_constructors_preserve_source_nominal_identity() {
     let output = check_source_allowing_prelude_redeclaration(
         r"
-        enum Option<T> { Some(T); None }
+        enum Option<T> { Some(T), None }
 
         fn main() -> i64 {
             let inferred = Option.Some(6);
@@ -3046,8 +3046,8 @@ fn supervisor_wired_to_rejects_remote_pid_by_role() {
         }
 
         supervisor App {
-            child db: Db;
-            child api: Api wired_to: { db };
+            child db: Db,
+            child api: Api wired_to: { db },
         }
         ",
     );
@@ -3074,11 +3074,11 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
         r"
         machine MachineState {
             events {
-                Tick;
+                Tick,
             }
 
-            state Idle;
-            state Running;
+            state Idle,
+            state Running,
 
             on Tick: Idle => .Running {
                 .Running
@@ -3541,7 +3541,7 @@ fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
     let parsed = hew_parser::parse(
         r"
         actor Worker {
-            let value: Rc<i64>;
+            let value: Rc<i64>,
             receive fn ping() {}
         }
 
@@ -3600,7 +3600,7 @@ fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
 fn vec_new_with_deferred_element_type_publishes_its_runtime_target() {
     let output = check_source(
         r"
-        type Bag<T> { items: Vec<T>; }
+        type Bag<T> { items: Vec<T>, }
 
         fn main() {
             let b = Bag { items: Vec.new() };
@@ -3633,8 +3633,8 @@ fn vec_new_with_deferred_element_type_publishes_its_runtime_target() {
 fn nested_generic_record_vec_new_publishes_its_runtime_target() {
     let output = check_source(
         r"
-        type Inner<T> { xs: Vec<T>; }
-        type Outer<T> { inner: Inner<T>; }
+        type Inner<T> { xs: Vec<T>, }
+        type Outer<T> { inner: Inner<T>, }
 
         fn main() {
             let o = Outer { inner: Inner { xs: Vec.new() } };

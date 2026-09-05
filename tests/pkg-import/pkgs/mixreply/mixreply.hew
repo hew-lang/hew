@@ -5,15 +5,15 @@
 //! from HIR's collision-gated transform and MIR's actor-reply equality rejects.
 
 pub type Unique {
-    u: i64;
+    u: i64,
 }
 
 pub type Colliding {
-    c: i64;
+    c: i64,
 }
 
 pub actor Src {
-    let seed: i64;
+    let seed: i64,
 
     receive fn get() -> Result<Unique, Colliding> {
         Ok(Unique { u: seed + 5 })

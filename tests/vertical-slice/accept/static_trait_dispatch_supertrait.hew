@@ -8,7 +8,7 @@ trait Extended: Base {
     fn extra(val: Self) -> i64;
 }
 
-type Widget { label: string; }
+type Widget { label: string, }
 
 impl Base for Widget {
     fn name(w: Widget) -> string { w.label }

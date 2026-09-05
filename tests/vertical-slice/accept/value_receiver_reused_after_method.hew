@@ -2,13 +2,13 @@
 // releases the receiver's payload, so the caller can call the method again
 // and still match the receiver afterwards.
 type Task {
-    name: string;
-    tags: Vec<string>;
+    name: string,
+    tags: Vec<string>,
 }
 
 enum Item {
-    Full(Task);
-    Bare(string);
+    Full(Task),
+    Bare(string),
 }
 
 impl Item {

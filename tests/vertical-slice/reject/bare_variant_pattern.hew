@@ -11,8 +11,8 @@
 //! program with the dot.
 
 enum Choice {
-    Present(i64);
-    Absent;
+    Present(i64),
+    Absent,
     Named { count: i64 }
 }
 

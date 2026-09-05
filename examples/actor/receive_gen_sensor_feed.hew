@@ -12,7 +12,7 @@
 // no longer wants values should let the stream go out of scope (or `break`
 // out of its `for await` loop) rather than hold it indefinitely.
 actor SensorFeed {
-    var offset: i64;
+    var offset: i64,
     init(start_offset: i64) {
         offset = start_offset;
     }

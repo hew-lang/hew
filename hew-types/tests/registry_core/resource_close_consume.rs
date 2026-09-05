@@ -33,7 +33,7 @@ fn resource_inherent_close_records_per_call_site_flag() {
     let output = typecheck_inline(
         r"
         #[resource]
-        pub type Conn { id: i64; }
+        pub type Conn { id: i64, }
 
         impl Conn {
             fn close(self) {}
@@ -60,7 +60,7 @@ fn resource_inherent_single_close_typechecks_cleanly() {
     let output = typecheck_inline(
         r"
         #[resource]
-        pub type Conn { id: i64; }
+        pub type Conn { id: i64, }
 
         impl Conn {
             fn close(self) {}
@@ -89,7 +89,7 @@ fn resource_inherent_single_close_typechecks_cleanly() {
 fn non_resource_inherent_close_not_in_resource_consume_set() {
     let output = typecheck_inline(
         r"
-        pub type Plain { id: i64; }
+        pub type Plain { id: i64, }
 
         impl Plain {
             fn close(self) {}

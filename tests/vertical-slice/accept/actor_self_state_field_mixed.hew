@@ -4,8 +4,8 @@
 // spellings share one binding per field, so mixing them in a body is not a
 // mode the checker has to choose between.
 actor Tally {
-    var hits: i64;
-    var misses: i64;
+    var hits: i64,
+    var misses: i64,
 
     init(seed: i64) {
         self.hits = seed;

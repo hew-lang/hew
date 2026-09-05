@@ -309,7 +309,7 @@ fn main() {
 fn checker_spawn_hashmap_new_infers_from_field_type() {
     let source = r"
 actor Cache {
-    let store: HashMap<string, i64>;
+    let store: HashMap<string, i64>,
     receive fn size() -> i64 {
         store.len()
     }
@@ -336,7 +336,7 @@ fn main() {
 fn checker_spawn_vec_new_infers_from_field_type() {
     let source = r"
 actor Log {
-    let entries: Vec<string>;
+    let entries: Vec<string>,
     receive fn count() -> i64 {
         entries.len()
     }
@@ -365,7 +365,7 @@ fn main() {
 fn checker_spawn_substitutes_type_args_into_generic_field_arg() {
     let source = r"
 actor Box<T> {
-    let value: T;
+    let value: T,
     receive fn touch() {}
 }
 
@@ -391,7 +391,7 @@ fn main() {
 fn checker_spawn_generic_field_arg_type_mismatch_still_reported() {
     let source = r#"
 actor Box<T> {
-    let value: T;
+    let value: T,
     receive fn touch() {}
 }
 

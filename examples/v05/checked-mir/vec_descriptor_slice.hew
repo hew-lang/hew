@@ -1,12 +1,12 @@
 enum CheckedMirColour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 type CheckedMirPoint {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn checked_mir_colour_tag(c: CheckedMirColour) -> i64 {

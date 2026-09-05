@@ -5,7 +5,7 @@
 // thread, not on a scheduler worker, so sending from `main` would race the
 // worker's wake.
 actor LossyWorker {
-    mailbox 1 overflow drop_new;
+    mailbox 1 overflow drop_new,
     receive fn work(value: i64) {
         if value == 2 {
             println("DROPPED_WORK_DELIVERED");

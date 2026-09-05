@@ -14,17 +14,17 @@
 type AppConfig { size: i64 }
 
 actor Cache {
-    var capacity: i64;
+    var capacity: i64,
     receive fn get_cap() -> i64 {
         capacity
     }
 }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child cache: Cache(capacity: config.size);
+    child cache: Cache(capacity: config.size),
 }
 
 fn main() -> i64 {

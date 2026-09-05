@@ -3,8 +3,8 @@
 // rest into an explicit wildcard field, so the checked-MIR must be byte-identical
 // to the `b: _` golden (modulo the fixture name) — proving `..` ≡ `_`.
 enum Packet {
-    Data { a: string, b: string };
-    Empty;
+    Data { a: string, b: string },
+    Empty,
 }
 
 fn make(good: bool) -> Packet {

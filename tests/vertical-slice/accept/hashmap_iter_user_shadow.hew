@@ -4,8 +4,8 @@
 import std.iter;
 
 type HashMapIter {
-    value: i64;
-    done: bool;
+    value: i64,
+    done: bool,
 }
 
 impl Iterator for HashMapIter {

@@ -688,7 +688,7 @@ mod non_root_module_inference_scope {
     fn trait_default_method_with_concrete_receiver_keeps_implicit_impl_arity() {
         let source = r"
             type Greeter {
-                id: i64;
+                id: i64,
             }
 
             trait Answerer {

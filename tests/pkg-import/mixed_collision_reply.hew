@@ -5,7 +5,7 @@
 import hew.mixreply;
 
 type Colliding {
-    c: i64;
+    c: i64,
 }
 
 fn main() {

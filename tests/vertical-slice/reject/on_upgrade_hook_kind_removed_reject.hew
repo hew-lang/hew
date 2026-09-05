@@ -2,7 +2,7 @@
 // code upgrade is refused permanently, so the hook list stops holding a
 // place for it. `#[on(upgrade)]` is now an ordinary unrecognised hook kind.
 actor Worker {
-    let count: i64;
+    let count: i64,
 
     #[on(upgrade)]
     fn on_upgrade() {

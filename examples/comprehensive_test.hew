@@ -6,21 +6,21 @@
 
 // === Type Declarations ===
 type Point {
-    x: i32;
-    y: i32;
+    x: i32,
+    y: i32,
 }
 
 enum TestResult {
-    Pass;
-    Fail;
-    Skip;
+    Pass,
+    Fail,
+    Skip,
 }
 
 enum Colour {
-    Red;
-    Green;
-    Blue;
-    Custom(i32);
+    Red,
+    Green,
+    Blue,
+    Custom(i32),
 }
 
 // === Wire Types ===

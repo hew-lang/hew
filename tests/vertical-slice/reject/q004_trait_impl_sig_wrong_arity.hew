@@ -15,7 +15,7 @@ pub trait Container {
 }
 
 pub type Holder {
-    n: i64;
+    n: i64,
 }
 
 impl Container for Holder {

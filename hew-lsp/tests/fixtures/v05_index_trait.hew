@@ -1,5 +1,5 @@
 type Bag {
-    value: i32;
+    value: i32,
 }
 
 trait Indexable {

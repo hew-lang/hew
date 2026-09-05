@@ -7,11 +7,11 @@
 import std.testing;
 
 actor KindCoalescer {
-    var alpha_count: i64 = 0;
-    var beta_count: i64 = 0;
-    var alpha_latest: i64 = -1;
+    var alpha_count: i64 = 0,
+    var beta_count: i64 = 0,
+    var alpha_latest: i64 = -1,
 
-    mailbox 64 overflow coalesce(id) fallback drop_new;
+    mailbox 64 overflow coalesce(id) fallback drop_new,
 
     receive fn alpha(id: i64, value: i64) {
         sleep(5ms);

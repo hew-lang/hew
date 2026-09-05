@@ -13,9 +13,9 @@
 // Pattern: Ask/Reply — the caller blocks until the limiter replies with
 // a boolean (allowed or rejected). This is back-pressure by design.
 actor RateLimiter {
-    var tokens: i64;
-    let max_tokens: i64;
-    let refill_amount: i64;
+    var tokens: i64,
+    let max_tokens: i64,
+    let refill_amount: i64,
 
     // Try to acquire a token. Returns 1 if allowed, 0 if rejected.
     receive fn acquire() -> i64 {
@@ -43,10 +43,10 @@ actor RateLimiter {
 
 // Simulated API worker that checks the limiter before processing.
 actor ApiWorker {
-    let id: i64;
-    let limiter: LocalPid<RateLimiter>;
-    var accepted: i64;
-    var rejected: i64;
+    let id: i64,
+    let limiter: LocalPid<RateLimiter>,
+    var accepted: i64,
+    var rejected: i64,
     receive fn handle_request(request_id: i64) {
         scope {
             let allowed_r = await limiter.acquire();
@@ -76,9 +76,9 @@ actor ApiWorker {
 
 // Periodic refill timer that adds tokens at a fixed interval.
 actor RefillTimer {
-    let limiter: LocalPid<RateLimiter>;
-    let interval: duration;
-    let cycles: i64;
+    let limiter: LocalPid<RateLimiter>,
+    let interval: duration,
+    let cycles: i64,
     receive fn start() {
         for i in 0 .. cycles {
             sleep(interval);

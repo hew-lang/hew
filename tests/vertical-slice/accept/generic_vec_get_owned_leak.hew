@@ -15,7 +15,7 @@
 // linearly across 100k iterations. A clean run with flat RSS is the
 // exactly-once witness for the generic clone-getter ABI.
 type Name {
-    label: string;
+    label: string,
 }
 
 fn first<T>(v: Vec<T>) -> Option<T> {

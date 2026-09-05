@@ -14,7 +14,7 @@
 import std.net;
 
 actor Reader {
-    let port: string;
+    let port: string,
     receive fn go(unused: i64) {
 
         // Give main a moment to start listening, then connect + await a read.

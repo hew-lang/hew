@@ -5,7 +5,7 @@
 // both into comma-joined strings and comparing them is the "feels
 // identical" proof.
 actor Ticker {
-    var base: i64;
+    var base: i64,
     init(b: i64) {
         base = b;
     }

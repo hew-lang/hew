@@ -4,7 +4,7 @@
 import std.encoding.json;
 
 type Box<T> {
-    value: T;
+    value: T,
 }
 
 fn _small_source() -> Result<i64, string> {

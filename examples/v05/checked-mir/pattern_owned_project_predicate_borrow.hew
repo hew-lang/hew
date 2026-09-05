@@ -1,7 +1,7 @@
 type Labels {
-    first: string;
-    code: i64;
-    last: string;
+    first: string,
+    code: i64,
+    last: string,
 }
 
 fn classify_record(value: Labels) -> i64 {

@@ -1,8 +1,8 @@
 // `init` and an `#[on(start)]` hook reach the same actor method a handler
 // does, including when the method writes the actor's state (#3285).
 actor Greeter {
-    var greeting: string = "";
-    var greeted: i64 = 0;
+    var greeting: string = "",
+    var greeted: i64 = 0,
 
     init(prefix: string) {
         greeting = prefix;

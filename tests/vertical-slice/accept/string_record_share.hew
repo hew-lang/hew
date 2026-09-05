@@ -1,4 +1,4 @@
-type Holder { value: string; }
+type Holder { value: string, }
 
 fn main() -> string {
     let s = "hello";

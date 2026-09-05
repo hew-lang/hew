@@ -12,12 +12,12 @@
 // thing that permits the uncovered cells.
 machine Tank {
     events {
-        Fill;
-        Drain;
+        Fill,
+        Drain,
     }
 
-    state Filling;
-    state Draining;
+    state Filling,
+    state Draining,
 
     on Drain: Filling => Draining {
         Tank.Draining

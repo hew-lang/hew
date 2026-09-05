@@ -19,7 +19,7 @@
 import hew.aliassrc.{ Payload as Tag };
 
 type Boxed {
-    item: Tag;
+    item: Tag,
 }
 
 fn main() {

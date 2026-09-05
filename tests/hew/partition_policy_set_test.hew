@@ -18,7 +18,7 @@ import std.link_monitor.{PartitionPolicy, set_partition_policy};
 import std.testing;
 
 actor PolicyProbe {
-    var all_ok: bool = true;
+    var all_ok: bool = true,
 
     // Runs inside a dispatch, so an execution context exists: every variant
     // must be accepted by the mapping and recorded (returns true). A single

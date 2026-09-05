@@ -15,7 +15,7 @@ type Named {
 }
 
 actor Holder {
-    var cur: Named;
+    var cur: Named,
 
     receive fn bump_bare() {
         cur.n = cur.n + 1;

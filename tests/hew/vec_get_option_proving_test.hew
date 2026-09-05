@@ -11,14 +11,14 @@
 import std.testing;
 
 type Rec {
-    label: string;
-    count: i64;
+    label: string,
+    count: i64,
 }
 
 enum Shade {
-    Light;
-    Medium;
-    Dark;
+    Light,
+    Medium,
+    Dark,
 }
 
 // ── scalar ──────────────────────────────────────────────────────────────────

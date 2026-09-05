@@ -117,7 +117,7 @@ use support::{describe_output, require_codegen};
 /// double-frees under the poisoned allocator. The `sum` output (1+2+3 = 6) plus
 /// the clean exit pin both directions.
 const NAMED_CHILD_DF_CONTROL_SOURCE: &str = "\
-indirect enum Tree { Leaf(i64); Node(Tree, Tree); }\n\
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }\n\
 fn sum(t: Tree) -> i64 { match t { Leaf(n) => n, Node(l, r) => sum(l) + sum(r), } }\n\
 fn main() {\n\
 \x20   let left = Node(Leaf(1), Leaf(2));\n\
@@ -142,7 +142,7 @@ const NAMED_CHILD_DF_CONTROL_EXPECTED: &str = "ok";
 fn loop_build_consume_source(iters: usize) -> String {
     let expected_total = iters * 3; // val(Node(Leaf(1), Leaf(2))) == 1 + 2 == 3
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -183,7 +183,7 @@ fn loop_build_consume_source(iters: usize) -> String {
 fn var_overwrite_loop_source(iters: usize) -> String {
     let expected_total = iters * 3; // val(Node(Leaf(1), Leaf(2))) == 1 + 2 == 3
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -210,7 +210,7 @@ fn var_overwrite_loop_source(iters: usize) -> String {
 fn single_leaf_loop_source(iters: usize) -> String {
     let expected_total = iters * 5; // val(Leaf(5)) == 5
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -236,7 +236,7 @@ fn single_leaf_loop_source(iters: usize) -> String {
 fn deep_tree_loop_source(iters: usize) -> String {
     let expected_total = iters * 10; // val(Node(Node(1,2),Node(3,4))) == 1+2+3+4 == 10
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -261,8 +261,8 @@ fn deep_tree_loop_source(iters: usize) -> String {
 fn mutual_loop_source(iters: usize) -> String {
     let expected_total = iters * 10; // depthA(AWrap(BWrap(AWrap(BEnd(7))))) == 7 + 1 + 1 + 1 == 10
     format!(
-        "indirect enum A {{ AEnd(i64); AWrap(B); }}\n\
-         indirect enum B {{ BEnd(i64); BWrap(A); }}\n\
+        "indirect enum A {{ AEnd(i64), AWrap(B), }}\n\
+         indirect enum B {{ BEnd(i64), BWrap(A), }}\n\
          fn depthA(a: A) -> i64 {{ match a {{ AEnd(n) => n, AWrap(b) => depthB(b) + 1, }} }}\n\
          fn depthB(b: B) -> i64 {{ match b {{ BEnd(n) => n, BWrap(a) => depthA(a) + 1, }} }}\n\
          fn run_loop() -> i64 {{\n\
@@ -299,8 +299,8 @@ fn mutual_loop_source(iters: usize) -> String {
 fn inline_enum_wrapped_indirect_loop_source(iters: usize) -> String {
     let expected_total = iters * 3; // val(Node(W(Leaf(3)))) == 3
     format!(
-        "enum Wrap {{ W(Tree); }}\n\
-         indirect enum Tree {{ Leaf(i64); Node(Wrap); }}\n\
+        "enum Wrap {{ W(Tree), }}\n\
+         indirect enum Tree {{ Leaf(i64), Node(Wrap), }}\n\
          fn val(t: Tree) -> i64 {{\n\
          \x20   match t {{\n\
          \x20       Leaf(n) => n,\n\
@@ -344,8 +344,8 @@ fn inline_enum_wrapped_indirect_loop_source(iters: usize) -> String {
 fn record_of_inline_enum_loop_source(iters: usize) -> String {
     let expected_total = iters * 3; // h.tag == 3
     format!(
-        "enum Wrap {{ W(Tree); }}\n\
-         indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "enum Wrap {{ W(Tree), }}\n\
+         indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          type Holder {{ tag: i64, wrap: Wrap }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -378,8 +378,8 @@ fn record_of_inline_enum_loop_source(iters: usize) -> String {
 fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
     let expected_total = iters * 3; // pair.1 == 3
     format!(
-        "enum Wrap {{ W(Tree); }}\n\
-         indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "enum Wrap {{ W(Tree), }}\n\
+         indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   for i in 0..{iters} {{\n\
@@ -404,7 +404,7 @@ fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
 fn actor_mailbox_teardown_source(frames: usize) -> String {
     format!(
         "import std.channel.channel;\n\
-         indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+         indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
          actor ProbeSink {{\n\
          \x20   receive fn hold(ready: channel.Sender<i64>) {{\n\
@@ -415,9 +415,9 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
          \x20   receive fn tagged(tag: i64, t: Tree) {{ let _ = tag + sum(t); }}\n\
          }}\n\
          supervisor App {{\n\
-         \x20   strategy: one_for_one;\n\
-         \x20   intensity: 3 within 60s;\n\
-         \x20   child sink: ProbeSink;\n\
+         \x20   strategy: one_for_one,\n\
+         \x20   intensity: 3 within 60s,\n\
+         \x20   child sink: ProbeSink,\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   let sup = spawn App;\n\
@@ -447,13 +447,13 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
 fn actor_request_carrier_source(frames: usize) -> String {
     let expected_total = 3 * frames * frames + 75 * frames;
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
          actor Scorer {{\n\
          \x20   receive fn score(tag: i64, tree: Tree) -> i64 {{ tag + sum(tree) }}\n\
          }}\n\
          actor Coordinator {{\n\
-         \x20   let scorer: LocalPid<Scorer>;\n\
+         \x20   let scorer: LocalPid<Scorer>,\n\
          \x20   receive fn ask_score(tag: i64, tree: Tree) -> i64 {{\n\
          \x20       match await scorer.score(tag, tree) {{ .Ok(value) => value, .Err(_) => -1, }}\n\
          \x20   }}\n\
@@ -495,7 +495,7 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
          \x20   receive fn score(tag: i64, value: i64) -> i64 {{ tag + value }}\n\
          }}\n\
          actor Coordinator {{\n\
-         \x20   let scorer: LocalPid<Scorer>;\n\
+         \x20   let scorer: LocalPid<Scorer>,\n\
          \x20   receive fn ask_score(tag: i64, value: i64) -> i64 {{\n\
          \x20       match await scorer.score(tag, value) {{ .Ok(result) => result, .Err(_) => -1, }}\n\
          \x20   }}\n\
@@ -529,14 +529,14 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
 /// the `after` arm makes every iteration observable without trapping.
 fn dead_actor_select_request_source(frames: usize) -> String {
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          actor Worker {{\n\
          \x20   receive fn score(tag: i64, tree: Tree) -> i64 {{ tag }}\n\
          }}\n\
          supervisor App {{\n\
-         \x20   strategy: one_for_one;\n\
-         \x20   intensity: 3 within 60s;\n\
-         \x20   child worker: Worker;\n\
+         \x20   strategy: one_for_one,\n\
+         \x20   intensity: 3 within 60s,\n\
+         \x20   child worker: Worker,\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   let sup = spawn App;\n\
@@ -564,15 +564,15 @@ fn dead_actor_select_request_source(frames: usize) -> String {
 /// the prepared owning carrier must complete under the poisoned allocator, and
 /// the post-join `BAD` sentinel must remain unreachable.
 const DEAD_ACTOR_JOIN_REQUEST_SOURCE: &str = "\
-indirect enum Tree { Leaf(i64); Node(Tree, Tree); }\n\
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }\n\
 actor Worker {\n\
 \x20   receive fn score(tag: i64, tree: Tree) -> i64 { tag }\n\
 \x20   receive fn crash_me() { panic(\"worker crash\"); }\n\
 }\n\
 supervisor App {\n\
-\x20   strategy: one_for_one;\n\
-\x20   intensity: 1 within 60s;\n\
-\x20   child worker: Worker;\n\
+\x20   strategy: one_for_one,\n\
+\x20   intensity: 1 within 60s,\n\
+\x20   child worker: Worker,\n\
 }\n\
 fn main() -> i64 {\n\
 \x20   let sup = spawn App;\n\
@@ -662,13 +662,13 @@ fn assert_actor_request_payload_slope_matches_scalar() {
 /// (`wire_reply_drop_fn`). A blocking `await` in `main` uses the direct
 /// `hew_actor_ask` path and wires no destructor.
 const ASK_REPLY_INDIRECT_ENUM_SOURCE: &str = "\
-indirect enum Tree { Leaf(i64); Node(Tree, Tree); }\n\
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }\n\
 fn val(t: Tree) -> i64 { match t { .Leaf(n) => n, .Node(l, r) => val(l) + val(r), } }\n\
 actor SlowReplier {\n\
 \x20   receive fn fetch() -> Tree { Tree.Node(Tree.Leaf(1), Tree.Leaf(2)) }\n\
 }\n\
 actor Driver {\n\
-\x20   var slow: LocalPid<SlowReplier>;\n\
+\x20   var slow: LocalPid<SlowReplier>,\n\
 \x20   receive fn run() -> i64 {\n\
 \x20       match await slow.fetch() {\n\
 \x20           .Ok(t) => { val(t) }\n\

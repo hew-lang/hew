@@ -5,9 +5,9 @@ actor SeedChild {
 }
 
 supervisor SeedSupervisor {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child worker: SeedChild;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child worker: SeedChild,
 }
 
 fn background_task() {}

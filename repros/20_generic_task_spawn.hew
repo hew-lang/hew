@@ -14,7 +14,7 @@ fn unit_worker<T>() {}
 fn side_work<T>(a: i64, b: i64) {}
 
 actor Runner {
-    var total: i64 = 0;
+    var total: i64 = 0,
 
     // No-arg value-returning generic spawn at two type args.
     // Asserts the exact computed value from both tasks.

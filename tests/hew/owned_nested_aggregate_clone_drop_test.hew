@@ -5,7 +5,7 @@ extern "C" {
 }
 
 type Rec {
-    s: string;
+    s: string,
 }
 
 fn make_nested() -> ((string, i64), bool) {

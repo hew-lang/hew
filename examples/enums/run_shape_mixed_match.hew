@@ -8,9 +8,9 @@
 //   2. A single `match` arm-chain dispatches correctly to each shape,
 //      destructures payload as needed, and yields distinct values.
 enum Shape {
-    Point;
-    Line(i64);
-    Box { w: i64, h: i64 };
+    Point,
+    Line(i64),
+    Box { w: i64, h: i64 },
 }
 
 fn measure(s: Shape) -> i64 {

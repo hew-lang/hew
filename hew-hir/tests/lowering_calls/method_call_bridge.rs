@@ -147,7 +147,7 @@ fn dotted_rc_constructor_uses_the_intrinsic_identity() {
 fn dotted_tuple_variant_lowers_from_checker_selected_owner() {
     let (lower_output, tc_output) = typecheck_and_lower(
         r"
-            enum Choice { Present(i64); Absent }
+            enum Choice { Present(i64), Absent }
             fn sample() -> Choice { Choice.Present(42) }
         ",
     );

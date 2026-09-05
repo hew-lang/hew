@@ -5,7 +5,7 @@
 // final teardown must release the last generation exactly once.
 
 actor LifecycleWriter {
-    var values: Vec<i64> = Vec.new();
+    var values: Vec<i64> = Vec.new(),
 
     init() {
         let next: Vec<i64> = Vec.new();

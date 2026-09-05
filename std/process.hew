@@ -59,20 +59,20 @@ type ChildHandle {
 /// and waited on at scope exit.
 #[resource]
 pub type Child {
-    handle: ChildHandle;
+    handle: ChildHandle,
 }
 
 /// Captured output from a completed command.
 pub type CommandOutput {
-    exit_code: i64;
-    stdout: string;
-    stderr: string;
+    exit_code: i64,
+    stdout: string,
+    stderr: string,
 }
 
 /// Structured execution errors for process launch and argument validation.
 pub enum ProcessError {
-    InvalidArguments(string);
-    LaunchFailed(string);
+    InvalidArguments(string),
+    LaunchFailed(string),
 }
 
 /// Methods available on a `Child` process.

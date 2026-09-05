@@ -12,7 +12,7 @@
 import std.testing;
 
 actor Worker {
-    let id: i64;
+    let id: i64,
     receive fn work(n: i64) -> i64 {
         if n == 999 {
             panic("boom");
@@ -25,16 +25,16 @@ actor Worker {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child w1: Worker(id: 1);
-    child w2: Worker(id: 2);
-    child w3: Worker(id: 3);
+    child w1: Worker(id: 1),
+    child w2: Worker(id: 2),
+    child w3: Worker(id: 3),
 }
 
 actor Dispatcher {
-    var sup: LocalPid<Pool>;
+    var sup: LocalPid<Pool>,
 
     // Crash w1, then ask w2 and w3 by name. Encodes the outcome positionally:
     // crashed * 100 + w2_id * 10 + w3_id = 123 when each sibling is reached.

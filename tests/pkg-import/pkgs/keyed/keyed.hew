@@ -15,8 +15,8 @@
 
 /// Generic pure-value handle: two `i64` fields, no owned payload → BitCopy.
 pub type Key<T> {
-    index: i64;
-    generation: i64;
+    index: i64,
+    generation: i64,
 }
 
 /// Build a `Key<T>` from an index.

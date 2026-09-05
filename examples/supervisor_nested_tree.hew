@@ -17,8 +17,8 @@
 //              /      \            |
 //          Worker(1)  Worker(2)  Cache(42)
 actor Worker {
-    let id: i32;
-    var count: i32;
+    let id: i32,
+    var count: i32,
     receive fn process(item: i32) {
         count = count + 1;
         print("[worker ");
@@ -38,8 +38,8 @@ actor Worker {
 }
 
 actor Cache {
-    let capacity: i32;
-    var entries: i32;
+    let capacity: i32,
+    var entries: i32,
     receive fn store(key: i32) {
         entries = entries + 1;
         print("[cache] stored key=");
@@ -54,28 +54,28 @@ actor Cache {
 
 // Inner supervisor: manages a pool of workers
 supervisor WorkerPool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child w1: Worker(id: 1, count: 0);
-    child w2: Worker(id: 2, count: 0);
+    child w1: Worker(id: 1, count: 0),
+    child w2: Worker(id: 2, count: 0),
 }
 
 // Inner supervisor: manages cache actors
 supervisor CacheManager {
-    strategy: one_for_one;
-    intensity: 2 within 60s;
+    strategy: one_for_one,
+    intensity: 2 within 60s,
 
-    child cache: Cache(capacity: 1000, entries: 0);
+    child cache: Cache(capacity: 1000, entries: 0),
 }
 
 // Root supervisor: manages the inner supervisors
 supervisor AppSupervisor {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child workers: WorkerPool;
-    child cache_mgr: CacheManager;
+    child workers: WorkerPool,
+    child cache_mgr: CacheManager,
 }
 
 fn main() {

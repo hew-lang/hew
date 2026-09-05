@@ -17,12 +17,12 @@
 import std.testing;
 
 type Pair<A, B> {
-    first: A;
-    second: B;
+    first: A,
+    second: B,
 }
 
 actor Keeper {
-    var held: Pair<i64, string> = Pair { first: 0, second: "none" };
+    var held: Pair<i64, string> = Pair { first: 0, second: "none" },
     receive fn store(n: i64, tag: string) -> i64 {
         let p = Pair { first: n, second: tag };
         held = clone p;

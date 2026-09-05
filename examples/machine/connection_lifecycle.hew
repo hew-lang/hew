@@ -9,23 +9,23 @@
 // grouping its three substates with the initial-substate marker.
 machine ConnectionLifecycle {
     events {
-        Connect;
-        AuthOk;
-        DrainStart;
-        DrainDone;
-        Disconnect;
+        Connect,
+        AuthOk,
+        DrainStart,
+        DrainDone,
+        Disconnect,
     }
 
-    state Disconnected;
+    state Disconnected,
 
     state Connected {
-        initial state Authenticating;
-        state Active;
-        state Draining;
+        initial state Authenticating,
+        state Active,
+        state Draining,
         on Disconnect: _ => Disconnected {
             ConnectionLifecycle.Disconnected
         }
-    }
+    },
 
     on Connect: Disconnected => Authenticating {
         ConnectionLifecycle.Authenticating

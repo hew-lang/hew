@@ -2,7 +2,7 @@
 // actor. From `main` the only reachable surface is the mailbox: the call is a
 // User-channel refusal, never an internal error (#3285).
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
 
     fn helper() -> i64 {
         count + 1

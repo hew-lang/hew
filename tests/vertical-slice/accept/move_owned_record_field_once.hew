@@ -1,5 +1,5 @@
 type W {
-    v: Vec<i64>;
+    v: Vec<i64>,
 }
 
 fn main() {

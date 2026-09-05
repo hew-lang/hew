@@ -15,16 +15,16 @@ actor ProbeLimiter {
 }
 
 supervisor ProbeTree {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child limiter: ProbeLimiter;
+    child limiter: ProbeLimiter,
 }
 
 actor ProbeWorker {
-    let tree: LocalPid<ProbeTree>;
-    var rejected: i64;
-    var unavailable: i64;
+    let tree: LocalPid<ProbeTree>,
+    var rejected: i64,
+    var unavailable: i64,
     receive fn handle_request() -> i64 {
         let result = await tree.limiter.acquire();
         match result {

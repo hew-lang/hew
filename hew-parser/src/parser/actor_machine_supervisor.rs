@@ -152,10 +152,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
-                    self.error("use `;` instead of `,` to separate fields".to_string());
-                    self.advance();
-                }
+                self.expect_structural_separator();
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -174,10 +171,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
-                    self.error("use `;` instead of `,` to separate fields".to_string());
-                    self.advance();
-                }
+                self.expect_structural_separator();
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -202,7 +196,7 @@ impl Parser<'_> {
                     self.advance();
                     overflow_policy = self.parse_overflow_policy();
                 }
-                self.eat(&Token::Semicolon);
+                self.expect_structural_separator();
             } else if self.peek_is_field_decl() {
                 self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 let field_name = self.expect_ident()?;
@@ -213,10 +207,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
-                    self.error("use `;` instead of `,` to separate fields".to_string());
-                    self.advance();
-                }
+                self.expect_structural_separator();
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -351,7 +342,7 @@ impl Parser<'_> {
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek_machine_kw("events") {
-                // `events { Name; Name { f: T; } … }` — the input-event
+                // `events { Name, Name { f: T }, … }` — the input-event
                 // vocabulary header (contextual keyword; replaces the former
                 // interleaved `event Name;` declarations).
                 self.advance();
@@ -359,7 +350,7 @@ impl Parser<'_> {
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let event_name = self.expect_ident()?;
                     let fields = self.parse_machine_event_fields()?;
-                    self.eat(&Token::Semicolon);
+                    self.expect_structural_separator();
                     events.push(MachineEvent {
                         name: event_name,
                         fields,
@@ -367,14 +358,14 @@ impl Parser<'_> {
                 }
                 self.expect(&Token::RightBrace)?;
             } else if self.peek_machine_kw("emits") {
-                // `emits { Name; … }` — optional Mealy-output manifest. Each
+                // `emits { Name, … }` — optional Mealy-output manifest. Each
                 // entry names a declared event the machine may `emit`. Stored
                 // as a bare name list; HIR cross-checks emit sites against it.
                 self.advance();
                 self.expect(&Token::LeftBrace)?;
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let emitted = self.expect_ident()?;
-                    self.eat(&Token::Semicolon);
+                    self.expect_structural_separator();
                     emits.push(emitted);
                 }
                 self.expect(&Token::RightBrace)?;
@@ -544,13 +535,14 @@ impl Parser<'_> {
         };
 
         // Body forms:
-        //   on Event: Source => Target;                     ← no body (unit)
+        //   on Event: Source => Target,                     ← no body (unit)
         //   on Event: Source => Target { field: expr, ... } ← struct fields, target inferred
         //   on Event: Source => Target { expression }       ← explicit body
-        let (body, body_form, body_start, body_end) = if self.eat(&Token::Semicolon) {
+        let (body, body_form, body_start, body_end) = if self.peek() != Some(&Token::LeftBrace) {
+            self.expect_structural_separator();
             // The implicit body is synthesized from the target state, so it is
             // spanned on the target token — not on whatever token follows the
-            // `;`. Diagnostics on this expression (notably the bare-variant
+            // `,`. Diagnostics on this expression (notably the bare-variant
             // fix-it that rewrites `Tgt` to `.Tgt`) are only applicable if they
             // point at the text they ask the author to replace.
             let body_expr = if target_is_contextual {
@@ -638,9 +630,7 @@ impl Parser<'_> {
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
-                if !self.eat(&Token::Semicolon) {
-                    self.eat(&Token::Comma);
-                }
+                self.expect_structural_separator();
                 fields.push((field_name, ty));
             }
             self.expect(&Token::RightBrace)?;
@@ -695,15 +685,13 @@ impl Parser<'_> {
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                     fields.push((field_name, ty));
                 }
             }
             self.expect(&Token::RightBrace)?;
         }
-        self.eat(&Token::Semicolon);
+        self.expect_structural_separator();
 
         states.push(MachineState {
             name: state_name,
@@ -795,7 +783,7 @@ impl Parser<'_> {
             }
         }
         self.expect(&Token::RightBrace)?;
-        self.eat(&Token::Semicolon);
+        self.expect_structural_separator();
 
         let Some(initial_name) = initial else {
             self.error_at(
@@ -907,15 +895,13 @@ impl Parser<'_> {
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                     fields.push((field_name, ty));
                 }
             }
             self.expect(&Token::RightBrace)?;
         }
-        self.eat(&Token::Semicolon);
+        self.expect_structural_separator();
         Some(MachineState {
             name,
             fields,
@@ -1171,9 +1157,7 @@ impl Parser<'_> {
                         }
                         _ => None,
                     };
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                 }
                 // `intensity: N within <duration>` — the restart-budget contract.
                 // Fuses the legacy `max_restarts:` + `window:` fields. `within`
@@ -1241,9 +1225,7 @@ impl Parser<'_> {
                     if let (Some(restarts), Some(window)) = (restarts, window) {
                         intensity = Some(Intensity { restarts, window });
                     }
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                 }
                 // Legacy `max_restarts:` / `window:` fields — removed in the
                 // flat-reliability-fields cutover. Emit a migration diagnostic
@@ -1269,9 +1251,7 @@ impl Parser<'_> {
                     {
                         self.advance();
                     }
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                 }
                 Some(Token::Child | Token::Pool) => {
                     let child_start = self.peek_span().start;
@@ -1545,9 +1525,7 @@ impl Parser<'_> {
                         }
                     }
 
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                     children.push(ChildSpec {
                         name: child_name,
                         actor_type,

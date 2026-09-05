@@ -4,7 +4,7 @@ impl Tx {
     fn commit(consuming self) { println(f"commit {self.id}"); }
 }
 actor Holder {
-    var tx: Tx = Tx { id: 1 };
+    var tx: Tx = Tx { id: 1 },
     receive fn demo() {
         println(tx.id);
     }

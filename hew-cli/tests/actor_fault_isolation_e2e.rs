@@ -17,9 +17,9 @@ actor Client {
 }
 
 actor ChatRoom {
-    let first: Client;
-    let second: Client;
-    let third: Client;
+    let first: Client,
+    let second: Client,
+    let third: Client,
 
     receive fn broadcast(message: string) {
         first.deliver(message);
@@ -60,9 +60,9 @@ actor Client {
 }
 
 actor ChatRoom {
-    let first: Client;
-    let second: Client;
-    let third: Client;
+    let first: Client,
+    let second: Client,
+    let third: Client,
 
     receive fn broadcast(message: string) {
         first.deliver(message);
@@ -128,7 +128,7 @@ fn main() {
 /// epilogue instead, and never consulted the flag.
 const SUPERVISOR_PLUS_UNSUPERVISED_CRASHER: &str = r#"
 actor Worker {
-    let id: i64;
+    let id: i64,
 
     receive fn work() {
         println(f"WORKED:{id}");
@@ -142,10 +142,10 @@ actor Loner {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child w1: Worker(id: 1);
+    child w1: Worker(id: 1),
 }
 
 fn main() {
@@ -169,7 +169,7 @@ fn main() {
 /// a crashed actor out of the exit status.
 const SUPERVISOR_RESTARTS_ITS_CHILD: &str = r#"
 actor Flaky {
-    let id: i64;
+    let id: i64,
 
     receive fn work() {
         println(f"WORKED:{id}");
@@ -181,10 +181,10 @@ actor Flaky {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child f1: Flaky(id: 1);
+    child f1: Flaky(id: 1),
 }
 
 fn main() {
@@ -213,10 +213,10 @@ actor Fragile {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child f1: Fragile;
+    child f1: Fragile,
 }
 
 fn main() {
@@ -258,10 +258,10 @@ actor Probe {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child w: Worker;
+    child w: Worker,
 }
 
 fn main() {
@@ -308,7 +308,7 @@ actor Slow {
 }
 
 actor Waiter {
-    let slow: Slow;
+    let slow: Slow,
 
     receive fn drive() -> i64 {
         match await slow.fetch() {
@@ -358,10 +358,10 @@ actor Probe {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child t1: OneShot restart: temporary;
+    child t1: OneShot restart: temporary,
 }
 
 fn main() {
@@ -403,10 +403,10 @@ actor Probe {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child w: Worker;
+    child w: Worker,
 }
 
 fn main() {
@@ -435,10 +435,10 @@ actor Flaky {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child f1: Flaky;
+    child f1: Flaky,
 }
 
 fn main() {
@@ -524,17 +524,17 @@ actor Flaky {
 }
 
 supervisor Inner {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child f1: Flaky;
+    child f1: Flaky,
 }
 
 supervisor Outer {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child inner: Inner;
+    child inner: Inner,
 }
 
 fn main() {
@@ -565,7 +565,7 @@ fn main() {
 /// ruling settles exactly the record it is about.
 const TWO_SUPERVISORS_ONE_HANDLED_ONE_NOT: &str = r#"
 actor Flaky {
-    let id: i64;
+    let id: i64,
 
     receive fn work() {
         println(f"WORKED:{id}");
@@ -577,17 +577,17 @@ actor Flaky {
 }
 
 supervisor Recovering {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child r1: Flaky(id: 1);
+    child r1: Flaky(id: 1),
 }
 
 supervisor GivingUp {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child g1: Flaky(id: 2);
+    child g1: Flaky(id: 2),
 }
 
 fn main() {

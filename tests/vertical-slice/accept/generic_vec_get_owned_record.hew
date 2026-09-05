@@ -11,7 +11,7 @@
 // the scalar `i64`, and the copy-on-write `string`, the generic helper
 // re-resolves each element ABI through the one entry point.
 type Name {
-    label: string;
+    label: string,
 }
 
 fn first<T>(v: Vec<T>) -> Option<T> {

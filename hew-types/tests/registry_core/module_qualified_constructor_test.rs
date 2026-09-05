@@ -95,8 +95,8 @@ fn typecheck_with_modules(
 
 const MODULE_WITH_LIFECYCLE: &str = r"
     pub enum Lifecycle {
-        Started { handle: i64 };
-        Stopped;
+        Started { handle: i64 },
+        Stopped,
         Failed(i64)
     }
 ";

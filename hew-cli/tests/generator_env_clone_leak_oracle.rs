@@ -395,7 +395,7 @@ const ACTOR_STATE_SOURCE: &str = r#"
 type Config { label: string }
 
 actor Reader {
-    var name: string;
+    var name: string,
     receive gen fn stream() -> i64 {
         yield name.len();
         yield name.len() + 1;
@@ -403,9 +403,9 @@ actor Reader {
 }
 
 supervisor App(config: Config) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child reader: Reader(name: config.label);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child reader: Reader(name: config.label),
 }
 
 fn main() {
@@ -463,12 +463,12 @@ type Payload {
 }
 
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 actor Streamer {
-    var state: string;
+    var state: string,
     receive gen fn emit(payload: Payload, tree: Tree, n: i64) -> i64 {
         var i: i64 = 0;
         if n > 0 {
@@ -542,12 +542,12 @@ type Payload {
 }
 
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 actor Streamer {
-    var state: string;
+    var state: string,
     receive gen fn endless(payload: Payload, tree: Tree) -> i64 {
         yield payload.label.len() + payload.data.len()
             + payload.pair.0.len() + state.len();
@@ -567,9 +567,9 @@ actor Streamer {
 type AppConfig { label: string }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child streamer: Streamer(state: config.label);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child streamer: Streamer(state: config.label),
 }
 
 fn main() {

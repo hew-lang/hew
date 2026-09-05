@@ -20,8 +20,8 @@ import std.net.http.http_client;
 import std.net.http;
 
 actor Client {{
-    let url: string;
-    var complete: i64;
+    let url: string,
+    var complete: i64,
 
     receive fn fetch(unused: i64) {{
         http_client.set_timeout(5000);
@@ -84,9 +84,9 @@ import std.net.http.http_client;
 import std.net.http;
 
 actor Client {{
-    let url: string;
-    let frames: i64;
-    var complete: i64;
+    let url: string,
+    let frames: i64,
+    var complete: i64,
 
     receive fn fetch(unused: i64) {{
         http_client.set_timeout(5000);
@@ -149,9 +149,9 @@ fn websocket_message_source(frames: usize) -> String {
 import std.net.websocket;
 
 actor Client {{
-    let url: string;
-    let frames: i64;
-    var complete: i64;
+    let url: string,
+    let frames: i64,
+    var complete: i64,
 
     receive fn send_frames(unused: i64) {{
         match websocket.connect(url) {{

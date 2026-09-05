@@ -91,17 +91,17 @@
 /// `ctx_set_int`, `ctx_set_bool`, and `ctx_set_list`.
 pub type Ctx {
     /// Keys for scalar (string-valued) entries.
-    skeys: Vec<string>;
+    skeys: Vec<string>,
     /// String-rendered values for scalar entries (parallel to `skeys`).
-    svals: Vec<string>;
+    svals: Vec<string>,
     /// Keys for list entries.
-    lkeys: Vec<string>;
+    lkeys: Vec<string>,
     /// Flat concatenation of all list items across all list entries.
-    litems: Vec<string>;
+    litems: Vec<string>,
     /// Start index into `litems` for each list entry (parallel to `lkeys`).
-    lstart: Vec<i64>;
+    lstart: Vec<i64>,
     /// Item count for each list entry (parallel to `lkeys`).
-    llen: Vec<i64>;
+    llen: Vec<i64>,
 }
 
 // ── Internal helper: (rendered-text, next-position) pair ─────────────
@@ -113,23 +113,23 @@ pub type Ctx {
 // WHEN: replace with `(string, i64)` tuple return once tuple returns land.
 // WHAT: the real shape is `Result<(string, i64), string>`.
 pub type RenderPair {
-    text: string;
-    next_pos: i64;
+    text: string,
+    next_pos: i64,
 }
 
 /// Opaque compiled template.
 pub type Template {
-    src: string;
+    src: string,
 }
 
 /// Structured template parse/render errors.
 pub enum TemplateError {
-    UnclosedDirective(string);
-    UnclosedBlock(string);
-    UnexpectedTag(string);
-    DotOutsideRange(string);
-    UnknownDirective(string);
-    DuplicateElse(string);
+    UnclosedDirective(string),
+    UnclosedBlock(string),
+    UnexpectedTag(string),
+    DotOutsideRange(string),
+    UnknownDirective(string),
+    DuplicateElse(string),
 }
 
 impl Display for TemplateError {

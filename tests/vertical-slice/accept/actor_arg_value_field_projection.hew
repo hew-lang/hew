@@ -3,9 +3,9 @@
 // `string` and `Vec` are copy-on-write, so sending any of these fields to an
 // actor leaves the source record whole. Only affine leaves transfer.
 type Holder {
-    count: i64;
-    name: string;
-    items: Vec<i64>;
+    count: i64,
+    name: string,
+    items: Vec<i64>,
 }
 
 actor TestSink {

@@ -15,7 +15,7 @@ use support::{describe_output, require_codegen};
 
 fn predicate_borrow_source(frames: usize) -> String {
     format!(
-        "#[resource] type Token {{ id: i64; }}\n\
+        "#[resource] type Token {{ id: i64, }}\n\
          impl Token {{\n\
          \x20   fn close(self) {{\n\
          \x20       if self.id == 1 {{ println(\"record-match-close\"); }}\n\
@@ -110,7 +110,7 @@ fn owned_project_predicate_borrow_releases_each_owner_once() {
 
 fn predicate_consume_source(frames: usize) -> String {
     format!(
-        "#[resource] type Token {{ id: i64; }}\n\
+        "#[resource] type Token {{ id: i64, }}\n\
          impl Token {{ fn close(self) {{ println(self.id); }} }}\n\
          type Packet {{ tag: i64, token: Token, text: string }}\n\
          fn record_join(p: Packet) -> i64 {{\n\

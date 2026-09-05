@@ -13,7 +13,7 @@
 // `for ... in copy_all(...)` loops are CONCRETE (`Vec<i64>` / `Vec<Point>`),
 // so the concrete for-in path is exercised alongside the generic one.
 
-type Point { x: i64; y: i64 }
+type Point { x: i64, y: i64 }
 
 fn copy_all<T>(items: Vec<T>) -> Vec<T> {
     let out: Vec<T> = Vec.new();

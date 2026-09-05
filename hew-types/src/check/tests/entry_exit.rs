@@ -3,7 +3,7 @@ use super::*;
 fn app_error_source(main_body: &str) -> String {
     format!(
         r"
-        enum AppError {{ Failed(string); }}
+        enum AppError {{ Failed(string), }}
 
         impl Display for AppError {{
             fn fmt(self) -> string {{
@@ -98,7 +98,7 @@ fn result_main_carries_resolved_display_declaration() {
 fn result_main_without_error_conformance_is_rejected() {
     let output = check_source(
         r#"
-        enum NonError { Failed(string); }
+        enum NonError { Failed(string), }
 
         impl Display for NonError {
             fn fmt(self) -> string {

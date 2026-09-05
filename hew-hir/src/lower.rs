@@ -39548,7 +39548,7 @@ impl Widget {
     fn generic_enum_option_i64_registered_in_enum_layouts() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Maybe<T> { Some(T); None }
+            enum Maybe<T> { Some(T), None }
             fn main() -> i64 {
                 let x: Maybe<i64> = Maybe.Some(42);
                 match x {
@@ -39707,7 +39707,7 @@ impl Widget {
     fn monomorphic_enum_does_not_appear_in_enum_layouts() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Colour { Red; Green; Blue }
+            enum Colour { Red, Green, Blue }
             fn main() -> i64 {
                 let c: Colour = Colour.Red;
                 match c {
@@ -39737,7 +39737,7 @@ impl Widget {
     fn nested_generic_enum_option_option_i64_registers_both_instantiations() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Maybe<T> { Some(T); None }
+            enum Maybe<T> { Some(T), None }
             fn main() -> i64 {
                 let inner: Maybe<i64> = Maybe.Some(5);
                 let outer: Maybe<Maybe<i64>> = Maybe.Some(inner);
@@ -40066,10 +40066,10 @@ impl Widget {
     fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
         let (_program, _tco, lowered) = parse_typecheck_and_lower(
             r#"
-            type QueryReply { handle: i64; }
+            type QueryReply { handle: i64, }
 
             actor Db {
-                var n: i64 = 0;
+                var n: i64 = 0,
                 receive fn query(sql: string) -> QueryReply {
                     n = n + 1;
                     QueryReply { handle: n }
@@ -40199,11 +40199,11 @@ impl Widget {
     fn same_leaf_user_enums_keep_user_constructor_identity() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum UserLinkError { UserLink; }
-            enum UserLookupError { UserLookup; }
-            enum UserMonitorError { UserMonitor; }
-            enum UserCrashAction { UserAction; }
-            enum UserCrashKind { UserKind; }
+            enum UserLinkError { UserLink, }
+            enum UserLookupError { UserLookup, }
+            enum UserMonitorError { UserMonitor, }
+            enum UserCrashAction { UserAction, }
+            enum UserCrashKind { UserKind, }
 
             fn user_link() -> UserLinkError { UserLinkError.UserLink }
             fn user_lookup() -> UserLookupError { UserLookupError.UserLookup }
@@ -40291,7 +40291,7 @@ impl Widget {
 
         let source = hew_parser::parse(
             r"
-            pub enum Color { Red; Green; Blue(i64); }
+            pub enum Color { Red, Green, Blue(i64), }
             ",
         );
         assert!(
@@ -40397,20 +40397,20 @@ impl Widget {
         // `Color::Red` registry key would make one import order diagnose the
         // tuple call as a struct ctor and the other mis-tag the struct ctor.
         let alpha_source = r"
-            pub enum Color { AlphaOnly; Red(i64); }
+            pub enum Color { AlphaOnly, Red(i64), }
             pub machine Switch {
-                events { AlphaTick; }
-                state Empty;
-                state Shared;
+                events { AlphaTick, }
+                state Empty,
+                state Shared,
                 on AlphaTick: _ => _ { state }
             }
         ";
         let beta_source = r"
-            pub enum Color { Red { value: i64 }; BetaOnly; }
+            pub enum Color { Red { value: i64 }, BetaOnly, }
             pub machine Switch {
-                events { BetaTick; }
-                state Shared;
-                state Full;
+                events { BetaTick, }
+                state Shared,
+                state Full,
                 on BetaTick: _ => _ { state }
             }
         ";

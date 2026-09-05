@@ -10,7 +10,7 @@
 // `let`, `var`, parameter, and match binders already reject this collision.
 // The induction variable is not exempt from it.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn go() {
         for count in [10, 20, 30] {

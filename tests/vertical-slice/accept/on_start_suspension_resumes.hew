@@ -5,7 +5,7 @@
 // reported value=0). The hook now parks against the actor and the scheduler's
 // resume re-entry drives it, exactly as a suspending `receive` handler is driven.
 actor Delayed {
-  var value: i64 = 0;
+  var value: i64 = 0,
   #[on(start)] fn init() {
     println("before");
     sleep(50ms);

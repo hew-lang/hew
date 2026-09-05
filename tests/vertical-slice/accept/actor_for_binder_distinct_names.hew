@@ -10,7 +10,7 @@
 // Reading through the receiver in the same loops pins the value: the state
 // field is the storage every access reaches.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn go() {
         let step = 100;

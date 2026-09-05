@@ -1,5 +1,5 @@
 actor Worker {
-    let _id: i64;
+    let _id: i64,
 
     receive fn ping() {}
 }

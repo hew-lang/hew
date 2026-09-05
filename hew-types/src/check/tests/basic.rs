@@ -8,7 +8,7 @@ pub(super) use super::*;
 fn contextual_variants_resolve_only_from_the_expected_type() {
     let output = check_source(
         r"
-enum Choice { Some(i64); None }
+enum Choice { Some(i64), None }
 
 fn choose(flag: bool) -> Choice {
     if flag { .Some(7) } else { .None }
@@ -72,7 +72,7 @@ fn contextual_variant_reports_ambiguous_expected_owner() {
 fn bare_variant_patterns_error_in_every_pattern_position() {
     let output = check_source(
         r"
-enum Choice { Present(i64); Absent; Named { value: i64 } }
+enum Choice { Present(i64), Absent, Named { value: i64 } }
 fn make() -> Choice { Present(7) }
 fn read(value: Choice) -> i64 {
     match value { Present(number) => number, Named { value } => value, Absent => 0 }
@@ -119,7 +119,7 @@ fn tag_test(value: Choice) -> i64 {
 fn dotted_variant_patterns_check_in_every_pattern_position() {
     let output = check_source(
         r"
-enum Choice { Present(i64); Absent; Named { value: i64 } }
+enum Choice { Present(i64), Absent, Named { value: i64 } }
 fn read(value: Choice) -> i64 {
     match value { .Present(number) => number, .Named { value } => value, .Absent => 0 }
 }
@@ -162,7 +162,7 @@ fn sum(p: Point) -> i64 {
 fn migration_mode_downgrades_both_bare_variant_spellings_to_warnings() {
     let parse_result = hew_parser::parse(
         r"
-enum Choice { Present(i64); Absent }
+enum Choice { Present(i64), Absent }
 fn contextual() -> Choice { Present(7) }
 fn read(value: Choice) -> i64 {
     match value { Present(number) => number, Absent => 0 }
@@ -221,7 +221,7 @@ fn inferred() { let value = Present(9); }
 fn dotted_owner_variants_typecheck_in_expression_position() {
     let output = check_source(
         r"
-enum Choice { Present(i64); Absent }
+enum Choice { Present(i64), Absent }
 fn tuple() -> Choice { Choice.Present(7) }
 fn unit() -> Choice { Choice.Absent }
 ",
@@ -284,7 +284,7 @@ fn read(value: i64) -> i64 {
 
 #[test]
 fn prelude_declarations_are_protected_before_source_registration() {
-    let output = check_source("type Iterator { value: i64; }");
+    let output = check_source("type Iterator { value: i64, }");
     assert!(output
         .errors
         .iter()
@@ -294,7 +294,7 @@ fn prelude_declarations_are_protected_before_source_registration() {
 #[test]
 fn non_root_prelude_declarations_are_protected_by_their_owner() {
     let output = check_source_in_module(
-        "type Result { value: i64; }",
+        "type Result { value: i64, }",
         vec!["hew".to_string(), "fixture".to_string()],
     );
     let collisions = output
@@ -311,7 +311,7 @@ fn non_root_prelude_declarations_are_protected_by_their_owner() {
 
 #[test]
 fn ordinary_builtin_declarations_remain_shadowable() {
-    let output = check_source("type HashMapIter { value: i64; }");
+    let output = check_source("type HashMapIter { value: i64, }");
     assert!(
         output.errors.is_empty(),
         "an ordinary builtin must remain shadowable: {:#?}",
@@ -647,7 +647,7 @@ fn typecheck_binary_op_type_mismatch() {
 
 #[test]
 fn record_equality_comparison_typechecks_when_structurally_eligible() {
-    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    if a == b {\n        println(\"equal\");\n    }\n}";
+    let source = "type Pt {\n    x: i64,\n    y: i64,\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    if a == b {\n        println(\"equal\");\n    }\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -662,7 +662,7 @@ fn record_equality_comparison_typechecks_when_structurally_eligible() {
 /// exists for aggregates, so this is a compiler gap, not a program error.
 #[test]
 fn record_inequality_typechecks_and_ordering_is_rejected() {
-    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    let ne = a != b;\n    let lt = a < b;\n    let _ = ne;\n    let _ = lt;\n}";
+    let source = "type Pt {\n    x: i64,\n    y: i64,\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    let ne = a != b;\n    let lt = a < b;\n    let _ = ne;\n    let _ = lt;\n}";
     let output = check_source(source);
     assert!(
         !output
@@ -689,7 +689,7 @@ fn record_inequality_typechecks_and_ordering_is_rejected() {
 /// structural-equality gate.
 #[test]
 fn enum_equality_not_gated_by_record_comparison_refusal() {
-    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn compare() -> bool {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    a == b\n}";
+    let source = "enum Colour {\n    Red,\n    Green,\n}\n\nfn compare() -> bool {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    a == b\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -703,7 +703,7 @@ fn enum_equality_not_gated_by_record_comparison_refusal() {
 /// `InvalidOperation`.
 #[test]
 fn enum_ordering_reports_checker_diagnostic() {
-    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let _ = a < b;\n}";
+    let source = "enum Colour {\n    Red,\n    Green,\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let _ = a < b;\n}";
     let output = check_source(source);
     assert!(
         output.errors.iter().any(|e| e.kind
@@ -719,7 +719,7 @@ fn enum_ordering_reports_checker_diagnostic() {
 
 #[test]
 fn payload_enum_equality_typechecks_when_structurally_eligible() {
-    let source = "enum Shape {\n    Circle(i64);\n    Empty;\n}\n\nfn main() {\n    let a = Shape.Circle(1);\n    let b = Shape.Circle(1);\n    let _ = a == b;\n}";
+    let source = "enum Shape {\n    Circle(i64),\n    Empty,\n}\n\nfn main() {\n    let a = Shape.Circle(1);\n    let b = Shape.Circle(1);\n    let _ = a == b;\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -810,7 +810,7 @@ fn managed_payload_enum_eq_rejects_with_named_diagnostic() {
 /// the record gate must not double-report.
 #[test]
 fn record_comparison_type_mismatch_reports_mismatch_not_refusal() {
-    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() -> bool {\n    let a = Pt { x: 1, y: 2 };\n    a == 5\n}";
+    let source = "type Pt {\n    x: i64,\n    y: i64,\n}\n\nfn main() -> bool {\n    let a = Pt { x: 1, y: 2 };\n    a == 5\n}";
     let output = check_source(source);
     assert!(
         output
@@ -1941,7 +1941,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     let source = concat!(
         "import ecosystem.db.sqlite;\n",
         "enum Result {\n",
-        "    Ok(i64);\n",
+        "    Ok(i64),\n",
         "    Err(i64)\n",
         "}\n",
         "fn unwrap_or(r: Result, fallback: i64) -> i64 {\n",
@@ -2108,7 +2108,7 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
 
     let second = hew_parser::parse(
         r"
-        pub type Listener { value: i64; }
+        pub type Listener { value: i64, }
         impl Listener {
             fn accept(self) -> i64 { self.value }
         }
@@ -2174,19 +2174,19 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
 fn reserved_type_names_fail_closed_across_declaration_kinds() {
     for (source, name) in [
         (
-            "type i64 { value: i64; }\nfn main() -> i64 { return 0; }",
+            "type i64 { value: i64, }\nfn main() -> i64 { return 0; }",
             "i64",
         ),
         (
-            "type CancellationToken { value: i64; }\nfn main() -> i64 { return 0; }",
+            "type CancellationToken { value: i64, }\nfn main() -> i64 { return 0; }",
             "CancellationToken",
         ),
         (
-            "type tuple<T> { value: T; }\nfn main() -> i64 { return 0; }",
+            "type tuple<T> { value: T, }\nfn main() -> i64 { return 0; }",
             "tuple",
         ),
         (
-            "type typeparam<T> { value: T; }\nfn main() -> i64 { return 0; }",
+            "type typeparam<T> { value: T, }\nfn main() -> i64 { return 0; }",
             "typeparam",
         ),
         (
@@ -2202,9 +2202,9 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
         (
             r"
             machine tuple {
-                events { Toggle; }
-                state Closed;
-                state Open;
+                events { Toggle, }
+                state Closed,
+                state Open,
                 on Toggle: Closed => .Open { Open }
                 on Toggle: Open => .Closed { Closed }
             }
@@ -2237,11 +2237,11 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
 #[test]
 fn non_reserved_type_names_remain_accepted() {
     let output = check_source(
-        "type Point { x: i64; y: i64; }\n\
-         type Tuple { a: i64; }\n\
-         type MyString { s: i64; }\n\
-         type CancellationTokens { count: i64; }\n\
-         enum Colour { Red; Green; Blue; }\n\
+        "type Point { x: i64, y: i64, }\n\
+         type Tuple { a: i64, }\n\
+         type MyString { s: i64, }\n\
+         type CancellationTokens { count: i64, }\n\
+         enum Colour { Red, Green, Blue, }\n\
          fn main() -> i64 { return 0; }",
     );
     assert!(

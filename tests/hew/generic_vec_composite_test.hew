@@ -14,7 +14,7 @@
 import std.testing;
 
 type W<T> {
-    v: T;
+    v: T,
 }
 
 fn store_and_read<T>(x: T) -> T {

@@ -12,7 +12,7 @@
 type Wrapper { inner: Vec<i64> }
 
 actor MaybeGreeter {
-    var name: Option<string>;
+    var name: Option<string>,
     init(name: Option<string>) {
         name = name;
     }
@@ -20,7 +20,7 @@ actor MaybeGreeter {
 }
 
 actor PairHolder {
-    var pair: (string, i64);
+    var pair: (string, i64),
     init(pair: (string, i64)) {
         pair = pair;
     }
@@ -28,7 +28,7 @@ actor PairHolder {
 }
 
 actor WrapperHolder {
-    var data: Wrapper;
+    var data: Wrapper,
     init(data: Wrapper) {
         data = data;
     }
@@ -36,7 +36,7 @@ actor WrapperHolder {
 }
 
 actor ProbeIndex {
-    var entries: HashMap<string, i64>;
+    var entries: HashMap<string, i64>,
     init(entries: HashMap<string, i64>) {
         entries = entries;
     }
@@ -44,7 +44,7 @@ actor ProbeIndex {
 }
 
 actor Seen {
-    var ids: HashSet<i64>;
+    var ids: HashSet<i64>,
     init(ids: HashSet<i64>) {
         ids = ids;
     }
@@ -52,14 +52,14 @@ actor Seen {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child maybe: MaybeGreeter(name: Some("hello"));
-    child pair: PairHolder(pair: ("hello", 1));
-    child wrap: WrapperHolder(data: Wrapper { inner: [] });
-    child index: ProbeIndex(entries: HashMap<string, i64>.new());
-    child seen: Seen(ids: HashSet<i64>.new());
+    child maybe: MaybeGreeter(name: Some("hello")),
+    child pair: PairHolder(pair: ("hello", 1)),
+    child wrap: WrapperHolder(data: Wrapper { inner: [] }),
+    child index: ProbeIndex(entries: HashMap<string, i64>.new()),
+    child seen: Seen(ids: HashSet<i64>.new()),
 }
 
 fn main() -> i64 {

@@ -8,7 +8,7 @@ actor Fresh {
 }
 
 actor CrashAfterUse {
-    let fresh: LocalPid<Fresh>;
+    let fresh: LocalPid<Fresh>,
 
     receive fn run(trigger: i64) -> i64 {
         let text = match await fresh.text() {

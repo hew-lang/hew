@@ -4,7 +4,7 @@
 // dispatch transaction; the receive handler still runs inside one.
 
 actor Worker {
-    var value: i64;
+    var value: i64,
 
     init() {
         value = 10;
@@ -30,10 +30,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child worker: Worker(value: 7);
+    child worker: Worker(value: 7),
 }
 
 fn main() -> i64 {

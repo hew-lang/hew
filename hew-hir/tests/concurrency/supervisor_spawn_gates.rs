@@ -27,8 +27,8 @@ fn lower_two_module(program: &Program) -> hew_hir::LowerOutput {
 fn supervisor_spawn_no_args_accepted() {
     let source = r"
         supervisor Root {
-            strategy: one_for_one;
-            child worker: Worker();
+            strategy: one_for_one,
+            child worker: Worker(),
         }
         actor Worker {
             receive fn work() {}
@@ -63,12 +63,12 @@ fn config_supervisor_spawn_with_config_arg_accepted() {
     let source = r"
         type AppConfig { size: i64 }
         actor Cache {
-            var capacity: i64;
+            var capacity: i64,
             receive fn get_cap() -> i64 { capacity }
         }
         supervisor App(config: AppConfig) {
-            strategy: one_for_one;
-            child cache: Cache(capacity: config.size);
+            strategy: one_for_one,
+            child cache: Cache(capacity: config.size),
         }
         fn main() {
             let cfg = AppConfig { size: 7 };
@@ -99,8 +99,8 @@ fn config_supervisor_spawn_with_config_arg_accepted() {
 fn supervisor_spawn_with_args_rejected() {
     let source = r"
         supervisor Root {
-            strategy: one_for_one;
-            child worker: Worker();
+            strategy: one_for_one,
+            child worker: Worker(),
         }
         actor Worker {
             receive fn work() {}
@@ -143,18 +143,18 @@ fn supervisor_spawn_with_args_rejected() {
 fn supervisor_spawn_with_args_in_machine_transition_body_rejected() {
     let source = r"
         supervisor Root {
-            strategy: one_for_one;
-            child worker: Worker();
+            strategy: one_for_one,
+            child worker: Worker(),
         }
         actor Worker {
             receive fn work() {}
         }
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
-            state Active;
+            state Active,
             on Tick: Active => Active reenter {
                 let s = spawn Root(value: 1);
                 Active
@@ -191,22 +191,22 @@ fn supervisor_spawn_with_args_in_machine_transition_body_rejected() {
 fn supervisor_spawn_with_args_in_machine_state_entry_rejected() {
     let source = r"
         supervisor Root {
-            strategy: one_for_one;
-            child worker: Worker();
+            strategy: one_for_one,
+            child worker: Worker(),
         }
         actor Worker {
             receive fn work() {}
         }
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
             state Idle {
                 entry {
                     let s = spawn Root(value: 1);
                 }
-            }
+            },
             on Tick: Idle => Idle reenter { Idle }
         }
         fn main() {}
@@ -238,7 +238,7 @@ fn supervisor_spawn_with_args_in_machine_state_entry_rejected() {
 fn actor_spawn_with_args_accepted() {
     let source = r"
         actor Worker {
-            var value: int = 0;
+            var value: int = 0,
             receive fn work() {}
         }
         fn main() {
@@ -355,8 +355,8 @@ fn module_local_supervisor_spawn_with_args_rejected() {
     ";
     let module_src = r"
         pub supervisor LocalSup {
-            strategy: one_for_one;
-            child worker: Worker();
+            strategy: one_for_one,
+            child worker: Worker(),
         }
         pub actor Worker {
             receive fn work() {}
@@ -397,8 +397,8 @@ fn module_local_supervisor_spawn_with_args_rejected() {
 fn root_supervisor_name_does_not_false_positive_in_module() {
     let root_src = r"
         supervisor Root {
-            strategy: one_for_one;
-            child worker: Worker();
+            strategy: one_for_one,
+            child worker: Worker(),
         }
         actor Worker {
             receive fn work() {}
@@ -411,7 +411,7 @@ fn root_supervisor_name_does_not_false_positive_in_module() {
         // actor, so the supervisor-spawn gate must not match against the
         // root program's `Root` supervisor.
         pub actor Root {
-            var value: int = 0;
+            var value: int = 0,
             receive fn ping() {}
         }
         pub fn make() {

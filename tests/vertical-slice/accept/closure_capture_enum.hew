@@ -3,8 +3,8 @@
 // `__hew_enum_drop_inplace_Tag` declaration — the closure-capture seed pass
 // must feed the enum channel of drop-thunk synthesis too.
 enum Tag {
-    Named(string);
-    Anon;
+    Named(string),
+    Anon,
 }
 
 fn apply(f: fn(i64) -> i64, x: i64) -> i64 {

@@ -35,8 +35,8 @@ fn require_ok(result: Result<(), net.NetError>) {{
 }}
 
 actor Client {{
-    let address: string;
-    var complete: i64;
+    let address: string,
+    var complete: i64,
 
     receive fn run(unused: i64) {{
         let endpoint = quic.new_client();

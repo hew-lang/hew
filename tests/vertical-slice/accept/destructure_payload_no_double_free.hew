@@ -23,7 +23,7 @@
 //! which a pure-runtime fixture cannot reach because the independent
 //! liveness layer also excludes the (arm-scoped, dead-at-exit) binders.
 
-enum Box<T> { Full(T); }
+enum Box<T> { Full(T), }
 
 fn main() -> i64 {
     var i: i64 = 0;

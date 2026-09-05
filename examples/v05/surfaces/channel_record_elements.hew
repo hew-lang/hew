@@ -13,8 +13,8 @@
 import std.channel.channel;
 
 type Tagged {
-    label: string;
-    value: i64;
+    label: string,
+    value: i64,
 }
 
 actor DrainRecords {

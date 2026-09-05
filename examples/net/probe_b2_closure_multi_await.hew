@@ -13,7 +13,7 @@ extern "C" {
 }
 
 actor Reader {
-    let addr: string;
+    let addr: string,
 
     receive fn go(unused: i64) {
         sleep(200ms);

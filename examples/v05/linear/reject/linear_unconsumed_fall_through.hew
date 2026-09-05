@@ -8,7 +8,7 @@
 // Move-checker lattice state at the tail: Live → Return → MustConsume.
 #[linear]
 type Txn {
-    id: i64;
+    id: i64,
 }
 
 impl Txn {

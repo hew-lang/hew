@@ -9,7 +9,7 @@ fn parses_trait_defaults_and_impl_type_aliases() {
         }
 
         type Counter {
-            value: int;
+            value: int,
         }
 
         impl Iterator for Counter {

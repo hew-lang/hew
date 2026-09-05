@@ -297,7 +297,7 @@ fn var_never_reassigned_emits_unusedmut_warning() {
 fn let_field_assign_immutable_root_is_rejected() {
     let output = typecheck(
         r"
-        type Point { x: i64; }
+        type Point { x: i64, }
 
         fn main() {
             let p = Point { x: 1 };
@@ -388,7 +388,7 @@ fn return_type_mismatch_empty_return_in_non_unit_fn() {
 fn undefined_field_on_struct() {
     let output = typecheck(
         r"
-        type Point { x: i64; y: i64; }
+        type Point { x: i64, y: i64, }
         fn main() {
             let p = Point { x: 1, y: 2 };
             let z = p.z;
@@ -411,7 +411,7 @@ fn undefined_field_on_struct() {
 fn undefined_method_on_struct() {
     let output = typecheck(
         r"
-        type Foo { x: i64; }
+        type Foo { x: i64, }
         fn main() {
             let f = Foo { x: 1 };
             f.bar();
@@ -455,8 +455,8 @@ fn duplicate_definition_same_function() {
 fn duplicate_definition_same_struct() {
     let output = typecheck(
         r"
-        type Foo { x: i64; }
-        type Foo { y: i64; }
+        type Foo { x: i64, }
+        type Foo { y: i64, }
         fn main() {}
     ",
     );
@@ -497,8 +497,8 @@ fn duplicate_definition_same_trait() {
 fn duplicate_definition_same_actor() {
     expect_duplicate_definition_span_kind_name(
         r"
-        actor Worker { let id: i64; }
-        actor Worker { let count: i64; }
+        actor Worker { let id: i64, }
+        actor Worker { let count: i64, }
         fn main() {}
     ",
         "Worker",
@@ -513,23 +513,23 @@ fn duplicate_definition_same_machine() {
         r"
         machine Traffic {
             events {
-                Tick;
+                Tick,
             }
 
-            state Red;
-            state Green;
-            on Tick: Red => Green;
-            on Tick: Green => Red;
+            state Red,
+            state Green,
+            on Tick: Red => Green,
+            on Tick: Green => Red,
         }
         machine Traffic {
             events {
-                Tick;
+                Tick,
             }
 
-            state Idle;
-            state Busy;
-            on Tick: Idle => Busy;
-            on Tick: Busy => Idle;
+            state Idle,
+            state Busy,
+            on Tick: Idle => Busy,
+            on Tick: Busy => Idle,
         }
         fn main() {}
     ",
@@ -552,15 +552,15 @@ fn duplicate_definition_machine_companion_event_same_type() {
         r"
         machine Light {
             events {
-                Toggle;
+                Toggle,
             }
 
-            state Off;
-            state On;
-            on Toggle: Off => On;
-            on Toggle: On => Off;
+            state Off,
+            state On,
+            on Toggle: Off => On,
+            on Toggle: On => Off,
         }
-        type LightEvent { code: i64; }
+        type LightEvent { code: i64, }
         fn main() {}
     ",
     );
@@ -578,16 +578,16 @@ fn duplicate_definition_machine_companion_event_same_type() {
 fn duplicate_definition_machine_companion_event_type_before_machine() {
     let output = typecheck(
         r"
-        type LightEvent { code: i64; }
+        type LightEvent { code: i64, }
         machine Light {
             events {
-                Toggle;
+                Toggle,
             }
 
-            state Off;
-            state On;
-            on Toggle: Off => On;
-            on Toggle: On => Off;
+            state Off,
+            state On,
+            on Toggle: Off => On,
+            on Toggle: On => Off,
         }
         fn main() {}
     ",
@@ -610,13 +610,13 @@ fn duplicate_definition_machine_companion_event_same_trait() {
         r"
         machine Light {
             events {
-                Toggle;
+                Toggle,
             }
 
-            state Off;
-            state On;
-            on Toggle: Off => On;
-            on Toggle: On => Off;
+            state Off,
+            state On,
+            on Toggle: Off => On,
+            on Toggle: On => Off,
         }
         trait LightEvent { fn render(val: Self) -> i64; }
         fn main() {}
@@ -639,13 +639,13 @@ fn duplicate_definition_machine_companion_event_trait_before_machine() {
         trait LightEvent { fn render(val: Self) -> i64; }
         machine Light {
             events {
-                Toggle;
+                Toggle,
             }
 
-            state Off;
-            state On;
-            on Toggle: Off => On;
-            on Toggle: On => Off;
+            state Off,
+            state On,
+            on Toggle: Off => On,
+            on Toggle: On => Off,
         }
         fn main() {}
     ",
@@ -668,11 +668,11 @@ fn duplicate_definition_same_wire_type() {
         r"
         #[wire]
         type Packet {
-            id: i32 @1;
+            id: i32 @1,
         }
         #[wire]
         type Packet {
-            name: string @1;
+            name: string @1,
         }
         fn main() {}
     ",
@@ -707,7 +707,7 @@ fn duplicate_definition_same_type_alias() {
 fn duplicate_definition_type_alias_collides_with_struct() {
     let output = typecheck(
         r"
-        type Foo { x: i64; }
+        type Foo { x: i64, }
         type Foo = i64;
         fn main() {}
     ",
@@ -847,9 +847,9 @@ fn invalid_operation_string_plus_int() {
 fn snapshot_send_to_actor_twice_is_valid() {
     let output = typecheck(
         r#"
-        type Payload { data: string; }
+        type Payload { data: string, }
         actor SnapshotSink {
-            let val: i64;
+            let val: i64,
             receive fn consume(h: Payload) {}
         }
         fn main() {
@@ -979,7 +979,7 @@ fn nonexhaustive_match_result_missing_err() {
 fn nonexhaustive_match_enum_missing_variant() {
     let output = typecheck(
         r#"
-        enum Colour { Red; Green; Blue; }
+        enum Colour { Red, Green, Blue, }
         fn label(c: Colour) -> string {
             match c {
                 .Red => "red",
@@ -1017,11 +1017,11 @@ fn machine_exhaustiveness_too_few_states() {
         r"
         machine Broken {
             events {
-                Ping;
+                Ping,
             }
 
-            state Only;
-            on Ping: Only => Only;
+            state Only,
+            on Ping: Only => Only,
         }
         fn main() {}
     ",
@@ -1043,8 +1043,8 @@ fn machine_exhaustiveness_no_events() {
     let output = typecheck(
         r"
         machine Broken {
-            state A;
-            state B;
+            state A,
+            state B,
         }
         fn main() {}
     ",
@@ -1067,14 +1067,14 @@ fn machine_exhaustiveness_unknown_event() {
         r"
         machine Broken {
             events {
-                X;
+                X,
             }
 
-            state A;
-            state B;
-            on X: A => B;
-            on X: B => A;
-            on Ghost: A => B;
+            state A,
+            state B,
+            on X: A => B,
+            on X: B => A,
+            on Ghost: A => B,
         }
         fn main() {}
     ",
@@ -1098,13 +1098,13 @@ fn machine_exhaustiveness_unknown_state() {
         r"
         machine Broken {
             events {
-                X;
+                X,
             }
 
-            state A;
-            state B;
-            on X: A => B;
-            on X: B => Phantom;
+            state A,
+            state B,
+            on X: A => B,
+            on X: B => Phantom,
         }
         fn main() {}
     ",
@@ -1128,11 +1128,11 @@ fn machine_exhaustiveness_duplicate_wildcard() {
         r"
         machine Broken {
             events {
-                X;
+                X,
             }
 
-            state A;
-            state B;
+            state A,
+            state B,
             on X: _ => _ { state }
             on X: _ => _ { state }
         }
@@ -1345,7 +1345,7 @@ fn if_over_error_condition_preserves_original_diagnostic_only() {
 fn or_pattern_error_scrutinee_single_error() {
     let output = typecheck(
         r"
-        enum Colour { Red; Green; }
+        enum Colour { Red, Green, }
 
         fn main() {
             let _ = match missing() {
@@ -1421,7 +1421,7 @@ fn tuple_pattern_error_scrutinee_silent() {
 fn checker_output_success_path_contains_no_unresolved_ty_var() {
     let output = typecheck(
         r"
-        type Box<T> { value: T; }
+        type Box<T> { value: T, }
 
         fn id<T>(x: T) -> _ { x }
 
@@ -1497,7 +1497,7 @@ fn inference_hole_generic_free_function_return_signature_is_resolved() {
 fn inference_hole_generic_impl_method_return_signature_is_resolved() {
     assert_resolved_return_hole(
         r"
-        type Box<T> { value: T; }
+        type Box<T> { value: T, }
         impl<T> Box<T> {
             fn get(boxed: Box<T>, x: T) -> _ { x }
         }
@@ -1540,7 +1540,7 @@ fn inference_hole_generic_actor_method_return_signature_is_resolved() {
 fn inference_hole_type_field_is_rejected() {
     let output = typecheck(
         r"
-        type Box { value: _; }
+        type Box { value: _, }
     ",
     );
     assert!(
@@ -1563,7 +1563,7 @@ fn inference_hole_enum_variant_constructor_is_stripped_from_output() {
     let output = typecheck(
         r"
         enum Maybe {
-            Some(_);
+            Some(_),
         }
     ",
     );
@@ -1750,7 +1750,7 @@ fn explicit_hole_nonitem_actor_init_param_annotation_is_rejected() {
     let output = typecheck(
         r"
         actor Greeter {
-            let name: string;
+            let name: string,
             init(prefix: _) {
                 println(name);
             }
@@ -1773,7 +1773,7 @@ fn explicit_hole_nonitem_actor_init_param_annotation_is_resolved_from_body() {
     let output = typecheck(
         r"
         actor Greeter {
-            let name: string;
+            let name: string,
             init(prefix: _) {
                 name = prefix;
             }
@@ -1879,14 +1879,14 @@ fn machine_exhaustiveness_duplicate_explicit() {
         r"
         machine Broken {
             events {
-                X;
+                X,
             }
 
-            state A;
-            state B;
-            on X: A => B;
-            on X: A => A;
-            on X: B => A;
+            state A,
+            state B,
+            on X: A => B,
+            on X: A => A,
+            on X: B => A,
         }
         fn main() {}
     ",
@@ -2016,11 +2016,11 @@ fn bounds_not_satisfied_missing_trait_impl() {
         trait Printable {
             fn describe(val: Self) -> string;
         }
-        type Dog { name: string; }
+        type Dog { name: string, }
         impl Printable for Dog {
             fn describe(d: Dog) -> string { d.name }
         }
-        type Rock { weight: i64; }
+        type Rock { weight: i64, }
         fn show<T: Printable>(val: T) -> string {
             val.describe()
         }
@@ -2086,7 +2086,7 @@ fn empty_type_args_on_generic_struct_init_is_arity_mismatch() {
     // `Wrapper<T>` has one type parameter; `Wrapper<> { … }` supplies zero.
     let output = typecheck(
         r"
-        type Wrapper<T> { value: T; }
+        type Wrapper<T> { value: T, }
 
         fn main() {
             let _w = Wrapper<> { value: 42 };
@@ -2109,7 +2109,7 @@ fn empty_type_args_on_generic_enum_variant_init_is_arity_mismatch() {
     let output = typecheck(
         r"
         enum Event<T> {
-            Move { x: T };
+            Move { x: T },
         }
 
         fn main() {
@@ -2195,8 +2195,8 @@ fn vec_push_copy_record_element_is_accepted() {
     let output = typecheck(
         r"
         type Point {
-            x: i32;
-            y: i32;
+            x: i32,
+            y: i32,
         }
         fn main() {
             let v: Vec<Point> = Vec.new();
@@ -2310,8 +2310,8 @@ fn vec_get_copy_record_element_is_accepted() {
     let output = typecheck(
         r"
         type Point {
-            x: i32;
-            y: i32;
+            x: i32,
+            y: i32,
         }
         fn main() {
             let v: Vec<Point> = Vec.new();
@@ -2348,8 +2348,8 @@ fn vec_contains_eligible_copy_record_compiles_after_w3_032_slice_3() {
     let output = typecheck(
         r"
         type Point {
-            x: i32;
-            y: i32;
+            x: i32,
+            y: i32,
         }
         fn main() {
             let v: Vec<Point> = Vec.new();
@@ -2392,7 +2392,7 @@ fn vec_contains_float_record_element_now_typechecks() {
     let output = typecheck(
         r"
         type Measurement {
-            value: f32;
+            value: f32,
         }
         fn main() {
             let v: Vec<Measurement> = Vec.new();
@@ -2413,7 +2413,7 @@ fn vec_contains_layout_managed_record_element_has_eq_eligibility_diagnostic() {
     let output = typecheck(
         r"
         type Packet {
-            data: bytes;
+            data: bytes,
         }
         fn has_packet(v: Vec<Packet>, needle: Packet) -> bool {
             v.contains(needle)
@@ -2442,8 +2442,8 @@ fn vec_remove_copy_record_element_now_succeeds() {
     let output = typecheck(
         r"
         type Point {
-            x: i32;
-            y: i32;
+            x: i32,
+            y: i32,
         }
         fn main() {
             let v: Vec<Point> = Vec.new();
@@ -2482,8 +2482,8 @@ fn vec_clear_record_element_is_layout_fail_closed() {
     let output = typecheck(
         r"
         type Point {
-            x: i32;
-            y: i32;
+            x: i32,
+            y: i32,
         }
         fn main() {
             let v: Vec<Point> = Vec.new();
@@ -2533,8 +2533,8 @@ fn vec_clone_bitcopy_record_element_is_permitted() {
     let output = typecheck(
         r"
         type Point {
-            x: i32;
-            y: i32;
+            x: i32,
+            y: i32,
         }
         fn main() {
             let v: Vec<Point> = Vec.new();
@@ -2584,8 +2584,8 @@ fn vec_clone_owning_record_element_is_permitted() {
     let output = typecheck(
         r"
         type Person {
-            name: string;
-            age: i64;
+            name: string,
+            age: i64,
         }
         fn main() {
             let v: Vec<Person> = Vec.new();
@@ -2622,8 +2622,8 @@ fn vec_append_record_element_is_layout_fail_closed() {
     let output = typecheck(
         r"
         type Point {
-            x: i32;
-            y: i32;
+            x: i32,
+            y: i32,
         }
         fn main() {
             let v: Vec<Point> = Vec.new();
@@ -2653,8 +2653,8 @@ fn vec_extend_retired_is_undefined_method() {
     let output = typecheck(
         r"
         type Point {
-            x: i32;
-            y: i32;
+            x: i32,
+            y: i32,
         }
         fn main() {
             let v: Vec<Point> = Vec.new();
@@ -2684,8 +2684,8 @@ fn vec_len_and_is_empty_on_layout_element_do_not_fire_fence() {
     let output = typecheck(
         r"
         type Point {
-            x: i32;
-            y: i32;
+            x: i32,
+            y: i32,
         }
         fn main() {
             let v: Vec<Point> = Vec.new();
@@ -2788,7 +2788,7 @@ fn dot_qualified_type_in_type_position_resolves_correctly() {
     // We use a locally-defined type to confirm the dot path resolves.
     let output = typecheck(
         r"
-        type Point { x: i64; y: i64; }
+        type Point { x: i64, y: i64, }
         fn make() -> Point {
             Point { x: 1, y: 2 }
         }

@@ -101,7 +101,7 @@ fn clone_on_unsupported_scalar_fails_closed() {
 fn actor_send_snapshot_does_not_suggest_clone() {
     let source = r"
         actor SnapshotSink {
-            let id: i64;
+            let id: i64,
             receive fn take(v: Vec<i64>) {}
         }
         fn main() {

@@ -13,12 +13,12 @@
 //! `Store::add$$string` body, keyed bare, with no naming-surface leak.
 
 type Slot<T> {
-    generation: i64;
-    value: T;
+    generation: i64,
+    value: T,
 }
 
 pub type Store<T> {
-    slots: Vec<Slot<T>>;
+    slots: Vec<Slot<T>>,
 }
 
 pub fn new<T>() -> Store<T> {

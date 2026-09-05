@@ -1,5 +1,5 @@
 enum BoxError<T> {
-    Failed(T);
+    Failed(T),
 }
 
 impl<T: Display> Display for BoxError<T> {

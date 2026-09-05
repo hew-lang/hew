@@ -33,7 +33,7 @@ type MessageHandle {
 
 #[resource]
 pub type Message {
-    handle: MessageHandle;
+    handle: MessageHandle,
 }
 
 /// Methods available on a protobuf `Message`.

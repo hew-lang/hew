@@ -64,7 +64,7 @@ const FLOOR_TOLERANCE: usize = 2;
 fn control_flat_source() -> String {
     format!(
         "\
-type Pair<A, B> {{ a: A; b: B; }}
+type Pair<A, B> {{ a: A, b: B, }}
 
 fn build(seed: string) -> i64 {{
     let p = Pair {{ a: seed + \"-a\", b: seed + \"-b\" }};
@@ -91,7 +91,7 @@ fn main() -> i64 {{
 fn fixture_flat_source() -> String {
     format!(
         "\
-type Pair<A, B> {{ a: A; b: B; }}
+type Pair<A, B> {{ a: A, b: B, }}
 
 fn build(seed: string) -> i64 {{
     let p = Pair {{ a: seed + \"-a\", b: seed + \"-b\" }};
@@ -116,7 +116,7 @@ fn main() -> i64 {{
 fn control_nested_source() -> String {
     format!(
         "\
-type Pair<A, B> {{ a: A; b: B; }}
+type Pair<A, B> {{ a: A, b: B, }}
 
 fn build(seed: string) -> i64 {{
     let inner = Pair {{ a: seed + \"-a\", b: seed + \"-b\" }};
@@ -143,7 +143,7 @@ fn main() -> i64 {{
 fn fixture_nested_source() -> String {
     format!(
         "\
-type Pair<A, B> {{ a: A; b: B; }}
+type Pair<A, B> {{ a: A, b: B, }}
 
 fn build(seed: string) -> i64 {{
     let inner = Pair {{ a: seed + \"-a\", b: seed + \"-b\" }};
@@ -171,7 +171,7 @@ fn main() -> i64 {{
 fn control_multi_source() -> String {
     format!(
         "\
-type Pair<A, B> {{ a: A; b: B; }}
+type Pair<A, B> {{ a: A, b: B, }}
 
 fn build(seed: string) -> i64 {{
     let nums = Pair {{ a: 1, b: 2 }};
@@ -198,7 +198,7 @@ fn main() -> i64 {{
 fn fixture_multi_source() -> String {
     format!(
         "\
-type Pair<A, B> {{ a: A; b: B; }}
+type Pair<A, B> {{ a: A, b: B, }}
 
 fn build(seed: string) -> i64 {{
     let nums = Pair {{ a: 1, b: 2 }};
@@ -231,10 +231,10 @@ fn main() -> i64 {{
 fn control_actor_source() -> String {
     format!(
         "\
-type Pair<A, B> {{ a: A; b: B; }}
+type Pair<A, B> {{ a: A, b: B, }}
 
 actor Keeper {{
-    var held: Pair<i64, string> = Pair {{ a: 0, b: \"none\" }};
+    var held: Pair<i64, string> = Pair {{ a: 0, b: \"none\" }},
     receive fn store(n: i64, tag: string) -> i64 {{
         let s2 = tag + \"-held\";
         let p = Pair {{ a: n, b: s2 }};
@@ -271,10 +271,10 @@ fn main() -> i64 {{
 fn fixture_actor_source() -> String {
     format!(
         "\
-type Pair<A, B> {{ a: A; b: B; }}
+type Pair<A, B> {{ a: A, b: B, }}
 
 actor Keeper {{
-    var held: Pair<i64, string> = Pair {{ a: 0, b: \"none\" }};
+    var held: Pair<i64, string> = Pair {{ a: 0, b: \"none\" }},
     receive fn store(n: i64, tag: string) -> i64 {{
         let s2 = tag + \"-held\";
         let p = Pair {{ a: n, b: s2 }};
@@ -308,7 +308,7 @@ fn main() -> i64 {{
 /// both originals and clone would double-free the shared buffers and crash under
 /// the poisoned-allocator triple before the sentinel prints. Runs on any unix.
 const NO_DOUBLE_FREE_SOURCE: &str = "\
-type Pair<A, B> { a: A; b: B; }
+type Pair<A, B> { a: A, b: B, }
 
 fn main() {
     let p = Pair { a: \"alpha\", b: \"beta\" };

@@ -4,8 +4,8 @@ type DqH {
 
 #[resource]
 type Dq {
-    handle: DqH;
-    tag: i64;
+    handle: DqH,
+    tag: i64,
 }
 
 impl Dq {
@@ -22,7 +22,7 @@ extern "C" {
 }
 
 actor Sink {
-    var hits: i64;
+    var hits: i64,
 
     receive fn take(v: Dq) -> i64 {
         let v_l = unsafe { hew_deque_len(v.handle) };

@@ -25,7 +25,7 @@ fn expected_lines(frames: usize) -> usize {
 
 fn generator_overwrite_source(frames: usize) -> String {
     format!(
-        "enum Box {{ Full(string); Empty; }}\n\
+        "enum Box {{ Full(string), Empty, }}\n\
          \n\
          fn generate_once() -> i64 {{\n\
          \x20   let g = gen {{\n\
@@ -51,7 +51,7 @@ fn generator_overwrite_source(frames: usize) -> String {
 
 fn ordinary_overwrite_control_source(frames: usize) -> String {
     format!(
-        "enum Box {{ Full(string); Empty; }}\n\
+        "enum Box {{ Full(string), Empty, }}\n\
          \n\
          fn overwrite_once() {{\n\
          \x20   var value: Box = Box.Full(string_concat(\"control-\", \"payload\"));\n\

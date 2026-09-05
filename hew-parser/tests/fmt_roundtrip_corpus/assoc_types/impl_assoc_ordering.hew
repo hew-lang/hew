@@ -5,7 +5,7 @@ trait Container {
 }
 
 type Widget {
-    value: i32;
+    value: i32,
 }
 
 impl Container for Widget {

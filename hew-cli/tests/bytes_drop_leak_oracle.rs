@@ -111,7 +111,7 @@ fn local_loop_source(frames: usize) -> String {
 fn overwrite_source(frames: usize) -> String {
     format!(
         "actor ByteStore {{\n\
-         \x20   var buf: bytes;\n\
+         \x20   var buf: bytes,\n\
          \n\
          \x20   receive fn store(packet: bytes) {{\n\
          \x20       buf = packet;\n\

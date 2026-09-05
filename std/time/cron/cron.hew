@@ -27,19 +27,19 @@ type ExprHandle {
 
 #[resource]
 pub type Expr {
-    handle: ExprHandle;
+    handle: ExprHandle,
 }
 
 /// Structured cron scheduling errors surfaced by the native ABI.
 pub enum CronError {
-    NoNextOccurrence(string);
-    InvalidInput(string);
-    InvalidEpoch(string);
+    NoNextOccurrence(string),
+    InvalidInput(string),
+    InvalidEpoch(string),
 }
 
 type CronNextResult {
-    status: i32;
-    timestamp: i64;
+    status: i32,
+    timestamp: i64,
 }
 
 fn cron_last_error_message() -> string {

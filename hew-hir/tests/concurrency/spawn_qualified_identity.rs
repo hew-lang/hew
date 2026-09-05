@@ -14,7 +14,7 @@ use hew_parser::module::{Module, ModuleGraph, ModuleId};
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeCheckOutput};
 
 const BANK_SRC: &str = "pub actor Account {\n\
-                        \x20   var balance: i64 = 0;\n\
+                        \x20   var balance: i64 = 0,\n\
                         \x20   receive fn deposit(n: i64) -> i64 { balance = balance + n; balance }\n\
                         }\n";
 
@@ -159,7 +159,7 @@ fn qualified_spawn_lowers_dotted_actor_name_and_pid_type() {
 fn root_spawn_keeps_bare_actor_name_and_pid_type() {
     let program = build_program(
         "actor Local {\n\
-         \x20   var total: i64 = 0;\n\
+         \x20   var total: i64 = 0,\n\
          \x20   receive fn poke() { total = total + 1; }\n\
          }\n\
          fn main() {\n\

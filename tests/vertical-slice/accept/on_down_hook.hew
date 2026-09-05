@@ -24,10 +24,10 @@ actor Watcher {
 }
 
 supervisor AppSupervisor {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child watcher: Watcher;
+    child watcher: Watcher,
 }
 
 fn main() -> i64 {

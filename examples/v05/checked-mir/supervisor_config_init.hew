@@ -11,13 +11,13 @@
 //     bootstrap emits per config-init child (the #2229 corpus-pin discipline:
 //     pin every new RuntimeCall family in the golden corpus).
 type AppConfig {
-    size: i64;
-    label: string;
+    size: i64,
+    label: string,
 }
 
 actor Cache {
-    var capacity: i64;
-    var name: string;
+    var capacity: i64,
+    var name: string,
     receive fn get_cap(_n: i64) -> i64 {
         capacity;
         name.len()
@@ -25,10 +25,10 @@ actor Cache {
 }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child cache: Cache(capacity: config.size, name: config.label);
+    child cache: Cache(capacity: config.size, name: config.label),
 }
 
 fn main() -> i64 {

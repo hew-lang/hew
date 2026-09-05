@@ -13,7 +13,7 @@
 // one handle). The checker now fails closed at CHECK time instead.
 #[resource]
 type File {
-    fd: i64;
+    fd: i64,
 }
 
 impl File {

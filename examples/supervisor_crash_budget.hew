@@ -10,8 +10,8 @@
 // This is the "let it crash" philosophy with a safety valve: crash and restart
 // is fine for transient failures, but persistent failures need human attention.
 actor Fragile {
-    let id: i32;
-    let lives: i32;
+    let id: i32,
+    let lives: i32,
     receive fn work() {
         print("fragile ");
         print(id);
@@ -29,11 +29,11 @@ actor Fragile {
 
 // Only allow 3 restarts in 60 seconds — after that, stop escalating
 supervisor FragilePool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child f1: Fragile(id: 1, lives: 3);
-    child f2: Fragile(id: 2, lives: 3);
+    child f1: Fragile(id: 1, lives: 3),
+    child f2: Fragile(id: 2, lives: 3),
 }
 
 fn main() {

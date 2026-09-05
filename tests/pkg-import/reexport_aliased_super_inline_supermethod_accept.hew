@@ -9,7 +9,7 @@
 import hew.reexsubalias.{SubA};
 
 type W {
-    id: i64;
+    id: i64,
 }
 
 impl SubA for W {

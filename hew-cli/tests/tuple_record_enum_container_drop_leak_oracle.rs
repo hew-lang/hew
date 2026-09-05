@@ -32,8 +32,8 @@ type Holder {
 }
 
 enum Slot {
-    Filled(i64);
-    Empty;
+    Filled(i64),
+    Empty,
 }
 
 fn step(h: Holder, i: i64) -> (Holder, Slot, i64) {
@@ -127,8 +127,8 @@ type Holder {
 }
 
 enum Slot {
-    Filled(i64);
-    Empty;
+    Filled(i64),
+    Empty,
 }
 
 fn step(h: Holder, i: i64) -> (Holder, Slot, i64) {

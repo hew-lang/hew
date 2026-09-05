@@ -20,8 +20,8 @@ use support::{hew_binary, repo_root, require_codegen};
 const FULL_SEND_AT_SHUTDOWN_SOURCE: &str = r#"import std.channel.channel;
 
 actor Pulse {
-    let ready: channel.Sender<i64>;
-    var count: i64 = 0;
+    let ready: channel.Sender<i64>,
+    var count: i64 = 0,
 
     #[every(1ms)]
     receive fn tick() {
@@ -88,7 +88,7 @@ fn full_send_with_draining_receiver_still_backpressures() {
         r#"import std.channel.channel;
 
 actor Pump {
-    let out: channel.Sender<i64>;
+    let out: channel.Sender<i64>,
 
     receive fn go(count: i64) {
         for i in 0..count {

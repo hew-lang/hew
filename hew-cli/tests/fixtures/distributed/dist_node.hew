@@ -51,22 +51,22 @@ type KvPut {
 }
 
 enum KvReq {
-    Put(KvPut);
-    GetKey(string);
+    Put(KvPut),
+    GetKey(string),
     // Cross-node monitor scenarios: fire-and-forget commands that drive the
     // remote actor to a terminal state so a monitoring client observes the
     // cross-node DOWN with the right reason.
-    StopSelf;
-    CrashSelf;
+    StopSelf,
+    CrashSelf,
     // scenario_partition_ask phase A: hold the reply past the client's ask
     // deadline so the pending ask is deterministically resolvable ONLY by the
     // armed partition probe (no reply, no socket drop — the route stays live).
-    Stall;
+    Stall,
 }
 
 enum KvResp {
-    Ack;
-    Value(string);
+    Ack,
+    Value(string),
 }
 
 // ── #[wire] cross-process body types ─────────────────────────────────────────
@@ -89,8 +89,8 @@ type WirePoint {
 // carry EXPLICIT @N tags — that is the explicit-tag body this scenario proves.
 #[wire]
 enum WireCmd {
-    Ping;
-    Move(WirePoint);
+    Ping,
+    Move(WirePoint),
 }
 
 // WireResult is the #[wire] struct reply: `tag` is which variant the server saw
@@ -102,7 +102,7 @@ type WireResult {
 }
 
 actor KeyValue {
-    let store: HashMap<string, string>;
+    let store: HashMap<string, string>,
     receive fn handle(req: KvReq) -> KvResp {
         match req {
             KvReq.Put(kv) => {
@@ -154,7 +154,7 @@ impl ActorMsg for KeyValue {
 // replies with a #[wire] struct, so the explicit-@N tagged body is exercised on
 // both the request and the reply leg of a remote ask.
 actor WireProbe {
-    let calls: i64;
+    let calls: i64,
     receive fn handle(cmd: WireCmd) -> WireResult {
         match cmd {
             WireCmd.Ping => WireResult { tag: 0, sum: 0 },
@@ -175,11 +175,11 @@ type DistIdentity {
 }
 
 enum IdentityReq {
-    Inspect;
+    Inspect,
 }
 
 enum IdentityResp {
-    Value(DistIdentity);
+    Value(DistIdentity),
 }
 
 actor IdentityProbe {
@@ -300,7 +300,7 @@ actor PartitionInjector {
 
 actor Linker {
     // 0 = CrashLinked (the linked actor crashes); 1 = MonitorLost (non-fatal).
-    let policy_sel: i64;
+    let policy_sel: i64,
 
     // Establish the cross-node link from inside this actor's own handler so the
     // implicit `self` subject of `link_remote` is THIS actor. The remote peer is
@@ -337,10 +337,10 @@ actor Linker {
 }
 
 actor MonitorProbe {
-    var active_monitor: Result<MonitorRef, MonitorError>;
-    var expected_monitor_id: u64 = 0;
-    var down_count: i64 = 0;
-    var down_reason: i64 = 100;
+    var active_monitor: Result<MonitorRef, MonitorError>,
+    var expected_monitor_id: u64 = 0,
+    var down_count: i64 = 0,
+    var down_reason: i64 = 100,
 
     // drive: 0 = clean stop, 1 = crash, 2 = leave target alive.
     receive fn arm(peer: RemotePid<KeyValue>, drive: i64) -> i64 {
@@ -711,8 +711,8 @@ actor MonitorProbe {
 }
 
 actor SetupRaceStopper {
-    let monitor_target: LocalPid<KeyValue>;
-    let link_target: LocalPid<KeyValue>;
+    let monitor_target: LocalPid<KeyValue>,
+    let link_target: LocalPid<KeyValue>,
     receive fn run() {
         var monitor_stopped = false;
         var link_stopped = false;
@@ -737,10 +737,10 @@ actor SetupRaceStopper {
 }
 
 actor LinkSetupRaceProbe {
-    var active_monitor: Result<MonitorRef, MonitorError>;
-    var expected_monitor_id: u64 = 0;
-    var down_count: i64 = 0;
-    var down_reason: i64 = 100;
+    var active_monitor: Result<MonitorRef, MonitorError>,
+    var expected_monitor_id: u64 = 0,
+    var down_count: i64 = 0,
+    var down_reason: i64 = 100,
     receive fn arm(peer: RemotePid<KeyValue>) -> i64 {
         let linker = spawn Linker(policy_sel: 0);
         active_monitor = monitor(linker);
@@ -828,7 +828,7 @@ actor MonitorCloseProbe {
 }
 
 actor MonitorLeakProbe {
-    var down_count: i64 = 0;
+    var down_count: i64 = 0,
     receive fn run(peer: RemotePid<KeyValue>, iterations: i64) -> i64 {
         var completed: i64 = 0;
         var previous_id: u64 = 0;

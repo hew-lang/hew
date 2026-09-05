@@ -123,7 +123,7 @@ fn compiler_iterator_impls_retain_their_typed_receiver_identities() {
 fn user_hashmap_iter_shadow_cannot_capture_the_compiler_cursor_impl() {
     let output = std_iter_output(
         r"
-type HashMapIter<T> { value: Option<T>; }
+type HashMapIter<T> { value: Option<T>, }
 impl<T> Iterator for HashMapIter<T> {
     type Item = T;
     fn next(var self) -> Option<T> { None }
@@ -168,7 +168,7 @@ fn main() -> i64 { 0 }
 fn user_map_shadow_does_not_capture_imported_iter_map_dispatch() {
     let output = std_iter_output(
         r"
-type Map<T> { value: Option<T>; }
+type Map<T> { value: Option<T>, }
 impl<T> Iterator for Map<T> {
     type Item = T;
     fn next(var self) -> Option<T> { None }

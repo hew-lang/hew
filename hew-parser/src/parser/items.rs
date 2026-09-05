@@ -1165,10 +1165,8 @@ impl Parser<'_> {
                     let name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
-                    // peek_span().start is now the first token after the `;` or `,`,
+                    self.expect_structural_separator();
+                    // peek_span().start is now the first token after the `,`,
                     // which captures any trailing comment on this field's line in the
                     // range item_start..item_end (comments are skipped by the lexer,
                     // but extract_comments scans the raw source for them).
@@ -1205,9 +1203,7 @@ impl Parser<'_> {
                         self.expect(&Token::Colon)?;
                         let ty = self.parse_type()?;
                         fields.push((field_name, ty));
-                        if !(self.eat(&Token::Comma) || self.eat(&Token::Semicolon)) {
-                            break;
-                        }
+                        self.expect_structural_separator();
                     }
                     self.expect(&Token::RightBrace)?;
                     VariantKind::Struct(fields)
@@ -1215,11 +1211,8 @@ impl Parser<'_> {
                     VariantKind::Unit
                 };
 
-                if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
-                    self.error("use `;` instead of `,` to separate variants".to_string());
-                    self.advance();
-                }
-                // peek_span() is now the position after the trailing `;`
+                self.expect_structural_separator();
+                // peek_span() is now the position after the trailing `,`
                 let item_end = self.peek_span().start;
                 Some((
                     TypeBodyItem::Variant(VariantDecl {

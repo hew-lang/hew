@@ -17,8 +17,8 @@ import std.net.{Connection};
 import std.os;
 
 actor ChatRoom {
-    var handlers: Vec<LocalPid<ClientHandler>>;
-    var names: Vec<string>;
+    var handlers: Vec<LocalPid<ClientHandler>>,
+    var names: Vec<string>,
     receive fn register(handler: LocalPid<ClientHandler>, name: string) {
         handlers.push(handler);
         names.push(name);
@@ -47,9 +47,9 @@ actor ChatRoom {
 }
 
 actor ClientHandler {
-    let conn: Connection;
-    let name: string;
-    let room: LocalPid<ChatRoom>;
+    let conn: Connection,
+    let name: string,
+    let room: LocalPid<ChatRoom>,
     receive fn start(unused: i32) {
         match conn.write_string(f"[server] welcome {name}") {
             .Ok(_) => {},

@@ -11,7 +11,7 @@
 //
 // Elements 10, 20, 30 sum to 60; a count guard pins the iteration count to 3.
 type SetBox {
-    s: HashSet<i64>;
+    s: HashSet<i64>,
 }
 
 fn make_set_box() -> SetBox {

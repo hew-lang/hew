@@ -2,8 +2,8 @@
 // the actor's state, and be named by its qualified `Actor.method` spelling
 // from inside the actor. Both spellings resolve to the one declaration (#3285).
 actor Ledger {
-    var total: i64 = 0;
-    var label: string = "";
+    var total: i64 = 0,
+    var label: string = "",
 
     fn scaled(by: i64) -> i64 {
         total * by

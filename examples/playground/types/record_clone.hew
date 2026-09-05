@@ -3,16 +3,16 @@
 //! the clone do not affect the original, matching native ownership semantics.
 
 type Counter {
-    value: i64;
+    value: i64,
 }
 
 type Inner {
-    value: i64;
+    value: i64,
 }
 
 type Outer {
-    inner: Inner;
-    label: string;
+    inner: Inner,
+    label: string,
 }
 
 fn main() {

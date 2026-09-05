@@ -13,7 +13,7 @@
 // Move-checker lattice: Consumed ⊓ Consumed = Consumed → accept.
 #[linear]
 type Txn {
-    id: i64;
+    id: i64,
 }
 
 impl Txn {

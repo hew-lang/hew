@@ -4,10 +4,10 @@
 import std.testing;
 
 actor IntCoalescer {
-    var processed: i64 = 0;
-    var latest: i64 = -1;
+    var processed: i64 = 0,
+    var latest: i64 = -1,
 
-    mailbox 1 overflow coalesce(id) fallback drop_new;
+    mailbox 1 overflow coalesce(id) fallback drop_new,
 
     receive fn update(id: i64, value: i64, pause: duration) {
         sleep(pause);

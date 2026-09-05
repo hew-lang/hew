@@ -5,8 +5,8 @@ type SeedWire {
 }
 
 type SeedPoint {
-    x: i32;
-    y: i32;
+    x: i32,
+    y: i32,
 }
 
 fn seed_structured() {

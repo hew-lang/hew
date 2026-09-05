@@ -11,7 +11,7 @@
 //
 // Elements "aa","bbb","cccc" (lens 2+3+4 = 9): exit 9.
 type SetBox {
-    s: HashSet<string>;
+    s: HashSet<string>,
 }
 
 fn make_set_box() -> SetBox {

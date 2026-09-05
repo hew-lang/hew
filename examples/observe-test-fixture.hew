@@ -1,7 +1,7 @@
 import std.observe;
 
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn increment(n: i64) {
         count = count + n;
@@ -13,7 +13,7 @@ actor Counter {
 }
 
 actor Pinger {
-    let target: Counter;
+    let target: Counter,
 
     receive fn ping(n: i64) -> i64 {
         var sent = 0;

@@ -3,7 +3,7 @@
 // consumed at another site earlier in the loop body and rebound since: the
 // nearest use decides, not any consume reachable in the loop.
 type Holder {
-    items: Vec<string>;
+    items: Vec<string>,
 }
 
 fn mk(tag: string) -> Holder {

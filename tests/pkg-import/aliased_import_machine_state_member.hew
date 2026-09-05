@@ -21,12 +21,12 @@ import hew.aliassrc.{ Payload as Tag };
 
 machine Holder {
     events {
-        Fill;
-        Bump;
+        Fill,
+        Bump,
     }
 
-    state Vacant;
-    state Full { item: Tag; }
+    state Vacant,
+    state Full { item: Tag, },
 
     on Fill: Vacant => Full {
         Full { item: Tag { code: 40 } }

@@ -6,26 +6,26 @@
 // counterfactual.
 
 pub indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 pub type Reply {
-    items: Vec<Reply>;
+    items: Vec<Reply>,
 }
 
 pub indirect enum A {
-    Leaf(i64);
-    Wrap(B);
+    Leaf(i64),
+    Wrap(B),
 }
 
 pub indirect enum B {
-    Leaf(i64);
-    Wrap(A);
+    Leaf(i64),
+    Wrap(A),
 }
 
 pub type Holder {
-    value: i64;
+    value: i64,
 }
 
 // Constructors, not qualified struct-literal expressions, so the importer

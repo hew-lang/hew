@@ -5,7 +5,7 @@
 // `self.out.put(n)` must reach the same dispatch `out.put(n)` reaches, so this
 // twin shares that fixture's expected output.
 actor W {
-    var total: i64 = 0;
+    var total: i64 = 0,
     receive fn put(n: i64) {
         self.total = self.total + n;
     }
@@ -15,7 +15,7 @@ actor W {
 }
 
 actor B {
-    let out: W;
+    let out: W,
     receive fn go(n: i64) {
         self.out.put(n);
     }

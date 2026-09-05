@@ -20,7 +20,7 @@ import hew.closableerr.{Closable as ForeignClosable};
 import hew.closableerr2;
 
 pub type ClosableHandle {
-    id: i64;
+    id: i64,
 }
 
 impl ForeignClosable for ClosableHandle {

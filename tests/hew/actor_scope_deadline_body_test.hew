@@ -15,7 +15,7 @@
 import std.testing;
 
 actor Deadliner {
-    var fired: i64 = 0;
+    var fired: i64 = 0,
 
     // The scoped child sleeps a fixed long duration; the deadline is short, so
     // the deadline wins and the body runs (fired = 7). The scoped child is a

@@ -1,4 +1,4 @@
-enum EnumScalarReadChoice { Pair(string, i64); }
+enum EnumScalarReadChoice { Pair(string, i64), }
 type EnumScalarReadCarrier {
     choice: EnumScalarReadChoice,
     sibling: string,

@@ -14,14 +14,14 @@
 // HIR, MIR, and codegen never see a composite.
 machine ConnectionLifecycle {
     events {
-        Connect;
-        AuthOk;
-        DrainStart;
-        DrainDone;
-        Disconnect;
+        Connect,
+        AuthOk,
+        DrainStart,
+        DrainDone,
+        Disconnect,
     }
 
-    state Disconnected;
+    state Disconnected,
 
     state Connected {
         entry {
@@ -37,7 +37,7 @@ machine ConnectionLifecycle {
             exit {
                 println("Authenticating.exit");
             }
-        }
+        },
         state Active {
             entry {
                 println("Active.entry");
@@ -45,7 +45,7 @@ machine ConnectionLifecycle {
             exit {
                 println("Active.exit");
             }
-        }
+        },
         state Draining {
             entry {
                 println("Draining.entry");
@@ -53,14 +53,14 @@ machine ConnectionLifecycle {
             exit {
                 println("Draining.exit");
             }
-        }
-        on Disconnect: _ => .Disconnected;
-    }
+        },
+        on Disconnect: _ => .Disconnected,
+    },
 
-    on Connect: Disconnected => .Authenticating;
-    on AuthOk: Authenticating => .Active;
-    on DrainStart: Active => .Draining;
-    on DrainDone: Draining => .Disconnected;
+    on Connect: Disconnected => .Authenticating,
+    on AuthOk: Authenticating => .Active,
+    on DrainStart: Active => .Draining,
+    on DrainDone: Draining => .Disconnected,
     on Connect: _ => _ {
         state
     }

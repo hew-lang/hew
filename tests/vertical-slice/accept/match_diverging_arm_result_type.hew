@@ -15,8 +15,8 @@
 //! Observable contract: the program prints two lines and exits 0.
 
 enum Status {
-    Good(string);
-    Bad;
+    Good(string),
+    Bad,
 }
 
 fn parse(input: string, fail: bool) -> Status {

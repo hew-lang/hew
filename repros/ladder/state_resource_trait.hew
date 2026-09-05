@@ -8,7 +8,7 @@ impl Bump for Conn {
     fn bump(var self) { self.fd = self.fd + 1; }
 }
 actor Holder {
-    var conn: Conn = Conn { fd: 10 };
+    var conn: Conn = Conn { fd: 10 },
     receive fn poke() {
         conn.bump();
         println(conn.fd);

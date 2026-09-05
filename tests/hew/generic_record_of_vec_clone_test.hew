@@ -15,7 +15,7 @@
 import std.testing;
 
 type Bag<T> {
-    items: Vec<T>;
+    items: Vec<T>,
 }
 
 #[test]

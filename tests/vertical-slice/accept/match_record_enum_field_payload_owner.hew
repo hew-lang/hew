@@ -4,8 +4,8 @@
 // readable after the record it came from goes out of scope, and the record's
 // other owned field must still be released exactly once.
 type Pair {
-    other: Vec<i64>;
-    value: Option<Vec<i64>>;
+    other: Vec<i64>,
+    value: Option<Vec<i64>>,
 }
 
 // The payload escapes past the record's scope exit: `p` is dropped on return,

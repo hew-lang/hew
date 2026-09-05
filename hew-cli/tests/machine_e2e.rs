@@ -5,15 +5,15 @@ use std::process::Command;
 use support::hew_binary;
 
 fn machine_fixture() -> &'static str {
-    "machine Light {\n    events {\n        Toggle;\n    }\n    state Off;\n    state On;\n    on Toggle: Off => On { .On }\n    on Toggle: On => Off { .Off }\n}\n"
+    "machine Light {\n    events {\n        Toggle,\n    }\n    state Off,\n    state On,\n    on Toggle: Off => On { .On }\n    on Toggle: On => Off { .Off }\n}\n"
 }
 
 fn missing_import_fixture() -> &'static str {
     "machine TrafficLight {\n\
-     \x20   events { Tick; }\n\
-     \x20   state Red;\n\
-     \x20   state Green;\n\
-     \x20   state Yellow;\n\
+     \x20   events { Tick, }\n\
+     \x20   state Red,\n\
+     \x20   state Green,\n\
+     \x20   state Yellow,\n\
      \x20   on Tick: Red => Green { .Green }\n\
      \x20   on Tick: Green => Yellow { .Yellow }\n\
      \x20   on Tick: Yellow => Red { .Red }\n\
@@ -79,16 +79,16 @@ fn machine_diagram_dot_emits_graphviz_on_stdout() {
 fn composite_fixture() -> &'static str {
     "machine Conn {\n\
      \x20   events {\n\
-     \x20       Connect;\n\
-     \x20       Disconnect;\n\
+     \x20       Connect,\n\
+     \x20       Disconnect,\n\
      \x20   }\n\
-     \x20   state Disconnected;\n\
+     \x20   state Disconnected,\n\
      \x20   state Connected {\n\
-     \x20       initial state Authenticating;\n\
-     \x20       state Active;\n\
-     \x20       on Disconnect: _ => .Disconnected;\n\
+     \x20       initial state Authenticating,\n\
+     \x20       state Active,\n\
+     \x20       on Disconnect: _ => .Disconnected,\n\
      \x20   }\n\
-     \x20   on Connect: Disconnected => .Authenticating;\n\
+     \x20   ,on Connect: Disconnected => .Authenticating,\n\
      \x20   on Connect: _ => _ { state }\n\
      \x20   on Disconnect: _ => _ { state }\n\
      }\n"
@@ -341,11 +341,11 @@ fn machine_list_fails_closed_on_zero_machines() {
 fn default_fixture() -> &'static str {
     "machine Tank {\n\
      \x20   events {\n\
-     \x20       Fill;\n\
-     \x20       Drain;\n\
+     \x20       Fill,\n\
+     \x20       Drain,\n\
      \x20   }\n\
-     \x20   state Filling;\n\
-     \x20   state Draining;\n\
+     \x20   state Filling,\n\
+     \x20   state Draining,\n\
      \x20   on Drain: Filling => Draining { .Draining }\n\
      \x20   default { state }\n\
      }\n"
@@ -355,12 +355,12 @@ fn default_fixture() -> &'static str {
 fn reenter_fixture() -> &'static str {
     "machine Counter {\n\
      \x20   events {\n\
-     \x20       Inc;\n\
-     \x20       Reset;\n\
+     \x20       Inc,\n\
+     \x20       Reset,\n\
      \x20   }\n\
-     \x20   state Zero;\n\
-     \x20   state NonZero { value: i64; }\n\
-     \x20   on Inc: Zero => NonZero { .NonZero { value: 1 } }\n\
+     \x20   state Zero,\n\
+     \x20   state NonZero { value: i64, }\n\
+     \x20   ,on Inc: Zero => NonZero { .NonZero { value: 1 } }\n\
      \x20   on Inc: NonZero => NonZero reenter { .NonZero { value: self.value + 1 } }\n\
      \x20   on Reset: NonZero => Zero { .Zero }\n\
      \x20   on Reset: Zero => Zero reenter { .Zero }\n\
@@ -372,14 +372,14 @@ fn reenter_fixture() -> &'static str {
 fn emits_fixture() -> &'static str {
     "machine Relay {\n\
      \x20   events {\n\
-     \x20       Trigger;\n\
-     \x20       Signal;\n\
+     \x20       Trigger,\n\
+     \x20       Signal,\n\
      \x20   }\n\
      \x20   emits {\n\
-     \x20       Signal;\n\
+     \x20       Signal,\n\
      \x20   }\n\
-     \x20   state Idle;\n\
-     \x20   state Active;\n\
+     \x20   state Idle,\n\
+     \x20   state Active,\n\
      \x20   on Trigger: Idle => Active { emit Signal {}; .Active }\n\
      \x20   on Trigger: Active => Idle { .Idle }\n\
      \x20   default { state }\n\
@@ -390,12 +390,12 @@ fn emits_fixture() -> &'static str {
 fn generic_fixture() -> &'static str {
     "machine Box<T> {\n\
      \x20   events {\n\
-     \x20       Put { value: T; }\n\
-     \x20       Take;\n\
+     \x20       Put { value: T, }\n\
+     \x20       ,Take,\n\
      \x20   }\n\
-     \x20   state Empty;\n\
-     \x20   state Full { value: T; }\n\
-     \x20   on Put(value): Empty => Full { Full { value: value } }\n\
+     \x20   state Empty,\n\
+     \x20   state Full { value: T, }\n\
+     \x20   ,on Put(value): Empty => Full { Full { value: value } }\n\
      \x20   on Take: Full => Empty { Empty }\n\
      }\n"
 }
@@ -750,9 +750,9 @@ fn machine_diagram_json_no_wildcard_rows() {
     // Minimal wildcard machine: one wildcard source, one named target.
     // `default { state }` satisfies exhaustiveness so the HIR path works.
     let source = "machine Toggle {\n\
-                  \x20   events { Flip; Reset; }\n\
-                  \x20   state A;\n\
-                  \x20   state B;\n\
+                  \x20   events { Flip, Reset, }\n\
+                  \x20   state A,\n\
+                  \x20   state B,\n\
                   \x20   on Flip: A => B { .B }\n\
                   \x20   on Reset: _ => A { .A }\n\
                   \x20   default { state }\n\
@@ -791,9 +791,9 @@ fn machine_diagram_json_event_fields_present() {
     let dir = support::tempdir();
     // `default { state }` satisfies exhaustiveness so the HIR check path works.
     let source = "machine Sender {\n\
-                  \x20   events { Send { payload: i64; }; Ack; }\n\
-                  \x20   state Idle;\n\
-                  \x20   state Waiting;\n\
+                  \x20   events { Send { payload: i64, }, Ack, }\n\
+                  \x20   state Idle,\n\
+                  \x20   state Waiting,\n\
                   \x20   on Send: Idle => Waiting { .Waiting }\n\
                   \x20   on Ack: Waiting => Idle { .Idle }\n\
                   \x20   default { state }\n\
@@ -837,9 +837,9 @@ fn imported_only_fixture() -> &'static str {
 fn local_and_imported_fixture() -> &'static str {
     "import std.machines.toggle.{Toggle, ToggleEvent};\n\
      machine Door {\n\
-     \x20   events { Push; }\n\
-     \x20   state Closed;\n\
-     \x20   state Open;\n\
+     \x20   events { Push, }\n\
+     \x20   state Closed,\n\
+     \x20   state Open,\n\
      \x20   on Push: Closed => Open { .Open }\n\
      \x20   on Push: Open => Closed { .Closed }\n\
      }\n\

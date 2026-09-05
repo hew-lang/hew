@@ -4,7 +4,7 @@
 // (not "undefined function") — the guard fires correctly for values that
 // are not function-typed.
 type Counter {
-    count: i64;
+    count: i64,
 }
 
 fn main() -> i64 {

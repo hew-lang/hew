@@ -4,7 +4,7 @@
 import std.iter;
 
 type MapBox {
-    m: HashMap<i64, i64>;
+    m: HashMap<i64, i64>,
 }
 
 fn make_box() -> MapBox {

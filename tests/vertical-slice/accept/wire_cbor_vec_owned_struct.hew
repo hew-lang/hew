@@ -7,9 +7,9 @@
 // element `drop_fn`. Exit 7 (the scalar `seq`) proves the round-trip; the
 // element strings are verified by the leak oracle's no-per-frame-leak slope.
 #[wire]
-type Item { name: string @1; }
+type Item { name: string @1, }
 #[wire]
-type Batch { items: Vec<Item> @1; seq: i64 @2; }
+type Batch { items: Vec<Item> @1, seq: i64 @2, }
 
 fn main() -> i64 {
     let xs: Vec<Item> = Vec.new();

@@ -14,15 +14,15 @@ fn _background() {
 }
 
 actor Worker {
-    let factor: i64;
+    let factor: i64,
     receive fn compute(n: i64) -> i64 {
         n * factor
     }
 }
 
 actor Coordinator {
-    let worker: LocalPid<Worker>;
-    let bias: i64;
+    let worker: LocalPid<Worker>,
+    let bias: i64,
     receive fn run(n: i64) -> i64 {
         let r = await worker.compute(n);
         // The fork runs AFTER the await resolves: the spawn must read the live

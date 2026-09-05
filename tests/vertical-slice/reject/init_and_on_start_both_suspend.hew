@@ -3,7 +3,7 @@
 // continuation can be parked at a time). The spawn site does not sequence that;
 // refuse at compile time rather than silently truncate either hook.
 actor Both {
-  var value: i64 = 0;
+  var value: i64 = 0,
   init() {
     println("init");
     sleep(20ms);

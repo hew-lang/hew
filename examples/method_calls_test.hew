@@ -2,8 +2,8 @@
 //! Description: Method Calls Test example.
 
 type Point {
-    x: f64;
-    y: f64;
+    x: f64,
+    y: f64,
 }
 
 trait PointMethods {

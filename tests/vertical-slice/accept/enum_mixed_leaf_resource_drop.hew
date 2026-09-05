@@ -20,13 +20,13 @@ impl Handle {
 }
 
 enum Slot {
-    Empty;
-    Full(Handle, string);
+    Empty,
+    Full(Handle, string),
 }
 
 enum Bare {
-    Nothing;
-    Held(Handle);
+    Nothing,
+    Held(Handle),
 }
 
 pub fn main() {

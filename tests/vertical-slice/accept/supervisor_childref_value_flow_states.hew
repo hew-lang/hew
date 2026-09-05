@@ -11,7 +11,7 @@
 // root-supervisor budget failures intentionally make the process exit 1; the
 // harness asserts that clean failure class plus the sentinel line.
 actor Worker {
-    let value: i64 = 7;
+    let value: i64 = 7,
     receive fn work() -> i64 {
         value
     }
@@ -27,42 +27,42 @@ actor Worker {
 }
 
 supervisor LivePool {
-    strategy: one_for_one;
-    intensity: 20 within 60s;
+    strategy: one_for_one,
+    intensity: 20 within 60s,
 
-    child worker: Worker(value: 7);
+    child worker: Worker(value: 7),
 }
 
 supervisor RestartPool {
-    strategy: one_for_one;
-    intensity: 20 within 60s;
+    strategy: one_for_one,
+    intensity: 20 within 60s,
 
-    child worker: Worker(value: 7);
+    child worker: Worker(value: 7),
 }
 
 supervisor BudgetPool {
-    strategy: one_for_one;
-    intensity: 2 within 60s;
+    strategy: one_for_one,
+    intensity: 2 within 60s,
 
-    child worker: Worker(value: 7);
+    child worker: Worker(value: 7),
 }
 
 supervisor StopPool {
-    strategy: one_for_one;
-    intensity: 20 within 60s;
+    strategy: one_for_one,
+    intensity: 20 within 60s,
 
-    child worker: Worker(value: 7) restart: temporary;
+    child worker: Worker(value: 7) restart: temporary,
 }
 
 supervisor StaticPool {
-    strategy: simple_one_for_one;
-    intensity: 2 within 60s;
+    strategy: simple_one_for_one,
+    intensity: 2 within 60s,
 
-    pool workers: Worker(value: 7) count: 1;
+    pool workers: Worker(value: 7) count: 1,
 }
 
 type Holder {
-    child: ChildRef<Worker>;
+    child: ChildRef<Worker>,
 }
 
 extern "C" {

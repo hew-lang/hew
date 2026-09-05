@@ -4,7 +4,7 @@
 import std.net.{Connection};
 
 actor ServerReader {
-    let conn: Connection;
+    let conn: Connection,
 
     receive fn start(unused: i32) {
         let msg = conn.read_string();

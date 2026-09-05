@@ -38,7 +38,7 @@ extern "C" {
 
 #[resource]
 type Slot {
-    addr: i64;
+    addr: i64,
 }
 
 impl Slot {
@@ -50,13 +50,13 @@ impl Slot {
 }
 
 type Pair {
-    slot: Slot;
-    tag: i64;
+    slot: Slot,
+    tag: i64,
 }
 
 type Two {
-    a: Slot;
-    b: Slot;
+    a: Slot,
+    b: Slot,
 }
 
 fn acquire() -> Slot {

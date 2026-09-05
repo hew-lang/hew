@@ -33,7 +33,7 @@ const ITERATIONS: usize = 48;
 fn vec_of_rc_source(body: &str) -> String {
     format!(
         "\
-type Node {{ value: i64; }}
+type Node {{ value: i64, }}
 
 fn make(seed: i64) -> Vec<Rc<Node>> {{
     let holders: Vec<Rc<Node>> = Vec.new();
@@ -208,7 +208,7 @@ fn vec_of_rc_dropping_clone_before_returned_original_leaks_nothing() {
 }
 
 const TUPLE_RC_MEMBER: &str = r#"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -219,7 +219,7 @@ fn main() -> i64 {
 "#;
 
 const OPTION_RC_PAYLOAD: &str = r"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -230,8 +230,8 @@ fn main() -> i64 {
 ";
 
 const RECORD_RC_FIELD: &str = r#"
-type Node { value: i64; }
-type Holder { r: Rc<Node>; tag: string; }
+type Node { value: i64, }
+type Holder { r: Rc<Node>, tag: string, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });

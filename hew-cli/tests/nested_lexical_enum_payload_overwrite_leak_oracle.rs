@@ -30,23 +30,23 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE_TEMPLATE: &str = r#"
 enum Box {
-    Full(string);
-    Empty;
+    Full(string),
+    Empty,
 }
 
 enum Inner {
-    Text(string);
-    Empty;
+    Text(string),
+    Empty,
 }
 
 enum Outer {
-    Full(Inner);
-    Empty;
+    Full(Inner),
+    Empty,
 }
 
 enum ScalarBox {
-    Full(i64);
-    Empty;
+    Full(i64),
+    Empty,
 }
 
 fn direct(i: i64) -> i64 {
@@ -178,13 +178,13 @@ fn main() -> i64 {
 
 const LIVE_ALIAS_TEMPLATE: &str = r#"
 enum Box {
-    Full(string);
-    Empty;
+    Full(string),
+    Empty,
 }
 
 enum PairBox {
-    Both(string, string);
-    Empty;
+    Both(string, string),
+    Empty,
 }
 
 fn live_alias(i: i64) -> i64 {
@@ -250,8 +250,8 @@ fn main() -> i64 {
 
 const SELF_ALIAS_TEMPLATE: &str = r#"
 enum Box {
-    Full(string);
-    Empty;
+    Full(string),
+    Empty,
 }
 
 fn self_alias(i: i64) -> i64 {
@@ -275,8 +275,8 @@ fn main() -> i64 {
 
 const CONDITIONAL_CONSUME_TEMPLATE: &str = r#"
 enum Box {
-    Full(string);
-    Empty;
+    Full(string),
+    Empty,
 }
 
 fn exercise(take: bool, i: i64) -> string {
@@ -309,7 +309,7 @@ const UNSUPPORTED_LIVE_ALIAS_CASES: &[(&str, &str, &str)] = &[
     (
         "mixed_string_vec",
         r#"
-enum Mixed { Full(string, Vec<i64>); Empty }
+enum Mixed { Full(string, Vec<i64>), Empty }
 fn main() {
     let values: Vec<i64> = Vec.new();
     var opt = Mixed.Full(f"mixed", values);
@@ -328,7 +328,7 @@ fn main() {
         "record_payload",
         r#"
 type Row { text: string }
-enum Box { Full(Row); Empty }
+enum Box { Full(Row), Empty }
 fn main() {
     var opt = Box.Full(Row { text: f"record" });
     match opt {
@@ -345,8 +345,8 @@ fn main() {
     (
         "nested_enum_payload",
         r#"
-enum Inner { Text(string); Empty }
-enum Outer { Full(Inner); Empty }
+enum Inner { Text(string), Empty }
+enum Outer { Full(Inner), Empty }
 fn main() {
     var opt = Outer.Full(Inner.Text(f"nested"));
     match opt {
@@ -366,7 +366,7 @@ fn main() {
     (
         "guard_fallthrough",
         r#"
-enum Box { Full(string); Empty }
+enum Box { Full(string), Empty }
 fn main() {
     var opt = Box.Full(f"guard");
     let n = match opt {

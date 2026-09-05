@@ -1,8 +1,8 @@
 // G: a record var passed through a consuming call in a loop and returned early.
 import std.string;
 
-type Run { checkpoint_seq: i64; stale: bool; run_id: string; }
-type Model { error: string; source_seq: i64; applied_seq: i64; run: Run; stages: Vec<string>; claims: Vec<string>; }
+type Run { checkpoint_seq: i64, stale: bool, run_id: string, }
+type Model { error: string, source_seq: i64, applied_seq: i64, run: Run, stages: Vec<string>, claims: Vec<string>, }
 
 fn empty() -> Model {
     Model { error: "", source_seq: 0, applied_seq: 0, run: Run { checkpoint_seq: -1, stale: false, run_id: "" }, stages: Vec.new(), claims: Vec.new() }

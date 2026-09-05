@@ -8,5 +8,5 @@
 
 /// Narrow `Gadget`: a single `i8` field.
 pub type Gadget {
-    v: i8;
+    v: i8,
 }

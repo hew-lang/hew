@@ -138,36 +138,36 @@ type QUICEventHandle {
 
 #[resource]
 pub type QUICEvent {
-    handle: QUICEventHandle;
+    handle: QUICEventHandle,
 }
 
 /// Non-destructive endpoint observation.
 pub type QUICEndpointObservation {
-    local_addr: string;
-    accepted_connections: i64;
-    last_error: string;
+    local_addr: string,
+    accepted_connections: i64,
+    last_error: string,
 }
 
 /// Non-destructive connection observation.
 pub type QUICConnectionObservation {
-    local_addr: string;
-    peer_addr: string;
-    opened_streams: i64;
-    accepted_streams: i64;
-    rtt_ms: i64;
-    bytes_sent: i64;
-    bytes_received: i64;
-    closed: bool;
-    last_error: string;
+    local_addr: string,
+    peer_addr: string,
+    opened_streams: i64,
+    accepted_streams: i64,
+    rtt_ms: i64,
+    bytes_sent: i64,
+    bytes_received: i64,
+    closed: bool,
+    last_error: string,
 }
 
 /// Non-destructive stream observation.
 pub type QUICStreamObservation {
-    bytes_sent: i64;
-    bytes_received: i64;
-    send_closed: bool;
-    recv_closed: bool;
-    last_error: string;
+    bytes_sent: i64,
+    bytes_received: i64,
+    send_closed: bool,
+    recv_closed: bool,
+    last_error: string,
 }
 
 // ── QUICEndpoint methods ──────────────────────────────────────────────

@@ -17,13 +17,13 @@
 
 /// Structured JWT errors surfaced by the native C ABI.
 pub enum JwtError {
-    None;
-    AlgorithmUnsupported;
-    InvalidKey;
-    TokenMalformed;
-    SignatureInvalid;
-    ClaimsExpired;
-    AllocationFailure;
+    None,
+    AlgorithmUnsupported,
+    InvalidKey,
+    TokenMalformed,
+    SignatureInvalid,
+    ClaimsExpired,
+    AllocationFailure,
 }
 
 fn jwt_error_from_i32(code: i32) -> JwtError { // INTERNAL-ABI: C ABI error tag is i32 repr(C)

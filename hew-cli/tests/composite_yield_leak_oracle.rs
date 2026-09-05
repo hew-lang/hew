@@ -121,8 +121,8 @@ fn record_yield_field_read_loop_source(frames: usize) -> String {
 fn enum_yield_drain_loop_source(frames: usize) -> String {
     format!(
         "enum Note {{\n\
-         \x20   Text(string);\n\
-         \x20   Number(i64);\n\
+         \x20   Text(string),\n\
+         \x20   Number(i64),\n\
          }}\n\
          actor Maker {{\n\
          \x20   receive gen fn notes() -> Note {{\n\
@@ -153,8 +153,8 @@ fn enum_yield_destructure_loop_source(frames: usize) -> String {
     let expected_total: usize = (0..frames).map(|i| 5 + i.to_string().len()).sum();
     format!(
         "enum Note {{\n\
-         \x20   Text(string);\n\
-         \x20   Number(i64);\n\
+         \x20   Text(string),\n\
+         \x20   Number(i64),\n\
          }}\n\
          actor Maker {{\n\
          \x20   receive gen fn notes() -> Note {{\n\

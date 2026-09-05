@@ -1,6 +1,6 @@
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 fn sum(t: Tree) -> i64 {
@@ -17,7 +17,7 @@ actor Scorer {
 }
 
 actor Coordinator {
-    let scorer: LocalPid<Scorer>;
+    let scorer: LocalPid<Scorer>,
 
     receive fn ask_score(tag: i64, tree: Tree) -> i64 {
         match await scorer.score(tag, tree) {

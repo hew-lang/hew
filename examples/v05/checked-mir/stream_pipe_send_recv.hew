@@ -7,7 +7,7 @@
 import std.stream;
 
 actor Echo {
-    let n: i64;
+    let n: i64,
     receive fn run(unused: i64) {
         let (sink, input) = match stream.bytes_pipe(4) {
             .Ok(pair) => pair,

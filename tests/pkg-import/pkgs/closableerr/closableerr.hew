@@ -10,7 +10,7 @@
 
 /// Error type returned by `Closable::close`.
 pub type CloseError {
-    code: i64;
+    code: i64,
 }
 
 /// A resource that can be closed, surfacing a `CloseError` on failure.
@@ -20,7 +20,7 @@ pub trait Closable {
 
 /// Non-prelude error leaf used by the local-shadow conformance oracle.
 pub type LocalShadowError {
-    code: i64;
+    code: i64,
 }
 
 /// Companion trait whose error leaf can be shadowed legally by an importer.

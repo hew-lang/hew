@@ -6,13 +6,13 @@ import std.string;
 import std.testing;
 
 type ClaimView {
-    item: string;
-    run_id: string;
-    fence: i64;
-    expires_at: i64;
-    lifecycle_state: string;
-    checkpoint: i64;
-    exact_head_verifying: bool;
+    item: string,
+    run_id: string,
+    fence: i64,
+    expires_at: i64,
+    lifecycle_state: string,
+    checkpoint: i64,
+    exact_head_verifying: bool,
 }
 
 fn active_claims() -> Vec<ClaimView> {

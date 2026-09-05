@@ -1,6 +1,6 @@
 enum Shape {
-    Circle(i64);
-    Square(i64);
+    Circle(i64),
+    Square(i64),
 }
 
 fn match_enum_probe() -> i64 {

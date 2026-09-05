@@ -14,16 +14,16 @@
 // the end-to-end signal for this fixture.
 machine Alarm {
     events {
-        Trigger;
-        Ring;
+        Trigger,
+        Ring,
     }
 
     emits {
-        Ring;
+        Ring,
     }
 
-    state Armed;
-    state Tripped;
+    state Armed,
+    state Tripped,
 
     on Trigger: Armed => Tripped {
         emit Ring {};
@@ -39,12 +39,12 @@ machine Alarm {
 
 machine Beacon {
     events {
-        Trigger;
-        Ring;
+        Trigger,
+        Ring,
     }
 
-    state Idle;
-    state Lit;
+    state Idle,
+    state Lit,
 
     on Trigger: Idle => Lit {
         Beacon.Lit

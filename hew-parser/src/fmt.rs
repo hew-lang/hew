@@ -591,7 +591,7 @@ impl<'a> Formatter<'a> {
                     self.write(name);
                     self.write(": ");
                     self.format_type_expr(&ty.0);
-                    self.write(";");
+                    self.write(",");
                     self.newline();
                     // flush any trailing comment on this line; span.end is the
                     // first token of the next item (or closing brace), so any
@@ -811,7 +811,7 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn format_variant(&mut self, v: &VariantDecl, trailing_semicolon: bool) {
+    fn format_variant(&mut self, v: &VariantDecl, trailing_comma: bool) {
         self.write_outer_doc(v.doc_comment.as_ref());
         self.write_indent();
         self.write(&v.name);
@@ -834,8 +834,8 @@ impl<'a> Formatter<'a> {
                 self.write(" }");
             }
         }
-        if trailing_semicolon {
-            self.write(";");
+        if trailing_comma {
+            self.write(",");
         }
         self.newline();
     }
@@ -1121,7 +1121,7 @@ impl<'a> Formatter<'a> {
                     }
                 }
             }
-            self.write(";\n");
+            self.write(",\n");
             has_body_item = true;
         }
 
@@ -1240,7 +1240,7 @@ impl<'a> Formatter<'a> {
             for name in &decl.emits {
                 self.write_indent();
                 self.write(name);
-                self.write(";\n");
+                self.write(",\n");
             }
             self.indent -= 1;
             self.write_indent();
@@ -1327,10 +1327,10 @@ impl<'a> Formatter<'a> {
         self.writeln("}");
     }
 
-    /// Emit `{ name: Type; … }` after an event/state name, or `;` when empty.
+    /// Emit `{ name: Type, … }` after an event/state name, or `,` when empty.
     fn format_machine_field_list(&mut self, fields: &[(String, Spanned<TypeExpr>)]) {
         if fields.is_empty() {
-            self.write(";");
+            self.write(",");
         } else {
             self.write(" { ");
             for (i, (name, ty)) in fields.iter().enumerate() {
@@ -1340,9 +1340,9 @@ impl<'a> Formatter<'a> {
                 self.write(name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(";");
+                self.write(",");
             }
-            self.write(" }");
+            self.write(" },");
         }
     }
 
@@ -1360,7 +1360,7 @@ impl<'a> Formatter<'a> {
                 self.write(name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(";\n");
+                self.write(",\n");
             }
             if let Some(entry) = &state.entry {
                 self.write_indent();
@@ -1376,7 +1376,7 @@ impl<'a> Formatter<'a> {
             }
             self.indent -= 1;
             self.write_indent();
-            self.write("}\n");
+            self.write("},\n");
         } else if !state.fields.is_empty() {
             self.write(" {");
             for (name, ty) in &state.fields {
@@ -1384,11 +1384,11 @@ impl<'a> Formatter<'a> {
                 self.write(name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(";");
+                self.write(",");
             }
-            self.write(" }\n");
+            self.write(" },\n");
         } else {
-            self.write(";\n");
+            self.write(",\n");
         }
     }
 
@@ -1453,7 +1453,7 @@ impl<'a> Formatter<'a> {
             &stripped_body
         };
         match transition.body_form {
-            MachineTransitionBodyForm::Implicit => self.write(";"),
+            MachineTransitionBodyForm::Implicit => self.write(","),
             MachineTransitionBodyForm::PayloadShorthand => {
                 // The head already wrote the target name (with its authored
                 // dot); the shorthand re-emits only the payload field list.
@@ -1587,7 +1587,7 @@ impl<'a> Formatter<'a> {
             self.write(name);
             self.write(": ");
             self.format_type_expr(&ty.0);
-            self.write(";\n");
+            self.write(",\n");
         }
         if let Some(entry) = &group.entry {
             self.write_indent();
@@ -1628,7 +1628,7 @@ impl<'a> Formatter<'a> {
 
         self.indent -= 1;
         self.write_indent();
-        self.write("}\n");
+        self.write("},\n");
     }
 
     /// Emit a substate declaration inside a composite block. The `initial`
@@ -1651,7 +1651,7 @@ impl<'a> Formatter<'a> {
                 self.write(fname);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(";\n");
+                self.write(",\n");
             }
             if let Some(entry) = &state.entry {
                 self.write_indent();
@@ -1667,7 +1667,7 @@ impl<'a> Formatter<'a> {
             }
             self.indent -= 1;
             self.write_indent();
-            self.write("}\n");
+            self.write("},\n");
         } else if !own_fields.is_empty() {
             self.write(" {");
             for (fname, ty) in own_fields {
@@ -1675,11 +1675,11 @@ impl<'a> Formatter<'a> {
                 self.write(fname);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(";");
+                self.write(",");
             }
-            self.write(" }\n");
+            self.write(" },\n");
         } else {
-            self.write(";\n");
+            self.write(",\n");
         }
     }
 
@@ -1694,7 +1694,7 @@ impl<'a> Formatter<'a> {
             self.write(" = ");
             self.format_expr(&default.0);
         }
-        self.write(";\n");
+        self.write(",\n");
     }
 
     fn format_actor_init(&mut self, init: &ActorInit, scope_end: usize) {
@@ -1793,14 +1793,14 @@ impl<'a> Formatter<'a> {
             SupervisorStrategy::RestForOne => self.write("rest_for_one"),
             SupervisorStrategy::SimpleOneForOne => self.write("simple_one_for_one"),
         }
-        self.write(";\n");
+        self.write(",\n");
         if let Some(intensity) = &decl.intensity {
             self.write_indent();
             self.write("intensity: ");
             self.write(&intensity.restarts.to_string());
             self.write(" within ");
             self.write(&intensity.window);
-            self.write(";\n");
+            self.write(",\n");
         }
 
         if !decl.children.is_empty() {
@@ -1871,7 +1871,7 @@ impl<'a> Formatter<'a> {
                 self.write(" }");
             }
         }
-        self.write(";\n");
+        self.write(",\n");
     }
 
     fn format_fn(&mut self, decl: &FnDecl, span_end: usize) {
@@ -4313,7 +4313,7 @@ mod tests {
         // block was collected by the parser and then dropped on the floor.
         let src = "\
 enum Foo {
-    A;
+    A,
 }
 
 /// Doc comment for Foo Display.
@@ -4354,7 +4354,7 @@ fn main() -> i32 {
     fn actor_declaration() {
         let src = "\
 actor Counter {
-    let count: i32;
+    let count: i32,
 
     receive fn increment() {
         self.count = self.count + 1;
@@ -4373,9 +4373,9 @@ actor Counter {
     fn enum_declaration() {
         let src = "\
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 ";
         let formatted = roundtrip(src);
@@ -4614,12 +4614,12 @@ fn main() {
     }
 
     #[test]
-    fn enum_all_variants_semicolon() {
+    fn enum_all_variants_comma() {
         let src = "\
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -4630,9 +4630,9 @@ enum Colour {
         let src = "\
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Completed;
+    Pending,
+    Active,
+    Completed,
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -4644,9 +4644,9 @@ enum Status {
 #[json(camelCase)]
 #[wire]
 enum Status {
-    PendingReview;
-    ActiveNow;
-    Completed;
+    PendingReview,
+    ActiveNow,
+    Completed,
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -4688,10 +4688,10 @@ type Msg {
         let src = "\
 pub enum IoError {
     // The target path does not exist.
-    NotFound(int);
+    NotFound(int),
     // The process lacks permission for the operation.
-    PermissionDenied(int);
-    Other(int); // catch-all
+    PermissionDenied(int),
+    Other(int), // catch-all
 }
 ";
         assert_eq!(roundtrip_source(src), src);
@@ -4702,8 +4702,8 @@ pub enum IoError {
         let src = "\
 type Config {
     // The server port to bind on.
-    port: int;
-    host: string; // hostname or IP
+    port: int,
+    host: string, // hostname or IP
 }
 ";
         assert_eq!(roundtrip_source(src), src);
@@ -4792,15 +4792,15 @@ fn empty_fn() {}
 // module-level comment
 enum Status {
     // ok variant
-    Ok;
+    Ok,
     // error variant
-    Err(int); // with payload
+    Err(int), // with payload
 }
 
 type Cfg {
     // host to connect to
-    host: string;
-    port: int; // default 8080
+    host: string,
+    port: int, // default 8080
 }
 
 fn handle(s: Status) -> int {
@@ -5009,7 +5009,7 @@ fn main() {
         // The formatter must emit `Name<T> { ... }` when type_args is Some.
         let src = "\
 type Wrapper<T> {
-    value: T;
+    value: T,
 }
 
 fn main() {
@@ -5024,7 +5024,7 @@ fn main() {
         // The formatter must emit `Name { ... }` (no `<>`) when type_args is None.
         let src = "\
 type Wrapper<T> {
-    value: T;
+    value: T,
 }
 
 fn main() {
@@ -5543,8 +5543,8 @@ impl<T> Vec<T> {
 type AppConfig { size: i64, label: string }
 
 actor Cache {
-    var capacity: i64;
-    var name: string;
+    var capacity: i64,
+    var name: string,
     receive fn get_cap(_n: i64) -> i64 {
         capacity;
         name.len()
@@ -5552,10 +5552,10 @@ actor Cache {
 }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child cache: Cache(capacity: config.size, name: config.label);
+    child cache: Cache(capacity: config.size, name: config.label),
 }
 
 fn main() -> i64 {
@@ -5593,7 +5593,7 @@ fn main() -> i64 {
     fn supervisor_without_config_param_no_parens() {
         let src = "\
 supervisor Simple {
-    strategy: one_for_one;
+    strategy: one_for_one,
 }
 ";
         let formatted = roundtrip(src);
@@ -5608,15 +5608,15 @@ supervisor Simple {
         let src = "\
 machine Socket {
     events {
-        Connect { fd: i64; }
+        Connect { fd: i64, }
     }
 
-    state Idle;
-    state Active { h: Handle; }
+    state Idle,
+    state Active { h: Handle, },
 
     on Connect(fd): Idle => Active { Active { h: Handle { fd: fd } } }
     on Connect(fd): Active => Active { h: Handle { fd: fd } }
-    on Connect(fd): Active => Idle;
+    on Connect(fd): Active => Idle,
 }
 ";
         let formatted = roundtrip(src);
@@ -5630,7 +5630,7 @@ machine Socket {
             "payload shorthand must remain shorthand; got:\n{formatted}"
         );
         assert!(
-            formatted.contains("on Connect(fd): Active => Idle;"),
+            formatted.contains("on Connect(fd): Active => Idle,"),
             "implicit transition must remain implicit; got:\n{formatted}"
         );
         assert_eq!(roundtrip(&formatted), formatted);
@@ -5640,7 +5640,7 @@ machine Socket {
     fn impl_block_doc_comment_is_preserved() {
         let src = "\
 enum Foo {
-    A;
+    A,
 }
 
 /// Doc comment for Foo Display.

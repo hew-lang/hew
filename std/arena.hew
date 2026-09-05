@@ -34,17 +34,17 @@
 /// identity prevents an independently-constructed same-typed arena from
 /// accepting an issued key.
 pub type Key<T> {
-    arena_id: i64;
-    index: i64;
-    generation: i64;
+    arena_id: i64,
+    index: i64,
+    generation: i64,
 }
 
 // A slot in the backing store. `value: None` marks the slot free. Every
 // `insert` mints a fresh arena-local generation, so slot reuse cannot recreate
 // an issued `Key`.
 type Slot<T> {
-    generation: i64;
-    value: Option<T>;
+    generation: i64,
+    value: Option<T>,
 }
 
 // An Arena owns mutable identity state and must not fork. A no-op affine
@@ -56,7 +56,7 @@ type Slot<T> {
 // directly. WHAT: `#[noclone]` or equivalent, applied straight to `Arena<T>`.
 #[resource]
 type ArenaCloneGuard {
-    marker: i64;
+    marker: i64,
 }
 
 impl ArenaCloneGuard {
@@ -70,11 +70,11 @@ impl ArenaCloneGuard {
 /// is non-cloneable because forking its identity state could issue ambiguous
 /// keys.
 pub type Arena<T> {
-    clone_guard: ArenaCloneGuard;
-    arena_id: i64;
-    generation_counter: Vec<i64>;
-    slots: Vec<Slot<T>>;
-    free: Vec<i64>;
+    clone_guard: ArenaCloneGuard,
+    arena_id: i64,
+    generation_counter: Vec<i64>,
+    slots: Vec<Slot<T>>,
+    free: Vec<i64>,
 }
 
 /// Create a new, empty arena.

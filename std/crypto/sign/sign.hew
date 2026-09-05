@@ -31,8 +31,8 @@
 /// `private_key` is an 83-byte PKCS#8 v2 document; pass it to `sign`.
 /// `public_key` is the 32-byte raw public point; pass it to `verify`.
 pub type Ed25519KeyPair {
-    private_key: bytes;
-    public_key: bytes;
+    private_key: bytes,
+    public_key: bytes,
 }
 
 /// Generate a fresh Ed25519 key pair.

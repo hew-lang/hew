@@ -62,12 +62,12 @@ fn typecheck_with_resolved_std(source: &str) -> hew_types::TypeCheckOutput {
 /// the authority boundary under test.
 fn typecheck_with_spoofed_std_import(owner: &str, source: &str) -> hew_types::TypeCheckOutput {
     let module_source = match owner {
-        "failure" => "pub type CrashNotification { actor_id: u64; }\npub enum CrashKind { Crashed; }",
+        "failure" => "pub type CrashNotification { actor_id: u64, }\npub enum CrashKind { Crashed, }",
         "link_monitor" => {
-            "pub type MonitorId { value: u64; }\n\
-             pub enum DownTarget { Local(u64); }\n\
-             pub enum DownReason { Exited; }\n\
-             pub type DownNotification { monitor: MonitorId; target: DownTarget; reason: DownReason; }"
+            "pub type MonitorId { value: u64, }\n\
+             pub enum DownTarget { Local(u64), }\n\
+             pub enum DownReason { Exited, }\n\
+             pub type DownNotification { monitor: MonitorId, target: DownTarget, reason: DownReason, }"
         }
         _ => panic!("unsupported lifecycle owner fixture: {owner}"),
     };
@@ -461,7 +461,7 @@ fn canonical_std_module_named_import_is_seeded_before_member_resolution() {
     );
 
     let spoof =
-        typecheck_link_monitor_import_edge(&["app", "failure"], "pub enum CrashKind { Crashed; }");
+        typecheck_link_monitor_import_edge(&["app", "failure"], "pub enum CrashKind { Crashed, }");
     assert!(
         spoof
             .errors
@@ -854,7 +854,7 @@ fn local_lifecycle_shadow_does_not_forge_imported_payload() {
         r"
         import std.failure.{CrashNotification};
 
-        type CrashNotification { value: i64; }
+        type CrashNotification { value: i64, }
 
         actor Watcher {
             #[on(exit)]
@@ -880,7 +880,7 @@ fn accept_on_start_only() {
     let output = typecheck(
         r"
         actor Cache {
-            let entries: i32;
+            let entries: i32,
 
             #[on(start)]
             fn warm() {
@@ -903,7 +903,7 @@ fn accept_on_stop_only() {
     let output = typecheck(
         r"
         actor Cache {
-            let entries: i32;
+            let entries: i32,
 
             #[on(stop)]
             fn flush() {
@@ -929,8 +929,8 @@ fn accept_multiple_on_stop_in_declared_order() {
     let output = typecheck(
         r"
         actor Cache {
-            let entries: i32;
-            let socket: i32;
+            let entries: i32,
+            let socket: i32,
 
             #[on(stop)]
             fn flush_cache() {
@@ -1109,7 +1109,7 @@ fn reject_hook_with_parameters() {
     let output = typecheck(
         r"
         actor Worker {
-            let count: i32;
+            let count: i32,
 
             #[on(stop)]
             fn shutdown(unused: i32) {
@@ -1137,7 +1137,7 @@ fn reject_duplicate_on_start() {
     let output = typecheck(
         r"
         actor Worker {
-            let count: i32;
+            let count: i32,
 
             #[on(start)]
             fn first() {
@@ -1171,7 +1171,7 @@ fn reject_unknown_hook_kind() {
     let output = typecheck(
         r"
         actor Worker {
-            let count: i32;
+            let count: i32,
 
             #[on(restart)]
             fn setup() {
@@ -1212,7 +1212,7 @@ fn on_crash_still_works() {
     let output = typecheck(
         r#"
         actor Worker {
-            let count: i32;
+            let count: i32,
 
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
@@ -1237,7 +1237,7 @@ fn on_upgrade_attribute_compile_errors() {
     // hook kind, not through a bespoke reserved-attribute diagnostic.
     let source = r"
         actor Worker {
-            let count: i32;
+            let count: i32,
 
             #[on(upgrade)]
             fn on_upgrade() {
@@ -1406,7 +1406,7 @@ fn accept_crash_action_return_inside_if_then_more_code() {
     // return now that the fail-closed gate is removed.
     let source = r"
         actor Worker {
-            let flag: i32;
+            let flag: i32,
 
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
@@ -1434,7 +1434,7 @@ fn accept_crash_hook_with_if_and_diverging_body() {
     let output = typecheck(
         r#"
         actor Worker {
-            let flag: i32;
+            let flag: i32,
 
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
@@ -1471,7 +1471,7 @@ fn accept_closure_inside_crash_hook_returning_crash_action() {
     let output = typecheck(
         r#"
         actor Worker {
-            let flag: i32;
+            let flag: i32,
 
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
@@ -1584,7 +1584,7 @@ fn on_crash_signature_pinned() {
     let output = typecheck(
         r#"
         actor Worker {
-            let count: i32;
+            let count: i32,
 
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {

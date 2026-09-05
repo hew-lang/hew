@@ -17,7 +17,7 @@
 // always loses — its channel is cancelled on the winning edge. The `after 500ms`
 // arm is a safety net that must NOT fire under normal load (500ms >> 50ms).
 actor Fast {
-    let tag: i64;
+    let tag: i64,
     receive fn compute(n: i64) -> i64 {
         n + tag
     }
@@ -31,8 +31,8 @@ actor Slow {
 }
 
 actor Coordinator {
-    let fast: LocalPid<Fast>;
-    let slow: LocalPid<Slow>;
+    let fast: LocalPid<Fast>,
+    let slow: LocalPid<Slow>,
     receive fn race_two(n: i64) -> i64 {
         let winner = select {
             reply from fast.compute(n) => reply,

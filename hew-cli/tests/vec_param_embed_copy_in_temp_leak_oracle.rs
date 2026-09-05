@@ -423,8 +423,8 @@ type Holder { items: Vec<string>, keep: string }
 type Wrap { items: Vec<string> }
 
 enum Payload {
-    Text(string);
-    Scalar(i64);
+    Text(string),
+    Scalar(i64),
 }
 
 impl Ops {
@@ -543,8 +543,8 @@ fn main() -> i64 {
 
 const CLONEABLE_ENUM_CONTROL_SOURCE: &str = r#"
 enum Mixed {
-    Text(string);
-    Scalar(i64);
+    Text(string),
+    Scalar(i64),
 }
 
 fn inspect(x: Mixed) -> i64 {

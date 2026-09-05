@@ -1,4 +1,4 @@
-enum EnumHeapReadChoice { Pair(string, i64); }
+enum EnumHeapReadChoice { Pair(string, i64), }
 type EnumHeapReadCarrier {
     choice: EnumHeapReadChoice,
     sibling: string,

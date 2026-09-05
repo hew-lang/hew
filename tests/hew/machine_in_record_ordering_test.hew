@@ -26,11 +26,11 @@ import std.testing;
 // ── Order A: container declared FIRST (this failed silently before the fix) ──
 machine OuterG {
     events {
-        step;
+        step,
     }
 
-    state HoldingG { w: WrapG; }
-    state EmptyG;
+    state HoldingG { w: WrapG, },
+    state EmptyG,
 
     on step: HoldingG => EmptyG {
         OuterG.EmptyG
@@ -41,16 +41,16 @@ machine OuterG {
 }
 
 type WrapG {
-    inner: InnerG;
+    inner: InnerG,
 }
 
 machine InnerG {
     events {
-        go;
+        go,
     }
 
-    state ReadyG { payload: string; }
-    state DoneG;
+    state ReadyG { payload: string, },
+    state DoneG,
 
     on go: ReadyG => DoneG {
         InnerG.DoneG
@@ -79,11 +79,11 @@ fn machine_through_record_container_declared_first() {
 // ── Order B: embedded machine declared FIRST (this always worked) ────────────
 machine InnerH {
     events {
-        go;
+        go,
     }
 
-    state ReadyH { payload: string; }
-    state DoneH;
+    state ReadyH { payload: string, },
+    state DoneH,
 
     on go: ReadyH => DoneH {
         InnerH.DoneH
@@ -94,16 +94,16 @@ machine InnerH {
 }
 
 type WrapH {
-    inner: InnerH;
+    inner: InnerH,
 }
 
 machine OuterH {
     events {
-        step;
+        step,
     }
 
-    state HoldingH { w: WrapH; }
-    state EmptyH;
+    state HoldingH { w: WrapH, },
+    state EmptyH,
 
     on step: HoldingH => EmptyH {
         OuterH.EmptyH

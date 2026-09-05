@@ -210,10 +210,10 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
     let failure_path: std::path::PathBuf = "std/failure.hew".into();
     let first_peer: std::path::PathBuf = "consumer/first.hew".into();
     let second_peer: std::path::PathBuf = "consumer/second.hew".into();
-    let failure = hew_parser::parse("pub enum CrashKind { Crashed; }");
+    let failure = hew_parser::parse("pub enum CrashKind { Crashed, }");
     let first = hew_parser::parse("pub fn untouched() {}");
     let mut second = hew_parser::parse(
-        "import std.failure.{ CrashKind as Kind }; pub type Holder { kind: Kind; }",
+        "import std.failure.{ CrashKind as Kind }; pub type Holder { kind: Kind, }",
     );
     for parsed in [&failure, &first, &second] {
         assert!(
@@ -325,12 +325,12 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
 fn resolved_module_copy_reenters_declaring_file_import_scope() {
     let color_path: std::path::PathBuf = "pkgs/aliassrc.hew".into();
     let consumer_path: std::path::PathBuf = "pkgs/deepalias.hew".into();
-    let mut color = hew_parser::parse("pub enum Color { Blue(i64); }");
+    let mut color = hew_parser::parse("pub enum Color { Blue(i64), }");
     let mut consumer = hew_parser::parse(
         r"
         import hew.aliassrc.{ Color as Hue };
-        pub type AliasBox { item: Hue; }
-        pub enum AliasWrap { Has(Hue); }
+        pub type AliasBox { item: Hue, }
+        pub enum AliasWrap { Has(Hue), }
         pub fn make() -> Hue { Hue.Blue(7) }
         pub fn score() -> i64 {
             let boxed: AliasBox = AliasBox { item: make() };
@@ -738,7 +738,7 @@ fn supervisor_actor_named_and_aliased_imports_publish_exact_identity() {
             "pub actor Worker { receive fn identify() -> i64 { 17 } }",
         );
         let supervisor = hew_parser::parse(&format!(
-            "supervisor App {{ child worker: {binding} restart: temporary; }}"
+            "supervisor App {{ child worker: {binding} restart: temporary, }}"
         ));
         assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
         let mut items = vec![(Item::Import(import), 0..1)];
@@ -770,7 +770,7 @@ fn supervisor_actor_whole_module_import_uses_exact_identity() {
         parsed_import_items("pub actor Worker { receive fn identify() -> i64 { 17 } }"),
     );
     let supervisor =
-        hew_parser::parse("supervisor App { child worker: worker.Worker restart: temporary; }");
+        hew_parser::parse("supervisor App { child worker: worker.Worker restart: temporary, }");
     assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
     let mut items = vec![(Item::Import(import), 0..1)];
     items.extend(supervisor.program.items);
@@ -791,7 +791,7 @@ fn selected_actor_alias_does_not_authorize_unbound_canonical_path() {
         "pub actor Worker { receive fn identify() -> i64 { 17 } }",
     );
     let supervisor = hew_parser::parse(
-        "supervisor App { child worker: support.worker.Worker restart: temporary; }",
+        "supervisor App { child worker: support.worker.Worker restart: temporary, }",
     );
     assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
     let mut items = vec![(Item::Import(import), 0..1)];
@@ -831,11 +831,11 @@ fn local_actor_shadows_same_leaf_import_for_supervisor_child() {
     let import = selected_actor_import(
         &["foreign", "workers"],
         None,
-        "pub actor Worker { let label: string; }",
+        "pub actor Worker { let label: string, }",
     );
     let root = hew_parser::parse(
         "actor Worker { receive fn identify() -> i64 { 9 } }\n\
-         supervisor App { child worker: Worker; }",
+         supervisor App { child worker: Worker, }",
     );
     assert!(root.errors.is_empty(), "{:#?}", root.errors);
     let mut items = vec![(Item::Import(import), 0..1)];
@@ -857,8 +857,8 @@ fn local_non_actor_shadow_is_not_replaced_by_imported_actor() {
         "pub actor Worker { receive fn identify() -> i64 { 17 } }",
     );
     let root = hew_parser::parse(
-        "type Worker { value: i64; }\n\
-         supervisor App { child worker: Worker; }",
+        "type Worker { value: i64, }\n\
+         supervisor App { child worker: Worker, }",
     );
     assert!(root.errors.is_empty(), "{:#?}", root.errors);
     let mut items = vec![(Item::Import(import), 0..1)];
@@ -891,7 +891,7 @@ fn colliding_actor_import_bindings_stop_before_supervisor_lowering() {
         None,
         "pub actor Worker { receive fn identify() -> i64 { 2 } }",
     );
-    let supervisor = hew_parser::parse("supervisor App { child worker: Worker; }");
+    let supervisor = hew_parser::parse("supervisor App { child worker: Worker, }");
     assert!(supervisor.errors.is_empty(), "{:#?}", supervisor.errors);
     let mut items = vec![(Item::Import(left), 0..1), (Item::Import(right), 2..3)];
     items.extend(supervisor.program.items);
@@ -913,7 +913,7 @@ fn colliding_actor_import_bindings_stop_before_supervisor_lowering() {
 
 #[test]
 fn unknown_supervisor_child_actor_is_rejected_before_mir() {
-    let output = check_source("supervisor App { child missing: Missing; }");
+    let output = check_source("supervisor App { child missing: Missing, }");
     assert!(output.errors.iter().any(|error| matches!(
         error.kind,
         TypeErrorKind::SupervisorError {
@@ -1015,7 +1015,7 @@ fn module_private_extern_call_publishes_exact_executable_target() {
 fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
     let left = hew_parser::parse(
         r"
-        pub type CollisionResult { left: i64; }
+        pub type CollisionResult { left: i64, }
         impl CollisionResult {
             fn echo(self) -> i64 { self.left }
         }
@@ -1023,7 +1023,7 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
     );
     let right = hew_parser::parse(
         r"
-        pub type CollisionResult { right: string; }
+        pub type CollisionResult { right: string, }
         impl CollisionResult {
             fn echo(self) -> string { self.right }
         }
@@ -1078,8 +1078,8 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
 fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
     let user_module = hew_parser::parse(
         r"
-        pub type Sender { marker: i64; }
-        pub type Receiver { marker: i64; }
+        pub type Sender { marker: i64, }
+        pub type Receiver { marker: i64, }
         ",
     );
     assert!(
@@ -1603,7 +1603,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
 #[test]
 fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
     let parsed = hew_parser::parse(
-        "pub enum NetError { Failed(i64); }\n\
+        "pub enum NetError { Failed(i64), }\n\
          pub fn net_error() -> NetError { NetError.Failed(1) }\n",
     );
     assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
@@ -1833,7 +1833,7 @@ fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
 fn canonical_module_variants_shadow_builtin_variants() {
     let output = check_source_in_module(
         r"
-        pub enum AppErr { NotFound(string); Timeout; }
+        pub enum AppErr { NotFound(string), Timeout, }
 
         pub fn payload(msg: string) -> AppErr { .NotFound(msg) }
         pub fn unit() -> AppErr { .Timeout }
@@ -3787,7 +3787,7 @@ fn test_file_import_private_items_not_visible() {
 /// reaches `Mode` only through the call's expected parameter type.
 fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     let module = hew_parser::parse(
-        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64;\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode.A => 1,\n        Mode.B => 2,\n        Mode.Present(value) => value,\n        Mode.Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode.A == Mode.A);\n}\n",
+        "pub enum Mode {\n    A,\n    B,\n    Present(i64),\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T,\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64,\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode.A => 1,\n        Mode.B => 2,\n        Mode.Present(value) => value,\n        Mode.Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode.A == Mode.A);\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);
@@ -3835,7 +3835,7 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
 /// never by calling `.step(...)` or constructing a payload.
 fn check_qualified_machine_state_root(root_source: &str) -> (Checker, TypeCheckOutput) {
     let module = hew_parser::parse(
-        "machine Light {\n    events {\n        Flip;\n    }\n\n    state On;\n    state Off;\n\n    on Flip: On => Off {\n        .Off\n    }\n    on Flip: Off => On {\n        .On\n    }\n}\n",
+        "machine Light {\n    events {\n        Flip,\n    }\n\n    state On,\n    state Off,\n\n    on Flip: On => Off {\n        .Off\n    }\n    on Flip: Off => On {\n        .On\n    }\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);
@@ -4066,7 +4066,7 @@ fn qualified_variant_expression_resolves_through_expected_nominal_identity() {
 #[test]
 fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
     let output = check_qualified_variant_root(
-        "import m;\n\nenum Mode {\n    A;\n    Z;\n}\n\nfn main() {\n    let x = m.pick(Mode.A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nenum Mode {\n    A,\n    Z,\n}\n\nfn main() {\n    let x = m.pick(Mode.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output
@@ -4083,7 +4083,7 @@ fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
 #[test]
 fn wrong_owner_variant_prefix_is_rejected_against_expected_nominal() {
     let output = check_qualified_variant_root(
-        "import m;\n\nenum Other {\n    A;\n}\n\nfn main() {\n    let x = m.pick(Other.A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nenum Other {\n    A,\n}\n\nfn main() {\n    let x = m.pick(Other.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output

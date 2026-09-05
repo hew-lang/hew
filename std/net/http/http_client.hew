@@ -47,7 +47,7 @@ type ResponseHandle {
 
 #[resource]
 pub type Response {
-    handle: ResponseHandle;
+    handle: ResponseHandle,
 }
 
 // ── Response methods ──────────────────────────────────────────────────

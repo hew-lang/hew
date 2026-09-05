@@ -3,7 +3,7 @@
 // `100`: the function returned its plausible private result while the caller's
 // wrapped Account stayed untouched.
 type Account {
-    balance: i64;
+    balance: i64,
 }
 
 fn withdraw(var acc: Option<Account>, amount: i64) -> i64 {

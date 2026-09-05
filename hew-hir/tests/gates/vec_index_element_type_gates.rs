@@ -224,7 +224,7 @@ fn vec_slice_supported_element_types_accepted() {
     let out = lower(
         r"
         type UserRecord { x: i32 }
-        enum Colour { Red; Green; }
+        enum Colour { Red, Green, }
         fn slice_bool(xs: Vec<bool>) -> Vec<bool> { xs[0..2] }
         fn slice_char(xs: Vec<char>) -> Vec<char> { xs[0..2] }
         fn slice_i8(xs: Vec<i8>) -> Vec<i8> { xs[0..2] }
@@ -291,20 +291,20 @@ fn vec_index_in_machine_transition_body_rejected() {
 
         machine M {
             events {
-                Go;
-                Reset;
+                Go,
+                Reset,
             }
 
-            state Idle;
-            state Done;
+            state Idle,
+            state Done,
             on Go: Idle => .Done {
                 let xs: Vec<bytes> = make_byteses();
                 let _: bytes = xs[0];
                 .Done
             }
-            on Go: Done => .Done;
-            on Reset: Done => .Idle;
-            on Reset: Idle => .Idle;
+            on Go: Done => .Done,
+            on Reset: Done => .Idle,
+            on Reset: Idle => .Idle,
         }
         ",
     );
@@ -333,16 +333,16 @@ fn vec_index_in_machine_transition_guard_rejected() {
 
         machine M {
             events {
-                Go;
-                Reset;
+                Go,
+                Reset,
             }
 
-            state Idle;
-            state Done;
+            state Idle,
+            state Done,
             on Go: Idle => .Done when make_byteses()[0].is_empty() { .Done }
-            on Go: Done => .Done;
-            on Reset: Done => .Idle;
-            on Reset: Idle => .Idle;
+            on Go: Done => .Done,
+            on Reset: Done => .Idle,
+            on Reset: Idle => .Idle,
         }
         ",
     );
@@ -377,8 +377,8 @@ fn machine_state_entry_exit_blocks_are_walked_by_vec_index_gate() {
 
         machine M {
             events {
-                Go;
-                Reset;
+                Go,
+                Reset,
             }
 
             state Idle {
@@ -390,12 +390,12 @@ fn machine_state_entry_exit_blocks_are_walked_by_vec_index_gate() {
                     let xs: Vec<bool> = make_bools();
                     let _: bool = xs[0];
                 }
-            }
-            state Done;
-            on Go: Idle => .Done;
-            on Go: Done => .Done;
-            on Reset: Done => .Idle;
-            on Reset: Idle => .Idle;
+            },
+            state Done,
+            on Go: Idle => .Done,
+            on Go: Done => .Done,
+            on Reset: Done => .Idle,
+            on Reset: Idle => .Idle,
         }
         ",
     );

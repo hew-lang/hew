@@ -4,7 +4,7 @@ impl Conn {
     fn close(c: Conn) { println(f"close {c.fd}"); }
 }
 actor Holder {
-    var conn: Option<Conn>;
+    var conn: Option<Conn>,
     receive fn take(c: Conn) { conn = Some(c); println("kept"); }
     receive fn show() -> i64 {
         match conn { .Some(c) => c.fd, .None => -1 }

@@ -21,9 +21,9 @@ import std.testing;
 
 // Direct (non-indirect) enum Vec must keep the layout-descriptor path.
 enum Dir {
-    North;
-    South;
-    East(i64);
+    North,
+    South,
+    East(i64),
 }
 
 fn dir_name(d: Dir) -> string {

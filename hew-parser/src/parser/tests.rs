@@ -14,7 +14,7 @@ fn parse_simple_function() {
 fn parse_stdlib_authority_attributes() {
     let source = r#"
 #[lang_item("option")]
-pub enum Maybe<T> { Some(T); None; }
+pub enum Maybe<T> { Some(T), None, }
 
 #[diagnostic_item("fs")]
 pub fn read_file() {}
@@ -104,11 +104,11 @@ extern "C" {
 #[test]
 fn parse_supervisor_child_dotted_module_qualified_type() {
     let source = "supervisor S {\n\
-                      \x20   strategy: one_for_one;\n\
-                      \x20   intensity: 1 within 60s;\n\
+                      \x20   strategy: one_for_one,\n\
+                      \x20   intensity: 1 within 60s,\n\
                       \n\
-                      \x20   child a: bank.Account(n: 1);\n\
-                      \x20   child b: Local;\n\
+                      \x20   child a: bank.Account(n: 1),\n\
+                      \x20   child b: Local,\n\
                       }\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -125,8 +125,8 @@ fn parse_supervisor_child_dotted_module_qualified_type() {
 #[test]
 fn parse_supervisor_construction_time_config_params() {
     let source = "supervisor App(config: AppConfig) {\n\
-                      \x20   strategy: one_for_one;\n\
-                      \x20   child cache: Cache(capacity: config.cache_size);\n\
+                      \x20   strategy: one_for_one,\n\
+                      \x20   child cache: Cache(capacity: config.cache_size),\n\
                       }\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -145,9 +145,9 @@ fn parse_supervisor_construction_time_config_params() {
 #[test]
 fn parse_pool_count_clause_lands_beside_the_init_args() {
     let source = "supervisor Farm {\n\
-                      \x20   strategy: simple_one_for_one;\n\
-                      \x20   intensity: 3 within 60s;\n\
-                      \x20   pool workers: Worker(value: 7) count: 2 restart: transient;\n\
+                      \x20   strategy: simple_one_for_one,\n\
+                      \x20   intensity: 3 within 60s,\n\
+                      \x20   pool workers: Worker(value: 7) count: 2 restart: transient,\n\
                       }\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -172,8 +172,8 @@ fn parse_pool_count_clause_lands_beside_the_init_args() {
 #[test]
 fn parse_pool_child_sets_an_actor_field_named_count() {
     let source = "supervisor Farm {\n\
-                      \x20   strategy: simple_one_for_one;\n\
-                      \x20   pool tickers: Ticker(count: 9) count: 2;\n\
+                      \x20   strategy: simple_one_for_one,\n\
+                      \x20   pool tickers: Ticker(count: 9) count: 2,\n\
                       }\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -240,8 +240,8 @@ fn parse_count_clause_on_a_static_child_is_refused() {
 #[test]
 fn parse_static_child_count_init_arg_stays_a_field() {
     let source = "supervisor Farm {\n\
-                      \x20   strategy: one_for_one;\n\
-                      \x20   child ticker: Ticker(count: 9);\n\
+                      \x20   strategy: one_for_one,\n\
+                      \x20   child ticker: Ticker(count: 9),\n\
                       }\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -256,8 +256,8 @@ fn parse_static_child_count_init_arg_stays_a_field() {
 #[test]
 fn parse_supervisor_without_params_has_empty_param_list() {
     let source = "supervisor S {\n\
-                      \x20   strategy: one_for_one;\n\
-                      \x20   child a: Local;\n\
+                      \x20   strategy: one_for_one,\n\
+                      \x20   child a: Local,\n\
                       }\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -305,7 +305,7 @@ fn parse_no_doc_comment() {
 
 #[test]
 fn parse_struct_decl() {
-    let source = "type Point { x: i32; y: i32; }";
+    let source = "type Point { x: i32, y: i32, }";
     let result = parse(source);
     assert!(result.errors.is_empty());
     assert_eq!(result.program.items.len(), 1);
@@ -336,7 +336,7 @@ fn type_tuple_declaration_preserves_positional_constructor_surface() {
 #[test]
 fn parse_actor_decl() {
     let source =
-        "actor Counter { var count: i32 = 0; receive fn increment() { count = count + 1; } }";
+        "actor Counter { var count: i32 = 0, receive fn increment() { count = count + 1; } }";
     let result = parse(source);
     assert!(result.errors.is_empty());
     assert_eq!(result.program.items.len(), 1);
@@ -2676,7 +2676,7 @@ fn parse_visibility_modifiers() {
     }
 
     // package type → Visibility::Package
-    let r = parse("package type Point { x: i32; y: i32 }");
+    let r = parse("package type Point { x: i32, y: i32 }");
     assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
     if let Item::TypeDecl(t) = &r.program.items[0].0 {
         assert_eq!(t.visibility, Visibility::Package);
@@ -2834,8 +2834,8 @@ fn wire_attr_on_type_declaration_produces_wire_metadata() {
     let source = "\
 #[wire]
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 ";
     let result = parse(source);
@@ -2888,9 +2888,9 @@ fn parse_wire_enum_unit_variants() {
     let source = "\
 #[wire]
 enum Command {
-    Start;
-    Stop;
-    Pause;
+    Start,
+    Stop,
+    Pause,
 }
 ";
     let result = parse(source);
@@ -2921,8 +2921,8 @@ fn parse_wire_enum_struct_payload_variants() {
     let source = "\
 #[wire(version = 2, min_version = 1)]
 enum Packet {
-    V1 { x: i64 };
-    V2 { y: String, z: bool };
+    V1 { x: i64 },
+    V2 { y: String, z: bool },
 }
 ";
     let result = parse(source);
@@ -2954,8 +2954,8 @@ fn parse_wire_enum_tuple_payload_variants() {
     let source = "\
 #[wire]
 enum Op {
-    Push(i64);
-    Pair(String, bool);
+    Push(i64),
+    Pair(String, bool),
 }
 ";
     let result = parse(source);
@@ -3009,8 +3009,8 @@ fn parse_wire_enum_preserves_naming_cases() {
 #[json(\"camelCase\")]
 #[yaml(\"kebab-case\")]
 enum Command {
-    Start;
-    Stop;
+    Start,
+    Stop,
 }
 ";
     let result = parse(source);
@@ -3034,8 +3034,8 @@ fn parses_visibility_prefixed_wire_enum() {
     let source = "\
 #[wire]
 pub enum Command {
-    Start;
-    Stop;
+    Start,
+    Stop,
 }
 ";
     let result = parse(source);
@@ -3071,9 +3071,9 @@ fn parses_mixed_variant_wire_enum() {
     let source = "\
 #[wire]
 enum Mixed {
-    A;
-    B(i64);
-    C { x: String, y: i32 };
+    A,
+    B(i64),
+    C { x: String, y: i32 },
 }
 ";
     let result = parse(source);
@@ -3132,7 +3132,7 @@ fn wire_struct_field_metadata_preserves_since_modifier() {
     let source = "\
 #[wire]
 type Msg {
-    added: String @2 repeated since 3 yaml(\"added\");
+    added: String @2 repeated since 3 yaml(\"added\"),
 }
 ";
     let result = parse(source);
@@ -3155,7 +3155,7 @@ fn wire_struct_field_metadata_preserves_explicit_number_and_naming_cases_kebab()
 #[yaml(\"kebab-case\")]
 #[wire]
 type Msg {
-    added: String @4 repeated json(\"added_name\");
+    added: String @4 repeated json(\"added_name\"),
 }
 ";
     let result = parse(source);
@@ -3368,7 +3368,7 @@ fn nested_dotted_spawn_and_supervisor_child_paths_parse() {
     assert!(spawned.errors.is_empty(), "errors: {:?}", spawned.errors);
 
     let supervised =
-        parse("supervisor App { strategy: one_for_one; child worker: app.workers.Worker(); }");
+        parse("supervisor App { strategy: one_for_one, child worker: app.workers.Worker(), }");
     assert!(
         supervised.errors.is_empty(),
         "errors: {:?}",
@@ -3647,7 +3647,7 @@ trait Fluent {
 
 #[test]
 fn capture_doc_comment_on_enum_variant() {
-    let source = "enum E {\n    /// The only variant.\n    A;\n}\n";
+    let source = "enum E {\n    /// The only variant.\n    A,\n}\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::TypeDecl(t) = &result.program.items[0].0 else {
@@ -3661,7 +3661,7 @@ fn capture_doc_comment_on_enum_variant() {
 
 #[test]
 fn capture_doc_comment_on_struct_field() {
-    let source = "type S {\n    /// The x coord.\n    x: i32;\n}\n";
+    let source = "type S {\n    /// The x coord.\n    x: i32,\n}\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::TypeDecl(t) = &result.program.items[0].0 else {
@@ -3675,7 +3675,7 @@ fn capture_doc_comment_on_struct_field() {
 
 #[test]
 fn capture_doc_comment_on_receive_fn_and_actor_field() {
-    let source = "actor A {\n    /// The counter.\n    let n: i32;\n    /// Increment handler.\n    receive fn inc() {}\n}\n";
+    let source = "actor A {\n    /// The counter.\n    let n: i32,\n    /// Increment handler.\n    receive fn inc() {}\n}\n";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::Actor(a) = &result.program.items[0].0 else {
@@ -4011,7 +4011,7 @@ fn parses_resource_marker_and_consuming_method() {
     let source = r"
             #[resource]
             type File {
-                fd: int
+                fd: int,
                 fn close(consuming self) -> int { 0 }
             }
         ";
@@ -4036,7 +4036,7 @@ fn parses_linear_marker_and_multiple_consuming_methods() {
     let source = r"
             #[linear]
             type Txn {
-                id: int
+                id: int,
                 fn commit(consuming self) -> int { 0 }
                 fn rollback(consuming self) -> int { 1 }
                 fn id(t: Txn) -> int { 0 }
@@ -4061,7 +4061,7 @@ fn parses_linear_marker_and_multiple_consuming_methods() {
 
 #[test]
 fn unmarked_type_has_no_resource_marker() {
-    let source = "type Point { x: int; y: int }";
+    let source = "type Point { x: int, y: int }";
     let result = parse(source);
     assert!(result.errors.is_empty());
     let (Item::TypeDecl(td), _) = &result.program.items[0] else {
@@ -4099,8 +4099,8 @@ fn resource_marker_rejects_tuple_type_without_affecting_supported_targets() {
     );
 
     let supported_source = r"
-#[resource] type Named { x: i64; }
-#[resource] enum E { A; }
+#[resource] type Named { x: i64, }
+#[resource] enum E { A, }
 ";
     let supported = parse(supported_source);
     assert!(
@@ -4170,9 +4170,9 @@ fn resource_markers_remain_valid_on_nominal_type_and_enum_declarations() {
 #[resource] type PrivateResource { id: i64 }
 #[linear] pub type PublicLinear { id: i64 }
 #[resource] package type PackageResource { id: i64 }
-#[linear] enum PrivateLinear { Open; }
-#[resource] pub enum PublicResource { Open; }
-#[linear] package indirect enum PackageLinear { Open; }
+#[linear] enum PrivateLinear { Open, }
+#[resource] pub enum PublicResource { Open, }
+#[linear] package indirect enum PackageLinear { Open, }
 ";
     let result = parse(source);
     assert!(
@@ -5567,7 +5567,7 @@ fn wire_attribute_legal_on_type_decl_and_field_only() {
     // free function, which has no field/type-decl position for it to attach
     // to. (The `@N` field-tag syntax used inside a `#[wire] type` body is a
     // distinct grammar from the `#[wire]` attribute exercised here.)
-    let legal = parse("#[wire]\ntype Contract { x: i64; }\ntype Point { #[wire] x: i64; }");
+    let legal = parse("#[wire]\ntype Contract { x: i64, }\ntype Point { #[wire] x: i64, }");
     assert!(
         legal.errors.is_empty(),
         "expected #[wire] on type decl and field to parse cleanly, got: {:?}",

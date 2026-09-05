@@ -26,8 +26,8 @@
 // `hew run examples/v05/collection_actor_drop_run_pass.hew` must complete with
 // exit 0 and print `ok`.
 actor CollectionHolder {
-    let counts: HashMap<string, i64>;
-    let scores: Vec<i64>;
+    let counts: HashMap<string, i64>,
+    let scores: Vec<i64>,
     receive fn ping() -> i64 {
         1
     }

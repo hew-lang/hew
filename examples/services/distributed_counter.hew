@@ -22,10 +22,10 @@
 
 // Coordinator — merges replica counts into a global total.
 actor Coordinator {
-    let replica_names: Vec<string>;
-    let replica_totals: Vec<i64>;
-    var global_total: i64;
-    var sync_count: i64;
+    let replica_names: Vec<string>,
+    let replica_totals: Vec<i64>,
+    var global_total: i64,
+    var sync_count: i64,
     receive fn register_replica(name: string) {
         replica_names.push(name);
         replica_totals.push(0);
@@ -58,9 +58,9 @@ actor Coordinator {
 
 // Replica — maintains a local counter and syncs with the coordinator.
 actor Replica {
-    let name: string;
-    let coordinator: LocalPid<Coordinator>;
-    var local_count: i64;
+    let name: string,
+    let coordinator: LocalPid<Coordinator>,
+    var local_count: i64,
     init() {
         println(f"[{name}] replica started");
     }

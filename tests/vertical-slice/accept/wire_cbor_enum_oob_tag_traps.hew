@@ -12,15 +12,15 @@
 // other malformed shape follows.
 #[wire]
 enum Wide {
-    A;
-    B(i64);
-    C(string);
+    A,
+    B(i64),
+    C(string),
 }
 
 #[wire]
 enum Narrow {
-    A;
-    B(i64);
+    A,
+    B(i64),
 }
 
 fn main() -> i64 {

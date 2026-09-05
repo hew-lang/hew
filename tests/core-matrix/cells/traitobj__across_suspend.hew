@@ -3,7 +3,7 @@ trait Named {
 }
 
 type P {
-    n: string;
+    n: string,
 }
 
 impl Named for P {
@@ -13,7 +13,7 @@ impl Named for P {
 }
 
 type Q {
-    n: string;
+    n: string,
 }
 
 impl Named for Q {
@@ -28,7 +28,7 @@ fn show_named(v: dyn Named) {
 }
 
 actor Holder {
-    var ready: bool;
+    var ready: bool,
 
     receive fn hold(v: dyn Named) -> i64 {
         sleep(2ms);

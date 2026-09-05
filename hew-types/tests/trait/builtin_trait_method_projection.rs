@@ -69,7 +69,7 @@ fn user_record_control_still_projects() {
             type Output;
             fn fetch(self, key: i64) -> Option<Self.Output>;
         }
-        type Box2<T> { inner: T; }
+        type Box2<T> { inner: T, }
         impl<T> Acc for Box2<T> {
             type Output = T;
             fn fetch(self, key: i64) -> Option<T> { Some(self.inner) }
@@ -155,7 +155,7 @@ fn vec_owned_record_element_projects() {
             type Output = T;
             fn fetch(self, key: i64) -> Option<T> { None }
         }
-        type Point { x: i64; y: i64; }
+        type Point { x: i64, y: i64, }
         fn takes_int(x: i64) {}
         fn main() {
             let pts: Vec<Point> = [Point { x: 1, y: 2 }];
@@ -378,7 +378,7 @@ fn overlapping_user_record_impls_rejected() {
             type Output;
             fn fetch(self, key: i64) -> Option<Self.Output>;
         }
-        type Box2<T> { inner: T; }
+        type Box2<T> { inner: T, }
         impl<T> Acc for Box2<T> {
             type Output = T;
             fn fetch(self, key: i64) -> Option<T> { Some(self.inner) }

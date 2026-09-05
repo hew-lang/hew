@@ -13,7 +13,7 @@
 import std.testing;
 
 actor Pulse {
-    var count: i64 = 0;
+    var count: i64 = 0,
     #[every(50ms)]
     receive fn tick() {
         count += 1;

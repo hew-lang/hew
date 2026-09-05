@@ -7,7 +7,7 @@ type Handle {
 
 #[resource]
 type Value {
-    handle: Handle;
+    handle: Handle,
 }
 
 trait ValueMethods {

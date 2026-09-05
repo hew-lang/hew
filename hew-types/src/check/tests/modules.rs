@@ -2331,7 +2331,7 @@ mod warning_source_attribution {
         // inside an actor; body mismatch must be reported.
         let source = r#"
 actor MyActor {
-    var value: i32 = 0;
+    var value: i32 = 0,
     receive fn handler() -> UnknownType { let x: i32 = "bad"; x }
 }
 "#;

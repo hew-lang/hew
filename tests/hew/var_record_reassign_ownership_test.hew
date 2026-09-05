@@ -13,14 +13,14 @@
 import std.testing;
 
 type S {
-    n: i64;
-    v: Vec<i64>;
+    n: i64,
+    v: Vec<i64>,
 }
 
 type Pair {
-    n: i64;
-    a: Vec<i64>;
-    b: Vec<i64>;
+    n: i64,
+    a: Vec<i64>,
+    b: Vec<i64>,
 }
 
 fn mk() -> S {
@@ -152,8 +152,8 @@ fn _test_literal_rhs_embedding_own_projection_is_exact() {
 // substrate in place: a regression to a blind drop (or a dropped guard)
 // corrupts the accumulator and fails the exact-element asserts below.
 type W {
-    a: Vec<i64>;
-    b: Vec<i64>;
+    a: Vec<i64>,
+    b: Vec<i64>,
 }
 
 fn swap_w(w: W) -> W {
@@ -166,7 +166,7 @@ fn grow_vec(v: Vec<i64>, x: i64) -> Vec<i64> {
 }
 
 actor RecAcc {
-    var state: S = S { n: 0, v: Vec.new() };
+    var state: S = S { n: 0, v: Vec.new() },
     receive fn bump() {
         state = grow(state);
     }
@@ -182,7 +182,7 @@ actor RecAcc {
 }
 
 actor VecAcc {
-    var v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new(),
     receive fn bump(x: i64) {
         v = grow_vec(v, x);
     }
@@ -196,7 +196,7 @@ actor VecAcc {
 }
 
 actor Swapper {
-    var w: W = W { a: Vec.new(), b: Vec.new() };
+    var w: W = W { a: Vec.new(), b: Vec.new() },
     receive fn seed() {
         w.a.push(1);
         w.b.push(2);

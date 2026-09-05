@@ -6,23 +6,23 @@
 
 /// Owning payload carried across the source, stage, and sink mailboxes.
 pub type PipelineItemI64 {
-    value: i64;
-    label: string;
-    crash_stage: bool;
+    value: i64,
+    label: string,
+    crash_stage: bool,
 }
 
 /// Concrete S1 builder. The permit count controls sink processing so callers
 /// can deterministically prove capacity-one admission.
 pub type PipelineI64TwoStage {
-    sink_permits: i64;
+    sink_permits: i64,
 }
 
 pub actor AdmissionControlI64 {
-    var permits: i64;
-    var stage_attempts: i64;
-    var stage_post_sends: i64;
+    var permits: i64,
+    var stage_attempts: i64,
+    var stage_post_sends: i64,
 
-    mailbox 1;
+    mailbox 1,
 
     receive fn take_permit() -> bool {
         if permits > 0 {
@@ -57,16 +57,16 @@ pub actor AdmissionControlI64 {
 }
 
 pub actor SinkI64 {
-    var count: i64;
-    var sum: i64;
-    var first: i64;
-    var second: i64;
-    var third: i64;
-    var last_value: i64;
-    var last_label: string;
-    let control: LocalPid<AdmissionControlI64>;
+    var count: i64,
+    var sum: i64,
+    var first: i64,
+    var second: i64,
+    var third: i64,
+    var last_value: i64,
+    var last_label: string,
+    let control: LocalPid<AdmissionControlI64>,
 
-    mailbox 1;
+    mailbox 1,
 
     receive fn push(item: PipelineItemI64) {
         var admitted = false;
@@ -124,10 +124,10 @@ pub actor SinkI64 {
 }
 
 pub actor StageI64 {
-    let next: LocalPid<SinkI64>;
-    let control: LocalPid<AdmissionControlI64>;
+    let next: LocalPid<SinkI64>,
+    let control: LocalPid<AdmissionControlI64>,
 
-    mailbox 1;
+    mailbox 1,
 
     receive fn push(item: PipelineItemI64) -> bool {
         match await control.mark_stage_attempt() {
@@ -149,11 +149,11 @@ pub actor StageI64 {
 }
 
 pub actor SourceI64 {
-    let next: LocalPid<StageI64>;
-    let sink: LocalPid<SinkI64>;
-    let control: LocalPid<AdmissionControlI64>;
+    let next: LocalPid<StageI64>,
+    let sink: LocalPid<SinkI64>,
+    let control: LocalPid<AdmissionControlI64>,
 
-    mailbox 1;
+    mailbox 1,
 
     receive fn push(item: PipelineItemI64) -> bool {
         match await next.push(item) {

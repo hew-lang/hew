@@ -24,10 +24,10 @@ actor Crasher {
 }
 
 supervisor AppSupervisor {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child c: Crasher;
+    child c: Crasher,
 }
 
 fn main() -> i64 {

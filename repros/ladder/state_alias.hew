@@ -1,5 +1,5 @@
 actor Example {
-    var data: Vec<i64> = Vec.new();
+    var data: Vec<i64> = Vec.new(),
     receive fn demo() {
         let ref1 = data;
         let ref2 = data;

@@ -12,7 +12,7 @@ actor Probe {
 }
 
 actor Boss {
-    let target: LocalPid<Probe>;
+    let target: LocalPid<Probe>,
     receive fn go() {
         link(target);
         monitor(target);

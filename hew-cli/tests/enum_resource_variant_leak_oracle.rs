@@ -18,7 +18,7 @@ fn resource_enum_source(frames: usize) -> String {
 #[opaque]\n\
 type Dq {{}}\n\
 #[resource]\n\
-type Handle {{ raw: Dq; }}\n\
+type Handle {{ raw: Dq, }}\n\
 impl Handle {{\n\
     fn value(self) -> i64 {{ 7 }}\n\
     fn sink(self) {{ self.close(); }}\n\
@@ -28,7 +28,7 @@ extern \"C\" {{\n\
     fn hew_deque_new() -> Dq;\n\
     fn hew_deque_free(consume dq: Dq);\n\
 }}\n\
-enum Outcome {{ Loaded(Handle); Failed(string); }}\n\
+enum Outcome {{ Loaded(Handle), Failed(string), }}\n\
 fn make(ok: bool) -> Outcome {{\n\
     if ok {{ Outcome.Loaded(Handle {{ raw: unsafe {{ hew_deque_new() }} }}) }}\n\
     else {{ Outcome.Failed(\"bad\".to_upper()) }}\n\
@@ -68,8 +68,8 @@ const XML_PROJECTED_HELPER_CRASH_SOURCE: &str = r#"
 import std.encoding.xml;
 
 enum Pair {
-    Both(xml.Node, string);
-    Nothing;
+    Both(xml.Node, string),
+    Nothing,
 }
 
 fn consume(pair: Pair, trigger: i64) -> i64 {
@@ -92,7 +92,7 @@ actor Helper {
 }
 
 actor Crasher {
-    let helper: LocalPid<Helper>;
+    let helper: LocalPid<Helper>,
 
     receive fn run(trigger: i64) -> i64 {
         let seed = match await helper.ping() {
@@ -136,7 +136,7 @@ actor Gate {
 }
 
 actor Runner {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
 
     receive fn run(trigger: i64) -> i64 {
         let seed = match await gate.tick() {
@@ -183,7 +183,7 @@ actor Gate {
 }
 
 actor Runner {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
 
     receive fn run(trigger: i64) -> i64 {
         let seed = match await gate.tick() {

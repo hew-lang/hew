@@ -778,7 +778,7 @@ fn native_cooperative_sleep_matches_wasi_output() {
 // inside an actor is still gated on wasm (see backlog #1451), so an ask-based
 // variant would fail at codegen and prove nothing about the timer.
 const COOPERATIVE_PERIODIC_SOURCE: &str = r#"actor Pulse {
-    var count: i64 = 0;
+    var count: i64 = 0,
 
     #[every(20ms)]
     receive fn tick() {
@@ -813,8 +813,8 @@ fn main() {
 const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.channel.channel;
 
 actor Pulse {
-    let ready: channel.Sender<i64>;
-    var count: i64 = 0;
+    let ready: channel.Sender<i64>,
+    var count: i64 = 0,
 
     #[every(20ms)]
     receive fn tick() {

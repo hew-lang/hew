@@ -356,3 +356,8 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
 - Retained source fixtures are migrated by parser-confirmed delimiter spans.
   Concatenated and interpolated test-source builders require a follow-up pass;
   their failures remain fixture admission errors, not semantic test results.
+
+- Composing later qualified-record and native enum coverage exposed structural
+  semicolons in constructed sources. Migrated those declarations while retaining
+  the original identity, visibility, payload and cleanup assertions. The affected
+  checker and HIR suites now exercise their intended semantics again.

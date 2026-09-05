@@ -102,7 +102,7 @@ const MODULE_WITH_LIFECYCLE: &str = r"
 ";
 
 const MODULE_WITH_RECORD: &str = r"
-    pub type Packet { code: i64; }
+    pub type Packet { code: i64, }
 ";
 
 #[test]
@@ -148,7 +148,7 @@ fn module_qualified_record_initialiser_refuses_a_private_type() {
             let packet = m.Packet { code: 42 };
         }
     ";
-    let output = typecheck_with_module(root_source, "type Packet { code: i64; }");
+    let output = typecheck_with_module(root_source, "type Packet { code: i64, }");
     assert!(
         output.errors.iter().any(|error| {
             error.kind == TypeErrorKind::UndefinedType
@@ -175,7 +175,7 @@ fn qualified_record_initialiser_does_not_use_a_same_leaf_foreign_type() {
         root_source,
         &[
             (&["myapp", "left"], MODULE_WITH_RECORD),
-            (&["myapp", "right"], r"pub type Packet { label: string; }"),
+            (&["myapp", "right"], r"pub type Packet { label: string, }"),
         ],
     );
     assert!(

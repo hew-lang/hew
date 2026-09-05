@@ -1,4 +1,4 @@
-enum Choice { Text(string); Empty }
+enum Choice { Text(string), Empty }
 
 fn divide(value: Choice, divisor: i64) -> i64 {
     let local = match value {

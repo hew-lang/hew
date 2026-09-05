@@ -44,7 +44,7 @@ fn assert_main_lowered(lowered: &hew_sir::LoweredModule) {
 fn user_enum_call_borrows_caller_and_match_consumes_a_copy() {
     let lowered = lower_source(
         r#"
-        enum Choice { Text(string); Empty }
+        enum Choice { Text(string), Empty }
 
         fn keep_text(value: string) {}
         fn inspect(value: Choice) -> i64 {
@@ -315,7 +315,7 @@ fn guarded_variant_match_lowers_explicit_predicate_cfg() {
 fn scalar_literal_payloads_use_their_exact_sir_constants() {
     let lowered = lower_source(
         r"
-        enum Token { Value(f64, char); Empty }
+        enum Token { Value(f64, char), Empty }
 
         fn classify(value: Token) -> i64 {
             match value {
@@ -355,7 +355,7 @@ fn scalar_literal_payloads_use_their_exact_sir_constants() {
 fn verifier_refuses_scalar_literals_with_forged_result_types() {
     let mut lowered = lower_source(
         r"
-        enum Token { Value(f64, char); Empty }
+        enum Token { Value(f64, char), Empty }
 
         fn classify(value: Token) -> i64 {
             match value {
@@ -461,7 +461,7 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
 fn ordered_guards_thread_mutation_into_later_same_variant_arms() {
     let lowered = lower_source(
         r"
-        enum Number { Some(i64); None }
+        enum Number { Some(i64), None }
 
         fn classify(value: Number) -> i64 {
             var attempts = 0;
@@ -699,7 +699,7 @@ fn let_else_binds_the_success_payload_into_the_enclosing_scope() {
 fn owning_if_expression_joins_independent_string_values() {
     let lowered = lower_source(
         r#"
-        enum Setting { Small(bool); Missing }
+        enum Setting { Small(bool), Missing }
 
         fn describe(value: Setting) -> string {
             match value {

@@ -1,4 +1,4 @@
-enum Number { Some(i64); None }
+enum Number { Some(i64), None }
 
 fn classify(value: Number) -> i64 {
     var attempts = 0;

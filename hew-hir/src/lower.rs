@@ -40642,7 +40642,7 @@ impl Widget {
 
     /// Builds a tiny module `{mod_name}` declaring `pub actor Conn { receive
     /// fn ping() -> i64 { <ping_result> } }` plus a sibling `pub actor
-    /// {holder_name} { let conn: Conn; ... }` whose state field references
+    /// {holder_name} { let conn: Conn, ... }` whose state field references
     /// `Conn` by bare name — the shape `canonicalize_actor_ref_field_ty`
     /// scopes to the declaring module. The `get` handler deliberately does
     /// NOT `await`/`match` on `conn`: that ask-reply inference path is
@@ -40660,7 +40660,7 @@ impl Widget {
     ) -> hew_parser::module::Module {
         let source = format!(
             "pub actor Conn {{ receive fn ping() -> i64 {{ {ping_result} }} }}\n\
-             pub actor {holder_name} {{ let conn: Conn; receive fn get() -> i64 {{ 0 }} }}\n"
+             pub actor {holder_name} {{ let conn: Conn, receive fn get() -> i64 {{ 0 }} }}\n"
         );
         let parsed = hew_parser::parse(&source);
         assert!(

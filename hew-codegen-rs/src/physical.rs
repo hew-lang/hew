@@ -3616,7 +3616,7 @@ mod tests {
 
         let semantic = lower_source(
             r#"
-            enum Choice { Text(string); Empty }
+            enum Choice { Text(string), Empty }
 
             fn inspect(value: Choice) -> i64 {
                 match value {

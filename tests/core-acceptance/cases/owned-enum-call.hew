@@ -1,4 +1,4 @@
-enum Choice { Text(string); Empty }
+enum Choice { Text(string), Empty }
 
 fn choose(value: Choice) -> string {
     match value {

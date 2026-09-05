@@ -1,4 +1,4 @@
-enum Payload { Small(bool); Wide(i64, string); Empty }
+enum Payload { Small(bool), Wide(i64, string), Empty }
 
 fn describe(value: Payload) -> string {
     match value {

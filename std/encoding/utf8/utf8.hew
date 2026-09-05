@@ -3,9 +3,9 @@
 /// Details of invalid UTF-8 in an encoded byte sequence.
 pub type Utf8Error {
     /// Number of valid bytes before the invalid or incomplete sequence.
-    valid_up_to: i64;
+    valid_up_to: i64,
     /// Invalid sequence length in bytes, or None for incomplete trailing input.
-    error_len: Option<i64>;
+    error_len: Option<i64>,
 }
 
 impl Display for Utf8Error {

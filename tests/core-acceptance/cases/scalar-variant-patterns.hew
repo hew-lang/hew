@@ -1,4 +1,4 @@
-enum Token { Value(f64, char); Empty }
+enum Token { Value(f64, char), Empty }
 
 fn classify(token: Token) -> i64 {
     match token {

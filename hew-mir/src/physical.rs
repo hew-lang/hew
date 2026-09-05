@@ -4019,7 +4019,7 @@ mod tests {
     fn verifier_rejects_variant_payload_carriers_that_cannot_hold_every_case() {
         let module = lower_source(
             r#"
-            enum Payload { Wide(i64, string); Empty }
+            enum Payload { Wide(i64, string), Empty }
 
             fn main() -> i64 {
                 let payload = Payload.Wide(7, "wide");

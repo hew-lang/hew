@@ -22,9 +22,16 @@ mod native {
 
     const N_SHARDS: usize = 256;
 
+    /// One local registry entry, including the compiler-minted actor identity.
+    #[derive(Clone, Debug)]
+    pub(crate) struct RegistryEntry {
+        pub(crate) actor: *mut c_void,
+        pub(crate) actor_type: String,
+    }
+
     /// Wrapper around the raw-pointer map so we can mark it `Send + Sync`.
     #[derive(Debug)]
-    struct RegistryShard(HashMap<String, *mut c_void>);
+    struct RegistryShard(HashMap<String, RegistryEntry>);
 
     // SAFETY: The registry stores raw pointers that may be sent/shared between
     // threads. Callers are responsible for ensuring the pointed-to actors remain
@@ -101,8 +108,52 @@ mod native {
         if reg.0.contains_key(&key) {
             return -1;
         }
-        reg.0.insert(key, actor);
+        reg.0.insert(
+            key,
+            RegistryEntry {
+                actor,
+                actor_type: String::new(),
+            },
+        );
         0
+    }
+
+    /// Register or re-point a typed local actor entry.
+    pub(crate) fn register_typed(name: &str, actor: *mut c_void, actor_type: &str) {
+        let shard = rt_current().registry.shard_for(name);
+        shard.write_or_recover().0.insert(
+            name.to_owned(),
+            RegistryEntry {
+                actor,
+                actor_type: actor_type.to_owned(),
+            },
+        );
+    }
+
+    /// Resolve a complete typed local entry.
+    pub(crate) fn lookup_typed(name: &str) -> Option<RegistryEntry> {
+        let registry = registry_opt()?;
+        let shard = registry.shard_for(name);
+        shard.read_or_recover().0.get(name).cloned()
+    }
+
+    /// Snapshot typed entries for promotion when a node starts.
+    pub(crate) fn typed_entries() -> Vec<(String, RegistryEntry)> {
+        let Some(registry) = registry_opt() else {
+            return Vec::new();
+        };
+        let mut entries = Vec::new();
+        for shard in &registry.shards {
+            entries.extend(
+                shard
+                    .read_or_recover()
+                    .0
+                    .iter()
+                    .filter(|(_, entry)| !entry.actor_type.is_empty())
+                    .map(|(name, entry)| (name.clone(), entry.clone())),
+            );
+        }
+        entries
     }
 
     /// Look up an actor by name.
@@ -123,7 +174,9 @@ mod native {
         };
         let shard = registry.shard_for(key);
         let reg = shard.read_or_recover();
-        reg.0.get(key).copied().unwrap_or(std::ptr::null_mut())
+        reg.0
+            .get(key)
+            .map_or(std::ptr::null_mut(), |entry| entry.actor)
     }
 
     /// Remove an actor registration by name.

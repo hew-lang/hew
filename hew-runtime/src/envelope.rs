@@ -28,7 +28,7 @@ use crate::node_identity::{Location, NodeId};
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 2;
+pub const WIRE_VERSION: u8 = 3;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
 pub const FRAME_TYPE_CONTROL: u8 = 0;
@@ -154,6 +154,9 @@ pub const MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES: usize = 4096;
 /// Maximum accepted registry name length on the gossip wire, in UTF-8 bytes.
 pub const MAX_REGISTRY_GOSSIP_NAME_BYTES: usize = 1024;
 
+/// Maximum accepted compiler-minted actor identity length on the gossip wire.
+pub const MAX_REGISTRY_GOSSIP_ACTOR_TYPE_BYTES: usize = 1024;
+
 /// A control frame: node-level signalling with an opaque byte payload.
 ///
 /// CDDL: `control-frame` rule in `schemas/envelope.cddl`.
@@ -233,7 +236,7 @@ pub enum WireFrame {
 
 /// Bounded registry-gossip control payload.
 ///
-/// Encoded as a definite CBOR map `{1: op, 2: name, 3: location}`.
+/// Encoded as a definite CBOR map `{1: op, 2: name, 3: location, 4: actor_type}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryGossipPayload {
     /// Registry operation (`REGISTRY_GOSSIP_OP_ADD` or `_REMOVE`).
@@ -242,6 +245,8 @@ pub struct RegistryGossipPayload {
     pub name: String,
     /// Exact actor identity being added or retracted.
     pub location: Location,
+    /// Canonical compiler-minted actor declaration identity.
+    pub actor_type: String,
 }
 
 /// Key-derived node identity paired with its durable session incarnation.
@@ -889,6 +894,10 @@ pub fn encode_registry_gossip_payload(
             Value::Integer(Integer::from(3u64)),
             location_to_value(payload.location),
         ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Text(payload.actor_type.clone()),
+        ),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes)
@@ -1064,7 +1073,7 @@ pub fn decode_registry_gossip_payload(
     let value: Value =
         ciborium::de::from_reader(bytes).map_err(RegistryGossipPayloadError::CborDecode)?;
     let map = collect_map(&value).map_err(RegistryGossipPayloadError::from)?;
-    ensure_exact_keys(&map, &[1, 2, 3]).map_err(RegistryGossipPayloadError::from)?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4]).map_err(RegistryGossipPayloadError::from)?;
     let payload = RegistryGossipPayload {
         op: value_to_u8(
             required(&map, 1).map_err(RegistryGossipPayloadError::from)?,
@@ -1079,6 +1088,11 @@ pub fn decode_registry_gossip_payload(
         location: value_to_location(
             required(&map, 3).map_err(RegistryGossipPayloadError::from)?,
             3,
+        )
+        .map_err(RegistryGossipPayloadError::from)?,
+        actor_type: value_to_text(
+            required(&map, 4).map_err(RegistryGossipPayloadError::from)?,
+            4,
         )
         .map_err(RegistryGossipPayloadError::from)?,
     };
@@ -1831,6 +1845,15 @@ fn validate_registry_gossip_payload(
         return Err(RegistryGossipPayloadError::MalformedField {
             key: 2,
             expected: "a registry name without NUL bytes",
+        });
+    }
+    if payload.actor_type.is_empty()
+        || payload.actor_type.len() > MAX_REGISTRY_GOSSIP_ACTOR_TYPE_BYTES
+        || payload.actor_type.as_bytes().contains(&0)
+    {
+        return Err(RegistryGossipPayloadError::MalformedField {
+            key: 4,
+            expected: "a non-empty canonical actor identity within the length bound",
         });
     }
     Ok(())

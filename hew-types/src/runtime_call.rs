@@ -552,11 +552,9 @@ pub enum RuntimeCallFamily {
     // Their runtime FFI symbols are carried separately by the stdlib catalog;
     // the family records the source-level builtin identity used by checker,
     // MIR, and codegen dispatch.
-    NodeAllowPeer,
     NodeConnect,
     NodeId,
     NodeIdentityKey,
-    NodeLoadKeys,
     NodeLookup,
     /// `monitor(RemotePid<T>)` →
     /// `hew_node_monitor_location(target, out_monitor_id) -> i32`.
@@ -567,9 +565,9 @@ pub enum RuntimeCallFamily {
     /// full `Location`; non-consuming.
     NodeMonitor,
     NodeRegister,
-    NodeSetTransport,
     NodeShutdown,
     NodeStart,
+    NodeUnregister,
 
     // --- User metrics (#1862) -----------------------------------------------
     // `std::metrics` emit path: register-or-get + mutate developer-defined
@@ -1223,17 +1221,15 @@ impl RuntimeCallFamily {
             Self::MathIntrinsic(MathIntrinsic::Ceil) => "ceil",
             Self::MathIntrinsic(MathIntrinsic::Round) => "round",
             // Node (pre-staged)
-            Self::NodeAllowPeer => "Node::allow_peer",
             Self::NodeConnect => "Node::connect",
             Self::NodeId => "Node::id",
             Self::NodeIdentityKey => "Node::identity_key",
-            Self::NodeLoadKeys => "Node::load_keys",
             Self::NodeLookup => "Node::lookup",
             Self::NodeMonitor => "hew_node_monitor_location",
             Self::NodeRegister => "Node::register",
-            Self::NodeSetTransport => "Node::set_transport",
             Self::NodeShutdown => "Node::shutdown",
             Self::NodeStart => "Node::start",
+            Self::NodeUnregister => "Node::unregister",
             // User metrics (#1862)
             Self::MetricCounterRegister => "hew_metric_counter_register",
             Self::MetricCounterInc => "hew_metric_counter_inc",
@@ -1551,17 +1547,15 @@ impl RuntimeCallFamily {
             "ceil" => Self::MathIntrinsic(MathIntrinsic::Ceil),
             "round" => Self::MathIntrinsic(MathIntrinsic::Round),
             // Node
-            "Node::allow_peer" => Self::NodeAllowPeer,
             "Node::connect" => Self::NodeConnect,
             "Node::id" => Self::NodeId,
             "Node::identity_key" => Self::NodeIdentityKey,
-            "Node::load_keys" => Self::NodeLoadKeys,
             "Node::lookup" => Self::NodeLookup,
             "hew_node_monitor_location" => Self::NodeMonitor,
             "Node::register" => Self::NodeRegister,
-            "Node::set_transport" => Self::NodeSetTransport,
             "Node::shutdown" => Self::NodeShutdown,
             "Node::start" => Self::NodeStart,
+            "Node::unregister" => Self::NodeUnregister,
             // User metrics (#1862)
             "hew_metric_counter_register" => Self::MetricCounterRegister,
             "hew_metric_counter_inc" => Self::MetricCounterInc,
@@ -1887,16 +1881,14 @@ impl RuntimeCallFamily {
     pub const fn is_node_builtin(self) -> bool {
         matches!(
             self,
-            Self::NodeAllowPeer
-                | Self::NodeConnect
+            Self::NodeConnect
                 | Self::NodeId
                 | Self::NodeIdentityKey
-                | Self::NodeLoadKeys
                 | Self::NodeLookup
                 | Self::NodeRegister
-                | Self::NodeSetTransport
                 | Self::NodeShutdown
                 | Self::NodeStart
+                | Self::NodeUnregister
         )
     }
 
@@ -2384,17 +2376,15 @@ impl RuntimeCallFamily {
             | F::MetricHistogramRecord
             | F::MetricVecRegister
             | F::MetricVecWith
-            | F::NodeAllowPeer
             | F::NodeConnect
             | F::NodeId
             | F::NodeIdentityKey
-            | F::NodeLoadKeys
             | F::NodeLookup
             | F::NodeMonitor
             | F::NodeRegister
-            | F::NodeSetTransport
             | F::NodeShutdown
             | F::NodeStart
+            | F::NodeUnregister
             | F::ObserveReadU64
             | F::ObserveScrape
             | F::ObserveSeries
@@ -3118,16 +3108,14 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::HashSetClearLayout
             | F::HashSetCloneLayout
             | F::HashSetToVecLayout
-            | F::NodeAllowPeer
             | F::NodeConnect
             | F::NodeId
             | F::NodeIdentityKey
-            | F::NodeLoadKeys
             | F::NodeLookup
             | F::NodeRegister
-            | F::NodeSetTransport
             | F::NodeShutdown
             | F::NodeStart
+            | F::NodeUnregister
             | F::RemotePidSend
             | F::SinkClose
             | F::SinkPeerClosed

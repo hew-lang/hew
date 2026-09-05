@@ -202,13 +202,28 @@ impl Drop for ManagedChild {
 struct SecureScenario {
     kx_dir: tempfile::TempDir,
     port: u16,
+    server_key: PathBuf,
+    client_key: PathBuf,
+    server_public: String,
+    client_public: String,
 }
 
 impl SecureScenario {
     fn new() -> Self {
+        let kx_dir = tempfile::tempdir().expect("create key-exchange dir for scenario");
+        let server_key = kx_dir.path().join("server.key");
+        let client_key = kx_dir.path().join("client.key");
+        let server_identity = hew_runtime::encryption::noise_identity_load_or_create(&server_key)
+            .expect("create server Noise identity");
+        let client_identity = hew_runtime::encryption::noise_identity_load_or_create(&client_key)
+            .expect("create client Noise identity");
         Self {
-            kx_dir: tempfile::tempdir().expect("create key-exchange dir for scenario"),
+            kx_dir,
             port: allocate_loopback_port(),
+            server_key,
+            client_key,
+            server_public: hew_runtime::peer_binding::hex_lower(&server_identity.public()),
+            client_public: hew_runtime::peer_binding::hex_lower(&client_identity.public()),
         }
     }
 
@@ -216,6 +231,11 @@ impl SecureScenario {
     /// key-exchange directory, and fixture role/port/scenario.
     fn spawn(&self, role: &str, scenario: &str, extra_env: &[(&str, &str)]) -> ManagedChild {
         let binary = compiled_node_binary();
+        let (key_path, peer_key) = match role {
+            "server" => (&self.server_key, &self.client_public),
+            "client" => (&self.client_key, &self.server_public),
+            other => panic!("unknown distributed fixture role {other}"),
+        };
         let mut command = Command::new(binary);
         command
             .env("HEW_TRANSPORT", "tcp")
@@ -223,6 +243,8 @@ impl SecureScenario {
             .env("HEW_DIST_PORT", self.port.to_string())
             .env("HEW_DIST_SCENARIO", scenario)
             .env("HEW_DIST_KX_DIR", self.kx_dir.path())
+            .env("HEW_DIST_KEY_PATH", key_path)
+            .env("HEW_DIST_PEER_KEY", peer_key)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (key, value) in extra_env {
@@ -1009,6 +1031,63 @@ fn authenticated_v2_handshake_rejects_wrong_credential_pin() {
     assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on handshake rejection; client stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn node_api_two_process_wrong_actor_type_returns_type_mismatch() {
+    let stdout = run_two_process_scenario("type_mismatch_lookup");
+    assert!(
+        stdout.contains("PASS type_mismatch_lookup error=TypeMismatch"),
+        "a registry lookup under the wrong actor type must return TypeMismatch; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on typed registry lookup; client stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn node_api_results_cover_prestart_registry_and_start_outcomes() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("hew-cli")
+        .join("tests")
+        .join("fixtures")
+        .join("distributed")
+        .join("node_api_results.hew");
+    let key_dir = tempfile::tempdir().expect("create Node API key directory");
+    let key_path = key_dir.path().join("node.key");
+    let mut command = Command::new(hew_binary());
+    command
+        .arg("run")
+        .arg(&source)
+        .current_dir(repo_root())
+        .env("HEW_NODE_TEST_KEY", key_path);
+    let output = support::run_bounded_command(command, "run node_api_results.hew");
+    assert!(
+        output.status.success(),
+        "Node API result fixture failed\n{}",
+        support::describe_output(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "PASS prestart-register",
+        "PASS prestart-lookup",
+        "PASS prestart-type-mismatch",
+        "PASS start-refusal-result",
+        "PASS start-success-result",
+        "PASS poststart-lookup",
+    ] {
+        assert!(
+            stdout.lines().any(|line| line == expected),
+            "missing `{expected}` in Node API fixture stdout:\n{stdout}"
+        );
+    }
+    assert!(
+        !stdout.contains("FAIL "),
+        "Node API fixture reported a behavioural failure:\n{stdout}"
     );
 }
 

@@ -475,7 +475,9 @@ mod tests {
                 BuiltinType::HashMap | BuiltinType::HashMapIter => {
                     Some((ValueClass::CowValue, CloneKind::FieldWise))
                 }
-                BuiltinType::CrashInfo => Some((ValueClass::CowValue, CloneKind::FieldWise)),
+                BuiltinType::CrashInfo | BuiltinType::NodeConfig => {
+                    Some((ValueClass::CowValue, CloneKind::FieldWise))
+                }
                 BuiltinType::CrashNotification => Some((ValueClass::BitCopy, CloneKind::Bits)),
                 BuiltinType::Rc | BuiltinType::Weak | BuiltinType::LambdaPid => {
                     Some((ValueClass::AffineResource, CloneKind::Retain))

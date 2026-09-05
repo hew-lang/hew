@@ -418,7 +418,6 @@ const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
 const BOOL_BOOL: &[BuiltinTy] = &[BuiltinTy::Bool, BuiltinTy::Bool];
 const STRING_STRING: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::String];
-const U16_STRING: &[BuiltinTy] = &[BuiltinTy::U16, BuiltinTy::String];
 const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
 const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
 const STRING_STRING_STRING: &[BuiltinTy] =
@@ -2443,44 +2442,21 @@ pub const CATALOG: &[BuiltinEntry] = &[
     ),
     // Class B: Node namespace — distributed-node lifecycle builtins (A7 S1).
     //
-    // Each entry maps the Hew `Node::X` call form to its `hew_node_api_X` C
-    // extern in `hew-runtime/src/hew_node.rs`.  The C functions return `c_int`
-    // (0 = success, -1 = error) but are declared `Unit` here so HIR/MIR treat
-    // them as void-returning and the call is emitted without a destination slot.
-    // On x86-64 and arm64 the callee's return value sits in rax/x0 and is
-    // harmlessly discarded by the caller — this is the standard C idiom for
-    // ignoring a return value.  The runtime still surfaces a peer-auth setup
-    // failure even though the `-1` is discarded: `Node::load_keys` /
-    // `Node::allow_peer` set `hew_last_error`, print a `hew:` stderr diagnostic,
-    // and record a sticky failure so a later `Node::start` refuses to bind a
-    // listener (fail-closed) rather than silently presenting an ephemeral
-    // identity. See `node_peer_auth_setup_failed` in `hew_node.rs`.
-    direct(
-        "Node::set_transport",
-        BuiltinClass::ClassB,
-        STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_set_transport",
-        },
-    ),
+    // Aggregate arguments and Result values are lowered by the codegen family
+    // intercepts; scalar catalogue types are dispatch placeholders only.
     direct(
         "Node::start",
         BuiltinClass::ClassB,
         STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_start",
-        },
+        BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
         "Node::connect",
         BuiltinClass::ClassB,
         STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_connect",
-        },
+        BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
         "Node::shutdown",
@@ -2489,32 +2465,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_node_api_shutdown",
-        },
-    ),
-    // `Node::load_keys(path: String)` — load/persist this node's stable mesh
-    // TLS identity from a keyfile. Same FFI shim shape as set_transport: one
-    // String in, c_int discarded as Unit. Native quic-mesh only.
-    direct(
-        "Node::load_keys",
-        BuiltinClass::ClassB,
-        STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_load_keys",
-        },
-    ),
-    // `Node::allow_peer(node_id: U16, credential_hex: String)` — bind a peer's
-    // authenticated credential to the NodeId it is permitted to claim (issue
-    // #2652). The credential is interpreted by the node's pinned transport: TCP
-    // ⇒ 32-byte Noise pubkey (`PeerCredential::NoiseKey`); quic-mesh ⇒ cert SPKI
-    // (`PeerCredential::Spki`). U16 + String in, c_int discarded as Unit.
-    direct(
-        "Node::allow_peer",
-        BuiltinClass::ClassB,
-        U16_STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_allow_peer",
         },
     ),
     // `Node::identity_key() -> String` — this node's stable public credential
@@ -2538,7 +2488,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::U64,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
+    // `Node::register<T>(name: String, pid: LocalPid<T>) -> Result<(), RegisterError>`
     //
     // Per R81, `LocalPid<T>` lowers to a bare `u64` PID at the C-ABI
     // boundary.  The catalog param list `[String, U64]` is a placeholder
@@ -2549,7 +2499,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
         "Node::register",
         BuiltinClass::ClassB,
         &[BuiltinTy::String, BuiltinTy::U64],
-        BuiltinTy::I32,
+        BuiltinTy::U64,
         BuiltinLinkage::NodeRegisterByPid {
             register_symbol: "hew_node_api_register_by_pid",
             pid_accessor: "hew_actor_pid",
@@ -2564,6 +2514,13 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // the C ABI for this CalleeNameDispatchOnly entry.
     direct(
         "Node::lookup",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "Node::unregister",
         BuiltinClass::ClassB,
         STRING,
         BuiltinTy::U64,

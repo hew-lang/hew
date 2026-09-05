@@ -72,7 +72,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
 use hew_hir::stdlib_catalog::PrintKind;
-use hew_hir::{mangle_dotted_name, ItemId};
+use hew_hir::{mangle_dotted_name, mangle_resolved_ty, ItemId};
 use hew_mir::{
     instr_source_places, is_string_const_ty, terminator_source_places, validate_context_markers,
     verify_raw_virtual_value_ladder, ActorHandlerKind, ActorLayout, ActorStateLoadMode,
@@ -1513,17 +1513,15 @@ fn wasm_excluded_call_family(
         | F::MetricHistogramRecord
         | F::MetricVecRegister
         | F::MetricVecWith
-        | F::NodeAllowPeer
         | F::NodeConnect
         | F::NodeId
         | F::NodeIdentityKey
-        | F::NodeLoadKeys
         | F::NodeLookup
         | F::NodeMonitor
         | F::NodeRegister
-        | F::NodeSetTransport
         | F::NodeShutdown
         | F::NodeStart
+        | F::NodeUnregister
         | F::ObserveReadU64
         | F::ObserveScrape
         | F::ObserveSeries
@@ -29439,6 +29437,39 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
         }
     };
 
+    let actor_ty = match place_resolved_ty(fn_ctx, *dest_place)? {
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Result),
+            args,
+            ..
+        } if args.len() == 2 => match &args[0] {
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::RemotePid),
+                args,
+                ..
+            } if args.len() == 1 => &args[0],
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "Node::lookup Ok type must be RemotePid<T>, got {other:?}"
+                )));
+            }
+        },
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "Node::lookup destination must be Result<RemotePid<T>, LookupError>, got {other:?}"
+            )));
+        }
+    };
+    let actor_identity = mangle_resolved_ty(actor_ty);
+    let actor_identity_ptr = intern_global_string_ptr(
+        fn_ctx,
+        &actor_identity,
+        &format!(
+            "str_node_lookup_type_{}",
+            llvm_global_name_fragment(&actor_identity)
+        ),
+    )?;
+
     // Load the name string (a `ptr` value stored in the arg's alloca).
     let (name_ptr_slot, name_slot_ty) = place_pointer(fn_ctx, *name_arg)?;
     let name_val = fn_ctx
@@ -29480,7 +29511,11 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
         .builder
         .build_call(
             lookup_fn,
-            &[metadata_value_from_basic(name_val), ok_field_ptr.into()],
+            &[
+                metadata_value_from_basic(name_val),
+                actor_identity_ptr.into(),
+                ok_field_ptr.into(),
+            ],
             "lookup_rc",
         )
         .llvm_ctx("hew_node_api_lookup_location call")?;
@@ -29540,13 +29575,21 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
             field_idx: 0,
         },
     )?;
-    // `LookupError::NotFound` is variant 0 of a single-variant enum with no
-    // payload — the entire `LookupError` outer struct is zero-initialised.
-    let zero_lookup_err = err_field_ty.const_zero();
-    fn_ctx
+    let error_discriminant = fn_ctx
         .builder
-        .build_store(err_field_ptr, zero_lookup_err)
-        .llvm_ctx("store LookupError::NotFound")?;
+        .build_int_sub(
+            rc,
+            rc.get_type().const_int(1, false),
+            "lookup_error_discriminant",
+        )
+        .llvm_ctx("lookup error discriminant")?;
+    store_error_discriminant(
+        fn_ctx,
+        err_field_ptr,
+        err_field_ty,
+        error_discriminant,
+        "Node::lookup",
+    )?;
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
@@ -29573,6 +29616,236 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
         .build_unconditional_branch(next_bb)
         .llvm_ctx("lookup ok br next")?;
 
+    Ok(())
+}
+
+fn store_error_discriminant(
+    fn_ctx: &FnCtx<'_, '_>,
+    error_ptr: PointerValue<'_>,
+    error_ty: BasicTypeEnum<'_>,
+    discriminant: IntValue<'_>,
+    helper: &str,
+) -> CodegenResult<()> {
+    let (tag_ptr, tag_ty) = match error_ty {
+        BasicTypeEnum::IntType(int_ty) => (error_ptr, int_ty),
+        BasicTypeEnum::StructType(struct_ty) => {
+            fn_ctx
+                .builder
+                .build_store(error_ptr, struct_ty.const_zero())
+                .llvm_ctx_with(|| format!("{helper} zero error enum"))?;
+            let tag_ptr = fn_ctx
+                .builder
+                .build_struct_gep(struct_ty, error_ptr, 0, "error_tag_ptr")
+                .llvm_ctx_with(|| format!("{helper} error tag GEP"))?;
+            let Some(BasicTypeEnum::IntType(tag_ty)) = struct_ty.get_field_type_at_index(0) else {
+                return Err(CodegenError::FailClosed(format!(
+                    "{helper} error enum has no integer discriminant"
+                )));
+            };
+            (tag_ptr, tag_ty)
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{helper} error payload must be an integer or struct, got {other:?}"
+            )));
+        }
+    };
+    let tag = fn_ctx
+        .builder
+        .build_int_cast(discriminant, tag_ty, "error_tag")
+        .llvm_ctx_with(|| format!("{helper} error tag cast"))?;
+    fn_ctx
+        .builder
+        .build_store(tag_ptr, tag)
+        .llvm_ctx_with(|| format!("{helper} store error tag"))?;
+    Ok(())
+}
+
+fn emit_unit_result_status(
+    fn_ctx: &FnCtx<'_, '_>,
+    status: IntValue<'_>,
+    dest: Place,
+    helper: &str,
+) -> CodegenResult<()> {
+    let dest_local = match dest {
+        Place::Local(local) => local,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{helper} Result destination must be local, got {other:?}"
+            )));
+        }
+    };
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed(format!("{helper} has no parent function")))?;
+    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "node_result_ok");
+    let err_bb = fn_ctx.ctx.append_basic_block(parent, "node_result_err");
+    let merge_bb = fn_ctx.ctx.append_basic_block(parent, "node_result_merge");
+    let success = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            status.get_type().const_zero(),
+            "node_result_success",
+        )
+        .llvm_ctx_with(|| format!("{helper} status compare"))?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(success, ok_bb, err_bb)
+        .llvm_ctx_with(|| format!("{helper} status branch"))?;
+
+    fn_ctx.builder.position_at_end(ok_bb);
+    store_composite_tag(fn_ctx, dest_local, 0, helper)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx_with(|| format!("{helper} ok merge"))?;
+
+    fn_ctx.builder.position_at_end(err_bb);
+    store_composite_tag(fn_ctx, dest_local, 1, helper)?;
+    let (error_ptr, error_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
+    )?;
+    let discriminant = fn_ctx
+        .builder
+        .build_int_sub(
+            status,
+            status.get_type().const_int(1, false),
+            "node_error_discriminant",
+        )
+        .llvm_ctx_with(|| format!("{helper} error discriminant"))?;
+    store_error_discriminant(fn_ctx, error_ptr, error_ty, discriminant, helper)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx_with(|| format!("{helper} error merge"))?;
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
+fn emit_node_start_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let [config] = args else {
+        return Err(CodegenError::FailClosed(format!(
+            "Node::start expects one NodeConfig, got {} arguments",
+            args.len()
+        )));
+    };
+    let dest = dest.copied().ok_or_else(|| {
+        CodegenError::FailClosed("Node::start must carry a Result destination".into())
+    })?;
+    let (config_ptr, config_ty) = place_pointer(fn_ctx, *config)?;
+    let BasicTypeEnum::StructType(config_ty) = config_ty else {
+        return Err(CodegenError::FailClosed(
+            "Node::start argument is not a NodeConfig record".into(),
+        ));
+    };
+    if config_ty.count_fields() != 6 {
+        return Err(CodegenError::FailClosed(format!(
+            "NodeConfig must have six fields, got {}",
+            config_ty.count_fields()
+        )));
+    }
+    let mut call_args = Vec::with_capacity(6);
+    for index in 0..6 {
+        let field_ptr = fn_ctx
+            .builder
+            .build_struct_gep(config_ty, config_ptr, index, "node_config_field_ptr")
+            .llvm_ctx("NodeConfig field GEP")?;
+        let field_ty = config_ty.get_field_type_at_index(index).ok_or_else(|| {
+            CodegenError::FailClosed(format!("NodeConfig field {index} is missing"))
+        })?;
+        let field = fn_ctx
+            .builder
+            .build_load(field_ty, field_ptr, "node_config_field")
+            .llvm_ctx("load NodeConfig field")?;
+        call_args.push(metadata_value_from_basic(field));
+    }
+    let start_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_node_api_start",
+    )?;
+    let call = fn_ctx
+        .builder
+        .build_call(start_fn, &call_args, "node_start_status")
+        .llvm_ctx("hew_node_api_start call")?;
+    let status = call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_node_api_start returned void".into()))?
+        .into_int_value();
+    emit_unit_result_status(fn_ctx, status, dest, "Node::start")?;
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Node::start next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("Node::start next branch")?;
+    Ok(())
+}
+
+fn emit_node_string_result_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+    symbol: &str,
+    helper: &str,
+) -> CodegenResult<()> {
+    let [arg] = args else {
+        return Err(CodegenError::FailClosed(format!(
+            "{helper} expects one string, got {} arguments",
+            args.len()
+        )));
+    };
+    let dest = dest.copied().ok_or_else(|| {
+        CodegenError::FailClosed(format!("{helper} must carry a Result destination"))
+    })?;
+    let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+    let value = fn_ctx
+        .builder
+        .build_load(arg_ty, arg_ptr, "node_string_arg")
+        .llvm_ctx_with(|| format!("{helper} load argument"))?;
+    let function = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        symbol,
+    )?;
+    let call = fn_ctx
+        .builder
+        .build_call(function, &[metadata_value_from_basic(value)], "node_status")
+        .llvm_ctx_with(|| format!("{helper} runtime call"))?;
+    let status = call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{helper} returned void")))?
+        .into_int_value();
+    emit_unit_result_status(fn_ctx, status, dest, helper)?;
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("{helper} next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx_with(|| format!("{helper} next branch"))?;
     Ok(())
 }
 
@@ -31321,6 +31594,32 @@ fn lower_terminator<'ctx>(
                 emit_node_lookup_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
+            if builtin == Some(RtFamily::NodeStart) {
+                emit_node_start_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if builtin == Some(RtFamily::NodeConnect) {
+                emit_node_string_result_call(
+                    fn_ctx,
+                    args,
+                    dest.as_ref(),
+                    *next,
+                    "hew_node_api_connect",
+                    "Node::connect",
+                )?;
+                return Ok(());
+            }
+            if builtin == Some(RtFamily::NodeUnregister) {
+                emit_node_string_result_call(
+                    fn_ctx,
+                    args,
+                    dest.as_ref(),
+                    *next,
+                    "hew_node_api_unregister",
+                    "Node::unregister",
+                )?;
+                return Ok(());
+            }
             // `hew_remote_pid_send` is the checker's MethodCallRewrite target
             // for `pid.send(msg)` on a `RemotePid<T>` receiver.  The catalog
             // entry uses `BuiltinLinkage::CalleeNameDispatchOnly` (a fieldless
@@ -31974,10 +32273,31 @@ fn lower_terminator<'ctx>(
                     };
                     let dest_place = dest.as_ref().ok_or_else(|| {
                         CodegenError::FailClosed(
-                            "Node::register (i32-returning) must carry a Terminator::Call dest"
-                                .into(),
+                            "Node::register must carry a Result destination".into(),
                         )
                     })?;
+
+                    let actor_ty = match place_resolved_ty(fn_ctx, *pid_arg)? {
+                        ResolvedTy::Named {
+                            builtin: Some(BuiltinType::LocalPid),
+                            args,
+                            ..
+                        } if args.len() == 1 => &args[0],
+                        other => {
+                            return Err(CodegenError::FailClosed(format!(
+                                "Node::register pid must be LocalPid<T>, got {other:?}"
+                            )));
+                        }
+                    };
+                    let actor_identity = mangle_resolved_ty(actor_ty);
+                    let actor_identity_ptr = intern_global_string_ptr(
+                        fn_ctx,
+                        &actor_identity,
+                        &format!(
+                            "str_node_register_type_{}",
+                            llvm_global_name_fragment(&actor_identity)
+                        ),
+                    )?;
 
                     // Load the name string pointer (ptr-typed alloca).
                     let (name_ptr, name_ty) = place_pointer(fn_ctx, *name_arg)?;
@@ -32012,6 +32332,7 @@ fn lower_terminator<'ctx>(
                             &[
                                 metadata_value_from_basic(name_val),
                                 metadata_value_from_basic(pid_u64),
+                                actor_identity_ptr.into(),
                             ],
                             "reg_result",
                         )
@@ -32021,19 +32342,12 @@ fn lower_terminator<'ctx>(
                             "hew_node_api_register_by_pid returned void — expected i32".into(),
                         )
                     })?;
-
-                    // Store the i32 return value into the destination.
-                    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-                    let i32_ty = fn_ctx.ctx.i32_type();
-                    if dest_ty != BasicTypeEnum::IntType(i32_ty) {
-                        return Err(CodegenError::FailClosed(format!(
-                            "Node::register dest type {dest_ty:?} does not match i32"
-                        )));
-                    }
-                    fn_ctx
-                        .builder
-                        .build_store(dest_ptr, reg_i32)
-                        .llvm_ctx("store reg result")?;
+                    emit_unit_result_status(
+                        fn_ctx,
+                        reg_i32.into_int_value(),
+                        *dest_place,
+                        "Node::register",
+                    )?;
                 }
             }
             if let Some(dest) = dest {

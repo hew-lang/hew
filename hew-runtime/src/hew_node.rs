@@ -1206,6 +1206,7 @@ fn remote_reply_data_to_ptr(reply_data: &[u8], reply_size: usize) -> *mut c_void
 #[derive(Debug, Default)]
 pub struct HewRegistry {
     remote_names: Mutex<HashMap<String, Location>>,
+    actor_types: Mutex<HashMap<String, String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1314,6 +1315,7 @@ unsafe fn unregister_names_from_node(
                     node.cluster,
                     c_name.as_ptr(),
                     &raw const location,
+                    c"legacy".as_ptr(),
                 );
             };
         }
@@ -1336,6 +1338,7 @@ unsafe fn unregister_local_names_for_node(node: &HewNode) {
     unsafe { unregister_names_from_node(node, names, false) };
 
     registry.remote_names.lock_or_recover().clear();
+    registry.actor_types.lock_or_recover().clear();
 }
 
 /// Remove all registered names that still point at `actor_id`.
@@ -1957,10 +1960,11 @@ fn send_reply_envelope(
 extern "C" fn node_registry_gossip_callback(
     name: *const c_char,
     location: *const HewLocation,
+    actor_type: *const c_char,
     is_add: bool,
     user_data: *mut c_void,
 ) {
-    if name.is_null() || location.is_null() || user_data.is_null() {
+    if name.is_null() || location.is_null() || actor_type.is_null() || user_data.is_null() {
         return;
     }
     // SAFETY: user_data is a *mut HewRegistry pointer set during hew_node_start,
@@ -1970,6 +1974,10 @@ extern "C" fn node_registry_gossip_callback(
     let key = unsafe { CStr::from_ptr(name) }
         .to_string_lossy()
         .into_owned();
+    // SAFETY: caller guarantees `actor_type` is a valid C string.
+    let actor_type = unsafe { CStr::from_ptr(actor_type) }
+        .to_string_lossy()
+        .into_owned();
     // SAFETY: caller guarantees `location` is readable for the callback.
     let Ok(location) = Location::try_from(unsafe { *location }) else {
         set_last_error("registry gossip callback received an invalid Location");
@@ -1977,9 +1985,14 @@ extern "C" fn node_registry_gossip_callback(
     };
     let mut map = registry.remote_names.lock_or_recover();
     if is_add {
-        map.insert(key, location);
+        map.insert(key.clone(), location);
+        registry
+            .actor_types
+            .lock_or_recover()
+            .insert(key, actor_type);
     } else if map.get(&key) == Some(&location) {
         map.remove(&key);
+        registry.actor_types.lock_or_recover().remove(&key);
     }
 }
 
@@ -2660,7 +2673,17 @@ pub unsafe extern "C" fn hew_node_register(
     name: *const c_char,
     actor: u64,
 ) -> c_int {
-    cabi_guard!(node.is_null() || name.is_null(), -1);
+    // SAFETY: forwards the caller contract with a stable legacy type identity.
+    unsafe { hew_node_register_typed(node, name, actor, c"legacy".as_ptr()) }
+}
+
+unsafe fn hew_node_register_typed(
+    node: *mut HewNode,
+    name: *const c_char,
+    actor: u64,
+    actor_type: *const c_char,
+) -> c_int {
+    cabi_guard!(node.is_null() || name.is_null() || actor_type.is_null(), -1);
     // SAFETY: caller guarantees node pointer validity.
     let node = unsafe { &mut *node };
     if node.registry.is_null() {
@@ -2671,6 +2694,10 @@ pub unsafe extern "C" fn hew_node_register(
     let key = unsafe { CStr::from_ptr(name) }
         .to_string_lossy()
         .into_owned();
+    // SAFETY: caller guarantees `actor_type` is a valid C string.
+    let actor_type = unsafe { CStr::from_ptr(actor_type) }
+        .to_string_lossy()
+        .into_owned();
     let Some(location) = local_actor_location(node, actor) else {
         set_last_error("hew_node_register: node has no authenticated Location authority");
         return -1;
@@ -2678,7 +2705,8 @@ pub unsafe extern "C" fn hew_node_register(
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
     let previous = reg.remote_names.lock_or_recover().get(&key).copied();
-    if previous == Some(location) {
+    let previous_type = reg.actor_types.lock_or_recover().get(&key).cloned();
+    if previous == Some(location) && previous_type.as_deref() == Some(actor_type.as_str()) {
         return 0;
     }
     if previous.is_some() {
@@ -2686,24 +2714,41 @@ pub unsafe extern "C" fn hew_node_register(
         unsafe { crate::registry::hew_registry_unregister(name) };
     }
     // SAFETY: registry API expects a stable C string pointer.
-    if unsafe { crate::registry::hew_registry_register(name, actor_id_to_registry_ptr(actor)) } != 0
-    {
-        return -1;
-    }
+    crate::registry::register_typed(&key, actor_id_to_registry_ptr(actor), &actor_type);
     reg.remote_names
         .lock_or_recover()
         .insert(key.clone(), location);
+    reg.actor_types
+        .lock_or_recover()
+        .insert(key.clone(), actor_type.clone());
 
     // Propagate to cluster gossip so remote nodes learn about this actor.
     if !node.cluster.is_null() {
         let abi_location = HewLocation::from(location);
         // SAFETY: cluster pointer is valid while the node is alive.
-        unsafe { cluster::hew_cluster_registry_add(node.cluster, name, &raw const abi_location) };
+        let Ok(c_actor_type) = CString::new(actor_type.as_bytes()) else {
+            return -1;
+        };
+        // SAFETY: the cluster and all borrowed C values remain valid for this call.
+        unsafe {
+            cluster::hew_cluster_registry_add(
+                node.cluster,
+                name,
+                &raw const abi_location,
+                c_actor_type.as_ptr(),
+            );
+        };
     }
     if !node.conn_mgr.is_null() {
         // SAFETY: connection manager pointer is valid while the node is alive.
         unsafe {
-            connection::hew_connmgr_broadcast_registry_gossip(node.conn_mgr, &key, location, true);
+            connection::hew_connmgr_broadcast_registry_gossip(
+                node.conn_mgr,
+                &key,
+                location,
+                &actor_type,
+                true,
+            );
         }
     }
 
@@ -2744,13 +2789,26 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
     let Some(removed_location) = removed_location else {
         return 0;
     };
+    let removed_type = reg
+        .actor_types
+        .lock_or_recover()
+        .remove(&key)
+        .unwrap_or_else(|| "legacy".to_string());
+    let Ok(c_actor_type) = CString::new(removed_type.as_bytes()) else {
+        return -1;
+    };
 
     // Propagate removal to cluster gossip.
     if !node.cluster.is_null() {
         let abi_location = HewLocation::from(removed_location);
         // SAFETY: cluster pointer is valid while the node is alive.
         unsafe {
-            cluster::hew_cluster_registry_remove(node.cluster, name, &raw const abi_location);
+            cluster::hew_cluster_registry_remove(
+                node.cluster,
+                name,
+                &raw const abi_location,
+                c_actor_type.as_ptr(),
+            );
         };
     }
     if !node.conn_mgr.is_null() {
@@ -2760,6 +2818,7 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
                 node.conn_mgr,
                 &key,
                 removed_location,
+                &removed_type,
                 false,
             );
         }
@@ -2781,7 +2840,25 @@ pub unsafe extern "C" fn hew_node_lookup_location(
     name: *const c_char,
     out: *mut HewRemotePid,
 ) -> c_int {
-    cabi_guard!(node.is_null() || name.is_null() || out.is_null(), -1);
+    // SAFETY: forwards the caller contract with the legacy identity.
+    let status = unsafe { hew_node_lookup_location_typed(node, name, c"legacy".as_ptr(), out) };
+    if status == 0 {
+        0
+    } else {
+        -1
+    }
+}
+
+unsafe fn hew_node_lookup_location_typed(
+    node: *mut HewNode,
+    name: *const c_char,
+    actor_type: *const c_char,
+    out: *mut HewRemotePid,
+) -> c_int {
+    cabi_guard!(
+        node.is_null() || name.is_null() || actor_type.is_null() || out.is_null(),
+        1
+    );
     // SAFETY: caller guarantees node pointer validity.
     let node = unsafe { &*node };
     if node.registry.is_null() {
@@ -2791,12 +2868,22 @@ pub unsafe extern "C" fn hew_node_lookup_location(
     let key = unsafe { CStr::from_ptr(name) }
         .to_string_lossy()
         .into_owned();
+    // SAFETY: caller guarantees `actor_type` is a valid C string.
+    let actor_type = unsafe { CStr::from_ptr(actor_type) }.to_string_lossy();
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
     let map = reg.remote_names.lock_or_recover();
     let Some(location) = map.get(&key).copied() else {
-        return -1;
+        return 1;
     };
+    if reg
+        .actor_types
+        .lock_or_recover()
+        .get(&key)
+        .is_none_or(|registered| registered != actor_type.as_ref())
+    {
+        return 2;
+    }
     // SAFETY: caller guarantees `out` is writable.
     unsafe { out.write(HewRemotePid::from(location)) };
     0
@@ -4903,6 +4990,190 @@ fn select_local_route_slot(
     None
 }
 
+unsafe fn node_config_strings(values: *mut hew_cabi::vec::HewVec) -> Result<Vec<String>, String> {
+    if values.is_null() {
+        return Ok(Vec::new());
+    }
+    // SAFETY: the caller provides a readable HewVec for the duration of this call.
+    let values = unsafe { &*values };
+    if values.elem_size != std::mem::size_of::<*const c_char>() {
+        return Err("NodeConfig string vector has an invalid element layout".to_string());
+    }
+    let mut result = Vec::with_capacity(values.len);
+    for index in 0..values.len {
+        let mut string_ptr: *const c_char = std::ptr::null();
+        // SAFETY: the vector layout and index bounds were validated above. Copying
+        // bytes avoids imposing pointer alignment on HewVec's byte buffer.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                values
+                    .data
+                    .add(index * std::mem::size_of::<*const c_char>()),
+                (&raw mut string_ptr).cast::<u8>(),
+                std::mem::size_of::<*const c_char>(),
+            );
+        }
+        if string_ptr.is_null() {
+            return Err("NodeConfig string vector contains a null value".to_string());
+        }
+        // SAFETY: NodeConfig string vectors contain valid C string pointers.
+        result.push(
+            unsafe { CStr::from_ptr(string_ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    Ok(result)
+}
+
+unsafe fn promote_local_registry(node: *mut HewNode) -> c_int {
+    for (name, entry) in crate::registry::typed_entries() {
+        let Ok(name) = CString::new(name) else {
+            return -1;
+        };
+        let Ok(actor_type) = CString::new(entry.actor_type) else {
+            return -1;
+        };
+        let actor = entry.actor.addr() as u64;
+        // SAFETY: the node is live and each CString remains valid for this call.
+        if unsafe { hew_node_register_typed(node, name.as_ptr(), actor, actor_type.as_ptr()) } != 0
+        {
+            return -1;
+        }
+    }
+    0
+}
+
+/// `Node::start(config)` — validate and atomically start a configured node.
+///
+/// Returns zero on success or one plus the `NodeError` discriminant.
+///
+/// # Safety
+///
+/// String pointers must be valid C strings and vector pointers must be valid
+/// `Vec<string>` runtime values for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_start(
+    bind: *const c_char,
+    transport: *const c_char,
+    key: *const c_char,
+    trust: *const c_char,
+    peers: *mut hew_cabi::vec::HewVec,
+    seeds: *mut hew_cabi::vec::HewVec,
+) -> c_int {
+    if bind.is_null() || transport.is_null() || key.is_null() || trust.is_null() {
+        set_last_error("Node::start: NodeConfig contains a null string");
+        return 1;
+    }
+    // SAFETY: the pointer was checked non-null and is a valid C string by contract.
+    let bind_text = unsafe { CStr::from_ptr(bind) }.to_string_lossy();
+    // SAFETY: the pointer was checked non-null and is a valid C string by contract.
+    let key_text = unsafe { CStr::from_ptr(key) }.to_string_lossy();
+    // SAFETY: the pointer was checked non-null and is a valid C string by contract.
+    let trust_text = unsafe { CStr::from_ptr(trust) }.to_string_lossy();
+    if bind_text.is_empty() || key_text.is_empty() || trust_text != "pinned" {
+        set_last_error("Node::start: bind and key must be non-empty and trust must be `pinned`");
+        return 1;
+    }
+    // SAFETY: NodeConfig owns a valid HewVec for the duration of this call.
+    let peer_credentials = match unsafe { node_config_strings(peers) } {
+        Ok(values) => values,
+        Err(message) => {
+            set_last_error(message);
+            return 1;
+        }
+    };
+    // SAFETY: NodeConfig owns a valid HewVec for the duration of this call.
+    let seed_addresses = match unsafe { node_config_strings(seeds) } {
+        Ok(values) => values,
+        Err(message) => {
+            set_last_error(message);
+            return 1;
+        }
+    };
+
+    {
+        let mut guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !matches!(guard.state, ConfigState::Building(_)) {
+            set_last_error("Node::start: a public node lifecycle is already active");
+            return 1;
+        }
+        guard.state = ConfigState::default();
+    }
+    // SAFETY: NodeConfig strings remain valid C strings for these synchronous calls.
+    let transport_status = unsafe { configure_transport(transport) };
+    // SAFETY: NodeConfig strings remain valid C strings for these synchronous calls.
+    let key_status = unsafe { configure_keys(key) };
+    if transport_status != 0 || key_status != 0 {
+        return 1;
+    }
+    for (index, credential) in peer_credentials.iter().enumerate() {
+        let (route_slot, credential) = if let Some((slot, value)) = credential.split_once('@') {
+            let Ok(slot) = slot.parse::<u16>() else {
+                set_last_error("Node::start: peer route slot must be a non-zero u16");
+                return 1;
+            };
+            if slot == 0 {
+                set_last_error("Node::start: peer route slot must be a non-zero u16");
+                return 1;
+            }
+            (slot, value)
+        } else {
+            let Ok(slot) = u16::try_from(index + 1) else {
+                set_last_error("Node::start: too many peer credentials");
+                return 1;
+            };
+            (slot, credential.as_str())
+        };
+        let Ok(credential) = CString::new(credential.as_bytes()) else {
+            set_last_error("Node::start: a peer credential contains a NUL byte");
+            return 1;
+        };
+        // SAFETY: the CString remains valid for this synchronous configuration call.
+        if unsafe { configure_peer(route_slot, credential.as_ptr()) } != 0 {
+            return 1;
+        }
+    }
+
+    // SAFETY: the NodeConfig bind string remains valid for this synchronous call.
+    if unsafe { start_address(bind) } != 0 {
+        return 2;
+    }
+    let promote_status = with_current_node_read(|guard| {
+        let node = *guard as *mut HewNode;
+        if node.is_null() {
+            -1
+        } else {
+            // SAFETY: the guarded current-node pointer is live for the closure.
+            unsafe { promote_local_registry(node) }
+        }
+    });
+    if promote_status != 0 {
+        // SAFETY: shutdown consumes only the guarded process-global node state.
+        let _ = unsafe { hew_node_api_shutdown() };
+        return 2;
+    }
+    for seed in seed_addresses {
+        if seed == bind_text {
+            continue;
+        }
+        let Ok(seed) = CString::new(seed) else {
+            // SAFETY: shutdown consumes only the guarded process-global node state.
+            let _ = unsafe { hew_node_api_shutdown() };
+            return 3;
+        };
+        // SAFETY: the seed CString remains valid for this synchronous call.
+        if unsafe { hew_node_api_connect(seed.as_ptr()) } != 0 {
+            // SAFETY: shutdown consumes only the guarded process-global node state.
+            let _ = unsafe { hew_node_api_shutdown() };
+            return 3;
+        }
+    }
+    0
+}
+
 /// Merge the start-time transport selection into staged pre-start config.
 ///
 /// # Errors
@@ -4911,11 +5182,9 @@ fn select_local_route_slot(
 fn merge_start_env_into_config(
     cfg: &mut crate::peer_binding::PeerAuthConfig,
 ) -> Result<(), String> {
-    // Transport (issue #2652): a selection pinned by an earlier transport-
-    // sensitive op (`Node::set_transport` / `Node::load_keys` /
-    // `Node::allow_peer`) is authoritative and wins over any later env change —
-    // start uses the STORED selection. Only when unpinned do we adopt the
-    // start-time env selection.
+    // A transport selected by NodeConfig is authoritative and wins over any
+    // later environment change. Only an unpinned internal configuration adopts
+    // the start-time environment selection.
     let effective = if let Some(pinned) = cfg.transport {
         pinned
     } else {
@@ -4933,13 +5202,12 @@ fn merge_start_env_into_config(
     Ok(())
 }
 
-/// `Node::start(addr)` — Create and start a node, binding to `addr`.
+/// Start a node from the already-staged peer-auth configuration.
 ///
 /// # Safety
 ///
 /// `addr` must be a valid null-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
+unsafe fn start_address(addr: *const c_char) -> c_int {
     if addr.is_null() {
         set_last_error("Node::start: address is null");
         return -1;
@@ -4979,18 +5247,15 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
             let msg = format!(
                 "Node::start: refusing to bind listener — peer-auth setup failed (fail-closed): {reason}"
             );
-            eprintln!("hew: {msg}");
             set_last_error(msg);
             return -1;
         }
         if let Err(msg) = merge_start_env_into_config(&mut cfg) {
-            eprintln!("hew: {msg}");
             set_last_error(msg);
             return -1;
         }
         // Pre-listen public validation (fail-closed before allocation).
         if let Err(msg) = cfg.validate_public() {
-            eprintln!("hew: {msg}");
             set_last_error(msg);
             return -1;
         }
@@ -5000,7 +5265,6 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
             select_local_route_slot(process_route_slot_base(), offset, cfg.bindings())
         else {
             let msg = "Node::start: no free local route slot remains after peer bindings";
-            eprintln!("hew: {msg}");
             set_last_error(msg);
             return -1;
         };
@@ -5008,7 +5272,6 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         let snapshot = match cfg.snapshot_for_start() {
             Ok(snapshot) => snapshot,
             Err(msg) => {
-                eprintln!("hew: {msg}");
                 set_last_error(msg);
                 return -1;
             }
@@ -5195,14 +5458,18 @@ pub unsafe extern "C" fn hew_node_api_register(
 /// `name` must be a valid null-terminated C string that remains live for
 /// the duration of this call.
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: u64) -> c_int {
-    if name.is_null() {
+pub unsafe extern "C" fn hew_node_api_register_by_pid(
+    name: *const c_char,
+    pid: u64,
+    actor_type: *const c_char,
+) -> c_int {
+    if name.is_null() || actor_type.is_null() {
         set_last_error("Node::register: name pointer is null");
-        return -1;
+        return 1;
     }
     if pid == 0 {
         set_last_error("Node::register: pid is zero (invalid actor)");
-        return -1;
+        return 2;
     }
     // Verify the actor is currently live in the actor table before attempting
     // to register it.  This prevents dangling registrations after an actor
@@ -5212,17 +5479,24 @@ pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: 
         set_last_error(format!(
             "Node::register: actor with pid {pid} not found in live-actor table"
         ));
-        return -1;
+        return 2;
     }
+    // SAFETY: both pointers were checked non-null and are valid C strings by contract.
+    let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+    // SAFETY: both pointers were checked non-null and are valid C strings by contract.
+    let actor_type_text = unsafe { CStr::from_ptr(actor_type) }.to_string_lossy();
+    if key.is_empty() || key.as_bytes().contains(&0) || actor_type_text.is_empty() {
+        set_last_error("Node::register: name and actor type must be non-empty");
+        return 1;
+    }
+    crate::registry::register_typed(&key, actor_id_to_registry_ptr(pid), &actor_type_text);
     with_current_node_read(|guard| {
         let node = *guard as *mut HewNode;
         if node.is_null() {
-            set_last_error("Node::register: no active node (call Node::start first)");
-            return -1;
+            return 0;
         }
-        // SAFETY: node is non-null; name is non-null and caller guarantees a
-        // valid C string; pid was validated above.
-        unsafe { hew_node_register(node, name, pid) }
+        // SAFETY: node and all arguments were validated above.
+        unsafe { hew_node_register_typed(node, name, pid, actor_type) }
     })
 }
 
@@ -5241,13 +5515,14 @@ pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: 
 pub unsafe extern "C" fn hew_node_api_unregister(name: *const c_char) -> c_int {
     if name.is_null() {
         set_last_error("Node::unregister: name pointer is null");
-        return -1;
+        return 1;
     }
+    // SAFETY: name was checked non-null and is valid by the caller contract.
+    let local_status = unsafe { crate::registry::hew_registry_unregister(name) };
     with_current_node_read(|guard| {
         let node = *guard as *mut HewNode;
         if node.is_null() {
-            set_last_error("Node::unregister: no active node (call Node::start first)");
-            return -1;
+            return i32::from(local_status != 0);
         }
         // SAFETY: node is non-null; name is non-null and caller guarantees a
         // valid C string.
@@ -5265,18 +5540,34 @@ pub unsafe extern "C" fn hew_node_api_unregister(name: *const c_char) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_lookup_location(
     name: *const c_char,
+    actor_type: *const c_char,
     out: *mut HewRemotePid,
 ) -> c_int {
-    if name.is_null() || out.is_null() {
-        return -1;
+    if name.is_null() || actor_type.is_null() || out.is_null() {
+        return 1;
+    }
+    // SAFETY: both pointers were checked non-null and are valid C strings by contract.
+    let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+    // SAFETY: both pointers were checked non-null and are valid C strings by contract.
+    let expected = unsafe { CStr::from_ptr(actor_type) }.to_string_lossy();
+    if let Some(entry) = crate::registry::lookup_typed(&key) {
+        if entry.actor_type != expected {
+            return 2;
+        }
+        let has_node = with_current_node_read(|guard| *guard != 0);
+        if !has_node {
+            // SAFETY: out was checked non-null and writable by the caller contract.
+            unsafe { out.write(HewRemotePid::default()) };
+            return 0;
+        }
     }
     with_current_node_read(|guard| {
         let node = *guard as *mut HewNode;
         if node.is_null() {
-            return -1;
+            return 1;
         }
         // SAFETY: node is pinned by the read lock; caller guarantees name/output.
-        unsafe { hew_node_lookup_location(node, name, out) }
+        unsafe { hew_node_lookup_location_typed(node, name, actor_type, out) }
     })
 }
 
@@ -5295,8 +5586,7 @@ pub unsafe extern "C" fn hew_node_api_lookup_location(
 /// # Safety
 ///
 /// `name` must be a valid null-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_int {
+unsafe fn configure_transport(name: *const c_char) -> c_int {
     // SAFETY: caller guarantees name is a valid C string (or null).
     let Some(s) = (unsafe { crate::util::cstr_to_str(&name, "hew_node_set_transport") }) else {
         return -1;
@@ -5376,7 +5666,6 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
 ///   allowlist after the operator's setup failed.
 fn node_peer_auth_setup_failed(msg: impl Into<String>) {
     let msg = msg.into();
-    eprintln!("hew: {msg} (fail-closed)");
     // Poison the staged config. If a public node lifecycle already owns the
     // state (Starting/Running) the poison is moot: that node already froze and
     // installed its snapshot. First poison wins (a later generic failure must
@@ -5411,8 +5700,7 @@ fn node_peer_auth_setup_failed(msg: impl Into<String>) {
 /// # Safety
 ///
 /// `path` must be a valid null-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
+unsafe fn configure_keys(path: *const c_char) -> c_int {
     // SAFETY: caller guarantees path is a valid C string (or null).
     let Some(p) = (unsafe { crate::util::cstr_to_str(&path, "Node::load_keys") }) else {
         node_peer_auth_setup_failed("Node::load_keys: invalid path argument");
@@ -5561,11 +5849,7 @@ fn stage_loaded_identity(
 /// # Safety
 ///
 /// `credential_hex` must be a valid null-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_node_api_allow_peer(
-    route_slot: u16,
-    credential_hex: *const c_char,
-) -> c_int {
+unsafe fn configure_peer(route_slot: u16, credential_hex: *const c_char) -> c_int {
     // SAFETY: caller guarantees credential_hex is a valid C string (or null).
     let Some(s) = (unsafe { crate::util::cstr_to_str(&credential_hex, "Node::allow_peer") }) else {
         node_peer_auth_setup_failed("Node::allow_peer: invalid credential argument");
@@ -6913,13 +7197,13 @@ mod tests {
         };
         let tcp = CString::new("tcp").expect("valid transport name");
         // SAFETY: tcp is a valid C string for this call.
-        assert_eq!(unsafe { hew_node_api_set_transport(tcp.as_ptr()) }, 0);
+        assert_eq!(unsafe { configure_transport(tcp.as_ptr()) }, 0);
 
         let key_path = identity.dir.path().join("node.key");
         let key_path = CString::new(key_path.to_str().expect("UTF-8 tempfile key path"))
             .expect("valid tempfile key path");
         // SAFETY: key_path is a valid C string and the directory remains live in the guard.
-        assert_eq!(unsafe { hew_node_api_load_keys(key_path.as_ptr()) }, 0);
+        assert_eq!(unsafe { configure_keys(key_path.as_ptr()) }, 0);
 
         identity
     }
@@ -8180,7 +8464,7 @@ mod tests {
         let _identity = stage_public_api_test_identity();
         let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind is a valid C string for this call.
-        let rc = unsafe { hew_node_api_start(bind.as_ptr()) };
+        let rc = unsafe { start_address(bind.as_ptr()) };
         assert_eq!(rc, 0, "identity-backed public start should succeed");
         {
             let g = PEER_AUTH_STATE
@@ -8231,9 +8515,9 @@ mod tests {
         let _identity = stage_public_api_test_identity();
         let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind valid.
-        assert_eq!(unsafe { hew_node_api_start(bind.as_ptr()) }, 0);
+        assert_eq!(unsafe { start_address(bind.as_ptr()) }, 0);
         // SAFETY: bind valid; second start must be rejected.
-        let second_rc = unsafe { hew_node_api_start(bind.as_ptr()) };
+        let second_rc = unsafe { start_address(bind.as_ptr()) };
         assert_eq!(
             second_rc, -1,
             "a second concurrent public start must be refused"
@@ -8295,9 +8579,9 @@ mod tests {
         std::fs::write(&key, b"not-a-keyfile-frame").unwrap();
         let c_key = CString::new(key.to_str().unwrap()).unwrap();
         // SAFETY: c_key is a valid NUL-terminated C string for this call.
-        let rc_load = unsafe { hew_node_api_load_keys(c_key.as_ptr()) };
+        let rc_load = unsafe { configure_keys(c_key.as_ptr()) };
         // SAFETY: bind is a valid NUL-terminated C string for this call.
-        let rc_start_after_load = unsafe { hew_node_api_start(bind.as_ptr()) };
+        let rc_start_after_load = unsafe { start_address(bind.as_ptr()) };
         // A fail-closed start never created a node; clean up if the gate regressed.
         if rc_start_after_load == 0 {
             // SAFETY: shutdown reclaims the current node, if any; takes no arguments.
@@ -8309,9 +8593,9 @@ mod tests {
         reset_staging();
         let bad_hex = CString::new("nothex!!").expect("valid C string");
         // SAFETY: bad_hex is a valid NUL-terminated C string for this call.
-        let rc_allow = unsafe { hew_node_api_allow_peer(2, bad_hex.as_ptr()) };
+        let rc_allow = unsafe { configure_peer(2, bad_hex.as_ptr()) };
         // SAFETY: bind is a valid NUL-terminated C string for this call.
-        let rc_start_after_allow = unsafe { hew_node_api_start(bind.as_ptr()) };
+        let rc_start_after_allow = unsafe { start_address(bind.as_ptr()) };
         if rc_start_after_allow == 0 {
             // SAFETY: shutdown reclaims the current node, if any; takes no arguments.
             unsafe { hew_node_api_shutdown() };
@@ -8350,7 +8634,7 @@ mod tests {
         let _identity = stage_public_api_test_identity();
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind_addr is a valid C string for the duration of this test.
-        unsafe { assert_eq!(hew_node_api_start(bind_addr.as_ptr()), 0) };
+        unsafe { assert_eq!(start_address(bind_addr.as_ptr()), 0) };
 
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
         let handles: Vec<_> = (0..2)
@@ -8501,12 +8785,12 @@ mod tests {
         // Pin TCP explicitly, then stage a peer credential under it.
         let tcp = CString::new("tcp").unwrap();
         // SAFETY: tcp is a valid C string for the call.
-        assert_eq!(unsafe { hew_node_api_set_transport(tcp.as_ptr()) }, 0);
+        assert_eq!(unsafe { configure_transport(tcp.as_ptr()) }, 0);
         assert_eq!(pinned_transport(), Some(PT::Tcp));
 
         let noise_hex = CString::new("11".repeat(32)).unwrap();
         // SAFETY: noise_hex is a valid 32-byte (64-hex) C string.
-        assert_eq!(unsafe { hew_node_api_allow_peer(2, noise_hex.as_ptr()) }, 0);
+        assert_eq!(unsafe { configure_peer(2, noise_hex.as_ptr()) }, 0);
         assert_eq!(
             pinned_transport(),
             Some(PT::Tcp),
@@ -8518,7 +8802,7 @@ mod tests {
         let mesh = CString::new("quic-mesh").unwrap();
         crate::hew_clear_error();
         // SAFETY: mesh is a valid C string for the call.
-        let flip_rc = unsafe { hew_node_api_set_transport(mesh.as_ptr()) };
+        let flip_rc = unsafe { configure_transport(mesh.as_ptr()) };
         assert_eq!(
             flip_rc, -1,
             "set_transport after credential staging must be rejected"
@@ -8536,7 +8820,7 @@ mod tests {
 
         // Re-selecting the same transport is idempotent and allowed.
         // SAFETY: tcp is a valid C string for the call.
-        let reselect_rc = unsafe { hew_node_api_set_transport(tcp.as_ptr()) };
+        let reselect_rc = unsafe { configure_transport(tcp.as_ptr()) };
         assert_eq!(
             reselect_rc, 0,
             "re-selecting the same transport after staging stays allowed"
@@ -8597,7 +8881,7 @@ mod tests {
                 let name = CString::new("quic-mesh").expect("valid transport name");
                 set_barrier.wait();
                 // SAFETY: name is a valid C string for this call.
-                unsafe { hew_node_api_set_transport(name.as_ptr()) }
+                unsafe { configure_transport(name.as_ptr()) }
             });
 
             let allow_hex = cred_hex.clone();
@@ -8605,7 +8889,7 @@ mod tests {
                 let hex = CString::new(allow_hex).expect("valid hex credential");
                 barrier.wait();
                 // SAFETY: hex is a valid C string for this call.
-                unsafe { hew_node_api_allow_peer(2, hex.as_ptr()) }
+                unsafe { configure_peer(2, hex.as_ptr()) }
             });
 
             let _ = set_thread.join().expect("set_transport thread panicked");
@@ -8698,7 +8982,7 @@ mod tests {
         let keyfile = dir.path().join("node.key");
         let keyfile_c = CString::new(keyfile.to_str().unwrap()).unwrap();
         // SAFETY: keyfile_c is a valid C string for the call.
-        assert_eq!(unsafe { hew_node_api_load_keys(keyfile_c.as_ptr()) }, 0);
+        assert_eq!(unsafe { configure_keys(keyfile_c.as_ptr()) }, 0);
         assert_eq!(pinned_transport(), Some(PT::Tcp));
 
         let key_before = read_identity();
@@ -8711,7 +8995,7 @@ mod tests {
         let mesh = CString::new("quic-mesh").unwrap();
         crate::hew_clear_error();
         // SAFETY: mesh is a valid C string for the call.
-        assert_eq!(unsafe { hew_node_api_set_transport(mesh.as_ptr()) }, -1);
+        assert_eq!(unsafe { configure_transport(mesh.as_ptr()) }, -1);
 
         let key_after = read_identity();
         assert_eq!(
@@ -9101,8 +9385,15 @@ mod tests {
             .insert("l18_gossip".to_owned(), Location::try_from(old).unwrap());
         let user_data = (&raw const registry).cast_mut().cast::<c_void>();
         let name = c"l18_gossip";
+        let actor_type = c"test.Counter";
 
-        node_registry_gossip_callback(name.as_ptr(), &raw const new, true, user_data);
+        node_registry_gossip_callback(
+            name.as_ptr(),
+            &raw const new,
+            actor_type.as_ptr(),
+            true,
+            user_data,
+        );
         let map = registry.remote_names.lock_or_recover();
         assert_eq!(
             map.get("l18_gossip").copied(),
@@ -9110,7 +9401,13 @@ mod tests {
             "new registration must re-point future lookup"
         );
         drop(map);
-        node_registry_gossip_callback(name.as_ptr(), &raw const old, false, user_data);
+        node_registry_gossip_callback(
+            name.as_ptr(),
+            &raw const old,
+            actor_type.as_ptr(),
+            false,
+            user_data,
+        );
         assert_eq!(
             registry
                 .remote_names
@@ -10018,12 +10315,14 @@ mod tests {
             // Simulate a remote registry gossip event arriving.
             let n = &*node.as_ptr();
             let remote_name = c"remote_counter";
+            let remote_actor_type = c"test.Counter";
             let remote_location = HewLocation::from(test_location(200, 0x99));
 
             // Invoke the callback directly (as the cluster would).
             node_registry_gossip_callback(
                 remote_name.as_ptr(),
                 &raw const remote_location,
+                remote_actor_type.as_ptr(),
                 true,
                 n.registry.cast::<c_void>(),
             );
@@ -10034,7 +10333,12 @@ mod tests {
             // Node lookup should find it via remote_names.
             let mut found = HewRemotePid::default();
             assert_eq!(
-                hew_node_lookup_location(node.as_ptr(), remote_name.as_ptr(), &raw mut found,),
+                hew_node_lookup_location_typed(
+                    node.as_ptr(),
+                    remote_name.as_ptr(),
+                    remote_actor_type.as_ptr(),
+                    &raw mut found,
+                ),
                 0
             );
             assert_eq!(
@@ -10046,6 +10350,7 @@ mod tests {
             node_registry_gossip_callback(
                 remote_name.as_ptr(),
                 &raw const remote_location,
+                remote_actor_type.as_ptr(),
                 false,
                 n.registry.cast::<c_void>(),
             );

@@ -415,7 +415,8 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::Duration
             | BuiltinType::Instant
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError,
+            | BuiltinType::TimeoutError
+            | BuiltinType::NodeConfig,
         )
         | None => None,
     }

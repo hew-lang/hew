@@ -57,6 +57,7 @@ registry-gossip-payload = {
     op:       1 => registry-gossip-op,
     name:     2 => text,           ; bounded by runtime to 1024 UTF-8 bytes
     location: 3 => location,       ; exact identity for both add and remove
+    actor-type: 4 => text,         ; canonical compiler-minted actor identity
 }
 
 registry-gossip-op = 5 / 6         ; add / remove

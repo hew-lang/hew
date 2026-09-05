@@ -533,6 +533,8 @@ const SYNTHETIC_RESULT_ITEM: ItemId = ItemId(u32::MAX - 2);
 /// path as `Option` / `Result` so `Err(LookupError::NotFound)` match arms
 /// resolve via `machine_ctor_registry`.
 const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
+const SYNTHETIC_NODE_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1010);
+const SYNTHETIC_REGISTER_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1011);
 /// `SendError` is also declared in `std/builtins.hew` and likewise invisible
 /// to the user-enum walk. Surface it so `match e { SendError::NodeRoutingNotWired
 /// => ... }` arms inside `Result<(), SendError>` matches resolve via
@@ -826,6 +828,8 @@ const EMPTY_BUILTIN_ENUM_SPEC: BuiltinEnumSpec = BuiltinEnumSpec {
 /// later specs replace earlier entries in `machine_ctor_registry`.
 const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
     ("std.builtins.LookupError", SYNTHETIC_LOOKUP_ERROR_ITEM),
+    ("std.builtins.NodeError", SYNTHETIC_NODE_ERROR_ITEM),
+    ("std.builtins.RegisterError", SYNTHETIC_REGISTER_ERROR_ITEM),
     ("std.builtins.SendError", SYNTHETIC_SEND_ERROR_ITEM),
     ("std.builtins.TimeoutError", SYNTHETIC_TIMEOUT_ERROR_ITEM),
     ("std.builtins.LinkError", SYNTHETIC_LINK_ERROR_ITEM),
@@ -19394,19 +19398,47 @@ impl LowerCtx {
                         })
                         .unwrap_or_else(|| name.clone());
                     let result_name = self.canonical_current_module_record_name(&result_name);
+                    let compiler_record =
+                        crate::builtin_type_classes::builtin_type_registration(&result_name)
+                            .filter(|registration| {
+                                matches!(
+                                    registration.shape,
+                                    crate::builtin_type_classes::BuiltinTypeShape::Struct(_)
+                                )
+                            });
+                    let (layout_name, result_ty) = if let Some(registration) = compiler_record {
+                        let layout_name = crate::compiler_record_layout_key(
+                            registration.builtin,
+                            &resolved_type_args,
+                        )
+                        .expect("registered compiler Struct record must have a layout key");
+                        (
+                            layout_name,
+                            ResolvedTy::named_builtin(
+                                registration.name(),
+                                registration.builtin,
+                                resolved_type_args.clone(),
+                            ),
+                        )
+                    } else {
+                        (
+                            result_name.clone(),
+                            ResolvedTy::Named {
+                                name: result_name,
+                                args: resolved_type_args.clone(),
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        )
+                    };
                     (
                         HirExprKind::StructInit {
-                            name: result_name.clone(),
+                            name: layout_name,
                             type_args: resolved_type_args.clone(),
                             fields: hir_fields,
                             base: hir_base,
                         },
-                        ResolvedTy::Named {
-                            name: result_name,
-                            args: resolved_type_args,
-                            builtin: None,
-                            is_opaque: false,
-                        },
+                        result_ty,
                     )
                 }
             }

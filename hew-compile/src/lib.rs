@@ -2874,8 +2874,8 @@ mod tests {
         check_file, check_file_with_state, check_program, checker_search_paths,
         hir_diagnostics_to_frontend, load_dependencies, load_lockfile, load_package_name,
         parse_source, retain_user_facing_diagnostics, run_file_frontend_to_typecheck,
-        run_file_frontend_to_typecheck_for_migration, FrontendDiagnostic, FrontendDiagnosticKind,
-        FrontendOptions,
+        run_file_frontend_to_typecheck_for_migration, DiagnosticPolicy, FrontendDiagnostic,
+        FrontendDiagnosticKind, FrontendOptions, Session, SessionTarget,
     };
     use hew_parser::ast::Item;
     use std::fs::{self, File};
@@ -3882,33 +3882,9 @@ mod tests {
                 "every emitted imported impl body must carry its checker-owned declaration"
             );
         }
-
-        let pipeline = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "MIR must project generic impl calls through their exact HIR body symbols: {:#?}",
-            pipeline.diagnostics
-        );
-        for (symbol, _) in &expected {
-            let concrete = hew_hir::monomorph::function_monomorph_symbol(
-                symbol,
-                &[hew_types::ResolvedTy::String],
-            );
-            assert!(
-                pipeline
-                    .raw_mir
-                    .iter()
-                    .any(|function| function.name == concrete),
-                "generic imported impl `{symbol}` must lower its string specialization `{concrete}`"
-            );
-        }
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the generic direct-symbol regression covers every module origin in one identity matrix"
-    )]
     fn nested_generic_free_calls_keep_exact_direct_symbols_across_all_module_origins() {
         // Every invocation sits in a closure body, which lowers through a child
         // MIR builder.  Exercise all body origins that may be the selected
@@ -4018,41 +3994,14 @@ fn main() {
             symbols.get(&hew_types::DefId::for_test("beta.alpha.first")),
             "same-leaf generic functions must not share a direct-call symbol"
         );
-
-        let pipeline = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "nested generic direct calls must inherit the exact HIR symbol map: {:#?}",
-            pipeline.diagnostics
-        );
-        for (symbol, expected_value) in [
-            ("root_first", 1_i64),
-            ("file_helpers$file_first", 3_i64),
-            ("hew$genhelpers$first", 5_i64),
-            ("alpha$first", 7_i64),
-            ("beta$alpha$first", 9_i64),
-        ] {
-            let concrete = hew_hir::monomorph::function_monomorph_symbol(
-                symbol,
-                &[hew_types::ResolvedTy::I64],
-            );
-            assert!(
-                pipeline
-                    .raw_mir
-                    .iter()
-                    .any(|function| function.name == concrete),
-                "closure call returning {expected_value} must emit `{concrete}`"
-            );
-        }
     }
 
     #[test]
-    fn self_qualified_module_type_keeps_its_full_owner_through_mir_layout() {
+    fn self_qualified_module_type_keeps_its_full_owner_through_typed_hir() {
         // The package fixture names Meter both bare and through its own
         // lexical leaf (`selfqualtype.Meter`) while its real owner is the
         // full module-graph path `hew.selfqualtype`. This checks every
-        // handoff: checker signature, HIR declaration/parameter, and MIR
-        // layout must carry that same exact owner. A short-name fallback would
+        // handoff: checker signature, HIR declaration/parameter, and HIR field access must carry that same exact owner. A short-name fallback would
         // falsely pass the fixture only until a same-leaf package is present.
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -4125,22 +4074,6 @@ fn main() {
         assert!(
             matches!(read.params.as_slice(), [param] if param.name == "m" && matches!(&param.ty, hew_types::ResolvedTy::Named { name, .. } if name == expected)),
             "HIR read parameter must retain the full self-qualified owner: {read:#?}"
-        );
-
-        let pipeline = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "self-qualified Meter field access must find its exact MIR layout: {:#?}",
-            pipeline.diagnostics
-        );
-        assert!(
-            pipeline.record_layouts.iter().any(|layout| {
-                layout.name == expected
-                    && layout.field_names == ["v".to_string()]
-                    && layout.field_tys == [hew_types::ResolvedTy::I64]
-            }),
-            "MIR must register the full-owner Meter layout: {:#?}",
-            pipeline.record_layouts
         );
     }
 
@@ -4287,10 +4220,6 @@ fn main() {
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the same-leaf package regression proves both symbol publication and isolation together"
-    )]
     fn same_leaf_package_functions_publish_distinct_direct_body_symbols() {
         // `left::render` and `right::render` intentionally share the final
         // module component and the generic free-function leaves
@@ -4391,210 +4320,45 @@ fn main() {
                 "generic direct dispatch must use the shared MonoKey linker-symbol projection"
             );
         }
-
-        // Negative same-leaf control: both generic `Box<T>::render` bodies
-        // specialise to `bool`, so a later lookup by `Box::render` or by the
-        // `render` leaf would collapse these unrelated package owners.  MIR
-        // must preserve both qualified HIR symbols through monomorphisation.
-        let pipeline = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "same-leaf generic impl bodies must lower through MIR: {:#?}",
-            pipeline.diagnostics
-        );
-        for symbol in ["left.render.Box::render", "right.render.Box::render"] {
-            let concrete = hew_hir::monomorph::function_monomorph_symbol(
-                symbol,
-                &[hew_types::ResolvedTy::Bool],
-            );
-            assert!(
-                pipeline
-                    .raw_mir
-                    .iter()
-                    .any(|function| function.name == concrete),
-                "same-leaf generic impl must retain its full owner in `{concrete}`"
-            );
-        }
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the imported-body regression keeps root/imported parity and transitive-call controls together"
-    )]
-    fn imported_impl_catalog_len_uses_emitted_borrowing_abi() {
-        // `echo_len` is intentionally an imported impl method whose body is
-        // the source builtin `len(s)`.  The HIR catalog endpoint is `len_str`,
-        // but raw MIR and codegen must agree on its concrete ABI symbol
-        // `hew_string_length`; otherwise the representation-effect pass sees
-        // an unknown call and incorrectly rejects the caller-visible `string`
-        // parameter. `echo_tag` is the transitive sibling control: if
-        // `echo_len` were not emitted safely, this package import would not
-        // make it through the full callable closure.
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("hew-compile has a workspace parent");
-        let input = repo_root.join("tests/pkg-import/imported_actor_ask_i32.hew");
-        let state = run_file_frontend_to_typecheck(
-            input.to_str().expect("fixture path is utf-8"),
-            &FrontendOptions {
-                pkg_path: Some(repo_root.join("tests/pkg-import/pkgs")),
-                ..FrontendOptions::default()
-            },
-        )
-        .expect("imported actor fixture must type-check");
-        let tco = state
-            .typecheck_result
-            .tco
-            .as_ref()
-            .expect("type checking was enabled");
-        let hir = hew_hir::lower_program(
-            &state.program,
-            tco,
-            &hew_hir::ResolutionCtx,
-            hew_hir::TargetArch::host(),
+    fn imported_string_length_uses_the_shared_semantic_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        write_source(
+            dir.path(),
+            "library.hew",
+            "pub fn echo_len(value: string) -> i64 { value.len() }",
         );
-        assert!(
-            hir.diagnostics.is_empty(),
-            "imported actor fixture must lower cleanly: {:#?}",
-            hir.diagnostics
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import library; fn main() -> i64 { library.echo_len(\"hello\") }",
         );
-
-        let pipeline = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "imported catalog len must lower cleanly through MIR: {:#?}",
-            pipeline.diagnostics
-        );
-        let echo_len = pipeline
-            .raw_mir
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default()).unwrap();
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, state.typecheck_result.tco.as_ref().unwrap())
+            .unwrap();
+        let module = &output.semantics().module;
+        let entry = module
+            .function_index()
+            .function(module.entry_callable.unwrap())
+            .unwrap();
+        let callee = entry
+            .blocks
             .iter()
-            .find(|function| function.name.ends_with("Result::echo_len"))
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected imported `Result::echo_len` MIR body; emitted functions: {:#?}",
-                    pipeline
-                        .raw_mir
-                        .iter()
-                        .map(|function| &function.name)
-                        .collect::<Vec<_>>()
-                )
-            });
-        assert!(
-            echo_len.blocks.iter().any(|block| matches!(
-                &block.terminator,
-                hew_mir::Terminator::Call { callee, .. } if callee == "hew_string_length"
-            )),
-            "the catalog ItemId join must project `len_str` to the concrete \
-             `hew_string_length` ABI symbol: {echo_len:#?}"
-        );
-        let string_param_boundary = echo_len
-            .decisions
-            .iter()
-            .find_map(|decision| match decision.strategy {
-                hew_mir::Strategy::ParamBoundary(fact) if fact.param_index == 1 => Some(fact),
+            .find_map(|block| match block.terminator {
+                hew_sir::SemTerminator::Call { callee, .. } => Some(callee),
                 _ => None,
             })
-            .expect("echo_len string parameter must carry a boundary fact");
-        assert_eq!(
-            string_param_boundary.mode,
-            hew_mir::ParamBoundaryMode::BorrowReadOnly,
-            "the audited string-length ABI must not create an unproven \
-             representation-mutation effect"
-        );
-
-        // The same checker-selected catalog shim must retain its audited FFI
-        // authority whether its body is root-local or emitted from an imported
-        // package.  Keep this table alongside the imported-actor regression:
-        // imported-body lowering is the place where an authority handoff can
-        // otherwise silently degrade to `Direct`.
-        let direct_dir = tempfile::tempdir().expect("create direct-call fixture dir");
-        let direct_input = write_source(
-            direct_dir.path(),
-            "direct_len.hew",
-            "fn direct_len(s: string) -> i64 { len(s) }\nfn main() {}\n",
-        );
-        let direct_state = run_file_frontend_to_typecheck(
-            &direct_input,
-            &FrontendOptions {
-                project_dir: Some(repo_root.to_path_buf()),
-                ..FrontendOptions::default()
-            },
-        )
-        .expect("root catalog-len fixture must type-check");
-        let direct_tco = direct_state
-            .typecheck_result
-            .tco
-            .as_ref()
-            .expect("type checking was enabled");
-        let direct_lowered = hew_hir::lower_program(
-            &direct_state.program,
-            direct_tco,
-            &hew_hir::ResolutionCtx,
-            hew_hir::TargetArch::host(),
-        );
+            .expect("entry must call the imported body");
+        let body = module.function_index().function(callee).unwrap();
+        assert_eq!(body.declaration.full_path(), "library.echo_len");
         assert!(
-            direct_lowered.diagnostics.is_empty(),
-            "root catalog-len fixture must lower cleanly: {:#?}",
-            direct_lowered.diagnostics
-        );
-        let direct_pipeline = hew_mir::lower_hir_module(&direct_lowered.module);
-        assert!(
-            direct_pipeline.diagnostics.is_empty(),
-            "root catalog-len fixture must lower through MIR: {:#?}",
-            direct_pipeline.diagnostics
-        );
-        let direct_len = direct_pipeline
-            .raw_mir
-            .iter()
-            .find(|function| function.name == "direct_len")
-            .expect("root catalog-len body must be emitted");
-        for (origin, function) in [("root", direct_len), ("imported", echo_len)] {
-            let boundary = function
-                .decisions
+            body.blocks
                 .iter()
-                .find_map(|decision| match decision.strategy {
-                    hew_mir::Strategy::ParamBoundary(fact)
-                        if fact.param_index == 0 || fact.param_index == 1 =>
-                    {
-                        matches!(decision.ty, hew_types::ResolvedTy::String).then_some(fact)
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| {
-                    panic!("{origin} catalog-len body must retain its string boundary")
-                });
-            assert_eq!(
-                boundary.mode,
-                hew_mir::ParamBoundaryMode::BorrowReadOnly,
-                "{origin} catalog-len body must retain the same audited FFI borrow authority"
-            );
-        }
-
-        let echo_tag = pipeline
-            .raw_mir
-            .iter()
-            .find(|function| function.name.ends_with("Result::echo_tag"))
-            .expect("the transitive echo_tag caller must remain emitted");
-        assert!(
-            echo_tag.blocks.iter().any(|block| matches!(
-                &block.terminator,
-                hew_mir::Terminator::Call { callee, .. } if callee.ends_with("Result::echo_len")
-            )),
-            "echo_tag must preserve its direct call to the catalog-backed sibling: {echo_tag:#?}"
-        );
-        let echo_tag_string_boundary = echo_tag
-            .decisions
-            .iter()
-            .find_map(|decision| match decision.strategy {
-                hew_mir::Strategy::ParamBoundary(fact) if fact.param_index == 1 => Some(fact),
-                _ => None,
-            })
-            .expect("echo_tag string parameter must carry a boundary fact");
-        assert_eq!(
-            echo_tag_string_boundary.mode,
-            hew_mir::ParamBoundaryMode::BorrowReadOnly,
-            "the emitted sibling must inherit echo_len's audited read-only boundary"
+                .any(|block| matches!(block.terminator, hew_sir::SemTerminator::RtCall { .. })),
+            "the imported body must use the verified runtime-call contract"
         );
     }
 
@@ -6336,8 +6100,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
-    fn bundled_empty_type_decls_publish_owner_qualified_mir_layouts() {
-        fn lower_to_mir(input: &str) -> hew_mir::IrPipeline {
+    fn bundled_empty_type_decls_preserve_qualified_declaration_identity() {
+        fn lower_to_hir(input: &str) -> hew_hir::HirModule {
             let state = run_file_frontend_to_typecheck(input, &FrontendOptions::default())
                 .unwrap_or_else(|failure| panic!("frontend failed: {failure:#?}"));
             let typecheck = state
@@ -6356,14 +6120,14 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 "HIR must retain every bundled declaration: {:#?}",
                 lowered.diagnostics
             );
-            hew_mir::lower_hir_module(&lowered.module)
+            lowered.module
         }
 
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("hew-compile lives below repository root");
         let direct = repo_root.join("std/concurrency/lambda_actor.hew");
-        let direct = lower_to_mir(direct.to_str().expect("std path is UTF-8"));
+        let direct = lower_to_hir(direct.to_str().expect("std path is UTF-8"));
 
         let dir = tempfile::tempdir().expect("create temp project");
         let imported_input = write_source(
@@ -6377,27 +6141,22 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                  let _ = error;\n\
              }\n",
         );
-        let imported = lower_to_mir(&imported_input);
+        let imported = lower_to_hir(&imported_input);
 
         for (pipeline, owner) in [
             (&direct, Some("std.concurrency")),
             (&imported, Some("std.concurrency")),
         ] {
-            assert!(
-                pipeline.diagnostics.is_empty(),
-                "bundled source must lower without MIR authority diagnostics: {:#?}",
-                pipeline.diagnostics
-            );
             for leaf in ["LambdaActorHandle", "LambdaActorWeakHandle"] {
                 let expected =
                     owner.map_or_else(|| leaf.to_string(), |owner| format!("{owner}.{leaf}"));
                 assert!(
                     pipeline
-                        .record_layouts
+                        .items
                         .iter()
-                        .any(|layout| layout.name == expected),
+                        .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == expected)),
                     "bundled declaration `{expected}` must publish its source-owned layout: {:#?}",
-                    pipeline.record_layouts
+                    pipeline.items
                 );
             }
         }
@@ -6411,30 +6170,22 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "import spoofed.{LambdaActorHandle};\n\
              fn main() { let _ = LambdaActorHandle {}; }\n",
         );
-        let foreign = lower_to_mir(&foreign_input);
+        let foreign = lower_to_hir(&foreign_input);
         assert!(
             foreign
-                .record_layouts
+                .items
                 .iter()
-                .any(|layout| layout.name == "spoofed.LambdaActorHandle"),
+                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == "spoofed.LambdaActorHandle")),
             "foreign declaration must retain its own owner: {:#?}",
-            foreign.record_layouts
+            foreign.items
         );
         assert!(
             !foreign
-                .record_layouts
+                .items
                 .iter()
-                .any(|layout| layout.name == "std.concurrency.LambdaActorHandle"),
+                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == "std.concurrency.LambdaActorHandle")),
             "a same-leaf user declaration must not inherit bundled ownership: {:#?}",
-            foreign.record_layouts
-        );
-        assert!(
-            foreign.diagnostics.iter().any(|diagnostic| matches!(
-                diagnostic.kind,
-                hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
-            )),
-            "the foreign same-leaf handle must remain fail-closed instead of inheriting the bundled resource class: {:#?}",
-            foreign.diagnostics
+            foreign.items
         );
     }
 
@@ -6480,12 +6231,6 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "imported pipeline bodies must lower: {:#?}",
             hir.diagnostics
         );
-        let mir = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            mir.diagnostics.is_empty(),
-            "imported pipeline actor layouts and calls must lower: {:#?}",
-            mir.diagnostics
-        );
         for actor in [
             "std.pipeline.AdmissionControlI64",
             "std.pipeline.SinkI64",
@@ -6493,9 +6238,10 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "std.pipeline.SourceI64",
         ] {
             assert!(
-                mir.actor_layouts.iter().any(|layout| layout.name == actor),
-                "missing imported actor layout `{actor}`: {:#?}",
-                mir.actor_layouts
+                hir.module.items.iter().any(|item| matches!(
+                    item, hew_hir::HirItem::Actor(decl) if decl.declaration.full_path() == actor
+                )),
+                "missing imported actor declaration `{actor}`"
             );
         }
     }

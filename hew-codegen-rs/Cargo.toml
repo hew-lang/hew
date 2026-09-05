@@ -4,70 +4,29 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Native and WebAssembly LLVM IR emitter for the Hew v0.5 compiler pipeline"
+description = "LLVM object emitter for verified Hew physical MIR"
 repository = "https://github.com/hew-lang/hew"
 readme = "../README.md"
 keywords = ["hew", "compiler", "llvm", "codegen", "wasm"]
 categories = ["compilers"]
 
 [dependencies]
-hew-hir = { path = "../hew-hir" }
 hew-mir = { path = "../hew-mir" }
 hew-types = { path = "../hew-types" }
-# Supervisor restart-budget windows arrive as raw duration source strings
-# (e.g. `"60s"`). Codegen interprets the unit via `hew_parser::parse_duration_ns`
-# so duration parsing stays centralised in one place (no second parser).
 hew-parser = { path = "../hew-parser" }
-# Single source of truth for the trap-code discriminants codegen emits. Codegen
-# imports `hew_runtime::internal::types::HEW_TRAP_*` so a runtime renumber fails
-# the codegen build closed instead of silently desyncing a hand-copied literal.
-# `default-features = false` keeps the heavy quic/profiler runtime features off
-# the compiler build (only the leaf `internal::types` constants are needed).
+# Trap discriminants remain shared with the runtime.
 hew-runtime = { path = "../hew-runtime", default-features = false }
-# Single source of truth for the layout-descriptor ABI codegen mirrors as LLVM
-# struct types: the `#[repr(C)]` shapes (`HewVecElemLayout`, `HewMapKeyLayout`,
-# `HewMapValueLayout`) and, load-bearing, the `HewTypeOwnershipKind`
-# discriminants embedded in every emitted layout global. Codegen reads those
-# discriminants off the enum instead of writing the integers by hand, so a
-# renumber cannot leave codegen telling the runtime the wrong ownership
-# discipline. Non-test builds of this crate define no `#[no_mangle]` symbols
-# (all of them are `#[cfg(test)]` stubs), so the dependency adds no exported
-# symbol that could collide at link time.
-hew-cabi = { path = "../hew-cabi" }
-# Inkwell wraps LLVM. Pinned to llvm22-1 because the v0.5 backend probe
-# (.claude/worktrees/c1-backend-probe @ e6c83faa) established this version
-# empirically against Homebrew llvm@22, and the release/tooling surface keeps
-# LLVM 22 as the shared major across the codebase.
 inkwell = { version = "=0.9.0", default-features = false, features = [
   "llvm22-1",
   "target-x86",
   "target-aarch64",
   "target-webassembly",
 ] }
-# Direct llvm-sys dependency so its `links = "llvm-22"` metadata reaches this
-# crate's build script as DEP_LLVM_22_CONFIG_PATH: the debug-info C++ shim must
-# compile against the SAME LLVM install llvm-sys links, or two LLVM 22 builds
-# differing in ABI-affecting options would corrupt DIBuilder memory.
+# Provides the exact LLVM toolchain path to the sanitizer test build setup.
 llvm-sys = "221"
 
-[build-dependencies]
-cc = "1"
-
 [dev-dependencies]
-hew-testutil = { path = "../hew-testutil" }
-# Fixture callable identities for the hand-built MIR modules the emission,
-# structural, and exec tests author.
-hew-mir = { path = "../hew-mir", features = ["test"] }
+hew-hir = { path = "../hew-hir" }
 hew-sir = { path = "../hew-sir" }
 hew-types = { path = "../hew-types", features = ["test"] }
-# The worker-free actor teardown seam is test-only. Keeping its feature on the
-# dev dependency prevents Cargo feature unification from putting the seam in
-# the compiler or the shipped `libhew.a`.
-hew-runtime = { path = "../hew-runtime", default-features = false, features = [
-  "composition-test",
-] }
-# libc::SIGABRT for the release-truth-table structural tests, which assert the
-# exact signal a double-release aborts with.
-libc.workspace = true
-# RAII-cleaned temp directories for tests that drive `emit_module` end-to-end.
 tempfile.workspace = true

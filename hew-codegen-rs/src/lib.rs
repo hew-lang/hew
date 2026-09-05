@@ -1,55 +1,13 @@
-//! Native and WebAssembly LLVM IR emitter for the Hew backend.
+//! LLVM object emission from verified physical MIR.
 //!
-//! Produces native object files and standalone WebAssembly modules from
-//! `hew-mir`'s raw MIR, with the LLVM module verified by `Module::verify()`
-//! before emission. IR construction and object emission both run in-process;
-//! textual `.ll` files are still written as diagnostics artefacts.
-//!
-//! ## Spine subset (initial)
-//!
-//! The emitter accepts integer literals, integer arithmetic
-//! (`+`, `-`, `*`), `let` bindings, value moves, and `Return`. Composite
-//! types, strings, closures, generators, and coroutines fail closed with
-//! a `CodegenError::Unsupported` carrying the construct name; the CLI
-//! surfaces this as a non-zero exit. Later work widens the accepted
-//! subset to cover strings, drop elaboration with cleanup CFG edges,
-//! and closures/generators.
-//!
-//! ## Public surface
-//!
-//! - [`emit_module`] — emit native + freestanding wasm artefacts for an `IrPipeline`.
-//! - [`emit_module_objects`] — emit IR/object artefacts without freestanding wasm linking.
-//! - [`emit_wasi_entry_adapter`] — publish the canonical entry consumed by the WASI runtime.
-//! - [`validate_codegen_front`] / [`validate_codegen_front_for_triple`] —
-//!   in-process build + LLVM-verify without any artefact emission.
-//! - [`verify_pipeline`] — compatibility alias for [`validate_codegen_front`].
-//! - [`EmitOptions`] — output configuration.
-//! - [`EmitArtefacts`] — paths of emitted files.
-//! - [`CodegenError`] — failure variants for diagnostic mapping.
+//! Ownership and cleanup are explicit inputs, not backend inferences.
 
-/// LLVM switched-resume coroutine emission — the codegen side of Hew's
-/// stackless continuation substrate (W6.007). The `llvm.coro.*` token-call
-/// helper, the switched-resume skeleton emitter, and the coro-pass runner.
-pub(crate) mod abi_class;
-pub(crate) mod arith;
-pub mod coro;
-pub(crate) mod layout;
 pub mod llvm;
 pub mod physical;
-pub(crate) mod runtime_abi;
-#[cfg(test)]
-mod runtime_family_parity;
 pub(crate) mod sanitizer;
-pub(crate) mod suspend;
-pub(crate) mod thunks;
-pub(crate) mod wire;
 
 pub use llvm::{
-    cleanup_capabilities_for_target, emit_module, emit_module_objects,
-    emit_module_objects_without_llvm, emit_module_without_llvm, emit_wasi_entry_adapter,
-    entry_body_symbol_for_triple, native_emission_triple, validate_codegen_front,
-    validate_codegen_front_for_triple, verify_pipeline, CleanupTargetCapabilities,
-    CleanupUnwindStrategy, CodegenError, EmitArtefacts, EmitOptions, OptLevel,
+    entry_body_symbol_for_triple, native_emission_triple, CodegenError, EmitArtefacts, OptLevel,
 };
 pub use physical::{
     emit_physical_object, physical_target_for_triple, validate_physical_codegen,

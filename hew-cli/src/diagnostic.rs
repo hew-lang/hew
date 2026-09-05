@@ -125,8 +125,7 @@ pub(crate) fn codegen_channel(
         | hew_codegen_rs::CodegenError::FailClosed(_)
         | hew_codegen_rs::CodegenError::FailClosedAt { .. } => DiagChannel::Internal,
         hew_codegen_rs::CodegenError::Unsupported(_)
-        | hew_codegen_rs::CodegenError::UnsupportedAt { .. }
-        | hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. } => DiagChannel::Limitation,
+        | hew_codegen_rs::CodegenError::UnsupportedAt { .. } => DiagChannel::Limitation,
         hew_codegen_rs::CodegenError::Link(_)
         | hew_codegen_rs::CodegenError::Io(_)
         | hew_codegen_rs::CodegenError::TargetSetup { .. }

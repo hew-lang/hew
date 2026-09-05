@@ -1789,17 +1789,13 @@ dependencies = [
 name = "hew-codegen-rs"
 version = "0.6.0-rc3"
 dependencies = [
- "cc",
- "hew-cabi",
  "hew-hir",
  "hew-mir",
  "hew-parser",
  "hew-runtime",
  "hew-sir",
- "hew-testutil",
  "hew-types",
  "inkwell",
- "libc",
  "llvm-sys",
  "tempfile",
 ]
@@ -1869,15 +1865,9 @@ name = "hew-mir"
 version = "0.6.0-rc3"
 dependencies = [
  "hew-hir",
- "hew-mir",
  "hew-parser",
- "hew-runtime",
  "hew-sir",
  "hew-types",
- "proptest",
- "serde",
- "siphasher",
- "toml",
 ]
 
 [[package]]

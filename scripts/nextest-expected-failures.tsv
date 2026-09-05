@@ -32,21 +32,6 @@ linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alter
 linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_after_ingress_does_not_over_release	#3079 ends the prior aggregate generation before reassignment
 linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_does_not_over_release	#3079 makes aggregate ingress generations loop-sensitive
 linux,macos,freebsd	failure	hew-cli::tuple_record_enum_container_drop_leak_oracle	empty_enum_carrier_projection_forwarding_keeps_tuple_and_enum_drop_authorities	#3079 selects one live tuple-enum carrier generation
-linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_bound_from_local_tuple_then_for_in_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_destructured_from_tuple_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_extracted_from_tuple_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_extracted_then_consumed_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_extracted_then_restored_into_local_aggregate_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::generator_in_local_tuple_consumed_by_for_in_is_freed_exactly_once	#3119 transfers generator ownership through aggregates
-linux,macos	failure	hew-codegen-rs::exec	generator_exec::generator_in_local_tuple_not_extracted_keeps_source_drop	#3119 transfers generator ownership through aggregates
-linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_nested_aggregate_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
-linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_reaggregated_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
-linux,macos,freebsd	failure	hew-codegen-rs::exec	generator_exec::w3053_reaggregated_record_generator_extraction_is_refused	#3119 rejects unsafe generator aggregate extraction
-linux,macos,freebsd	failure	hew-codegen-rs::exec	for_in_vec_string_exec::vec_iter_cursor_transfers_are_path_sensitive_and_overwrite_safe	#3120 gives each Vec iterator generation one cleanup guard
-linux,macos,freebsd	failure	hew-codegen-rs::exec	vec_owned_element_routing_exec::vec_array_literal_owned_tuple_runs	#3120 ends consumed loop bindings before cleanup
-linux,macos,freebsd	failure	hew-codegen-rs::exec	sink_owned_element_exec::contextual_file_sink_binders_close_once_per_exit	#3114 closes each contextual Sink binder on its selected exits
-linux,macos,freebsd	failure	hew-codegen-rs::exec	sink_owned_element_exec::guard_shapes_over_a_contextual_sink_write_and_close_on_every_path	#3114 keeps the Sink carrier live through failed guards
-linux,macos,freebsd	failure	hew-codegen-rs::exec	sink_owned_element_exec::guarded_match_arm_hands_the_live_sink_to_the_selected_arm	#3114 hands the live Sink to exactly the selected guarded arm
 linux,macos,windows	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3113 closes every returned owned-handle field exactly once
 macos	failure	hew-cli::actor_handler_unused_owned_param_leak_oracle	mutable_direct_record_transfer_then_overwrite_uses_only_overwrite_flag	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::arena_stdlib_leak_oracle	stdlib_arena_holder_insert_remove_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees

@@ -1458,3 +1458,17 @@ Focused verifier controls cover missing selections, malformed signatures,
 forbidden transfers, failed-result visibility and discarded faults. The physical
 MIR library tests and scoped MIR/codegen JSON Clippy pass. LLVM still refuses the
 new terminator explicitly in this compiled layer; callback emission follows.
+
+## LLVM execution of selected value calls
+
+Ordinary value calls now use the same exact selected callback table as collection
+keys. The table remains available while emitting function bodies; key descriptors
+are still demanded only by Map/Set construction. Borrowed operands use their
+aligned physical entry slots, including immediate scalars, with no ownership
+copy. The existing callback wrappers adapt selected user methods and normalize
+scalar outputs. Ordinary and selected calls share normal/fault dispatch.
+
+The LLVM library tests and scoped MIR/codegen JSON Clippy pass. An O0/O2 JIT
+control executes selected String equality and Hash through ordinary function
+bodies, including counted embedded-NUL contents and signed integer hash bits.
+Broader source equality controls follow the separate SIR producer prerequisite.

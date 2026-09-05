@@ -50,7 +50,7 @@ fn selected_symbol(
         .keys()
         .position(|key| key == &(ty.clone(), capability))
         .unwrap();
-    format!("__hew_key_callback_{index}")
+    format!("__hew_value_callback_{index}")
 }
 
 fn llvm<'ctx>(ctx: &'ctx Context, physical: &PhysicalModule) -> Module<'ctx> {
@@ -71,7 +71,7 @@ fn add_recipe_callback<'ctx>(
     name: &str,
     capability: ValueCapability,
     emit: impl FnOnce(
-        &mut KeyEmitter<'_, 'ctx, '_>,
+        &mut SelectedValueEmitter<'_, 'ctx, '_>,
         PointerValue<'ctx>,
         Option<PointerValue<'ctx>>,
     ) -> CodegenResult<()>,
@@ -103,8 +103,9 @@ fn add_recipe_callback<'ctx>(
         module: physical,
         llvm,
         functions: BTreeMap::new(),
+        value_callbacks: BTreeMap::new(),
     };
-    let mut emitter = KeyEmitter::new(&parent, &callbacks, function, capability).unwrap();
+    let mut emitter = SelectedValueEmitter::new(&parent, &callbacks, function, capability).unwrap();
     let lhs = emitter.parameter(0).unwrap();
     let rhs = if capability == ValueCapability::Eq {
         Some(emitter.parameter(1).unwrap())
@@ -123,7 +124,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
             if function
                 .get_name()
                 .to_bytes()
-                .starts_with(b"__hew_key_callback_")
+                .starts_with(b"__hew_value_callback_")
             {
                 function.set_linkage(Linkage::External);
             }
@@ -398,9 +399,10 @@ fn user_fault_preserves_status_pointer_and_unwritten_callback_result() {
             module: &physical,
             llvm,
             functions: BTreeMap::new(),
+            value_callbacks: BTreeMap::new(),
         };
         emitter.declare_functions().unwrap();
-        emitter.emit_collection_key_descriptors().unwrap();
+        emitter.emit_selected_value_callbacks().unwrap();
         // Model the private callable's failure ABI with a distinct nonzero status
         // and an opaque pointer. It deliberately dirties its own scratch result.
         for plan in physical.value_capabilities.values() {
@@ -547,9 +549,10 @@ fn key_descriptors_require_construction_and_complete_selected_plans() {
         module: &physical,
         llvm: ctx.create_module("missing_key"),
         functions: BTreeMap::new(),
+        value_callbacks: BTreeMap::new(),
     };
     assert!(emitter
-        .emit_collection_key_descriptors()
+        .emit_selected_value_callbacks()
         .unwrap_err()
         .to_string()
         .contains("lacks selected Hash"));
@@ -655,9 +658,10 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
         module: &physical,
         llvm: ctx.create_module("missing_component"),
         functions: BTreeMap::new(),
+        value_callbacks: BTreeMap::new(),
     };
     assert!(emitter
-        .emit_collection_key_descriptors()
+        .emit_selected_value_callbacks()
         .unwrap_err()
         .to_string()
         .contains("has no callback"));
@@ -677,9 +681,10 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
             module: &malformed,
             llvm: ctx.create_module("unadmitted_recipe"),
             functions: BTreeMap::new(),
+            value_callbacks: BTreeMap::new(),
         };
         assert!(emitter
-            .emit_collection_key_descriptors()
+            .emit_selected_value_callbacks()
             .unwrap_err()
             .to_string()
             .contains("outside checker admission"));
@@ -723,3 +728,6 @@ fn key_callback_layouts_and_private_calls_verify_on_windows_and_macos() {
         }
     }
 }
+
+#[path = "physical_value_call_tests.rs"]
+mod value_calls;

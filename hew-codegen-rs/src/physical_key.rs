@@ -1,4 +1,4 @@
-//! Key callbacks execute the exact physical capability selections. They borrow
+//! Selected value callbacks execute the exact physical capability selections. They borrow
 //! value slots and publish a result only after every selected operation succeeds.
 
 use hew_mir::physical::{PhysicalValueCapability, PhysicalValueMethod};
@@ -7,13 +7,13 @@ use inkwell::types::IntType;
 
 use super::*;
 
-type CallbackTable<'ctx> = BTreeMap<(ResolvedTy, ValueCapability), FunctionValue<'ctx>>;
+pub(super) type CallbackTable<'ctx> = BTreeMap<(ResolvedTy, ValueCapability), FunctionValue<'ctx>>;
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x100_0000_01b3;
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
-    pub(super) fn emit_collection_key_descriptors(&self) -> CodegenResult<()> {
+    pub(super) fn emit_selected_value_callbacks(&self) -> CodegenResult<CallbackTable<'ctx>> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let mut callbacks = BTreeMap::new();
         // Declare the complete selected graph before emitting any body. Symbols
@@ -24,7 +24,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 ValueCapability::Eq => 4,
             };
             let function = self.llvm.add_function(
-                &format!("__hew_key_callback_{index}"),
+                &format!("__hew_value_callback_{index}"),
                 self.ctx
                     .i32_type()
                     .fn_type(&vec![pointer.into(); arity], false),
@@ -34,7 +34,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }
         for ((ty, capability), selection) in &self.module.value_capabilities {
             let function = callbacks[&(ty.clone(), *capability)];
-            KeyEmitter::new(self, &callbacks, function, *capability)?.emit(ty, selection)?;
+            SelectedValueEmitter::new(self, &callbacks, function, *capability)?
+                .emit(ty, selection)?;
         }
         for function in &self.module.functions {
             for block in &function.blocks {
@@ -77,7 +78,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 }
             }
         }
-        Ok(())
+        Ok(callbacks)
     }
 
     fn emit_key_descriptor(
@@ -115,7 +116,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     }
 }
 
-struct KeyEmitter<'a, 'ctx, 'm> {
+struct SelectedValueEmitter<'a, 'ctx, 'm> {
     parent: &'a ModuleEmitter<'ctx, 'm>,
     callbacks: &'a CallbackTable<'ctx>,
     builder: Builder<'ctx>,
@@ -125,7 +126,7 @@ struct KeyEmitter<'a, 'ctx, 'm> {
     fault: PointerValue<'ctx>,
 }
 
-impl<'a, 'ctx, 'm> KeyEmitter<'a, 'ctx, 'm> {
+impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
     fn new(
         parent: &'a ModuleEmitter<'ctx, 'm>,
         callbacks: &'a CallbackTable<'ctx>,

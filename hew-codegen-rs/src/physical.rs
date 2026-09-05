@@ -31,7 +31,7 @@ use hew_runtime::internal::types::{
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
 use hew_types::runtime_call::collection_type_arguments;
-use hew_types::{EntryExitAction, EntryIntegerType, ResolvedTy};
+use hew_types::{EntryExitAction, EntryIntegerType, ResolvedTy, ValueCapability};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -539,6 +539,7 @@ struct ModuleEmitter<'ctx, 'm> {
     module: &'m PhysicalModule,
     llvm: Module<'ctx>,
     functions: BTreeMap<CallableId, FunctionValue<'ctx>>,
+    value_callbacks: key::CallbackTable<'ctx>,
 }
 
 struct FunctionEmitter<'a, 'ctx> {
@@ -555,6 +556,7 @@ struct FunctionEmitter<'a, 'ctx> {
     active_fault: PointerValue<'ctx>,
     active_status: PointerValue<'ctx>,
     functions: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
+    value_callbacks: &'a key::CallbackTable<'ctx>,
 }
 
 /// Execute verified type recipes in either a language body or a container
@@ -1143,10 +1145,11 @@ fn build_module<'ctx>(
         module: physical,
         llvm,
         functions: BTreeMap::new(),
+        value_callbacks: BTreeMap::new(),
     };
     emitter.declare_functions()?;
     emitter.emit_collection_value_descriptors()?;
-    emitter.emit_collection_key_descriptors()?;
+    emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;
     emitter
@@ -1470,12 +1473,21 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .storage
             .iter()
             .map(|storage| {
-                builder
+                let slot = builder
                     .build_alloca(
                         llvm_type(ctx, &storage.layout.repr)?,
                         &format!("s{}", storage.id.0),
                     )
-                    .llvm_ctx("allocate physical storage")
+                    .llvm_ctx("allocate physical storage")?;
+                slot.as_instruction()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "physical storage allocation is not an instruction".into(),
+                        )
+                    })?
+                    .set_alignment(storage.layout.align)
+                    .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
+                Ok(slot)
             })
             .collect::<CodegenResult<Vec<_>>>()?;
         let active_fault = builder
@@ -1557,6 +1569,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             active_fault,
             active_status,
             functions: &module.functions,
+            value_callbacks: &module.value_callbacks,
         })
     }
 
@@ -2194,9 +2207,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 unwind,
             } => self.emit_call(*callee, args, *result, normal, unwind.as_ref()),
-            PhysicalTerminator::ValueCall { .. } => Err(CodegenError::FailClosed(
-                "selected value calls require LLVM callback lowering".into(),
-            )),
+            PhysicalTerminator::ValueCall {
+                ty,
+                capability,
+                args,
+                result,
+                normal,
+                unwind,
+            } => self.emit_value_call(ty, *capability, args, *result, normal, unwind),
             PhysicalTerminator::RuntimeCall {
                 action,
                 args,
@@ -2597,6 +2615,68 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         for source in moved {
             self.clear_owned(source)?;
         }
+        self.emit_call_outcome(status, normal, unwind)
+    }
+
+    fn emit_value_call(
+        &self,
+        ty: &ResolvedTy,
+        capability: ValueCapability,
+        transfers: &[ArgumentTransfer],
+        result: StorageId,
+        normal: &PhysicalEdge,
+        unwind: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let callback = *self
+            .value_callbacks
+            .get(&(ty.clone(), capability))
+            .ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "physical value call lacks its exact selected callback".into(),
+                )
+            })?;
+        let mut arguments = Vec::<BasicMetadataValueEnum<'ctx>>::new();
+        for transfer in transfers {
+            let ArgumentTransfer::Borrow(source) = transfer else {
+                return Err(CodegenError::FailClosed(
+                    "physical value callback requires borrowed argument storage".into(),
+                ));
+            };
+            // All physical operands, including constants and direct scalars,
+            // already have aligned entry storage. Borrow its address without
+            // cloning an owner or adapting the selected user method here.
+            arguments.push(self.slots[source.0 as usize].into());
+        }
+        arguments.push(self.slots[result.0 as usize].into());
+        arguments.push(self.active_fault.into());
+        self.builder
+            .build_store(
+                self.active_fault,
+                self.ctx.ptr_type(AddressSpace::default()).const_null(),
+            )
+            .llvm_ctx("clear active fault before selected value call")?;
+        let status = self
+            .builder
+            .build_call(callback, &arguments, "value.call.status")
+            .llvm_ctx("emit selected value call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("selected value callback returned no status".into())
+            })?
+            .into_int_value();
+        self.builder
+            .build_store(self.active_status, status)
+            .llvm_ctx("store selected value call status")?;
+        self.emit_call_outcome(status, normal, Some(unwind))
+    }
+
+    fn emit_call_outcome(
+        &self,
+        status: IntValue<'ctx>,
+        normal: &PhysicalEdge,
+        unwind: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
         let success = self.ctx.append_basic_block(self.value, "call.success");
         let failure = self.ctx.append_basic_block(self.value, "call.failure");
         let ok = self

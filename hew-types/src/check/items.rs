@@ -965,10 +965,12 @@ impl Checker {
                     self.tail_ok_coercions
                         .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
                 } else if actual == Ty::Unit {
-                    self.result_return_coercions.insert(
-                        SpanKey::in_module(&fd.fn_span, self.current_module_idx),
-                        super::ResultReturnKind::Success,
-                    );
+                    if let Some(annotation) = &fd.return_type {
+                        self.result_return_coercions.insert(
+                            SpanKey::in_module(&annotation.1, self.current_module_idx),
+                            super::ResultReturnKind::Success,
+                        );
+                    }
                 }
             }
             self.tail_ok_armed = prev_tail_ok_armed;
@@ -2205,6 +2207,13 @@ impl Checker {
         rf: &ReceiveFnDecl,
         fields: &[FieldDecl],
     ) {
+        if matches!(
+            rf.return_type.as_ref().map(|ty| &ty.0),
+            Some(TypeExpr::Fallible { .. })
+        ) {
+            self.report_error(TypeErrorKind::InvalidOperation, &rf.span,
+                "`fails` receive functions require fallible message completion lowering, which is not yet admitted".to_string());
+        }
         // Validate #[every(duration)] attribute if present.
         self.validate_every_attribute(rf);
         self.actor_handler_state_guards.insert(

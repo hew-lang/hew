@@ -523,7 +523,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "fallible function success return",
-        probe: "fn main() -> i64 fails string { 7 }",
+        probe: "fn value() -> i64 fails string { 7 } fn main() -> i64 { match value() { .Ok(n) => n, .Err(_) => 0 } }",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },
@@ -990,8 +990,8 @@ fn live_gate_matches_declared_coverage() {
 #[test]
 fn fallible_functions_require_the_shared_result_lowering() {
     for source in [
-        "fn main() -> i64 fails string { 7 }",
-        "fn main() -> i64 fails string { return error \"missing\"; }",
+        "fn value() -> i64 fails string { 7 } fn main() -> i64 { match value() { .Ok(n) => n, .Err(_) => 0 } }",
+        "fn value() -> i64 fails string { return error \"missing\"; } fn main() -> i64 { match value() { .Ok(n) => n, .Err(_) => 0 } }",
     ] {
         let compiled =
             compile_to_sandbox_bytecode(source, Some(SANDBOX_PROFILE)).expect("sandbox compile");

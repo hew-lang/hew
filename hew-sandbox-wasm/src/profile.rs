@@ -169,14 +169,21 @@ impl<'a> ProfileChecker<'a> {
                     NativeOnlySurface::NativeFfi,
                     NativeOnlySurface::NativeFfi.reason(),
                 ),
-                Item::Function(function) => self.check_block(&function.body),
+                Item::Function(function) => {
+                    self.check_return_clause(function.return_type.as_ref());
+                    self.check_block(&function.body);
+                }
                 Item::Actor(actor) => {
                     // Actors are admitted: the VM runtime (ActorScheduler) executes
                     // actor bytecode. Walk each receive handler body fail-closed.
                     for receive_fn in &actor.receive_fns {
+                        self.check_return_clause(receive_fn.return_type.as_ref());
                         self.in_receive_handler = true;
                         self.check_block(&receive_fn.body);
                         self.in_receive_handler = false;
+                    }
+                    for method in &actor.methods {
+                        self.check_return_clause(method.return_type.as_ref());
                     }
                 }
                 Item::Supervisor(supervisor) => {
@@ -212,6 +219,11 @@ impl<'a> ProfileChecker<'a> {
                 ),
                 Item::Const(const_decl) => self.check_expr(&const_decl.value),
                 Item::TypeDecl(type_decl) => {
+                    for item in &type_decl.body {
+                        if let hew_parser::ast::TypeBodyItem::Method(method) = item {
+                            self.check_return_clause(method.return_type.as_ref());
+                        }
+                    }
                     // W3.030 V15: `#[resource]` types carry an implicit drop
                     // contract that dispatches `<T>::close` through the
                     // unified `ScopeExitPlan` stream. The sandbox-WASM
@@ -1279,6 +1291,12 @@ impl<'a> ProfileChecker<'a> {
                 }
             }
             TypeExpr::Named { .. } | TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
+        }
+    }
+
+    fn check_return_clause(&mut self, ty: Option<&Spanned<TypeExpr>>) {
+        if let Some((ty @ TypeExpr::Fallible { .. }, span)) = ty {
+            self.check_type_expr(ty, span);
         }
     }
 

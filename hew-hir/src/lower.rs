@@ -13677,12 +13677,12 @@ impl LowerCtx {
         };
         let mut body = self.with_current_return_type(source_return_ty.clone(), |ctx| {
             let mut body = ctx.lower_block(&func.body, &source_return_ty);
-            if ctx
-                .result_return_coercions
-                .contains_key(&ctx.mk_key(&func.fn_span))
-            {
-                let value = ctx.make_unit_expr(func.fn_span.clone());
-                body.tail = Some(Box::new(ctx.wrap_tail_ok(value, &func.fn_span)));
+            if let Some(annotation) = func.return_type.as_ref().filter(|annotation| {
+                ctx.result_return_coercions
+                    .contains_key(&ctx.mk_key(&annotation.1))
+            }) {
+                let value = ctx.make_unit_expr(annotation.1.clone());
+                body.tail = Some(Box::new(ctx.wrap_tail_ok(value, &annotation.1)));
             }
             body
         });

@@ -492,6 +492,172 @@ impl VecValueOp {
     }
 }
 
+/// Ordinary map operations with independently owned keys and values.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+pub enum MapValueOp {
+    #[default]
+    New,
+    Len,
+    Index,
+    Get,
+    ContainsKey,
+    Insert,
+    Remove,
+    Clear,
+    Keys,
+    Values,
+    Entries,
+}
+
+impl MapValueOp {
+    #[must_use]
+    pub const fn from_method(method: crate::HashMapMethod) -> Option<Self> {
+        Some(match method {
+            crate::HashMapMethod::Len => Self::Len,
+            crate::HashMapMethod::Get => Self::Get,
+            crate::HashMapMethod::ContainsKey => Self::ContainsKey,
+            crate::HashMapMethod::Insert => Self::Insert,
+            crate::HashMapMethod::Remove => Self::Remove,
+            crate::HashMapMethod::Clear => Self::Clear,
+            crate::HashMapMethod::Keys => Self::Keys,
+            crate::HashMapMethod::Values => Self::Values,
+            crate::HashMapMethod::Entries => Self::Entries,
+            crate::HashMapMethod::Clone => return None,
+        })
+    }
+
+    const fn contract(self) -> RuntimeSemanticContract {
+        use RuntimeArgumentEffect::{Borrow, Move};
+        use RuntimeResultEffect::{
+            BitCopy, FreshOwned, IndependentValue, UpdatedReceiver, UpdatedReceiverAndValue,
+        };
+        use RuntimeValueKind::{Applied, Bool, Receiver, Tuple, TypeArgument, I64};
+        const MAP: RuntimeValueKind = Receiver(BuiltinType::HashMap);
+        const KEY: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: TypeArgument(0),
+            effect: Borrow,
+        };
+        const VALUE: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: TypeArgument(1),
+            effect: Borrow,
+        };
+        const READ: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: MAP,
+            effect: Borrow,
+        };
+        const WRITE: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: MAP,
+            effect: Move,
+        };
+        const OPTIONAL_VALUE: RuntimeValueKind = Applied(BuiltinType::Option, &[TypeArgument(1)]);
+        match self {
+            Self::New => runtime_semantic_contract(&[], FreshOwned(MAP), &[]),
+            Self::Len => runtime_semantic_contract(&[READ], BitCopy(I64), &[]),
+            Self::Index => runtime_semantic_contract(
+                &[READ, KEY],
+                IndependentValue(TypeArgument(1)),
+                &[RuntimeLogicalFailure::IndexOutOfBounds],
+            ),
+            Self::Get => {
+                runtime_semantic_contract(&[READ, KEY], IndependentValue(OPTIONAL_VALUE), &[])
+            }
+            Self::ContainsKey => runtime_semantic_contract(&[READ, KEY], BitCopy(Bool), &[]),
+            Self::Insert => {
+                runtime_semantic_contract(&[WRITE, KEY, VALUE], UpdatedReceiver(MAP), &[])
+            }
+            Self::Remove => runtime_semantic_contract(
+                &[WRITE, KEY],
+                UpdatedReceiverAndValue(Tuple(&[MAP, OPTIONAL_VALUE])),
+                &[],
+            ),
+            Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(MAP), &[]),
+            Self::Keys => runtime_semantic_contract(
+                &[READ],
+                IndependentValue(Applied(BuiltinType::Vec, &[TypeArgument(0)])),
+                &[],
+            ),
+            Self::Values => runtime_semantic_contract(
+                &[READ],
+                IndependentValue(Applied(BuiltinType::Vec, &[TypeArgument(1)])),
+                &[],
+            ),
+            Self::Entries => runtime_semantic_contract(
+                &[READ],
+                IndependentValue(Applied(
+                    BuiltinType::Vec,
+                    &[Tuple(&[TypeArgument(0), TypeArgument(1)])],
+                )),
+                &[],
+            ),
+        }
+    }
+}
+
+/// Ordinary set operations using the same element and receiver type templates.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+pub enum SetValueOp {
+    #[default]
+    New,
+    Len,
+    Contains,
+    Insert,
+    Remove,
+    Clear,
+    Elements,
+}
+
+impl SetValueOp {
+    #[must_use]
+    pub const fn from_method(method: crate::HashSetMethod) -> Option<Self> {
+        Some(match method {
+            crate::HashSetMethod::Len => Self::Len,
+            crate::HashSetMethod::Contains => Self::Contains,
+            crate::HashSetMethod::Insert => Self::Insert,
+            crate::HashSetMethod::Remove => Self::Remove,
+            crate::HashSetMethod::Clear => Self::Clear,
+            crate::HashSetMethod::ToVec => Self::Elements,
+            crate::HashSetMethod::Clone | crate::HashSetMethod::IsEmpty => return None,
+        })
+    }
+
+    const fn contract(self) -> RuntimeSemanticContract {
+        use RuntimeArgumentEffect::{Borrow, Move};
+        use RuntimeResultEffect::{
+            BitCopy, FreshOwned, IndependentValue, UpdatedReceiver, UpdatedReceiverAndValue,
+        };
+        use RuntimeValueKind::{Applied, Bool, Receiver, Tuple, TypeArgument, I64};
+        const SET: RuntimeValueKind = Receiver(BuiltinType::HashSet);
+        const ELEMENT: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: TypeArgument(0),
+            effect: Borrow,
+        };
+        const READ: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: SET,
+            effect: Borrow,
+        };
+        const WRITE: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: SET,
+            effect: Move,
+        };
+        match self {
+            Self::New => runtime_semantic_contract(&[], FreshOwned(SET), &[]),
+            Self::Len => runtime_semantic_contract(&[READ], BitCopy(I64), &[]),
+            Self::Contains => runtime_semantic_contract(&[READ, ELEMENT], BitCopy(Bool), &[]),
+            Self::Insert | Self::Remove => runtime_semantic_contract(
+                &[WRITE, ELEMENT],
+                UpdatedReceiverAndValue(Tuple(&[SET, Bool])),
+                &[],
+            ),
+            Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(SET), &[]),
+            Self::Elements => runtime_semantic_contract(
+                &[READ],
+                IndependentValue(Applied(BuiltinType::Vec, &[TypeArgument(0)])),
+                &[],
+            ),
+        }
+    }
+}
+
 const fn runtime_semantic_contract(
     arguments: &'static [RuntimeArgumentContract],
     result: RuntimeResultEffect,
@@ -1086,6 +1252,8 @@ pub enum RuntimeCallFamily {
     // --- Vec<T> ------------------------------------------------------------
     /// Final semantic values; target lowering chooses layout-backed runtime entry points.
     Vector(VecValueOp),
+    Map(MapValueOp),
+    Set(SetValueOp),
     VecAppend,
     VecClear,
     VecClone,
@@ -1779,6 +1947,28 @@ impl RuntimeCallFamily {
             Self::TaskSetResult => "hew_task_set_result",
             Self::TaskSpawnThread => "hew_task_spawn_thread",
             // Semantic labels are not C ABI entry points.
+            Self::Map(op) => match op {
+                MapValueOp::New => "map.value.new",
+                MapValueOp::Len => "map.value.len",
+                MapValueOp::Index => "map.value.index",
+                MapValueOp::Get => "map.value.get",
+                MapValueOp::ContainsKey => "map.value.contains_key",
+                MapValueOp::Insert => "map.value.insert",
+                MapValueOp::Remove => "map.value.remove",
+                MapValueOp::Clear => "map.value.clear",
+                MapValueOp::Keys => "map.value.keys",
+                MapValueOp::Values => "map.value.values",
+                MapValueOp::Entries => "map.value.entries",
+            },
+            Self::Set(op) => match op {
+                SetValueOp::New => "set.value.new",
+                SetValueOp::Len => "set.value.len",
+                SetValueOp::Contains => "set.value.contains",
+                SetValueOp::Insert => "set.value.insert",
+                SetValueOp::Remove => "set.value.remove",
+                SetValueOp::Clear => "set.value.clear",
+                SetValueOp::Elements => "set.value.elements",
+            },
             Self::Vector(op) => match op {
                 VecValueOp::New => "vec.value.new",
                 VecValueOp::Len => "vec.value.len",
@@ -2159,6 +2349,24 @@ impl RuntimeCallFamily {
             "hew_vec_join_str" => Self::VecJoinStr,
             "hew_vec_len" => Self::VecLen,
             "vec.value.new" => Self::Vector(VecValueOp::New),
+            "map.value.new" => Self::Map(MapValueOp::New),
+            "map.value.len" => Self::Map(MapValueOp::Len),
+            "map.value.index" => Self::Map(MapValueOp::Index),
+            "map.value.get" => Self::Map(MapValueOp::Get),
+            "map.value.contains_key" => Self::Map(MapValueOp::ContainsKey),
+            "map.value.insert" => Self::Map(MapValueOp::Insert),
+            "map.value.remove" => Self::Map(MapValueOp::Remove),
+            "map.value.clear" => Self::Map(MapValueOp::Clear),
+            "map.value.keys" => Self::Map(MapValueOp::Keys),
+            "map.value.values" => Self::Map(MapValueOp::Values),
+            "map.value.entries" => Self::Map(MapValueOp::Entries),
+            "set.value.new" => Self::Set(SetValueOp::New),
+            "set.value.len" => Self::Set(SetValueOp::Len),
+            "set.value.contains" => Self::Set(SetValueOp::Contains),
+            "set.value.insert" => Self::Set(SetValueOp::Insert),
+            "set.value.remove" => Self::Set(SetValueOp::Remove),
+            "set.value.clear" => Self::Set(SetValueOp::Clear),
+            "set.value.elements" => Self::Set(SetValueOp::Elements),
             "vec.value.len" => Self::Vector(VecValueOp::Len),
             "vec.value.index" => Self::Vector(VecValueOp::Index),
             "vec.value.get" => Self::Vector(VecValueOp::Get),
@@ -2392,6 +2600,8 @@ impl RuntimeCallFamily {
         matches!(
             self,
             Self::Vector(_)
+                | Self::Map(_)
+                | Self::Set(_)
                 | Self::BytesGet
                 | Self::RegexCapture
                 | Self::RegexCompile
@@ -2476,6 +2686,15 @@ impl RuntimeCallFamily {
         }
     }
 
+    const fn collection_semantic_contract(self) -> Option<RuntimeSemanticContract> {
+        match self {
+            Self::Vector(op) => Some(op.contract()),
+            Self::Map(op) => Some(op.contract()),
+            Self::Set(op) => Some(op.contract()),
+            _ => None,
+        }
+    }
+
     /// True iff calling this family consumes the receiver handle (the
     /// runtime entry takes ownership; the caller MUST NOT drop the
     /// handle after the call). Mirrors `runtime_symbol_consumes_receiver`
@@ -2494,8 +2713,7 @@ impl RuntimeCallFamily {
     /// listing.
     #[must_use]
     pub fn consumes_receiver(self) -> bool {
-        if let Self::Vector(op) = self {
-            let contract = op.contract();
+        if let Some(contract) = self.collection_semantic_contract() {
             return matches!(
                 contract.arguments.first(),
                 Some(RuntimeArgumentContract {
@@ -2569,8 +2787,7 @@ impl RuntimeCallFamily {
     ///   lowering decision.
     #[must_use]
     pub fn arg_consume_verdict(self, index: usize) -> ConsumeVerdict {
-        if let Self::Vector(op) = self {
-            let contract = op.contract();
+        if let Some(contract) = self.collection_semantic_contract() {
             return match contract.arguments.get(index) {
                 Some(RuntimeArgumentContract {
                     effect: RuntimeArgumentEffect::Move,
@@ -2680,8 +2897,8 @@ impl RuntimeCallFamily {
         const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
         const INDEX_FAILURES: &[RuntimeLogicalFailure] = &[RuntimeLogicalFailure::IndexOutOfBounds];
 
-        if let Self::Vector(op) = self {
-            return Some(op.contract());
+        if let Some(contract) = self.collection_semantic_contract() {
+            return Some(contract);
         }
 
         if let Some(contract) = self.text_variant_semantic_contract() {
@@ -2806,8 +3023,7 @@ impl RuntimeCallFamily {
     /// an alias even when the backing allocation address happens not to move.
     #[must_use]
     pub const fn invalidates_collection_element_aliases(self) -> bool {
-        if let Self::Vector(op) = self {
-            let contract = op.contract();
+        if let Some(contract) = self.collection_semantic_contract() {
             return matches!(
                 contract.arguments,
                 [
@@ -2895,6 +3111,8 @@ impl RuntimeCallFamily {
             // Everything else: NOT suspending today. Exhaustively listed
             // so adding a new variant requires an explicit decision.
             F::Vector(_)
+            | F::Map(_)
+            | F::Set(_)
             | F::StreamClose
             | F::StreamTryNextLayout
             | F::SinkTryWrite(_)
@@ -3662,6 +3880,8 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
     for repr in F::iter() {
         match repr {
             F::Vector(_) => out.extend(VecValueOp::iter().map(F::Vector)),
+            F::Map(_) => out.extend(MapValueOp::iter().map(F::Map)),
+            F::Set(_) => out.extend(SetValueOp::iter().map(F::Set)),
             F::MathIntrinsic(_) => out.extend(MathIntrinsic::iter().map(F::MathIntrinsic)),
             F::SinkWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkWrite)),
             F::SinkTryWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkTryWrite)),
@@ -3963,12 +4183,24 @@ mod tests {
             // fail-closed default.
             for index in 1..=3 {
                 let expected = match family {
-                    RuntimeCallFamily::Vector(
-                        VecValueOp::Index | VecValueOp::Get | VecValueOp::Push,
-                    ) if index == 1 => ConsumeVerdict::ProvenBorrow,
-                    RuntimeCallFamily::Vector(VecValueOp::Set) if index <= 2 => {
+                    RuntimeCallFamily::Map(MapValueOp::Insert)
+                    | RuntimeCallFamily::Vector(VecValueOp::Set)
+                        if index <= 2 =>
+                    {
                         ConsumeVerdict::ProvenBorrow
                     }
+                    RuntimeCallFamily::Map(
+                        MapValueOp::Index
+                        | MapValueOp::Get
+                        | MapValueOp::ContainsKey
+                        | MapValueOp::Remove,
+                    )
+                    | RuntimeCallFamily::Set(
+                        SetValueOp::Contains | SetValueOp::Insert | SetValueOp::Remove,
+                    )
+                    | RuntimeCallFamily::Vector(
+                        VecValueOp::Index | VecValueOp::Get | VecValueOp::Push,
+                    ) if index == 1 => ConsumeVerdict::ProvenBorrow,
                     RuntimeCallFamily::HashMapInsertLayout if matches!(index, 1 | 2) => {
                         ConsumeVerdict::ProvenConsume
                     }
@@ -4243,6 +4475,12 @@ mod tests {
             "vec.value.set",
             "vec.value.pop",
             "vec.value.clear",
+            "map.value.insert",
+            "map.value.remove",
+            "map.value.clear",
+            "set.value.insert",
+            "set.value.remove",
+            "set.value.clear",
         ]
         .into_iter()
         .collect();
@@ -4555,6 +4793,169 @@ mod tests {
     // in `hew-mir`. They moved to `hew-mir/tests/runtime_call_allowlist.rs`
     // alongside the re-export shim and run as integration tests against
     // the same substrate.
+}
+
+#[cfg(test)]
+mod map_set_semantic_contract_tests {
+    use super::*;
+
+    fn builtin(kind: BuiltinType, arguments: Vec<ResolvedTy>) -> ResolvedTy {
+        ResolvedTy::named_builtin(kind.canonical_name(), kind, arguments)
+    }
+
+    #[test]
+    fn map_selection_and_projection_keep_exact_nested_value_types() {
+        let value = builtin(
+            BuiltinType::Vec,
+            vec![builtin(
+                BuiltinType::Result,
+                vec![ResolvedTy::I64, ResolvedTy::String],
+            )],
+        );
+        let map = builtin(
+            BuiltinType::HashMap,
+            vec![ResolvedTy::String, value.clone()],
+        );
+        let optional = builtin(BuiltinType::Option, vec![value.clone()]);
+        let get = RuntimeCallFamily::Map(MapValueOp::Get)
+            .semantic_contract()
+            .unwrap();
+        assert!(get.matches_signature(&[map.clone(), ResolvedTy::String], &optional));
+        assert!(!get.matches_signature(&[map.clone(), ResolvedTy::I64], &optional));
+        assert!(!get.matches_signature(
+            &[map.clone(), ResolvedTy::String],
+            &builtin(BuiltinType::Option, vec![ResolvedTy::String])
+        ));
+        assert!(!get.matches_signature(
+            &[map.clone(), ResolvedTy::String],
+            &ResolvedTy::named_user("Option", vec![value.clone()])
+        ));
+
+        let entries = RuntimeCallFamily::Map(MapValueOp::Entries)
+            .semantic_contract()
+            .unwrap();
+        let pairs = builtin(
+            BuiltinType::Vec,
+            vec![ResolvedTy::Tuple(vec![ResolvedTy::String, value.clone()])],
+        );
+        assert!(entries.matches_signature(std::slice::from_ref(&map), &pairs));
+        assert!(!entries.matches_signature(
+            std::slice::from_ref(&map),
+            &builtin(
+                BuiltinType::Vec,
+                vec![ResolvedTy::Tuple(vec![value, ResolvedTy::String])]
+            )
+        ));
+        assert_eq!(
+            RuntimeCallFamily::Map(MapValueOp::Get).result_authority(),
+            RuntimeResultAuthority::IndependentValue
+        );
+        assert_eq!(
+            RuntimeCallFamily::Map(MapValueOp::Entries).result_authority(),
+            RuntimeResultAuthority::IndependentValue
+        );
+    }
+
+    #[test]
+    fn collection_constructors_require_canonical_identity_and_arity() {
+        for (family, kind, arguments) in [
+            (
+                RuntimeCallFamily::Map(MapValueOp::New),
+                BuiltinType::HashMap,
+                vec![ResolvedTy::String, ResolvedTy::I64],
+            ),
+            (
+                RuntimeCallFamily::Set(SetValueOp::New),
+                BuiltinType::HashSet,
+                vec![ResolvedTy::String],
+            ),
+        ] {
+            let contract = family.semantic_contract().unwrap();
+            let receiver = builtin(kind, arguments.clone());
+            assert!(contract.matches_signature(&[], &receiver));
+            assert!(contract.matches_signature(
+                &[],
+                &ResolvedTy::named_builtin("renamed.Collection", kind, arguments.clone())
+            ));
+            assert!(!contract.matches_signature(
+                &[],
+                &ResolvedTy::named_user(kind.canonical_name(), arguments)
+            ));
+            assert!(!contract.matches_signature(&[], &builtin(kind, vec![])));
+            assert!(!contract
+                .matches_signature(&[], &builtin(BuiltinType::Vec, vec![ResolvedTy::String])));
+            assert!(!contract.matches_signature(std::slice::from_ref(&receiver), &receiver));
+        }
+    }
+
+    #[test]
+    fn map_updates_replace_the_receiver_and_preserve_input_owners() {
+        let map = builtin(
+            BuiltinType::HashMap,
+            vec![ResolvedTy::String, ResolvedTy::Bytes],
+        );
+        let insert = RuntimeCallFamily::Map(MapValueOp::Insert);
+        assert!(insert
+            .semantic_contract()
+            .unwrap()
+            .matches_signature(&[map.clone(), ResolvedTy::String, ResolvedTy::Bytes], &map));
+        assert!(!insert.semantic_contract().unwrap().matches_signature(
+            &[map.clone(), ResolvedTy::String, ResolvedTy::Bytes],
+            &ResolvedTy::Unit
+        ));
+        assert_eq!(insert.arg_consume_verdict(0), ConsumeVerdict::ProvenConsume);
+        assert_eq!(insert.arg_consume_verdict(1), ConsumeVerdict::ProvenBorrow);
+        assert_eq!(insert.arg_consume_verdict(2), ConsumeVerdict::ProvenBorrow);
+
+        let removed = builtin(BuiltinType::Option, vec![ResolvedTy::Bytes]);
+        let remove = RuntimeCallFamily::Map(MapValueOp::Remove)
+            .semantic_contract()
+            .unwrap();
+        assert!(remove.matches_signature(
+            &[map.clone(), ResolvedTy::String],
+            &ResolvedTy::Tuple(vec![map.clone(), removed.clone()])
+        ));
+        assert!(!remove.matches_signature(&[map.clone(), ResolvedTy::String], &removed));
+        assert!(!remove.matches_signature(
+            &[map, ResolvedTy::String],
+            &ResolvedTy::Tuple(vec![
+                builtin(
+                    BuiltinType::HashMap,
+                    vec![ResolvedTy::I64, ResolvedTy::Bytes]
+                ),
+                removed
+            ])
+        ));
+    }
+
+    #[test]
+    fn set_updates_return_presence_without_consuming_the_input_element() {
+        let set = builtin(BuiltinType::HashSet, vec![ResolvedTy::String]);
+        let vector = builtin(BuiltinType::Vec, vec![ResolvedTy::String]);
+        for operation in [SetValueOp::Insert, SetValueOp::Remove] {
+            let family = RuntimeCallFamily::Set(operation);
+            let contract = family.semantic_contract().unwrap();
+            assert!(contract.matches_signature(
+                &[set.clone(), ResolvedTy::String],
+                &ResolvedTy::Tuple(vec![set.clone(), ResolvedTy::Bool])
+            ));
+            assert!(!contract.matches_signature(
+                &[vector.clone(), ResolvedTy::String],
+                &ResolvedTy::Tuple(vec![vector.clone(), ResolvedTy::Bool])
+            ));
+            assert!(
+                !contract.matches_signature(&[set.clone(), ResolvedTy::String], &ResolvedTy::Bool)
+            );
+            assert_eq!(family.arg_consume_verdict(1), ConsumeVerdict::ProvenBorrow);
+            assert!(family.invalidates_collection_element_aliases());
+        }
+        let elements = RuntimeCallFamily::Set(SetValueOp::Elements);
+        assert!(elements
+            .semantic_contract()
+            .unwrap()
+            .matches_signature(std::slice::from_ref(&set), &vector));
+        assert!(!elements.invalidates_collection_element_aliases());
+    }
 }
 
 #[cfg(test)]

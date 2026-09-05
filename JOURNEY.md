@@ -671,3 +671,11 @@ ordinary result types from its type arguments. Vector element, optional and
 receiver-plus-element results use the same type templates that map/set operations
 will consume, replacing the vector-only signature vocabulary. The full checker
 suite passes with the existing vector contracts preserved.
+
+Map and set semantic operation contracts now describe borrowed reads and
+inputs, receiver replacement, independent projections and removal results.
+The shared receiver templates derive nested Option/Vec/tuple results and reject
+wrong keys, forged builtin names, incorrect arities and mismatched result types.
+The full checker suite passes. Source producers, verified physical recipes and
+native consumers remain the next layer; this checkpoint does not admit map/set
+source programs through native lowering yet.

@@ -22246,19 +22246,25 @@ impl LowerCtx {
             }
             HirExprKind::ResolvedImplCall {
                 target:
-                    CallTarget::RuntimeCollection(hew_types::MethodTargetFamily::Vec(
-                        hew_types::VecMethod::IsEmpty,
-                    )),
+                    CallTarget::RuntimeCollection(
+                        method @ (hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::IsEmpty)
+                        | hew_types::MethodTargetFamily::HashSet(
+                            hew_types::HashSetMethod::IsEmpty,
+                        )),
+                    ),
                 receiver,
                 args,
                 ..
             } if args.is_empty() => {
-                let length = self.collection_call_kind(
-                    Family::Vector(VecValueOp::Len),
-                    vec![*receiver],
-                    &ResolvedTy::I64,
-                    span,
-                );
+                let family = match method {
+                    hew_types::MethodTargetFamily::Vec(_) => Family::Vector(VecValueOp::Len),
+                    hew_types::MethodTargetFamily::HashSet(_) => Family::Set(SetValueOp::Len),
+                    hew_types::MethodTargetFamily::HashMap(_) => {
+                        unreachable!("matched emptiness method")
+                    }
+                };
+                let length =
+                    self.collection_call_kind(family, vec![*receiver], &ResolvedTy::I64, span);
                 let length =
                     self.make_expr(length, ResolvedTy::I64, IntentKind::Read, span.clone());
                 let zero = self.make_i64_literal(0, span.clone());

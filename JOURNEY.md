@@ -865,3 +865,33 @@ scalars, so the Unicode/NUL leaf length is seven, not its nine UTF-8 bytes.
 The handoff preserves that first result and supplies the corrected expectation.
 No further compiler boundary was encountered by this carrier; JSON/YAML
 conversion and fallible Hash/Eq callback contracts remain separate work.
+
+## Map/Set source producers: index, copies and composed projections
+
+Map indexing now uses the typed semantic Index operation and its shared failure
+cleanup. Explicit Map/Set clones copy a borrowed receiver with CopyValue; field
+loans end after the copy. Set emptiness composes semantic Len with comparison
+against zero. Neither copy nor emptiness adds an ABI operation. Diagnostics for
+unsupported calls now identify the exact typed call target.
+
+Focused source tests cover all permanent Map/Set cases, cloned map fields,
+optional lookups/removals, independently owned projections, nested set mutations,
+and set iteration through the semantic Elements operation. The missing-key
+regression verifies that the field loan ends before its parent is destroyed.
+The complete HIR/SIR Make selection builds and retains four failing positives:
+Map is_empty has no checker-produced rewrite, owned Map values/entries hit the
+checker projection allowlist, public Set to_vec lookup is absent, and
+println_bool has no semantic runtime operation. Their named owners must supply
+these contracts; no spelling-based substitute or ignored test was introduced.
+All other selected tests pass, including malformed-IR ownership negatives.
+
+Validation: cargo fmt --all; make test-strict -o test-artifacts with
+NEXTEST_WORKSPACE_ARGS='-p hew-hir -p hew-sir --lib --tests --no-fail-fast';
+make lint-rust with CLIPPY_ARGS='-p hew-hir -p hew-sir' passes. The native
+compiler builds through make core-acceptance with
+CORE_ACCEPTANCE_ARGS='--case map-value-copy', but both O0 and O2 stop at
+E_PHYSICAL_LOWERING for Map(New), whose physical action is not in this lane.
+An initial invocation used an unsupported --report option and was corrected.
+Generated native code and sanitizer execution are therefore unproven for Map/Set
+sources here. This is a buildable producer checkpoint, not full acceptance.
+No type, shared IR, verifier, physical or backend files were changed.

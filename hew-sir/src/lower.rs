@@ -3041,15 +3041,48 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.lower_expr_with_binding_use(source, binding_use)
             }
             HirExprKind::Index { container, index }
-                if hew_types::vector_element_type(&self.ty(&container.ty)).is_some() =>
+                if matches!(
+                    collection_type_arguments(&self.ty(&container.ty)),
+                    Some((
+                        hew_types::BuiltinType::Vec | hew_types::BuiltinType::HashMap,
+                        _
+                    ))
+                ) =>
             {
+                let family = match collection_type_arguments(&self.ty(&container.ty)) {
+                    Some((hew_types::BuiltinType::Vec, _)) => {
+                        hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Index)
+                    }
+                    Some((hew_types::BuiltinType::HashMap, _)) => {
+                        hew_types::RuntimeCallFamily::Map(
+                            hew_types::runtime_call::MapValueOp::Index,
+                        )
+                    }
+                    _ => unreachable!("matched a canonical indexed collection"),
+                };
                 self.lower_runtime_operation(
                     expr,
-                    hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Index),
+                    family,
                     &[container.as_ref(), index.as_ref()],
                     true,
                 )?
-                .ok_or_else(|| "vector index must produce a semantic copy".to_string())
+                .ok_or_else(|| "collection index must produce a semantic copy".to_string())
+            }
+            HirExprKind::ResolvedImplCall {
+                target:
+                    CallTarget::RuntimeCollection(
+                        hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Clone)
+                        | hew_types::MethodTargetFamily::HashSet(hew_types::HashSetMethod::Clone),
+                    ),
+                receiver,
+                args,
+                ..
+            } if args.is_empty() => {
+                let mut loans = Vec::new();
+                let source = self.lower_borrowed_read(receiver, &mut loans)?;
+                let copy = self.emit(expr, SemOpKind::CopyValue { source })?;
+                self.end_call_loans(&loans)?;
+                Ok(copy)
             }
             HirExprKind::Index { container, index }
                 if self.ty(&container.ty) == ResolvedTy::Bytes =>
@@ -4811,7 +4844,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             CallTarget::User(_) | CallTarget::ImplMethod(_) => {
                 self.lower_direct_call(expr, value_required)
             }
-            _ => Err("call target has no verified ownership-SIR operation contract".to_string()),
+            _ => Err(format!(
+                "call target {target:?} has no verified ownership-SIR operation contract"
+            )),
         }
     }
 
@@ -5056,10 +5091,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 RuntimeResultEffect::UpdatedReceiverAndValue(_)
             ) {
                 let binding = transformed_binding
-                    .ok_or_else(|| "runtime pop has no transformed binding".to_string())?;
+                    .ok_or_else(|| "runtime transform has no source binding".to_string())?;
                 let ty = self
                     .value_ty(continuation)
-                    .ok_or_else(|| "runtime pop result disappeared".to_string())?;
+                    .ok_or_else(|| "runtime transform result disappeared".to_string())?;
                 let shape = self.service.require_aggregate_shape(&ty)?;
                 let results = self.emit_destructure_value(
                     continuation,

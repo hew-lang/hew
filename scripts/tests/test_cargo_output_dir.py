@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for Cargo config parsing."""
+"""Regression tests for Hew target selection and Cargo metadata failures."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import contextlib
 import importlib.util
 import io
 import os
-import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,70 +41,29 @@ cargo_output_dir = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cargo_output_dir)
 
 
-def parse_config(text: str) -> str:
-    """Parse Cargo configuration through the production TOML path."""
-    path = Path(".cargo/config.toml")
-    config = cargo_output_dir._load_toml(text, path)
-    return cargo_output_dir._configured_target(config, path) or ""
+def test_configured_target_shapes() -> None:
+    for config, expected in (
+        ({}, None),
+        ({"build": {}}, None),
+        ({"build": {"target": "aarch64-apple-darwin"}}, "aarch64-apple-darwin"),
+        ({"build": {"target": ["wasm32-wasip1"]}}, "wasm32-wasip1"),
+    ):
+        assert cargo_output_dir._configured_target(config, MODULE_PATH) == expected
 
 
-def test_build_table_string() -> None:
-    assert (
-        parse_config('[build]\ntarget = "aarch64-apple-darwin"\n')
-        == "aarch64-apple-darwin"
-    )
-
-
-def test_root_dotted_key() -> None:
-    assert (
-        parse_config("build.target = 'x86_64-unknown-freebsd'\n")
-        == "x86_64-unknown-freebsd"
-    )
-
-
-def test_single_multiline_array_and_comments() -> None:
-    text = """
-[build]
-target = [
-    "wasm32-wasip1", # the selected target
-]
-"""
-    assert parse_config(text) == "wasm32-wasip1"
-
-
-def test_hash_inside_target_is_not_a_comment() -> None:
-    assert (
-        parse_config('[build]\ntarget = "custom#target" # comment\n') == "custom#target"
-    )
-
-
-def test_literal_string_backslash_is_not_a_python_escape() -> None:
-    assert parse_config("[build]\ntarget = 'custom\\target'\n") == "custom\\target"
-
-
-def test_quoted_build_table() -> None:
-    assert parse_config('["build"]\ntarget = "aarch64-apple-darwin"\n') == (
-        "aarch64-apple-darwin"
-    )
-
-
-def test_malformed_config_fails_closed() -> None:
-    malformed = (
-        "[broken\n",
-        '[build]\ntarget = "bad\\x41escape"\n',
-        '[build]\ntarget = "first"\ntarget = "second"\n',
-    )
-    for source in malformed:
+def test_ambiguous_or_invalid_target_fails_closed() -> None:
+    configs = [
+        {"build": "not a table"},
+        *({"build": {"target": value}} for value in ("", [], ["a", "b"], [1], 1)),
+    ]
+    for config in configs:
         try:
-            parse_config(source)
-        except tomllib.TOMLDecodeError:
-            pass
+            with counterfactual("invalid-target"):
+                cargo_output_dir._configured_target(config, MODULE_PATH)
+        except SystemExit as exc:
+            assert exc.code == 1
         else:
-            raise AssertionError(f"malformed Cargo config was accepted: {source!r}")
-
-
-def test_missing_build_target() -> None:
-    assert parse_config('[target.x86_64-pc-windows-msvc]\nlinker = "lld-link"\n') == ""
+            raise AssertionError(f"invalid target was accepted: {config!r}")
 
 
 def test_metadata_failure_fails_closed() -> None:
@@ -187,14 +145,8 @@ def test_malformed_metadata_fails_closed() -> None:
 
 
 _TESTS = (
-    test_build_table_string,
-    test_root_dotted_key,
-    test_single_multiline_array_and_comments,
-    test_hash_inside_target_is_not_a_comment,
-    test_literal_string_backslash_is_not_a_python_escape,
-    test_quoted_build_table,
-    test_malformed_config_fails_closed,
-    test_missing_build_target,
+    test_configured_target_shapes,
+    test_ambiguous_or_invalid_target_fails_closed,
     test_metadata_failure_fails_closed,
     test_missing_cargo_fails_closed,
     test_malformed_metadata_fails_closed,

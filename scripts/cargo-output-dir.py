@@ -66,10 +66,6 @@ def _configured_target(config: dict[str, Any], path: Path) -> str | None:
     die(f"{path} has a non-string build.target value")
 
 
-def _load_toml(text: str, path: Path) -> dict[str, Any]:
-    return tomllib.loads(text)
-
-
 def target_root() -> Path:
     """The `target/` equivalent Cargo writes into, absolute.
 
@@ -137,7 +133,7 @@ def config_build_target() -> str:
         except (OSError, UnicodeError) as err:
             die(f"cannot read {path}: {err}")
         try:
-            config = _load_toml(text, path)
+            config = tomllib.loads(text)
         except ValueError as err:
             die(str(err))
         target = _configured_target(config, path)

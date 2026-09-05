@@ -18,8 +18,14 @@ QUIET=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --quiet) QUIET=1; shift ;;
-        *) echo "error: unknown argument: $1" >&2; exit 1 ;;
+    --quiet)
+        QUIET=1
+        shift
+        ;;
+    *)
+        echo "error: unknown argument: $1" >&2
+        exit 1
+        ;;
     esac
 done
 
@@ -27,7 +33,7 @@ COMMITTED="${REPO_ROOT}/THIRD-PARTY-LICENSES"
 
 if [[ ! -f "$COMMITTED" ]]; then
     echo "error: THIRD-PARTY-LICENSES not found at ${COMMITTED}" >&2
-    echo "  Run 'make baselines' to generate it." >&2
+    echo "  Run 'make licenses' to generate it." >&2
     exit 1
 fi
 
@@ -37,22 +43,22 @@ if ! command -v cargo-about &>/dev/null && ! cargo about --version &>/dev/null 2
     exit 1
 fi
 
-TMPFILE="$(mktemp "/tmp/third-party-licenses.XXXXXX")"
+TMPFILE="$(mktemp "${TMPDIR:-/tmp}/third-party-licenses.XXXXXX")"
 trap 'rm -f "$TMPFILE"' EXIT
 
-(( QUIET == 0 )) && echo "Regenerating THIRD-PARTY-LICENSES for freshness check..."
+((QUIET == 0)) && echo "Regenerating THIRD-PARTY-LICENSES for freshness check..."
 
-# Suppress cargo-about's own progress chatter; capture only the generated output.
-cargo about generate "${REPO_ROOT}/about.hbs" --workspace \
+# Reject unresolved licences and preserve generator diagnostics on failure.
+cargo about generate "${REPO_ROOT}/about.hbs" --workspace --locked --fail \
     --manifest-path "${REPO_ROOT}/Cargo.toml" \
-    2>/dev/null > "$TMPFILE"
+    >"$TMPFILE"
 
 if diff -u "$COMMITTED" "$TMPFILE"; then
-    (( QUIET == 0 )) && echo "ok: THIRD-PARTY-LICENSES is current"
+    ((QUIET == 0)) && echo "ok: THIRD-PARTY-LICENSES is current"
     exit 0
 else
     echo "" >&2
     echo "error: THIRD-PARTY-LICENSES is stale (Cargo.lock or about.hbs changed)." >&2
-    echo "  Run 'make baselines' and commit the updated file." >&2
+    echo "  Run 'make licenses' and commit the updated file." >&2
     exit 1
 fi

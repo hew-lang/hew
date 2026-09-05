@@ -112,6 +112,23 @@ This triggers `.github/workflows/release-gate.yml`, which runs:
 The sanitizer job executes ASan directly, so a missing, skipped, or red run
 fails the release gate without a separate evidence parser.
 
+## Release dependencies and notices
+
+Before tagging, run `make release-checks` with cargo-deny 0.19.6 and
+cargo-about 0.9.0 installed. This checks allowed licences, known security
+advisories, permitted dependency sources, generated third-party notices and
+installer version ordering. The tag-release workflow repeats the same command
+before building publishable artifacts and installs pinned prebuilt tools.
+
+Duplicate dependency versions are permitted and are not reported. Other
+policy warnings fail validation: update the dependency or document a specific
+exception in `deny.toml`. When the dependency graph changes, run `make licenses`
+and commit `Cargo.lock` and `THIRD-PARTY-LICENSES` together. Generation uses the
+locked graph and fails if a licence cannot be resolved.
+
+These release checks are available during development but do not run on every
+unrelated PR. `make pre-release` runs them before platform validation.
+
 ## Phase 4 — Local cross-platform validation (optional but recommended)
 
 For full cross-platform hardware validation beyond CI runners:
@@ -186,7 +203,7 @@ version 22; an absent or different version fails validation before building.
 
 What `make pre-release` does:
 
-1. `make release` — release build of all binaries
+1. `make release-checks` — dependency policy, notices and installer ordering
 2. `scripts/pre-release-validate.sh` — per-platform:
    - Build all release artifacts
    - Verify binaries exist and run (`--version`)

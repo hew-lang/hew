@@ -303,10 +303,14 @@ Full documentation at **[hew.sh/docs](https://hew.sh/docs)**
 
 ### Prerequisites
 
-| Dependency | Version        | Purpose                                              |
-| ---------- | -------------- | ---------------------------------------------------- |
-| Rust       | repository pin | Compiler, runtime, package manager                   |
-| LLVM       | 22.1           | Native/WASM object emission through inkwell/llvm-sys |
+| Dependency     | Version                                                  | Purpose                                              |
+| -------------- | -------------------------------------------------------- | ---------------------------------------------------- |
+| Rust and Cargo | `rust-toolchain.toml` pin (including Clippy and rustfmt) | Compiler, runtime and package manager                |
+| LLVM           | 22.1.x                                                   | Native/WASM object emission through inkwell/llvm-sys |
+| C compiler     | GCC or Clang; MSVC environment on Windows                | Native linking and C header checks                   |
+| GNU Make       | GNU implementation                                       | Build and test entry points                          |
+| Python         | 3.12+                                                    | Makefile gates and repository scripts                |
+| Git and Bash   | Available on `PATH`                                      | Source checkout and shell helpers                    |
 
 **Install on Ubuntu/Debian:**
 
@@ -321,7 +325,7 @@ wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
 echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" \
   | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
 sudo apt-get update
-sudo apt-get install -y llvm-22-dev clang-22
+sudo apt-get install -y llvm-22-dev clang-22 make gcc git python3
 ```
 
 **Install on macOS:**
@@ -343,8 +347,8 @@ brew install python@3.12
 make          # Build the usable developer toolchain
 make release  # Build the optimized install/package toolchain
 make preflight     # Unconditional, fail-fast pre-PR gate
-make test     # Run Rust + native codegen tests
-make lint     # Run the same lint/build-system aggregate as CI
+make test     # Run Rust workspace tests against the known-failure ratchet
+make lint     # Run Rust lint, source contracts and Hew formatting
 ```
 
 The default toolchain pairs the `release-lib` compiler with its linkable
@@ -376,20 +380,42 @@ make sandbox-parity             # full Node VM plus Rust native/sandbox parity s
 
 Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` for the repo-local browser/tooling slice: curated `hew-wasm` analysis smoke plus the repo-local `hew-wasm` build (`make wasm`) that powers browser-side diagnostics tooling. Use `make playground-wasi-check` in codegen-capable environments when you also want the focused manifest-driven WASI runtime proof. The `hew-wasm` crate in this repo is analysis-only; the sandbox VM execution target and downstream browser app live in `hew-lang/playground`.
 
-### Optional Dependencies
+### Development tools
 
-These are only needed for specific workflows:
+Install these when developing Hew, in addition to the build prerequisites:
 
-| Dependency                    | Install                                             | Purpose                                                                                                                       |
-| ----------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| wasmtime                      | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run the WASI end-to-end tests (`make playground-wasi-check`, and the `wasi_run_e2e` / `eval_wasm_*` cases inside `make test`) |
-| wasm32-wasip1 target          | `rustup target add wasm32-wasip1`                   | Build the WASI runtime (`make wasm-runtime`, `make sandbox-parity`)                                                           |
-| wasm32-unknown-unknown target | `rustup target add wasm32-unknown-unknown`          | Build the browser/sandbox module (`make wasm`, `make playground-check`, `make sandbox-parity`)                                |
-| wasm-pack                     | `cargo install wasm-pack`                           | Build browser and sandbox bindings (`make wasm`, `make playground-check`, `make sandbox-parity`)                              |
-| Python 3.12+                  | system package manager                              | Required for Makefile gates and repository scripts (`scripts/`)                                                               |
-| actionlint                    | platform package manager                            | Validate GitHub Actions workflows before pushing (`make actionlint`)                                                          |
-| ShellCheck                    | platform package manager                            | Validate shell scripts (`make lint`)                                                                                          |
-| cargo-fuzz                    | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)                                                                                           |
+| Dependency   | Version / install                                                                            | Purpose                                                         |
+| ------------ | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| ShellCheck   | [0.11.0 release](https://github.com/koalaman/shellcheck/releases/tag/v0.11.0)                | Shell-script lint; CI installs the version selected in `ci.yml` |
+| actionlint   | [Release binaries](https://github.com/rhysd/actionlint/releases) or platform package manager | Validate GitHub Actions workflows before pushing                |
+| clang-format | LLVM installation or platform package manager                                                | Check generated C headers                                       |
+
+After setting up or changing your environment, run:
+
+```bash
+make check-requirements
+```
+
+This checks tool availability and the required Rust, LLVM, Python and ShellCheck
+versions. It is an explicit diagnostic, not a prerequisite of builds, lint or
+tests. Normal commands trust the configured environment. Structural lint
+provisions its pinned ast-grep and Hew grammar through the existing Make targets.
+
+### Workflow-specific test tools
+
+These are needed for the indicated workflows; they are outside
+`make check-requirements`:
+
+| Dependency                    | Version / install                                                                    | Purpose                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| cargo-nextest                 | `cargo install cargo-nextest --locked --version 0.9.120`                             | Rust test execution (`make test`)                                       |
+| wasmtime                      | [v47.0.2 release](https://github.com/bytecodealliance/wasmtime/releases/tag/v47.0.2) | WASI tests (`make playground-wasi-check` and WASI cases in `make test`) |
+| wasm32-wasip1 target          | `rustup target add wasm32-wasip1`                                                    | WASI runtime archives                                                   |
+| wasm32-unknown-unknown target | `rustup target add wasm32-unknown-unknown`                                           | Browser/sandbox modules                                                 |
+| wasm-pack                     | `cargo install wasm-pack --locked --version 0.13.1`                                  | Browser and sandbox bindings                                            |
+| Node.js and npm               | Node.js 24                                                                           | Browser, sandbox and grammar checks                                     |
+| Mosquitto clients             | Platform package manager (`mosquitto-clients` on Ubuntu)                             | MQTT broker end-to-end checks                                           |
+| cargo-fuzz                    | `cargo install cargo-fuzz`                                                           | Parser fuzzing (`hew-parser/fuzz/`)                                     |
 
 ## License
 

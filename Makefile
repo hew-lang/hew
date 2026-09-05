@@ -96,6 +96,11 @@
 help:
 	@$(PYTHON) scripts/make-help.py
 
+# Explicit environment diagnostic; normal gates trust the configured tools.
+.PHONY: check-requirements
+check-requirements: ## Develop: check local build and lint prerequisites on demand
+	@$(PYTHON) scripts/check-requirements.py
+
 LINT_GATES += shell-script-lint
 shell-script-lint:
 	@$(PYTHON) scripts/shell-script-lint.py

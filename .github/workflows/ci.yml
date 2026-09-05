@@ -39,6 +39,7 @@ env:
   # commit. Assets used: x86_64-linux.tar.xz, aarch64-macos.tar.xz,
   # x86_64-windows.zip.
   WASMTIME_VERSION: "v47.0.2"
+  SHELLCHECK_VERSION: "0.11.0"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -68,6 +69,11 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
+
+      - name: Install ShellCheck
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: shellcheck@${{ env.SHELLCHECK_VERSION }}
 
       - name: Provision pinned ast-grep toolchain
         id: lint-tools
@@ -99,10 +105,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install shell and C header checks
+      - name: Install ShellCheck
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: shellcheck@${{ env.SHELLCHECK_VERSION }}
+
+      - name: Install C header checks
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq shellcheck clang-format gcc
+          sudo apt-get install -y -qq clang-format gcc
 
       - name: Verify build tooling and checker behaviour
         run: make -k test-tooling

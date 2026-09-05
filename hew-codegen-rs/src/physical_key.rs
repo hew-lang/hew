@@ -36,15 +36,46 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             let function = callbacks[&(ty.clone(), *capability)];
             KeyEmitter::new(self, &callbacks, function, *capability)?.emit(ty, selection)?;
         }
-        for glue in &self.module.map_glue {
-            self.emit_key_descriptor(&map_key_descriptor_symbol(glue.id), &glue.key, &callbacks)?;
-        }
-        for glue in &self.module.set_glue {
-            self.emit_key_descriptor(
-                &set_key_descriptor_symbol(glue.id),
-                &glue.element,
-                &callbacks,
-            )?;
+        for function in &self.module.functions {
+            for block in &function.blocks {
+                let PhysicalTerminator::RuntimeCall { action, .. } = &block.terminator else {
+                    continue;
+                };
+                let (name, recipe) = match action {
+                    PhysicalRuntimeAction::Map {
+                        operation: PhysicalMapOp::New,
+                        glue,
+                    } => {
+                        let recipe = self
+                            .module
+                            .map_glue
+                            .get(glue.0 as usize)
+                            .filter(|recipe| recipe.id == *glue)
+                            .ok_or_else(|| {
+                                CodegenError::FailClosed("key descriptor has no map recipe".into())
+                            })?;
+                        (map_key_descriptor_symbol(*glue), &recipe.key)
+                    }
+                    PhysicalRuntimeAction::Set {
+                        operation: PhysicalSetOp::New,
+                        glue,
+                    } => {
+                        let recipe = self
+                            .module
+                            .set_glue
+                            .get(glue.0 as usize)
+                            .filter(|recipe| recipe.id == *glue)
+                            .ok_or_else(|| {
+                                CodegenError::FailClosed("key descriptor has no set recipe".into())
+                            })?;
+                        (set_key_descriptor_symbol(*glue), &recipe.element)
+                    }
+                    _ => continue,
+                };
+                if self.llvm.get_global(&name).is_none() {
+                    self.emit_key_descriptor(&name, recipe, &callbacks)?;
+                }
+            }
         }
         Ok(())
     }
@@ -55,12 +86,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         recipe: &PhysicalValueRecipe,
         callbacks: &CallbackTable<'ctx>,
     ) -> CodegenResult<()> {
-        let Some(hash) = callbacks.get(&(recipe.ty.clone(), ValueCapability::Hash)) else {
-            return Ok(());
-        };
-        let Some(eq) = callbacks.get(&(recipe.ty.clone(), ValueCapability::Eq)) else {
-            return Ok(());
-        };
+        let hash = callbacks
+            .get(&(recipe.ty.clone(), ValueCapability::Hash))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("demanded collection key lacks selected Hash".into())
+            })?;
+        let eq = callbacks
+            .get(&(recipe.ty.clone(), ValueCapability::Eq))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("demanded collection key lacks selected Eq".into())
+            })?;
         let value = self.value_descriptor(name, recipe)?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let descriptor_ty = self.ctx.struct_type(
@@ -88,9 +123,6 @@ struct KeyEmitter<'a, 'ctx, 'm> {
     capability: ValueCapability,
     out: PointerValue<'ctx>,
     fault: PointerValue<'ctx>,
-    // Only locally allocated borrowing cursors need cleanup. Value owners remain
-    // with the caller on every outcome, including a selected user method fault.
-    cursors: Vec<(PointerValue<'ctx>, &'static str)>,
 }
 
 impl<'a, 'ctx, 'm> KeyEmitter<'a, 'ctx, 'm> {
@@ -126,11 +158,10 @@ impl<'a, 'ctx, 'm> KeyEmitter<'a, 'ctx, 'm> {
             capability,
             out: parameter(output_index)?,
             fault: parameter(output_index + 1)?,
-            cursors: vec![],
         })
     }
 
-    fn emit(mut self, ty: &ResolvedTy, selection: &PhysicalValueCapability) -> CodegenResult<()> {
+    fn emit(self, ty: &ResolvedTy, selection: &PhysicalValueCapability) -> CodegenResult<()> {
         let lhs = self.parameter(0)?;
         let rhs = if self.capability == ValueCapability::Eq {
             Some(self.parameter(1)?)
@@ -164,31 +195,10 @@ impl<'a, 'ctx, 'm> KeyEmitter<'a, 'ctx, 'm> {
                 let glue = self.values().vector_glue(id)?;
                 self.vector(&glue.element.ty, lhs, rhs)
             }
-            PhysicalValueMethod::Map(id) => {
-                let rhs = self.require_eq(rhs, "map")?;
-                let glue = self
-                    .parent
-                    .module
-                    .map_glue
-                    .get(id.0 as usize)
-                    .filter(|glue| glue.id == id)
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("key callback has no map recipe".into())
-                    })?;
-                self.unordered(&glue.key.ty, Some(&glue.value.ty), lhs, rhs)
-            }
-            PhysicalValueMethod::Set(id) => {
-                let rhs = self.require_eq(rhs, "set")?;
-                let glue = self
-                    .parent
-                    .module
-                    .set_glue
-                    .get(id.0 as usize)
-                    .filter(|glue| glue.id == id)
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("key callback has no set recipe".into())
-                    })?;
-                self.unordered(&glue.element.ty, None, lhs, rhs)
+            PhysicalValueMethod::Map(_) | PhysicalValueMethod::Set(_) => {
+                Err(CodegenError::FailClosed(
+                    "structural Map/Set key capabilities are outside checker admission".into(),
+                ))
             }
         }
     }
@@ -313,23 +323,7 @@ impl<'a, 'ctx, 'm> KeyEmitter<'a, 'ctx, 'm> {
         )
     }
 
-    fn cleanup(&self) -> CodegenResult<()> {
-        for &(cursor, symbol) in self.cursors.iter().rev() {
-            self.free_cursor(cursor, symbol)?;
-        }
-        Ok(())
-    }
-
-    fn free_cursor(&self, cursor: PointerValue<'ctx>, symbol: &str) -> CodegenResult<()> {
-        let drop = external_drop(self.parent.ctx, &self.parent.llvm, symbol)?;
-        self.builder
-            .build_call(drop, &[cursor.into()], "")
-            .llvm_ctx("release key comparison cursor")?;
-        Ok(())
-    }
-
     fn finish(&self, value: IntValue<'ctx>) -> CodegenResult<()> {
-        self.cleanup()?;
         let value = if self.capability == ValueCapability::Eq {
             self.builder
                 .build_int_z_extend(self.truth(value)?, self.parent.ctx.i8_type(), "key.bool")
@@ -364,7 +358,6 @@ impl<'a, 'ctx, 'm> KeyEmitter<'a, 'ctx, 'm> {
             failed,
         )?;
         self.builder.position_at_end(failed);
-        self.cleanup()?;
         // The callee wrote the opaque fault directly. Preserve its exact status,
         // do not read its result storage, and leave our caller's output untouched.
         self.builder
@@ -816,143 +809,8 @@ impl<'a, 'ctx, 'm> KeyEmitter<'a, 'ctx, 'm> {
         self.builder.position_at_end(done);
         self.finish(ctx.bool_type().const_int(1, false))
     }
-
-    fn cursor(
-        &mut self,
-        handle: PointerValue<'ctx>,
-        is_map: bool,
-    ) -> CodegenResult<PointerValue<'ctx>> {
-        let (new, free) = if is_map {
-            (
-                "hew_hashmap_iter_new_layout",
-                "hew_hashmap_iter_free_layout",
-            )
-        } else {
-            (
-                "hew_hashset_iter_new_layout",
-                "hew_hashset_iter_free_layout",
-            )
-        };
-        let ptr = self.parent.ctx.ptr_type(AddressSpace::default());
-        let cursor = self
-            .runtime(new, ptr.fn_type(&[ptr.into()], false), &[handle.into()])?
-            .into_pointer_value();
-        self.cursors.push((cursor, free));
-        Ok(cursor)
-    }
-
-    fn advance(
-        &self,
-        cursor: PointerValue<'ctx>,
-        key: PointerValue<'ctx>,
-        value: Option<PointerValue<'ctx>>,
-    ) -> CodegenResult<IntValue<'ctx>> {
-        let mut args = vec![cursor.into(), key.into()];
-        let name = if let Some(value) = value {
-            args.push(value.into());
-            "hew_hashmap_iter_next_layout"
-        } else {
-            "hew_hashset_iter_next_layout"
-        };
-        let ptr = self.parent.ctx.ptr_type(AddressSpace::default());
-        Ok(self
-            .runtime(
-                name,
-                self.parent
-                    .ctx
-                    .bool_type()
-                    .fn_type(&vec![ptr.into(); args.len()], false),
-                &args,
-            )?
-            .into_int_value())
-    }
-
-    fn unordered(
-        &mut self,
-        key: &ResolvedTy,
-        value: Option<&ResolvedTy>,
-        lhs: PointerValue<'ctx>,
-        rhs: PointerValue<'ctx>,
-    ) -> CodegenResult<()> {
-        // Equality uses the selected Eq components directly. A nested collection
-        // needs no invented Hash plan, and iteration order is not observable.
-        let ctx = self.parent.ctx;
-        let ptr = ctx.ptr_type(AddressSpace::default());
-        let is_map = value.is_some();
-        let length_name = if is_map {
-            "hew_hashmap_len_layout"
-        } else {
-            "hew_hashset_len_layout"
-        };
-        let left = self.handle(lhs)?;
-        let right = self.handle(rhs)?;
-        self.continue_equal(self.equal(
-            self.length(length_name, left)?,
-            self.length(length_name, right)?,
-        )?)?;
-        let left_key = self.values().entry_scratch(ptr.into(), "key.left.slot")?;
-        let right_key = self.values().entry_scratch(ptr.into(), "key.right.slot")?;
-        let left_value = if is_map {
-            Some(self.values().entry_scratch(ptr.into(), "key.left.value")?)
-        } else {
-            None
-        };
-        let right_value = if is_map {
-            Some(self.values().entry_scratch(ptr.into(), "key.right.value")?)
-        } else {
-            None
-        };
-        let outer = self.cursor(left, is_map)?;
-        let outer_next = self.block("key.collection.next");
-        let search = self.block("key.collection.search");
-        let all_equal = self.block("key.collection.equal");
-        self.jump(outer_next)?;
-        self.builder.position_at_end(outer_next);
-        self.branch(
-            self.advance(outer, left_key, left_value)?,
-            search,
-            all_equal,
-        )?;
-        self.builder.position_at_end(all_equal);
-        self.finish(ctx.bool_type().const_int(1, false))?;
-        self.builder.position_at_end(search);
-        let inner = self.cursor(right, is_map)?;
-        let inner_next = self.block("key.collection.candidate");
-        let compare = self.block("key.collection.compare");
-        let absent = self.block("key.collection.absent");
-        let found = self.block("key.collection.found");
-        self.jump(inner_next)?;
-        self.builder.position_at_end(inner_next);
-        self.branch(
-            self.advance(inner, right_key, right_value)?,
-            compare,
-            absent,
-        )?;
-        self.builder.position_at_end(absent);
-        self.finish(ctx.bool_type().const_zero())?;
-        self.builder.position_at_end(compare);
-        let same_key =
-            self.component(key, self.handle(left_key)?, Some(self.handle(right_key)?))?;
-        self.branch(self.truth(same_key)?, found, inner_next)?;
-        self.builder.position_at_end(found);
-        if let Some(value) = value {
-            let left_slot = left_value.ok_or_else(|| {
-                CodegenError::FailClosed("map comparison has no value slot".into())
-            })?;
-            let right_slot = right_value.ok_or_else(|| {
-                CodegenError::FailClosed("map comparison has no value slot".into())
-            })?;
-            self.continue_equal(self.component(
-                value,
-                self.handle(left_slot)?,
-                Some(self.handle(right_slot)?),
-            )?)?;
-        }
-        let (_, free) = self
-            .cursors
-            .pop()
-            .ok_or_else(|| CodegenError::FailClosed("key comparison lost its cursor".into()))?;
-        self.free_cursor(inner, free)?;
-        self.jump(outer_next)
-    }
 }
+
+#[cfg(test)]
+#[path = "physical_key_tests.rs"]
+mod tests;

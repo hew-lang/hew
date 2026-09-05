@@ -1140,3 +1140,32 @@ hew-codegen-rs suite and scoped make lint-rust pass. This is an initial compiled
 checkpoint; direct callback execution and fault regression tests are the next
 validation step. At this base the checker also refuses derived Map/Set Eq, so
 those recipes are present for the physical interface but are not source-admitted.
+
+### Key callback admission and execution validation
+
+Removed the unreachable structural Map/Set Eq emitters after confirming the
+checker explicitly refuses those capabilities. Map/Set physical recipes now fail
+closed; this supersedes the initial checkpoint's broader recipe implementation.
+Key descriptors are emitted only for concrete New operations, and a demanded
+constructor with either key capability missing explicitly refuses. Borrowed
+collections do not acquire descriptors just because another collection demands
+the same key type.
+
+New JIT tests execute callbacks at O0 and O2: total floating keys, padding-free
+aggregate composition through selected user methods, counted strings with embedded
+NUL, active byte regions, borrowed owned-user receivers, Vec elements, active
+variant payloads, and exact nonzero status/fault propagation with untouched caller
+outputs. Malformed physical tests reject missing components and unadmitted Map/Set
+recipes. Windows x64 and macOS arm64 target emission LLVM-verifies, including key
+descriptors, byte hashing and private borrowed calls; native execution is Linux-only.
+
+The base's legacy collection admission still refuses Bytes and Vec/Option record
+keys before SIR despite their capability-level support. Those recipe tests therefore
+exercise the emitter directly with physical layouts and already-selected component
+callbacks. They do not change admission or claim full collection-kernel integration.
+The integration owner is composing the source-admission and fault-kernel consumers.
+
+The complete hew-codegen-rs Make suite, scoped make lint-rust, Rust formatting and
+diff checks pass. The parent integration hook is isolated in its own commit; the
+child only consumes PhysicalValueMethod and PhysicalCallable, so the opaque
+checker-selection migration requires no emitter-side API change.

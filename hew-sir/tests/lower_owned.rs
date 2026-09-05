@@ -6,13 +6,17 @@ use hew_sir::{
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn lower_source(source: &str) -> hew_sir::LoweredModule {
+    lower_source_with_registry(source, ModuleRegistry::new(Vec::new()))
+}
+
+fn lower_source_with_registry(source: &str, registry: ModuleRegistry) -> hew_sir::LoweredModule {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:#?}",
         parsed.errors
     );
-    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+    let mut checker = Checker::new(registry);
     let facts = checker.check_program(&parsed.program);
     assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);
     let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
@@ -22,6 +26,45 @@ fn lower_source(source: &str) -> hew_sir::LoweredModule {
         hir.diagnostics
     );
     lower_module(&hir.module, &facts)
+}
+
+#[test]
+fn canonical_string_length_uses_a_borrowing_runtime_operation() {
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-sir must live under the repository root")
+        .to_path_buf();
+    let lowered = lower_source_with_registry(
+        r#"
+        import std.string;
+
+        fn echo_len(value: string) -> i64 { value.len() }
+        fn main() { println(echo_len("hello")); }
+        "#,
+        ModuleRegistry::new(vec![repo_root]),
+    );
+
+    assert!(matches!(
+        lowered
+            .statuses
+            .iter()
+            .find(|status| status.name == "echo_len"),
+        Some(status) if matches!(status.status, SirLoweringStatus::Lowered)
+    ));
+    let echo_len = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "echo_len")
+        .expect("the imported string-length caller must have a SIR body");
+    assert!(echo_len.blocks.iter().any(|block| matches!(
+        &block.terminator,
+        SemTerminator::RtCall { family, args, .. }
+            if *family == hew_types::RuntimeCallFamily::StringLen
+                && args.len() == 1
+                && args[0].decision == BoundaryDecision::Borrow
+    )));
+    assert!(verify_module(&lowered.module).is_empty());
 }
 
 #[test]

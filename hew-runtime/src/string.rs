@@ -788,15 +788,12 @@ pub unsafe extern "C" fn hew_char_to_string(c: i32) -> *mut c_char {
 /// # Safety
 ///
 /// `s` must be a valid NUL-terminated C string (or null, which returns 0).
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "Matching C ABI: strlen result is returned as i32 per Hew convention"
-)]
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_length(s: *const c_char) -> i32 {
+pub unsafe extern "C" fn hew_string_length(s: *const c_char) -> i64 {
     // SAFETY: cstr_len handles null check internally.
-    unsafe { cstr_len(s) as i32 }
+    let length = unsafe { cstr_len(s) };
+    // Hew lengths use i64. Never truncate a host-sized length at the ABI.
+    i64::try_from(length).unwrap_or_else(|_| std::process::abort())
 }
 
 /// Lexicographic comparison of two C strings.
@@ -1347,7 +1344,7 @@ pub unsafe extern "C" fn hew_string_char_count(s: *const c_char) -> i32 {
 ///
 /// `s` must be a valid NUL-terminated C string (or null, which returns 0).
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_byte_length(s: *const c_char) -> i32 {
+pub unsafe extern "C" fn hew_string_byte_length(s: *const c_char) -> i64 {
     // SAFETY: Forwarding to hew_string_length with same contract.
     unsafe { hew_string_length(s) }
 }

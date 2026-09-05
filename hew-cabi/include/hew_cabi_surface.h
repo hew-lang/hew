@@ -5071,8 +5071,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1496] = {
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_byte_length",
-     "{\"native\": \"fn hew_string_byte_length( *const c_char) -> i32\", "
-     "\"wasm32-wasip1\": \"fn hew_string_byte_length( *const c_char) -> i32\"}",
+     "{\"native\": \"fn hew_string_byte_length( *const c_char) -> i64\", "
+     "\"wasm32-wasip1\": \"fn hew_string_byte_length( *const c_char) -> i64\"}",
      "native,wasm32-wasip1", "stable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_char_at",
@@ -5193,8 +5193,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1496] = {
      "native,wasm32-wasip1", "stable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_length",
-     "{\"native\": \"fn hew_string_length( *const c_char) -> i32\", "
-     "\"wasm32-wasip1\": \"fn hew_string_length( *const c_char) -> i32\"}",
+     "{\"native\": \"fn hew_string_length( *const c_char) -> i64\", "
+     "\"wasm32-wasip1\": \"fn hew_string_length( *const c_char) -> i64\"}",
      "native,wasm32-wasip1", "stable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_lines",

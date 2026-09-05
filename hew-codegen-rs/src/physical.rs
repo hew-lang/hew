@@ -1840,6 +1840,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(result()?, value)?;
             }
+            PhysicalRuntimeAction::StringLen => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_string_length",
+                    self.ctx.i64_type().fn_type(&[ptr.into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[self.load(source(0)?, "string.length.input")?.into()],
+                    "string.length",
+                )?;
+                self.store(result()?, value)?;
+            }
             PhysicalRuntimeAction::U8ToString => {
                 let function = get_or_declare_external(
                     self.llvm,
@@ -1850,6 +1863,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     function,
                     &[self.load(source(0)?, "u8.to.string.input")?.into()],
                     "u8.to.string",
+                )?;
+                self.store(result()?, value)?;
+            }
+            PhysicalRuntimeAction::I64ToString => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_i64_to_string",
+                    ptr.fn_type(&[self.ctx.i64_type().into()], false),
+                )?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[self.load(source(0)?, "i64.to.string.input")?.into()],
+                    "i64.to.string",
                 )?;
                 self.store(result()?, value)?;
             }
@@ -2418,13 +2444,17 @@ mod tests {
     use super::*;
 
     fn lower_source(source: &str) -> SemModule {
+        lower_source_with_registry(source, ModuleRegistry::new(Vec::new()))
+    }
+
+    fn lower_source_with_registry(source: &str, registry: ModuleRegistry) -> SemModule {
         let parsed = hew_parser::parse(source);
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:#?}",
             parsed.errors
         );
-        let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+        let mut checker = Checker::new(registry);
         let facts = checker.check_program(&parsed.program);
         assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);
         let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
@@ -2817,6 +2847,41 @@ mod tests {
         assert!(module.get_function("hew_bytes_clone_ref").is_some());
         assert!(module.get_function("hew_string_drop").is_some());
         assert!(module.get_function("hew_bytes_drop").is_some());
+    }
+
+    #[test]
+    fn string_length_uses_the_widened_runtime_abi() {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-codegen-rs must live under the repository root")
+            .to_path_buf();
+        let semantic = lower_source_with_registry(
+            r#"
+            import std.string;
+            fn main() -> i64 { "length".len() }
+            "#,
+            ModuleRegistry::new(vec![repo_root]),
+        );
+        let triple = native_emission_triple();
+        let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+        let target = physical_target_for_inventory(&triple, &inventory)
+            .expect("string length target layout");
+        let verified = hew_mir::lower_physical_module(&semantic, target)
+            .expect("string length physical lowering");
+        let ctx = Context::create();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0)
+            .expect("target machine");
+        let module = build_module(&ctx, verified.module(), "string_length", &machine)
+            .expect("string length LLVM module");
+        module.verify().expect("string length LLVM verification");
+        let length = module
+            .get_function("hew_string_length")
+            .expect("exact runtime length declaration");
+        assert_eq!(
+            length.get_type().get_return_type(),
+            Some(ctx.i64_type().into())
+        );
+        assert_eq!(length.get_type().count_param_types(), 1);
     }
 
     #[test]

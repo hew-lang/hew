@@ -11917,7 +11917,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_std_io_bytes_push_requires_provenance_and_checked_signature() {
+    fn canonical_std_io_runtime_methods_require_provenance_and_checked_signature() {
         let push_signature = FnSig {
             params: vec![Ty::U8],
             return_type: Ty::Unit,
@@ -11961,6 +11961,33 @@ mod tests {
             ),
             None,
             "the runtime ABI family is not admitted by symbol spelling and arity alone",
+        );
+
+        let len_signature = FnSig {
+            params: vec![],
+            return_type: Ty::I64,
+            ..FnSig::default()
+        };
+        canonical.extern_method_origins.insert(
+            "string::len".to_string(),
+            (Some("std.string".to_string()), true),
+        );
+        assert_eq!(
+            canonical.canonical_std_io_runtime_method_family(
+                "string::len",
+                "hew_string_length",
+                &len_signature,
+            ),
+            Some(crate::runtime_call::RuntimeCallFamily::StringLen),
+        );
+        assert_eq!(
+            lookalike.canonical_std_io_runtime_method_family(
+                "string::len",
+                "hew_string_length",
+                &len_signature,
+            ),
+            None,
+            "a user string len extern sharing the runtime spelling must remain untrusted",
         );
     }
 

@@ -1,0 +1,14 @@
+import std.string;
+
+fn byte_count(value: string) -> i64 { value.len() }
+
+fn main() -> i64 {
+    let value = "hé";
+    let length = byte_count(value);
+    let empty = byte_count("");
+    if length != 3 || empty != 0 {
+        return 1;
+    }
+    println(f"{value}:{length}:{empty}");
+    0
+}

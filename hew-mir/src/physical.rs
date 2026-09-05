@@ -53,11 +53,6 @@ impl PhysicalTypeInventory {
     pub fn aggregates(&self) -> impl Iterator<Item = &PhysicalAggregateDescriptor> {
         self.aggregates.values()
     }
-
-    #[must_use]
-    pub fn aggregate(&self, ty: &ResolvedTy) -> Option<&PhysicalAggregateDescriptor> {
-        self.aggregates.get(ty)
-    }
 }
 
 /// LLVM-independent carrier chosen by the target layout resolver.
@@ -324,7 +319,9 @@ pub enum PhysicalRuntimeAction {
     StringEquals,
     StringToBytesOwned,
     StringToUppercase,
+    StringLen,
     U8ToString,
+    I64ToString,
     PrintlnI64,
     PrintlnString,
     BytesLen,
@@ -339,7 +336,9 @@ impl PhysicalRuntimeAction {
             Self::StringEquals => RuntimeCallFamily::StringEquals,
             Self::StringToBytesOwned => RuntimeCallFamily::StringToBytes,
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
+            Self::StringLen => RuntimeCallFamily::StringLen,
             Self::U8ToString => RuntimeCallFamily::U8ToString,
+            Self::I64ToString => RuntimeCallFamily::I64ToString,
             Self::PrintlnI64 => RuntimeCallFamily::PrintlnI64,
             Self::PrintlnString => RuntimeCallFamily::PrintlnString,
             Self::BytesLen => RuntimeCallFamily::BytesLen,
@@ -712,9 +711,10 @@ fn collect_inventory_aggregate(
     inventory: &mut PhysicalTypeInventory,
     ty: &ResolvedTy,
 ) {
-    if !inventory.types.insert(ty.clone()) && inventory.aggregates.contains_key(ty) {
+    if inventory.aggregates.contains_key(ty) {
         return;
     }
+    inventory.types.insert(ty.clone());
     let fields = match ty {
         ResolvedTy::Tuple(fields) if !fields.is_empty() => Some(fields.clone()),
         _ => module
@@ -888,7 +888,9 @@ fn physical_runtime_action(
         RuntimeCallFamily::StringEquals => PhysicalRuntimeAction::StringEquals,
         RuntimeCallFamily::StringToBytes => PhysicalRuntimeAction::StringToBytesOwned,
         RuntimeCallFamily::StringToUppercase => PhysicalRuntimeAction::StringToUppercase,
+        RuntimeCallFamily::StringLen => PhysicalRuntimeAction::StringLen,
         RuntimeCallFamily::U8ToString => PhysicalRuntimeAction::U8ToString,
+        RuntimeCallFamily::I64ToString => PhysicalRuntimeAction::I64ToString,
         RuntimeCallFamily::PrintlnI64 => PhysicalRuntimeAction::PrintlnI64,
         RuntimeCallFamily::PrintlnString => PhysicalRuntimeAction::PrintlnString,
         RuntimeCallFamily::BytesLen => PhysicalRuntimeAction::BytesLen,
@@ -1636,11 +1638,22 @@ fn verify_aggregate_make(
             recipe.fields.len()
         )));
     }
+    if fields.contains(&dest) {
+        return Err(PhysicalError::new(
+            "physical aggregate construction aliases its destination storage",
+        ));
+    }
+    let mut consumed = BTreeSet::new();
     for (index, (field, expected)) in fields.iter().zip(&recipe.fields).enumerate() {
         let field = storage(function, *field)?;
         if field.ty != expected.ty || field.own != expected.own {
             return Err(PhysicalError::new(format!(
                 "physical aggregate construction field {index} disagrees with its glue recipe"
+            )));
+        }
+        if expected.own == OwnKind::Owned && !consumed.insert(field.id) {
+            return Err(PhysicalError::new(format!(
+                "physical aggregate construction consumes owned field {index} more than once"
             )));
         }
     }
@@ -3045,19 +3058,35 @@ mod tests {
     }
 
     #[test]
-    fn verifier_refuses_aggregate_projection_with_wrong_copy_action() {
+    fn verifier_refuses_malformed_aggregate_copy_and_consumption() {
         let module = lower_source(
             r#"
-            type Packet { label: string, payload: bytes }
+            type Packet { first: string, second: string }
             fn main() {
-                let packet = Packet { label: "record", payload: b"P" };
-                let label = packet.label;
+                let packet = Packet { first: "one", second: "two" };
+                let label = packet.first;
             }
             "#,
         );
         let mut physical = lower_physical_module(&module, target_for_inventory(&module))
             .expect("valid aggregate physical lowering")
             .into_unverified();
+        let mut duplicate_consume = physical.clone();
+        let fields = duplicate_consume
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .flat_map(|block| &mut block.ops)
+            .find_map(|operation| match operation {
+                PhysicalOp::AggregateMake { fields, .. } => Some(fields),
+                _ => None,
+            })
+            .expect("aggregate construction");
+        fields[1] = fields[0];
+        let error = verify_physical_module(&duplicate_consume)
+            .expect_err("aggregate construction must not consume one owner twice");
+        assert!(error.message.contains("more than once"));
+
         let action = physical
             .functions
             .iter_mut()

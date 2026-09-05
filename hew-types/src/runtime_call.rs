@@ -274,6 +274,18 @@ pub struct RuntimeSemanticContract {
     pub failures: &'static [RuntimeLogicalFailure],
 }
 
+const fn runtime_semantic_contract(
+    arguments: &'static [RuntimeArgumentContract],
+    result: RuntimeResultEffect,
+    failures: &'static [RuntimeLogicalFailure],
+) -> RuntimeSemanticContract {
+    RuntimeSemanticContract {
+        arguments,
+        result,
+        failures,
+    }
+}
+
 const SIR_I64_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
     ty: RuntimeValueKind::I64,
     effect: RuntimeArgumentEffect::Copy,
@@ -788,10 +800,12 @@ pub enum RuntimeCallFamily {
     StringFind,
     StringGet,
     StringIndex,
+    StringLen,
     StringSliceCodepoints,
     StringToBytes,
     StringToUppercase,
     U8ToString,
+    I64ToString,
     /// Compiler catalogue `println_i64` intercept. Physical lowering expands
     /// this semantic unary operation to the audited `hew_print_value` ABI.
     PrintlnI64,
@@ -1102,6 +1116,14 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
+        signature_key: "string::len",
+        symbol: "hew_string_length",
+        family: Some(RuntimeCallFamily::StringLen),
+        params: EMPTY,
+        result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
         signature_key: "string::to_bytes",
         symbol: "hew_string_to_bytes",
         family: Some(RuntimeCallFamily::StringToBytes),
@@ -1197,6 +1219,7 @@ impl RuntimeCallFamily {
             "println_i64" => Some(Self::PrintlnI64),
             "println_str" => Some(Self::PrintlnString),
             "to_string_u8" => Some(Self::U8ToString),
+            "to_string_i64" => Some(Self::I64ToString),
             _ => None,
         }
     }
@@ -1431,10 +1454,12 @@ impl RuntimeCallFamily {
             Self::StringFind => "hew_string_find",
             Self::StringGet => "hew_string_get",
             Self::StringIndex => "hew_string_index",
+            Self::StringLen => "hew_string_length",
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
             Self::StringToBytes => "hew_string_to_bytes",
             Self::StringToUppercase => "hew_string_to_uppercase",
             Self::U8ToString => "hew_u8_to_string",
+            Self::I64ToString => "hew_i64_to_string",
             Self::PrintlnI64 => "hew_print_value",
             Self::PrintlnString => "hew_println_str",
             // Supervisor
@@ -1764,10 +1789,12 @@ impl RuntimeCallFamily {
             "hew_string_find" => Self::StringFind,
             "hew_string_get" => Self::StringGet,
             "hew_string_index" => Self::StringIndex,
+            "hew_string_length" => Self::StringLen,
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
             "hew_string_to_bytes" => Self::StringToBytes,
             "hew_string_to_uppercase" => Self::StringToUppercase,
             "hew_u8_to_string" => Self::U8ToString,
+            "hew_i64_to_string" => Self::I64ToString,
             "hew_print_value" => Self::PrintlnI64,
             "hew_println_str" => Self::PrintlnString,
             // Supervisor
@@ -2327,56 +2354,30 @@ impl RuntimeCallFamily {
         const INDEX_FAILURES: &[RuntimeLogicalFailure] = &[RuntimeLogicalFailure::IndexOutOfBounds];
 
         Some(match self {
-            Self::StringToUppercase => RuntimeSemanticContract {
-                arguments: STRING_BORROW,
-                result: FreshOwned(String),
-                failures: NO_FAILURES,
-            },
-            Self::StringToBytes => RuntimeSemanticContract {
-                arguments: STRING_BORROW,
-                result: FreshOwned(Bytes),
-                failures: NO_FAILURES,
-            },
-            Self::StringEquals => RuntimeSemanticContract {
-                arguments: STRING_PAIR_BORROW,
-                result: BitCopy(Bool),
-                failures: NO_FAILURES,
-            },
-            Self::StringConcat => RuntimeSemanticContract {
-                arguments: STRING_PAIR_BORROW,
-                result: FreshOwned(String),
-                failures: NO_FAILURES,
-            },
-            Self::U8ToString => RuntimeSemanticContract {
-                arguments: U8_COPY,
-                result: FreshOwned(String),
-                failures: NO_FAILURES,
-            },
-            Self::PrintlnI64 => RuntimeSemanticContract {
-                arguments: SIR_I64_COPY,
-                result: Unit,
-                failures: NO_FAILURES,
-            },
-            Self::PrintlnString => RuntimeSemanticContract {
-                arguments: STRING_BORROW,
-                result: Unit,
-                failures: NO_FAILURES,
-            },
-            Self::BytesLen => RuntimeSemanticContract {
-                arguments: BYTES_BORROW,
-                result: BitCopy(I64),
-                failures: NO_FAILURES,
-            },
-            Self::BytesIndex => RuntimeSemanticContract {
-                arguments: BYTES_INDEX,
-                result: BitCopy(U8),
-                failures: INDEX_FAILURES,
-            },
-            Self::BytesPush => RuntimeSemanticContract {
-                arguments: BYTES_PUSH,
-                result: UpdatedReceiver(Bytes),
-                failures: NO_FAILURES,
-            },
+            Self::StringToUppercase => {
+                runtime_semantic_contract(STRING_BORROW, FreshOwned(String), NO_FAILURES)
+            }
+            Self::StringToBytes => {
+                runtime_semantic_contract(STRING_BORROW, FreshOwned(Bytes), NO_FAILURES)
+            }
+            Self::StringEquals => {
+                runtime_semantic_contract(STRING_PAIR_BORROW, BitCopy(Bool), NO_FAILURES)
+            }
+            Self::StringConcat => {
+                runtime_semantic_contract(STRING_PAIR_BORROW, FreshOwned(String), NO_FAILURES)
+            }
+            Self::StringLen => runtime_semantic_contract(STRING_BORROW, BitCopy(I64), NO_FAILURES),
+            Self::U8ToString => runtime_semantic_contract(U8_COPY, FreshOwned(String), NO_FAILURES),
+            Self::I64ToString => {
+                runtime_semantic_contract(SIR_I64_COPY, FreshOwned(String), NO_FAILURES)
+            }
+            Self::PrintlnI64 => runtime_semantic_contract(SIR_I64_COPY, Unit, NO_FAILURES),
+            Self::PrintlnString => runtime_semantic_contract(STRING_BORROW, Unit, NO_FAILURES),
+            Self::BytesLen => runtime_semantic_contract(BYTES_BORROW, BitCopy(I64), NO_FAILURES),
+            Self::BytesIndex => runtime_semantic_contract(BYTES_INDEX, BitCopy(U8), INDEX_FAILURES),
+            Self::BytesPush => {
+                runtime_semantic_contract(BYTES_PUSH, UpdatedReceiver(Bytes), NO_FAILURES)
+            }
             _ => return None,
         })
     }
@@ -2701,10 +2702,12 @@ impl RuntimeCallFamily {
             | F::StringFind
             | F::StringGet
             | F::StringIndex
+            | F::StringLen
             | F::StringSliceCodepoints
             | F::StringToBytes
             | F::StringToUppercase
             | F::U8ToString
+            | F::I64ToString
             | F::PrintlnI64
             | F::PrintlnString
             | F::SupervisorDirectId
@@ -3595,6 +3598,7 @@ mod tests {
                 "string::char_at",
                 "string::get",
                 "string::codepoint_at_utf8",
+                "string::len",
                 "string::to_bytes",
                 "string::to_upper",
             ],

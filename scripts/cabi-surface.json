@@ -14316,8 +14316,8 @@
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_byte_length( *const c_char) -> i32",
-        "wasm32-wasip1": "fn hew_string_byte_length( *const c_char) -> i32"
+        "native": "fn hew_string_byte_length( *const c_char) -> i64",
+        "wasm32-wasip1": "fn hew_string_byte_length( *const c_char) -> i64"
       },
       "symbol": "hew_string_byte_length"
     },
@@ -14646,8 +14646,8 @@
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_length( *const c_char) -> i32",
-        "wasm32-wasip1": "fn hew_string_length( *const c_char) -> i32"
+        "native": "fn hew_string_length( *const c_char) -> i64",
+        "wasm32-wasip1": "fn hew_string_length( *const c_char) -> i64"
       },
       "symbol": "hew_string_length"
     },

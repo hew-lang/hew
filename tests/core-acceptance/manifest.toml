@@ -136,3 +136,27 @@ timeout_seconds = 15
 [case.expected]
 stdout = "INNER:65:66\n"
 exit = 0
+
+[[case]]
+id = "string-byte-length"
+intent = "The imported string length operation borrows its value, reports UTF-8 byte length as i64 and handles an empty string."
+source = "cases/string-byte-length.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "hé:3:0\n"
+exit = 0
+
+[[case]]
+id = "integer-format-width"
+intent = "Integer interpolation preserves signed i64 values beyond the 32-bit range and cleans its temporary strings."
+source = "cases/integer-format-width.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "-4294967297:4294967297\n"
+exit = 0

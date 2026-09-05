@@ -262,3 +262,7 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   reads fields from both owners. Removing the nominal descriptor makes the
   verifier reject the callable header, demonstrating that presentation names
   cannot substitute for the exact shape contract.
+- Canonical `string.len()` now carries a typed `StringLen` runtime family from
+  the trusted `std.string` declaration into SIR. Its semantic contract borrows
+  one string, returns a bit-copy `i64`, and has no logical failure edge; an
+  identical user extern remains outside this family.

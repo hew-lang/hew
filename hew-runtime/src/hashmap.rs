@@ -727,7 +727,8 @@ unsafe fn layout_probe(
     }
 }
 
-/// Resize the table to double capacity, re-hashing every OCCUPIED slot.
+/// Stage double-capacity storage, re-hashing every occupied slot.
+/// The old table remains the owner until the caller commits this storage.
 ///
 /// # Safety
 ///
@@ -744,8 +745,8 @@ unsafe fn layout_resize(
     // local BEFORE any allocator call. No Rust reference (`&*m`, `&mut *m`, or
     // a reference borrowed through them) is retained across `alloc(...)` or
     // `dealloc(...)`. The rebuild loop below operates exclusively on these
-    // locals and the raw entries pointers; field writes back to `*m` happen
-    // only after the dealloc of the old entries.
+    // locals and the raw entries pointers. The caller commits the new storage
+    // only after its remaining fallible probes succeed.
 
     // -- Step 1: copy all needed map fields as scalars / raw pointers ----------
     // SAFETY: caller guarantees `m` is a valid, fully-initialised pointer; the
@@ -1280,8 +1281,7 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
         //    the stored K's owned allocation when K is `String` /
         //    `LayoutManaged`. The duplicate K the caller passed is released by
         //    the codegen conditional drop on the overwrite path
-        //    (`emit_insert_overwrite_key_release`, branching on this function's
-        //    `i1` return; issue #2033).
+        //    after a successful status with a false insertion result.
         // 2. The old V is dropped via `val_layout.drop_fn` before the new V
         //    overwrites it. `drop_fn = None` (Plain ownership) is the
         //    no-op fast path.

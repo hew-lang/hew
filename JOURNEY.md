@@ -1187,3 +1187,18 @@ The runtime/CABI library and existing runtime/CABI tests pass. Scoped JSON
 Clippy passes. Fault-specific output, atomicity and release-balance tests follow
 this compiled interface checkpoint. Compiler consumers, ownership contracts and
 generated census updates remain with integration.
+
+Fault protocol acceptance now covers real logical fault owners from hash and
+equality callbacks. Lookup, cloned lookup, contains, removal, moving removal,
+transfer-in and copy-in insertion leave result sentinels untouched on failure.
+Tests cover occupied and vacant probes, partially staged rehash, the incoming
+hash after rehash, and equality after successful rehash. Copies borrowed from
+the same Map or Set remain readable after a failed insertion. Every scenario
+checks exact owner balance and verifies original contents after resetting the
+callback state.
+
+The full runtime/CABI suite, focused JSON Clippy and benchmark JSON Clippy pass.
+The fault protocol, composite values, owned entries and string refcount cases
+also pass ASan/LSan without suppressions. CABI compiles for Windows x64, macOS
+arm64 and WASI; runtime execution and sanitizer validation were on Linux.
+Compiler consumers and ownership/census integration remain with their owner.

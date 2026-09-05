@@ -10,10 +10,10 @@
 //! Copy-in insertion always borrows both inputs. Callback faults pass unchanged
 //! through the kernel, which never inspects or releases the opaque fault owner.
 //! Status zero initializes result outputs and clears the fault output; nonzero
-//! status leaves result outputs untouched and transfers the callback fault. It
-//! transfers the key only when vacant; the caller retains a duplicate key on
-//! replacement. Lookups borrow keys, and cloning lookups produce independent
-//! values. Removal, replacement, clear and destruction release stored owners
+//! status leaves result outputs untouched and transfers the callback fault.
+//! Successful transfer-in takes the key only when vacant; the caller retains
+//! a duplicate key on replacement. Lookups borrow keys, and cloning lookups
+//! produce independent values. Removal, replacement, clear and destruction release stored owners
 //! through the value descriptor. A clone callback must roll back its own partial
 //! output before returning failure.
 

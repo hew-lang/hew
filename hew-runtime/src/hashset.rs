@@ -283,7 +283,8 @@ pub unsafe extern "C" fn hew_hashset_new_with_layout(
 
 /// Insert an element into the set.
 ///
-/// Returns `true` if the element was newly inserted, `false` if already present.
+/// On success, `present_out` is true for a newly inserted element and false
+/// when the element was already present.
 ///
 /// # String-element ownership: inherits the map key MOVE contract
 ///

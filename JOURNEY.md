@@ -193,3 +193,8 @@
   remain ownership transfers. Direct-call cleanup records only owners created
   while evaluating that call's arguments, so a nested later argument cannot
   destroy an earlier argument belonging to its enclosing call.
+- Discarding a bare owned binding is now a read with no ownership discharge.
+  A discarded block result receives copy semantics at its tail, then destroys
+  only that new result; the source binding remains live. The same scoped
+  distinction lets a block used by a return move its tail while a block used by
+  an ordinary value expression copies it.

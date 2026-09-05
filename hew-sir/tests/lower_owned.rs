@@ -198,6 +198,80 @@ fn owned_binding_aliases_copy_and_preserve_source() {
 }
 
 #[test]
+fn discarded_owned_binding_reads_preserve_source() {
+    let lowered = lower_source(
+        r#"
+        fn keep_text(value: string) {}
+        fn keep_bytes(value: bytes) {}
+
+        fn main() {
+            let text = "text";
+            text;
+            keep_text(text);
+
+            let data = b"data";
+            data;
+            keep_bytes(data);
+        }
+        "#,
+    );
+    assert!(
+        matches!(
+            lowered
+                .statuses
+                .iter()
+                .find(|status| status.name == "main")
+                .map(|status| &status.status),
+            Some(SirLoweringStatus::Lowered)
+        ),
+        "discarding a binding read must not consume its owner: {:#?}",
+        lowered.statuses
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "discarded binding reads must produce verified SIR: {:#?}",
+        verify_module(&lowered.module)
+    );
+}
+
+#[test]
+fn discarded_owned_block_tails_copy_and_preserve_source() {
+    let lowered = lower_source(
+        r#"
+        fn keep_text(value: string) {}
+        fn keep_bytes(value: bytes) {}
+
+        fn main() {
+            let text = "text";
+            { text };
+            keep_text(text);
+
+            let data = b"data";
+            { data };
+            keep_bytes(data);
+        }
+        "#,
+    );
+    assert!(
+        matches!(
+            lowered
+                .statuses
+                .iter()
+                .find(|status| status.name == "main")
+                .map(|status| &status.status),
+            Some(SirLoweringStatus::Lowered)
+        ),
+        "discarding a block result must not consume its source: {:#?}",
+        lowered.statuses
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "discarded block results must produce verified SIR: {:#?}",
+        verify_module(&lowered.module)
+    );
+}
+
+#[test]
 fn nested_owned_call_arguments_live_until_outer_call() {
     for main_body in ["pair(make(), make());", "pair(\"literal\", make());"] {
         let lowered = lower_source(&format!(

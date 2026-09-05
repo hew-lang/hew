@@ -1351,7 +1351,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.ty(&self.function.return_ty).user_facing()
             ));
         }
-        let result = self.lower_block(&self.function.body)?;
+        let result = self.lower_block(&self.function.body, OwnedBindingUse::Move)?;
         if self.is_open() {
             if let Some(result) = &result {
                 self.owned_live.remove(&result.value);
@@ -1406,7 +1406,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         expr: &HirExpr,
         binding_use: OwnedBindingUse,
     ) -> Result<ValueId, String> {
-        let source = self.lower_expr(expr)?;
+        let source = self.lower_expr_with_binding_use(expr, binding_use)?;
         let ty = self.ty(&expr.ty);
         let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
         if own != OwnKind::Owned {
@@ -1553,7 +1553,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
-    fn lower_block(&mut self, block: &HirBlock) -> Result<Option<Operand>, String> {
+    fn lower_block(
+        &mut self,
+        block: &HirBlock,
+        tail_binding_use: OwnedBindingUse,
+    ) -> Result<Option<Operand>, String> {
         for statement in &block.statements {
             if !self.is_open() {
                 break;
@@ -1647,7 +1651,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         self,
                         expr,
                         "block tail value",
-                        OwnedBindingUse::Move,
+                        tail_binding_use,
                     )?,
                 })),
                 None => Ok(None),
@@ -1657,9 +1661,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
     }
 
-    fn lower_scoped_block(&mut self, block: &HirBlock) -> Result<Option<Operand>, String> {
+    fn lower_scoped_block(
+        &mut self,
+        block: &HirBlock,
+        tail_binding_use: OwnedBindingUse,
+    ) -> Result<Option<Operand>, String> {
         let outer: std::collections::HashSet<_> = self.bindings.keys().copied().collect();
-        let result = self.lower_block(block)?;
+        let result = self.lower_block(block, tail_binding_use)?;
         if self.is_open() {
             let locals: Vec<_> = self
                 .bindings
@@ -1730,10 +1738,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         require_initial_scalar_read(expr.intent)
             .map_err(|reason| format!("discarded expression: {reason}"))?;
+        let live_before_expression: std::collections::HashSet<_> =
+            self.owned_live.keys().copied().collect();
         match &expr.kind {
             HirExprKind::Block(block) => {
-                if let Some(value) = self.lower_scoped_block(block)? {
-                    if self.owned_live.contains_key(&value.value) {
+                if let Some(value) = self.lower_scoped_block(block, OwnedBindingUse::Copy)? {
+                    if self.owned_live.contains_key(&value.value)
+                        && !live_before_expression.contains(&value.value)
+                    {
                         self.emit_destroy(value.value)?;
                     }
                 }
@@ -1761,11 +1773,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             _ => {}
         }
         if matches!(expr.kind, HirExprKind::Call { .. }) {
-            self.lower_direct_call(expr, false)?;
+            if let Some(value) = self.lower_direct_call(expr, false)? {
+                if self.owned_live.contains_key(&value) && !live_before_expression.contains(&value)
+                {
+                    self.emit_destroy(value)?;
+                }
+            }
             return Ok(());
         }
         let value = self.lower_expr(expr)?;
-        if self.owned_live.contains_key(&value) {
+        if self.owned_live.contains_key(&value) && !live_before_expression.contains(&value) {
             self.emit_destroy(value)?;
         }
         Ok(())
@@ -1776,33 +1793,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         reason = "the closed initial HIR-to-SIR expression mapping remains intentionally local"
     )]
     fn lower_expr(&mut self, expr: &HirExpr) -> Result<ValueId, String> {
+        self.lower_expr_with_binding_use(expr, OwnedBindingUse::Copy)
+    }
+
+    fn lower_expr_with_binding_use(
+        &mut self,
+        expr: &HirExpr,
+        binding_use: OwnedBindingUse,
+    ) -> Result<ValueId, String> {
         match &expr.kind {
-            HirExprKind::Literal(HirLiteral::Integer(value)) => {
-                if !self.ty(&expr.ty).is_integer() {
-                    return Err(format!(
-                        "integer literal resolved as `{}` needs a dedicated SIR literal representation",
-                        self.ty(&expr.ty).user_facing()
-                    ));
-                }
-                self.emit(expr, SemOpKind::ConstI64(*value))
-            }
-            HirExprKind::Literal(HirLiteral::Bool(value)) => {
-                if self.ty(&expr.ty) != ResolvedTy::Bool {
-                    return Err(format!(
-                        "boolean literal resolved as `{}` violates the SIR bool literal invariant",
-                        self.ty(&expr.ty).user_facing()
-                    ));
-                }
-                self.emit(expr, SemOpKind::ConstBool(*value))
-            }
-            HirExprKind::Literal(HirLiteral::String(value)) => {
-                let literal = self.service.intern_string(value);
-                self.emit(expr, SemOpKind::ConstStr(literal))
-            }
-            HirExprKind::Literal(HirLiteral::Bytes(value)) => {
-                let literal = self.service.intern_bytes(value);
-                self.emit(expr, SemOpKind::ConstBytes(literal))
-            }
+            HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::BindingRef {
@@ -1870,7 +1870,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     .to_string()
             }),
             HirExprKind::Block(block) => self
-                .lower_block(block)?
+                .lower_block(block, binding_use)?
                 .map(|value| value.value)
                 .ok_or_else(|| "a divergent block cannot produce a SIR value".to_string()),
             HirExprKind::If {
@@ -1884,6 +1884,38 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 "one-armed if expressions are deferred until unit values are modeled".to_string(),
             ),
             _ => Err("unsupported HIR expression kind in the initial SIR subset".to_string()),
+        }
+    }
+
+    fn lower_literal(&mut self, expr: &HirExpr, literal: &HirLiteral) -> Result<ValueId, String> {
+        match literal {
+            HirLiteral::Integer(value) => {
+                if !self.ty(&expr.ty).is_integer() {
+                    return Err(format!(
+                        "integer literal resolved as `{}` needs a dedicated SIR literal representation",
+                        self.ty(&expr.ty).user_facing()
+                    ));
+                }
+                self.emit(expr, SemOpKind::ConstI64(*value))
+            }
+            HirLiteral::Bool(value) => {
+                if self.ty(&expr.ty) != ResolvedTy::Bool {
+                    return Err(format!(
+                        "boolean literal resolved as `{}` violates the SIR bool literal invariant",
+                        self.ty(&expr.ty).user_facing()
+                    ));
+                }
+                self.emit(expr, SemOpKind::ConstBool(*value))
+            }
+            HirLiteral::String(value) => {
+                let literal = self.service.intern_string(value);
+                self.emit(expr, SemOpKind::ConstStr(literal))
+            }
+            HirLiteral::Bytes(value) => {
+                let literal = self.service.intern_bytes(value);
+                self.emit(expr, SemOpKind::ConstBytes(literal))
+            }
+            _ => Err("unsupported HIR literal kind in the initial SIR subset".to_string()),
         }
     }
 
@@ -2371,7 +2403,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.current = body_block;
         self.bindings = header_bindings.clone();
         self.owned_live = header_live.clone();
-        let tail = self.lower_scoped_block(body)?;
+        let tail = self.lower_scoped_block(body, OwnedBindingUse::Copy)?;
         if let Some(tail) = tail {
             if self.owned_live.contains_key(&tail.value) {
                 self.emit_destroy(tail.value)?;

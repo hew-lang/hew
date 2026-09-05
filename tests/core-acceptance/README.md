@@ -7,6 +7,8 @@ expected stdout, stderr and exit status at O0 and O2.
 AddressSanitizer, then runs the safety cases with generated LLVM instrumentation
 and leak detection. This target requires Linux and a compatible clang toolchain;
 missing tools or instrumentation fail the run. No leak suppressions are used.
+The safety cases include bounds faults and nested-call failure with live owners;
+their expected fault reports do not excuse leaks or post-failure execution.
 
 Use `CORE_ACCEPTANCE_ARGS='--case bytes-copy-mutate'` to focus either command.
 A case must belong to the requested suite. A passing focused run does not prove

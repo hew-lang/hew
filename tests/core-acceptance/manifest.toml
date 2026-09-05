@@ -73,3 +73,42 @@ timeout_seconds = 15
 [case.expected]
 stdout = ""
 exit = 23
+
+[[case]]
+id = "owned-negative-index"
+intent = "A negative bytes index reports a logical fault and releases live string and bytes owners without continuing."
+source = "cases/owned-negative-index.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 205
+
+[[case]]
+id = "owned-past-end-index"
+intent = "An index equal to the bytes length reports a logical fault and releases live owners without continuing."
+source = "cases/owned-past-end-index.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 205
+
+[[case]]
+id = "owned-nested-failure"
+intent = "A divide-by-zero fault releases callee string/bytes owners and propagates through caller cleanup before one report."
+source = "cases/owned-nested-failure.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

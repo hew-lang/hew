@@ -1,0 +1,15 @@
+// A callee fault releases its values and propagates through caller cleanup.
+fn divide(value: string, divisor: i64) -> i64 {
+    let local = value.to_upper();
+    let data = local.to_bytes();
+    let result = data.len() / divisor;
+    println(local);
+    result
+}
+
+fn main() -> i64 {
+    let caller = "outer-owner".to_upper();
+    let result = divide(caller, 0);
+    println(caller);
+    result
+}

@@ -1114,7 +1114,7 @@ core-safety-build:
 		RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer"
 
 core-safety: core-safety-build ## Test: run native ownership cases with generated and runtime ASan/LSan
-	cargo run -p xtask -- core-acceptance --suite safety \
+	ASAN_SYMBOLIZER_PATH="$(ASAN_SYMBOLIZER)" cargo run -p xtask -- core-acceptance --suite safety \
 		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" $(CORE_ACCEPTANCE_ARGS)
 
 # The runner has consequential case-selection and error behaviour, but it is

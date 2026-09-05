@@ -2701,6 +2701,24 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
+    // Compiler-owned UTF-8 source declarations carry their real signatures.
+    // These rows are exact dispatch identities only: validating decode's
+    // nominal Result type is checked by RuntimeSemanticContract, so the Unit
+    // return below is deliberately not a second representation of it.
+    direct(
+        "utf8.decode",
+        BuiltinClass::ClassB,
+        BYTES,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "utf8.decode_lossy",
+        BuiltinClass::ClassB,
+        BYTES,
+        BuiltinTy::String,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
     // ── W5.005 (F1b): memory-intrinsic floor (`mem.*`) ────────────────────
     //
     // The general-purpose heap allocator + typed-pointer primitives that back

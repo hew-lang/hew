@@ -1382,6 +1382,18 @@ pub enum TypeErrorKind {
         /// the attribute. Used by tests to pin diagnostic precision.
         method_key: String,
     },
+    /// A canonical stdlib intrinsic declaration does not match the semantic
+    /// runtime contract selected by its exact intrinsic key.
+    ///
+    /// The declaration is never admitted into `intrinsic_declarations`, so a
+    /// stale or malformed compiler-owned source signature cannot reach HIR as
+    /// a runtime call with different argument or result types.
+    ///
+    /// Envelope code: `E_INTRINSIC_SIGNATURE_MISMATCH`.
+    IntrinsicSignatureMismatch {
+        /// The closed intrinsic catalogue key.
+        intrinsic_key: String,
+    },
     /// A struct-init expression attempted to directly construct an `#[opaque]`
     /// handle type.
     ///
@@ -1590,6 +1602,7 @@ impl TypeErrorKind {
             Self::ConflictingTraitImpl { .. } => "ConflictingTraitImpl",
             Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",
             Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
+            Self::IntrinsicSignatureMismatch { .. } => "E_INTRINSIC_SIGNATURE_MISMATCH",
             Self::RefutableLetPattern { .. } => "RefutableLetPattern",
             Self::LetElseDoesNotDiverge => "LetElseDoesNotDiverge",
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",

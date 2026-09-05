@@ -266,7 +266,11 @@ const FAILURE_HEW: &str = include_str!("../../../std/failure.hew");
 ///   the catalog id threaded on `RawMirFunction::intrinsic_id` (Decision 4
 ///   Option A); an unrecognised id is fail-closed (D343), never a silent
 ///   empty-body no-op.
-const INTRINSIC_FLOOR_MODULES: &[&str] = &["std.math", "std.mem"];
+/// - `std.encoding.utf8` — validating and explicitly lossy byte decoding.
+///   These are ordinary typed Hew declarations whose exact canonical source
+///   identity selects a closed runtime operation; the raw status/out ABI is
+///   not exposed to source programs.
+const INTRINSIC_FLOOR_MODULES: &[&str] = &["std.math", "std.mem", "std.encoding.utf8"];
 
 #[must_use]
 pub fn intrinsic_floor_modules() -> &'static [&'static str] {
@@ -7497,6 +7501,70 @@ impl Checker {
         }
     }
 
+    /// Validate source declarations against the shared semantic contract before
+    /// publishing runtime authority. Other floor operations retain their own
+    /// catalogue validation in HIR.
+    fn validate_intrinsic_signature(
+        &mut self,
+        key: &str,
+        intrinsic_key: &str,
+        fd: &FnDecl,
+    ) -> bool {
+        let Some(family) =
+            crate::runtime_call::RuntimeCallFamily::from_catalog_endpoint(intrinsic_key)
+        else {
+            return true;
+        };
+        let Some(contract) = family.semantic_contract() else {
+            return true;
+        };
+        let signature_matches = self.fn_sigs.get(key).is_some_and(|signature| {
+            let Ok(params) = signature
+                .params
+                .iter()
+                .map(crate::ResolvedTy::from_ty)
+                .collect::<Result<Vec<_>, _>>()
+            else {
+                return false;
+            };
+            let Ok(result) = crate::ResolvedTy::from_ty(&signature.return_type) else {
+                return false;
+            };
+            signature.type_params.is_empty()
+                && !signature.is_async
+                && !fd.is_generator
+                && !fd
+                    .params
+                    .iter()
+                    .any(|param| param.is_consume || param.is_mutable)
+                && family
+                    .source_intrinsic_declaration()
+                    .is_none_or(|expected| expected == key)
+                && contract.matches_signature(&params, &result)
+        });
+        if !signature_matches {
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::IntrinsicSignatureMismatch {
+                    intrinsic_key: intrinsic_key.to_string(),
+                },
+                span: fd.decl_span.clone(),
+                message: format!(
+                    "canonical intrinsic `{intrinsic_key}` has a source declaration that \
+                     does not match its semantic runtime contract"
+                ),
+                notes: vec![],
+                suggestions: vec![
+                    "restore the canonical standard-library declaration's name, parameters and \
+                     return type"
+                        .to_string(),
+                ],
+                source_module: self.current_module.clone(),
+            });
+        }
+        signature_matches
+    }
+
     /// Validate a `#[intrinsic("…")]` declaration's placement and, if it lives
     /// in a stdlib-floor module **and** is a top-level free function, record
     /// the name→key mapping consumed by HIR lowering.
@@ -7582,6 +7650,9 @@ impl Checker {
                 .as_ref()
                 .is_some_and(|module| self.canonical_std_module_sources.contains(module))
         {
+            if !self.validate_intrinsic_signature(&key, intrinsic_key, fd) {
+                return;
+            }
             self.intrinsic_declarations
                 .insert(key, intrinsic_key.to_string());
             return;

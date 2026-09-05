@@ -244,6 +244,34 @@ pub struct RuntimeSemanticContract {
     pub failures: &'static [RuntimeLogicalFailure],
 }
 
+impl RuntimeSemanticContract {
+    /// Check a concrete language signature against this runtime operation.
+    ///
+    /// The checker calls this only after proving the declaration is canonical
+    /// compiler-owned source.  Keeping the type comparison here makes the
+    /// runtime contract the single authority for both call admission and SIR
+    /// verification, including exact nominal variant results.
+    #[must_use]
+    pub fn matches_signature(self, params: &[ResolvedTy], result: &ResolvedTy) -> bool {
+        if params.len() != self.arguments.len()
+            || !params
+                .iter()
+                .zip(self.arguments)
+                .all(|(actual, expected)| expected.ty.matches(actual))
+        {
+            return false;
+        }
+
+        match self.result {
+            RuntimeResultEffect::Unit => *result == ResolvedTy::Unit,
+            RuntimeResultEffect::BitCopy(kind)
+            | RuntimeResultEffect::FreshOwned(kind)
+            | RuntimeResultEffect::UpdatedReceiver(kind) => kind.matches(result),
+            RuntimeResultEffect::FreshOwnedVariant(kind) => kind.matches(result),
+        }
+    }
+}
+
 const fn runtime_semantic_contract(
     arguments: &'static [RuntimeArgumentContract],
     result: RuntimeResultEffect,
@@ -474,6 +502,7 @@ pub enum RuntimeCallFamily {
     BytesClear,
     BytesContains,
     BytesDecodeUtf8,
+    BytesDecodeUtf8Lossy,
     BytesGet,
     BytesIndex,
     BytesIsEmpty,
@@ -1203,6 +1232,11 @@ impl RuntimeCallFamily {
                 result: FreshOwnedVariant(RuntimeVariantResultKind::Utf8Decode),
                 failures: NO_FAILURES,
             },
+            Self::BytesDecodeUtf8Lossy => RuntimeSemanticContract {
+                arguments: BYTES_BORROW,
+                result: FreshOwned(String),
+                failures: NO_FAILURES,
+            },
             _ => return None,
         })
     }
@@ -1227,6 +1261,17 @@ impl RuntimeCallFamily {
         Self::from_c_symbol(signature_key)
     }
 
+    /// Exact source declaration allowed to publish this floor operation.
+    /// Import aliases retain this owner; a same-named function cannot claim it.
+    #[must_use]
+    pub fn source_intrinsic_declaration(self) -> Option<&'static str> {
+        match self {
+            Self::BytesDecodeUtf8 => Some("std.encoding.utf8.decode"),
+            Self::BytesDecodeUtf8Lossy => Some("std.encoding.utf8.decode_lossy"),
+            _ => None,
+        }
+    }
+
     /// Resolve an exact compiler-owned stdlib catalogue endpoint to its
     /// runtime family. Catalogue endpoint identity is established before this
     /// call; arbitrary source names never reach it.
@@ -1237,6 +1282,8 @@ impl RuntimeCallFamily {
             "println_str" => Some(Self::PrintlnString),
             "to_string_u8" => Some(Self::U8ToString),
             "to_string_i64" => Some(Self::I64ToString),
+            "utf8.decode" => Some(Self::BytesDecodeUtf8),
+            "utf8.decode_lossy" => Some(Self::BytesDecodeUtf8Lossy),
             _ => None,
         }
     }
@@ -1282,6 +1329,7 @@ impl RuntimeCallFamily {
             Self::BytesClear => "hew_bytes_clear",
             Self::BytesContains => "hew_bytes_contains",
             Self::BytesDecodeUtf8 => "hew_bytes_decode_utf8",
+            Self::BytesDecodeUtf8Lossy => "hew_bytes_decode_utf8_lossy",
             Self::BytesGet => "hew_bytes_get",
             Self::BytesIndex => "hew_bytes_index",
             Self::BytesIsEmpty => "hew_bytes_is_empty",
@@ -1620,6 +1668,7 @@ impl RuntimeCallFamily {
             "hew_bytes_clear" => Self::BytesClear,
             "hew_bytes_contains" => Self::BytesContains,
             "hew_bytes_decode_utf8" => Self::BytesDecodeUtf8,
+            "hew_bytes_decode_utf8_lossy" => Self::BytesDecodeUtf8Lossy,
             "hew_bytes_get" => Self::BytesGet,
             "hew_bytes_index" => Self::BytesIndex,
             "hew_bytes_is_empty" => Self::BytesIsEmpty,
@@ -2051,6 +2100,7 @@ impl RuntimeCallFamily {
                 | Self::BytesClear
                 | Self::BytesContains
                 | Self::BytesDecodeUtf8
+                | Self::BytesDecodeUtf8Lossy
                 | Self::BytesGet
                 | Self::BytesIndex
                 | Self::BytesIsEmpty
@@ -2600,6 +2650,7 @@ impl RuntimeCallFamily {
             | F::BytesClear
             | F::BytesContains
             | F::BytesDecodeUtf8
+            | F::BytesDecodeUtf8Lossy
             | F::BytesGet
             | F::BytesIndex
             | F::BytesIsEmpty
@@ -3533,6 +3584,31 @@ mod tests {
             RuntimeResultEffect::FreshOwnedVariant(RuntimeVariantResultKind::Utf8Decode)
         );
         assert!(decode.failures.is_empty());
+
+        let lossy = RuntimeCallFamily::BytesDecodeUtf8Lossy
+            .semantic_contract()
+            .expect("lossy decode must have an ownership-SIR contract");
+        assert_eq!(lossy.arguments, decode.arguments);
+        assert_eq!(
+            lossy.result,
+            RuntimeResultEffect::FreshOwned(RuntimeValueKind::String)
+        );
+        assert!(lossy.failures.is_empty());
+
+        assert!(decode.matches_signature(
+            &[ResolvedTy::Bytes],
+            &ResolvedTy::Named {
+                name: "Result".to_string(),
+                args: vec![
+                    ResolvedTy::String,
+                    named_type("std.encoding.utf8.Utf8Error", None),
+                ],
+                builtin: Some(crate::BuiltinType::Result),
+                is_opaque: false,
+            },
+        ));
+        assert!(!decode.matches_signature(&[ResolvedTy::String], &ResolvedTy::String));
+        assert!(lossy.matches_signature(&[ResolvedTy::Bytes], &ResolvedTy::String));
 
         let byte_len = RuntimeCallFamily::StringByteLen
             .semantic_contract()

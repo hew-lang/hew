@@ -247,3 +247,102 @@ fn mem_intrinsic_in_non_floor_module_is_rejected() {
         output.errors
     );
 }
+
+#[test]
+fn canonical_utf8_functions_publish_exact_runtime_targets() {
+    let parsed = hew_parser::parse(
+        r"
+        import std.encoding.utf8;
+
+        fn exercise(data: bytes) {
+            let validating = utf8.decode(data);
+            let lossy = utf8.decode_lossy(data);
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let output = Checker::new(test_registry()).check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "type errors: {:#?}",
+        output.errors
+    );
+
+    for expected in [
+        crate::runtime_call::RuntimeCallFamily::BytesDecodeUtf8,
+        crate::runtime_call::RuntimeCallFamily::BytesDecodeUtf8Lossy,
+    ] {
+        assert!(
+            output.method_call_rewrites.values().any(|rewrite| matches!(
+                rewrite,
+                MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                    target: crate::check::dispatch::CallTarget::Runtime(family),
+                    ..
+                } if *family == expected
+            )),
+            "canonical UTF-8 call must publish {expected:?}: {:#?}",
+            output.method_call_rewrites
+        );
+    }
+}
+
+#[test]
+fn ordinary_decode_lookalike_remains_a_user_call() {
+    let output = check_source(
+        r#"
+        fn decode(data: bytes) -> string { "user" }
+        fn call(data: bytes) -> string { decode(data) }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "type errors: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .direct_call_targets
+            .values()
+            .any(|target| matches!(target, crate::check::dispatch::CallTarget::User(_))),
+        "ordinary same-leaf function must retain user declaration identity: {:#?}",
+        output.direct_call_targets
+    );
+    assert!(
+        !output
+            .direct_call_targets
+            .values()
+            .any(|target| matches!(target, crate::check::dispatch::CallTarget::Runtime(_))),
+        "ordinary same-leaf function must never acquire runtime authority"
+    );
+}
+
+#[test]
+fn malformed_canonical_utf8_decode_signature_is_not_admitted() {
+    let output = check_source_in_canonical_std_module(
+        r#"
+        pub type Utf8Error { valid_up_to: i64; error_len: Option<i64>; }
+        #[intrinsic("utf8.decode")]
+        pub fn decode(data: string) -> string;
+        "#,
+        &[
+            "std".to_string(),
+            "encoding".to_string(),
+            "utf8".to_string(),
+        ],
+    );
+    assert!(output.errors.iter().any(|error| matches!(
+        &error.kind,
+        TypeErrorKind::IntrinsicSignatureMismatch { intrinsic_key }
+            if intrinsic_key == "utf8.decode"
+    )));
+    assert!(
+        !output
+            .intrinsic_declarations
+            .contains_key("std.encoding.utf8.decode"),
+        "malformed canonical declaration must not become a runtime target"
+    );
+}

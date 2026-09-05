@@ -1154,6 +1154,11 @@ impl Checker {
         if matches!(intrinsic_key.as_str(), "math.abs" | "math.min" | "math.max") {
             return None;
         }
+        if let Some(family) =
+            crate::runtime_call::RuntimeCallFamily::from_catalog_endpoint(intrinsic_key)
+        {
+            return Some(family);
+        }
         let math_symbol = intrinsic_key.strip_prefix("math.")?;
         match crate::runtime_call::RuntimeCallFamily::from_c_symbol(math_symbol) {
             Some(family @ crate::runtime_call::RuntimeCallFamily::MathIntrinsic(_)) => Some(family),

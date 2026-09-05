@@ -1404,3 +1404,22 @@ comparison control passes. Focused selected-Eq regressions, obsolete bytes
 rejection expectations and full affected checker validation remain pending at
 this checkpoint. Native selected-operation lowering belongs to the integration
 owner and has not been changed or validated here.
+
+Selected Eq admission now covers independent owned values, bytes nested through
+records, tuples, Vec, Option and Result, and user methods whose ignored members
+have no derived Eq. Generic calls reuse the same demands after inference,
+including composite Eq bounds forwarded through an abstract caller. Controls
+reject no-Eq concrete instantiations and verify that an element's Eq does not
+grant Eq to its containing Map. Forward declaration registration, exact generic
+method identity, both Result payloads and aggregate ordering during inference
+are covered. Unused abstract branches in the separate Vec.contains layout gate
+have been removed along with the old ordinary-comparison eligibility consumer.
+
+The complete hew-types unit and integration suites pass through
+`make test-strict -o test-artifacts NEXTEST_WORKSPACE_ARGS='-p hew-types --no-fail-fast'`.
+Scalar float comparisons retain their existing checker route; selected float
+Eq remains a distinct capability. Native value-operation, failure cleanup and
+runtime execution evidence remain the integration owner's next boundary. No
+HIR, SIR, MIR, codegen or runtime source was changed.
+
+`make lint-rust CLIPPY_ARGS='-p hew-types'`, Rust formatting and diff checks pass.

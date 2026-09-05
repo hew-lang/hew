@@ -593,6 +593,23 @@ impl Checker {
                 );
                 continue;
             }
+            // A composite over abstract parameters has no concrete selection
+            // yet. Carry its Eq demand through the same instantiation graph as
+            // an ordinary comparison. Bare parameters still need their declared
+            // bound in the active scope.
+            if MarkerTrait::from_name(bound) == Some(MarkerTrait::Eq)
+                && !matches!(resolved_arg, Ty::Named { args, builtin: None, .. } if args.is_empty())
+                && Self::ty_mentions_type_params(
+                    resolved_arg,
+                    &self
+                        .current_type_param_names()
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                )
+            {
+                self.record_eq_requirement(resolved_arg, span);
+                continue;
+            }
             if self.type_satisfies_trait_bound(resolved_arg, bound) {
                 self.report_missing_dispatchable_supertrait_impls(
                     param_name,

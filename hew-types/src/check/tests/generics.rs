@@ -4029,9 +4029,11 @@ fn main() -> i64 {
     let output = check_source(source);
     assert!(
         output.errors.iter().any(|e| {
-            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
+                && e.message.contains("HashMap<string, i64>")
         }),
-        "the checker must name the ineligible member and its type at the instantiation; got: {:?}",
+        "the checker must name the concrete type without Eq at the instantiation; got: {:?}",
         output.errors
     );
 }
@@ -4058,7 +4060,9 @@ fn main() -> i64 {
     let output = check_source(source);
     assert!(
         output.errors.iter().any(|e| {
-            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
+                && e.message.contains("HashMap<string, i64>")
         }),
         "the requirement must propagate through a generic caller; got: {:?}",
         output.errors
@@ -4316,7 +4320,8 @@ fn main() -> i64 {
     assert!(
         output.errors.iter().any(|e| {
             e.message.contains("`Holder::same`")
-                && e.message.contains("member `Some`")
+                && e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
                 && e.message.contains("HashMap<string, i64>")
         }),
         "a method instantiation must be refused by the checker, not by codegen; got: {:?}",
@@ -4390,11 +4395,13 @@ fn generic_forwarder_chain(hops: usize) -> String {
 }
 
 #[test]
-fn generic_instantiation_chain_within_the_hop_budget_still_names_the_member() {
+fn generic_instantiation_chain_within_the_hop_budget_still_checks_eq() {
     let output = check_source(&generic_forwarder_chain(40));
     assert!(
         output.errors.iter().any(|e| {
-            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
+                && e.message.contains("HashMap<string, i64>")
         }),
         "a chain inside the budget must be discharged normally; got: {:?}",
         output.errors
@@ -4582,7 +4589,8 @@ fn main() -> i64 {{
     assert!(
         output.errors.iter().any(|e| {
             e.message.contains("`Store::keep`")
-                && e.message.contains("member `Some`")
+                && e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
                 && e.message.contains("HashMap<string, i64>")
         }),
         "an actor receive call is an application like any other and must discharge its \
@@ -4658,7 +4666,7 @@ fn main() -> i64 {{
         !output
             .errors
             .iter()
-            .any(|e| e.message.contains("structural equality")),
+            .any(|e| e.message.contains("selected Eq")),
         "`IntBox::Item = i64` projects to an eligible leaf; got: {:?}",
         output.errors
     );
@@ -4681,7 +4689,9 @@ fn main() -> i64 {{
     let output = check_source(&source);
     assert!(
         output.errors.iter().any(|e| {
-            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
+                && e.message.contains("HashMap<string, i64>")
         }),
         "`MapBox::Item = HashMap<string, i64>` has no structural equality path; got: {:?}",
         output.errors
@@ -4996,4 +5006,155 @@ fn main() -> i64 { 0 }
         "the single diagnostic must name both owners; got: {}",
         reports[0].message
     );
+}
+
+#[test]
+fn selected_eq_generic_comparisons_admit_bytes_and_nested_bytes() {
+    let output = check_source(
+        r"
+        fn same<T>(left: T, right: T) -> bool { left == right }
+        fn forward<U>(left: Option<U>, right: Option<U>) -> bool { same(left, right) }
+        fn bytes(left: bytes, right: bytes) -> bool { same(left, right) }
+        fn nested(left: Option<(i32, bytes)>, right: Option<(i32, bytes)>) -> bool { forward(left, right) }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_generic_bound_accepts_nested_selected_user_impl() {
+    let output = check_source(
+        r"
+        type Key { id: i64, values: HashMap<string, i64> }
+        impl Eq for Key { fn eq(self, other: Key) -> bool { self.id == other.id } }
+        fn same<T: Eq>(left: T, right: T) -> bool { left == right }
+        fn compare(left: Vec<Key>, right: Vec<Key>) -> bool { same(left, right) }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_generic_bound_rejects_a_concrete_no_eq_type() {
+    let source = r"
+        type NoEq { callback: fn() -> i64 }
+        fn require<T: Eq>(value: T) {}
+        fn use_value(value: NoEq) { require(value); }
+    ";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("NoEq")
+                && error.message.contains("Eq")),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn selected_eq_unbounded_generic_instantiation_rejects_no_eq_type_at_call() {
+    let source = r"
+        type NoEq { callback: fn() -> i64 }
+        fn same<T>(left: T, right: T) -> bool { left == right }
+        fn compare(left: NoEq, right: NoEq) -> bool { same(left, right) }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
+    assert!(output.errors[0].message.contains("NoEq"));
+    assert!(output.errors[0].message.contains("selected Eq"));
+    assert_eq!(
+        source[output.errors[0].span.clone()].trim(),
+        "same(left, right)"
+    );
+}
+
+#[test]
+fn selected_eq_bound_allows_forward_declared_byte_record() {
+    let output = check_source(
+        r"
+        type Box<T: Eq> { value: T }
+        type Outer { value: Box<Later> }
+        type Later { data: bytes }
+        fn same(left: Outer, right: Outer) -> bool { left == right }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_inferred_generic_vector_is_checked_at_instantiation() {
+    let source = r"
+        fn same<T>(value: T) -> bool {
+            var left = Vec.new();
+            var right = Vec.new();
+            let result = left == right;
+            left.push(value);
+            right.push(value);
+            result
+        }
+        fn compare(value: HashMap<string, i64>) -> bool { same(value) }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
+    assert!(output.errors[0]
+        .message
+        .contains("Vec<HashMap<string, i64>>"));
+    assert_eq!(source[output.errors[0].span.clone()].trim(), "same(value)");
+}
+
+#[test]
+fn selected_eq_concrete_demand_does_not_walk_unrelated_generic_calls() {
+    let mut source = generic_forwarder_chain(70).replace("a == b", "true");
+    source.push_str("fn concrete(left: string, right: string) -> bool { left == right }");
+    let output = check_source(&source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_generic_bound_composes_through_an_abstract_caller() {
+    let output = check_source(
+        r"
+        fn require<T: Eq>(value: T) {}
+        fn forward<U: Eq>(value: Option<U>) { require(value); }
+        fn use_value(value: Option<bytes>) { forward(value); }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_generic_bound_does_not_grant_eq_to_a_containing_map() {
+    let source = r"
+        fn require<T: Eq>(value: T) {}
+        fn forward<U: Eq>(value: HashMap<string, U>) { require(value); }
+        fn use_value(value: HashMap<string, i64>) { forward(value); }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
+    assert!(output.errors[0].message.contains("HashMap<string, i64>"));
+    assert_eq!(
+        source[output.errors[0].span.clone()].trim(),
+        "forward(value)"
+    );
+}
+
+#[test]
+fn selected_eq_bound_waits_for_forward_user_impl_registration() {
+    let output = check_source(
+        r"
+        type Key { values: HashMap<string, i64> }
+        type Box<T: Eq> { value: T }
+        fn use_value(value: Box<Key>) {}
+        impl Eq for Key {
+            fn eq(self, other: Key) -> bool { self.values.len() == other.values.len() }
+        }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }

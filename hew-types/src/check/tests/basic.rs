@@ -740,28 +740,23 @@ fn builtin_payload_enum_comparison_typechecks_when_structurally_eligible() {
 }
 
 #[test]
-fn record_with_bytes_field_eq_rejects_with_named_diagnostic() {
+fn record_with_bytes_field_eq_is_accepted() {
     let output = check_source(
         r"
         type Packet { data: bytes }
-
-        fn same(a: Packet, b: Packet) -> bool {
-            a == b
-        }
+        fn same(a: Packet, b: Packet) -> bool { a == b }
         ",
     );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`==` on record type `Packet`")
-                && e.message.contains("member `data`")
-                && e.message.contains("layout-managed/non-Copy")
-                && e.message.contains("bytes")
-                && !e.message.contains("IntCmp")
-        }),
-        "managed record eq should fail closed with a named checker diagnostic: {:#?}",
-        output.errors
-    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let facts = output
+        .type_facts
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_user(
+            "Packet",
+            vec![],
+        )))
+        .unwrap();
+    assert!(facts.eq);
+    assert!(!facts.hash, "bytes equality must not grant record hashing");
 }
 
 #[test]
@@ -783,27 +778,13 @@ fn record_with_string_field_eq_is_accepted() {
 }
 
 #[test]
-fn managed_payload_enum_eq_rejects_with_named_diagnostic() {
+fn bytes_payload_enum_eq_is_accepted() {
     let output = check_source(
         r"
-        fn same(a: Option<bytes>, b: Option<bytes>) -> bool {
-            a == b
-        }
+        fn same(a: Option<bytes>, b: Option<bytes>) -> bool { a == b }
         ",
     );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
-                && e.message
-                    .contains("`==` on enum `Option<bytes>` with payload variants")
-                && e.message.contains("member `Some`")
-                && e.message.contains("layout-managed/non-Copy")
-                && e.message.contains("bytes")
-                && !e.message.contains("IntCmp")
-        }),
-        "managed payload enum eq should fail closed with a named checker diagnostic: {:#?}",
-        output.errors
-    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 /// When the operand types disagree, the plain mismatch diagnostic wins;
@@ -2247,6 +2228,248 @@ fn non_reserved_type_names_remain_accepted() {
     assert!(
         output.errors.is_empty(),
         "non-reserved type names should be accepted; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn selected_eq_admits_independent_owned_vectors() {
+    let output = check_source(
+        r#"
+        fn compare() -> bool {
+            var left: Vec<string> = Vec.new();
+            var right: Vec<string> = Vec.new();
+            left.push("same");
+            right.push("same");
+            left == right && !(left != right)
+        }
+    "#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_admits_independent_owned_tuples() {
+    let output = check_source(
+        r#"
+        fn compare() -> bool {
+            let left = ("same", 42);
+            let right = ("same", 42);
+            left == right && !(left != right)
+        }
+    "#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_admits_owned_option_result_composition() {
+    let output = check_source(
+        r#"
+        fn compare() -> bool {
+            let left: Option<Result<string, bytes>> = Some(Ok("same"));
+            let right: Option<Result<string, bytes>> = Some(Ok("same"));
+            left == right && !(left != right)
+        }
+    "#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_admits_bytes_without_hash() {
+    let output = check_source(
+        "fn compare(left: bytes, right: bytes) -> bool { left == right && !(left != right) }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let facts = output
+        .type_facts
+        .get(&crate::TypeInstanceKey(ResolvedTy::Bytes))
+        .unwrap();
+    assert!(facts.eq);
+    assert!(!facts.hash);
+}
+
+#[test]
+fn selected_eq_admits_nested_bytes() {
+    let output = check_source(
+        r"
+        type Packet { data: Option<(i32, bytes)>, blocks: Vec<bytes> }
+        fn compare(left: Packet, right: Packet) -> bool { left == right && !(left != right) }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_uses_nested_user_methods_for_otherwise_ineligible_members() {
+    let output = check_source(
+        r"
+        type Key { id: i64, values: HashMap<string, i64> }
+        impl Eq for Key { fn eq(self, other: Key) -> bool { self.id == other.id } }
+        type Wrapper { value: Key }
+        fn vectors(left: Vec<Key>, right: Vec<Key>) -> bool { left == right }
+        fn tuples(left: (Key, string), right: (Key, string)) -> bool { left != right }
+        fn records(left: Wrapper, right: Wrapper) -> bool { left == right }
+        fn variants(left: Option<Result<Key, bytes>>, right: Option<Result<Key, bytes>>) -> bool { left != right }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let expected = output
+        .identity
+        .declaration_by_path("Key::<impl Eq for Key>::eq")
+        .unwrap()
+        .clone();
+    let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
+    let selected = service
+        .capability_plan(
+            &ResolvedTy::named_user("Key", vec![]),
+            crate::ValueCapability::Eq,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        selected.plan(),
+        &crate::ValueMethodPlan::User {
+            method: expected,
+            type_args: vec![]
+        }
+    );
+}
+
+#[test]
+fn selected_eq_rejects_nested_members_without_an_eq_implementation() {
+    let source = r"
+        type Key { id: i64, values: HashMap<string, i64> }
+        type Wrapper { value: Key }
+        fn compare(left: Wrapper, right: Wrapper) -> bool { left == right }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    let error = &output.errors[0];
+    assert_eq!(error.kind, TypeErrorKind::InvalidOperation);
+    assert!(
+        error.message.contains("`Wrapper` has no selected Eq"),
+        "{error:?}"
+    );
+    assert_eq!(source[error.span.clone()].trim(), "left == right");
+}
+
+#[test]
+fn selected_eq_waits_for_inference_before_rejecting_a_vector() {
+    let source = r"
+        fn compare() -> bool {
+            var left = Vec.new();
+            var right = Vec.new();
+            let same = left == right;
+            let a: HashMap<string, i64> = HashMap.new();
+            let b: HashMap<string, i64> = HashMap.new();
+            left.push(a);
+            right.push(b);
+            same
+        }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
+    assert!(output.errors[0]
+        .message
+        .contains("Vec<HashMap<string, i64>>"));
+    assert_eq!(
+        source[output.errors[0].span.clone()].trim(),
+        "left == right"
+    );
+}
+
+#[test]
+fn selected_eq_does_not_rewrite_ordinary_float_comparisons() {
+    let source = "fn compare(a: f64, b: f64) -> bool { a == b || a != b || a < b }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output.user_comparison_dispatch.is_empty());
+    for expression in ["a == b", "a != b", "a < b"] {
+        assert_eq!(
+            output.expr_types.iter().find_map(|(key, ty)| {
+                (source[key.start..key.end].trim() == expression).then_some(ty)
+            }),
+            Some(&Ty::Bool)
+        );
+    }
+    let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
+    assert_eq!(
+        service
+            .capability_plan(&ResolvedTy::F64, crate::ValueCapability::Eq)
+            .unwrap()
+            .unwrap()
+            .plan(),
+        &crate::ValueMethodPlan::Derived
+    );
+}
+
+#[test]
+fn selected_eq_composes_exact_generic_user_method_for_bytes() {
+    let output = check_source(
+        r"
+        type Key<T> { value: T, ignored: HashMap<string, i64> }
+        impl<T: Eq> Eq for Key<T> {
+            fn eq(self, other: Key<T>) -> bool { self.value == other.value }
+        }
+        fn compare(left: Option<Key<bytes>>, right: Option<Key<bytes>>) -> bool { left == right }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let expected = output
+        .identity
+        .declaration_by_path("Key::<impl Eq for Key<T>>::eq")
+        .unwrap()
+        .clone();
+    let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
+    let key = ResolvedTy::named_user("Key", vec![ResolvedTy::Bytes]);
+    let selected = service
+        .capability_plan(&key, crate::ValueCapability::Eq)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        selected.plan(),
+        &crate::ValueMethodPlan::User {
+            method: expected,
+            type_args: vec![ResolvedTy::Bytes],
+        }
+    );
+}
+
+#[test]
+fn selected_eq_checks_both_result_payload_capabilities() {
+    let source = r"
+        fn compare(left: Result<bytes, HashMap<string, i64>>, right: Result<bytes, HashMap<string, i64>>) -> bool { left == right }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
+    assert!(output.errors[0]
+        .message
+        .contains("Result<bytes, HashMap<string, i64>>"));
+    assert_eq!(
+        source[output.errors[0].span.clone()].trim(),
+        "left == right"
+    );
+}
+
+#[test]
+fn selected_eq_keeps_aggregate_ordering_gate_during_operand_inference() {
+    let source = r"
+        type Pair { x: i64, y: i64 }
+        fn compare(left: _, right: Pair) -> bool { left < right }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|error| {
+            matches!(
+                error.kind,
+                TypeErrorKind::InvalidOperation | TypeErrorKind::DerivedOrdUnavailable { .. }
+            ) && error.message.contains("PartialOrd")
+        }),
+        "{:?}",
         output.errors
     );
 }

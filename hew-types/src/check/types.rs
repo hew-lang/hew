@@ -2747,9 +2747,6 @@ pub struct Checker {
     /// Built-in value-container clone checks deferred until after inference.
     /// Keyed by clone call-site span.
     pub(super) deferred_builtin_clone_admission: HashMap<SpanKey, DeferredBuiltinCloneAdmission>,
-    /// Structural-equality obligations raised inside generic function bodies,
-    /// keyed by the owning function's `fn_sigs` key. Discharged per
-    /// instantiation by `finalize_eq_requirements`.
     /// Dedup set for [`Checker::reject_shadowing_method_type_params`], keyed by
     /// the DECLARATION's identity: owner key, declaration span, parameter name.
     ///
@@ -2758,6 +2755,8 @@ pub struct Checker {
     /// registering-module key emitted the same diagnostic once per module — the
     /// second copy landing at unrelated lines in the implementor's file.
     pub(super) shadowed_method_type_param_reports: HashSet<(String, usize, usize, String)>,
+    /// Equality demands grouped by owning function; None covers expressions
+    /// outside a function. Resolved once concretely or through generic calls.
     pub(super) eq_requirements: HashMap<Option<String>, Vec<EqRequirement>>,
     /// Every generic function call site observed while checking bodies, in
     /// source order. Consumed alongside `eq_requirements`.

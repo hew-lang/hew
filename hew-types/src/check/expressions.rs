@@ -5180,7 +5180,7 @@ impl Checker {
         &mut self,
         op: BinaryOp,
         left_resolved: &Ty,
-        _right_resolved: &Ty,
+        right_resolved: &Ty,
         left_span: &Span,
         right_span: &Span,
         expr_span: &Span,
@@ -5222,25 +5222,26 @@ impl Checker {
                 return;
             }
         }
-        let aggregate = match left_resolved {
-            Ty::Tuple(_)
-            | Ty::Named {
-                builtin: Some(BuiltinType::Option | BuiltinType::Result),
-                ..
-            } => true,
-            Ty::Named { name, .. } => self.type_defs.get(name).is_some_and(|definition| {
-                matches!(
-                    definition.kind,
-                    TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
-                )
-            }),
-            _ => false,
-        };
-        if !aggregate {
+        let Some(type_name) = [left_resolved, right_resolved].into_iter().find_map(|ty| {
+            let aggregate = match ty {
+                Ty::Tuple(_)
+                | Ty::Named {
+                    builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                    ..
+                } => true,
+                Ty::Named { name, .. } => self.type_defs.get(name).is_some_and(|definition| {
+                    matches!(
+                        definition.kind,
+                        TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
+                    )
+                }),
+                _ => false,
+            };
+            aggregate.then(|| ty.user_facing().to_string())
+        }) else {
             return;
-        }
+        };
         let span = left_span.start..right_span.end;
-        let type_name = left_resolved.user_facing().to_string();
         if !self
             .registry
             .implements_marker(left_resolved, MarkerTrait::PartialOrd)
@@ -5296,7 +5297,7 @@ impl Checker {
     /// Record an Eq demand in the existing instantiation obligation graph.
     /// Concrete demands are checked once declarations and inference settle;
     /// abstract demands are substituted at the graph's concrete call roots.
-    fn record_eq_requirement(&mut self, ty: &Ty, span: &Span) {
+    pub(super) fn record_eq_requirement(&mut self, ty: &Ty, span: &Span) {
         let owner = self.current_function.clone();
         let params = owner
             .as_ref()
@@ -5464,7 +5465,7 @@ impl Checker {
     }
 
     /// Build the diagnostic for one ineligible instantiation of a generic
-    /// callee that compares `template` structurally.
+    /// callee that requires Eq for `template`.
     fn generic_structural_eq_instantiation_error(
         template: &Ty,
         concrete: &Ty,
@@ -5475,7 +5476,7 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             pending.report_span.clone(),
             format!(
-                "`{callee}` compares `{}` for equality; this instantiation `{}` has no selected Eq implementation",
+                "`{callee}` requires Eq for `{}`; this instantiation `{}` has no selected Eq implementation",
                 template.user_facing(),
                 concrete.user_facing(),
             ),
@@ -5535,7 +5536,9 @@ impl Checker {
         service: &mut TypeFactService,
     ) -> Vec<crate::error::TypeError> {
         let mut new_errors = Vec::new();
-        for requirement in requirements.values().flatten() {
+        let mut demands: Vec<_> = requirements.values().flatten().collect();
+        demands.sort_by_key(|demand| (&demand.source_module, demand.span.start, demand.span.end));
+        for requirement in demands {
             let concrete = self
                 .normalize_for_use(&requirement.ty)
                 .materialize_literal_defaults();
@@ -5564,21 +5567,25 @@ impl Checker {
         new_errors
     }
 
-    /// Discharge every generic structural-equality obligation against the
-    /// concrete instantiations the program actually contains.
+    /// Discharge concrete comparisons and the generic Eq obligations reachable
+    /// through the program's instantiation graph.
     ///
     /// The walk starts at applications whose substitution is concrete in the
     /// caller's terms and follows generic → generic call edges, so an obligation
     /// raised two hops down still lands on the concrete application the
-    /// programmer wrote. Codegen's `eq_thunk` is therefore never the first to
-    /// notice an ineligible instantiation.
+    /// programmer wrote. Every demand uses the same selected Eq authority.
     pub(super) fn finalize_eq_requirements(&mut self) {
         // WHY a hop budget: polymorphic recursion (`fn f<T>() { g::<Vec<T>>() }`)
         // generates an unbounded instantiation chain. Exceeding it is reported,
         // never skipped — see `generic_structural_eq_depth_error`.
         const MAX_INSTANTIATION_DEPTH: u32 = 64;
 
-        let requirements = std::mem::take(&mut self.eq_requirements);
+        let mut requirements = std::mem::take(&mut self.eq_requirements);
+        for requirement in requirements.values_mut().flatten() {
+            requirement.ty = self
+                .normalize_for_use(&requirement.ty)
+                .materialize_literal_defaults();
+        }
         let sites = std::mem::take(&mut self.generic_fn_instantiation_sites);
         if requirements.is_empty() {
             return;
@@ -5586,6 +5593,16 @@ impl Checker {
 
         let mut service = TypeFactService::new(self.type_fact_context(), BTreeMap::new());
         let mut new_errors = self.check_concrete_eq_requirements(&requirements, &mut service);
+        requirements.retain(|_, demands| {
+            demands.retain(|demand| {
+                Self::ty_mentions_type_params(&demand.ty, &demand.owner_type_params)
+            });
+            !demands.is_empty()
+        });
+        if requirements.is_empty() {
+            self.errors.extend(new_errors);
+            return;
+        }
         let (roots, edges) = self.partition_generic_instantiation_sites(sites);
         let mut seen: HashSet<(String, String, usize, Option<String>)> = HashSet::new();
         let mut work: VecDeque<PendingInstantiation> = roots.into();
@@ -5615,9 +5632,6 @@ impl Checker {
                 .into_iter()
                 .flatten()
             {
-                if !Self::ty_mentions_type_params(&requirement.ty, &requirement.owner_type_params) {
-                    continue;
-                }
                 // Substitute, then collapse any associated-type projection the
                 // substitution just made resolvable (`Option<C::Item>` with
                 // `C = IntBox` becomes `Option<i64>`). A projection that

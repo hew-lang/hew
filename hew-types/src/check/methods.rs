@@ -3625,11 +3625,9 @@ impl Checker {
                 // `enforce_type_param_bounds` rejects an argument that does not
                 // satisfy the bound — so an affine resource can never reach a
                 // `T: Clone` position. This is the single template-capability
-                // authority; structural equality applies the same split from
-                // the other side (see `finalize_generic_structural_eq`), where
-                // the checker re-runs the eligibility walk per instantiation
-                // because a semantic `Eq` bound does not imply a structural
-                // compare path.
+                // authority for Clone. Equality demands use
+                // `finalize_eq_requirements` to select the exact concrete Eq
+                // implementation at each instantiation.
                 if let Some(capability) = self.type_param_template_clone_capability(&resolved) {
                     return if capability {
                         None

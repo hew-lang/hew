@@ -1198,10 +1198,12 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_owned(
             let src = (*v).data.add((start_u + i) * elem_size);
             let dst = (*out).data.add(i * elem_size);
             core::ptr::copy_nonoverlapping(src, dst, elem_size);
-            let status = clone_fn(
-                src.cast::<core::ffi::c_void>(),
-                dst.cast::<core::ffi::c_void>(),
-            );
+            let status = clone_fn.map_or(0, |clone_fn| {
+                clone_fn(
+                    src.cast::<core::ffi::c_void>(),
+                    dst.cast::<core::ffi::c_void>(),
+                )
+            });
             if status != 0 {
                 (*out).len = i;
                 hew_vec_free_owned(out);
@@ -2529,21 +2531,22 @@ unsafe fn owned_descriptor<'a>(v: *const HewVec) -> &'a HewVecElemLayout {
     }
 }
 
-/// Resolve and validate the clone thunk for an owned descriptor, aborting
-/// fail-closed when it is absent.
-unsafe fn owned_clone_fn(layout: &HewVecElemLayout) -> hew_cabi::vec::HewVecElemCloneThunk {
+/// Resolve the descriptor's semantic copy action. Plain values need no thunk;
+/// a non-plain value must never silently fall back to a byte copy.
+unsafe fn owned_clone_fn(layout: &HewVecElemLayout) -> Option<hew_cabi::vec::HewVecElemCloneThunk> {
     match layout.clone_fn {
-        Some(f) => f,
+        Some(f) => Some(f),
+        None if layout.ownership_kind == HewTypeOwnershipKind::Plain => None,
         // SAFETY: abort path.
         None => unsafe { abort_owned_thunk_missing("clone") },
     }
 }
 
-/// Resolve and validate the drop thunk for an owned descriptor, aborting
-/// fail-closed when it is absent.
-unsafe fn owned_drop_fn(layout: &HewVecElemLayout) -> hew_cabi::vec::HewVecElemDropThunk {
+/// Resolve the descriptor's cleanup action; only plain values need no thunk.
+unsafe fn owned_drop_fn(layout: &HewVecElemLayout) -> Option<hew_cabi::vec::HewVecElemDropThunk> {
     match layout.drop_fn {
-        Some(f) => f,
+        Some(f) => Some(f),
+        None if layout.ownership_kind == HewTypeOwnershipKind::Plain => None,
         // SAFETY: abort path.
         None => unsafe { abort_owned_thunk_missing("drop") },
     }
@@ -2583,10 +2586,8 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
     }
 }
 
-/// Push an owned element: deep-copy it into a new slot via the descriptor
-/// `clone_fn`. The Vec takes ownership; the caller's source remains its own
-/// (the move-in is a deep copy, then the source binding is `Consumed` at the
-/// MIR level for owned-aggregate args).
+/// Copy an element into a new slot through its descriptor. The source remains
+/// independently owned by the caller. Plain values need only a byte copy.
 ///
 /// # Safety
 ///
@@ -2610,7 +2611,9 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
         // Memcpy first so BitCopy fields / enum tag bytes are correct, then run
         // the clone thunk to deep-copy the owned heap (clone-fn contract).
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
-        let status = clone_fn(data, dst.cast::<core::ffi::c_void>());
+        let status = clone_fn.map_or(0, |clone_fn| {
+            clone_fn(data, dst.cast::<core::ffi::c_void>())
+        });
         if status != 0 {
             // The clone thunk rolled back its own partial work; the slot is not
             // live. Fail closed rather than admit a half-cloned element.
@@ -2745,7 +2748,8 @@ pub unsafe extern "C" fn hew_vec_get_clone(
                     let clone_fn = owned_clone_fn(layout);
                     let src = (*v).data.add(idx * elem_size);
                     core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), elem_size);
-                    let status = clone_fn(src.cast::<core::ffi::c_void>(), out);
+                    let status = clone_fn
+                        .map_or(0, |clone_fn| clone_fn(src.cast::<core::ffi::c_void>(), out));
                     if status != 0 {
                         // The clone thunk rolled back its partial work; the
                         // payload is not live. Fail closed rather than hand a
@@ -2818,9 +2822,13 @@ pub unsafe extern "C-unwind" fn hew_vec_set_owned(
         }
         let slot = (*v).data.add(index * elem_size);
         // Drop the replaced element exactly once, then deep-copy the new one in.
-        drop_fn(slot.cast::<core::ffi::c_void>());
+        if let Some(drop_fn) = drop_fn {
+            drop_fn(slot.cast::<core::ffi::c_void>());
+        }
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), slot, elem_size);
-        let status = clone_fn(data, slot.cast::<core::ffi::c_void>());
+        let status = clone_fn.map_or(0, |clone_fn| {
+            clone_fn(data, slot.cast::<core::ffi::c_void>())
+        });
         if status != 0 {
             let msg = b"PANIC: Vec owned element clone failed\n\0";
             write_stderr(&msg[..msg.len() - 1]);
@@ -2872,7 +2880,9 @@ pub unsafe extern "C-unwind" fn hew_vec_set_owned_move(
         // then MOVE the new element in: byte-copy transfers BitCopy fields, enum
         // tag bytes, AND owned-heap pointers into the slot. No `clone_fn` — the
         // source's heap is now owned by the Vec; the source temp is dead.
-        drop_fn(slot.cast::<core::ffi::c_void>());
+        if let Some(drop_fn) = drop_fn {
+            drop_fn(slot.cast::<core::ffi::c_void>());
+        }
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), slot, elem_size);
     }
 }
@@ -4871,6 +4881,54 @@ mod vec_owned_tests {
     use super::*;
     use core::sync::atomic::{AtomicI64, Ordering};
     use std::sync::{Mutex, MutexGuard};
+
+    #[test]
+    fn plain_descriptor_uses_the_same_value_operations_without_thunks() {
+        let layout = HewVecElemLayout {
+            size: size_of::<(i64, i64)>(),
+            align: align_of::<(i64, i64)>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        };
+        // SAFETY: the descriptor matches every input/output; source values are
+        // separate from both vector buffers, and each vector is released once.
+        unsafe {
+            let original = hew_vec_new_with_elem_layout(&raw const layout);
+            let first = (11_i64, 12_i64);
+            let second = (21_i64, 22_i64);
+            hew_vec_push_owned(original, (&raw const first).cast());
+            hew_vec_push_owned_move(original, (&raw const second).cast());
+            let copy = hew_vec_clone_owned(original);
+
+            let replacement = (31_i64, 32_i64);
+            hew_vec_set_owned(copy, 0, (&raw const replacement).cast());
+            hew_vec_set_owned_move(copy, 1, (&raw const replacement).cast());
+            let mut value = (0_i64, 0_i64);
+            assert!(hew_vec_get_clone(original, 0, (&raw mut value).cast()));
+            assert_eq!(value, first);
+            assert!(hew_vec_get_clone(original, 1, (&raw mut value).cast()));
+            assert_eq!(value, second);
+            let slice = hew_vec_slice_range_owned(original, 1, 2);
+            hew_vec_free_owned(original);
+            assert_eq!(hew_vec_len(slice), 1);
+            assert!(hew_vec_get_clone(slice, 0, (&raw mut value).cast()));
+            assert_eq!(value, second);
+            hew_vec_free_owned(slice);
+
+            assert_eq!(hew_vec_pop_owned(copy, (&raw mut value).cast()), 1);
+            assert_eq!(value, replacement);
+            assert_eq!(hew_vec_len(copy), 1);
+            assert!(hew_vec_get_clone(copy, 0, (&raw mut value).cast()));
+            assert_eq!(value, replacement);
+            hew_vec_clear(copy);
+            value = (-1, -2);
+            assert_eq!(hew_vec_pop_owned(copy, (&raw mut value).cast()), 0);
+            assert!(!hew_vec_get_clone(copy, 0, (&raw mut value).cast()));
+            assert_eq!(value, (-1, -2), "empty results leave output untouched");
+            hew_vec_free_owned(copy);
+        }
+    }
 
     // The thunk counters are process-global, so the counter-using tests must run
     // serially. This mutex serialises them; each test holds the guard for its

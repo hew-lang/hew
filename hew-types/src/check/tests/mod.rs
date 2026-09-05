@@ -36,6 +36,7 @@ mod modules;
 mod mut_receiver;
 mod opaque_resources;
 mod option_none;
+mod optional_control_flow;
 mod output;
 mod patterns;
 mod records;

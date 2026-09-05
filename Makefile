@@ -668,7 +668,7 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-asan-fixture-selftest hew-fmt-property stdlib-lint \
 	sir-coverage sir-parity
 
-ci-shard-3: grammar-parity downstream-check mqtt-broker-e2e sandbox-parity \
+ci-shard-3: grammar-parity mqtt-broker-e2e sandbox-parity \
 	fuzz-oracle fuzz-oracle-selftest test-package-install \
 	checked-mir-verify checked-mir-run \
 	test-core-matrix test-stdlib-ratchet \
@@ -1688,8 +1688,10 @@ grammar-parity:
 # Report drift between docs/syntax-data.json and every downstream sibling
 # repo checkout found next to this one (vscode-hew, hew.sh, hew.run,
 # tree-sitter-hew, vim-hew, hew-studio). A sibling repo not present locally
-# is skipped, not failed — see scripts/sync-downstream.sh.
-downstream-check:
+# is skipped, not failed — see scripts/sync-downstream.sh. This is an
+# opt-in local check, outside preflight and hosted CI. In a worktree, set
+# HEW_SYNC_PARENT to the directory containing the ecosystem checkouts.
+downstream-check: ## Develop: check synchronization with available local sibling repos
 	@echo "==> downstream-check: comparing docs/syntax-data.json against sibling repos"
 	scripts/sync-downstream.sh --check
 

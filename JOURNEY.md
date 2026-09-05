@@ -535,3 +535,19 @@ import is now unconditional, matching the cross-platform function signature.
 The integrated JSON/YAML tests pass, and the combined C ABI census reflects
 their managed text arguments and results. A fresh Windows build verifies the
 import repair; earlier Linux results do not substitute for that check.
+
+## Shared map and vector value protocols
+
+Map keys now add hash/equality callbacks to the same copy/drop descriptor used
+by vector elements. The duplicate map-value descriptor is removed. Map copying
+and key/value projections use the common callbacks, including owning composite
+keys; the separate String-only key-copy path and composite projection refusals
+are gone. Set copying inherits the same behaviour through its inner map.
+
+The complete runtime/C ABI suite passes. New composite-key/value tests exercise
+map growth, copying, extraction, removal and projections that outlive both source
+maps; set copies and projected elements also survive source destruction. These
+tests and the existing string-reference and recursive-container lifetime tests
+pass under ASan/LSan without suppressions. The Make sanitizer target can select
+integration tests while retaining its library-test default. Generated native
+map lowering and platform validation remain subsequent work.

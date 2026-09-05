@@ -16,8 +16,8 @@
 use core::ffi::c_void;
 use core::ptr;
 
-use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
-use hew_cabi::vec::{HewTypeLayout, HewTypeOwnershipKind, HewVec, HewVecElemLayout};
+use hew_cabi::map::{HewMapKeyLayout, HewVecElemLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewVec};
 
 /// Entry states.
 const EMPTY: u8 = 0;
@@ -27,28 +27,9 @@ const TOMBSTONE: u8 = 2;
 /// Load factor percentage threshold for resize (shared by the layout family).
 const LOAD_PCTG: usize = 75;
 
-// ===========================================================================
-// Layout-backed HashMap (`HewLayoutHashMap`) — C-1b (W3.003 slice C-1b)
-// ===========================================================================
-//
-// A sibling of `HewHashMap` that stores opaque key/value blobs whose identity
-// is delegated to caller-supplied hash and equality thunks. Slot layout per
-// council Rev 1:
-//
-//   [state: u8][pad to key_align][key blob: key_size]
-//                  [pad to val_align][val blob: val_size][pad to max(key_align,val_align)]
-//
-// All `#[no_mangle]` entry points are fail-closed per LESSONS `boundary-fail-closed`
-// (P0): null pointers, missing thunks, zero-size keys, non-power-of-two alignment,
-// stride overflow, and `LayoutManaged` ownership are rejected at the boundary.
-//
-// Ownership contract (LESSONS `ffi-ownership-contracts` P0):
-//   - The map owns the byte blobs it copies into its slots.
-//   - The map does NOT own `key_layout` / `val_layout` — caller keeps these alive
-//     for the lifetime of the map (the runtime reads `hash_fn`/`eq_fn` and the
-//     size/align fields on every probe and on free).
-//   - For `ownership_kind == Plain` (only supported variant in this slice), blobs
-//     are byte-copy-safe — no per-slot drop is run on free / overwrite / removal.
+// Each occupied slot stores a state byte followed by aligned key and value
+// blobs. Key identity callbacks borrow those blobs. Both fields carry the same
+// semantic copy/drop protocol used by descriptor-backed vectors.
 
 /// Initial capacity for a layout-backed map (must be a power of two).
 const LAYOUT_INIT_CAP: usize = 16;
@@ -95,7 +76,7 @@ pub struct HewLayoutHashMap {
     /// Total slot count; always a power of two.
     pub cap: usize,
     /// Byte offset of the key blob inside a slot (after the `state` byte and
-    /// any padding required to reach `key_layout.align`).
+    /// any padding required to reach `key_layout.value.align`).
     pub key_offset: usize,
     /// Byte offset of the value blob inside a slot.
     pub val_offset: usize,
@@ -109,7 +90,7 @@ pub struct HewLayoutHashMap {
     /// map, not just a one-shot at-entry check.
     pub key_layout: HewMapKeyLayout,
     /// Value descriptor — owned by-value snapshot (same rationale).
-    pub val_layout: HewMapValueLayout,
+    pub val_layout: HewVecElemLayout,
 }
 
 /// Opaque cursor for borrowing occupied entries from a layout-backed map.
@@ -389,20 +370,20 @@ pub unsafe fn validate_key_layout(key_layout: *const HewMapKeyLayout) {
         crate::set_last_error("HewLayoutHashMap: key_layout.eq_fn is None");
         panic!("HewLayoutHashMap: key_layout.eq_fn is None");
     }
-    if kl.size == 0 {
+    if kl.value.size == 0 {
         crate::set_last_error("HewLayoutHashMap: zero-size keys are not admissible");
         panic!("HewLayoutHashMap: zero-size keys are not admissible");
     }
-    if !kl.align.is_power_of_two() {
-        crate::set_last_error("HewLayoutHashMap: key_layout.align is not a power of two");
-        panic!("HewLayoutHashMap: key_layout.align is not a power of two");
+    if !kl.value.align.is_power_of_two() {
+        crate::set_last_error("HewLayoutHashMap: key_layout.value.align is not a power of two");
+        panic!("HewLayoutHashMap: key_layout.value.align is not a power of two");
     }
     // C0a: LayoutManaged / String ownership are admitted; their drop_fn
     // requirement is enforced by validate_descriptor_ownership (called from
     // the constructor).
 }
 
-/// Validate a `HewMapValueLayout` at constructor time.
+/// Validate a `HewVecElemLayout` at constructor time.
 ///
 /// Exposed `pub` for the same reason as [`validate_key_layout`].
 ///
@@ -416,8 +397,8 @@ pub unsafe fn validate_key_layout(key_layout: *const HewMapKeyLayout) {
 ///
 /// # Safety
 ///
-/// `val_layout` must be non-null and point to a valid `HewMapValueLayout`.
-pub unsafe fn validate_val_layout(val_layout: *const HewMapValueLayout) {
+/// `val_layout` must be non-null and point to a valid `HewVecElemLayout`.
+pub unsafe fn validate_val_layout(val_layout: *const HewVecElemLayout) {
     if val_layout.is_null() {
         crate::set_last_error("HewLayoutHashMap: val_layout is null");
         panic!("HewLayoutHashMap: val_layout is null");
@@ -460,16 +441,16 @@ pub unsafe fn validate_val_layout(val_layout: *const HewMapValueLayout) {
 /// `validate_key_layout` / `validate_val_layout` first).
 pub unsafe fn validate_descriptor_ownership(
     key_layout: *const HewMapKeyLayout,
-    val_layout: *const HewMapValueLayout,
+    val_layout: *const HewVecElemLayout,
 ) {
     // SAFETY: caller-guaranteed non-null + valid.
     let kl = unsafe { &*key_layout };
     // SAFETY: same.
     let vl = unsafe { &*val_layout };
-    match kl.ownership_kind {
+    match kl.value.ownership_kind {
         HewTypeOwnershipKind::Plain => {}
         HewTypeOwnershipKind::String => {
-            if kl.drop_fn.is_none() {
+            if kl.value.drop_fn.is_none() {
                 crate::set_last_error(
                     "HewLayoutHashMap: key_layout ownership_kind=String requires drop_fn",
                 );
@@ -477,7 +458,7 @@ pub unsafe fn validate_descriptor_ownership(
             }
         }
         HewTypeOwnershipKind::LayoutManaged => {
-            if kl.drop_fn.is_none() {
+            if kl.value.drop_fn.is_none() {
                 crate::set_last_error(
                     "HewLayoutHashMap: key_layout ownership_kind=LayoutManaged requires drop_fn",
                 );
@@ -538,7 +519,7 @@ pub unsafe fn validate_descriptor_ownership(
 #[must_use]
 pub unsafe fn validate_and_compute_slot_layout(
     key_layout: *const HewMapKeyLayout,
-    val_layout: *const HewMapValueLayout,
+    val_layout: *const HewVecElemLayout,
 ) -> (usize, usize, usize, usize) {
     // SAFETY: forwarded; the validator itself null-checks.
     unsafe { validate_key_layout(key_layout) };
@@ -551,7 +532,7 @@ pub unsafe fn validate_and_compute_slot_layout(
     let kl = unsafe { &*key_layout };
     // SAFETY: validated non-null above.
     let vl = unsafe { &*val_layout };
-    let Some(t) = compute_slot_layout(kl.size, kl.align, vl.size, vl.align) else {
+    let Some(t) = compute_slot_layout(kl.value.size, kl.value.align, vl.size, vl.align) else {
         crate::set_last_error("HewLayoutHashMap: slot stride overflow");
         panic!("HewLayoutHashMap: slot stride overflow");
     };
@@ -745,8 +726,8 @@ unsafe fn layout_resize(m: *mut HewLayoutHashMap) {
     // plain scalar loads and do not borrow `*m`.
     let (key_size, key_align, val_size, val_align, hash_fn_opt) = unsafe {
         (
-            (*m).key_layout.size,
-            (*m).key_layout.align,
+            (*m).key_layout.value.size,
+            (*m).key_layout.value.align,
             (*m).val_layout.size,
             (*m).val_layout.align,
             (*m).key_layout.hash_fn,
@@ -850,7 +831,7 @@ unsafe fn layout_resize(m: *mut HewLayoutHashMap) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_new_with_layout(
     key_layout: *const HewMapKeyLayout,
-    val_layout: *const HewMapValueLayout,
+    val_layout: *const HewVecElemLayout,
 ) -> *mut HewLayoutHashMap {
     if key_layout.is_null() {
         crate::set_last_error("hew_hashmap_new_with_layout: key_layout is null");
@@ -916,89 +897,32 @@ fn abort_layout_clone(reason: impl Into<String>) -> ! {
     std::process::abort();
 }
 
-unsafe fn clone_layout_string_blob(src: *const u8, dst: *mut u8, label: &str) {
-    // SAFETY: caller guarantees `src` points to a slot blob containing a
-    // managed-string handle and `dst` points to writable slot storage for the same
-    // blob shape.
-    let src_ptr: *const hew_cabi::string::HewString =
-        unsafe { ptr::read_unaligned(src.cast::<*const hew_cabi::string::HewString>()) };
-    // SAFETY: `src_ptr` is either null or a live managed string by the
-    // descriptor's String ownership contract.
-    let cloned = unsafe { crate::string::hew_string_clone(src_ptr) };
-    if !src_ptr.is_null() && cloned.is_null() {
-        abort_layout_clone(format!("{label}: string clone allocation failed"));
-    }
-    // SAFETY: `dst` is writable for a pointer-sized String blob.
-    unsafe { ptr::write_unaligned(dst.cast::<*mut hew_cabi::string::HewString>(), cloned) };
-}
-
-unsafe fn clone_layout_key_blob(
-    ownership_kind: HewTypeOwnershipKind,
-    src: *const u8,
-    dst: *mut u8,
-    size: usize,
-) {
-    match ownership_kind {
-        HewTypeOwnershipKind::Plain => {
-            // SAFETY: caller guarantees both blobs are valid for `size` bytes.
-            unsafe { ptr::copy_nonoverlapping(src, dst, size) };
-        }
-        HewTypeOwnershipKind::String => {
-            // SAFETY: forwarded blob contract.
-            unsafe { clone_layout_string_blob(src, dst, "hew_hashmap_clone_layout key") };
-        }
-        HewTypeOwnershipKind::LayoutManaged => abort_layout_clone(
-            "hew_hashmap_clone_layout: key layout-managed clone thunk is unavailable",
-        ),
-        HewTypeOwnershipKind::Bytes => abort_layout_clone(
-            "hew_hashmap_clone_layout: key ownership_kind=Bytes is not valid for maps",
-        ),
+fn require_clone(layout: &HewVecElemLayout, label: &str) {
+    if layout.ownership_kind != HewTypeOwnershipKind::Plain && layout.clone_fn.is_none() {
+        abort_layout_clone(format!("{label}: clone callback is unavailable"));
     }
 }
 
-unsafe fn clone_layout_value_blob(
-    layout: HewMapValueLayout,
-    src: *const u8,
-    dst: *mut u8,
-    label: &str,
-) {
-    match layout.ownership_kind {
-        HewTypeOwnershipKind::Plain => {
-            if layout.size > 0 {
-                // SAFETY: caller guarantees both blobs are valid for
-                // `layout.size` bytes.
-                unsafe { ptr::copy_nonoverlapping(src, dst, layout.size) };
-            }
+/// Copy one value through the shared descriptor. The callback replaces owning
+/// leaves after the complete representation is seeded, exactly as for vectors.
+unsafe fn clone_layout_blob(layout: HewVecElemLayout, src: *const u8, dst: *mut u8, label: &str) {
+    require_clone(&layout, label);
+    if layout.size > 0 {
+        // SAFETY: the caller supplies live, non-overlapping value slots of this layout.
+        unsafe { ptr::copy_nonoverlapping(src, dst, layout.size) };
+    }
+    if let Some(clone) = layout.clone_fn {
+        // SAFETY: the descriptor's callback accepts the two concrete value slots.
+        let status = unsafe { clone(src.cast(), dst.cast()) };
+        if status != 0 {
+            abort_layout_clone(format!("{label}: clone callback returned {status}"));
         }
-        HewTypeOwnershipKind::String | HewTypeOwnershipKind::LayoutManaged => {
-            let Some(clone_fn) = layout.clone_fn else {
-                abort_layout_clone(format!("{label}: value clone thunk is unavailable"));
-            };
-            if layout.size > 0 {
-                // The map-value clone thunk ABI matches the existing aggregate
-                // clone helpers: caller first seeds dst with an exact byte copy
-                // so tags/BitCopy fields are present, then the thunk overwrites
-                // owned leaves with semantic clones.
-                // SAFETY: caller guarantees both blobs are valid for
-                // `layout.size` bytes and non-overlapping.
-                unsafe { ptr::copy_nonoverlapping(src, dst, layout.size) };
-            }
-            // SAFETY: descriptor validator/checker ensures `clone_fn` matches
-            // the value blob ABI; dst was seeded per thunk contract above.
-            let rc = unsafe { clone_fn(src.cast::<c_void>(), dst.cast::<c_void>()) };
-            if rc != 0 {
-                abort_layout_clone(format!("{label}: value clone thunk returned {rc}"));
-            }
-        }
-        HewTypeOwnershipKind::Bytes => abort_layout_clone(format!(
-            "{label}: value ownership_kind=Bytes is not valid for maps"
-        )),
     }
 }
 
 /// Deep-clone a layout-backed map, duplicating owned slot blobs when the
-/// descriptor provides a concrete clone discipline. Layout-managed keys fail
-/// closed because `HewMapKeyLayout` has no key clone thunk field.
+/// key and value descriptors provide concrete clone callbacks. Both roles use
+/// the same copy protocol as vector elements.
 ///
 /// # Safety
 ///
@@ -1017,22 +941,9 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
 
     // SAFETY: m non-null and constructed via hew_hashmap_new_with_layout.
     let src = unsafe { &*m };
-    let entries_align = core::cmp::max(src.key_layout.align, src.val_layout.align);
-    if matches!(
-        src.key_layout.ownership_kind,
-        HewTypeOwnershipKind::LayoutManaged
-    ) {
-        abort_layout_clone(
-            "hew_hashmap_clone_layout: key layout-managed clone thunk is unavailable",
-        );
-    }
-    if matches!(
-        src.val_layout.ownership_kind,
-        HewTypeOwnershipKind::String | HewTypeOwnershipKind::LayoutManaged
-    ) && src.val_layout.clone_fn.is_none()
-    {
-        abort_layout_clone("hew_hashmap_clone_layout: value clone thunk is unavailable");
-    }
+    let entries_align = core::cmp::max(src.key_layout.value.align, src.val_layout.align);
+    require_clone(&src.key_layout.value, "map key");
+    require_clone(&src.val_layout, "map value");
 
     // SAFETY: source map was validated at construction time.
     let cloned_entries = unsafe { alloc_layout_entries(src.cap, src.stride, entries_align) };
@@ -1077,12 +988,7 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
         let dst_key = unsafe { slot_key(cloned_entries, idx, src.stride, src.key_offset) };
         // SAFETY: forwarded blob contracts.
         unsafe {
-            clone_layout_key_blob(
-                src.key_layout.ownership_kind,
-                src_key,
-                dst_key,
-                src.key_layout.size,
-            );
+            clone_layout_blob(src.key_layout.value, src_key, dst_key, "map key");
         }
         if src.val_layout.size > 0 {
             // SAFETY: occupied slot has a valid value blob.
@@ -1091,7 +997,7 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
             let dst_val = unsafe { slot_val(cloned_entries, idx, src.stride, src.val_offset) };
             // SAFETY: forwarded blob contracts.
             unsafe {
-                clone_layout_value_blob(
+                clone_layout_blob(
                     src.val_layout,
                     src_val,
                     dst_val,
@@ -1114,57 +1020,10 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
 /// `val` may be null only when the value layout's `size` is zero (`HashSet`
 /// contract); otherwise null aborts fail-closed.
 ///
-/// # String-element ownership: MOVE on ingress (no copy-in)
-///
-/// For `String` keys/values codegen wires the String-ownership descriptors
-/// `hew_layout_key_string` / `hew_layout_val_string`
-/// (`hew-codegen-rs/src/llvm.rs`), whose `drop_fn` is the header-aware
-/// `hew_layout_string_drop` → `hew_string_drop` (refcount decrement,
-/// free-at-zero, static-literal safe). The strings codegen hands to this
-/// function are therefore **already header-aware** Hew strings — there is no
-/// `strdup` and no headerless map producer anywhere in the map runtime.
-///
-/// Consequently this function's String contract is an **ownership-transfer
-/// MOVE, not a copy-in**: the `ptr::copy_nonoverlapping` of the key/value
-/// pointer bits below relocates the sole owner into the map's slot. It is
-/// deliberately *not* a `clone` — the caller's string is consumed (its single
-/// owning reference now lives in the map), so the map does **not** retain on
-/// ingress. The matched release side is symmetric: `hew_hashmap_clone_layout`
-/// **retains** each string element (`clone_layout_string_blob` →
-/// `hew_string_clone`, refcount bump) and `hew_hashmap_free_layout` /
-/// `hew_hashmap_remove_layout` **release** via the descriptor `drop_fn`
-/// (refcount decrement, free-at-zero). That clone-retains / drop-releases
-/// symmetry is what makes the byte-copy MOVE sound rather than an unpaired
-/// aliasing copy (LESSONS `alias-byte-copy-not-semantic-clone`): there is one
-/// owner at a time, never two owners of one allocation.
-///
-/// Because ingress is MOVE, copy-in is **intentionally absent** — adding it
-/// would waste a String allocation and (until P3 drop emission lands) orphan
-/// the moved-from source, introducing a leak. A future *headerless* map
-/// producer (none exists today) would have to either copy-in at the producer
-/// or grow a dedicated map copy-in path; this is a fail-closed catalogue note,
-/// not a present gap.
-///
-/// ## Conditional key-consume asymmetry (read this for P3 consuming-call lowering)
-///
-/// Key disposition is **runtime-conditional on `existed`**, which is why the
-/// caller's K ownership cannot be resolved statically:
-/// - **Vacant insert** (`!existed`): the caller's K is **MOVED** into the slot
-///   — consumed, the map is now its sole owner.
-/// - **Overwrite** (`existed`): the stored slot K is the equality-witness and
-///   is **reused in place**; the caller's duplicate K is **NOT** consumed here
-///   — the caller retains it. Its release is materialised by the codegen
-///   conditional drop (`emit_insert_overwrite_key_release` in
-///   `hew-codegen-rs/src/llvm.rs`), which branches on this function's `i1`
-///   return and frees the caller's duplicate on the overwrite path (issue
-///   #2033; see the occupied-slot branch below).
-///
-/// Since `insert` returns `!existed`, K consumption is decided at runtime; a
-/// static null-after-move on the caller's K would be **wrong on the overwrite
-/// path**. The codegen materialiser therefore derives the consuming-call
-/// ownership model from this per-path contract — a runtime branch on the `i1`
-/// return — rather than a uniform null-after-move (LESSONS
-/// `raii-null-after-move`).
+/// The value owner transfers on both return paths. A new entry also takes the
+/// key owner; replacement preserves the stored key and leaves the incoming
+/// duplicate key with the caller. The Boolean result identifies which path ran.
+/// Cloning operations and eventual cleanup use the shared value descriptors.
 ///
 /// # Safety
 ///
@@ -1192,7 +1051,7 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
     // descriptor fields are plain scalar loads.
     let (key_size, val_size, hash_fn_opt, eq_fn_opt, val_drop_fn_opt) = unsafe {
         (
-            (*m).key_layout.size,
+            (*m).key_layout.value.size,
             (*m).val_layout.size,
             (*m).key_layout.hash_fn,
             (*m).key_layout.eq_fn,
@@ -1421,7 +1280,7 @@ pub unsafe extern "C" fn hew_hashmap_get_clone_layout(
         // SAFETY: val_ptr points at the occupied slot value and `out` was
         // validated for this value layout above.
         unsafe {
-            clone_layout_value_blob(
+            clone_layout_blob(
                 map.val_layout,
                 val_ptr,
                 out.cast::<u8>(),
@@ -1471,7 +1330,7 @@ pub unsafe extern "C" fn hew_hashmap_remove_layout(
     let (hash_fn_opt, eq_fn_opt, key_drop_fn_opt, val_drop_fn_opt, val_size) = (
         map.key_layout.hash_fn,
         map.key_layout.eq_fn,
-        map.key_layout.drop_fn,
+        map.key_layout.value.drop_fn,
         map.val_layout.drop_fn,
         map.val_layout.size,
     );
@@ -1573,7 +1432,7 @@ pub unsafe extern "C" fn hew_hashmap_remove_take_layout(
     let (hash_fn_opt, eq_fn_opt, key_drop_fn_opt, val_size) = (
         map.key_layout.hash_fn,
         map.key_layout.eq_fn,
-        map.key_layout.drop_fn,
+        map.key_layout.value.drop_fn,
         map.val_layout.size,
     );
     let (Some(hash_fn), Some(eq_fn)) = (hash_fn_opt, eq_fn_opt) else {
@@ -1684,8 +1543,8 @@ pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
     // W4.001 Stage C0a: descriptors are owned by-value snapshots.
     let kl = &map_ref.key_layout;
     let vl = &map_ref.val_layout;
-    let entries_align = core::cmp::max(kl.align, vl.align);
-    let key_drop_fn_opt = kl.drop_fn;
+    let entries_align = core::cmp::max(kl.value.align, vl.align);
+    let key_drop_fn_opt = kl.value.drop_fn;
     let val_drop_fn_opt = vl.drop_fn;
     let val_size = vl.size;
 
@@ -1757,7 +1616,7 @@ pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
     let val_offset = map.val_offset;
     let kl = &map.key_layout;
     let vl = &map.val_layout;
-    let key_drop_fn_opt = kl.drop_fn;
+    let key_drop_fn_opt = kl.value.drop_fn;
     let val_drop_fn_opt = vl.drop_fn;
     let val_size = vl.size;
 
@@ -1819,6 +1678,28 @@ pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
 // WHAT the real solution looks like: impl IntoIterator for HashMap<K,V> with
 // cursor-based iteration, wired into lower_for_iter_desugar.
 
+/// Collect one field from each occupied slot using the vector's copy protocol.
+unsafe fn collect_layout_field(
+    map: &HewLayoutHashMap,
+    layout: HewVecElemLayout,
+    offset: usize,
+) -> *mut HewVec {
+    require_clone(&layout, "map projection");
+    // SAFETY: the descriptor was validated by the map constructor and is copied by the vector.
+    let result = unsafe { crate::vec::hew_vec_new_with_elem_layout(&raw const layout) };
+    for index in 0..map.cap {
+        // SAFETY: the state byte is inside the live map allocation.
+        if unsafe { *slot_state(map.entries, index, map.stride) } != OCCUPIED {
+            continue;
+        }
+        // SAFETY: an occupied slot contains a live value at the supplied field offset.
+        let source = unsafe { map.entries.add(index * map.stride + offset) };
+        // SAFETY: push borrows the field and creates an independent value through the same descriptor.
+        unsafe { crate::vec::hew_vec_push_owned(result, source.cast()) };
+    }
+    result
+}
+
 /// Collect all keys of a layout-backed map into a new `HewVec`.
 ///
 /// Returns an eagerly allocated `*mut HewVec` containing one cloned copy of
@@ -1827,7 +1708,7 @@ pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
 /// # Ownership
 ///
 /// The caller owns the returned `HewVec` and must free it via
-/// `hew_vec_free_layout` (Plain keys) or `hew_vec_free` (String keys) when done.
+/// `hew_vec_free_owned` when done, for every supported key type.
 /// The source map is unchanged.
 ///
 /// A null `m` returns null fail-closed.
@@ -1838,82 +1719,14 @@ pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_keys_layout(m: *const HewLayoutHashMap) -> *mut HewVec {
     if m.is_null() {
-        return core::ptr::null_mut();
+        return ptr::null_mut();
     }
-    // SAFETY: m non-null, validated by gate.
+    // SAFETY: the caller supplies a live map.
     unsafe { validate_op_map(m) };
-    // SAFETY: m non-null and validated.
+    // SAFETY: m is non-null and live for the complete projection.
     let map = unsafe { &*m };
-
-    match map.key_layout.ownership_kind {
-        HewTypeOwnershipKind::LayoutManaged => {
-            crate::set_last_error(
-                "hew_hashmap_keys_layout: LayoutManaged keys not yet supported (W5.011-P2b-maps)",
-            );
-            std::process::abort();
-        }
-        HewTypeOwnershipKind::Bytes => {
-            // The Bytes kind belongs to the channel/stream element witness;
-            // map descriptors never carry it. Fail closed.
-            crate::set_last_error("hew_hashmap_keys_layout: ownership_kind=Bytes is not valid");
-            std::process::abort();
-        }
-        HewTypeOwnershipKind::Plain => {
-            let type_layout = HewTypeLayout {
-                size: map.key_layout.size,
-                align: map.key_layout.align,
-                ownership_kind: HewTypeOwnershipKind::Plain,
-            };
-            // SAFETY: non-null layout.
-            let vec = unsafe { crate::vec::hew_vec_new_with_layout(&raw const type_layout) };
-            if vec.is_null() {
-                return core::ptr::null_mut();
-            }
-            for idx in 0..map.cap {
-                // SAFETY: idx < cap, stride matches allocation.
-                let state = unsafe { *slot_state(map.entries, idx, map.stride) };
-                if state != OCCUPIED {
-                    continue;
-                }
-                // SAFETY: occupied slot has a valid key blob.
-                let key_ptr = unsafe { slot_key(map.entries, idx, map.stride, map.key_offset) };
-                // SAFETY: key_ptr is valid for key_layout.size bytes; vec was
-                // allocated with the matching HewTypeLayout.
-                unsafe {
-                    crate::vec::hew_vec_push_layout(
-                        vec,
-                        key_ptr.cast::<c_void>(),
-                        &raw const type_layout,
-                    );
-                }
-            }
-            vec
-        }
-        HewTypeOwnershipKind::String => {
-            // SAFETY: String Vec constructor.
-            let vec = unsafe { crate::vec::hew_vec_new_str() };
-            if vec.is_null() {
-                return core::ptr::null_mut();
-            }
-            for idx in 0..map.cap {
-                // SAFETY: idx < cap, stride matches allocation.
-                let state = unsafe { *slot_state(map.entries, idx, map.stride) };
-                if state != OCCUPIED {
-                    continue;
-                }
-                // SAFETY: occupied slot stores a managed string handle in the key blob.
-                let key_blob = unsafe { slot_key(map.entries, idx, map.stride, map.key_offset) };
-                // SAFETY: blob holds a managed string handle (may be null).
-                let key_ptr: *const hew_cabi::string::HewString = unsafe {
-                    ptr::read_unaligned(key_blob.cast::<*const hew_cabi::string::HewString>())
-                };
-                // hew_vec_push_str retains an independent owner.
-                // SAFETY: key_ptr is a live managed string (or null).
-                unsafe { crate::vec::hew_vec_push_str(vec, key_ptr) };
-            }
-            vec
-        }
-    }
+    // SAFETY: the descriptor and offset describe an initialized field in every occupied slot.
+    unsafe { collect_layout_field(map, map.key_layout.value, map.key_offset) }
 }
 
 /// Collect every occupied `(K, V)` pair into an independently owned Vec.
@@ -1950,7 +1763,7 @@ pub unsafe extern "C" fn hew_hashmap_entries_layout(
     let Some(v_end) = v_offset.checked_add(map.val_layout.size) else {
         abort_layout_clone("hew_hashmap_entries_layout: V field offset overflow");
     };
-    if v_offset < map.key_layout.size || v_end > pair.size {
+    if v_offset < map.key_layout.value.size || v_end > pair.size {
         abort_layout_clone("hew_hashmap_entries_layout: invalid pair field layout");
     }
 
@@ -1987,13 +1800,8 @@ pub unsafe extern "C" fn hew_hashmap_entries_layout(
         // that single owned copy into the Vec, after which the scratch storage
         // holds no owning references and is deallocated with its own layout.
         unsafe {
-            clone_layout_key_blob(
-                map.key_layout.ownership_kind,
-                key,
-                scratch,
-                map.key_layout.size,
-            );
-            clone_layout_value_blob(
+            clone_layout_blob(map.key_layout.value, key, scratch, "map key");
+            clone_layout_blob(
                 map.val_layout,
                 val,
                 scratch.add(v_offset),
@@ -2014,7 +1822,7 @@ pub unsafe extern "C" fn hew_hashmap_entries_layout(
 /// # Ownership
 ///
 /// The caller owns the returned `HewVec` and must free it via
-/// `hew_vec_free_layout` (Plain values) or `hew_vec_free` (String values).
+/// `hew_vec_free_owned` when done, for every supported value type.
 /// The source map is unchanged.
 ///
 /// A null `m` returns null fail-closed.
@@ -2025,80 +1833,12 @@ pub unsafe extern "C" fn hew_hashmap_entries_layout(
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_values_layout(m: *const HewLayoutHashMap) -> *mut HewVec {
     if m.is_null() {
-        return core::ptr::null_mut();
+        return ptr::null_mut();
     }
-    // SAFETY: m non-null, validated by gate.
+    // SAFETY: the caller supplies a live map.
     unsafe { validate_op_map(m) };
-    // SAFETY: m non-null and validated.
+    // SAFETY: m is non-null and live for the complete projection.
     let map = unsafe { &*m };
-
-    match map.val_layout.ownership_kind {
-        HewTypeOwnershipKind::LayoutManaged => {
-            crate::set_last_error(
-                "hew_hashmap_values_layout: LayoutManaged values not yet supported (W5.011-P2b-maps)",
-            );
-            std::process::abort();
-        }
-        HewTypeOwnershipKind::Bytes => {
-            // The Bytes kind belongs to the channel/stream element witness;
-            // map descriptors never carry it. Fail closed.
-            crate::set_last_error("hew_hashmap_values_layout: ownership_kind=Bytes is not valid");
-            std::process::abort();
-        }
-        HewTypeOwnershipKind::Plain => {
-            let type_layout = HewTypeLayout {
-                size: map.val_layout.size,
-                align: map.val_layout.align,
-                ownership_kind: HewTypeOwnershipKind::Plain,
-            };
-            // SAFETY: non-null layout.
-            let vec = unsafe { crate::vec::hew_vec_new_with_layout(&raw const type_layout) };
-            if vec.is_null() {
-                return core::ptr::null_mut();
-            }
-            for idx in 0..map.cap {
-                // SAFETY: idx < cap, stride matches allocation.
-                let state = unsafe { *slot_state(map.entries, idx, map.stride) };
-                if state != OCCUPIED {
-                    continue;
-                }
-                // SAFETY: occupied slot has a valid value blob.
-                let val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
-                // SAFETY: val_ptr is valid for val_layout.size bytes; vec was
-                // allocated with the matching HewTypeLayout.
-                unsafe {
-                    crate::vec::hew_vec_push_layout(
-                        vec,
-                        val_ptr.cast::<c_void>(),
-                        &raw const type_layout,
-                    );
-                }
-            }
-            vec
-        }
-        HewTypeOwnershipKind::String => {
-            // SAFETY: String Vec constructor.
-            let vec = unsafe { crate::vec::hew_vec_new_str() };
-            if vec.is_null() {
-                return core::ptr::null_mut();
-            }
-            for idx in 0..map.cap {
-                // SAFETY: idx < cap, stride matches allocation.
-                let state = unsafe { *slot_state(map.entries, idx, map.stride) };
-                if state != OCCUPIED {
-                    continue;
-                }
-                // SAFETY: occupied slot stores a managed string handle in the value blob.
-                let val_blob = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
-                // SAFETY: blob holds a managed string handle (may be null).
-                let val_ptr: *const hew_cabi::string::HewString = unsafe {
-                    ptr::read_unaligned(val_blob.cast::<*const hew_cabi::string::HewString>())
-                };
-                // hew_vec_push_str retains an independent owner.
-                // SAFETY: val_ptr is a live managed string (or null).
-                unsafe { crate::vec::hew_vec_push_str(vec, val_ptr) };
-            }
-            vec
-        }
-    }
+    // SAFETY: the descriptor and offset describe an initialized field in every occupied slot.
+    unsafe { collect_layout_field(map, map.val_layout, map.val_offset) }
 }

@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewMapValueDropThunk, HewMapValueLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewVecElemDropThunk, HewVecElemLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -64,8 +64,8 @@ extern "C" fn snapshot_drop(_blob: *mut c_void) {
     SNAPSHOT_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
-fn plain_v_layout() -> HewMapValueLayout {
-    HewMapValueLayout {
+fn plain_v_layout() -> HewVecElemLayout {
+    HewVecElemLayout {
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -76,12 +76,15 @@ fn plain_v_layout() -> HewMapValueLayout {
 
 fn plain_k_layout() -> HewMapKeyLayout {
     HewMapKeyLayout {
-        size: 8,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: 8,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     }
 }
 
@@ -93,12 +96,15 @@ fn plain_k_layout() -> HewMapKeyLayout {
 #[should_panic(expected = "key_layout ownership_kind=String requires drop_fn")]
 fn rejects_string_key_without_drop_fn() {
     let kl = HewMapKeyLayout {
-        size: 8,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::String,
+        value: HewVecElemLayout {
+            size: 8,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::String,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
     let vl = plain_v_layout();
     unsafe {
@@ -110,12 +116,15 @@ fn rejects_string_key_without_drop_fn() {
 #[should_panic(expected = "key_layout ownership_kind=LayoutManaged requires drop_fn")]
 fn rejects_layout_managed_key_without_drop_fn() {
     let kl = HewMapKeyLayout {
-        size: 8,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        value: HewVecElemLayout {
+            size: 8,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
     let vl = plain_v_layout();
     unsafe {
@@ -127,7 +136,7 @@ fn rejects_layout_managed_key_without_drop_fn() {
 #[should_panic(expected = "val_layout ownership_kind=String requires drop_fn")]
 fn rejects_string_value_without_drop_fn() {
     let kl = plain_k_layout();
-    let vl = HewMapValueLayout {
+    let vl = HewVecElemLayout {
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::String,
@@ -143,7 +152,7 @@ fn rejects_string_value_without_drop_fn() {
 #[should_panic(expected = "val_layout ownership_kind=LayoutManaged requires drop_fn")]
 fn rejects_layout_managed_value_without_drop_fn() {
     let kl = plain_k_layout();
-    let vl = HewMapValueLayout {
+    let vl = HewVecElemLayout {
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -174,11 +183,14 @@ fn accepts_plain_with_drop_fn_no_op() {
     // The relaxed-direction is safe because extra cleanup is harmless;
     // missing cleanup is the leak hazard the rejected cases above guard.
     let kl = HewMapKeyLayout {
-        drop_fn: Some(snapshot_drop as HewMapValueDropThunk),
+        value: HewVecElemLayout {
+            drop_fn: Some(snapshot_drop as HewVecElemDropThunk),
+            ..plain_k_layout().value
+        },
         ..plain_k_layout()
     };
-    let vl = HewMapValueLayout {
-        drop_fn: Some(snapshot_drop as HewMapValueDropThunk),
+    let vl = HewVecElemLayout {
+        drop_fn: Some(snapshot_drop as HewVecElemDropThunk),
         ..plain_v_layout()
     };
     unsafe {
@@ -199,18 +211,21 @@ fn kernel_honours_snapshot_after_caller_mutates_descriptors() {
     // present, owned ownership kinds). The constructor snapshots both
     // descriptors into the map — see plan rev6 §4 Blocker B2.
     let mut kl = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        value: HewVecElemLayout {
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(snapshot_drop as HewVecElemDropThunk),
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: Some(snapshot_drop as HewMapValueDropThunk),
     };
-    let mut vl = HewMapValueLayout {
+    let mut vl = HewVecElemLayout {
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        drop_fn: Some(snapshot_drop as HewMapValueDropThunk),
+        drop_fn: Some(snapshot_drop as HewVecElemDropThunk),
         clone_fn: None,
     };
 
@@ -228,8 +243,8 @@ fn kernel_honours_snapshot_after_caller_mutates_descriptors() {
             reason = "we mutate kl/vl precisely to assert the kernel ignores the change"
         )]
         {
-            kl.drop_fn = None;
-            kl.ownership_kind = HewTypeOwnershipKind::Plain;
+            kl.value.drop_fn = None;
+            kl.value.ownership_kind = HewTypeOwnershipKind::Plain;
             vl.drop_fn = None;
             vl.ownership_kind = HewTypeOwnershipKind::Plain;
         }

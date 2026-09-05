@@ -1,8 +1,8 @@
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVec, HewVecElemLayout};
+use hew_cabi::map::{HewMapKeyLayout, HewVecElemLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewVec};
 use hew_runtime::hashmap::{
     hew_hashmap_free_layout, hew_hashmap_insert_layout, hew_hashmap_new_with_layout,
 };
@@ -44,14 +44,17 @@ fn hashmap_of_vec_drops_every_nested_element_exactly_once() {
     INNER_ELEMENT_DROPS.store(0, Ordering::SeqCst);
 
     let key_layout = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64),
         eq_fn: Some(eq_i64),
-        drop_fn: None,
     };
-    let value_layout = HewMapValueLayout {
+    let value_layout = HewVecElemLayout {
         size: size_of::<*mut HewVec>(),
         align: align_of::<*mut HewVec>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,

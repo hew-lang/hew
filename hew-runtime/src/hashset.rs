@@ -18,7 +18,7 @@
 use core::ffi::c_void;
 use core::ptr;
 
-use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
+use hew_cabi::map::{HewMapKeyLayout, HewVecElemLayout};
 use hew_cabi::vec::HewTypeOwnershipKind;
 
 use crate::hashmap::{
@@ -79,7 +79,7 @@ use crate::vec::HewVec;
 /// The pointer must therefore remain valid for the entire lifetime of the map.
 /// A `static` binding provides program-lifetime validity without any
 /// heap allocation.
-static VALUE_LAYOUT: HewMapValueLayout = HewMapValueLayout {
+static VALUE_LAYOUT: HewVecElemLayout = HewVecElemLayout {
     size: 0,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -457,16 +457,8 @@ pub unsafe extern "C" fn hew_hashset_to_vec_layout(set: *const HewLayoutHashSet)
 
 /// Deep-clone a layout-backed set and its underlying storage.
 ///
-/// Operates on the layout-keyed [`HewLayoutHashSet`] substrate produced by
-/// [`hew_hashset_new_with_layout`]: it allocates the outer wrapper and
-/// delegates the inner map to [`hew_hashmap_clone_layout`], which honours the
-/// element layout's clone discipline and fails closed on unsupported
-/// layout-managed key paths.
-///
-/// Pairs with [`hew_hashset_free_layout`]. Layout-backed sets must not be
-/// cloned through the non-layout `hew_hashset_clone` ABI: that would reinterpret
-/// 16-byte-stride layout entries as 48-byte `HewMapEntry` records (W4.045
-/// use-after-free, `lifecycle-symmetry` / `codegen-abi-authority` P0).
+/// The inner map copies every element through its shared value descriptor.
+/// Release the independent result with [`hew_hashset_free_layout`].
 ///
 /// # Safety
 ///
@@ -482,10 +474,7 @@ pub unsafe extern "C" fn hew_hashset_clone_layout(
     }
     // SAFETY: set non-null; map was constructed via hew_hashmap_new_with_layout.
     let cloned_map = unsafe { hew_hashmap_clone_layout((*set).map) };
-    // hew_hashmap_clone_layout aborts on OOM and on unsupported layout-managed
-    // key paths, and returns null only for a null input. The inner map of a
-    // valid set is never null, so a null here is impossible under the current
-    // implementation; guard defensively anyway (fail-closed).
+    // A live set always owns a non-null inner map; cloning must preserve that invariant.
     if cloned_map.is_null() {
         crate::set_last_error("hew_hashset_clone_layout: inner map clone failed");
         std::process::abort();

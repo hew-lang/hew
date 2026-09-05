@@ -508,3 +508,23 @@ allowed the intended zero-sized and retained-value behaviours to execute.
 Full lint reached the remaining machine/actor dogfood coverage and the older MIR
 measurement fixture, which still fail to compile through the new core. Those
 failures remain visible while the native language implementation continues.
+
+## Managed JSON and YAML text boundaries
+
+JSON and YAML source-facing text now borrows the canonical managed string
+handle. Getters, serialization and error exports return independent managed
+owners, and the existing string-free exports release those owners. Empty text
+uses the null handle throughout constructors, keys, values and parse input;
+parsers receive the complete UTF-8 document and retain native format errors.
+The existing resource boxes and child-transfer rules remain intact.
+
+Direct Rust fixtures now allocate actual managed handles through a shared test
+owner. Boundary tests cover empty and embedded-NUL keys and values through
+builders, native serialization and reparsing. Retention tests release inputs,
+sibling results and source containers while keeping other results alive, and
+check error text after the slot changes or clears. Focused JSON/YAML checks,
+address/leak sanitizers without suppressions, and standard-library JSON Clippy
+pass. The full standard-library run identifies failures in the untouched
+regex/DNS Vec-string consumers already recorded by the boundary audit; those
+remain with their owners. Combined census and native/platform acceptance are
+integration work outside this slice.

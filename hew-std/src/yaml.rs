@@ -1,14 +1,13 @@
 //! Hew `std::encoding::yaml` — YAML parsing and generation.
 //!
 //! Provides YAML parsing, serialization, and value access for compiled Hew
-//! programs. All returned strings are allocated with `libc::malloc` and
-//! NUL-terminated. All returned [`HewYamlValue`] pointers are heap-allocated
+//! programs. Text inputs borrow managed [`HewString`] handles and text results
+//! transfer an independent managed owner. Null is the canonical empty string.
+//! All returned [`HewYamlValue`] pointers are heap-allocated
 //! via `Box` and must be freed with [`hew_yaml_free`].
 use base64::Engine as _;
-use hew_cabi::cabi::str_to_malloc;
+use hew_cabi::string::{string_as_str, string_from_str, string_release, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
-use std::ffi::CStr;
-use std::os::raw::c_char;
 
 /// Reject YAML inputs larger than 1 MiB before parsing to avoid memory abuse.
 const YAML_PARSE_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
@@ -192,18 +191,11 @@ fn is_yaml_anchor_alias_name_byte(byte: u8) -> bool {
 ///
 /// # Safety
 ///
-/// `yaml_str` must be a valid NUL-terminated C string.
+/// `yaml_str` must be a live managed string handle (null means empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const c_char) -> *mut HewYamlValue {
-    if yaml_str.is_null() {
-        set_parse_last_error("invalid YAML input: null pointer");
-        return std::ptr::null_mut();
-    }
-    // SAFETY: yaml_str is a valid NUL-terminated C string per caller contract.
-    let Ok(s) = (unsafe { CStr::from_ptr(yaml_str) }).to_str() else {
-        set_parse_last_error("invalid YAML input: input was not valid UTF-8");
-        return std::ptr::null_mut();
-    };
+pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const HewString) -> *mut HewYamlValue {
+    // SAFETY: the caller borrows a live managed string or canonical empty handle.
+    let s = unsafe { string_as_str(yaml_str) };
     if let Err(err) = validate_yaml_input_limits(s) {
         set_parse_last_error(err);
         return std::ptr::null_mut();
@@ -222,32 +214,33 @@ pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const c_char) -> *mut HewYaml
 
 /// Return the most recent parse error for this Hew actor.
 ///
-/// Returns an empty string when no error is set.
+/// Returns an owned managed string; release it with [`hew_yaml_string_free`].
+/// Returns canonical empty (null) when no error is set.
 ///
 /// Errors are keyed per (actor, parser-kind), so a different parser's success
 /// does not clear this slot.
 #[no_mangle]
-pub extern "C" fn hew_yaml_last_error() -> *mut c_char {
-    str_to_malloc(&get_parse_last_error())
+pub extern "C" fn hew_yaml_last_error() -> *mut HewString {
+    string_from_str(&get_parse_last_error())
 }
 
 /// Serialize a [`HewYamlValue`] back to a YAML string.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
+/// Returns an owned managed string. The caller must release
 /// it with [`hew_yaml_string_free`]. Returns null on error.
 ///
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewYamlValue`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_yaml_stringify(val: *const HewYamlValue) -> *mut c_char {
+pub unsafe extern "C" fn hew_yaml_stringify(val: *const HewYamlValue) -> *mut HewString {
     if val.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
     match serde_yaml::to_string(&v.inner) {
-        Ok(s) => str_to_malloc(&s),
+        Ok(s) => string_from_str(&s),
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -410,21 +403,22 @@ pub unsafe extern "C" fn hew_yaml_get_float(val: *const HewYamlValue) -> f64 {
 
 /// Get the string value from a [`HewYamlValue`].
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with [`hew_yaml_string_free`]. Returns null if the value is not a string.
+/// Returns an owned managed string. The caller must release
+/// it with [`hew_yaml_string_free`]. Returns canonical empty (null) for an
+/// empty string or a value that is not a string; use [`hew_yaml_type`] to distinguish.
 ///
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewYamlValue`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_yaml_get_string(val: *const HewYamlValue) -> *mut c_char {
+pub unsafe extern "C" fn hew_yaml_get_string(val: *const HewYamlValue) -> *mut HewString {
     if val.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
     match v.inner.as_str() {
-        Some(s) => str_to_malloc(s),
+        Some(s) => string_from_str(s),
         None => std::ptr::null_mut(),
     }
 }
@@ -496,19 +490,17 @@ pub unsafe extern "C" fn hew_yaml_get_bytes(val: *const HewYamlValue) -> BytesTr
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewYamlValue`], or null.
-/// `key` must be a valid NUL-terminated C string.
+/// `key` must be a live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_get_field(
     val: *const HewYamlValue,
-    key: *const c_char,
+    key: *const HewString,
 ) -> *mut HewYamlValue {
-    if val.is_null() || key.is_null() {
+    if val.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: key is a valid NUL-terminated C string per caller contract.
-    let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
-        return std::ptr::null_mut();
-    };
+    // SAFETY: key is a live managed string handle (null means empty) per caller contract.
+    let key_str = unsafe { string_as_str(key) };
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
     let serde_yaml::Value::Mapping(mapping) = &v.inner else {
@@ -596,20 +588,17 @@ pub unsafe extern "C" fn hew_yaml_free(val: *mut HewYamlValue) {
     record_value_box_consumed();
 }
 
-/// Free a C string previously returned by [`hew_yaml_stringify`] or
-/// [`hew_yaml_get_string`].
+/// Release a managed string previously returned by [`hew_yaml_stringify`] or
+/// [`hew_yaml_get_string`] or [`hew_yaml_last_error`].
 ///
 /// # Safety
 ///
-/// `s` must be a pointer previously returned by `hew_yaml_stringify` or
-/// `hew_yaml_get_string`, and must not have been freed already.
+/// `s` must be null or one owned managed result from `hew_yaml_stringify`,
+/// `hew_yaml_get_string` or `hew_yaml_last_error`, not already released.
 #[no_mangle]
-pub unsafe extern "C" fn hew_yaml_string_free(s: *mut c_char) {
-    if s.is_null() {
-        return;
-    }
-    // SAFETY: s was allocated with libc::malloc and has not been freed.
-    unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test frees str_to_malloc output)
+pub unsafe extern "C" fn hew_yaml_string_free(s: *mut HewString) {
+    // SAFETY: the caller transfers one managed owner, or canonical empty.
+    unsafe { string_release(s) };
 }
 
 // ---------------------------------------------------------------------------
@@ -627,26 +616,23 @@ pub extern "C" fn hew_yaml_object_new() -> *mut HewYamlValue {
 
 /// Set a boolean field on a YAML mapping.
 ///
-/// Does nothing if `obj` is null, not a mapping, or `key` is null.
+/// Does nothing if `obj` is null or not a mapping.
 ///
 /// # Safety
 ///
 /// `obj` must be a valid non-null [`HewYamlValue`] pointer. `key` must be a
-/// valid NUL-terminated C string.
+/// live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_bool(
     obj: *mut HewYamlValue,
-    key: *const c_char,
+    key: *const HewString,
     val: i32,
 ) {
-    if obj.is_null() || key.is_null() {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key_str = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
+    let key_str = unsafe { string_as_str(key) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(
@@ -664,17 +650,14 @@ pub unsafe extern "C" fn hew_yaml_object_set_bool(
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_int(
     obj: *mut HewYamlValue,
-    key: *const c_char,
+    key: *const HewString,
     val: i64,
 ) {
-    if obj.is_null() || key.is_null() {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key_str = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
+    let key_str = unsafe { string_as_str(key) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(
@@ -692,17 +675,14 @@ pub unsafe extern "C" fn hew_yaml_object_set_int(
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_float(
     obj: *mut HewYamlValue,
-    key: *const c_char,
+    key: *const HewString,
     val: f64,
 ) {
-    if obj.is_null() || key.is_null() {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key_str = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
+    let key_str = unsafe { string_as_str(key) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(
@@ -716,27 +696,20 @@ pub unsafe extern "C" fn hew_yaml_object_set_float(
 ///
 /// # Safety
 ///
-/// Same as [`hew_yaml_object_set_bool`]. `val` must be a valid NUL-terminated
-/// C string.
+/// Same as [`hew_yaml_object_set_bool`]. `val` must be a live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_string(
     obj: *mut HewYamlValue,
-    key: *const c_char,
-    val: *const c_char,
+    key: *const HewString,
+    val: *const HewString,
 ) {
-    if obj.is_null() || key.is_null() || val.is_null() {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key and val are valid NUL-terminated strings.
-    let key_str = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
-    // SAFETY: val is non-null (checked above) and valid per caller contract.
-    let val_str = unsafe { CStr::from_ptr(val) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key and val are live managed string handles (null means empty).
+    let key_str = unsafe { string_as_str(key) }.to_owned();
+    // SAFETY: val is a live managed string or canonical empty per caller contract.
+    let val_str = unsafe { string_as_str(val) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(
@@ -757,7 +730,7 @@ pub unsafe extern "C" fn hew_yaml_object_set_string(
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_char(
     obj: *mut HewYamlValue,
-    key: *const c_char,
+    key: *const HewString,
     val: i64,
 ) {
     // SAFETY: delegates to set_int under the same null-or-valid-pointer contract.
@@ -775,7 +748,7 @@ pub unsafe extern "C" fn hew_yaml_object_set_char(
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_duration(
     obj: *mut HewYamlValue,
-    key: *const c_char,
+    key: *const HewString,
     val: i64,
 ) {
     // SAFETY: delegates to set_int under the same null-or-valid-pointer contract.
@@ -816,17 +789,17 @@ pub unsafe extern "C" fn hew_yaml_get_duration(val: *const HewYamlValue) -> i64 
 ///
 /// The `val` pointer is consumed and must not be freed by the caller. A
 /// non-null `val` is consumed on every return path, including when `obj` is
-/// null or not a mapping, or `key` is null. A null `val` is a no-op.
+/// null or not a mapping. A null `val` is a no-op.
 ///
 /// # Safety
 ///
 /// `obj` must be a valid [`HewYamlValue`] pointer or null. `key` must be a
-/// valid NUL-terminated C string or null. `val` must be a valid
+/// live managed string handle or null (the empty string). `val` must be a valid
 /// [`HewYamlValue`] pointer that the caller relinquishes ownership of, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set(
     obj: *mut HewYamlValue,
-    key: *const c_char,
+    key: *const HewString,
     val: *mut HewYamlValue,
 ) {
     if val.is_null() {
@@ -837,14 +810,11 @@ pub unsafe extern "C" fn hew_yaml_object_set(
     let child = unsafe { Box::from_raw(val) };
     #[cfg(test)]
     record_value_box_consumed();
-    if obj.is_null() || key.is_null() {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key_str = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
+    let key_str = unsafe { string_as_str(key) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(serde_yaml::Value::String(key_str), child.inner);
@@ -853,21 +823,18 @@ pub unsafe extern "C" fn hew_yaml_object_set(
 
 /// Set a null field on a YAML mapping.
 ///
-/// Does nothing if `obj` is null, not a mapping, or `key` is null.
+/// Does nothing if `obj` is null or not a mapping.
 ///
 /// # Safety
 ///
 /// Same as [`hew_yaml_object_set_bool`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_yaml_object_set_null(obj: *mut HewYamlValue, key: *const c_char) {
-    if obj.is_null() || key.is_null() {
+pub unsafe extern "C" fn hew_yaml_object_set_null(obj: *mut HewYamlValue, key: *const HewString) {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key_str = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
+    let key_str = unsafe { string_as_str(key) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(serde_yaml::Value::String(key_str), serde_yaml::Value::Null);
@@ -943,22 +910,19 @@ pub unsafe extern "C" fn hew_yaml_array_push_float(arr: *mut HewYamlValue, val: 
 
 /// Push a string onto a YAML sequence. The string value is copied.
 ///
-/// Does nothing if `arr` is null, not a sequence, or `val` is null.
+/// Does nothing if `arr` is null or not a sequence.
 ///
 /// # Safety
 ///
 /// `arr` must be a valid non-null [`HewYamlValue`] pointer. `val` must be a
-/// valid NUL-terminated C string.
+/// live managed string handle (null means empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_yaml_array_push_string(arr: *mut HewYamlValue, val: *const c_char) {
-    if arr.is_null() || val.is_null() {
+pub unsafe extern "C" fn hew_yaml_array_push_string(arr: *mut HewYamlValue, val: *const HewString) {
+    if arr.is_null() {
         return;
     }
-    // SAFETY: val is non-null (checked above) and valid per caller contract.
-    let val_str = unsafe { CStr::from_ptr(val) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: val is a live managed string or canonical empty per caller contract.
+    let val_str = unsafe { string_as_str(val) }.to_owned();
     // SAFETY: arr is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Sequence(seq) = &mut unsafe { &mut *arr }.inner {
         seq.push(serde_yaml::Value::String(val_str));
@@ -1051,17 +1015,11 @@ pub extern "C" fn hew_yaml_from_float(val: f64) -> *mut HewYamlValue {
 ///
 /// # Safety
 ///
-/// `val` must be a valid NUL-terminated C string, or null.
+/// `val` must be a live managed string handle or null (the empty string).
 #[no_mangle]
-pub unsafe extern "C" fn hew_yaml_from_string(val: *const c_char) -> *mut HewYamlValue {
-    if val.is_null() {
-        return std::ptr::null_mut();
-    }
+pub unsafe extern "C" fn hew_yaml_from_string(val: *const HewString) -> *mut HewYamlValue {
     // SAFETY: val is non-null (checked above) and valid per caller contract.
-    let s = unsafe { CStr::from_ptr(val) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    let s = unsafe { string_as_str(val) }.to_owned();
     boxed_value(serde_yaml::Value::String(s))
 }
 
@@ -1085,25 +1043,131 @@ pub extern "C" fn hew_yaml_from_null() -> *mut HewYamlValue {
 )]
 mod tests {
     use super::*;
+    use crate::test_string::ManagedString;
     use hew_runtime::bytes::hew_bytes_drop;
-    use std::ffi::CString;
     use std::fmt::Write as _;
 
     /// Helper: parse a YAML string and return the owned pointer.
     fn parse(yaml: &str) -> *mut HewYamlValue {
-        let c = CString::new(yaml).unwrap();
-        // SAFETY: c is a valid NUL-terminated C string.
+        let c = ManagedString::new(yaml);
+        // SAFETY: c is a live managed string handle.
         unsafe { hew_yaml_parse(c.as_ptr()) }
     }
 
-    /// Helper: read a C string pointer and free it.
-    unsafe fn read_and_free_cstr(ptr: *mut c_char) -> String {
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string from malloc.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated with malloc.
+    /// Helper: read a managed string handle and free it.
+    unsafe fn read_and_free_string(ptr: *mut HewString) -> String {
+        // SAFETY: ptr is a live managed string owner or canonical empty.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: ptr is an owned managed result.
         unsafe { hew_yaml_string_free(ptr) };
         s
+    }
+
+    #[test]
+    fn managed_keys_and_values_roundtrip_without_truncation() {
+        let text = "雪\0colour\0tail";
+        for key_text in ["", "clé\0suffix"] {
+            let key = ManagedString::new(key_text);
+            let input = ManagedString::new(text);
+            let obj = hew_yaml_object_new();
+            let arr = hew_yaml_array_new();
+            // SAFETY: each resource is live and each text argument is borrowed managed data.
+            unsafe {
+                hew_yaml_object_set_bool(obj, key.as_ptr(), 1);
+                let field = hew_yaml_get_field(obj, key.as_ptr());
+                assert_eq!(hew_yaml_get_bool(field), 1);
+                hew_yaml_free(field);
+                hew_yaml_object_set_int(obj, key.as_ptr(), 42);
+                let field = hew_yaml_get_field(obj, key.as_ptr());
+                assert_eq!(hew_yaml_get_int(field), 42);
+                hew_yaml_free(field);
+                hew_yaml_object_set_float(obj, key.as_ptr(), 1.5);
+                let field = hew_yaml_get_field(obj, key.as_ptr());
+                assert!((hew_yaml_get_float(field) - 1.5).abs() < f64::EPSILON);
+                hew_yaml_free(field);
+                hew_yaml_object_set_char(obj, key.as_ptr(), 0x96ea);
+                let field = hew_yaml_get_field(obj, key.as_ptr());
+                assert_eq!(hew_yaml_get_char(field), 0x96ea);
+                hew_yaml_free(field);
+                hew_yaml_object_set_duration(obj, key.as_ptr(), -42);
+                let field = hew_yaml_get_field(obj, key.as_ptr());
+                assert_eq!(hew_yaml_get_duration(field), -42);
+                hew_yaml_free(field);
+                hew_yaml_object_set_null(obj, key.as_ptr());
+                let field = hew_yaml_get_field(obj, key.as_ptr());
+                assert_eq!(hew_yaml_type(field), 0);
+                hew_yaml_free(field);
+                hew_yaml_object_set_string(obj, key.as_ptr(), input.as_ptr());
+                hew_yaml_array_push_string(arr, input.as_ptr());
+                hew_yaml_array_push_string(arr, std::ptr::null());
+                drop(input);
+
+                let field = hew_yaml_get_field(obj, key.as_ptr());
+                let saved = hew_yaml_get_string(field);
+                hew_yaml_free(field);
+                let encoded = hew_yaml_stringify(obj);
+                let native: serde_yaml::Value =
+                    serde_yaml::from_str(string_as_str(encoded)).unwrap();
+                assert_eq!(native[key_text].as_str(), Some(text));
+                assert_eq!(native.as_mapping().unwrap().len(), 1);
+                let reparsed = hew_yaml_parse(encoded);
+                hew_yaml_string_free(encoded);
+                hew_yaml_free(obj);
+                assert_eq!(string_as_str(saved), text);
+                hew_yaml_string_free(saved);
+                let field = hew_yaml_get_field(reparsed, key.as_ptr());
+                assert_eq!(read_and_free_string(hew_yaml_get_string(field)), text);
+                hew_yaml_free(field);
+                hew_yaml_free(reparsed);
+
+                for (index, expected) in [(0, text), (1, "")] {
+                    let field = hew_yaml_array_get(arr, index);
+                    assert_eq!(hew_yaml_type(field), 4);
+                    assert_eq!(read_and_free_string(hew_yaml_get_string(field)), expected);
+                    hew_yaml_free(field);
+                }
+                let parent = hew_yaml_object_new();
+                hew_yaml_object_set(parent, key.as_ptr(), arr);
+                let field = hew_yaml_get_field(parent, key.as_ptr());
+                assert_eq!(hew_yaml_array_len(field), 2);
+                hew_yaml_free(field);
+                hew_yaml_object_set_string(parent, key.as_ptr(), std::ptr::null());
+                let field = hew_yaml_get_field(parent, key.as_ptr());
+                assert_eq!(hew_yaml_type(field), 4);
+                let empty = hew_yaml_get_string(field);
+                assert!(empty.is_null());
+                hew_yaml_string_free(empty);
+                hew_yaml_free(field);
+                hew_yaml_free(parent);
+            }
+        }
+    }
+
+    #[test]
+    fn managed_parser_preserves_native_document_errors() {
+        for document in ["", "true\0trailing", "{\"broken\":", "雪\0tail"] {
+            let input = ManagedString::new(document);
+            let native = serde_yaml::from_str::<serde_yaml::Value>(document);
+            // SAFETY: input is valid UTF-8 in a live managed handle, including canonical empty.
+            unsafe {
+                let value = hew_yaml_parse(input.as_ptr());
+                match native {
+                    Ok(_) => {
+                        assert!(!value.is_null());
+                        assert!(hew_yaml_last_error().is_null());
+                        hew_yaml_free(value);
+                    }
+                    Err(error) => {
+                        assert!(value.is_null());
+                        assert_eq!(
+                            read_and_free_string(hew_yaml_last_error()),
+                            error.to_string()
+                        );
+                    }
+                }
+                assert_eq!(string_as_str(input.as_ptr()), document);
+            }
+        }
     }
 
     /// Helper: read a bytes triple and release its runtime allocation.
@@ -1126,9 +1190,9 @@ mod tests {
     #[test]
     fn child_transfer_is_unconditional_and_deep_clone_is_independent() {
         let baseline = live_value_boxes();
-        let key = CString::new("child").unwrap();
+        let key = ManagedString::new("child");
 
-        // Null/invalid parents and invalid keys still consume a non-null child.
+        // Null/invalid parents still consume a non-null child; a null key means empty.
         // SAFETY: every non-null handle below is freshly allocated and freed or
         // transferred exactly once; null pointers exercise the documented no-op path.
         unsafe {
@@ -1198,22 +1262,22 @@ mod tests {
         unsafe {
             assert_eq!(hew_yaml_type(val), 6); // mapping
 
-            let name_key = CString::new("name").unwrap();
+            let name_key = ManagedString::new("name");
             let name = hew_yaml_get_field(val, name_key.as_ptr());
             assert!(!name.is_null());
             assert_eq!(hew_yaml_type(name), 4); // string
-            let name_str = read_and_free_cstr(hew_yaml_get_string(name));
+            let name_str = read_and_free_string(hew_yaml_get_string(name));
             assert_eq!(name_str, "hew");
             hew_yaml_free(name);
 
-            let ver_key = CString::new("version").unwrap();
+            let ver_key = ManagedString::new("version");
             let ver = hew_yaml_get_field(val, ver_key.as_ptr());
             assert!(!ver.is_null());
             assert_eq!(hew_yaml_type(ver), 2); // number_int
             assert_eq!(hew_yaml_get_int(ver), 42);
             hew_yaml_free(ver);
 
-            let active_key = CString::new("active").unwrap();
+            let active_key = ManagedString::new("active");
             let active = hew_yaml_get_field(val, active_key.as_ptr());
             assert!(!active.is_null());
             assert_eq!(hew_yaml_type(active), 1); // bool
@@ -1254,15 +1318,15 @@ mod tests {
 
         // SAFETY: val is a valid HewYamlValue from parse.
         unsafe {
-            let outer_key = CString::new("outer").unwrap();
+            let outer_key = ManagedString::new("outer");
             let outer = hew_yaml_get_field(val, outer_key.as_ptr());
             assert!(!outer.is_null());
 
-            let inner_key = CString::new("inner").unwrap();
+            let inner_key = ManagedString::new("inner");
             let inner = hew_yaml_get_field(outer, inner_key.as_ptr());
             assert!(!inner.is_null());
 
-            let value_key = CString::new("value").unwrap();
+            let value_key = ManagedString::new("value");
             let v = hew_yaml_get_field(inner, value_key.as_ptr());
             assert!(!v.is_null());
             assert_eq!(hew_yaml_get_int(v), 99);
@@ -1283,7 +1347,7 @@ mod tests {
         // SAFETY: val is a valid HewYamlValue from parse.
         unsafe {
             let yaml_str = hew_yaml_stringify(val);
-            let result = read_and_free_cstr(yaml_str);
+            let result = read_and_free_string(yaml_str);
             // Re-parse both to compare structurally.
             let v1: serde_yaml::Value = serde_yaml::from_str(original).unwrap();
             let v2: serde_yaml::Value = serde_yaml::from_str(&result).unwrap();
@@ -1318,7 +1382,7 @@ mod tests {
 
             let str_val = parse("\"hello\"");
             assert_eq!(hew_yaml_type(str_val), 4);
-            let s = read_and_free_cstr(hew_yaml_get_string(str_val));
+            let s = read_and_free_string(hew_yaml_get_string(str_val));
             assert_eq!(s, "hello");
             hew_yaml_free(str_val);
 
@@ -1344,7 +1408,10 @@ mod tests {
 
         // SAFETY: null pointer is safe for hew_yaml_parse.
         unsafe {
-            assert!(hew_yaml_parse(std::ptr::null()).is_null());
+            let empty = hew_yaml_parse(std::ptr::null());
+            assert!(!empty.is_null());
+            assert_eq!(hew_yaml_type(empty), 0);
+            hew_yaml_free(empty);
         }
     }
 
@@ -1371,7 +1438,7 @@ mod tests {
             hew_yaml_array_push_bool(arr, 1);
             hew_yaml_array_push_int(arr, 42);
             hew_yaml_array_push_float(arr, 2.5);
-            let s = CString::new("hello").unwrap();
+            let s = ManagedString::new("hello");
             hew_yaml_array_push_string(arr, s.as_ptr());
             hew_yaml_array_push_null(arr);
 
@@ -1396,7 +1463,7 @@ mod tests {
 
             let e3 = hew_yaml_array_get(arr, 3);
             assert_eq!(hew_yaml_type(e3), 4); // string
-            let s_out = read_and_free_cstr(hew_yaml_get_string(e3));
+            let s_out = read_and_free_string(hew_yaml_get_string(e3));
             assert_eq!(s_out, "hello");
             hew_yaml_free(e3);
 
@@ -1416,7 +1483,7 @@ mod tests {
         // SAFETY: arr and inner are valid HewYamlValue pointers.
         unsafe {
             let inner = hew_yaml_object_new();
-            let k = CString::new("nested").unwrap();
+            let k = ManagedString::new("nested");
             hew_yaml_object_set_int(inner, k.as_ptr(), 7);
             // Push takes ownership of inner — do not free it.
             hew_yaml_array_push(arr, inner);
@@ -1444,7 +1511,7 @@ mod tests {
             hew_yaml_array_push_int(child_arr, 1);
             hew_yaml_array_push_int(child_arr, 2);
 
-            let k = CString::new("items").unwrap();
+            let k = ManagedString::new("items");
             // Set takes ownership of child_arr — do not free it.
             hew_yaml_object_set(obj, k.as_ptr(), child_arr);
 
@@ -1464,7 +1531,7 @@ mod tests {
 
         // SAFETY: obj is a valid HewYamlValue from hew_yaml_object_new.
         unsafe {
-            let k = CString::new("empty").unwrap();
+            let k = ManagedString::new("empty");
             hew_yaml_object_set_null(obj, k.as_ptr());
 
             let field = hew_yaml_get_field(obj, k.as_ptr());
@@ -1499,15 +1566,18 @@ mod tests {
             assert!((fv - 1.5).abs() < f64::EPSILON);
             hew_yaml_free(float_val);
 
-            let str_c = CString::new("world").unwrap();
+            let str_c = ManagedString::new("world");
             let str_val = hew_yaml_from_string(str_c.as_ptr());
             assert_eq!(hew_yaml_type(str_val), 4);
-            let sv = read_and_free_cstr(hew_yaml_get_string(str_val));
+            let sv = read_and_free_string(hew_yaml_get_string(str_val));
             assert_eq!(sv, "world");
             hew_yaml_free(str_val);
 
-            // Null pointer input returns null.
-            assert!(hew_yaml_from_string(std::ptr::null()).is_null());
+            // A null text handle constructs an empty string value.
+            let empty = hew_yaml_from_string(std::ptr::null());
+            assert_eq!(hew_yaml_type(empty), 4);
+            assert!(hew_yaml_get_string(empty).is_null());
+            hew_yaml_free(empty);
 
             let null_val = hew_yaml_from_null();
             assert_eq!(hew_yaml_type(null_val), 0);
@@ -1522,17 +1592,17 @@ mod tests {
 
         // SAFETY: all pointers are valid HewYamlValue from builder functions.
         unsafe {
-            let k_name = CString::new("name").unwrap();
-            let v_name = CString::new("hew").unwrap();
+            let k_name = ManagedString::new("name");
+            let v_name = ManagedString::new("hew");
             hew_yaml_object_set_string(obj, k_name.as_ptr(), v_name.as_ptr());
 
-            let k_version = CString::new("version").unwrap();
+            let k_version = ManagedString::new("version");
             hew_yaml_object_set_int(obj, k_version.as_ptr(), 1);
 
-            let k_tags = CString::new("tags").unwrap();
+            let k_tags = ManagedString::new("tags");
             let tags = hew_yaml_array_new();
-            let t1 = CString::new("lang").unwrap();
-            let t2 = CString::new("actor").unwrap();
+            let t1 = ManagedString::new("lang");
+            let t2 = ManagedString::new("actor");
             hew_yaml_array_push_string(tags, t1.as_ptr());
             hew_yaml_array_push_string(tags, t2.as_ptr());
             hew_yaml_object_set(obj, k_tags.as_ptr(), tags);
@@ -1540,15 +1610,15 @@ mod tests {
             // Stringify and re-parse to verify structural equality.
             let yaml_out = hew_yaml_stringify(obj);
             assert!(!yaml_out.is_null());
-            let yaml_str = read_and_free_cstr(yaml_out);
+            let yaml_str = read_and_free_string(yaml_out);
 
-            let reparsed = hew_yaml_parse(CString::new(yaml_str).unwrap().as_ptr());
+            let reparsed = hew_yaml_parse(ManagedString::new(yaml_str).as_ptr());
             assert!(!reparsed.is_null());
 
             // Verify fields survived the roundtrip.
             let name_field = hew_yaml_get_field(reparsed, k_name.as_ptr());
             assert!(!name_field.is_null());
-            let name_out = read_and_free_cstr(hew_yaml_get_string(name_field));
+            let name_out = read_and_free_string(hew_yaml_get_string(name_field));
             assert_eq!(name_out, "hew");
             hew_yaml_free(name_field);
 
@@ -1573,19 +1643,19 @@ mod tests {
         // SAFETY: all pointers are valid HewYamlValue from builder functions.
         unsafe {
             let meta = hew_yaml_object_new();
-            let k_author = CString::new("author").unwrap();
-            let v_author = CString::new("slepp").unwrap();
+            let k_author = ManagedString::new("author");
+            let v_author = ManagedString::new("slepp");
             hew_yaml_object_set_string(meta, k_author.as_ptr(), v_author.as_ptr());
-            let k_stable = CString::new("stable").unwrap();
+            let k_stable = ManagedString::new("stable");
             hew_yaml_object_set_bool(meta, k_stable.as_ptr(), 1);
 
             let scores = hew_yaml_array_new();
             hew_yaml_array_push_int(scores, 10);
             hew_yaml_array_push_int(scores, 20);
 
-            let k_meta = CString::new("meta").unwrap();
+            let k_meta = ManagedString::new("meta");
             hew_yaml_object_set(root, k_meta.as_ptr(), meta);
-            let k_scores = CString::new("scores").unwrap();
+            let k_scores = ManagedString::new("scores");
             hew_yaml_object_set(root, k_scores.as_ptr(), scores);
 
             // Verify nested structure.
@@ -1593,7 +1663,7 @@ mod tests {
             assert_eq!(hew_yaml_type(meta_out), 6); // mapping
 
             let author_out = hew_yaml_get_field(meta_out, k_author.as_ptr());
-            let author_str = read_and_free_cstr(hew_yaml_get_string(author_out));
+            let author_str = read_and_free_string(hew_yaml_get_string(author_out));
             assert_eq!(author_str, "slepp");
             hew_yaml_free(author_out);
 
@@ -1634,7 +1704,10 @@ mod tests {
             hew_yaml_object_set_null(std::ptr::null_mut(), std::ptr::null());
 
             // Scalar constructors with null string input.
-            assert!(hew_yaml_from_string(std::ptr::null()).is_null());
+            let empty = hew_yaml_from_string(std::ptr::null());
+            assert_eq!(hew_yaml_type(empty), 4);
+            assert!(hew_yaml_get_string(empty).is_null());
+            hew_yaml_free(empty);
 
             // Stringify with null.
             assert!(hew_yaml_stringify(std::ptr::null()).is_null());
@@ -1647,7 +1720,7 @@ mod tests {
 
             // Object set on a non-mapping is a silent no-op.
             let arr = hew_yaml_array_new();
-            let k = CString::new("key").unwrap();
+            let k = ManagedString::new("key");
             hew_yaml_object_set_bool(arr, k.as_ptr(), 1);
             assert_eq!(hew_yaml_type(arr), 5); // still a sequence, unmodified
             assert_eq!(hew_yaml_array_len(arr), 0);
@@ -1663,9 +1736,12 @@ mod tests {
     fn null_pointer_safety_all_getters() {
         // SAFETY: testing null-pointer behaviour on all getter functions.
         unsafe {
-            assert!(hew_yaml_parse(std::ptr::null()).is_null());
-            let err = read_and_free_cstr(hew_yaml_last_error());
-            assert!(!err.is_empty());
+            let empty = hew_yaml_parse(std::ptr::null());
+            assert!(!empty.is_null());
+            assert_eq!(hew_yaml_type(empty), 0);
+            hew_yaml_free(empty);
+            let err = read_and_free_string(hew_yaml_last_error());
+            assert!(err.is_empty());
             assert_eq!(hew_yaml_type(std::ptr::null()), -1);
             assert_eq!(hew_yaml_get_bool(std::ptr::null()), 0);
             assert_eq!(hew_yaml_get_int(std::ptr::null()), 0);
@@ -1683,8 +1759,8 @@ mod tests {
         let bad = parse(": invalid ::: yaml");
         assert!(bad.is_null());
 
-        // SAFETY: hew_yaml_last_error returns a malloc-allocated C string.
-        let err = unsafe { read_and_free_cstr(hew_yaml_last_error()) };
+        // SAFETY: hew_yaml_last_error returns a managed string owner.
+        let err = unsafe { read_and_free_string(hew_yaml_last_error()) };
         assert!(!err.is_empty());
     }
 
@@ -1695,8 +1771,8 @@ mod tests {
         let ok = parse("name: hew\n");
         assert!(!ok.is_null());
 
-        // SAFETY: hew_yaml_last_error returns a malloc-allocated C string.
-        let err = unsafe { read_and_free_cstr(hew_yaml_last_error()) };
+        // SAFETY: hew_yaml_last_error returns a managed string owner.
+        let err = unsafe { read_and_free_string(hew_yaml_last_error()) };
         assert!(err.is_empty());
 
         // SAFETY: ok is a valid pointer returned by parse.
@@ -1739,8 +1815,8 @@ mod tests {
         let val = parse(&yaml);
         assert!(val.is_null());
 
-        // SAFETY: hew_yaml_last_error returns a malloc-allocated C string.
-        let err = unsafe { read_and_free_cstr(hew_yaml_last_error()) };
+        // SAFETY: hew_yaml_last_error returns a managed string owner.
+        let err = unsafe { read_and_free_string(hew_yaml_last_error()) };
         assert!(err.contains("alias limit"));
     }
 
@@ -1750,8 +1826,8 @@ mod tests {
         let val = parse(&yaml);
         assert!(val.is_null());
 
-        // SAFETY: hew_yaml_last_error returns a malloc-allocated C string.
-        let err = unsafe { read_and_free_cstr(hew_yaml_last_error()) };
+        // SAFETY: hew_yaml_last_error returns a managed string owner.
+        let err = unsafe { read_and_free_string(hew_yaml_last_error()) };
         assert!(err.contains("size limit"));
         assert!(err.contains("byte cap"));
     }
@@ -1777,7 +1853,7 @@ copy_three: *release
 
         // SAFETY: val is a valid pointer returned by parse.
         unsafe {
-            let key = CString::new("copy_three").unwrap();
+            let key = ManagedString::new("copy_three");
             let copy_three = hew_yaml_get_field(val, key.as_ptr());
             assert!(!copy_three.is_null());
             assert_eq!(hew_yaml_type(copy_three), 6);
@@ -1794,7 +1870,7 @@ copy_three: *release
         // SAFETY: val is a valid pointer returned by parse.
         unsafe {
             assert_eq!(hew_yaml_type(val), 4);
-            let s = read_and_free_cstr(hew_yaml_get_string(val));
+            let s = read_and_free_string(hew_yaml_get_string(val));
             assert_eq!(s, "&not_anchor *not_alias");
             hew_yaml_free(val);
         }
@@ -1990,14 +2066,14 @@ description: a language runtime
 
         // SAFETY: val is a valid HewYamlValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_yaml_get_field(val, key.as_ptr());
             assert!(!field.is_null());
 
             let bytes = hew_yaml_get_bytes(field);
             assert!(bytes.ptr.is_null());
 
-            let err = read_and_free_cstr(hew_yaml_last_error());
+            let err = read_and_free_string(hew_yaml_last_error());
             assert!(err.contains("invalid YAML bytes"));
             assert!(err.contains("base64") || err.contains("decode"));
 
@@ -2014,13 +2090,13 @@ description: a language runtime
 
         // SAFETY: val is a valid HewYamlValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_yaml_get_field(val, key.as_ptr());
             assert!(!field.is_null());
 
             let bytes = read_and_free_bytes(hew_yaml_get_bytes(field));
             assert!(bytes.is_empty());
-            assert!(read_and_free_cstr(hew_yaml_last_error()).is_empty());
+            assert!(read_and_free_string(hew_yaml_last_error()).is_empty());
 
             hew_yaml_free(field);
             hew_yaml_free(val);
@@ -2035,11 +2111,11 @@ description: a language runtime
 
         // SAFETY: bad is a valid HewYamlValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_yaml_get_field(bad, key.as_ptr());
             assert!(!field.is_null());
             assert!(hew_yaml_get_bytes(field).ptr.is_null());
-            assert!(!read_and_free_cstr(hew_yaml_last_error()).is_empty());
+            assert!(!read_and_free_string(hew_yaml_last_error()).is_empty());
             hew_yaml_free(field);
             hew_yaml_free(bad);
         }
@@ -2049,12 +2125,12 @@ description: a language runtime
 
         // SAFETY: val is a valid HewYamlValue from parse.
         unsafe {
-            let key = CString::new("missing").unwrap();
+            let key = ManagedString::new("missing");
             let field = hew_yaml_get_field(val, key.as_ptr());
             assert!(field.is_null());
 
             assert!(hew_yaml_get_bytes(field).ptr.is_null());
-            let err = read_and_free_cstr(hew_yaml_last_error());
+            let err = read_and_free_string(hew_yaml_last_error());
             assert!(err.contains("null") || err.contains("key not found"));
 
             hew_yaml_free(val);
@@ -2069,13 +2145,13 @@ description: a language runtime
 
         // SAFETY: val is a valid HewYamlValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_yaml_get_field(val, key.as_ptr());
             assert!(!field.is_null());
 
             let bytes = read_and_free_bytes(hew_yaml_get_bytes(field));
             assert_eq!(bytes, b"hew");
-            assert!(read_and_free_cstr(hew_yaml_last_error()).is_empty());
+            assert!(read_and_free_string(hew_yaml_last_error()).is_empty());
 
             hew_yaml_free(field);
             hew_yaml_free(val);
@@ -2116,7 +2192,7 @@ description: a language runtime
         // SAFETY: obj is valid from hew_yaml_object_new.
         unsafe {
             let obj = hew_yaml_object_new();
-            let k = CString::new("cp").unwrap();
+            let k = ManagedString::new("cp");
             hew_yaml_object_set_char(obj, k.as_ptr(), 0x41); // 'A' = 65
             let field = hew_yaml_get_field(obj, k.as_ptr());
             assert!(!field.is_null());
@@ -2132,7 +2208,7 @@ description: a language runtime
                                      // SAFETY: obj is valid from hew_yaml_object_new.
         unsafe {
             let obj = hew_yaml_object_new();
-            let k = CString::new("dur").unwrap();
+            let k = ManagedString::new("dur");
             hew_yaml_object_set_duration(obj, k.as_ptr(), ns);
             let field = hew_yaml_get_field(obj, k.as_ptr());
             assert!(!field.is_null());
@@ -2148,7 +2224,7 @@ description: a language runtime
                                     // SAFETY: obj is valid from hew_yaml_object_new.
         unsafe {
             let obj = hew_yaml_object_new();
-            let k = CString::new("past").unwrap();
+            let k = ManagedString::new("past");
             hew_yaml_object_set_duration(obj, k.as_ptr(), ns);
             let field = hew_yaml_get_field(obj, k.as_ptr());
             assert!(!field.is_null());
@@ -2159,10 +2235,10 @@ description: a language runtime
     }
 
     #[test]
-    fn get_field_null_key_returns_null() {
+    fn get_field_missing_empty_key_returns_null() {
         let val = parse("name: hew\n");
         assert!(!val.is_null());
-        // SAFETY: val is valid; passing null key.
+        // SAFETY: val is valid; the null text handle looks up the empty key.
         unsafe {
             assert!(hew_yaml_get_field(val, std::ptr::null()).is_null());
             hew_yaml_free(val);
@@ -2234,7 +2310,7 @@ description: a language runtime
         assert!(!val.is_null());
         // SAFETY: val is valid.
         unsafe {
-            let k = CString::new("key").unwrap();
+            let k = ManagedString::new("key");
             assert!(hew_yaml_get_field(val, k.as_ptr()).is_null());
             hew_yaml_free(val);
         }
@@ -2246,7 +2322,7 @@ description: a language runtime
         assert!(!val.is_null());
         // SAFETY: val is valid.
         unsafe {
-            let k = CString::new("nonexistent").unwrap();
+            let k = ManagedString::new("nonexistent");
             assert!(hew_yaml_get_field(val, k.as_ptr()).is_null());
             hew_yaml_free(val);
         }
@@ -2288,8 +2364,8 @@ description: a language runtime
         // SAFETY: arr is a valid sequence.
         unsafe {
             let arr = hew_yaml_array_new();
-            let k = CString::new("key").unwrap();
-            let v = CString::new("val").unwrap();
+            let k = ManagedString::new("key");
+            let v = ManagedString::new("val");
 
             hew_yaml_object_set_bool(arr, k.as_ptr(), 1);
             hew_yaml_object_set_int(arr, k.as_ptr(), 42);
@@ -2307,7 +2383,7 @@ description: a language runtime
         // SAFETY: obj is a valid mapping.
         unsafe {
             let obj = hew_yaml_object_new();
-            let s = CString::new("test").unwrap();
+            let s = ManagedString::new("test");
 
             hew_yaml_array_push_bool(obj, 1);
             hew_yaml_array_push_int(obj, 42);
@@ -2373,7 +2449,7 @@ description: a language runtime
         // SAFETY: val is valid.
         unsafe {
             assert_eq!(hew_yaml_type(val), 4); // string
-            let s = read_and_free_cstr(hew_yaml_get_string(val));
+            let s = read_and_free_string(hew_yaml_get_string(val));
             assert_eq!(s, "true");
             hew_yaml_free(val);
         }
@@ -2409,7 +2485,7 @@ description: a language runtime
     }
 
     // -----------------------------------------------------------------------
-    // Unicode through CString FFI boundary
+    // Unicode through managed string FFI boundary
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2418,7 +2494,7 @@ description: a language runtime
         assert!(!val.is_null());
         // SAFETY: val is valid.
         unsafe {
-            let s = read_and_free_cstr(hew_yaml_get_string(val));
+            let s = read_and_free_string(hew_yaml_get_string(val));
             assert_eq!(s, "Hello 🌍🎉 world");
             hew_yaml_free(val);
         }
@@ -2430,7 +2506,7 @@ description: a language runtime
         assert!(!val.is_null());
         // SAFETY: val is valid.
         unsafe {
-            let k = CString::new("clé").unwrap();
+            let k = ManagedString::new("clé");
             let field = hew_yaml_get_field(val, k.as_ptr());
             assert!(!field.is_null());
             assert_eq!(hew_yaml_get_int(field), 42);
@@ -2467,7 +2543,7 @@ description: a language runtime
         // SAFETY: val is valid.
         unsafe {
             assert_eq!(hew_yaml_type(val), 4); // string
-            let s = read_and_free_cstr(hew_yaml_get_string(val));
+            let s = read_and_free_string(hew_yaml_get_string(val));
             assert!(s.contains("line one"));
             assert!(s.contains("line two"));
             hew_yaml_free(val);
@@ -2482,7 +2558,7 @@ description: a language runtime
         // SAFETY: val is valid.
         unsafe {
             assert_eq!(hew_yaml_type(val), 4); // string
-            let s = read_and_free_cstr(hew_yaml_get_string(val));
+            let s = read_and_free_string(hew_yaml_get_string(val));
             assert!(s.contains("line one"));
             assert!(s.contains("line two"));
             hew_yaml_free(val);
@@ -2531,22 +2607,22 @@ description: a language runtime
 
             for (id, label) in [(1_i64, "α"), (2, "β")] {
                 let item = hew_yaml_object_new();
-                let k_id = CString::new("id").unwrap();
+                let k_id = ManagedString::new("id");
                 hew_yaml_object_set_int(item, k_id.as_ptr(), id);
-                let k_label = CString::new("label").unwrap();
-                let v_label = CString::new(label).unwrap();
+                let k_label = ManagedString::new("label");
+                let v_label = ManagedString::new(label);
                 hew_yaml_object_set_string(item, k_label.as_ptr(), v_label.as_ptr());
                 hew_yaml_array_push(items, item);
             }
 
-            let k_items = CString::new("items").unwrap();
+            let k_items = ManagedString::new("items");
             hew_yaml_object_set(root, k_items.as_ptr(), items);
-            let k_count = CString::new("count").unwrap();
+            let k_count = ManagedString::new("count");
             hew_yaml_object_set_int(root, k_count.as_ptr(), 2);
 
             // Stringify and re-parse.
             let yaml_str = hew_yaml_stringify(root);
-            let yaml_text = read_and_free_cstr(yaml_str);
+            let yaml_text = read_and_free_string(yaml_str);
             hew_yaml_free(root);
 
             let reparsed = parse(&yaml_text);
@@ -2561,9 +2637,9 @@ description: a language runtime
             let items_field = hew_yaml_get_field(reparsed, k_items.as_ptr());
             assert_eq!(hew_yaml_array_len(items_field), 2);
             let item1 = hew_yaml_array_get(items_field, 1);
-            let k_label = CString::new("label").unwrap();
+            let k_label = ManagedString::new("label");
             let label_field = hew_yaml_get_field(item1, k_label.as_ptr());
-            let label_str = read_and_free_cstr(hew_yaml_get_string(label_field));
+            let label_str = read_and_free_string(hew_yaml_get_string(label_field));
             assert_eq!(label_str, "β");
             hew_yaml_free(label_field);
             hew_yaml_free(item1);

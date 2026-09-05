@@ -5,8 +5,8 @@
 //! `hew_stream_last_error`, and the `hew_last_error` counterfactual that proves
 //! the probes discriminate a borrow from a transfer — is measured by
 //! `hew-runtime/tests/last_error_result_retention.rs`. That file carries the
-//! full argument for the instrument; this one applies the identical three
-//! probes to the exports that live in this crate.
+//! full argument for the legacy instrument. JSON/YAML use managed handles
+//! and additionally preserve embedded NUL text after the slot changes or clears.
 //!
 //! R1 (two live results are distinct addresses), R2 (`rc == 1` at handoff, read
 //! through the non-destructive `cstring_ensure_unique`) and R3 (the slot
@@ -154,12 +154,48 @@ fn datetime_last_error_result_is_transferred() {
     );
 }
 
+/// Managed diagnostics keep complete text after the slot changes or clears.
+fn assert_managed_error_is_transferred(
+    slot: ErrorSlotKind,
+    call: extern "C" fn() -> *mut hew_cabi::string::HewString,
+    release: unsafe extern "C" fn(*mut hew_cabi::string::HewString),
+) {
+    use hew_cabi::string::string_as_str;
+    use hew_runtime::parse_error_slot::clear_error;
+
+    let message = "parse diagnostic: clé\0雪\0tail";
+    set_error(slot, message.to_owned());
+    let first = call();
+    let second = call();
+    assert!(!first.is_null());
+    assert_ne!(first, second);
+    // SAFETY: the exports return independent managed owners.
+    unsafe {
+        assert_eq!(string_as_str(first), message);
+        release(first);
+        assert_eq!(string_as_str(second), message);
+        let third = call();
+        set_error(slot, "replacement diagnostic".to_owned());
+        let replacement = call();
+        clear_error(slot);
+        let empty = call();
+        assert!(empty.is_null());
+        assert_eq!(string_as_str(second), message);
+        assert_eq!(string_as_str(third), message);
+        assert_eq!(string_as_str(replacement), "replacement diagnostic");
+        release(second);
+        release(third);
+        release(replacement);
+        release(empty);
+    }
+}
+
 #[test]
 fn json_last_error_result_is_transferred() {
-    assert_slot_backed_result_is_transferred(
-        "hew_json_last_error",
+    assert_managed_error_is_transferred(
         ErrorSlotKind::Json,
         crate::json::hew_json_last_error,
+        crate::json::hew_json_string_free,
     );
 }
 
@@ -174,10 +210,10 @@ fn toml_last_error_result_is_transferred() {
 
 #[test]
 fn yaml_last_error_result_is_transferred() {
-    assert_slot_backed_result_is_transferred(
-        "hew_yaml_last_error",
+    assert_managed_error_is_transferred(
         ErrorSlotKind::Yaml,
         crate::yaml::hew_yaml_last_error,
+        crate::yaml::hew_yaml_string_free,
     );
 }
 

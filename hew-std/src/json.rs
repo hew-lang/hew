@@ -1,14 +1,13 @@
 //! Hew `std::encoding::json` — JSON parsing and generation.
 //!
 //! Provides JSON parsing, serialization, and value access for compiled Hew
-//! programs. All returned strings are allocated with `libc::malloc` and
-//! NUL-terminated. All returned [`HewJsonValue`] pointers are heap-allocated
+//! programs. Text inputs borrow managed [`HewString`] handles and text results
+//! transfer an independent managed owner. Null is the canonical empty string.
+//! All returned [`HewJsonValue`] pointers are heap-allocated
 //! via `Box` and must be freed with [`hew_json_free`].
 use base64::Engine as _;
-use hew_cabi::cabi::str_to_malloc;
+use hew_cabi::string::{string_as_str, string_from_str, string_release, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
-use std::ffi::CStr;
-use std::os::raw::c_char;
 
 /// Opaque wrapper around a [`serde_json::Value`].
 ///
@@ -67,11 +66,11 @@ fn get_parse_last_error() -> String {
         .unwrap_or_default()
 }
 
-fn stringify_result_to_malloc(result: Result<String, serde_json::Error>) -> *mut c_char {
+fn stringify_result_to_string(result: Result<String, serde_json::Error>) -> *mut HewString {
     match result {
         Ok(json) => {
             clear_parse_last_error();
-            str_to_malloc(&json)
+            string_from_str(&json)
         }
         Err(err) => {
             set_parse_last_error(format!("json stringify failed: {err}"));
@@ -91,18 +90,11 @@ fn stringify_result_to_malloc(result: Result<String, serde_json::Error>) -> *mut
 ///
 /// # Safety
 ///
-/// `json_str` must be a valid NUL-terminated C string.
+/// `json_str` must be a live managed string handle (null means empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_json_parse(json_str: *const c_char) -> *mut HewJsonValue {
-    if json_str.is_null() {
-        set_parse_last_error("invalid JSON input: null pointer");
-        return std::ptr::null_mut();
-    }
-    // SAFETY: json_str is a valid NUL-terminated C string per caller contract.
-    let Ok(s) = unsafe { CStr::from_ptr(json_str) }.to_str() else {
-        set_parse_last_error("invalid JSON input: input was not valid UTF-8");
-        return std::ptr::null_mut();
-    };
+pub unsafe extern "C" fn hew_json_parse(json_str: *const HewString) -> *mut HewJsonValue {
+    // SAFETY: the caller borrows a live managed string or canonical empty handle.
+    let s = unsafe { string_as_str(json_str) };
     match serde_json::from_str::<serde_json::Value>(s) {
         Ok(val) => {
             clear_parse_last_error();
@@ -117,31 +109,32 @@ pub unsafe extern "C" fn hew_json_parse(json_str: *const c_char) -> *mut HewJson
 
 /// Return the most recent parse error for this Hew actor.
 ///
-/// Returns an empty string when no error is set.
+/// Returns an owned managed string; release it with [`hew_json_string_free`].
+/// Returns canonical empty (null) when no error is set.
 ///
 /// Errors are keyed per (actor, parser-kind), so a different parser's success
 /// does not clear this slot.
 #[no_mangle]
-pub extern "C" fn hew_json_last_error() -> *mut c_char {
-    str_to_malloc(&get_parse_last_error())
+pub extern "C" fn hew_json_last_error() -> *mut HewString {
+    string_from_str(&get_parse_last_error())
 }
 
 /// Serialize a [`HewJsonValue`] back to a JSON string.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
+/// Returns an owned managed string. The caller must release
 /// it with [`hew_json_string_free`]. Returns null on error.
 ///
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewJsonValue`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_json_stringify(val: *const HewJsonValue) -> *mut c_char {
+pub unsafe extern "C" fn hew_json_stringify(val: *const HewJsonValue) -> *mut HewString {
     if val.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: val is a valid HewJsonValue pointer per caller contract.
     let v = unsafe { &*val };
-    stringify_result_to_malloc(serde_json::to_string(&v.inner))
+    stringify_result_to_string(serde_json::to_string(&v.inner))
 }
 
 /// Return the type tag of a [`HewJsonValue`].
@@ -290,21 +283,22 @@ pub unsafe extern "C" fn hew_json_get_float(val: *const HewJsonValue) -> f64 {
 
 /// Get the string value from a [`HewJsonValue`].
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with [`hew_json_string_free`]. Returns null if the value is not a string.
+/// Returns an owned managed string. The caller must release
+/// it with [`hew_json_string_free`]. Returns canonical empty (null) for an
+/// empty string or a value that is not a string; use [`hew_json_type`] to distinguish.
 ///
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewJsonValue`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_json_get_string(val: *const HewJsonValue) -> *mut c_char {
+pub unsafe extern "C" fn hew_json_get_string(val: *const HewJsonValue) -> *mut HewString {
     if val.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: val is a valid HewJsonValue pointer per caller contract.
     let v = unsafe { &*val };
     match v.inner.as_str() {
-        Some(s) => str_to_malloc(s),
+        Some(s) => string_from_str(s),
         None => std::ptr::null_mut(),
     }
 }
@@ -376,19 +370,17 @@ pub unsafe extern "C" fn hew_json_get_bytes(val: *const HewJsonValue) -> BytesTr
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewJsonValue`], or null.
-/// `key` must be a valid NUL-terminated C string.
+/// `key` must be a live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_get_field(
     val: *const HewJsonValue,
-    key: *const c_char,
+    key: *const HewString,
 ) -> *mut HewJsonValue {
-    if val.is_null() || key.is_null() {
+    if val.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: key is a valid NUL-terminated C string per caller contract.
-    let Ok(key_str) = unsafe { CStr::from_ptr(key) }.to_str() else {
-        return std::ptr::null_mut();
-    };
+    // SAFETY: key is a live managed string handle (null means empty) per caller contract.
+    let key_str = unsafe { string_as_str(key) };
     // SAFETY: val is a valid HewJsonValue pointer per caller contract.
     let v = unsafe { &*val };
     match v.inner.get(key_str) {
@@ -497,20 +489,17 @@ pub unsafe extern "C" fn hew_json_free(val: *mut HewJsonValue) {
     record_value_box_consumed();
 }
 
-/// Free a C string previously returned by [`hew_json_stringify`] or
-/// [`hew_json_get_string`].
+/// Release a managed string previously returned by [`hew_json_stringify`] or
+/// [`hew_json_get_string`] or [`hew_json_last_error`].
 ///
 /// # Safety
 ///
-/// `s` must be a pointer previously returned by `hew_json_stringify` or
-/// `hew_json_get_string`, and must not have been freed already.
+/// `s` must be null or one owned managed result from `hew_json_stringify`,
+/// `hew_json_get_string` or `hew_json_last_error`, not already released.
 #[no_mangle]
-pub unsafe extern "C" fn hew_json_string_free(s: *mut c_char) {
-    if s.is_null() {
-        return;
-    }
-    // SAFETY: s was allocated with libc::malloc and has not been freed.
-    unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test frees str_to_malloc json)
+pub unsafe extern "C" fn hew_json_string_free(s: *mut HewString) {
+    // SAFETY: the caller transfers one managed owner, or canonical empty.
+    unsafe { string_release(s) };
 }
 
 // ---------------------------------------------------------------------------
@@ -528,26 +517,23 @@ pub extern "C" fn hew_json_object_new() -> *mut HewJsonValue {
 
 /// Set a boolean field on a JSON object.
 ///
-/// Does nothing if `obj` is null, not an object, or `key` is null.
+/// Does nothing if `obj` is null or not an object.
 ///
 /// # Safety
 ///
 /// `obj` must be a valid non-null [`HewJsonValue`] pointer. `key` must be a
-/// valid NUL-terminated C string.
+/// live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_bool(
     obj: *mut HewJsonValue,
-    key: *const c_char,
+    key: *const HewString,
     val: i32,
 ) {
-    if obj.is_null() || key.is_null() {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
+    let key = unsafe { string_as_str(key) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(key, serde_json::Value::Bool(val != 0));
@@ -562,17 +548,14 @@ pub unsafe extern "C" fn hew_json_object_set_bool(
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_int(
     obj: *mut HewJsonValue,
-    key: *const c_char,
+    key: *const HewString,
     val: i64,
 ) {
-    if obj.is_null() || key.is_null() {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
+    let key = unsafe { string_as_str(key) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(
@@ -590,17 +573,14 @@ pub unsafe extern "C" fn hew_json_object_set_int(
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_float(
     obj: *mut HewJsonValue,
-    key: *const c_char,
+    key: *const HewString,
     val: f64,
 ) {
-    if obj.is_null() || key.is_null() {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
+    let key = unsafe { string_as_str(key) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         if let Some(n) = serde_json::Number::from_f64(val) {
@@ -613,27 +593,20 @@ pub unsafe extern "C" fn hew_json_object_set_float(
 ///
 /// # Safety
 ///
-/// Same as [`hew_json_object_set_bool`]. `val` must be a valid NUL-terminated
-/// C string.
+/// Same as [`hew_json_object_set_bool`]. `val` must be a live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_string(
     obj: *mut HewJsonValue,
-    key: *const c_char,
-    val: *const c_char,
+    key: *const HewString,
+    val: *const HewString,
 ) {
-    if obj.is_null() || key.is_null() || val.is_null() {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key and val are valid NUL-terminated strings.
-    let key = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
-    // SAFETY: val is non-null (checked above) and valid per caller contract.
-    let val = unsafe { CStr::from_ptr(val) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key and val are live managed string handles (null means empty).
+    let key = unsafe { string_as_str(key) }.to_owned();
+    // SAFETY: val is a live managed string or canonical empty per caller contract.
+    let val = unsafe { string_as_str(val) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(key, serde_json::Value::String(val));
@@ -651,11 +624,10 @@ pub unsafe extern "C" fn hew_json_object_set_string(
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_char(
     obj: *mut HewJsonValue,
-    key: *const c_char,
+    key: *const HewString,
     val: i64,
 ) {
-    // SAFETY: delegates to set_int after verifying null contracts; caller
-    // guarantees obj and key are valid per the same contract as set_bool.
+    // SAFETY: delegates under the same resource and borrowed-string contract as set_bool.
     unsafe { hew_json_object_set_int(obj, key, val) }
 }
 
@@ -670,11 +642,10 @@ pub unsafe extern "C" fn hew_json_object_set_char(
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_duration(
     obj: *mut HewJsonValue,
-    key: *const c_char,
+    key: *const HewString,
     val: i64,
 ) {
-    // SAFETY: delegates to set_int after verifying null contracts; caller
-    // guarantees obj and key are valid per the same contract as set_bool.
+    // SAFETY: delegates under the same resource and borrowed-string contract as set_bool.
     unsafe { hew_json_object_set_int(obj, key, val) }
 }
 
@@ -712,22 +683,19 @@ pub unsafe extern "C" fn hew_json_get_duration(val: *const HewJsonValue) -> i64 
 
 /// Set a null field on a JSON object.
 ///
-/// Does nothing if `obj` is null or not an object, or `key` is null.
+/// Does nothing if `obj` is null or not an object.
 ///
 /// # Safety
 ///
 /// `obj` must be a valid non-null [`HewJsonValue`] pointer. `key` must be a
-/// valid NUL-terminated C string.
+/// live managed string handle (null means empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_json_object_set_null(obj: *mut HewJsonValue, key: *const c_char) {
-    if obj.is_null() || key.is_null() {
+pub unsafe extern "C" fn hew_json_object_set_null(obj: *mut HewJsonValue, key: *const HewString) {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
+    let key = unsafe { string_as_str(key) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(key, serde_json::Value::Null);
@@ -738,35 +706,32 @@ pub unsafe extern "C" fn hew_json_object_set_null(obj: *mut HewJsonValue, key: *
 /// (the caller must not free it).
 ///
 /// A non-null `val` is consumed on every return path, including when `obj` is
-/// null or not an object, or `key` is null. A null `val` is a no-op.
+/// null or not an object. A null `val` is a no-op.
 ///
 /// # Safety
 ///
 /// `obj` must be a valid [`HewJsonValue`] pointer or null. `key` must be a
-/// valid NUL-terminated C string or null. `val` must be a heap-allocated
+/// live managed string handle or null (the empty string). `val` must be a heap-allocated
 /// [`HewJsonValue`] that this function takes ownership of, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set(
     obj: *mut HewJsonValue,
-    key: *const c_char,
+    key: *const HewString,
     val: *mut HewJsonValue,
 ) {
     if val.is_null() {
         return;
     }
     // SAFETY: val was allocated with Box::into_raw; ownership transfers at the
-    // ABI boundary even when the parent/key precondition rejects insertion.
+    // ABI boundary even when the parent precondition rejects insertion.
     let child = unsafe { Box::from_raw(val) };
     #[cfg(test)]
     record_value_box_consumed();
-    if obj.is_null() || key.is_null() {
+    if obj.is_null() {
         return;
     }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
+    let key = unsafe { string_as_str(key) }.to_owned();
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(key, child.inner);
@@ -844,22 +809,19 @@ pub unsafe extern "C" fn hew_json_array_push_float(arr: *mut HewJsonValue, val: 
 
 /// Push a string onto a JSON array. The string value is copied.
 ///
-/// Does nothing if `arr` or `val` is null, or `arr` is not an array.
+/// Does nothing if `arr` is null or is not an array.
 ///
 /// # Safety
 ///
 /// `arr` must be a valid non-null [`HewJsonValue`] pointer. `val` must be a
-/// valid NUL-terminated C string.
+/// live managed string handle (null means empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_json_array_push_string(arr: *mut HewJsonValue, val: *const c_char) {
-    if arr.is_null() || val.is_null() {
+pub unsafe extern "C" fn hew_json_array_push_string(arr: *mut HewJsonValue, val: *const HewString) {
+    if arr.is_null() {
         return;
     }
-    // SAFETY: val is a valid NUL-terminated C string per caller contract.
-    let s = unsafe { CStr::from_ptr(val) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+    // SAFETY: val is a live managed string handle (null means empty) per caller contract.
+    let s = unsafe { string_as_str(val) }.to_owned();
     // SAFETY: arr is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
         vec.push(serde_json::Value::String(s));
@@ -945,21 +907,15 @@ pub extern "C" fn hew_json_from_float(val: f64) -> *mut HewJsonValue {
 
 /// Create a [`HewJsonValue`] containing a string. The string value is copied.
 ///
-/// Returns null if `val` is null.
+/// A null text handle creates an empty string value.
 ///
 /// # Safety
 ///
-/// `val` must be a valid NUL-terminated C string, or null.
+/// `val` must be a live managed string handle or null (the empty string).
 #[no_mangle]
-pub unsafe extern "C" fn hew_json_from_string(val: *const c_char) -> *mut HewJsonValue {
-    if val.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: val is a valid NUL-terminated C string per caller contract.
-    let s = unsafe { CStr::from_ptr(val) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
+pub unsafe extern "C" fn hew_json_from_string(val: *const HewString) -> *mut HewJsonValue {
+    // SAFETY: val is a live managed string handle (null means empty) per caller contract.
+    let s = unsafe { string_as_str(val) }.to_owned();
     boxed_value(serde_json::Value::String(s))
 }
 
@@ -980,25 +936,131 @@ pub extern "C" fn hew_json_from_null() -> *mut HewJsonValue {
 )]
 mod tests {
     use super::*;
+    use crate::test_string::ManagedString;
     use hew_runtime::bytes::hew_bytes_drop;
     use std::collections::BTreeMap;
-    use std::ffi::CString;
 
     /// Helper: parse a JSON string and return the owned pointer.
     fn parse(json: &str) -> *mut HewJsonValue {
-        let c = CString::new(json).unwrap();
-        // SAFETY: c is a valid NUL-terminated C string.
+        let c = ManagedString::new(json);
+        // SAFETY: c is a live managed string handle.
         unsafe { hew_json_parse(c.as_ptr()) }
     }
 
-    /// Helper: read a C string pointer and free it.
-    unsafe fn read_and_free_cstr(ptr: *mut c_char) -> String {
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string from malloc.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated with malloc.
+    /// Helper: read a managed string handle and free it.
+    unsafe fn read_and_free_string(ptr: *mut HewString) -> String {
+        // SAFETY: ptr is a live managed string owner or canonical empty.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: ptr is an owned managed result.
         unsafe { hew_json_string_free(ptr) };
         s
+    }
+
+    #[test]
+    fn managed_keys_and_values_roundtrip_without_truncation() {
+        let text = "雪\0colour\0tail";
+        for key_text in ["", "clé\0suffix"] {
+            let key = ManagedString::new(key_text);
+            let input = ManagedString::new(text);
+            let obj = hew_json_object_new();
+            let arr = hew_json_array_new();
+            // SAFETY: each resource is live and each text argument is borrowed managed data.
+            unsafe {
+                hew_json_object_set_bool(obj, key.as_ptr(), 1);
+                let field = hew_json_get_field(obj, key.as_ptr());
+                assert_eq!(hew_json_get_bool(field), 1);
+                hew_json_free(field);
+                hew_json_object_set_int(obj, key.as_ptr(), 42);
+                let field = hew_json_get_field(obj, key.as_ptr());
+                assert_eq!(hew_json_get_int(field), 42);
+                hew_json_free(field);
+                hew_json_object_set_float(obj, key.as_ptr(), 1.5);
+                let field = hew_json_get_field(obj, key.as_ptr());
+                assert!((hew_json_get_float(field) - 1.5).abs() < f64::EPSILON);
+                hew_json_free(field);
+                hew_json_object_set_char(obj, key.as_ptr(), 0x96ea);
+                let field = hew_json_get_field(obj, key.as_ptr());
+                assert_eq!(hew_json_get_char(field), 0x96ea);
+                hew_json_free(field);
+                hew_json_object_set_duration(obj, key.as_ptr(), -42);
+                let field = hew_json_get_field(obj, key.as_ptr());
+                assert_eq!(hew_json_get_duration(field), -42);
+                hew_json_free(field);
+                hew_json_object_set_null(obj, key.as_ptr());
+                let field = hew_json_get_field(obj, key.as_ptr());
+                assert_eq!(hew_json_type(field), 0);
+                hew_json_free(field);
+                hew_json_object_set_string(obj, key.as_ptr(), input.as_ptr());
+                hew_json_array_push_string(arr, input.as_ptr());
+                hew_json_array_push_string(arr, std::ptr::null());
+                drop(input);
+
+                let field = hew_json_get_field(obj, key.as_ptr());
+                let saved = hew_json_get_string(field);
+                hew_json_free(field);
+                let encoded = hew_json_stringify(obj);
+                let native: serde_json::Value =
+                    serde_json::from_str(string_as_str(encoded)).unwrap();
+                assert_eq!(native[key_text].as_str(), Some(text));
+                assert_eq!(native.as_object().unwrap().len(), 1);
+                let reparsed = hew_json_parse(encoded);
+                hew_json_string_free(encoded);
+                hew_json_free(obj);
+                assert_eq!(string_as_str(saved), text);
+                hew_json_string_free(saved);
+                let field = hew_json_get_field(reparsed, key.as_ptr());
+                assert_eq!(read_and_free_string(hew_json_get_string(field)), text);
+                hew_json_free(field);
+                hew_json_free(reparsed);
+
+                for (index, expected) in [(0, text), (1, "")] {
+                    let field = hew_json_array_get(arr, index);
+                    assert_eq!(hew_json_type(field), 4);
+                    assert_eq!(read_and_free_string(hew_json_get_string(field)), expected);
+                    hew_json_free(field);
+                }
+                let parent = hew_json_object_new();
+                hew_json_object_set(parent, key.as_ptr(), arr);
+                let field = hew_json_get_field(parent, key.as_ptr());
+                assert_eq!(hew_json_array_len(field), 2);
+                hew_json_free(field);
+                hew_json_object_set_string(parent, key.as_ptr(), std::ptr::null());
+                let field = hew_json_get_field(parent, key.as_ptr());
+                assert_eq!(hew_json_type(field), 4);
+                let empty = hew_json_get_string(field);
+                assert!(empty.is_null());
+                hew_json_string_free(empty);
+                hew_json_free(field);
+                hew_json_free(parent);
+            }
+        }
+    }
+
+    #[test]
+    fn managed_parser_preserves_native_document_errors() {
+        for document in ["", "true\0trailing", "{\"broken\":", "雪\0tail"] {
+            let input = ManagedString::new(document);
+            let native = serde_json::from_str::<serde_json::Value>(document);
+            // SAFETY: input is valid UTF-8 in a live managed handle, including canonical empty.
+            unsafe {
+                let value = hew_json_parse(input.as_ptr());
+                match native {
+                    Ok(_) => {
+                        assert!(!value.is_null());
+                        assert!(hew_json_last_error().is_null());
+                        hew_json_free(value);
+                    }
+                    Err(error) => {
+                        assert!(value.is_null());
+                        assert_eq!(
+                            read_and_free_string(hew_json_last_error()),
+                            error.to_string()
+                        );
+                    }
+                }
+                assert_eq!(string_as_str(input.as_ptr()), document);
+            }
+        }
     }
 
     /// Helper: read a bytes triple and release its runtime allocation.
@@ -1021,9 +1083,9 @@ mod tests {
     #[test]
     fn child_transfer_is_unconditional_and_deep_clone_is_independent() {
         let baseline = live_value_boxes();
-        let key = CString::new("child").unwrap();
+        let key = ManagedString::new("child");
 
-        // Null/invalid parents and invalid keys still consume a non-null child.
+        // Null/invalid parents still consume a non-null child; a null key means empty.
         // SAFETY: every non-null handle below is freshly allocated and freed or
         // transferred exactly once; null pointers exercise the documented no-op path.
         unsafe {
@@ -1078,22 +1140,22 @@ mod tests {
         unsafe {
             assert_eq!(hew_json_type(val), 6); // object
 
-            let name_key = CString::new("name").unwrap();
+            let name_key = ManagedString::new("name");
             let name = hew_json_get_field(val, name_key.as_ptr());
             assert!(!name.is_null());
             assert_eq!(hew_json_type(name), 4); // string
-            let name_str = read_and_free_cstr(hew_json_get_string(name));
+            let name_str = read_and_free_string(hew_json_get_string(name));
             assert_eq!(name_str, "hew");
             hew_json_free(name);
 
-            let ver_key = CString::new("version").unwrap();
+            let ver_key = ManagedString::new("version");
             let ver = hew_json_get_field(val, ver_key.as_ptr());
             assert!(!ver.is_null());
             assert_eq!(hew_json_type(ver), 2); // number_int
             assert_eq!(hew_json_get_int(ver), 42);
             hew_json_free(ver);
 
-            let active_key = CString::new("active").unwrap();
+            let active_key = ManagedString::new("active");
             let active = hew_json_get_field(val, active_key.as_ptr());
             assert!(!active.is_null());
             assert_eq!(hew_json_type(active), 1); // bool
@@ -1133,15 +1195,15 @@ mod tests {
 
         // SAFETY: val is a valid HewJsonValue from parse.
         unsafe {
-            let outer_key = CString::new("outer").unwrap();
+            let outer_key = ManagedString::new("outer");
             let outer = hew_json_get_field(val, outer_key.as_ptr());
             assert!(!outer.is_null());
 
-            let inner_key = CString::new("inner").unwrap();
+            let inner_key = ManagedString::new("inner");
             let inner = hew_json_get_field(outer, inner_key.as_ptr());
             assert!(!inner.is_null());
 
-            let value_key = CString::new("value").unwrap();
+            let value_key = ManagedString::new("value");
             let v = hew_json_get_field(inner, value_key.as_ptr());
             assert!(!v.is_null());
             assert_eq!(hew_json_get_int(v), 99);
@@ -1162,7 +1224,7 @@ mod tests {
         // SAFETY: val is a valid HewJsonValue from parse.
         unsafe {
             let json_str = hew_json_stringify(val);
-            let result = read_and_free_cstr(json_str);
+            let result = read_and_free_string(json_str);
             // Re-parse both to compare structurally (key order may differ).
             let v1: serde_json::Value = serde_json::from_str(original).unwrap();
             let v2: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -1197,7 +1259,7 @@ mod tests {
 
             let str_val = parse(r#""hello""#);
             assert_eq!(hew_json_type(str_val), 4);
-            let s = read_and_free_cstr(hew_json_get_string(str_val));
+            let s = read_and_free_string(hew_json_get_string(str_val));
             assert_eq!(s, "hello");
             hew_json_free(str_val);
 
@@ -1261,9 +1323,9 @@ mod tests {
         unsafe {
             // Build inner object: {"enabled": true, "count": 5}
             let inner_obj = hew_json_object_new();
-            let k_enabled = CString::new("enabled").unwrap();
+            let k_enabled = ManagedString::new("enabled");
             hew_json_object_set_bool(inner_obj, k_enabled.as_ptr(), 1);
-            let k_count = CString::new("count").unwrap();
+            let k_count = ManagedString::new("count");
             hew_json_object_set_int(inner_obj, k_count.as_ptr(), 5);
 
             // Build array: [1, 2, 3]
@@ -1274,19 +1336,19 @@ mod tests {
 
             // Build outer object with nested children
             let obj = hew_json_object_new();
-            let k_name = CString::new("name").unwrap();
-            let v_name = CString::new("test").unwrap();
+            let k_name = ManagedString::new("name");
+            let v_name = ManagedString::new("test");
             hew_json_object_set_string(obj, k_name.as_ptr(), v_name.as_ptr());
-            let k_config = CString::new("config").unwrap();
+            let k_config = ManagedString::new("config");
             hew_json_object_set(obj, k_config.as_ptr(), inner_obj);
             // inner_obj is consumed — do not free it.
-            let k_items = CString::new("items").unwrap();
+            let k_items = ManagedString::new("items");
             hew_json_object_set(obj, k_items.as_ptr(), arr);
             // arr is consumed — do not free it.
 
             // Stringify and verify structure
             let json_str = hew_json_stringify(obj);
-            let result = read_and_free_cstr(json_str);
+            let result = read_and_free_string(json_str);
             let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
             assert_eq!(parsed["name"], "test");
@@ -1313,13 +1375,13 @@ mod tests {
             hew_json_array_push_bool(arr, 1);
             hew_json_array_push_int(arr, 42);
             hew_json_array_push_float(arr, 3.14);
-            let s = CString::new("hello").unwrap();
+            let s = ManagedString::new("hello");
             hew_json_array_push_string(arr, s.as_ptr());
             hew_json_array_push_null(arr);
 
             // Push a nested object via hew_json_array_push
             let child = hew_json_object_new();
-            let k = CString::new("nested").unwrap();
+            let k = ManagedString::new("nested");
             hew_json_object_set_bool(child, k.as_ptr(), 0);
             hew_json_array_push(arr, child);
             // child is consumed — do not free it.
@@ -1344,7 +1406,7 @@ mod tests {
 
             let e3 = hew_json_array_get(arr, 3);
             assert_eq!(hew_json_type(e3), 4); // string
-            let e3_str = read_and_free_cstr(hew_json_get_string(e3));
+            let e3_str = read_and_free_string(hew_json_get_string(e3));
             assert_eq!(e3_str, "hello");
             hew_json_free(e3);
 
@@ -1396,16 +1458,19 @@ mod tests {
             assert!(hew_json_from_float(f64::INFINITY).is_null());
 
             // String
-            let s_val = CString::new("colour").unwrap();
+            let s_val = ManagedString::new("colour");
             let str_val = hew_json_from_string(s_val.as_ptr());
             assert!(!str_val.is_null());
             assert_eq!(hew_json_type(str_val), 4);
-            let s_str = read_and_free_cstr(hew_json_get_string(str_val));
+            let s_str = read_and_free_string(hew_json_get_string(str_val));
             assert_eq!(s_str, "colour");
             hew_json_free(str_val);
 
             // String: null input returns null
-            assert!(hew_json_from_string(std::ptr::null()).is_null());
+            let empty = hew_json_from_string(std::ptr::null());
+            assert_eq!(hew_json_type(empty), 4);
+            assert!(hew_json_get_string(empty).is_null());
+            hew_json_free(empty);
 
             // Null
             let null_val = hew_json_from_null();
@@ -1421,7 +1486,7 @@ mod tests {
         unsafe {
             // Object with null field
             let obj = hew_json_object_new();
-            let k = CString::new("empty").unwrap();
+            let k = ManagedString::new("empty");
             hew_json_object_set_null(obj, k.as_ptr());
 
             let field = hew_json_get_field(obj, k.as_ptr());
@@ -1431,7 +1496,7 @@ mod tests {
 
             // Verify stringification includes the null field
             let json_str = hew_json_stringify(obj);
-            let result = read_and_free_cstr(json_str);
+            let result = read_and_free_string(json_str);
             let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
             assert!(parsed["empty"].is_null());
 
@@ -1461,7 +1526,7 @@ mod tests {
         // SAFETY: testing null-pointer behaviour on all getter functions.
         unsafe {
             assert!(hew_json_parse(std::ptr::null()).is_null());
-            let err = read_and_free_cstr(hew_json_last_error());
+            let err = read_and_free_string(hew_json_last_error());
             assert!(!err.is_empty());
             assert_eq!(hew_json_type(std::ptr::null()), -1);
             assert_eq!(hew_json_get_bool(std::ptr::null()), 0);
@@ -1481,8 +1546,8 @@ mod tests {
         let bad = parse("{invalid json}");
         assert!(bad.is_null());
 
-        // SAFETY: hew_json_last_error returns a malloc-allocated C string.
-        let err = unsafe { read_and_free_cstr(hew_json_last_error()) };
+        // SAFETY: hew_json_last_error returns a managed string owner.
+        let err = unsafe { read_and_free_string(hew_json_last_error()) };
         assert!(!err.is_empty());
     }
 
@@ -1493,8 +1558,8 @@ mod tests {
         let ok = parse("{}");
         assert!(!ok.is_null());
 
-        // SAFETY: hew_json_last_error returns a malloc-allocated C string.
-        let err = unsafe { read_and_free_cstr(hew_json_last_error()) };
+        // SAFETY: hew_json_last_error returns a managed string owner.
+        let err = unsafe { read_and_free_string(hew_json_last_error()) };
         assert!(err.is_empty());
 
         // SAFETY: ok is a valid pointer returned by parse.
@@ -1508,11 +1573,11 @@ mod tests {
         let mut bad_map = BTreeMap::new();
         bad_map.insert(vec![0xff], 1);
 
-        let json = stringify_result_to_malloc(serde_json::to_string(&bad_map));
+        let json = stringify_result_to_string(serde_json::to_string(&bad_map));
         assert!(json.is_null());
 
-        // SAFETY: hew_json_last_error returns a malloc-allocated C string.
-        let err = unsafe { read_and_free_cstr(hew_json_last_error()) };
+        // SAFETY: hew_json_last_error returns a managed string owner.
+        let err = unsafe { read_and_free_string(hew_json_last_error()) };
         assert!(err.contains("stringify"));
     }
 
@@ -1524,14 +1589,14 @@ mod tests {
 
         // SAFETY: val is a valid HewJsonValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_json_get_field(val, key.as_ptr());
             assert!(!field.is_null());
 
             let bytes = hew_json_get_bytes(field);
             assert!(bytes.ptr.is_null());
 
-            let err = read_and_free_cstr(hew_json_last_error());
+            let err = read_and_free_string(hew_json_last_error());
             assert!(err.contains("base64") || err.contains("decode"));
 
             hew_json_free(field);
@@ -1547,13 +1612,13 @@ mod tests {
 
         // SAFETY: val is a valid HewJsonValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_json_get_field(val, key.as_ptr());
             assert!(!field.is_null());
 
             let bytes = read_and_free_bytes(hew_json_get_bytes(field));
             assert!(bytes.is_empty());
-            assert!(read_and_free_cstr(hew_json_last_error()).is_empty());
+            assert!(read_and_free_string(hew_json_last_error()).is_empty());
 
             hew_json_free(field);
             hew_json_free(val);
@@ -1568,13 +1633,13 @@ mod tests {
 
         // SAFETY: val is a valid HewJsonValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_json_get_field(val, key.as_ptr());
             assert!(!field.is_null());
 
             let bytes = read_and_free_bytes(hew_json_get_bytes(field));
             assert_eq!(bytes, b"hello");
-            assert!(read_and_free_cstr(hew_json_last_error()).is_empty());
+            assert!(read_and_free_string(hew_json_last_error()).is_empty());
 
             hew_json_free(field);
             hew_json_free(val);
@@ -1589,11 +1654,11 @@ mod tests {
 
         // SAFETY: bad is a valid HewJsonValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_json_get_field(bad, key.as_ptr());
             assert!(!field.is_null());
             assert!(hew_json_get_bytes(field).ptr.is_null());
-            assert!(!read_and_free_cstr(hew_json_last_error()).is_empty());
+            assert!(!read_and_free_string(hew_json_last_error()).is_empty());
             hew_json_free(field);
             hew_json_free(bad);
         }
@@ -1603,12 +1668,12 @@ mod tests {
 
         // SAFETY: good is a valid HewJsonValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_json_get_field(good, key.as_ptr());
             assert!(!field.is_null());
             let bytes = read_and_free_bytes(hew_json_get_bytes(field));
             assert_eq!(bytes, b"hello");
-            assert!(read_and_free_cstr(hew_json_last_error()).is_empty());
+            assert!(read_and_free_string(hew_json_last_error()).is_empty());
             hew_json_free(field);
             hew_json_free(good);
         }
@@ -1625,11 +1690,11 @@ mod tests {
 
             // SAFETY: val is a valid HewJsonValue from parse.
             unsafe {
-                let key = CString::new("b").unwrap();
+                let key = ManagedString::new("b");
                 let field = hew_json_get_field(val, key.as_ptr());
                 assert!(!field.is_null());
                 assert!(hew_json_get_bytes(field).ptr.is_null());
-                let err = read_and_free_cstr(hew_json_last_error());
+                let err = read_and_free_string(hew_json_last_error());
                 hew_json_free(field);
                 hew_json_free(val);
                 err
@@ -1643,11 +1708,11 @@ mod tests {
 
             // SAFETY: val is a valid HewJsonValue from parse.
             unsafe {
-                let key = CString::new("b").unwrap();
+                let key = ManagedString::new("b");
                 let field = hew_json_get_field(val, key.as_ptr());
                 assert!(!field.is_null());
                 let bytes = read_and_free_bytes(hew_json_get_bytes(field));
-                let err = read_and_free_cstr(hew_json_last_error());
+                let err = read_and_free_string(hew_json_last_error());
                 hew_json_free(field);
                 hew_json_free(val);
                 (bytes, err)
@@ -1660,8 +1725,8 @@ mod tests {
         assert!(err.contains("base64") || err.contains("decode"));
         assert_eq!(bytes, b"hello");
         assert!(ok_err.is_empty());
-        // SAFETY: hew_json_last_error returns a malloc-allocated C string.
-        assert!(unsafe { read_and_free_cstr(hew_json_last_error()) }.is_empty());
+        // SAFETY: hew_json_last_error returns a managed string owner.
+        assert!(unsafe { read_and_free_string(hew_json_last_error()) }.is_empty());
     }
 
     #[test]
@@ -1672,11 +1737,11 @@ mod tests {
 
         // SAFETY: bad is a valid HewJsonValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_json_get_field(bad, key.as_ptr());
             assert!(!field.is_null());
             assert!(hew_json_get_bytes(field).ptr.is_null());
-            assert!(!read_and_free_cstr(hew_json_last_error()).is_empty());
+            assert!(!read_and_free_string(hew_json_last_error()).is_empty());
             hew_json_free(field);
             hew_json_free(bad);
         }
@@ -1686,12 +1751,12 @@ mod tests {
 
         // SAFETY: val is a valid HewJsonValue from parse.
         unsafe {
-            let key = CString::new("num").unwrap();
+            let key = ManagedString::new("num");
             let field = hew_json_get_field(val, key.as_ptr());
             assert!(!field.is_null());
 
             assert!(hew_json_get_bytes(field).ptr.is_null());
-            let err = read_and_free_cstr(hew_json_last_error());
+            let err = read_and_free_string(hew_json_last_error());
             assert!(err.contains("not a string"));
 
             hew_json_free(field);
@@ -1707,11 +1772,11 @@ mod tests {
 
         // SAFETY: bad is a valid HewJsonValue from parse.
         unsafe {
-            let key = CString::new("b").unwrap();
+            let key = ManagedString::new("b");
             let field = hew_json_get_field(bad, key.as_ptr());
             assert!(!field.is_null());
             assert!(hew_json_get_bytes(field).ptr.is_null());
-            assert!(!read_and_free_cstr(hew_json_last_error()).is_empty());
+            assert!(!read_and_free_string(hew_json_last_error()).is_empty());
             hew_json_free(field);
             hew_json_free(bad);
         }
@@ -1721,12 +1786,12 @@ mod tests {
 
         // SAFETY: val is a valid HewJsonValue from parse.
         unsafe {
-            let key = CString::new("missing").unwrap();
+            let key = ManagedString::new("missing");
             let field = hew_json_get_field(val, key.as_ptr());
             assert!(field.is_null());
 
             assert!(hew_json_get_bytes(field).ptr.is_null());
-            let err = read_and_free_cstr(hew_json_last_error());
+            let err = read_and_free_string(hew_json_last_error());
             assert!(err.contains("null") || err.contains("key not found"));
 
             hew_json_free(val);
@@ -1768,7 +1833,7 @@ mod tests {
         // SAFETY: obj is valid from hew_json_object_new.
         unsafe {
             let obj = hew_json_object_new();
-            let k = CString::new("cp").unwrap();
+            let k = ManagedString::new("cp");
             hew_json_object_set_char(obj, k.as_ptr(), 0x41); // 'A' = 65
             let field = hew_json_get_field(obj, k.as_ptr());
             assert!(!field.is_null());
@@ -1784,7 +1849,7 @@ mod tests {
                                      // SAFETY: obj is valid from hew_json_object_new.
         unsafe {
             let obj = hew_json_object_new();
-            let k = CString::new("dur").unwrap();
+            let k = ManagedString::new("dur");
             hew_json_object_set_duration(obj, k.as_ptr(), ns);
             let field = hew_json_get_field(obj, k.as_ptr());
             assert!(!field.is_null());
@@ -1800,7 +1865,7 @@ mod tests {
                                     // SAFETY: obj is valid from hew_json_object_new.
         unsafe {
             let obj = hew_json_object_new();
-            let k = CString::new("past").unwrap();
+            let k = ManagedString::new("past");
             hew_json_object_set_duration(obj, k.as_ptr(), ns);
             let field = hew_json_get_field(obj, k.as_ptr());
             assert!(!field.is_null());
@@ -1811,10 +1876,10 @@ mod tests {
     }
 
     #[test]
-    fn get_field_null_key_returns_null() {
+    fn get_field_missing_empty_key_returns_null() {
         let val = parse(r#"{"a":1}"#);
         assert!(!val.is_null());
-        // SAFETY: val is valid; passing null key.
+        // SAFETY: val is valid; the null text handle looks up the empty key.
         unsafe {
             assert!(hew_json_get_field(val, std::ptr::null()).is_null());
             hew_json_free(val);
@@ -1897,7 +1962,7 @@ mod tests {
         assert!(!val.is_null());
         // SAFETY: val is valid.
         unsafe {
-            let k = CString::new("key").unwrap();
+            let k = ManagedString::new("key");
             assert!(hew_json_get_field(val, k.as_ptr()).is_null());
             hew_json_free(val);
         }
@@ -1909,7 +1974,7 @@ mod tests {
         assert!(!val.is_null());
         // SAFETY: val is valid.
         unsafe {
-            let k = CString::new("nonexistent").unwrap();
+            let k = ManagedString::new("nonexistent");
             assert!(hew_json_get_field(val, k.as_ptr()).is_null());
             hew_json_free(val);
         }
@@ -1951,8 +2016,8 @@ mod tests {
         // SAFETY: arr is a valid array from hew_json_array_new.
         unsafe {
             let arr = hew_json_array_new();
-            let k = CString::new("key").unwrap();
-            let v = CString::new("val").unwrap();
+            let k = ManagedString::new("key");
+            let v = ManagedString::new("val");
 
             hew_json_object_set_bool(arr, k.as_ptr(), 1);
             hew_json_object_set_int(arr, k.as_ptr(), 42);
@@ -1971,7 +2036,7 @@ mod tests {
         // SAFETY: obj is a valid object from hew_json_object_new.
         unsafe {
             let obj = hew_json_object_new();
-            let s = CString::new("test").unwrap();
+            let s = ManagedString::new("test");
 
             hew_json_array_push_bool(obj, 1);
             hew_json_array_push_int(obj, 42);
@@ -1997,7 +2062,7 @@ mod tests {
         // SAFETY: obj is a valid object.
         unsafe {
             let obj = hew_json_object_new();
-            let k = CString::new("bad").unwrap();
+            let k = ManagedString::new("bad");
             hew_json_object_set_float(obj, k.as_ptr(), f64::NAN);
 
             // Field should not exist.
@@ -2011,11 +2076,11 @@ mod tests {
         // SAFETY: obj is a valid object.
         unsafe {
             let obj = hew_json_object_new();
-            let k = CString::new("inf").unwrap();
+            let k = ManagedString::new("inf");
             hew_json_object_set_float(obj, k.as_ptr(), f64::INFINITY);
             assert!(hew_json_get_field(obj, k.as_ptr()).is_null());
 
-            let k2 = CString::new("neginf").unwrap();
+            let k2 = ManagedString::new("neginf");
             hew_json_object_set_float(obj, k2.as_ptr(), f64::NEG_INFINITY);
             assert!(hew_json_get_field(obj, k2.as_ptr()).is_null());
 
@@ -2067,7 +2132,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Unicode through the CString FFI boundary
+    // Unicode through the managed string FFI boundary
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2076,7 +2141,7 @@ mod tests {
         assert!(!val.is_null());
         // SAFETY: val is valid.
         unsafe {
-            let s = read_and_free_cstr(hew_json_get_string(val));
+            let s = read_and_free_string(hew_json_get_string(val));
             assert_eq!(s, "Hello 🌍🎉 world");
             hew_json_free(val);
         }
@@ -2089,7 +2154,7 @@ mod tests {
         assert!(!val.is_null());
         // SAFETY: val is valid.
         unsafe {
-            let s = read_and_free_cstr(hew_json_get_string(val));
+            let s = read_and_free_string(hew_json_get_string(val));
             assert_eq!(s, "Hew");
             hew_json_free(val);
         }
@@ -2101,7 +2166,7 @@ mod tests {
         assert!(!val.is_null());
         // SAFETY: val is valid.
         unsafe {
-            let k = CString::new("clé").unwrap();
+            let k = ManagedString::new("clé");
             let field = hew_json_get_field(val, k.as_ptr());
             assert!(!field.is_null());
             assert_eq!(hew_json_get_int(field), 42);
@@ -2158,7 +2223,7 @@ mod tests {
         // Walk 50 levels deep and verify the leaf.
         // SAFETY: val is valid from parse.
         unsafe {
-            let key = CString::new("a").unwrap();
+            let key = ManagedString::new("a");
             let mut current = val;
             for _ in 0..50 {
                 let next = hew_json_get_field(current, key.as_ptr());
@@ -2188,22 +2253,22 @@ mod tests {
 
             for (id, label) in [(1_i64, "α"), (2, "β")] {
                 let item = hew_json_object_new();
-                let k_id = CString::new("id").unwrap();
+                let k_id = ManagedString::new("id");
                 hew_json_object_set_int(item, k_id.as_ptr(), id);
-                let k_label = CString::new("label").unwrap();
-                let v_label = CString::new(label).unwrap();
+                let k_label = ManagedString::new("label");
+                let v_label = ManagedString::new(label);
                 hew_json_object_set_string(item, k_label.as_ptr(), v_label.as_ptr());
                 hew_json_array_push(items, item);
             }
 
-            let k_items = CString::new("items").unwrap();
+            let k_items = ManagedString::new("items");
             hew_json_object_set(root, k_items.as_ptr(), items);
-            let k_count = CString::new("count").unwrap();
+            let k_count = ManagedString::new("count");
             hew_json_object_set_int(root, k_count.as_ptr(), 2);
 
             // Stringify and re-parse.
             let json_str = hew_json_stringify(root);
-            let json_text = read_and_free_cstr(json_str);
+            let json_text = read_and_free_string(json_str);
             hew_json_free(root);
 
             let reparsed = parse(&json_text);
@@ -2218,9 +2283,9 @@ mod tests {
             let items_field = hew_json_get_field(reparsed, k_items.as_ptr());
             assert_eq!(hew_json_array_len(items_field), 2);
             let item1 = hew_json_array_get(items_field, 1);
-            let k_label = CString::new("label").unwrap();
+            let k_label = ManagedString::new("label");
             let label_field = hew_json_get_field(item1, k_label.as_ptr());
-            let label_str = read_and_free_cstr(hew_json_get_string(label_field));
+            let label_str = read_and_free_string(hew_json_get_string(label_field));
             assert_eq!(label_str, "β");
             hew_json_free(label_field);
             hew_json_free(item1);

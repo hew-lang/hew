@@ -3,7 +3,9 @@
 //! Every promoted symbol is named at its own call site below. The shared
 //! instrument proves two live results are distinct (R1), each arrives solely
 //! owned (R2), and the producer/input remains usable after the caller releases
-//! both (R3). An unmeasured symbol has no call site here and must remain absent
+//! both (R3). JSON/YAML instead use managed ownership and verify results
+//! after container destruction, including canonical empty and embedded NUL.
+//! An unmeasured symbol has no call site here and must remain absent
 //! from the classification's `result-retention` axis.
 
 use std::ffi::{c_char, CStr, CString};
@@ -114,43 +116,86 @@ fn url_and_cidr_results_are_transferred() {
     );
 }
 
+/// Returned text must outlive sibling releases, later calls and its value container.
+fn assert_managed_value_results<T>(
+    from_string: unsafe extern "C" fn(*const hew_cabi::string::HewString) -> *mut T,
+    get_string: unsafe extern "C" fn(*const T) -> *mut hew_cabi::string::HewString,
+    stringify: unsafe extern "C" fn(*const T) -> *mut hew_cabi::string::HewString,
+    free_value: unsafe extern "C" fn(*mut T),
+    free_string: unsafe extern "C" fn(*mut hew_cabi::string::HewString),
+    decode: impl Fn(&str) -> String,
+) {
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::{string_as_str, string_release, string_retain};
+
+    for expected in ["", "clé\0雪\0fin"] {
+        let input = ManagedString::new(expected);
+        // SAFETY: the input is a live managed string, borrowed by the constructor.
+        let value = unsafe { from_string(input.as_ptr()) };
+        assert!(!value.is_null());
+        drop(input);
+        // SAFETY: value owns its copied contents; all text results are separate owners.
+        unsafe {
+            let first = get_string(value);
+            let second = get_string(value);
+            assert_eq!(first.is_null(), expected.is_empty());
+            assert_eq!(second.is_null(), expected.is_empty());
+            if !expected.is_empty() {
+                assert_ne!(first, second);
+            }
+            assert_eq!(string_as_str(first), expected);
+            let retained = string_retain(first);
+            free_string(first);
+            assert_eq!(string_as_str(second), expected);
+            free_string(second);
+
+            let serialized = stringify(value);
+            assert_eq!(decode(string_as_str(serialized)), expected);
+            let later_serialized = stringify(value);
+            assert_ne!(serialized, later_serialized);
+            free_string(later_serialized);
+            let third = get_string(value);
+            free_value(value);
+
+            assert_eq!(string_as_str(retained), expected);
+            assert_eq!(string_as_str(third), expected);
+            assert_eq!(decode(string_as_str(serialized)), expected);
+            string_release(retained);
+            free_string(third);
+            free_string(serialized);
+        }
+    }
+}
+
 #[test]
-fn json_yaml_and_toml_results_are_transferred() {
+fn json_managed_results_survive_value_destruction() {
+    use crate::json;
+    assert_managed_value_results(
+        json::hew_json_from_string,
+        json::hew_json_get_string,
+        json::hew_json_stringify,
+        json::hew_json_free,
+        json::hew_json_string_free,
+        |text| serde_json::from_str::<String>(text).unwrap(),
+    );
+}
+
+#[test]
+fn yaml_managed_results_survive_value_destruction() {
+    use crate::yaml;
+    assert_managed_value_results(
+        yaml::hew_yaml_from_string,
+        yaml::hew_yaml_get_string,
+        yaml::hew_yaml_stringify,
+        yaml::hew_yaml_free,
+        yaml::hew_yaml_string_free,
+        |text| serde_yaml::from_str::<String>(text).unwrap(),
+    );
+}
+
+#[test]
+fn toml_results_are_transferred() {
     let scalar = CString::new("retention probe").unwrap();
-
-    // SAFETY: `scalar` is a valid NUL-terminated string.
-    let json = unsafe { crate::json::hew_json_from_string(scalar.as_ptr()) };
-    assert_transferred(
-        "hew_json_get_string",
-        // SAFETY: `json` stays live until both measurements complete.
-        || unsafe { crate::json::hew_json_get_string(json) },
-        |text| assert_eq!(text.to_str().unwrap(), "retention probe"),
-    );
-    assert_transferred(
-        "hew_json_stringify",
-        // SAFETY: `json` stays live until both measurements complete.
-        || unsafe { crate::json::hew_json_stringify(json) },
-        |text| assert_eq!(text.to_str().unwrap(), "\"retention probe\""),
-    );
-    // SAFETY: getters/stringify borrowed the live value.
-    unsafe { crate::json::hew_json_free(json) };
-
-    // SAFETY: `scalar` is a valid NUL-terminated string.
-    let yaml = unsafe { crate::yaml::hew_yaml_from_string(scalar.as_ptr()) };
-    assert_transferred(
-        "hew_yaml_get_string",
-        // SAFETY: `yaml` stays live until both measurements complete.
-        || unsafe { crate::yaml::hew_yaml_get_string(yaml) },
-        |text| assert_eq!(text.to_str().unwrap(), "retention probe"),
-    );
-    assert_transferred(
-        "hew_yaml_stringify",
-        // SAFETY: `yaml` stays live until both measurements complete.
-        || unsafe { crate::yaml::hew_yaml_stringify(yaml) },
-        |text| assert!(text.to_str().unwrap().contains("retention probe")),
-    );
-    // SAFETY: getters/stringify borrowed the live value.
-    unsafe { crate::yaml::hew_yaml_free(yaml) };
 
     // SAFETY: `scalar` is a valid NUL-terminated string.
     let toml_scalar = unsafe { crate::toml::hew_toml_from_string(scalar.as_ptr()) };

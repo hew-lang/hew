@@ -25,6 +25,14 @@ fn lower_source(source: &str) -> SemModule {
         lowered.statuses
     );
     assert!(
+        lowered
+            .callable_statuses
+            .iter()
+            .all(|(_, status)| { !matches!(status, SirLoweringStatus::Unsupported { .. }) }),
+        "a demanded callable did not lower: {:#?}",
+        lowered.callable_statuses
+    );
+    assert!(
         verify_module(&lowered.module).is_empty(),
         "verify: {:#?}\n{}",
         verify_module(&lowered.module),
@@ -184,6 +192,34 @@ fn permanent_map_index_fault() {
 fn permanent_set_value_copy() {
     lower_source(include_str!(
         "../../tests/core-acceptance/cases/set-value-copy.hew"
+    ));
+}
+
+#[test]
+fn permanent_selected_key_methods() {
+    lower_source(include_str!(
+        "../../tests/core-acceptance/cases/map-selected-key-methods.hew"
+    ));
+}
+
+#[test]
+fn permanent_composite_key_equality() {
+    lower_source(include_str!(
+        "../../tests/core-acceptance/cases/map-composite-key-equality.hew"
+    ));
+}
+
+#[test]
+fn permanent_hash_callback_fault() {
+    lower_source(include_str!(
+        "../../tests/core-acceptance/cases/map-hash-callback-fault.hew"
+    ));
+}
+
+#[test]
+fn permanent_eq_callback_fault() {
+    lower_source(include_str!(
+        "../../tests/core-acceptance/cases/map-eq-callback-fault.hew"
     ));
 }
 

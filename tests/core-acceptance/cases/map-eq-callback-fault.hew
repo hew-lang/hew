@@ -1,0 +1,27 @@
+type Key {
+    label: string,
+    code: i64,
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        0
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        let local = self.label.to_upper();
+        let bytes = local.to_bytes();
+        bytes.len() / (self.code - other.code) == 1
+    }
+}
+
+fn main() -> i64 {
+    let caller = "caller".to_upper();
+    var values: HashMap<Key, Vec<string>> = HashMap.new();
+    values.insert(Key { label: "first".to_upper(), code: 7 }, ["first payload".to_upper()]);
+    values.insert(Key { label: "second".to_upper(), code: 7 }, ["second payload".to_upper()]);
+    println(caller);
+    0
+}

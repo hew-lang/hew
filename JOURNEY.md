@@ -1114,3 +1114,10 @@ SIR, physical MIR and compiler-session suites pass. This includes capability
 provenance mutations, absent construction plans, borrowed read demand, generic
 impl specialization, owned projections and source capability refusals. Native
 key callback emission and runtime fault consumers remain the next boundary.
+
+Added permanent native and paired safety fixtures for derived outer keys using
+exact generic Hash/Eq overrides, composite equality across vector and active
+variant/optional payloads, and Hash/Eq callback faults with live callback locals
+and nested insertion payloads. Their SIR source controls pass and now require
+every demanded callable to lower. Native callback and sanitizer execution remain
+pending the emitter and fault-kernel composition.

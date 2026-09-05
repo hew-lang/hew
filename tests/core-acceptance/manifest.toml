@@ -689,3 +689,51 @@ timeout_seconds = 15
 stdout = ""
 stderr = "hew: failure: IndexOutOfBounds (205)\n"
 exit = 205
+
+[[case]]
+id = "map-selected-key-methods"
+intent = "Derived outer keys preserve exact generic Hash and Eq overrides, and map and set insertion borrow their owning inputs."
+source = "cases/map-selected-key-methods.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nREPLACEMENT\nFIRST\ntrue\nfalse\n1\n"
+stderr = ""
+exit = 0
+
+[[case]]
+id = "map-composite-key-equality"
+intent = "Derived key equality compares vector order and active enum and optional payloads, preserving selected values after map clear."
+source = "cases/map-composite-key-equality.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "3\nreversed\nempty suffix\nREPLACEMENT\n"
+stderr = ""
+exit = 0
+
+[[case]]
+id = "map-hash-callback-fault"
+intent = "A selected Hash callback propagates its original fault while releasing its local values, the consumed receiver and borrowed insertion staging."
+source = "cases/map-hash-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "map-eq-callback-fault"
+intent = "A selected Eq callback fault during collision probing releases callback locals and both existing and staged owning map payloads."
+source = "cases/map-eq-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

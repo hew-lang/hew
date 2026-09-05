@@ -1,0 +1,47 @@
+enum Label {
+    Text(string),
+    Empty,
+}
+
+type Key {
+    group: i64,
+    labels: Vec<Label>,
+    suffix: Option<string>,
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.group
+    }
+}
+
+fn make(reverse: bool, empty: bool) -> Key {
+    let first = Label.Text("first".to_upper());
+    let second = Label.Text("second".to_upper());
+    let labels = if reverse {
+        [second, first]
+    } else {
+        [first, second]
+    };
+    let suffix: Option<string> = if empty {
+        None
+    } else {
+        Some("suffix".to_upper())
+    };
+    Key { group: 7, labels: labels, suffix: suffix }
+}
+
+fn main() -> i64 {
+    var values: HashMap<Key, string> = HashMap.new();
+    values.insert(make(false, false), "initial");
+    values.insert(make(false, false), "replacement".to_upper());
+    values.insert(make(true, false), "reversed");
+    values.insert(make(false, true), "empty suffix");
+    let saved = values[make(false, false)];
+    println(values.len());
+    println(values[make(true, false)]);
+    println(values[make(false, true)]);
+    values.clear();
+    println(saved);
+    0
+}

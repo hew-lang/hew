@@ -26,14 +26,12 @@ SERVER_HEW="$REPO_ROOT/examples/distributed/kv_server.hew"
 CLIENT_HEW="$REPO_ROOT/examples/distributed/kv_client.hew"
 
 # Temp dir for compiled binaries (cleaned up on exit).
-BIN_DIR="$(mktemp -d -t kv-e2e-bins)"
+BIN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kv-e2e-bins.XXXXXX")"
 SERVER_BIN="$BIN_DIR/kv_server"
 CLIENT_BIN="$BIN_DIR/kv_client"
 
-# macOS mktemp only randomises trailing X's; a non-X suffix produces a
-# literal filename. Use -t (portable) to get a randomised path.
-SERVER_LOG="$(mktemp -t kv-server)"
-CLIENT_LOG="$(mktemp -t kv-client)"
+SERVER_LOG="$BIN_DIR/server.log"
+CLIENT_LOG="$BIN_DIR/client.log"
 
 # shellcheck disable=SC2329  # invoked via trap EXIT, not by name
 cleanup() {
@@ -42,7 +40,7 @@ cleanup() {
         # Bounded wait: give the server up to 3 s to exit after SIGTERM, then
         # SIGKILL to ensure the trap never hangs (the server's sleep_ms(120000)
         # would otherwise block `wait` for two minutes).
-        local deadline=$(( $(date +%s) + 3 ))
+        local deadline=$(($(date +%s) + 3))
         while kill -0 "$SERVER_PID" 2>/dev/null && [[ $(date +%s) -lt $deadline ]]; do
             sleep 0.1
         done
@@ -51,7 +49,6 @@ cleanup() {
         fi
         wait "$SERVER_PID" 2>/dev/null || true
     fi
-    rm -f "$SERVER_LOG" "$CLIENT_LOG"
     rm -rf "$BIN_DIR"
 }
 trap cleanup EXIT
@@ -78,12 +75,12 @@ HEW_COMPILE() { (cd "$REPO_ROOT" && "$HEW" compile --emit-dir "$BIN_DIR" "$@"); 
 echo "[harness] compiling server..."
 COMPILE_START=$(date +%s)
 HEW_COMPILE "$SERVER_HEW" 2>&1
-echo "[harness] server compiled in $(( $(date +%s) - COMPILE_START ))s"
+echo "[harness] server compiled in $(($(date +%s) - COMPILE_START))s"
 
 echo "[harness] compiling client..."
 COMPILE_START=$(date +%s)
 HEW_COMPILE "$CLIENT_HEW" 2>&1
-echo "[harness] client compiled in $(( $(date +%s) - COMPILE_START ))s"
+echo "[harness] client compiled in $(($(date +%s) - COMPILE_START))s"
 
 if [[ ! -x "$SERVER_BIN" || ! -x "$CLIENT_BIN" ]]; then
     echo "[harness] ERROR: compiled binaries not found in $BIN_DIR"
@@ -111,7 +108,7 @@ while ! grep -q "$READY_MSG" "$SERVER_LOG" 2>/dev/null; do
         cat "$SERVER_LOG"
         exit 1
     fi
-    elapsed_s=$(( $(date +%s) - SERVER_START_S ))
+    elapsed_s=$(($(date +%s) - SERVER_START_S))
     if [[ $elapsed_s -ge $READY_TIMEOUT ]]; then
         echo "[harness] ERROR: server did not become ready within ${READY_TIMEOUT}s"
         echo "--- server log so far ---"
@@ -127,7 +124,7 @@ echo "[harness] starting client..."
 CLIENT_START=$(date +%s)
 HEW_TRANSPORT=tcp "$CLIENT_BIN" "127.0.0.1" "$PORT" >"$CLIENT_LOG" 2>&1
 CLIENT_EXIT=$?
-CLIENT_ELAPSED=$(( $(date +%s) - CLIENT_START ))
+CLIENT_ELAPSED=$(($(date +%s) - CLIENT_START))
 
 echo "[harness] client exit=$CLIENT_EXIT  duration=${CLIENT_ELAPSED}s"
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Syntax-check and ShellCheck every tracked shell script under scripts/."""
+"""Syntax-check and ShellCheck every tracked shell script in the repository."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def tracked_shell_scripts(root: Path) -> tuple[str, ...]:
     result = subprocess.run(
-        ["git", "ls-files", "-z", "--", "scripts"],
+        ["git", "ls-files", "-z", "--", "*.sh"],
         cwd=root,
         check=True,
         capture_output=True,
@@ -32,10 +32,21 @@ def tracked_shell_scripts(root: Path) -> tuple[str, ...]:
 def check(root: Path) -> int:
     scripts = tracked_shell_scripts(root)
     if not scripts:
-        print("shell script lint: no tracked scripts/*.sh files", file=sys.stderr)
+        print("shell script lint: no tracked *.sh files", file=sys.stderr)
         return 1
     for script in scripts:
-        result = subprocess.run(["bash", "-n", script], cwd=root, check=False)
+        with (root / script).open(encoding="utf-8") as source:
+            shebang = source.readline().strip()
+        shell = {
+            "#!/bin/sh": "sh",
+            "#!/usr/bin/env sh": "sh",
+            "#!/bin/bash": "bash",
+            "#!/usr/bin/env bash": "bash",
+        }.get(shebang)
+        if shell is None:
+            print(f"{script}: expected a sh or bash shebang", file=sys.stderr)
+            return 1
+        result = subprocess.run([shell, "-n", script], cwd=root, check=False)
         if result.returncode:
             return result.returncode
     result = subprocess.run(["shellcheck", *scripts], cwd=root, check=False)

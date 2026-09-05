@@ -170,10 +170,12 @@ _run_test() {
 
     # Stage the test file and packages
     cp "${TEST_HEW}" "${tmpdir}/test.hew"
-    [[ -f "${DEB_PKG}" ]] && cp "${DEB_PKG}" "${tmpdir}/" || true
-    [[ -f "${RPM_PKG}" ]] && cp "${RPM_PKG}" "${tmpdir}/" || true
-    [[ -f "${ARCH_PKG}" ]] && cp "${ARCH_PKG}" "${tmpdir}/" || true
-    [[ -f "${APK_PKG}" ]] && cp "${APK_PKG}" "${tmpdir}/" || true
+    local package
+    for package in "$DEB_PKG" "$RPM_PKG" "$ARCH_PKG" "$APK_PKG"; do
+        if [[ -f "$package" ]]; then
+            cp "$package" "$tmpdir/"
+        fi
+    done
 
     local output
     if output=$(run_with_timeout "${TEST_TIMEOUT}" docker run --rm \

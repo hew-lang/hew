@@ -15,7 +15,7 @@ FILTER="${1:-}"
 
 # Pre-compile Go benchmarks
 GO_BIN_DIR=$(mktemp -d)
-trap "rm -rf $GO_BIN_DIR" EXIT
+trap 'rm -rf "$GO_BIN_DIR"' EXIT
 
 echo "=== Hew vs Go Algorithm Benchmark ==="
 echo ""

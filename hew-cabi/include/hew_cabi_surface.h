@@ -2118,9 +2118,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1500] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_contains_key_layout",
      "{\"native\": \"fn hew_hashmap_contains_key_layout( *const "
-     "HewLayoutHashMap, *const c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
-     "hew_hashmap_contains_key_layout( *const HewLayoutHashMap, *const c_void, "
-     ") -> bool\"}",
+     "HewLayoutHashMap, *const c_void, *mut bool, *mut *mut c_void, ) -> "
+     "i32\", \"wasm32-wasip1\": \"fn hew_hashmap_contains_key_layout( *const "
+     "HewLayoutHashMap, *const c_void, *mut bool, *mut *mut c_void, ) -> "
+     "i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_entries_layout",
@@ -2138,30 +2139,33 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1500] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_get_clone_layout",
      "{\"native\": \"fn hew_hashmap_get_clone_layout( *const HewLayoutHashMap, "
-     "*const c_void, *mut c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
-     "hew_hashmap_get_clone_layout( *const HewLayoutHashMap, *const c_void, "
-     "*mut c_void, ) -> bool\"}",
+     "*const c_void, *mut c_void, *mut bool, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_hashmap_get_clone_layout( *const "
+     "HewLayoutHashMap, *const c_void, *mut c_void, *mut bool, *mut *mut "
+     "c_void, ) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_get_layout",
      "{\"native\": \"fn hew_hashmap_get_layout( *const HewLayoutHashMap, "
-     "*const c_void, ) -> *const c_void\", \"wasm32-wasip1\": \"fn "
-     "hew_hashmap_get_layout( *const HewLayoutHashMap, *const c_void, ) -> "
-     "*const c_void\"}",
+     "*const c_void, *mut *const c_void, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_hashmap_get_layout( *const HewLayoutHashMap, "
+     "*const c_void, *mut *const c_void, *mut *mut c_void, ) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_insert_clone_layout",
      "{\"native\": \"fn hew_hashmap_insert_clone_layout( *mut "
-     "HewLayoutHashMap, *const c_void, *const c_void, ) -> bool\", "
-     "\"wasm32-wasip1\": \"fn hew_hashmap_insert_clone_layout( *mut "
-     "HewLayoutHashMap, *const c_void, *const c_void, ) -> bool\"}",
+     "HewLayoutHashMap, *const c_void, *const c_void, *mut bool, *mut *mut "
+     "c_void, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "hew_hashmap_insert_clone_layout( *mut HewLayoutHashMap, *const c_void, "
+     "*const c_void, *mut bool, *mut *mut c_void, ) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_insert_layout",
      "{\"native\": \"fn hew_hashmap_insert_layout( *mut HewLayoutHashMap, "
-     "*const c_void, *const c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
-     "hew_hashmap_insert_layout( *mut HewLayoutHashMap, *const c_void, *const "
-     "c_void, ) -> bool\"}",
+     "*const c_void, *const c_void, *mut bool, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_hashmap_insert_layout( *mut "
+     "HewLayoutHashMap, *const c_void, *const c_void, *mut bool, *mut *mut "
+     "c_void, ) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_iter_free_layout",
@@ -2206,16 +2210,18 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1500] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_remove_layout",
      "{\"native\": \"fn hew_hashmap_remove_layout( *mut HewLayoutHashMap, "
-     "*const c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
-     "hew_hashmap_remove_layout( *mut HewLayoutHashMap, *const c_void, ) -> "
-     "bool\"}",
+     "*const c_void, *mut bool, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_hashmap_remove_layout( *mut "
+     "HewLayoutHashMap, *const c_void, *mut bool, *mut *mut c_void, ) -> "
+     "i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_remove_take_layout",
      "{\"native\": \"fn hew_hashmap_remove_take_layout( *mut HewLayoutHashMap, "
-     "*const c_void, *mut c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
-     "hew_hashmap_remove_take_layout( *mut HewLayoutHashMap, *const c_void, "
-     "*mut c_void, ) -> bool\"}",
+     "*const c_void, *mut c_void, *mut bool, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_hashmap_remove_take_layout( *mut "
+     "HewLayoutHashMap, *const c_void, *mut c_void, *mut bool, *mut *mut "
+     "c_void, ) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_values_layout",
@@ -2239,9 +2245,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1500] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_contains_layout",
      "{\"native\": \"fn hew_hashset_contains_layout( *const HewLayoutHashSet, "
-     "*const c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
-     "hew_hashset_contains_layout( *const HewLayoutHashSet, *const c_void, ) "
-     "-> bool\"}",
+     "*const c_void, *mut bool, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_hashset_contains_layout( *const "
+     "HewLayoutHashSet, *const c_void, *mut bool, *mut *mut c_void, ) -> "
+     "i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_free_layout",
@@ -2252,16 +2259,18 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1500] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_insert_clone_layout",
      "{\"native\": \"fn hew_hashset_insert_clone_layout( *mut "
-     "HewLayoutHashSet, *const c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
-     "hew_hashset_insert_clone_layout( *mut HewLayoutHashSet, *const c_void, ) "
-     "-> bool\"}",
+     "HewLayoutHashSet, *const c_void, *mut bool, *mut *mut c_void, ) -> "
+     "i32\", \"wasm32-wasip1\": \"fn hew_hashset_insert_clone_layout( *mut "
+     "HewLayoutHashSet, *const c_void, *mut bool, *mut *mut c_void, ) -> "
+     "i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_insert_layout",
      "{\"native\": \"fn hew_hashset_insert_layout( *mut HewLayoutHashSet, "
-     "*const c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
-     "hew_hashset_insert_layout( *mut HewLayoutHashSet, *const c_void, ) -> "
-     "bool\"}",
+     "*const c_void, *mut bool, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_hashset_insert_layout( *mut "
+     "HewLayoutHashSet, *const c_void, *mut bool, *mut *mut c_void, ) -> "
+     "i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_is_empty_layout",
@@ -2305,9 +2314,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1500] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_remove_layout",
      "{\"native\": \"fn hew_hashset_remove_layout( *mut HewLayoutHashSet, "
-     "*const c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
-     "hew_hashset_remove_layout( *mut HewLayoutHashSet, *const c_void, ) -> "
-     "bool\"}",
+     "*const c_void, *mut bool, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_hashset_remove_layout( *mut "
+     "HewLayoutHashSet, *const c_void, *mut bool, *mut *mut c_void, ) -> "
+     "i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_to_vec_layout",

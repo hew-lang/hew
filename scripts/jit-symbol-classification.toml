@@ -1983,17 +1983,19 @@ stops the call site from being read as an independent lane operation."""
 [ownership]
 
 # Copy-in preserves all caller owners; the collection owns semantic copies.
+# Output-slot addresses are borrowed. Callback status governs initialization
+# of presence and fault contents through the collection protocol.
 [[ownership.contracts]]
 symbol = "hew_hashmap_insert_clone_layout"
 result = "none"
-params = ["borrow", "borrow", "borrow"]
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_hashset_insert_clone_layout"
 result = "none"
-params = ["borrow", "borrow"]
+params = ["borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

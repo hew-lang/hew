@@ -1208,3 +1208,9 @@ Compiler consumers and ownership/census integration remain with their owner.
 Integrated the callback-status runtime and C ABI changes. SIR now requires selected Hash and Eq methods at collection construction and tracks active faults in its existing path-sensitive ownership flow, including functions with no owned values. Added controls for absent, abandoned, overwritten and mixed-predecessor faults. Physical callables retain their checker declaration and concrete instance for capability identity verification.
 
 Validation: SIR and physical MIR unit suites pass. The full SIR run reaches four outstanding collection source-admission cases (generic key specialization, map emptiness, map projections and set projection), assigned to the parallel checker work. The key descriptor emitter and callback-failure compiler ABI remain pending integration; this checkpoint does not claim native Map execution.
+
+### Collection callback status emission checkpoint
+
+Native Map/Set callback kernels use status plus presence/fault outputs. Emission tests status before reading outputs and releases a semantically consumed receiver on callback failure before SIR cleanup. Map index absence initializes the bounds fault only on successful lookup; existing callback faults retain their status and owner. Regenerated the C ABI census and corrected clone-in ownership parameter arities.
+
+Compiler checks and scoped SIR/MIR/codegen JSON Clippy pass. The Windows private status/result/fault ABI test passes. FFI classification and its regression tests pass; generated-surface regressions are running. This is an intermediate compiled checkpoint: source contracts and SIR/MIR callback-failure edges still require their coordinated file handback, and native Map execution awaits key descriptor emission.

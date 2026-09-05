@@ -2656,7 +2656,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 );
             }
             PhysicalRuntimeAction::Set { operation, glue } => {
-                return self.emit_set_call((operation, glue), transfers, result()?, normal);
+                return self.emit_set_call(
+                    (operation, glue),
+                    transfers,
+                    result()?,
+                    normal,
+                    failure,
+                );
             }
             PhysicalRuntimeAction::Vector { operation, glue } => {
                 return self.emit_vector_call(
@@ -3249,43 +3255,25 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(result, len)?;
             }
             PhysicalMapOp::ContainsKey => {
-                let function = get_or_declare_external(
-                    self.llvm,
+                let contains = self.emit_collection_callback(
                     "hew_hashmap_contains_key_layout",
-                    self.ctx
-                        .bool_type()
-                        .fn_type(&[pointer.into(), pointer.into()], false),
+                    &[map.into(), self.slots[source(1)?.0 as usize].into()],
+                    failure,
+                    None,
                 )?;
-                let contains = self
-                    .runtime_call_value(
-                        function,
-                        &[map.into(), self.slots[source(1)?.0 as usize].into()],
-                        "map.contains",
-                    )?
-                    .into_int_value();
-                let contains = self
-                    .builder
-                    .build_int_z_extend(contains, self.ctx.i8_type(), "map.contains.value")
-                    .llvm_ctx("normalize map presence")?;
                 self.store(result, contains.into())?;
             }
             PhysicalMapOp::Insert | PhysicalMapOp::Clear => {
                 if operation == PhysicalMapOp::Insert {
-                    let function = get_or_declare_external(
-                        self.llvm,
+                    self.emit_collection_callback(
                         "hew_hashmap_insert_clone_layout",
-                        self.ctx
-                            .bool_type()
-                            .fn_type(&[pointer.into(), pointer.into(), pointer.into()], false),
-                    )?;
-                    self.runtime_call_value(
-                        function,
                         &[
                             map.into(),
                             self.slots[source(1)?.0 as usize].into(),
                             self.slots[source(2)?.0 as usize].into(),
                         ],
-                        "map.insert",
+                        failure,
+                        Some((receiver, DestroyAction::Map(glue))),
                     )?;
                 } else {
                     let function = external_drop(self.ctx, self.llvm, "hew_hashmap_clear_layout")?;
@@ -3365,7 +3353,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .layout(&glue.value.ty)
             .ok_or_else(|| CodegenError::FailClosed("map value has no target layout".into()))?;
         let value_ty = llvm_type(self.ctx, &layout.repr)?;
-        let pointer = self.ctx.ptr_type(AddressSpace::default());
         let values = self.value_emitter();
         let output = if operation == PhysicalMapOp::Index {
             self.slots[result.0 as usize]
@@ -3392,24 +3379,27 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         } else {
             "hew_hashmap_get_clone_layout"
         };
-        let function = get_or_declare_external(
-            self.llvm,
+        let consumed = matches!(operation, PhysicalMapOp::Remove { .. })
+            .then_some((receiver, DestroyAction::Map(id)));
+        let found = self.emit_collection_callback(
             symbol,
-            self.ctx
-                .bool_type()
-                .fn_type(&[pointer.into(), pointer.into(), pointer.into()], false),
+            &[
+                self.load(receiver, "map.lookup.receiver")?.into(),
+                self.slots[key.0 as usize].into(),
+                output.into(),
+            ],
+            failure,
+            consumed,
         )?;
         let found = self
-            .runtime_call_value(
-                function,
-                &[
-                    self.load(receiver, "map.lookup.receiver")?.into(),
-                    self.slots[key.0 as usize].into(),
-                    output.into(),
-                ],
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                found,
+                self.ctx.i8_type().const_zero(),
                 "map.lookup.found",
-            )?
-            .into_int_value();
+            )
+            .llvm_ctx("normalize map lookup presence")?;
         let present = self
             .ctx
             .append_basic_block(self.value, "map.lookup.present");
@@ -3427,6 +3417,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 .build_unconditional_branch(complete)
                 .llvm_ctx("finish absent map value")?;
         } else {
+            self.initialize_active_fault(205)?;
             self.emit_edge(failure.ok_or_else(|| {
                 CodegenError::FailClosed("map index lacks its failure cleanup".into())
             })?)?;
@@ -3470,6 +3461,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         transfers: &[ArgumentTransfer],
         result: StorageId,
         normal: &PhysicalEdge,
+        failure: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let (operation, glue) = action;
         let source = |index: usize| {
@@ -3507,24 +3499,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     PhysicalSetOp::Remove { .. } => "hew_hashset_remove_layout",
                     _ => unreachable!("matched membership operation"),
                 };
-                let function = get_or_declare_external(
-                    self.llvm,
+                let consumed = (operation != PhysicalSetOp::Contains)
+                    .then_some((receiver, DestroyAction::Set(glue)));
+                let present = self.emit_collection_callback(
                     symbol,
-                    self.ctx
-                        .bool_type()
-                        .fn_type(&[pointer.into(), pointer.into()], false),
+                    &[set.into(), self.slots[source(1)?.0 as usize].into()],
+                    failure,
+                    consumed,
                 )?;
-                let present = self
-                    .runtime_call_value(
-                        function,
-                        &[set.into(), self.slots[source(1)?.0 as usize].into()],
-                        "set.presence",
-                    )?
-                    .into_int_value();
-                let present = self
-                    .builder
-                    .build_int_z_extend(present, self.ctx.i8_type(), "set.presence.value")
-                    .llvm_ctx("normalize set presence")?;
                 if operation == PhysicalSetOp::Contains {
                     self.store(result, present.into())?;
                 } else {
@@ -3545,6 +3527,77 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
         }
         self.emit_edge(normal)
+    }
+
+    /// Callback status precedes every read of the presence or value outputs.
+    /// A failed borrowing kernel retains its receiver; a semantic Move still
+    /// consumes that receiver, so release it before entering SIR cleanup.
+    fn emit_collection_callback(
+        &self,
+        symbol: &str,
+        inputs: &[BasicMetadataValueEnum<'ctx>],
+        failure: Option<&PhysicalEdge>,
+        consumed: Option<(StorageId, DestroyAction)>,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        let failure = failure.ok_or_else(|| {
+            CodegenError::FailClosed(format!("{symbol} lacks callback fault cleanup"))
+        })?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let output = self
+            .value_emitter()
+            .entry_scratch(self.ctx.i8_type().into(), "collection.presence.out")?;
+        let mut arguments = inputs.to_vec();
+        arguments.push(output.into());
+        arguments.push(self.active_fault.into());
+        let parameters = vec![pointer.into(); arguments.len()];
+        let function = get_or_declare_external(
+            self.llvm,
+            symbol,
+            self.ctx.i32_type().fn_type(&parameters, false),
+        )?;
+        self.builder
+            .build_store(self.active_fault, pointer.const_null())
+            .llvm_ctx("clear callback fault output")?;
+        let status = self
+            .runtime_call_value(function, &arguments, "collection.status")?
+            .into_int_value();
+        self.builder
+            .build_store(self.active_status, status)
+            .llvm_ctx("retain callback status")?;
+        let succeeded = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "collection.succeeded",
+            )
+            .llvm_ctx("test callback status before outputs")?;
+        let success = self
+            .ctx
+            .append_basic_block(self.value, "collection.success");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "collection.callback.failed");
+        self.builder
+            .build_conditional_branch(succeeded, success, failed)
+            .llvm_ctx("select callback outcome")?;
+        self.builder.position_at_end(failed);
+        if let Some((receiver, destroy)) = consumed {
+            self.value_emitter().destroy_loaded_value(
+                self.load(receiver, "collection.failed.receiver")?,
+                &self.storage(receiver)?.layout,
+                destroy,
+            )?;
+            self.clear_owned(receiver)?;
+        }
+        self.emit_edge(failure)?;
+        self.builder.position_at_end(success);
+        Ok(self
+            .builder
+            .build_load(self.ctx.i8_type(), output, "collection.presence")
+            .llvm_ctx("read successful callback presence")?
+            .into_int_value())
     }
 
     fn release_failed_vector_receiver(
@@ -3860,6 +3913,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     fn emit_new_fault(&self, code: i32) -> CodegenResult<()> {
+        self.initialize_active_fault(code)?;
+        self.emit_propagate_fault()
+    }
+
+    fn initialize_active_fault(&self, code: i32) -> CodegenResult<()> {
         let function = external_fault_new(self.ctx, self.llvm)?;
         let fault = self
             .builder
@@ -3873,11 +3931,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("fault constructor returned void".into()))?;
         self.builder
-            .build_store(self.fault_out, fault)
+            .build_store(self.active_fault, fault)
             .llvm_ctx("store physical trap fault")?;
         self.builder
-            .build_return(Some(&self.ctx.i32_type().const_int(code as u64, true)))
-            .llvm_ctx("return physical trap status")?;
+            .build_store(
+                self.active_status,
+                self.ctx.i32_type().const_int(code as u64, true),
+            )
+            .llvm_ctx("retain physical trap status")?;
         Ok(())
     }
 

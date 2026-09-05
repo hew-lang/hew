@@ -1808,7 +1808,6 @@ dependencies = [
 name = "hew-compile"
 version = "0.6.0-rc3"
 dependencies = [
- "hew-codegen-rs",
  "hew-hir",
  "hew-lexer",
  "hew-mir",

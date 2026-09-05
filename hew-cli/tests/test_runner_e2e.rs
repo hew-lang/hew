@@ -104,14 +104,9 @@ fn passing_suite_exits_zero() {
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
 }
 
-/// The test runner synthesizes a unit-returning `main` which calls the
-/// discovered test.  This therefore exercises a closed strict SIR component
-/// containing two zero-result direct calls: `main -> unit_test -> helper`.
-/// A successful executable run proves the flag reaches the in-process test
-/// compiler and that SIR realizes those calls rather than merely parsing the
-/// test input.
+/// Selected test declarations retain their direct helper calls.
 #[test]
-fn sir_lower_runs_unit_returning_direct_test_wrapper() {
+fn selected_unit_test_calls_its_helper() {
     require_codegen();
 
     let dir = support::tempdir();
@@ -122,7 +117,7 @@ fn sir_lower_runs_unit_returning_direct_test_wrapper() {
     );
     let mut command = Command::new(hew_binary());
     command
-        .args(["test", ".", "--sir-lower", "--no-color", "--jobs", "1"])
+        .args(["test", ".", "--no-color", "--jobs", "1"])
         // Integration builds may place the compiler in an SSD target directory
         // outside the checkout, where its dev-layout stdlib discovery cannot
         // infer this source tree from a temporary test project.

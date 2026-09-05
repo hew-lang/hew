@@ -362,42 +362,6 @@ fn eval_inline_expression_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
 }
 
-/// Strict SIR mode must reach the strict lowering boundary for eval fragments
-/// rather than silently compiling the established HIR→MIR body. The generated
-/// auto-print call is deliberately outside the first direct-call SIR slice, so
-/// the command must fail before codegen with that exact no-fallback policy.
-#[test]
-fn eval_sir_lower_rejects_an_unadmitted_fragment_without_legacy_fallback() {
-    let output = Command::new(hew_binary())
-        .args(["eval", "--sir-lower", "1 + 2"])
-        .current_dir(repo_root())
-        .output()
-        .expect("run hew eval --sir-lower");
-
-    assert!(
-        !output.status.success(),
-        "strict SIR eval should reject its unsupported generated print call"
-    );
-    assert!(
-        output.stdout.is_empty(),
-        "strict SIR eval must not fall back and print the legacy result: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("SIR strict lowering failed"),
-        "stderr should identify strict SIR lowering: {stderr}"
-    );
-    assert!(
-        stderr.contains("only ordinary user/impl direct calls"),
-        "stderr should surface the HIR→SIR rejection reason: {stderr}"
-    );
-    assert!(
-        stderr.contains("no legacy MIR fallback was used"),
-        "stderr should make the no-fallback policy explicit: {stderr}"
-    );
-}
-
 #[test]
 fn eval_std_observe_reads_runtime_metric() {
     require_codegen();

@@ -2317,11 +2317,11 @@ mod tests {
         assert_eq!(wasm.target.pointer_width, hew_mir::PointerWidth::Bits32);
         assert_eq!(
             wasm.lower_hir_module(&hir.module, &tco)
-                .map(|output| format!("{:?}", output.sir))
+                .map(|output| format!("{:?}", output.semantics()))
                 .map_err(|error| error.to_string()),
             build
                 .lower_hir_module(&hir.module, &tco)
-                .map(|output| format!("{:?}", output.sir))
+                .map(|output| format!("{:?}", output.semantics()))
                 .map_err(|error| error.to_string()),
             "wasm must run the build check set while retaining its own ABI width"
         );

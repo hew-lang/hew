@@ -20,7 +20,6 @@
 //! hew add <pkg> / hew install / …  # Package-manager commands (see hew --help)
 //! hew tool compile file.hew        # Run the v0.5 IR ladder and emit native or WASM
 //! hew tool playground-verify       # Verify runnable playground examples
-//! hew tool sir-coverage <paths>    # Report which functions SIR admits
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
 //! hew observe [args...]             # Launch the TUI actor observer (delegates to hew-observe)
@@ -137,119 +136,89 @@ impl Drop for JsonDiagnosticFlush {
     }
 }
 
-/// Resolve the `hew compile` emit target. `Err(())` means the requested target
-/// is unsupported (the error is already printed); the caller returns the exit
-/// code so the single flush chokepoint still runs (never `process::exit` here —
-/// that would bypass the [`JsonDiagnosticFlush`] guard and drop advisories).
-/// Shared semantic verification for native and analysis consumers.
-fn lower_verified_hir_to_sir(
-    module: &hew_hir::HirModule,
+fn lower_program_to_semantics(
+    program: &hew_parser::ast::Program,
+    source: &str,
+    label: &str,
     tco: &hew_types::TypeCheckOutput,
-) -> Result<hew_sir::LoweredModule, DiagChannel> {
+    target: &target::TargetSpec,
+) -> Result<hew_compile::SessionOutput, DiagChannel> {
     hew_compile::Session::new(
-        hew_compile::SessionTarget::native(),
+        hew_compile::SessionTarget {
+            hir_arch: hir_target_arch(target),
+            ..hew_compile::SessionTarget::native()
+        },
         hew_compile::DiagnosticPolicy::default(),
     )
-    .lower_hir_module(module, tco)
-    .map(|output| output.sir)
-    .map_err(|error| {
-        diagnostic::emit_plain_diagnostic_line(&format!("E_SIR_VERIFY: {error}"));
-        DiagChannel::Internal
+    .lower_program(program, tco)
+    .map_err(|error| match error {
+        hew_compile::SessionError::Hir(diagnostics) => {
+            let diagnostics =
+                hew_compile::hir_diagnostics_to_frontend(program, source, label, diagnostics);
+            compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
+        }
+        error @ hew_compile::SessionError::Semantic(_) => {
+            emit_semantic_error("E_SIR_VERIFY", &error.to_string(), DiagChannel::Internal)
+        }
+        error @ hew_compile::SessionError::Unsupported { .. } => emit_semantic_error(
+            "E_SIR_UNSUPPORTED",
+            &error.to_string(),
+            DiagChannel::Limitation,
+        ),
     })
 }
 
-/// File frontend plus verified HIR, shared by SIR inspection and every
-/// file-to-MIR driver. Keeping this boundary separate means `--dump-sir`
-/// stops at the semantic layer instead of inheriting a backend limitation from
-/// an unrelated later stage.
-struct VerifiedFileHir {
-    state: hew_compile::FileFrontendState,
-    lower_output: hew_hir::LowerOutput,
-}
-
-impl VerifiedFileHir {
-    fn typecheck_output(&self) -> &hew_types::TypeCheckOutput {
-        self.state
-            .typecheck_result
-            .tco
-            .as_ref()
-            .expect("verified HIR requires a type-check output")
+fn emit_semantic_error(code: &str, message: &str, channel: DiagChannel) -> DiagChannel {
+    if diagnostic_json::json_output_active() {
+        diagnostic_json::push_json_diagnostic(diagnostic_json::coded_message_diagnostic(
+            code, message, channel,
+        ));
+    } else {
+        diagnostic::emit_plain_diagnostic_line(&format!("{}{code}: {message}", channel.prefix()));
     }
+    channel
 }
 
-fn lower_file_to_verified_hir(
+fn lower_file_to_semantics(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<VerifiedFileHir, DiagChannel> {
+) -> Result<(hew_compile::SessionOutput, Vec<PathBuf>), DiagChannel> {
     let input = input_path.display().to_string();
     let fopts = compile::frontend_options(target, options);
     let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
         let channel = compile::render_frontend_diagnostics(&failure.diagnostics);
         if failure.diagnostics.is_empty() {
-            eprintln!("Error: {}", failure.message);
+            diagnostic::emit_plain_diagnostic_line(&format!("Error: {}", failure.message));
         }
         channel.unwrap_or(DiagChannel::User)
     })?;
     compile::render_frontend_diagnostics(&state.diagnostics);
-
-    let lower_output = {
-        let tco = state.typecheck_result.tco.as_ref().ok_or_else(|| {
-            eprintln!(
-                "Error: Hew lowering requires a type-checked program; \\
-                 this path should be unreachable (no_typecheck = false)"
-            );
-            DiagChannel::User
-        })?;
-        hew_hir::lower_program(
-            &state.program,
-            tco,
-            &hew_hir::ResolutionCtx,
-            hir_target_arch(target),
+    let tco = state.typecheck_result.tco.as_ref().ok_or_else(|| {
+        emit_semantic_error(
+            "E_TYPECHECK_REQUIRED",
+            "compilation requires a type-checked program",
+            DiagChannel::User,
         )
-    };
-    let mut hir_diagnostics = lower_output.diagnostics.clone();
-    // Defense-in-depth: the verifier may emit a second `NotYetImplemented`
-    // for an `Unsupported` placeholder that lacked a prior lowerer
-    // diagnostic. Dedup by (kind, span) so the user sees each problem once.
-    for diagnostic in hew_hir::verify_hir(&lower_output.module) {
-        if !hir_diagnostics
-            .iter()
-            .any(|existing| existing.kind == diagnostic.kind && existing.span == diagnostic.span)
-        {
-            hir_diagnostics.push(diagnostic);
-        }
-    }
-    if !hir_diagnostics.is_empty() {
-        let frontend_diagnostics = hew_compile::hir_diagnostics_to_frontend(
-            &state.program,
-            &state.source,
-            &input,
-            hir_diagnostics,
-        );
-        let channel = compile::render_frontend_diagnostics(&frontend_diagnostics);
-        return Err(channel.unwrap_or(DiagChannel::User));
-    }
-
-    Ok(VerifiedFileHir {
-        state,
-        lower_output,
-    })
+    })?;
+    let output = lower_program_to_semantics(&state.program, &state.source, &input, tco, target)?;
+    let native_pkg_dirs = native_link::collect_import_pkg_dirs(&state.program);
+    Ok((output, native_pkg_dirs))
 }
 
-/// Lower a source file into verified semantic SSA without constructing MIR or
-/// consulting the backend. This is the inspection boundary for `--dump-sir`.
+/// Inspect semantic SSA before target storage and layout realization.
 fn lower_file_to_sir(
     input_path: &Path,
     requested_target: Option<&str>,
     options: &compile::CompileOptions,
 ) -> Result<hew_sir::LoweredModule, DiagChannel> {
     let target = target::TargetSpec::from_requested(requested_target).map_err(|error| {
-        eprintln!("Error: {error}");
+        diagnostic::emit_plain_diagnostic_line(&format!("Error: {error}"));
         DiagChannel::User
     })?;
-    let verified = lower_file_to_verified_hir(input_path, &target, options)?;
-    lower_verified_hir_to_sir(&verified.lower_output.module, verified.typecheck_output())
+    Ok(lower_file_to_semantics(input_path, &target, options)?
+        .0
+        .into_semantics())
 }
 
 fn lower_file_to_physical_for_target(
@@ -257,37 +226,25 @@ fn lower_file_to_physical_for_target(
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
 ) -> Result<(hew_mir::VerifiedPhysicalModule, Vec<PathBuf>), DiagChannel> {
-    let verified = lower_file_to_verified_hir(input_path, target, options)?;
-    let sir =
-        lower_verified_hir_to_sir(&verified.lower_output.module, verified.typecheck_output())?;
-    let triple = target.linker_triple();
-    let physical_target = hew_codegen_rs::physical_target_for_triple(&triple).map_err(|error| {
-        diagnostic::render_codegen_emit_error(&error, Some(input_path));
-        diagnostic::codegen_channel(&error)
-    })?;
-    let physical =
-        hew_mir::lower_physical_module(&sir.module, physical_target).map_err(|error| {
-            eprintln!("Physical MIR lowering failed: {error}");
-            DiagChannel::User
-        })?;
-    let native_pkg_dirs = native_link::collect_import_pkg_dirs(&verified.state.program);
-    Ok((physical, native_pkg_dirs))
+    let (output, native_pkg_dirs) = lower_file_to_semantics(input_path, target, options)?;
+    Ok((lower_session_to_physical(&output, target)?, native_pkg_dirs))
 }
 
-fn lower_verified_hir_to_physical(
-    module: &hew_hir::HirModule,
-    tco: &hew_types::TypeCheckOutput,
+fn lower_session_to_physical(
+    output: &hew_compile::SessionOutput,
     target: &target::TargetSpec,
 ) -> Result<hew_mir::VerifiedPhysicalModule, DiagChannel> {
-    let sir = lower_verified_hir_to_sir(module, tco)?;
     let physical_target = hew_codegen_rs::physical_target_for_triple(&target.linker_triple())
         .map_err(|error| {
             diagnostic::render_codegen_emit_error(&error, None);
             diagnostic::codegen_channel(&error)
         })?;
-    hew_mir::lower_physical_module(&sir.module, physical_target).map_err(|error| {
-        eprintln!("Physical MIR lowering failed: {error}");
-        DiagChannel::Limitation
+    output.lower_physical(physical_target).map_err(|error| {
+        emit_semantic_error(
+            "E_PHYSICAL_LOWERING",
+            &error.to_string(),
+            DiagChannel::Limitation,
+        )
     })
 }
 
@@ -333,35 +290,8 @@ fn run_check_deep_gates(
         return Ok(());
     };
 
-    let lower_output = hew_hir::lower_program(
-        &state.program,
-        tco,
-        &hew_hir::ResolutionCtx,
-        hir_target_arch(target),
-    );
-    let mut hir_diagnostics = lower_output.diagnostics;
-    let verifier_diags = hew_hir::verify_hir(&lower_output.module);
-    for diag in verifier_diags {
-        let already_present = hir_diagnostics
-            .iter()
-            .any(|d| d.kind == diag.kind && d.span == diag.span);
-        if !already_present {
-            hir_diagnostics.push(diag);
-        }
-    }
-    if !hir_diagnostics.is_empty() {
-        let frontend_diagnostics = hew_compile::hir_diagnostics_to_frontend(
-            &state.program,
-            &state.source,
-            input,
-            hir_diagnostics,
-        );
-        let channel = compile::render_frontend_diagnostics(&frontend_diagnostics);
-        return Err(channel.unwrap_or(DiagChannel::User));
-    }
-
     let _ = levels;
-    lower_verified_hir_to_sir(&lower_output.module, tco)?;
+    lower_program_to_semantics(&state.program, &state.source, input, tco, target)?;
     Ok(())
 }
 
@@ -429,7 +359,7 @@ fn emit_module_with_triple(
             target_triple: Some(target_triple.unwrap_or(&pipeline.module().target.triple)),
             opt_level,
             emit_llvm,
-            address_sanitizer: false,
+            address_sanitizer: link::address_sanitizer_requested(),
         },
     )
     .map_err(|error| {
@@ -622,33 +552,9 @@ pub(crate) fn compile_native_from_program_with_paths(
         DiagChannel::User
     })?;
 
-    let lower_output = hew_hir::lower_program(
-        &state.program,
-        tco,
-        &hew_hir::ResolutionCtx,
-        hir_target_arch(&target),
-    );
-    let mut hir_diagnostics = lower_output.diagnostics;
-    for diag in hew_hir::verify_hir(&lower_output.module) {
-        if !hir_diagnostics
-            .iter()
-            .any(|d| d.kind == diag.kind && d.span == diag.span)
-        {
-            hir_diagnostics.push(diag);
-        }
-    }
-    if !hir_diagnostics.is_empty() {
-        let frontend_diagnostics = hew_compile::hir_diagnostics_to_frontend(
-            &state.program,
-            &state.source,
-            source_label,
-            hir_diagnostics,
-        );
-        let channel = compile::render_frontend_diagnostics(&frontend_diagnostics);
-        return Err(channel.unwrap_or(DiagChannel::User));
-    }
-
-    let pipeline = lower_verified_hir_to_physical(&lower_output.module, tco, &target)?;
+    let output =
+        lower_program_to_semantics(&state.program, &state.source, source_label, tco, &target)?;
+    let pipeline = lower_session_to_physical(&output, &target)?;
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = output_path
         .file_stem()

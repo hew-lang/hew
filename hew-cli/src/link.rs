@@ -189,28 +189,8 @@ pub(crate) fn link_executable_with_hew_lib(
         std::env::var_os("HEW_COVERAGE").as_deref() == Some(std::ffi::OsStr::new("1")),
     );
 
-    // ── ASan instrumentation at the link step (opt-in via HEW_SANITIZE_ADDRESS=1) ──
-    // When building a compiled .hew binary against an ASan-instrumented libhew.a
-    // (built with `RUSTFLAGS=-Zsanitizer=address`), the final link must also pass
-    // `-fsanitize=address` so clang pulls in the ASan runtime
-    // (`libclang_rt.asan-<arch>.a`) and wires the `__asan_init` entry point.
-    // Without this flag the binary links but ASan is not initialised at startup,
-    // so ASAN_OPTIONS=detect_leaks=1 produces no reports — all leaks are silently
-    // missed.  This is the flag that makes `scripts/asan-fixture-check.sh` work:
-    // that script builds ASan libhew.a with nightly, then invokes `hew compile`
-    // (which resolves libhew.a next to the ASan-built hew binary) with this env
-    // var set so the link step activates the ASan runtime.
-    //
-    // Like HEW_COVERAGE, this is a clang-only flag.  A GCC cc host degrades to
-    // an ordinary link rather than passing a flag the driver rejects.
-    //
-    // WHY a heuristic env flag: the compiler has no first-class sanitizer build
-    // mode yet.  WHEN obsolete: when `hew build --sanitize=address` is a real
-    // CLI surface.  WHAT that looks like: a typed option that also selects the
-    // sanitizer libhew.a variant from the build system, not an out-of-band env.
-    let sanitize_address = std::env::var_os("HEW_SANITIZE_ADDRESS").as_deref()
-        == Some(std::ffi::OsStr::new("1"))
-        && compiler.program == "clang";
+    let sanitize_address = address_sanitizer_requested();
+    validate_address_sanitizer_linker(&compiler, sanitize_address)?;
 
     // A compiler running from a recognized Cargo profile must link the archive
     // built in that same profile family. This is not instrumentation-specific:
@@ -525,6 +505,24 @@ fn windows_missing_clang_error() -> String {
 /// other value (`0`, empty string, unset, or any other string) disables it.
 fn coverage_instrument_enabled(compiler_program: &str, hew_coverage_env_set: bool) -> bool {
     hew_coverage_env_set && compiler_program == "clang"
+}
+
+/// The build setting shared by generated-code instrumentation and linking.
+pub(crate) fn address_sanitizer_requested() -> bool {
+    std::env::var_os("HEW_SANITIZE_ADDRESS").as_deref() == Some(std::ffi::OsStr::new("1"))
+}
+
+fn validate_address_sanitizer_linker(
+    compiler: &NativeCompiler,
+    requested: bool,
+) -> Result<(), String> {
+    if requested && !compiler.accepts_target_flag {
+        return Err(format!(
+            "Error: AddressSanitizer requires a clang linker; selected driver is `{}`",
+            compiler.program
+        ));
+    }
+    Ok(())
 }
 
 /// Whether a C driver's `--version` banner identifies a clang-family driver.
@@ -1876,58 +1874,24 @@ mod tests {
         assert!(!enabled, "HEW_COVERAGE='' must not enable instrumentation");
     }
 
-    // ── HEW_SANITIZE_ADDRESS env-var contract (value must be exactly "1") ──
-    // Mirrors the HEW_COVERAGE tests above; uses the same ENV_LOCK for safety.
-
     #[test]
-    fn sanitize_address_enabled_for_clang_with_env() {
-        let enabled = std::env::var_os("HEW_SANITIZE_ADDRESS").as_deref()
-            == Some(std::ffi::OsStr::new("1"))
-            && "clang" == "clang";
-        // This test is a direct unit-test of the inline expression in
-        // link_executable.  When the env var is unset (default in CI), the
-        // expression is false — which is correct.  The contract test below
-        // exercises the value-check explicitly via set_var.
-        let _ = enabled; // value varies by environment; see contract tests below.
+    fn requested_address_sanitizer_rejects_a_non_clang_linker() {
+        let compiler = NativeCompiler {
+            program: "gcc".to_string(),
+            accepts_target_flag: false,
+        };
+        assert!(validate_address_sanitizer_linker(&compiler, false).is_ok());
+        let error = validate_address_sanitizer_linker(&compiler, true).unwrap_err();
+        assert!(error.contains("AddressSanitizer requires a clang linker"));
     }
 
     #[test]
-    fn sanitize_address_disabled_for_cc_even_with_env() {
-        // `-fsanitize=address` is clang-only; a `cc`-only host must not
-        // receive it, so the link step degrades to a normal build.
-        let enabled = std::env::var_os("HEW_SANITIZE_ADDRESS").as_deref()
-            == Some(std::ffi::OsStr::new("1"))
-            && "cc" == "clang";
-        assert!(!enabled, "HEW_SANITIZE_ADDRESS must not activate for cc");
-    }
-
-    #[test]
-    fn sanitize_address_env_zero_is_not_enabled() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
-        unsafe { std::env::set_var("HEW_SANITIZE_ADDRESS", "0") };
-        let enabled = std::env::var_os("HEW_SANITIZE_ADDRESS").as_deref()
-            == Some(std::ffi::OsStr::new("1"))
-            && "clang" == "clang";
-        // SAFETY: same guard as above.
-        unsafe { std::env::remove_var("HEW_SANITIZE_ADDRESS") };
-        assert!(!enabled, "HEW_SANITIZE_ADDRESS=0 must not enable sanitizer");
-    }
-
-    #[test]
-    fn sanitize_address_env_one_with_clang_is_enabled() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
-        unsafe { std::env::set_var("HEW_SANITIZE_ADDRESS", "1") };
-        let enabled = std::env::var_os("HEW_SANITIZE_ADDRESS").as_deref()
-            == Some(std::ffi::OsStr::new("1"))
-            && "clang" == "clang";
-        // SAFETY: same guard as above.
-        unsafe { std::env::remove_var("HEW_SANITIZE_ADDRESS") };
-        assert!(
-            enabled,
-            "HEW_SANITIZE_ADDRESS=1 with clang must enable sanitizer"
-        );
+    fn requested_address_sanitizer_accepts_a_clang_driver_alias() {
+        let compiler = NativeCompiler {
+            program: "/opt/llvm/bin/clang-22".to_string(),
+            accepts_target_flag: true,
+        };
+        assert!(validate_address_sanitizer_linker(&compiler, true).is_ok());
     }
 
     #[cfg(not(target_os = "windows"))]

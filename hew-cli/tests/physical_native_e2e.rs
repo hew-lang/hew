@@ -170,3 +170,40 @@ fn retired_lowering_switch_is_rejected() {
     );
     assert!(String::from_utf8_lossy(&result.stderr).contains("--sir-lower"));
 }
+
+#[test]
+fn requested_sanitizer_instruments_the_emitted_object() {
+    use object::{Object, ObjectSymbol};
+    require_codegen();
+    let dir = tempdir();
+    let source = dir.path().join("sanitized.hew");
+    std::fs::write(
+        &source,
+        "fn copy(value: string) -> string { value }\nfn main() -> i64 { copy(\"hello\"); 23 }\n",
+    )
+    .unwrap();
+    for instrumented in [false, true] {
+        let output = dir
+            .path()
+            .join(if instrumented { "asan.o" } else { "plain.o" });
+        let mut command = Command::new(hew_binary());
+        command
+            .arg("build")
+            .arg(&source)
+            .arg("--emit-obj")
+            .arg("-o")
+            .arg(&output)
+            .env("HEW_SANITIZE_ADDRESS", if instrumented { "1" } else { "0" });
+        let result = run_bounded_command(command, "emit sanitizer object");
+        assert!(result.status.success(), "{}", describe_output(&result));
+        let bytes = std::fs::read(output).unwrap();
+        let object = object::File::parse(bytes.as_slice()).unwrap();
+        let has_asan = object.symbols().any(|symbol| {
+            symbol.is_undefined() && symbol.name().is_ok_and(|name| name.contains("__asan_init"))
+        });
+        assert_eq!(
+            has_asan, instrumented,
+            "generated object must reflect the requested instrumentation"
+        );
+    }
+}

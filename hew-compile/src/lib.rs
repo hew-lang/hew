@@ -142,6 +142,24 @@ impl Session {
         )
     }
 
+    /// Lower a checked source program through the shared semantic boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns HIR lowering or semantic verification diagnostics.
+    pub fn lower_program(
+        &self,
+        program: &hew_parser::ast::Program,
+        tco: &hew_types::TypeCheckOutput,
+    ) -> Result<SessionOutput, SessionError> {
+        let lowered =
+            hew_hir::lower_program(program, tco, &hew_hir::ResolutionCtx, self.target.hir_arch);
+        if !lowered.diagnostics.is_empty() {
+            return Err(SessionError::Hir(lowered.diagnostics));
+        }
+        self.lower_hir_module(&lowered.module, tco)
+    }
+
     /// Verify and canonicalize ownership semantics shared by every host.
     ///
     /// # Errors
@@ -161,6 +179,7 @@ impl Session {
         if !diagnostics.is_empty() {
             return Err(SessionError::Semantic(diagnostics));
         }
+        require_complete_semantics(&sir, module.entry_exit_plan.is_some())?;
         hew_sir::canonicalize_module_constant_cfg(&mut sir.module).map_err(
             |error| match error {
                 hew_sir::SirOptimizationError::InvalidInput(diagnostics)
@@ -176,10 +195,22 @@ impl Session {
 /// Verified semantic compilation result, independent of the execution host.
 #[derive(Debug)]
 pub struct SessionOutput {
-    pub sir: hew_sir::LoweredModule,
+    sir: hew_sir::LoweredModule,
 }
 
 impl SessionOutput {
+    /// Inspect the verified semantic result without invalidating it.
+    #[must_use]
+    pub fn semantics(&self) -> &hew_sir::LoweredModule {
+        &self.sir
+    }
+
+    /// Consume the session result and relinquish its verification guarantee.
+    #[must_use]
+    pub fn into_semantics(self) -> hew_sir::LoweredModule {
+        self.sir
+    }
+
     /// Realize verified semantics using the backend's measured target layouts.
     ///
     /// # Errors
@@ -198,6 +229,10 @@ impl SessionOutput {
 pub enum SessionError {
     Hir(Vec<hew_hir::HirDiagnostic>),
     Semantic(Vec<hew_sir::SirDiagnostic>),
+    Unsupported {
+        callable: Option<hew_sir::CallableId>,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for SessionError {
@@ -207,11 +242,150 @@ impl std::fmt::Display for SessionError {
             Self::Semantic(diagnostics) => {
                 write!(formatter, "SIR verification failed: {diagnostics:?}")
             }
+            Self::Unsupported { message, .. } => formatter.write_str(message),
         }
     }
 }
 
 impl std::error::Error for SessionError {}
+
+/// Headers without bodies are valid SIR, but a selected executable must close
+/// every demanded body. Join by resolved identity, never by emitted names.
+fn require_complete_semantics(
+    sir: &hew_sir::LoweredModule,
+    entry_required: bool,
+) -> Result<(), SessionError> {
+    if entry_required && sir.module.entry_callable.is_none() {
+        return Err(SessionError::Unsupported {
+            callable: None,
+            message: "the selected process entry has no semantic callable".to_string(),
+        });
+    }
+    for (callable, status) in &sir.callable_statuses {
+        if let hew_sir::SirLoweringStatus::Unsupported { reason } = status {
+            let name = sir
+                .module
+                .callable(*callable)
+                .map_or("<unknown>", |item| item.symbol.as_str());
+            return Err(SessionError::Unsupported {
+                callable: Some(*callable),
+                message: format!("semantic lowering of `{name}` is not implemented: {reason}"),
+            });
+        }
+    }
+    let index = sir.module.function_index();
+    let require_body = |callable| {
+        if index.function(callable).is_none() {
+            let name = sir
+                .module
+                .callable(callable)
+                .map_or("<unknown>", |item| item.symbol.as_str());
+            return Err(SessionError::Unsupported {
+                callable: Some(callable),
+                message: format!("required semantic callable `{name}` has no body"),
+            });
+        }
+        Ok(())
+    };
+    if let Some(entry) = sir.module.entry_callable {
+        require_body(entry)?;
+    }
+    for function in &sir.module.functions {
+        for block in &function.blocks {
+            if let hew_sir::SemTerminator::Call { callee, .. } = &block.terminator {
+                require_body(*callee)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod session_completion_tests {
+    use super::*;
+
+    fn complete_module() -> hew_sir::LoweredModule {
+        let program = parse_source(
+            "fn leaf() -> i64 { 7 } fn unused() -> i64 { 9 } fn main() -> i64 { leaf() }",
+            "completion.hew",
+        )
+        .unwrap();
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(tco.errors.is_empty(), "{:?}", tco.errors);
+        Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&program, &tco)
+            .unwrap()
+            .into_semantics()
+    }
+
+    #[test]
+    fn complete_entry_allows_unreached_headers_without_bodies() {
+        let sir = complete_module();
+        assert!(sir.module.callables.len() > sir.module.functions.len());
+        require_complete_semantics(&sir, true).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_must_have_a_callable_and_body() {
+        let mut sir = complete_module();
+        let entry = sir.module.entry_callable.unwrap();
+        sir.module
+            .functions
+            .retain(|function| function.callable != entry);
+        assert!(matches!(
+            require_complete_semantics(&sir, true),
+            Err(SessionError::Unsupported { callable: Some(id), .. }) if id == entry
+        ));
+        sir.module.entry_callable = None;
+        assert!(matches!(
+            require_complete_semantics(&sir, true),
+            Err(SessionError::Unsupported { callable: None, .. })
+        ));
+    }
+
+    #[test]
+    fn demanded_callee_must_have_a_body() {
+        let mut sir = complete_module();
+        let callee = sir
+            .module
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .find_map(|block| match block.terminator {
+                hew_sir::SemTerminator::Call { callee, .. } => Some(callee),
+                _ => None,
+            })
+            .expect("the source contains a direct call");
+        sir.module
+            .functions
+            .retain(|function| function.callable != callee);
+        assert!(matches!(
+            require_complete_semantics(&sir, true),
+            Err(SessionError::Unsupported { callable: Some(id), .. }) if id == callee
+        ));
+    }
+
+    #[test]
+    fn lowering_refusal_cannot_be_hidden_by_a_verified_body() {
+        let mut sir = complete_module();
+        let entry = sir.module.entry_callable.unwrap();
+        let (_, status) = sir
+            .callable_statuses
+            .iter_mut()
+            .find(|(callable, _)| *callable == entry)
+            .unwrap();
+        *status = hew_sir::SirLoweringStatus::Unsupported {
+            reason: "deliberate incomplete lowering".to_string(),
+        };
+        assert!(matches!(
+            require_complete_semantics(&sir, true),
+            Err(SessionError::Unsupported { callable: Some(id), message })
+                if id == entry && message.contains("deliberate incomplete lowering")
+        ));
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum FrontendDiagnosticKind {
@@ -3591,62 +3765,6 @@ mod tests {
                 "generic imported impl `{symbol}` must lower its string specialization `{concrete}`"
             );
         }
-    }
-
-    #[cfg(feature = "codegen")]
-    #[test]
-    fn remote_pid_lookup_annotation_reaches_mir_with_its_builtin_carrier() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let input = write_source(
-            dir.path(),
-            "main.hew",
-            r#"
-            actor Echo { receive fn handle(request: i64) -> i64 { request } }
-            impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
-            actor Client {
-                receive fn go(unused: i64) {
-                    let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
-                    match found {
-                        .Ok(peer) => { let reply = peer.ask(7, 1000); },
-                        .Err(_) => {},
-                    }
-                }
-            }
-            "#,
-        );
-        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
-            .expect("lookup fixture must type-check");
-        let tco = state
-            .typecheck_result
-            .tco
-            .as_ref()
-            .expect("successful fixture has type output");
-        let hir = hew_hir::lower_program(
-            &state.program,
-            tco,
-            &hew_hir::ResolutionCtx,
-            hew_hir::TargetArch::host(),
-        );
-        assert!(
-            hir.diagnostics.is_empty(),
-            "HIR diagnostics: {:#?}",
-            hir.diagnostics
-        );
-        let mut pipeline = hew_mir::lower_hir_module(&hir.module);
-        pipeline.attach_lowering_facts(tco);
-        assert!(
-            !pipeline.diagnostics.iter().any(|diagnostic| matches!(
-                diagnostic.kind,
-                hew_mir::MirDiagnosticKind::UnknownType { ref name } if name == "RemotePid"
-            )),
-            "RemotePid must retain its builtin discriminator through MIR: {:#?}",
-            pipeline.diagnostics
-        );
-        let codegen = hew_codegen_rs::validate_codegen_front(&pipeline);
-        assert!(
-            codegen.is_ok(),
-            "the full compiler boundary must accept RemotePid lookup output: {codegen:?}"
-        );
     }
 
     #[test]

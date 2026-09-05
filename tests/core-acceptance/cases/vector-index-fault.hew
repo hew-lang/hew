@@ -1,0 +1,6 @@
+fn main() {
+    let outer = "outer".to_upper();
+    let values = ["element".to_upper()];
+    values[-1];
+    println(outer);
+}

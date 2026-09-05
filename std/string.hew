@@ -660,7 +660,7 @@ pub fn split(s: string, sep: string) -> Vec<string> {
 /// }
 /// ```
 pub fn lines(s: string) -> Vec<string> {
-    let result: Vec<string> = Vec.new();
+    var result: Vec<string> = Vec.new();
     let slen = s.len();
     var start = 0;
     while start < slen {

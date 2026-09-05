@@ -423,3 +423,61 @@ timeout_seconds = 15
 [case.expected]
 stdout = "packet:packet:1:2\ninner:inner:66\n"
 exit = 0
+
+[[case]]
+id = "vector-scalar"
+intent = "Plain integer vector values compose through construction, indexing, updates and removal without ownership callbacks."
+source = "cases/vector-scalar.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "42\n"
+exit = 0
+
+[[case]]
+id = "vector-get-mutate"
+intent = "Optional vector extraction preserves an independent Unicode/NUL string across replacement, removal, clear and receiver destruction."
+source = "cases/vector-get-mutate.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "4\n"
+exit = 0
+
+[[case]]
+id = "vector-index-fault"
+intent = "A negative vector read index cleans up the borrowed receiver and enclosing owners through its logical fault edge."
+source = "cases/vector-index-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 205
+
+[[case]]
+id = "vector-set-fault"
+intent = "A failed vector replacement releases the transferred receiver and preserves borrowed input until enclosing cleanup."
+source = "cases/vector-set-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 205
+
+[[case]]
+id = "vector-pop-fault"
+intent = "Removing from an empty vector releases the transferred receiver and enclosing owners without reading an uninitialized element."
+source = "cases/vector-pop-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 205

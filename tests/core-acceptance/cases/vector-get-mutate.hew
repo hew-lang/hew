@@ -1,0 +1,30 @@
+fn preserved() -> string {
+    var values = ["first".to_upper(), "Aé\0B", "tail".to_upper()];
+    let saved = values.get(1);
+    let missing = values.get(-1);
+    let removed = values.pop();
+    values.set(0, removed);
+    if removed != "TAIL" || values[0] != "TAIL" || values.len() != 2 {
+        return "incorrect update";
+    }
+    values.clear();
+    match missing {
+        Some(_) => {
+            return "incorrect bounds";
+        },
+        None => {},
+    }
+    match saved {
+        Some(value) => value,
+        None => "missing value",
+    }
+}
+
+fn main() -> i64 {
+    let value = preserved();
+    if value != "Aé\0B" {
+        return 1;
+    }
+    println(value.len());
+    0
+}

@@ -1,0 +1,6 @@
+fn main() {
+    let replacement = "replacement".to_upper();
+    var values = ["element".to_upper()];
+    values.set(1, replacement);
+    println(replacement);
+}

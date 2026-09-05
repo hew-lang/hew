@@ -1,0 +1,16 @@
+fn main() -> i64 {
+    let num: i64 = 42;
+    var values: Vec<i64> = [num];
+    println(f"{values[0]}");
+    values.push(7);
+    values.set(0, num + 1);
+    let removed = values.pop();
+    if num != 42 || removed != 7 || values[0] != 43 {
+        return 1;
+    }
+    values.clear();
+    if values.len() != 0 {
+        return 2;
+    }
+    0
+}

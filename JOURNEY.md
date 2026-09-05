@@ -472,3 +472,15 @@ checks exercise the migrated ownership and error paths.
 The HTTP stream-error test consumes the same managed error result through
 `string_as_str` and `string_release`, preserving the runtime allocator contract
 across the standard-library test boundary.
+
+## Vector operation acceptance
+
+Added executable scalar, optional extraction and mutation cases alongside
+separate negative-index, invalid-replacement and empty-pop cleanup cases.
+They exercise both borrowed and transferred receiver failure edges under the
+same native and sanitizer suites. These cases remain pending until the physical
+vector consumer is composed. The string lines helper now declares its vector
+builder mutable, matching the checker-enforced mutation contract.
+
+Regenerated the C ABI declarations after the managed OS and stream text
+migration so exported string handles agree with the runtime signatures.

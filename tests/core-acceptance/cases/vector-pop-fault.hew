@@ -1,0 +1,6 @@
+fn main() {
+    let outer = "outer".to_upper();
+    var values: Vec<string> = Vec.new();
+    values.pop();
+    println(outer);
+}

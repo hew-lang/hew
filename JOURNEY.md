@@ -1356,3 +1356,24 @@ Physical lowering currently refuses ValueCall explicitly, and there is no source
 producer yet. Native selected equality remains pending those two layers. Scalar
 float operators retain IEEE comparison; structural selected Eq retains the
 existing documented bit-pattern rule for float members.
+
+## Ordinary selected equality producer
+
+Composite and bytes equality now demand the exact selected Eq plan and emit
+ValueCall with borrowed inputs, a normal-edge bool result and fault cleanup.
+Inequality negates only the successful result. Ordinary string comparison keeps
+its existing counted-string operation; scalar numeric comparisons retain their
+numeric semantics. Source controls cover independent vectors, owning tuples and
+records, selected nested user Eq, active Option/Result payloads and faults.
+
+A shared call-read helper now captures a whole binding before a later argument
+can replace it. It preserves stable projection loans and avoids copying ordinary
+stable inputs. A further source control exposed tree.children.push(tree): the
+parent was consumed before its borrowed insertion input. The receiver transform
+now snapshots that exact alias before decomposition and shares the snapshot
+across repeated inputs. The prior SIR ownership-lifetime refusal is reproduced
+by the regression; the corrected source passes verification.
+
+All SIR library and integration tests and scoped Rust lint pass. LLVM emission
+for ValueCall remains in the separately owned physical implementation; no new
+native equality acceptance is claimed at this checkpoint.

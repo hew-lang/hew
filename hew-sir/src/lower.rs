@@ -3127,6 +3127,29 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 right,
             } => self.lower_logical_or(expr, left, right),
             HirExprKind::Binary { op, left, right } => {
+                if matches!(
+                    op,
+                    hew_parser::ast::BinaryOp::Equal | hew_parser::ast::BinaryOp::NotEqual
+                ) && matches!(
+                    self.ty(&left.ty),
+                    ResolvedTy::Bytes
+                        | ResolvedTy::Tuple(_)
+                        | ResolvedTy::Named { .. }
+                        | ResolvedTy::Unit
+                ) {
+                    let equals = self.lower_value_equality(expr, [left, right])?;
+                    return if *op == hew_parser::ast::BinaryOp::NotEqual {
+                        self.emit(
+                            expr,
+                            SemOpKind::Unary {
+                                op: hew_parser::ast::UnaryOp::Not,
+                                value: Operand { value: equals },
+                            },
+                        )
+                    } else {
+                        Ok(equals)
+                    };
+                }
                 if self.ty(&left.ty) == ResolvedTy::String {
                     return match op {
                         hew_parser::ast::BinaryOp::Add => self
@@ -4781,6 +4804,108 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    /// Capture an earlier value before a later argument can replace its owner.
+    /// Stable projected reads keep their ordinary call-local loans instead.
+    fn lower_call_read(
+        &mut self,
+        expr: &HirExpr,
+        loans: &mut Vec<ValueId>,
+        later_arguments_are_stable: bool,
+        can_borrow_projection: bool,
+    ) -> Result<Operand, String> {
+        if !later_arguments_are_stable {
+            Ok(Operand {
+                value: lower_initial_value_transfer(
+                    self,
+                    expr,
+                    "call argument snapshot",
+                    OwnedBindingUse::Copy,
+                )?,
+            })
+        } else if can_borrow_projection {
+            self.lower_borrowed_read(expr, loans)
+        } else {
+            self.lower_read_operand(expr, "call argument")
+        }
+    }
+
+    fn lower_value_equality(
+        &mut self,
+        expr: &HirExpr,
+        args: [&HirExpr; 2],
+    ) -> Result<ValueId, String> {
+        let ty = self.ty(&args[0].ty);
+        if self.ty(&args[1].ty) != ty || self.ty(&expr.ty) != ResolvedTy::Bool {
+            return Err("selected equality requires matching operands and a bool result".into());
+        }
+        self.service
+            .require_value_capability(&ty, hew_types::ValueCapability::Eq)?;
+        let live_before_arguments: std::collections::HashSet<_> =
+            self.owned_live.keys().copied().collect();
+        let mut loans = Vec::new();
+        let mut lowered_args = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            let stable_tail = args[index + 1..]
+                .iter()
+                .all(|arg| Self::stable_argument_read(arg));
+            let operand = self.lower_call_read(arg, &mut loans, stable_tail, true)?;
+            lowered_args.push(crate::BoundaryOperand {
+                operand,
+                decision: crate::BoundaryDecision::Borrow,
+            });
+        }
+        let live_at_call = self.owned_live.clone();
+        let argument_temporaries: Vec<_> = live_at_call
+            .keys()
+            .filter(|value| {
+                !live_before_arguments.contains(value)
+                    && !self.bindings.values().any(|bound| bound == *value)
+            })
+            .copied()
+            .collect();
+        let raw = self.fresh_value();
+        let continuation = self.fresh_value();
+        let normal = self.new_block(vec![BlockArg {
+            value: continuation,
+            ty: ResolvedTy::Bool,
+            own: OwnKind::None,
+        }]);
+        let unwind = self.new_block(Vec::new());
+        let id = OpId(self.ops);
+        self.ops += 1;
+        self.set_terminator(SemTerminator::ValueCall {
+            id,
+            ty,
+            capability: hew_types::ValueCapability::Eq,
+            args: lowered_args,
+            result: CallResult::Value(ValueDef {
+                id: raw,
+                ty: ResolvedTy::Bool,
+                own: OwnKind::None,
+            }),
+            normal: Edge {
+                target: normal,
+                args: vec![Operand { value: raw }],
+            },
+            unwind: CallUnwind::Cleanup(Edge {
+                target: unwind,
+                args: Vec::new(),
+            }),
+        })?;
+        self.current = unwind;
+        self.owned_live = live_at_call.clone();
+        self.end_call_loans(&loans)?;
+        self.destroy_all_live()?;
+        self.set_terminator(SemTerminator::ResumeUnwind)?;
+        self.current = normal;
+        self.owned_live = live_at_call;
+        self.end_call_loans(&loans)?;
+        for value in argument_temporaries.into_iter().rev() {
+            self.emit_destroy(value)?;
+        }
+        Ok(continuation)
+    }
+
     /// Lower an HIR direct call through the resolved SIR callable table.
     ///
     /// `value_required` distinguishes a value context from a discarded/unit
@@ -4864,11 +4989,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     expected.ty.user_facing()
                 ));
             }
-            let operand = if args[index + 1..].iter().all(Self::stable_argument_read) {
-                self.lower_borrowed_read(arg, &mut loans)?
-            } else {
-                self.lower_read_operand(arg, "direct call argument")?
-            };
+            let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
+            let operand = self.lower_call_read(arg, &mut loans, stable_tail, true)?;
             lowered_args.push(crate::BoundaryOperand {
                 operand,
                 decision: match expected.passing {
@@ -5044,31 +5166,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         for (index, (&arg, expected)) in args.iter().zip(contract.arguments).enumerate() {
             let (value, decision) = match expected.effect {
                 RuntimeArgumentEffect::Borrow => {
-                    let operand = if read_only
-                        && args[index + 1..]
-                            .iter()
-                            .all(|arg| Self::stable_argument_read(arg))
-                    {
-                        self.lower_borrowed_read(arg, &mut loans)?
-                    } else {
-                        self.lower_read_operand(arg, "runtime borrow argument")?
-                    };
+                    let stable_tail = args[index + 1..]
+                        .iter()
+                        .all(|arg| Self::stable_argument_read(arg));
+                    let operand = self.lower_call_read(arg, &mut loans, stable_tail, read_only)?;
                     (operand.value, crate::BoundaryDecision::Borrow)
                 }
                 RuntimeArgumentEffect::Copy => {
                     let no_owner =
                         OwnKind::of_ty(&parameter_types[index], self.service.checked_facts.rows())?
                             == OwnKind::None;
-                    let operand = if read_only
-                        && no_owner
-                        && args[index + 1..]
-                            .iter()
-                            .all(|arg| Self::stable_argument_read(arg))
-                    {
-                        self.lower_borrowed_read(arg, &mut loans)?
-                    } else {
-                        self.lower_read_operand(arg, "runtime copy argument")?
-                    };
+                    let stable_tail = args[index + 1..]
+                        .iter()
+                        .all(|arg| Self::stable_argument_read(arg));
+                    let operand =
+                        self.lower_call_read(arg, &mut loans, stable_tail, read_only && no_owner)?;
                     (operand.value, crate::BoundaryDecision::Copy)
                 }
                 RuntimeArgumentEffect::Move => {
@@ -5091,6 +5203,32 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 operand: Operand { value },
                 decision,
             });
+        }
+
+        // An argument can be the owning parent of the receiver itself, as
+        // in tree.children.push(tree). Preserve that input before taking the
+        // parent apart, sharing one snapshot across repeated borrowed inputs.
+        if let Some(place) = &transformed_place {
+            let parent = self.bindings.get(&place.binding).copied().ok_or_else(|| {
+                "runtime receiver parent disappeared during argument evaluation".to_string()
+            })?;
+            if !place.projections.is_empty()
+                && self.value_own_kind(parent) == Some(OwnKind::Owned)
+                && lowered_args.iter().any(|arg| arg.operand.value == parent)
+            {
+                let snapshot = self.emit_typed(
+                    Provenance::Site(expr.site),
+                    &place.root_ty,
+                    SemOpKind::CopyValue {
+                        source: Operand { value: parent },
+                    },
+                )?;
+                for arg in &mut lowered_args {
+                    if arg.operand.value == parent {
+                        arg.operand.value = snapshot;
+                    }
+                }
+            }
         }
 
         // Classify expression temporaries before extracting retained parent

@@ -5,6 +5,37 @@ use hew_sir::{
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, ValueCapability};
 
+fn lower_source(source: &str) -> SemModule {
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+    let facts = checker.check_program(&parsed.program);
+    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+    let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let lowered = lower_module(&hir.module, &facts);
+    assert!(
+        lowered.statuses.iter().any(|status| status.name == "main"
+            && matches!(status.status, hew_sir::SirLoweringStatus::Lowered)),
+        "{:?}",
+        lowered.statuses
+    );
+    assert!(
+        lowered
+            .callable_statuses
+            .iter()
+            .all(|(_, status)| !matches!(status, hew_sir::SirLoweringStatus::Unsupported { .. })),
+        "{:?}",
+        lowered.callable_statuses
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "{:?}",
+        verify_module(&lowered.module)
+    );
+    lowered.module
+}
+
 fn selected_call(capability: ValueCapability) -> SemModule {
     let (method, invocation) = match capability {
         ValueCapability::Eq => (
@@ -13,17 +44,9 @@ fn selected_call(capability: ValueCapability) -> SemModule {
         ),
         ValueCapability::Hash => ("fn selected(a: i64) -> i64 { a }", "selected(1)"),
     };
-    let parsed = hew_parser::parse(&format!(
+    let mut module = lower_source(&format!(
         "{method} fn main() -> i64 {{ let map: HashMap<i64, string> = HashMap.new(); {invocation} }}"
     ));
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
-    let facts = checker.check_program(&parsed.program);
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
-    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
-    let mut module = lower_module(&hir.module, &facts).module;
-    assert!(verify_module(&module).is_empty());
     let target = module
         .functions
         .iter()
@@ -165,4 +188,143 @@ fn selected_method_failure_cannot_discard_its_fault() {
     assert!(verify_module(&module)
         .iter()
         .any(|d| matches!(d.kind, SirDiagnosticKind::FaultLifetime { .. })));
+}
+
+#[test]
+fn ordinary_composite_equality_demands_selected_methods() {
+    for source in [
+        r#"fn main() -> i64 { let a = ["one".to_upper()]; let b = ["one".to_upper()]; if a == b { 1 } else { 0 } }"#,
+        r#"fn main() -> i64 { let a = ("one".to_upper(), 1); let b = ("two".to_upper(), 1); if a != b { 1 } else { 0 } }"#,
+        r#"type Label { raw: string } type Outer { value: Label }
+        impl Eq for Label { fn eq(self, other: Label) -> bool { self.raw.len() == other.raw.len() } }
+        fn main() -> i64 { let a = Outer { value: Label { raw: "one".to_upper() } }; let b = Outer { value: Label { raw: "two".to_upper() } }; if a == b { 1 } else { 0 } }"#,
+        r#"fn main() -> i64 { let a: Option<string> = Some("one".to_upper()); let b: Option<string> = None; if a != b { 1 } else { 0 } }"#,
+        r#"fn main() -> i64 { let a: Result<string, i64> = Ok("one".to_upper()); let b: Result<string, i64> = Err(1); if a != b { 1 } else { 0 } }"#,
+    ] {
+        let module = lower_source(source);
+        assert!(module
+            .functions
+            .iter()
+            .flat_map(|f| &f.blocks)
+            .any(|b| matches!(
+                b.terminator,
+                SemTerminator::ValueCall {
+                    capability: ValueCapability::Eq,
+                    ..
+                }
+            )));
+        assert!(module
+            .value_capabilities
+            .keys()
+            .all(|(_, capability)| *capability == ValueCapability::Eq));
+    }
+}
+
+#[test]
+fn equality_snapshots_a_whole_binding_before_later_mutation() {
+    let module = lower_source(
+        r#"
+        fn main() -> i64 {
+            var left = ["kept".to_upper()];
+            let right = left;
+            if left == { left.clear(); right } { 1 } else { 0 }
+        }
+    "#,
+    );
+    let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+    let argument = main
+        .blocks
+        .iter()
+        .find_map(|b| match &b.terminator {
+            SemTerminator::ValueCall { args, .. } => Some(args[0].operand.value),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        main.blocks.iter().flat_map(|b| &b.ops).any(|op| matches!(
+            op.kind,
+            hew_sir::SemOpKind::CopyValue { .. }
+        ) && op
+            .results
+            .iter()
+            .any(|result| result.id == argument)),
+        "the left input must own its pre-mutation snapshot"
+    );
+}
+
+#[test]
+fn selected_equality_keeps_user_method_fault_cleanup() {
+    let module = lower_source(
+        r#"
+        type Key { label: string, divisor: i64 }
+        impl Eq for Key {
+            fn eq(self, other: Key) -> bool {
+                let local = other.label.to_upper();
+                local.len() / self.divisor == 1
+            }
+        }
+        fn main() -> i64 {
+            let left = [Key { label: "left".to_upper(), divisor: 0 }];
+            let right = [Key { label: "right".to_upper(), divisor: 1 }];
+            if left == right { 1 } else { 0 }
+        }
+    "#,
+    );
+    assert!(module
+        .value_capabilities
+        .values()
+        .any(|plan| plan.callable.is_some()));
+    let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+    let failure = main
+        .blocks
+        .iter()
+        .find_map(|b| match &b.terminator {
+            SemTerminator::ValueCall {
+                unwind: CallUnwind::Cleanup(edge),
+                ..
+            } => Some(edge.target),
+            _ => None,
+        })
+        .unwrap();
+    let cleanup = &main.blocks[failure.0 as usize];
+    assert!(matches!(cleanup.terminator, SemTerminator::ResumeUnwind));
+    assert!(cleanup
+        .ops
+        .iter()
+        .any(|op| matches!(op.kind, hew_sir::SemOpKind::DestroyValue { .. })));
+}
+
+#[test]
+fn scalar_float_comparison_preserves_its_numeric_operation() {
+    let module = lower_source("type Wrapped { value: f64 } fn main() -> i64 { let x = 0.0 / 0.0; let a = Wrapped { value: x }; let b = Wrapped { value: x }; if (x == x) == (a == b) { 1 } else { 0 } }");
+    let mut scalar = false;
+    let mut selected = false;
+    for block in module.functions.iter().flat_map(|f| &f.blocks) {
+        scalar |= block.ops.iter().any(|op| {
+            matches!(
+                op.kind,
+                hew_sir::SemOpKind::Binary {
+                    op: hew_parser::ast::BinaryOp::Equal,
+                    ..
+                }
+            )
+        });
+        selected |= matches!(block.terminator, SemTerminator::ValueCall { .. });
+    }
+    assert!(scalar && selected);
+}
+
+#[test]
+fn collection_field_insertion_snapshots_its_own_parent_argument() {
+    let module = lower_source(
+        r#"
+        type Tree { label: string, children: Vec<Tree> }
+        fn main() -> i64 {
+            var tree = Tree { label: "root".to_upper(), children: Vec.new() };
+            tree.children.push(tree);
+            tree.children[0].label.len()
+        }
+    "#,
+    );
+    assert!(verify_module(&module).is_empty());
 }

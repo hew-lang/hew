@@ -25,9 +25,10 @@ pub use lower::{
     SirLoweringDemand, SirLoweringStatus, SirRootSelectionError, SirSourceStatus,
 };
 pub use model::{
-    BlockArg, BlockId, BoundaryOperand, CallResult, CallUnwind, CallableId, CallableInstance,
-    CheckedFailure, Edge, EffectSet, FunctionSourceOrigin, GenericTemplateId, OpId, Operand,
-    OperandSlot, Provenance, SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind,
+    AggregateShapeId, AggregateShapeRef, BlockArg, BlockId, BoundaryOperand, CallResult,
+    CallUnwind, CallableId, CallableInstance, CheckedFailure, Edge, EffectSet,
+    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, SemAbiParam,
+    SemAggregateField, SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind,
     SemFunction, SemFunctionIndex, SemGenericTemplate, SemModule, SemOp, SemOpKind,
     SemParamPassing, SemSignature, SemTerminator, SirInstanceKey, SuccessorSlot, UseSite, ValueDef,
     ValueId,
@@ -36,7 +37,8 @@ pub use optimize::{
     canonicalize_module_constant_cfg, CfgCanonicalizationReport, SirOptimizationError,
 };
 pub use ownership::{
-    checked_binary_failure_kinds, runtime_failure_trap_kind, Binding, BindingId, BindingTarget,
+    aggregate_field_recipes, aggregate_field_types, checked_binary_failure_kinds,
+    runtime_failure_trap_kind, AggregateFieldRecipe, Binding, BindingId, BindingTarget,
     BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, SnapshotDecision,
     StringLiteralId, SuspendKind, TrapKind,
 };

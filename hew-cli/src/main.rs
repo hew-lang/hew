@@ -242,9 +242,9 @@ fn lower_session_to_physical(
         ));
     }
     let inventory = hew_mir::physical::physical_type_inventory(&output.semantics().module);
-    let physical_target = hew_codegen_rs::physical::physical_target_for_types(
+    let physical_target = hew_codegen_rs::physical::physical_target_for_inventory(
         &target.linker_triple(),
-        inventory.iter(),
+        &inventory,
     )
     .map_err(|error| {
         diagnostic::render_codegen_emit_error(&error, None);

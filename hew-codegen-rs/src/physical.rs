@@ -4,11 +4,14 @@
 //! storage, layout, and private ABI choices are already explicit in the
 //! verified physical module.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::path::Path;
 
-use hew_mir::physical::{BlockId, CallableId, OwnKind, TrapKind};
+use hew_mir::physical::{
+    BlockId, CallableId, OwnKind, PhysicalAggregateDescriptor, PhysicalAggregateGlue,
+    PhysicalAggregateId, PhysicalTypeInventory, TrapKind,
+};
 use hew_mir::{
     ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier, PhysicalBlock, PhysicalCallable,
     PhysicalCheckedFailure, PhysicalConst, PhysicalEdge, PhysicalFunction, PhysicalLayout,
@@ -37,6 +40,9 @@ use crate::llvm::{
     entry_body_symbol_for_triple, native_emission_triple, CodegenError, CodegenResult,
     EmitArtefacts, LlvmResultExt, OptLevel,
 };
+
+/// `hew_print_value`'s audited ABI tag for a signed 64-bit integer.
+const HEW_PRINT_KIND_I64: u64 = 1;
 
 /// Native object emission options for the physical pipeline.
 #[derive(Debug, Clone)]
@@ -71,6 +77,27 @@ pub fn physical_target_for_types<'a>(
     triple: &str,
     types: impl IntoIterator<Item = &'a ResolvedTy>,
 ) -> Result<PhysicalTarget, CodegenError> {
+    physical_target_for_parts(triple, types, std::iter::empty())
+}
+
+/// Resolve the exact target layouts for one demanded physical type inventory.
+///
+/// # Errors
+///
+/// Returns a target setup error or refuses a demanded aggregate whose exact
+/// descriptor cannot be realized recursively for the selected target.
+pub fn physical_target_for_inventory(
+    triple: &str,
+    inventory: &PhysicalTypeInventory,
+) -> Result<PhysicalTarget, CodegenError> {
+    physical_target_for_parts(triple, inventory.types(), inventory.aggregates())
+}
+
+fn physical_target_for_parts<'a>(
+    triple: &str,
+    types: impl IntoIterator<Item = &'a ResolvedTy>,
+    aggregates: impl IntoIterator<Item = &'a PhysicalAggregateDescriptor>,
+) -> Result<PhysicalTarget, CodegenError> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, OptLevel::O0)?;
     let data = machine.get_target_data();
     let data_layout = data
@@ -80,11 +107,30 @@ pub fn physical_target_for_types<'a>(
         .into_owned();
     let mut target = PhysicalTarget::new(triple, data_layout);
     let ctx = Context::create();
+    let aggregate_fields = aggregates
+        .into_iter()
+        .map(|aggregate| (aggregate.ty.clone(), aggregate.fields.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut visiting = BTreeSet::new();
     for ty in primitive_types() {
-        realize_layout(&ctx, &data, &mut target, &ty)?;
+        realize_layout(
+            &ctx,
+            &data,
+            &mut target,
+            &ty,
+            &aggregate_fields,
+            &mut visiting,
+        )?;
     }
     for ty in types {
-        realize_layout(&ctx, &data, &mut target, ty)?;
+        realize_layout(
+            &ctx,
+            &data,
+            &mut target,
+            ty,
+            &aggregate_fields,
+            &mut visiting,
+        )?;
     }
     Ok(target)
 }
@@ -94,29 +140,41 @@ fn realize_layout(
     data: &TargetData,
     target: &mut PhysicalTarget,
     ty: &ResolvedTy,
+    aggregate_fields: &BTreeMap<ResolvedTy, Vec<ResolvedTy>>,
+    visiting: &mut BTreeSet<ResolvedTy>,
 ) -> CodegenResult<()> {
     if target.layout(ty).is_some() {
         return Ok(());
     }
-    let repr = match ty {
-        ResolvedTy::Tuple(fields) => {
-            let mut layouts = Vec::with_capacity(fields.len());
-            for field in fields {
-                realize_layout(ctx, data, target, field)?;
-                layouts.push(target.layout(field).cloned().ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "physical target did not realize tuple field `{}`",
-                        field.user_facing()
-                    ))
-                })?);
-            }
-            PhysicalRepr::Struct(layouts)
+    if !visiting.insert(ty.clone()) {
+        return Err(CodegenError::FailClosed(format!(
+            "physical aggregate `{}` contains itself by value",
+            ty.user_facing()
+        )));
+    }
+    let fields = match ty {
+        ResolvedTy::Tuple(fields) => Some(fields.as_slice()),
+        _ => aggregate_fields.get(ty).map(Vec::as_slice),
+    };
+    let repr = if let Some(fields) = fields {
+        let mut layouts = Vec::with_capacity(fields.len());
+        for field in fields {
+            realize_layout(ctx, data, target, field, aggregate_fields, visiting)?;
+            layouts.push(target.layout(field).cloned().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "physical target did not realize aggregate field `{}`",
+                    field.user_facing()
+                ))
+            })?);
         }
-        _ => primitive_repr(ctx, data, ty)?,
+        PhysicalRepr::Struct(layouts)
+    } else {
+        primitive_repr(ctx, data, ty)?
     };
     let llvm_ty = llvm_type(ctx, &repr)?;
     let (size, align) = measure_layout(data, llvm_ty);
     target.insert_layout(ty.clone(), PhysicalLayout { size, align, repr });
+    visiting.remove(ty);
     Ok(())
 }
 
@@ -764,6 +822,79 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("extract physical tuple field")?;
                 self.store(*dest, field)
             }
+            PhysicalOp::AggregateMake { dest, fields, .. } => {
+                let BasicTypeEnum::StructType(aggregate_ty) =
+                    llvm_type(self.ctx, &self.storage(*dest)?.layout.repr)?
+                else {
+                    return Err(CodegenError::FailClosed(
+                        "physical aggregate destination is not an LLVM struct".into(),
+                    ));
+                };
+                let mut aggregate = aggregate_ty.get_undef();
+                for (index, field) in fields.iter().enumerate() {
+                    let value = self.load(*field, "aggregate.field")?;
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed(
+                            "physical aggregate field index exceeds u32".into(),
+                        )
+                    })?;
+                    aggregate = match self
+                        .builder
+                        .build_insert_value(aggregate, value, index, "aggregate.make")
+                        .llvm_ctx("insert physical aggregate field")?
+                    {
+                        inkwell::values::AggregateValueEnum::StructValue(value) => value,
+                        inkwell::values::AggregateValueEnum::ArrayValue(_) => {
+                            return Err(CodegenError::FailClosed(
+                                "physical aggregate insertion produced an LLVM array".into(),
+                            ));
+                        }
+                    };
+                }
+                self.store(*dest, aggregate.into())?;
+                for field in fields {
+                    self.clear_owned(*field)?;
+                }
+                Ok(())
+            }
+            PhysicalOp::AggregateProjectCopy {
+                dest,
+                aggregate,
+                field,
+                action,
+                ..
+            } => {
+                let aggregate = self
+                    .load(*aggregate, "aggregate.project.source")?
+                    .into_struct_value();
+                let field_value = self
+                    .builder
+                    .build_extract_value(aggregate, *field, "aggregate.project.field")
+                    .llvm_ctx("extract physical aggregate field for copy")?;
+                let value =
+                    self.clone_loaded_value(field_value, &self.storage(*dest)?.layout, *action)?;
+                self.store(*dest, value)
+            }
+            PhysicalOp::AggregateDestructure {
+                aggregate, fields, ..
+            } => {
+                let value = self
+                    .load(*aggregate, "aggregate.destructure.source")?
+                    .into_struct_value();
+                for (index, field) in fields.iter().enumerate() {
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed(
+                            "physical aggregate field index exceeds u32".into(),
+                        )
+                    })?;
+                    let field_value = self
+                        .builder
+                        .build_extract_value(value, index, "aggregate.destructure.field")
+                        .llvm_ctx("extract physical aggregate field")?;
+                    self.store(*field, field_value)?;
+                }
+                self.clear_owned(*aggregate)
+            }
             PhysicalOp::Transfer { dest, source } => {
                 let value = self.load(*source, "transfer")?;
                 self.store(*dest, value)?;
@@ -968,6 +1099,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         action: CloneAction,
     ) -> CodegenResult<BasicValueEnum<'ctx>> {
         let value = self.load(source, "clone.source")?;
+        self.clone_loaded_value(value, &self.storage(source)?.layout, action)
+    }
+
+    fn clone_loaded_value(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        layout: &PhysicalLayout,
+        action: CloneAction,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
         match action {
             CloneAction::Bitwise => Ok(value),
             CloneAction::StringRetain => {
@@ -998,29 +1138,129 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("retain physical bytes")?;
                 Ok(aggregate.into())
             }
+            CloneAction::Aggregate(id) => {
+                let glue = self.aggregate_glue(id)?;
+                let source = value.into_struct_value();
+                let BasicTypeEnum::StructType(aggregate_ty) = llvm_type(self.ctx, &layout.repr)?
+                else {
+                    return Err(CodegenError::FailClosed(
+                        "physical aggregate clone has a non-struct layout".into(),
+                    ));
+                };
+                let mut clone = aggregate_ty.get_undef();
+                for (index, field) in glue.fields.iter().enumerate() {
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed(
+                            "physical aggregate field index exceeds u32".into(),
+                        )
+                    })?;
+                    let value = self
+                        .builder
+                        .build_extract_value(source, index, "aggregate.clone.field")
+                        .llvm_ctx("extract physical aggregate clone field")?;
+                    let action = field.clone.ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "physical aggregate glue {} field {index} has no clone action",
+                            id.0
+                        ))
+                    })?;
+                    let layout = self.module.target.layout(&field.ty).ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "physical aggregate glue {} field {index} has no target layout",
+                            id.0
+                        ))
+                    })?;
+                    let value = self.clone_loaded_value(value, layout, action)?;
+                    clone = match self
+                        .builder
+                        .build_insert_value(clone, value, index, "aggregate.clone")
+                        .llvm_ctx("insert physical aggregate clone field")?
+                    {
+                        inkwell::values::AggregateValueEnum::StructValue(value) => value,
+                        inkwell::values::AggregateValueEnum::ArrayValue(_) => {
+                            return Err(CodegenError::FailClosed(
+                                "physical aggregate clone produced an LLVM array".into(),
+                            ));
+                        }
+                    };
+                }
+                Ok(clone.into())
+            }
         }
     }
 
     fn destroy_value(&self, source: StorageId, action: DestroyAction) -> CodegenResult<()> {
         let value = self.load(source, "destroy.source")?;
-        let pointer = match action {
-            DestroyAction::StringRelease => value.into_pointer_value(),
-            DestroyAction::BytesRelease => self
-                .builder
-                .build_extract_value(value.into_struct_value(), 0, "bytes.drop.ptr")
-                .llvm_ctx("extract bytes release pointer")?
-                .into_pointer_value(),
-        };
-        let symbol = match action {
-            DestroyAction::StringRelease => "hew_string_drop",
-            DestroyAction::BytesRelease => "hew_bytes_drop",
-        };
-        let function = external_drop(self.ctx, self.llvm, symbol)?;
-        self.builder
-            .build_call(function, &[pointer.into()], "physical.drop")
-            .llvm_ctx("release physical owner")?;
+        self.destroy_loaded_value(value, &self.storage(source)?.layout, action)?;
         let zero = llvm_type(self.ctx, &self.storage(source)?.layout.repr)?.const_zero();
         self.store(source, zero)
+    }
+
+    fn destroy_loaded_value(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        layout: &PhysicalLayout,
+        action: DestroyAction,
+    ) -> CodegenResult<()> {
+        match action {
+            DestroyAction::StringRelease | DestroyAction::BytesRelease => {
+                let pointer = match action {
+                    DestroyAction::StringRelease => value.into_pointer_value(),
+                    DestroyAction::BytesRelease => self
+                        .builder
+                        .build_extract_value(value.into_struct_value(), 0, "bytes.drop.ptr")
+                        .llvm_ctx("extract bytes release pointer")?
+                        .into_pointer_value(),
+                    DestroyAction::Aggregate(_) => unreachable!("matched primitive release"),
+                };
+                let symbol = match action {
+                    DestroyAction::StringRelease => "hew_string_drop",
+                    DestroyAction::BytesRelease => "hew_bytes_drop",
+                    DestroyAction::Aggregate(_) => unreachable!("matched primitive release"),
+                };
+                let function = external_drop(self.ctx, self.llvm, symbol)?;
+                self.builder
+                    .build_call(function, &[pointer.into()], "physical.drop")
+                    .llvm_ctx("release physical owner")?;
+                Ok(())
+            }
+            DestroyAction::Aggregate(id) => {
+                let glue = self.aggregate_glue(id)?;
+                let value = value.into_struct_value();
+                let PhysicalRepr::Struct(layout_fields) = &layout.repr else {
+                    return Err(CodegenError::FailClosed(
+                        "physical aggregate destroy has a non-struct layout".into(),
+                    ));
+                };
+                for index in (0..glue.fields.len()).rev() {
+                    let field = &glue.fields[index];
+                    let Some(action) = field.destroy else {
+                        continue;
+                    };
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed(
+                            "physical aggregate field index exceeds u32".into(),
+                        )
+                    })?;
+                    let field_value = self
+                        .builder
+                        .build_extract_value(value, index, "aggregate.destroy.field")
+                        .llvm_ctx("extract physical aggregate destroy field")?;
+                    self.destroy_loaded_value(field_value, &layout_fields[index as usize], action)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn aggregate_glue(&self, id: PhysicalAggregateId) -> CodegenResult<&PhysicalAggregateGlue> {
+        self.module
+            .aggregate_glue
+            .get(id.0 as usize)
+            .filter(|glue| glue.id == id)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!("unknown physical aggregate glue {}", id.0))
+            })
     }
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
@@ -1613,6 +1853,32 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(result()?, value)?;
             }
+            PhysicalRuntimeAction::PrintlnI64 => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_print_value",
+                    self.ctx.void_type().fn_type(
+                        &[
+                            self.ctx.i8_type().into(),
+                            self.ctx.i64_type().into(),
+                            self.ctx.bool_type().into(),
+                        ],
+                        false,
+                    ),
+                )?;
+                self.runtime_call_void(
+                    function,
+                    &[
+                        self.ctx
+                            .i8_type()
+                            .const_int(HEW_PRINT_KIND_I64, false)
+                            .into(),
+                        self.load(source(0)?, "println.i64.bits")?.into(),
+                        self.ctx.bool_type().const_int(1, false).into(),
+                    ],
+                    "println.i64",
+                )?;
+            }
             PhysicalRuntimeAction::PrintlnString => {
                 let function = get_or_declare_external(
                     self.llvm,
@@ -2137,7 +2403,7 @@ fn get_or_declare_external<'ctx>(
 mod tests {
     use std::collections::BTreeMap;
 
-    use hew_hir::ItemId;
+    use hew_hir::{lower_program_host_target, ItemId, ResolutionCtx};
     use hew_sir::{
         BlockArg, BoundaryDecision, BoundaryOperand, CallableInstance, CheckedFailure, Edge,
         FunctionSourceOrigin, Operand, Provenance, SemBlock, SemCallConv, SemCallable,
@@ -2145,10 +2411,44 @@ mod tests {
         ValueDef, ValueId,
     };
     use hew_types::{
-        CloneKind, DefId, EntryExitPlan, SendFact, TypeFacts, TypeInstanceKey, ValueClass,
+        module_registry::ModuleRegistry, Checker, CloneKind, DefId, EntryExitPlan, SendFact,
+        TypeFacts, TypeInstanceKey, ValueClass,
     };
 
     use super::*;
+
+    fn lower_source(source: &str) -> SemModule {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+        let facts = checker.check_program(&parsed.program);
+        assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);
+        let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
+        assert!(
+            hir.diagnostics.is_empty(),
+            "HIR errors: {:#?}",
+            hir.diagnostics
+        );
+        let lowered = hew_sir::lower_module(&hir.module, &facts);
+        assert!(
+            lowered.statuses.iter().any(|status| {
+                status.name == "main"
+                    && matches!(status.status, hew_sir::SirLoweringStatus::Lowered)
+            }),
+            "source main did not lower: {:#?}",
+            lowered.statuses
+        );
+        assert!(
+            hew_sir::verify_module(&lowered.module).is_empty(),
+            "source must produce verified SIR: {:#?}",
+            hew_sir::verify_module(&lowered.module)
+        );
+        lowered.module
+    }
 
     fn scalar_entry_module() -> SemModule {
         let declaration = DefId::for_test("main");
@@ -2209,6 +2509,7 @@ mod tests {
             }),
             entry_callable: Some(CallableId(0)),
             functions: vec![function],
+            aggregate_shapes: vec![],
             type_facts: BTreeMap::from([(
                 TypeInstanceKey(ResolvedTy::I64),
                 TypeFacts {
@@ -2385,6 +2686,7 @@ mod tests {
             entry_exit_plan: None,
             entry_callable: None,
             functions: vec![function],
+            aggregate_shapes: vec![],
             type_facts: BTreeMap::from([(
                 TypeInstanceKey(ResolvedTy::Bytes),
                 TypeFacts {
@@ -2456,6 +2758,65 @@ mod tests {
                     PhysicalLayout { repr: PhysicalRepr::Integer { bits: 64 }, .. },
                 ])
         ));
+    }
+
+    #[test]
+    fn owned_record_layout_and_recursive_glue_emit_verified_llvm() {
+        let semantic = lower_source(
+            r#"
+            type Packet { label: string, payload: bytes }
+
+            fn duplicate(packet: Packet) -> Packet { packet }
+
+            fn main() {
+                let packet = Packet { payload: b"P", label: "record" };
+                let packet_copy = duplicate(packet);
+                let first = packet_copy.label;
+                let second = packet.label;
+            }
+            "#,
+        );
+        let triple = native_emission_triple();
+        let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+        let target = physical_target_for_inventory(&triple, &inventory)
+            .expect("exact aggregate target layout");
+        let [shape] = semantic.aggregate_shapes.as_slice() else {
+            panic!("source must demand one exact record shape")
+        };
+        assert!(matches!(
+            target.layout(&shape.aggregate_ty),
+            Some(PhysicalLayout {
+                repr: PhysicalRepr::Struct(fields),
+                ..
+            }) if fields.len() == 2
+        ));
+        let verified = hew_mir::lower_physical_module(&semantic, target)
+            .expect("owned record physical lowering");
+        assert!(verified.module().callables.iter().any(|callable| {
+            callable.return_ty == shape.aggregate_ty
+                && matches!(
+                    callable.params.as_slice(),
+                    [hew_mir::PhysicalParam {
+                        carrier: ParamCarrier::Indirect,
+                        ..
+                    }]
+                )
+        }));
+        let ctx = Context::create();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0)
+            .expect("target machine");
+        let module = build_module(&ctx, verified.module(), "owned_record", &machine)
+            .expect("owned record LLVM module");
+        module.verify().expect("owned record LLVM verification");
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("aggregate.clone.field") && ir.contains("aggregate.destroy.field"),
+            "whole aggregate copy/drop must execute the resolved recursive glue"
+        );
+        assert!(module.get_function("hew_string_clone").is_some());
+        assert!(module.get_function("hew_bytes_clone_ref").is_some());
+        assert!(module.get_function("hew_string_drop").is_some());
+        assert!(module.get_function("hew_bytes_drop").is_some());
     }
 
     #[test]

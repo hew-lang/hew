@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use hew_hir::{ItemId, SiteId};
 use hew_parser::ast::Span;
-use hew_types::{DefId, ResolvedTy, TypeFacts, TypeInstanceKey};
+use hew_types::{DefId, NominalInstance, ResolvedTy, TypeFacts, TypeInstanceKey};
 
 use crate::ownership::{
     Binding, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl, PlaceId,
@@ -378,6 +378,35 @@ pub struct SemCallable {
     pub kind: SemCallableKind,
 }
 
+/// Module-local identity of one demanded concrete record shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AggregateShapeId(pub u32);
+
+/// Semantic aggregate shape selected by an operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AggregateShapeRef {
+    /// Tuple field order and types come from the operation's exact tuple type.
+    Tuple,
+    /// Named record shape carried in [`SemModule::aggregate_shapes`].
+    Record(AggregateShapeId),
+}
+
+/// One ordered, fully substituted record field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemAggregateField {
+    pub name: String,
+    pub ty: ResolvedTy,
+}
+
+/// Exact semantic shape of one concrete named record used by demanded bodies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemAggregateShape {
+    pub id: AggregateShapeId,
+    pub aggregate_ty: ResolvedTy,
+    pub instance: NominalInstance,
+    pub fields: Vec<SemAggregateField>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
     /// Deterministic resolved direct-call authority.  IDs must equal their
@@ -399,6 +428,9 @@ pub struct SemModule {
     /// declaration path or emitted symbol.
     pub entry_callable: Option<CallableId>,
     pub functions: Vec<SemFunction>,
+    /// Concrete named aggregate shapes mentioned by demanded SIR bodies, in
+    /// module-local ID order. Tuple shapes remain structural in `ResolvedTy`.
+    pub aggregate_shapes: Vec<SemAggregateShape>,
     /// The §6.3 fact table for every type this module's bodies mention,
     /// projected from `TypeCheckOutput::type_facts`.
     ///
@@ -420,6 +452,23 @@ impl SemModule {
         self.callables
             .get(usize::try_from(id.0).ok()?)
             .filter(|callable| callable.id == id)
+    }
+
+    /// Resolve a record shape only when its ID agrees with the canonical table
+    /// position.
+    #[must_use]
+    pub fn aggregate_shape(&self, id: AggregateShapeId) -> Option<&SemAggregateShape> {
+        self.aggregate_shapes
+            .get(usize::try_from(id.0).ok()?)
+            .filter(|shape| shape.id == id)
+    }
+
+    /// Resolve the one exact concrete record descriptor for a semantic type.
+    #[must_use]
+    pub fn aggregate_shape_for_type(&self, ty: &ResolvedTy) -> Option<&SemAggregateShape> {
+        self.aggregate_shapes
+            .iter()
+            .find(|shape| &shape.aggregate_ty == ty)
     }
 
     /// Find a monomorphic resolved callable from checker-owned declaration
@@ -649,6 +698,18 @@ pub enum SemOpKind {
         tuple: Operand,
         index: u32,
     },
+    /// Construct one owned semantic aggregate by consuming every ordered
+    /// field operand. The shape carries no layout or storage decision.
+    AggregateMake {
+        shape: AggregateShapeRef,
+        fields: Vec<Operand>,
+    },
+    /// Read one aggregate field and produce an independent logical copy.
+    AggregateProjectCopy {
+        shape: AggregateShapeRef,
+        aggregate: Operand,
+        field: u32,
+    },
     Unary {
         op: hew_parser::ast::UnaryOp,
         value: Operand,
@@ -718,6 +779,7 @@ pub enum SemOpKind {
     /// `destructure %agg` - consumes the aggregate and produces one result per
     /// field, each of which must be consumed on every path.
     Destructure {
+        shape: AggregateShapeRef,
         aggregate: Operand,
     },
 
@@ -787,6 +849,17 @@ impl SemOpKind {
                 }
             }
             Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
+            Self::AggregateMake { fields, .. } => {
+                for (index, field) in fields.iter().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR operation operand count exceeds u32"),
+                        ),
+                        field,
+                    );
+                }
+            }
+            Self::AggregateProjectCopy { aggregate, .. } => visit(OperandSlot(0), aggregate),
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
@@ -802,7 +875,9 @@ impl SemOpKind {
             | Self::DestroyValue { value }
             | Self::BeginBorrow { owner: value }
             | Self::EndBorrow { borrow: value }
-            | Self::Destructure { aggregate: value }
+            | Self::Destructure {
+                aggregate: value, ..
+            }
             | Self::StoreInit { value, .. }
             | Self::StoreAssign { value, .. } => visit(OperandSlot(0), value),
         }
@@ -839,6 +914,17 @@ impl SemOpKind {
                 }
             }
             Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
+            Self::AggregateMake { fields, .. } => {
+                for (index, field) in fields.iter_mut().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR operation operand count exceeds u32"),
+                        ),
+                        field,
+                    );
+                }
+            }
+            Self::AggregateProjectCopy { aggregate, .. } => visit(OperandSlot(0), aggregate),
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
@@ -854,7 +940,9 @@ impl SemOpKind {
             | Self::DestroyValue { value }
             | Self::BeginBorrow { owner: value }
             | Self::EndBorrow { borrow: value }
-            | Self::Destructure { aggregate: value }
+            | Self::Destructure {
+                aggregate: value, ..
+            }
             | Self::StoreInit { value, .. }
             | Self::StoreAssign { value, .. } => visit(OperandSlot(0), value),
         }
@@ -878,6 +966,8 @@ impl SemOpKind {
             | Self::EndBorrow { .. }
             | Self::Move { .. }
             | Self::Fork { .. }
+            | Self::AggregateMake { .. }
+            | Self::AggregateProjectCopy { .. }
             | Self::Destructure { .. }
             | Self::AllocPlace { .. }
             | Self::LoadCopy { .. }
@@ -914,6 +1004,7 @@ impl SemOpKind {
             Self::DestroyValue { .. }
                 | Self::Move { .. }
                 | Self::Fork { .. }
+                | Self::AggregateMake { .. }
                 | Self::Destructure { .. }
                 | Self::LoadTake { .. }
                 | Self::StoreInit { .. }

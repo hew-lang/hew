@@ -112,3 +112,27 @@ timeout_seconds = 15
 stdout = ""
 stderr = "hew: failure: DivideByZero (202)\n"
 exit = 202
+
+[[case]]
+id = "owned-record-call"
+intent = "An ordinary record argument survives the call and an owned returned record provides independently mutable field copies."
+source = "cases/owned-record-call.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CORE/CORE/66\n"
+exit = 0
+
+[[case]]
+id = "owned-tuple-parent-exit"
+intent = "A copied owning nested tuple survives its parent's scope and retains independent string and bytes fields."
+source = "cases/owned-tuple-parent-exit.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "INNER:65:66\n"
+exit = 0

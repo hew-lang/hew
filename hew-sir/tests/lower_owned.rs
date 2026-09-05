@@ -77,6 +77,34 @@ fn core_owned_runtime_sources_lower_to_verified_sir() {
 }
 
 #[test]
+fn scalar_eval_print_uses_a_typed_runtime_operation() {
+    let lowered = lower_source("fn main() { println(1 + 2); }");
+
+    assert!(
+        matches!(
+            lowered.statuses.iter().find(|status| status.name == "main"),
+            Some(status) if matches!(status.status, SirLoweringStatus::Lowered)
+        ),
+        "the eval wrapper must lower through the scalar print contract: {:#?}",
+        lowered.statuses
+    );
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("the eval wrapper main must have a SIR body");
+    assert!(main.blocks.iter().any(|block| matches!(
+        block.terminator,
+        SemTerminator::RtCall {
+            family: hew_types::RuntimeCallFamily::PrintlnI64,
+            ..
+        }
+    )));
+    assert!(verify_module(&lowered.module).is_empty());
+}
+
+#[test]
 fn constant_owned_branch_that_needs_cleanup_remains_executable() {
     let mut lowered = lower_source(include_str!(
         "../../tests/core-acceptance/cases/owned-branch-reassign.hew"

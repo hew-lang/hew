@@ -535,6 +535,7 @@ mod tests {
             entry_exit_plan: None,
             entry_callable: None,
             functions: vec![function],
+            aggregate_shapes: Vec::new(),
             type_facts: fact_service.into_rows(),
             string_literals: std::collections::BTreeMap::new(),
             bytes_literals: std::collections::BTreeMap::new(),

@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::ownership::TypeFactTable;
 use crate::OpId;
 use crate::{
-    BindingTarget, BlockId, CallableId, CallableInstance, GenericTemplateId, SemCallConv,
-    SemCallable, SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind,
-    SemParamPassing, SemSignature, SemTerminator, SirInstanceKey, UseSite, ValueId,
+    AggregateShapeId, AggregateShapeRef, BindingTarget, BlockId, CallableId, CallableInstance,
+    GenericTemplateId, SemAggregateShape, SemCallConv, SemCallable, SemCallableKind, SemFunction,
+    SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
+    SirInstanceKey, UseSite, ValueId,
 };
 use hew_hir::{monomorph::function_monomorph_symbol, substitute_type_params};
 use hew_types::ResolvedTy;
@@ -25,6 +26,10 @@ pub enum SirDiagnosticKind {
     },
     InvalidCallable {
         callable: CallableId,
+        reason: String,
+    },
+    InvalidAggregateShape {
+        shape: AggregateShapeId,
         reason: String,
     },
     InvalidRootCallable {
@@ -235,10 +240,67 @@ impl<'a> CallableContext<'a> {
     }
 }
 
+fn verify_aggregate_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
+    let mut types = HashSet::new();
+    let mut instances = HashSet::new();
+    for (index, shape) in module.aggregate_shapes.iter().enumerate() {
+        let expected =
+            AggregateShapeId(u32::try_from(index).expect("SIR aggregate shape count exceeds u32"));
+        let mut refuse = |reason| {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidAggregateShape {
+                shape: shape.id,
+                reason,
+            }));
+        };
+        if shape.id != expected {
+            refuse(format!(
+                "non-canonical table position: expected {}, found {}",
+                expected.0, shape.id.0
+            ));
+        }
+        if shape.aggregate_ty.nominal_instance().as_ref() != Some(&shape.instance) {
+            refuse(format!(
+                "concrete type `{}` does not carry the descriptor's nominal instance",
+                shape.aggregate_ty.user_facing()
+            ));
+        }
+        if !types.insert(shape.aggregate_ty.clone()) {
+            refuse(format!(
+                "concrete type `{}` has more than one descriptor",
+                shape.aggregate_ty.user_facing()
+            ));
+        }
+        if !instances.insert(shape.instance.clone()) {
+            refuse("nominal instance has more than one descriptor".to_string());
+        }
+        let mut names = HashSet::new();
+        if shape.fields.iter().any(|field| !names.insert(&field.name)) {
+            refuse("descriptor repeats a field name".to_string());
+        }
+        if crate::OwnKind::of_ty(&shape.aggregate_ty, &module.type_facts)
+            != Ok(crate::OwnKind::Owned)
+        {
+            refuse(format!(
+                "concrete type `{}` is not an owned aggregate",
+                shape.aggregate_ty.user_facing()
+            ));
+        }
+        if let Err(reason) = crate::aggregate_field_recipes(
+            AggregateShapeRef::Record(shape.id),
+            &shape.aggregate_ty,
+            &module.aggregate_shapes,
+            &module.type_facts,
+        ) {
+            refuse(reason);
+        }
+    }
+}
+
 #[must_use]
 pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
     let callables = verify_callable_table(module, &mut diagnostics);
+    verify_aggregate_shapes(module, &mut diagnostics);
     let mut names = HashSet::new();
     let mut declarations = HashSet::new();
     for function in &module.functions {
@@ -281,6 +343,7 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
             function,
             Some(&callables),
             &module.type_facts,
+            &module.aggregate_shapes,
         ));
     }
     diagnostics
@@ -299,6 +362,7 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
         function,
         Some(&callables),
         &module.type_facts,
+        &module.aggregate_shapes,
     ));
     diagnostics
 }
@@ -332,7 +396,7 @@ pub(crate) fn verify_function_with_facts(
     function: &SemFunction,
     facts: &TypeFactTable,
 ) -> Vec<SirDiagnostic> {
-    verify_function_with_context(function, None, facts)
+    verify_function_with_context(function, None, facts, &[])
 }
 
 /// Verify the semantic precondition for discarding blocks during a CFG rewrite.
@@ -443,6 +507,7 @@ pub(crate) fn verify_function_with_context(
     function: &SemFunction,
     callable_context: Option<&CallableContext<'_>>,
     facts: &TypeFactTable,
+    aggregate_shapes: &[SemAggregateShape],
 ) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
@@ -588,7 +653,14 @@ pub(crate) fn verify_function_with_context(
     // defined in a later block rather than silently skipping its type check.
     for block in &function.blocks {
         for op in &block.ops {
-            verify_operation_shape(function, op, &types, facts, &mut diagnostics);
+            verify_operation_shape(
+                function,
+                op,
+                &types,
+                facts,
+                aggregate_shapes,
+                &mut diagnostics,
+            );
         }
         block.terminator.visit_successors(|edge| {
             let Some(target) = blocks.get(&edge.target) else {
@@ -772,7 +844,7 @@ fn verify_callable_table<'a>(
             }));
         }
         for (parameter, abi) in callable.signature.params.iter().enumerate() {
-            if !is_initial_call_value(&abi.ty) {
+            if !is_supported_call_value(module, &abi.ty) {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                     callable: callable.id,
                     reason: format!(
@@ -781,10 +853,27 @@ fn verify_callable_table<'a>(
                     ),
                 }));
             }
-            let expected_passing = if matches!(abi.ty, ResolvedTy::String | ResolvedTy::Bytes) {
-                SemParamPassing::Borrow
-            } else {
-                SemParamPassing::ReadOnly
+            let expected_passing = match crate::OwnKind::of_ty(&abi.ty, &module.type_facts) {
+                Ok(crate::OwnKind::Owned) => SemParamPassing::Borrow,
+                Ok(crate::OwnKind::None) => SemParamPassing::ReadOnly,
+                Ok(crate::OwnKind::Guaranteed) => {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: format!(
+                            "parameter {parameter} concrete type facts produced the borrow-only Guaranteed kind"
+                        ),
+                    }));
+                    continue;
+                }
+                Err(reason) => {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: format!(
+                            "parameter {parameter} has no exact ownership facts: {reason}"
+                        ),
+                    }));
+                    continue;
+                }
             };
             if abi.passing != expected_passing {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
@@ -804,7 +893,7 @@ fn verify_callable_table<'a>(
                 }));
             }
         }
-        if !is_initial_call_return(&callable.signature.return_ty) {
+        if !is_supported_call_return(module, &callable.signature.return_ty) {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                 callable: callable.id,
                 reason: format!(
@@ -1126,8 +1215,14 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
             if !elements.is_empty() && elements.iter().all(is_initial_value_type))
 }
 
-fn is_initial_call_return(ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Unit) || is_initial_call_value(ty)
+fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
+    is_initial_call_value(ty)
+        || matches!(ty, ResolvedTy::Tuple(fields) if !fields.is_empty())
+        || module.aggregate_shape_for_type(ty).is_some()
+}
+
+fn is_supported_call_return(module: &SemModule, ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Unit) || is_supported_call_value(module, ty)
 }
 
 #[allow(
@@ -1139,8 +1234,58 @@ fn verify_operation_shape(
     operation: &SemOp,
     types: &HashMap<ValueId, ResolvedTy>,
     facts: &TypeFactTable,
+    aggregate_shapes: &[SemAggregateShape],
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
+    if let SemOpKind::Destructure { shape, aggregate } = &operation.kind {
+        let Some(aggregate_ty) = types.get(&aggregate.value) else {
+            return;
+        };
+        let recipes =
+            match crate::aggregate_field_recipes(*shape, aggregate_ty, aggregate_shapes, facts) {
+                Ok(recipes) => recipes,
+                Err(reason) => {
+                    invalid_operation(function, operation.id, reason, diagnostics);
+                    return;
+                }
+            };
+        if crate::OwnKind::of_ty(aggregate_ty, facts) != Ok(crate::OwnKind::Owned) {
+            invalid_operation(
+                function,
+                operation.id,
+                format!(
+                    "aggregate.destructure operand `{}` is not owned",
+                    aggregate_ty.user_facing()
+                ),
+                diagnostics,
+            );
+        }
+        if operation.results.len() != recipes.len() {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidResultArity {
+                    op: operation.id,
+                    actual: operation.results.len(),
+                },
+            ));
+            return;
+        }
+        for (index, (result, recipe)) in operation.results.iter().zip(recipes).enumerate() {
+            if result.ty != recipe.ty {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "aggregate.destructure result {index} has `{}`, expected `{}`",
+                        result.ty.user_facing(),
+                        recipe.ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+        }
+        return;
+    }
     let expected_results = usize::from(!matches!(
         operation.kind,
         SemOpKind::DestroyValue { .. }
@@ -1305,6 +1450,124 @@ fn verify_operation_shape(
                         tuple_ty.user_facing(),
                         result.ty.user_facing(),
                         expected_ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+        }
+        SemOpKind::AggregateMake { shape, fields } => {
+            let recipes =
+                match crate::aggregate_field_recipes(*shape, &result.ty, aggregate_shapes, facts) {
+                    Ok(recipes) => recipes,
+                    Err(reason) => {
+                        invalid_operation(function, operation.id, reason, diagnostics);
+                        return;
+                    }
+                };
+            if crate::OwnKind::of_ty(&result.ty, facts) != Ok(crate::OwnKind::Owned) {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "aggregate.make result `{}` is not an owned aggregate",
+                        result.ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+            if fields.len() != recipes.len() {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "aggregate.make for `{}` has {} field(s), expected {}",
+                        result.ty.user_facing(),
+                        fields.len(),
+                        recipes.len()
+                    ),
+                    diagnostics,
+                );
+            }
+            for (index, (field, recipe)) in fields.iter().zip(recipes).enumerate() {
+                if types.get(&field.value) != Some(&recipe.ty) {
+                    let actual = types
+                        .get(&field.value)
+                        .map_or("<undefined>".to_string(), |ty| ty.user_facing().to_string());
+                    invalid_operation(
+                        function,
+                        operation.id,
+                        format!(
+                            "aggregate.make field {index} has `{actual}`, expected `{}`",
+                            recipe.ty.user_facing()
+                        ),
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        SemOpKind::AggregateProjectCopy {
+            shape,
+            aggregate,
+            field,
+        } => {
+            let Some(aggregate_ty) = types.get(&aggregate.value) else {
+                return;
+            };
+            let recipes =
+                match crate::aggregate_field_recipes(*shape, aggregate_ty, aggregate_shapes, facts)
+                {
+                    Ok(recipes) => recipes,
+                    Err(reason) => {
+                        invalid_operation(function, operation.id, reason, diagnostics);
+                        return;
+                    }
+                };
+            if crate::OwnKind::of_ty(aggregate_ty, facts) != Ok(crate::OwnKind::Owned) {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "aggregate.project_copy operand `{}` is not an owned aggregate",
+                        aggregate_ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+            let Some(recipe) = usize::try_from(*field)
+                .ok()
+                .and_then(|index| recipes.get(index))
+            else {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "aggregate.project_copy field {field} is out of bounds for `{}` with {} field(s)",
+                        aggregate_ty.user_facing(),
+                        recipes.len()
+                    ),
+                    diagnostics,
+                );
+                return;
+            };
+            if result.ty != recipe.ty {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "aggregate.project_copy field {field} produces `{}`, expected `{}`",
+                        result.ty.user_facing(),
+                        recipe.ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+            if recipe.clone == hew_types::CloneKind::None {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "aggregate.project_copy field {field} of `{}` has no copy operation",
+                        aggregate_ty.user_facing()
                     ),
                     diagnostics,
                 );
@@ -2528,7 +2791,7 @@ mod parameter_own_kind_tests {
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
         let context = callable_context(&callables);
         let diagnostics =
-            verify_function_with_context(&function, Some(&context), &TypeFactTable::new());
+            verify_function_with_context(&function, Some(&context), &TypeFactTable::new(), &[]);
         let reason = kind_finding(&diagnostics).expect("a Borrow slot refuses an Owned parameter");
         assert!(reason.contains("Guaranteed"), "{reason}");
     }
@@ -2542,7 +2805,7 @@ mod parameter_own_kind_tests {
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
         let context = callable_context(&callables);
         let diagnostics =
-            verify_function_with_context(&function, Some(&context), &TypeFactTable::new());
+            verify_function_with_context(&function, Some(&context), &TypeFactTable::new(), &[]);
         assert_eq!(None, kind_finding(&diagnostics));
     }
 
@@ -2556,7 +2819,8 @@ mod parameter_own_kind_tests {
         let context = callable_context(&callables);
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
-        let diagnostics = verify_function_with_context(&function, Some(&context), facts.rows());
+        let diagnostics =
+            verify_function_with_context(&function, Some(&context), facts.rows(), &[]);
         let reason =
             kind_finding(&diagnostics).expect("a ReadOnly slot refuses a Guaranteed parameter");
         assert!(reason.contains("Owned"), "{reason}");
@@ -2570,7 +2834,7 @@ mod parameter_own_kind_tests {
     #[test]
     fn verifier_refuses_a_parameter_whose_header_slot_it_cannot_read() {
         let function = function(ResolvedTy::I64, OwnKind::None);
-        let diagnostics = verify_function_with_context(&function, None, &TypeFactTable::new());
+        let diagnostics = verify_function_with_context(&function, None, &TypeFactTable::new(), &[]);
         let reason =
             kind_finding(&diagnostics).expect("no callable table means no slot to audit against");
         assert!(reason.contains("no header slot"), "{reason}");

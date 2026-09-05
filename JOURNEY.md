@@ -239,3 +239,26 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   operations whose failure cleanup is not yet explicit in SIR.
 - Focused `hew-mir` physical tests cover scalar result-out lowering, concrete
   copy selection, missing-layout refusal, and malformed callable identity.
+
+## Owned aggregate semantics
+
+- Owned tuples and named records now use one semantic operation family:
+  construction consumes ordered fields, ordinary projection creates an
+  explicit independent copy, and destruction consumes the whole aggregate.
+  The existing no-drop tuple make/get operations remain a separate bit-copy
+  specialization.
+- Demanded named record shapes retain exact checker declaration and concrete
+  nominal-instance identity. Field recipes are derived once from the
+  checker-published type-fact rows and shared with physical lowering; missing
+  shape, type or clone facts refuse verification.
+- Source regressions cover retained source fields, whole-record aliases,
+  declaration order independent of initializer order, repeated projections,
+  and a counterfactual missing-copy recipe.
+- Direct aggregate calls now borrow owned parameters and return independent
+  owners. Callable admission and verification both require the same exact
+  tuple or nominal record shape, and admitted headers publish their shape even
+  when demand does not reach the body.
+- A source-to-SIR regression retains the caller's record after the call and
+  reads fields from both owners. Removing the nominal descriptor makes the
+  verifier reject the callable header, demonstrating that presentation names
+  cannot substitute for the exact shape contract.

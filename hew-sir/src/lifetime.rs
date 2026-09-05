@@ -201,6 +201,7 @@ impl<'a> Flow<'a> {
         for op in &block.ops {
             let consumes = match &op.kind {
                 SemOpKind::TupleMake { .. }
+                | SemOpKind::AggregateMake { .. }
                 | SemOpKind::DestroyValue { .. }
                 | SemOpKind::Move { .. }
                 | SemOpKind::Fork { .. }
@@ -216,6 +217,7 @@ impl<'a> Flow<'a> {
                 | SemOpKind::ConstStr(_)
                 | SemOpKind::ConstBytes(_)
                 | SemOpKind::TupleGet { .. }
+                | SemOpKind::AggregateProjectCopy { .. }
                 | SemOpKind::Unary { .. }
                 | SemOpKind::Binary { .. }
                 | SemOpKind::Cast { .. }

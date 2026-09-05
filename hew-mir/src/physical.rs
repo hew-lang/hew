@@ -8,11 +8,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hew_parser::ast::{BinaryOp, UnaryOp};
-pub use hew_sir::{BlockId, CallableId, OwnKind, TrapKind};
 use hew_sir::{
-    BoundaryDecision, CallResult, CallUnwind, Edge, SemFunction, SemModule, SemOp, SemOpKind,
-    SemTerminator, SnapshotDecision, ValueId,
+    AggregateShapeRef, BoundaryDecision, CallResult, CallUnwind, Edge, SemFunction, SemModule,
+    SemOp, SemOpKind, SemTerminator, SnapshotDecision, ValueId,
 };
+pub use hew_sir::{BlockId, CallableId, OwnKind, TrapKind};
 use hew_types::{
     CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect, RuntimeCallFamily,
     RuntimeResultEffect, TypeInstanceKey,
@@ -21,6 +21,44 @@ use hew_types::{
 /// Function-local identity of one concrete storage allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StorageId(pub u32);
+
+/// Module-local identity of one verified aggregate layout and glue recipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalAggregateId(pub u32);
+
+/// One exact demanded aggregate descriptor in the physical type inventory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalAggregateDescriptor {
+    pub ty: ResolvedTy,
+    pub fields: Vec<ResolvedTy>,
+}
+
+/// Concrete types and aggregate shapes demanded by verified SIR bodies.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PhysicalTypeInventory {
+    types: BTreeSet<ResolvedTy>,
+    aggregates: BTreeMap<ResolvedTy, PhysicalAggregateDescriptor>,
+}
+
+impl PhysicalTypeInventory {
+    #[must_use]
+    pub fn contains(&self, ty: &ResolvedTy) -> bool {
+        self.types.contains(ty)
+    }
+
+    pub fn types(&self) -> impl Iterator<Item = &ResolvedTy> {
+        self.types.iter()
+    }
+
+    pub fn aggregates(&self) -> impl Iterator<Item = &PhysicalAggregateDescriptor> {
+        self.aggregates.values()
+    }
+
+    #[must_use]
+    pub fn aggregate(&self, ty: &ResolvedTy) -> Option<&PhysicalAggregateDescriptor> {
+        self.aggregates.get(ty)
+    }
+}
 
 /// LLVM-independent carrier chosen by the target layout resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +171,7 @@ pub enum CloneAction {
     Bitwise,
     StringRetain,
     BytesRetain,
+    Aggregate(PhysicalAggregateId),
 }
 
 /// A release selected once from an explicit SIR destroy plus concrete type.
@@ -140,6 +179,24 @@ pub enum CloneAction {
 pub enum DestroyAction {
     StringRelease,
     BytesRelease,
+    Aggregate(PhysicalAggregateId),
+}
+
+/// One field in an aggregate's physical copy/drop recipe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalAggregateField {
+    pub ty: ResolvedTy,
+    pub own: OwnKind,
+    pub clone: Option<CloneAction>,
+    pub destroy: Option<DestroyAction>,
+}
+
+/// Shared physical glue for one exact concrete aggregate type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalAggregateGlue {
+    pub id: PhysicalAggregateId,
+    pub ty: ResolvedTy,
+    pub fields: Vec<PhysicalAggregateField>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -172,6 +229,23 @@ pub enum PhysicalOp {
         dest: StorageId,
         tuple: StorageId,
         index: u32,
+    },
+    AggregateMake {
+        dest: StorageId,
+        fields: Vec<StorageId>,
+        glue: PhysicalAggregateId,
+    },
+    AggregateProjectCopy {
+        dest: StorageId,
+        aggregate: StorageId,
+        field: u32,
+        glue: PhysicalAggregateId,
+        action: CloneAction,
+    },
+    AggregateDestructure {
+        aggregate: StorageId,
+        fields: Vec<StorageId>,
+        glue: PhysicalAggregateId,
     },
     Transfer {
         dest: StorageId,
@@ -251,6 +325,7 @@ pub enum PhysicalRuntimeAction {
     StringToBytesOwned,
     StringToUppercase,
     U8ToString,
+    PrintlnI64,
     PrintlnString,
     BytesLen,
     BytesIndex,
@@ -265,6 +340,7 @@ impl PhysicalRuntimeAction {
             Self::StringToBytesOwned => RuntimeCallFamily::StringToBytes,
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
             Self::U8ToString => RuntimeCallFamily::U8ToString,
+            Self::PrintlnI64 => RuntimeCallFamily::PrintlnI64,
             Self::PrintlnString => RuntimeCallFamily::PrintlnString,
             Self::BytesLen => RuntimeCallFamily::BytesLen,
             Self::BytesIndex => RuntimeCallFamily::BytesIndex,
@@ -338,6 +414,7 @@ pub struct PhysicalFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalModule {
     pub target: PhysicalTarget,
+    pub aggregate_glue: Vec<PhysicalAggregateGlue>,
     pub callables: Vec<PhysicalCallable>,
     pub functions: Vec<PhysicalFunction>,
     pub entry_callable: Option<CallableId>,
@@ -406,6 +483,8 @@ pub fn lower_physical_module(
         )));
     }
 
+    let (aggregate_glue, aggregate_ids) = build_aggregate_glue(module)?;
+
     let callables = module
         .callables
         .iter()
@@ -448,11 +527,12 @@ pub fn lower_physical_module(
     let functions = module
         .functions
         .iter()
-        .map(|function| lower_function(module, &target, function))
+        .map(|function| lower_function(module, &target, function, &aggregate_ids))
         .collect::<Result<Vec<_>, _>>()?;
 
     let physical = PhysicalModule {
         target,
+        aggregate_glue,
         callables,
         functions,
         entry_callable: module.entry_callable,
@@ -464,13 +544,133 @@ pub fn lower_physical_module(
     Ok(VerifiedPhysicalModule(physical))
 }
 
+fn build_aggregate_glue(
+    module: &SemModule,
+) -> Result<
+    (
+        Vec<PhysicalAggregateGlue>,
+        BTreeMap<ResolvedTy, PhysicalAggregateId>,
+    ),
+    PhysicalError,
+> {
+    let inventory = physical_type_inventory(module);
+    let owned_aggregates = inventory
+        .aggregates()
+        .map(|aggregate| {
+            OwnKind::of_ty(&aggregate.ty, &module.type_facts)
+                .map(|own| (aggregate, own))
+                .map_err(PhysicalError::new)
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|(aggregate, own)| (own == OwnKind::Owned).then_some(aggregate))
+        .collect::<Vec<_>>();
+    let aggregate_ids = owned_aggregates
+        .iter()
+        .enumerate()
+        .map(|(index, aggregate)| {
+            let index = u32::try_from(index)
+                .map_err(|_| PhysicalError::new("physical aggregate count exceeds u32"))?;
+            Ok((aggregate.ty.clone(), PhysicalAggregateId(index)))
+        })
+        .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
+    let glue = owned_aggregates
+        .into_iter()
+        .map(|aggregate| {
+            let id = aggregate_ids[&aggregate.ty];
+            let shape = aggregate_shape_ref(module, &aggregate.ty)?;
+            let recipes = hew_sir::aggregate_field_recipes(
+                shape,
+                &aggregate.ty,
+                &module.aggregate_shapes,
+                &module.type_facts,
+            )
+            .map_err(PhysicalError::new)?;
+            let fields = recipes
+                .into_iter()
+                .map(|recipe| {
+                    Ok(PhysicalAggregateField {
+                        clone: clone_action_for_type(&recipe.ty, recipe.clone, &aggregate_ids)?,
+                        destroy: destroy_action_for_type(&recipe.ty, &aggregate_ids),
+                        ty: recipe.ty,
+                        own: recipe.own,
+                    })
+                })
+                .collect::<Result<Vec<_>, PhysicalError>>()?;
+            Ok(PhysicalAggregateGlue {
+                id,
+                ty: aggregate.ty.clone(),
+                fields,
+            })
+        })
+        .collect::<Result<Vec<_>, PhysicalError>>()?;
+    Ok((glue, aggregate_ids))
+}
+
+fn aggregate_shape_ref(
+    module: &SemModule,
+    ty: &ResolvedTy,
+) -> Result<AggregateShapeRef, PhysicalError> {
+    match ty {
+        ResolvedTy::Tuple(fields) if !fields.is_empty() => Ok(AggregateShapeRef::Tuple),
+        _ => module
+            .aggregate_shape_for_type(ty)
+            .map(|shape| AggregateShapeRef::Record(shape.id))
+            .ok_or_else(|| {
+                PhysicalError::new(format!(
+                    "owned aggregate `{}` has no exact SIR shape descriptor",
+                    ty.user_facing()
+                ))
+            }),
+    }
+}
+
+fn clone_action_for_type(
+    ty: &ResolvedTy,
+    clone: CloneKind,
+    aggregate_ids: &BTreeMap<ResolvedTy, PhysicalAggregateId>,
+) -> Result<Option<CloneAction>, PhysicalError> {
+    let action = match clone {
+        CloneKind::None => return Ok(None),
+        CloneKind::Bits => CloneAction::Bitwise,
+        CloneKind::Retain if ty == &ResolvedTy::String => CloneAction::StringRetain,
+        CloneKind::Retain if ty == &ResolvedTy::Bytes => CloneAction::BytesRetain,
+        CloneKind::FieldWise => {
+            CloneAction::Aggregate(*aggregate_ids.get(ty).ok_or_else(|| {
+                PhysicalError::new(format!(
+                    "field-wise aggregate `{}` has no demanded physical descriptor",
+                    ty.user_facing()
+                ))
+            })?)
+        }
+        unsupported => {
+            return Err(PhysicalError::new(format!(
+                "physical clone action for `{}` and {unsupported:?} is not implemented",
+                ty.user_facing()
+            )));
+        }
+    };
+    Ok(Some(action))
+}
+
+fn destroy_action_for_type(
+    ty: &ResolvedTy,
+    aggregate_ids: &BTreeMap<ResolvedTy, PhysicalAggregateId>,
+) -> Option<DestroyAction> {
+    match ty {
+        ResolvedTy::String => Some(DestroyAction::StringRelease),
+        ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
+        _ => aggregate_ids.get(ty).copied().map(DestroyAction::Aggregate),
+    }
+}
+
 /// Collect the concrete semantic types that the physical module must realize.
 ///
 /// Generic templates and unrelated checker fact rows are deliberately absent:
 /// the inventory follows only callable headers and storage-producing types in
 /// the verified concrete SIR module.
 #[must_use]
-pub fn physical_type_inventory(module: &SemModule) -> BTreeSet<ResolvedTy> {
+pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
     let mut types = BTreeSet::new();
     for callable in &module.callables {
         types.extend(
@@ -496,7 +696,44 @@ pub fn physical_type_inventory(module: &SemModule) -> BTreeSet<ResolvedTy> {
             }
         }
     }
-    types
+    let mut inventory = PhysicalTypeInventory {
+        types,
+        aggregates: BTreeMap::new(),
+    };
+    let demanded = inventory.types.iter().cloned().collect::<Vec<_>>();
+    for ty in demanded {
+        collect_inventory_aggregate(module, &mut inventory, &ty);
+    }
+    inventory
+}
+
+fn collect_inventory_aggregate(
+    module: &SemModule,
+    inventory: &mut PhysicalTypeInventory,
+    ty: &ResolvedTy,
+) {
+    if !inventory.types.insert(ty.clone()) && inventory.aggregates.contains_key(ty) {
+        return;
+    }
+    let fields = match ty {
+        ResolvedTy::Tuple(fields) if !fields.is_empty() => Some(fields.clone()),
+        _ => module
+            .aggregate_shape_for_type(ty)
+            .map(|shape| shape.fields.iter().map(|field| field.ty.clone()).collect()),
+    };
+    let Some(fields) = fields else {
+        return;
+    };
+    inventory.aggregates.insert(
+        ty.clone(),
+        PhysicalAggregateDescriptor {
+            ty: ty.clone(),
+            fields: fields.clone(),
+        },
+    );
+    for field in fields {
+        collect_inventory_aggregate(module, inventory, &field);
+    }
 }
 
 fn required_layout<'a>(
@@ -516,6 +753,7 @@ struct FunctionLowerer<'a> {
     module: &'a SemModule,
     target: &'a PhysicalTarget,
     function: &'a SemFunction,
+    aggregate_ids: &'a BTreeMap<ResolvedTy, PhysicalAggregateId>,
     values: BTreeMap<ValueId, StorageId>,
     places: BTreeMap<hew_sir::PlaceId, StorageId>,
     storage: Vec<PhysicalStorage>,
@@ -525,11 +763,13 @@ fn lower_function(
     module: &SemModule,
     target: &PhysicalTarget,
     function: &SemFunction,
+    aggregate_ids: &BTreeMap<ResolvedTy, PhysicalAggregateId>,
 ) -> Result<PhysicalFunction, PhysicalError> {
     let mut lowerer = FunctionLowerer {
         module,
         target,
         function,
+        aggregate_ids,
         values: BTreeMap::new(),
         places: BTreeMap::new(),
         storage: Vec::new(),
@@ -649,6 +889,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::StringToBytes => PhysicalRuntimeAction::StringToBytesOwned,
         RuntimeCallFamily::StringToUppercase => PhysicalRuntimeAction::StringToUppercase,
         RuntimeCallFamily::U8ToString => PhysicalRuntimeAction::U8ToString,
+        RuntimeCallFamily::PrintlnI64 => PhysicalRuntimeAction::PrintlnI64,
         RuntimeCallFamily::PrintlnString => PhysicalRuntimeAction::PrintlnString,
         RuntimeCallFamily::BytesLen => PhysicalRuntimeAction::BytesLen,
         RuntimeCallFamily::BytesIndex => PhysicalRuntimeAction::BytesIndex,
@@ -811,6 +1052,30 @@ impl FunctionLowerer<'_> {
                 tuple: self.value(tuple.value)?,
                 index: *index,
             }),
+            SemOpKind::AggregateMake { fields, .. } => {
+                let dest = self.one_result(operation)?;
+                one(PhysicalOp::AggregateMake {
+                    dest,
+                    fields: fields
+                        .iter()
+                        .map(|field| self.value(field.value))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    glue: self.aggregate_id(&self.storage[dest.0 as usize].ty)?,
+                })
+            }
+            SemOpKind::AggregateProjectCopy {
+                aggregate, field, ..
+            } => {
+                let aggregate = self.value(aggregate.value)?;
+                let dest = self.one_result(operation)?;
+                one(PhysicalOp::AggregateProjectCopy {
+                    dest,
+                    aggregate,
+                    field: *field,
+                    glue: self.aggregate_id(&self.storage[aggregate.0 as usize].ty)?,
+                    action: self.clone_action(&self.storage[dest.0 as usize].ty)?,
+                })
+            }
             SemOpKind::CopyValue { source } => {
                 let dest = self.one_result(operation)?;
                 let ty = &operation.results[0].ty;
@@ -825,7 +1090,7 @@ impl FunctionLowerer<'_> {
                 let source = self.value(value.value)?;
                 one(PhysicalOp::Destroy {
                     source,
-                    action: Self::destroy_action(&self.storage[source.0 as usize].ty)?,
+                    action: self.destroy_action(&self.storage[source.0 as usize].ty)?,
                 })
             }
             SemOpKind::Move { source } | SemOpKind::Fork { source } => one(PhysicalOp::Transfer {
@@ -874,7 +1139,7 @@ impl FunctionLowerer<'_> {
                 one(PhysicalOp::Assign {
                     dest,
                     source: self.value(value.value)?,
-                    destroy_old: Self::destroy_action(&self.storage[dest.0 as usize].ty)?,
+                    destroy_old: self.destroy_action(&self.storage[dest.0 as usize].ty)?,
                 })
             }
             SemOpKind::EndLifetime { place } => {
@@ -882,10 +1147,22 @@ impl FunctionLowerer<'_> {
                 let storage = self.place(*place)?;
                 one(PhysicalOp::StorageDead {
                     storage,
-                    destroy: Self::destroy_action(&self.storage[storage.0 as usize].ty)?,
+                    destroy: self.destroy_action(&self.storage[storage.0 as usize].ty)?,
                 })
             }
-            SemOpKind::StrEq { .. } | SemOpKind::BytesEq { .. } | SemOpKind::Destructure { .. } => {
+            SemOpKind::Destructure { aggregate, .. } => {
+                let aggregate = self.value(aggregate.value)?;
+                one(PhysicalOp::AggregateDestructure {
+                    aggregate,
+                    fields: operation
+                        .results
+                        .iter()
+                        .map(|result| self.value(result.id))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    glue: self.aggregate_id(&self.storage[aggregate.0 as usize].ty)?,
+                })
+            }
+            SemOpKind::StrEq { .. } | SemOpKind::BytesEq { .. } => {
                 Err(PhysicalError::new(format!(
                     "SIR op {} is not yet admitted by physical MIR",
                     operation.id.0
@@ -1080,27 +1357,30 @@ impl FunctionLowerer<'_> {
                     ty.user_facing()
                 ))
             })?;
-        match (ty, facts.clone) {
-            (_, CloneKind::Bits) => Ok(CloneAction::Bitwise),
-            (ResolvedTy::String, CloneKind::Retain) => Ok(CloneAction::StringRetain),
-            (ResolvedTy::Bytes, CloneKind::Retain) => Ok(CloneAction::BytesRetain),
-            _ => Err(PhysicalError::new(format!(
-                "physical copy action for `{}` and {:?} is not yet implemented",
-                ty.user_facing(),
-                facts.clone
-            ))),
-        }
+        clone_action_for_type(ty, facts.clone, self.aggregate_ids)?.ok_or_else(|| {
+            PhysicalError::new(format!(
+                "physical copy of `{}` has no admitted clone action",
+                ty.user_facing()
+            ))
+        })
     }
 
-    fn destroy_action(ty: &ResolvedTy) -> Result<DestroyAction, PhysicalError> {
-        match ty {
-            ResolvedTy::String => Ok(DestroyAction::StringRelease),
-            ResolvedTy::Bytes => Ok(DestroyAction::BytesRelease),
-            _ => Err(PhysicalError::new(format!(
-                "physical destroy action for `{}` is not yet implemented",
+    fn destroy_action(&self, ty: &ResolvedTy) -> Result<DestroyAction, PhysicalError> {
+        destroy_action_for_type(ty, self.aggregate_ids).ok_or_else(|| {
+            PhysicalError::new(format!(
+                "physical destroy action for `{}` is not implemented",
                 ty.user_facing()
-            ))),
-        }
+            ))
+        })
+    }
+
+    fn aggregate_id(&self, ty: &ResolvedTy) -> Result<PhysicalAggregateId, PhysicalError> {
+        self.aggregate_ids.get(ty).copied().ok_or_else(|| {
+            PhysicalError::new(format!(
+                "owned aggregate `{}` has no physical glue identity",
+                ty.user_facing()
+            ))
+        })
     }
 }
 
@@ -1109,6 +1389,51 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
         return Err(PhysicalError::new(
             "physical module requires a target triple and data layout",
         ));
+    }
+    for (index, glue) in module.aggregate_glue.iter().enumerate() {
+        if usize::try_from(glue.id.0).ok() != Some(index) {
+            return Err(PhysicalError::new(format!(
+                "physical aggregate glue {} is not at its canonical table index {index}",
+                glue.id.0
+            )));
+        }
+        let layout = required_layout(&module.target, &glue.ty)?;
+        let PhysicalRepr::Struct(layout_fields) = &layout.repr else {
+            return Err(PhysicalError::new(format!(
+                "physical aggregate glue {} has a non-aggregate layout",
+                glue.id.0
+            )));
+        };
+        if layout_fields.len() != glue.fields.len() {
+            return Err(PhysicalError::new(format!(
+                "physical aggregate glue {} has {} recipes for {} layout fields",
+                glue.id.0,
+                glue.fields.len(),
+                layout_fields.len()
+            )));
+        }
+        for (field_index, (field, layout_field)) in
+            glue.fields.iter().zip(layout_fields).enumerate()
+        {
+            if field.own == OwnKind::Guaranteed {
+                return Err(PhysicalError::new(format!(
+                    "physical aggregate glue {} field {field_index} carries a borrow-only obligation",
+                    glue.id.0
+                )));
+            }
+            if module.target.layout(&field.ty) != Some(layout_field) {
+                return Err(PhysicalError::new(format!(
+                    "physical aggregate glue {} field {field_index} layout disagrees with target authority",
+                    glue.id.0
+                )));
+            }
+            if let Some(action) = field.clone {
+                verify_clone_action(module, &field.ty, field.own, action)?;
+            }
+            if let Some(action) = field.destroy {
+                verify_destroy_action(module, &field.ty, field.own, action)?;
+            }
+        }
     }
     for (index, callable) in module.callables.iter().enumerate() {
         if usize::try_from(callable.id.0).ok() != Some(index) {
@@ -1192,7 +1517,7 @@ fn verify_physical_function(
     }
     for block in &function.blocks {
         for operation in &block.ops {
-            verify_operation_storage(function, operation)?;
+            verify_operation_storage(module, function, operation)?;
         }
         verify_terminator(module, function, &block_ids, &block.terminator)?;
     }
@@ -1223,7 +1548,238 @@ fn require_same_storage_type(
     }
 }
 
+fn aggregate_glue(
+    module: &PhysicalModule,
+    id: PhysicalAggregateId,
+) -> Result<&PhysicalAggregateGlue, PhysicalError> {
+    module
+        .aggregate_glue
+        .get(id.0 as usize)
+        .filter(|glue| glue.id == id)
+        .ok_or_else(|| PhysicalError::new(format!("unknown physical aggregate glue {}", id.0)))
+}
+
+fn verify_clone_action(
+    module: &PhysicalModule,
+    ty: &ResolvedTy,
+    own: OwnKind,
+    action: CloneAction,
+) -> Result<(), PhysicalError> {
+    let valid = match action {
+        CloneAction::Bitwise => own == OwnKind::None,
+        CloneAction::StringRetain => ty == &ResolvedTy::String && own == OwnKind::Owned,
+        CloneAction::BytesRetain => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
+        CloneAction::Aggregate(id) => {
+            let glue = aggregate_glue(module, id)?;
+            glue.ty == *ty
+                && own == OwnKind::Owned
+                && glue.fields.iter().all(|field| field.clone.is_some())
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(PhysicalError::new(format!(
+            "physical clone action {action:?} disagrees with `{}` storage",
+            ty.user_facing()
+        )))
+    }
+}
+
+fn verify_destroy_action(
+    module: &PhysicalModule,
+    ty: &ResolvedTy,
+    own: OwnKind,
+    action: DestroyAction,
+) -> Result<(), PhysicalError> {
+    let valid = match action {
+        DestroyAction::StringRelease => ty == &ResolvedTy::String && own == OwnKind::Owned,
+        DestroyAction::BytesRelease => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
+        DestroyAction::Aggregate(id) => {
+            let glue = aggregate_glue(module, id)?;
+            glue.ty == *ty
+                && own == OwnKind::Owned
+                && glue
+                    .fields
+                    .iter()
+                    .all(|field| field.own != OwnKind::Owned || field.destroy.is_some())
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(PhysicalError::new(format!(
+            "physical destroy action {action:?} disagrees with `{}` storage",
+            ty.user_facing()
+        )))
+    }
+}
+
+fn verify_aggregate_make(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    dest: StorageId,
+    fields: &[StorageId],
+    glue: PhysicalAggregateId,
+) -> Result<(), PhysicalError> {
+    let destination = storage(function, dest)?;
+    let recipe = aggregate_glue(module, glue)?;
+    if destination.ty != recipe.ty || destination.own != OwnKind::Owned {
+        return Err(PhysicalError::new(
+            "physical aggregate construction destination disagrees with its glue recipe",
+        ));
+    }
+    if fields.len() != recipe.fields.len() {
+        return Err(PhysicalError::new(format!(
+            "physical aggregate construction has {} fields for {} recipes",
+            fields.len(),
+            recipe.fields.len()
+        )));
+    }
+    for (index, (field, expected)) in fields.iter().zip(&recipe.fields).enumerate() {
+        let field = storage(function, *field)?;
+        if field.ty != expected.ty || field.own != expected.own {
+            return Err(PhysicalError::new(format!(
+                "physical aggregate construction field {index} disagrees with its glue recipe"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_aggregate_project_copy(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    dest: StorageId,
+    aggregate: StorageId,
+    field: u32,
+    glue: PhysicalAggregateId,
+    action: CloneAction,
+) -> Result<(), PhysicalError> {
+    let aggregate = storage(function, aggregate)?;
+    let destination = storage(function, dest)?;
+    let recipe = aggregate_glue(module, glue)?;
+    if aggregate.ty != recipe.ty || !matches!(aggregate.own, OwnKind::Owned | OwnKind::Guaranteed) {
+        return Err(PhysicalError::new(
+            "physical aggregate projection source disagrees with its glue recipe",
+        ));
+    }
+    let expected = usize::try_from(field)
+        .ok()
+        .and_then(|index| recipe.fields.get(index))
+        .ok_or_else(|| {
+            PhysicalError::new(format!(
+                "physical aggregate projection index {field} is out of bounds"
+            ))
+        })?;
+    if destination.ty != expected.ty
+        || destination.own != expected.own
+        || expected.clone != Some(action)
+    {
+        return Err(PhysicalError::new(
+            "physical aggregate projection disagrees with its field copy recipe",
+        ));
+    }
+    verify_clone_action(module, &destination.ty, destination.own, action)
+}
+
+fn verify_aggregate_destructure(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    aggregate: StorageId,
+    fields: &[StorageId],
+    glue: PhysicalAggregateId,
+) -> Result<(), PhysicalError> {
+    let aggregate = storage(function, aggregate)?;
+    let recipe = aggregate_glue(module, glue)?;
+    if aggregate.ty != recipe.ty || aggregate.own != OwnKind::Owned {
+        return Err(PhysicalError::new(
+            "physical aggregate destructure source disagrees with its glue recipe",
+        ));
+    }
+    if fields.len() != recipe.fields.len() {
+        return Err(PhysicalError::new(format!(
+            "physical aggregate destructure has {} results for {} fields",
+            fields.len(),
+            recipe.fields.len()
+        )));
+    }
+    for (index, (field, expected)) in fields.iter().zip(&recipe.fields).enumerate() {
+        let field = storage(function, *field)?;
+        if field.ty != expected.ty || field.own != expected.own {
+            return Err(PhysicalError::new(format!(
+                "physical aggregate destructure field {index} disagrees with its glue recipe"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_tuple_make(
+    function: &PhysicalFunction,
+    dest: StorageId,
+    elements: &[StorageId],
+) -> Result<(), PhysicalError> {
+    let destination = storage(function, dest)?;
+    let ResolvedTy::Tuple(field_types) = &destination.ty else {
+        return Err(PhysicalError::new(
+            "physical tuple construction has a non-tuple destination",
+        ));
+    };
+    if destination.own != OwnKind::None {
+        return Err(PhysicalError::new(
+            "physical tuple construction is limited to no-drop values",
+        ));
+    }
+    if field_types.len() != elements.len() {
+        return Err(PhysicalError::new(format!(
+            "physical tuple construction has {} elements for {} fields",
+            elements.len(),
+            field_types.len()
+        )));
+    }
+    for (index, (element, expected)) in elements.iter().zip(field_types).enumerate() {
+        let element = storage(function, *element)?;
+        if element.own != OwnKind::None || &element.ty != expected {
+            return Err(PhysicalError::new(format!(
+                "physical tuple element {index} disagrees with its no-drop field type"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_tuple_get(
+    function: &PhysicalFunction,
+    dest: StorageId,
+    tuple: StorageId,
+    index: u32,
+) -> Result<(), PhysicalError> {
+    let destination = storage(function, dest)?;
+    let tuple = storage(function, tuple)?;
+    let ResolvedTy::Tuple(field_types) = &tuple.ty else {
+        return Err(PhysicalError::new(
+            "physical tuple projection reads a non-tuple value",
+        ));
+    };
+    let field = usize::try_from(index)
+        .ok()
+        .and_then(|index| field_types.get(index))
+        .ok_or_else(|| {
+            PhysicalError::new(format!(
+                "physical tuple projection index {index} is out of bounds"
+            ))
+        })?;
+    if tuple.own != OwnKind::None || destination.own != OwnKind::None || &destination.ty != field {
+        return Err(PhysicalError::new(
+            "physical tuple projection disagrees with its no-drop field type",
+        ));
+    }
+    Ok(())
+}
+
 fn verify_operation_storage(
+    module: &PhysicalModule,
     function: &PhysicalFunction,
     operation: &PhysicalOp,
 ) -> Result<(), PhysicalError> {
@@ -1233,77 +1789,66 @@ fn verify_operation_storage(
         }
         PhysicalOp::Unary { dest, source, .. }
         | PhysicalOp::Transfer { dest, source }
-        | PhysicalOp::Borrow { dest, source }
-        | PhysicalOp::Clone { dest, source, .. }
-        | PhysicalOp::Assign { dest, source, .. } => {
+        | PhysicalOp::Borrow { dest, source } => {
             require_same_storage_type(function, *dest, *source, "physical operation")?;
         }
         PhysicalOp::Cast { dest, source, .. } => {
             storage(function, *dest)?;
             storage(function, *source)?;
         }
-        PhysicalOp::TupleMake { dest, elements } => {
-            let destination = storage(function, *dest)?;
-            let ResolvedTy::Tuple(field_types) = &destination.ty else {
-                return Err(PhysicalError::new(
-                    "physical tuple construction has a non-tuple destination",
-                ));
-            };
-            if destination.own != OwnKind::None {
-                return Err(PhysicalError::new(
-                    "physical tuple construction is limited to no-drop values",
-                ));
-            }
-            if field_types.len() != elements.len() {
-                return Err(PhysicalError::new(format!(
-                    "physical tuple construction has {} elements for {} fields",
-                    elements.len(),
-                    field_types.len()
-                )));
-            }
-            for (index, (element, expected)) in elements.iter().zip(field_types).enumerate() {
-                let element = storage(function, *element)?;
-                if element.own != OwnKind::None || &element.ty != expected {
-                    return Err(PhysicalError::new(format!(
-                        "physical tuple element {index} disagrees with its no-drop field type"
-                    )));
-                }
-            }
-        }
+        PhysicalOp::TupleMake { dest, elements } => verify_tuple_make(function, *dest, elements)?,
         PhysicalOp::TupleGet { dest, tuple, index } => {
-            let destination = storage(function, *dest)?;
-            let tuple = storage(function, *tuple)?;
-            let ResolvedTy::Tuple(field_types) = &tuple.ty else {
-                return Err(PhysicalError::new(
-                    "physical tuple projection reads a non-tuple value",
-                ));
-            };
-            let field = usize::try_from(*index)
-                .ok()
-                .and_then(|index| field_types.get(index))
-                .ok_or_else(|| {
-                    PhysicalError::new(format!(
-                        "physical tuple projection index {index} is out of bounds"
-                    ))
-                })?;
-            if tuple.own != OwnKind::None
-                || destination.own != OwnKind::None
-                || &destination.ty != field
-            {
-                return Err(PhysicalError::new(
-                    "physical tuple projection disagrees with its no-drop field type",
-                ));
-            }
+            verify_tuple_get(function, *dest, *tuple, *index)?;
         }
+        PhysicalOp::AggregateMake { dest, fields, glue } => {
+            verify_aggregate_make(module, function, *dest, fields, *glue)?;
+        }
+        PhysicalOp::AggregateProjectCopy {
+            dest,
+            aggregate,
+            field,
+            glue,
+            action,
+        } => verify_aggregate_project_copy(
+            module, function, *dest, *aggregate, *field, *glue, *action,
+        )?,
+        PhysicalOp::AggregateDestructure {
+            aggregate,
+            fields,
+            glue,
+        } => verify_aggregate_destructure(module, function, *aggregate, fields, *glue)?,
         PhysicalOp::Binary { dest, lhs, rhs, .. } => {
             storage(function, *dest)?;
             require_same_storage_type(function, *lhs, *rhs, "physical binary operation")?;
         }
-        PhysicalOp::Destroy { source, .. } | PhysicalOp::EndBorrow { source } => {
+        PhysicalOp::Destroy { source, action } => {
+            let source = storage(function, *source)?;
+            verify_destroy_action(module, &source.ty, source.own, *action)?;
+        }
+        PhysicalOp::EndBorrow { source } => {
             storage(function, *source)?;
         }
-        PhysicalOp::StorageDead { storage: id, .. } => {
-            storage(function, *id)?;
+        PhysicalOp::Clone {
+            dest,
+            source,
+            action,
+        } => {
+            require_same_storage_type(function, *dest, *source, "physical clone")?;
+            let destination = storage(function, *dest)?;
+            verify_clone_action(module, &destination.ty, destination.own, *action)?;
+        }
+        PhysicalOp::Assign {
+            dest, destroy_old, ..
+        } => {
+            let destination = storage(function, *dest)?;
+            verify_destroy_action(module, &destination.ty, destination.own, *destroy_old)?;
+        }
+        PhysicalOp::StorageDead {
+            storage: id,
+            destroy,
+        } => {
+            let source = storage(function, *id)?;
+            verify_destroy_action(module, &source.ty, source.own, *destroy)?;
         }
     }
     Ok(())
@@ -1459,6 +2004,30 @@ fn apply_operation(
         PhysicalOp::TupleGet { dest, tuple, .. } => {
             initialized(state, *tuple, block, "tuple projection")?;
             define(function, state, *dest, block, "tuple projection")?;
+        }
+        PhysicalOp::AggregateMake { dest, fields, .. } => {
+            for field in fields {
+                initialized(state, *field, block, "aggregate construction")?;
+            }
+            define(function, state, *dest, block, "aggregate construction")?;
+            for field in fields {
+                consume_if_owned(function, state, *field)?;
+            }
+        }
+        PhysicalOp::AggregateProjectCopy {
+            dest, aggregate, ..
+        } => {
+            initialized(state, *aggregate, block, "aggregate projection")?;
+            define(function, state, *dest, block, "aggregate projection")?;
+        }
+        PhysicalOp::AggregateDestructure {
+            aggregate, fields, ..
+        } => {
+            initialized(state, *aggregate, block, "aggregate destructure")?;
+            for field in fields {
+                define(function, state, *field, block, "aggregate destructure")?;
+            }
+            consume_if_owned(function, state, *aggregate)?;
         }
         PhysicalOp::Binary { dest, lhs, rhs, .. } => {
             initialized(state, *lhs, block, "binary operation")?;
@@ -2063,6 +2632,41 @@ mod tests {
         target
     }
 
+    fn target_for_inventory(module: &SemModule) -> PhysicalTarget {
+        let inventory = physical_type_inventory(module);
+        let mut target = target();
+        let mut pending = inventory.aggregates().collect::<Vec<_>>();
+        while !pending.is_empty() {
+            let previous = pending.len();
+            pending.retain(|aggregate| {
+                let Some(fields) = aggregate
+                    .fields
+                    .iter()
+                    .map(|field| target.layout(field).cloned())
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return true;
+                };
+                let align = fields.iter().map(|field| field.align).max().unwrap_or(1);
+                let size = fields.iter().map(|field| field.size).sum();
+                target.insert_layout(
+                    aggregate.ty.clone(),
+                    PhysicalLayout {
+                        size,
+                        align,
+                        repr: PhysicalRepr::Struct(fields),
+                    },
+                );
+                false
+            });
+            assert!(
+                pending.len() < previous,
+                "test aggregate layouts must be acyclic"
+            );
+        }
+        target
+    }
+
     fn lower_source(source: &str) -> SemModule {
         let parsed = hew_parser::parse(source);
         assert!(
@@ -2163,6 +2767,7 @@ mod tests {
             entry_exit_plan: None,
             entry_callable: Some(CallableId(0)),
             functions: vec![function],
+            aggregate_shapes: vec![],
             type_facts,
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),
@@ -2382,6 +2987,94 @@ mod tests {
     }
 
     #[test]
+    fn lowers_owned_aggregate_operations_with_exact_recursive_glue() {
+        let module = lower_source(
+            r#"
+            type Packet { label: string, payload: bytes }
+
+            fn main() {
+                let pair = ("tuple", b"T");
+                let pair_copy = pair;
+                let tuple_label = pair_copy.0;
+                let packet = Packet { payload: b"P", label: "record" };
+                let packet_copy = packet;
+                let record_label = packet_copy.label;
+            }
+            "#,
+        );
+        let verified = lower_physical_module(&module, target_for_inventory(&module))
+            .expect("owned aggregate physical lowering");
+        let physical = verified.module();
+        assert_eq!(physical.aggregate_glue.len(), 2);
+        assert!(physical.aggregate_glue.iter().all(|glue| {
+            matches!(glue.fields[0].clone, Some(CloneAction::StringRetain))
+                && matches!(glue.fields[1].clone, Some(CloneAction::BytesRetain))
+                && matches!(glue.fields[0].destroy, Some(DestroyAction::StringRelease))
+                && matches!(glue.fields[1].destroy, Some(DestroyAction::BytesRelease))
+        }));
+        let operations = physical
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.ops)
+            .collect::<Vec<_>>();
+        assert!(operations
+            .iter()
+            .any(|operation| matches!(operation, PhysicalOp::AggregateMake { .. })));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            PhysicalOp::Clone {
+                action: CloneAction::Aggregate(_),
+                ..
+            }
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            PhysicalOp::AggregateProjectCopy {
+                action: CloneAction::StringRetain,
+                ..
+            }
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            PhysicalOp::Destroy {
+                action: DestroyAction::Aggregate(_),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn verifier_refuses_aggregate_projection_with_wrong_copy_action() {
+        let module = lower_source(
+            r#"
+            type Packet { label: string, payload: bytes }
+            fn main() {
+                let packet = Packet { label: "record", payload: b"P" };
+                let label = packet.label;
+            }
+            "#,
+        );
+        let mut physical = lower_physical_module(&module, target_for_inventory(&module))
+            .expect("valid aggregate physical lowering")
+            .into_unverified();
+        let action = physical
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .flat_map(|block| &mut block.ops)
+            .find_map(|operation| match operation {
+                PhysicalOp::AggregateProjectCopy { action, .. } => Some(action),
+                _ => None,
+            })
+            .expect("aggregate field projection");
+        *action = CloneAction::BytesRetain;
+        let error = verify_physical_module(&physical)
+            .expect_err("aggregate projection must use its exact field recipe");
+        assert!(error.message.contains("field copy recipe"));
+    }
+
+    #[test]
     fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
         let module = lower_source(
             r"
@@ -2468,6 +3161,24 @@ mod tests {
                 PhysicalRuntimeAction::PrintlnString,
             ])
         );
+    }
+
+    #[test]
+    fn scalar_print_lowers_to_the_exact_physical_runtime_action() {
+        let module = lower_source("fn main() { println(1 + 2); }");
+        let verified = lower_physical_module(&module, target()).expect("physical scalar print");
+        assert!(verified
+            .module()
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .any(|block| matches!(
+                block.terminator,
+                PhysicalTerminator::RuntimeCall {
+                    action: PhysicalRuntimeAction::PrintlnI64,
+                    ..
+                }
+            )));
     }
 
     #[test]
@@ -2821,6 +3532,7 @@ mod tests {
         };
         let physical = PhysicalModule {
             target: physical_target,
+            aggregate_glue: vec![],
             callables: vec![callable],
             functions: vec![function],
             entry_callable: None,

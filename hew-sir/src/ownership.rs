@@ -4,13 +4,105 @@
 //! All ownership is explicit in the op stream. An operand's mode **is the op it
 //! feeds**; there is no side tag on a read.
 
-use crate::model::SemParamPassing;
-use crate::model::ValueId;
+use crate::model::{AggregateShapeRef, SemAggregateShape, SemParamPassing, ValueId};
 use hew_parser::ast::Span;
-use hew_types::{ResolvedTy, TypeInstanceKey, ValueClass};
+use hew_types::{CloneKind, ResolvedTy, TypeInstanceKey, ValueClass};
 
 /// The §6.2 fact table a module carries, as the ownership rules read it.
 pub type TypeFactTable = std::collections::BTreeMap<TypeInstanceKey, hew_types::TypeFacts>;
+
+/// One ordered aggregate field's ownership recipe.
+///
+/// This is derived solely from the exact concrete field type and the
+/// checker-published fact row. Physical lowering may choose storage and ABI,
+/// but it must consume this recipe instead of classifying a field again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateFieldRecipe {
+    pub ty: ResolvedTy,
+    pub own: OwnKind,
+    pub clone: CloneKind,
+}
+
+/// Resolve one operation's exact ordered aggregate field types.
+///
+/// Tuple shapes are structural. Named records must carry a module-local shape
+/// ID whose descriptor agrees with the operation's concrete aggregate type.
+/// No consumer may reconstruct a record descriptor from its display name.
+///
+/// # Errors
+///
+/// Refuses an empty/non-tuple structural shape, a missing/non-canonical record
+/// ID, or a record descriptor whose concrete type differs from the operation.
+pub fn aggregate_field_types(
+    shape: AggregateShapeRef,
+    aggregate_ty: &ResolvedTy,
+    shapes: &[SemAggregateShape],
+) -> Result<Vec<ResolvedTy>, String> {
+    match shape {
+        AggregateShapeRef::Tuple => match aggregate_ty {
+            ResolvedTy::Tuple(fields) if !fields.is_empty() => Ok(fields.clone()),
+            ResolvedTy::Tuple(_) => Err("empty tuples have no owned aggregate shape".to_string()),
+            _ => Err(format!(
+                "tuple aggregate operation has non-tuple type `{}`",
+                aggregate_ty.user_facing()
+            )),
+        },
+        AggregateShapeRef::Record(id) => {
+            let descriptor = shapes
+                .get(usize::try_from(id.0).map_err(|_| {
+                    format!("aggregate shape {} exceeds the host index range", id.0)
+                })?)
+                .filter(|descriptor| descriptor.id == id)
+                .ok_or_else(|| format!("aggregate shape {} is missing or non-canonical", id.0))?;
+            if &descriptor.aggregate_ty != aggregate_ty {
+                return Err(format!(
+                    "aggregate shape {} describes `{}`, not `{}`",
+                    id.0,
+                    descriptor.aggregate_ty.user_facing(),
+                    aggregate_ty.user_facing()
+                ));
+            }
+            Ok(descriptor
+                .fields
+                .iter()
+                .map(|field| field.ty.clone())
+                .collect())
+        }
+    }
+}
+
+/// Derive the single ordered ownership/copy recipe for one concrete aggregate.
+///
+/// Missing field facts are a hard refusal. This service is shared by the SIR
+/// verifier and physical lowering, so aggregate glue has one semantic input.
+///
+/// # Errors
+///
+/// Returns [`aggregate_field_types`]'s shape refusal or identifies the exact
+/// concrete field type whose checker-published fact row is absent.
+pub fn aggregate_field_recipes(
+    shape: AggregateShapeRef,
+    aggregate_ty: &ResolvedTy,
+    shapes: &[SemAggregateShape],
+    facts: &TypeFactTable,
+) -> Result<Vec<AggregateFieldRecipe>, String> {
+    aggregate_field_types(shape, aggregate_ty, shapes)?
+        .into_iter()
+        .map(|ty| {
+            let row = facts.get(&TypeInstanceKey(ty.clone())).ok_or_else(|| {
+                format!(
+                    "aggregate field `{}` has no concrete type-fact row",
+                    ty.user_facing()
+                )
+            })?;
+            Ok(AggregateFieldRecipe {
+                ty,
+                own: OwnKind::of_class(row.class),
+                clone: row.clone,
+            })
+        })
+        .collect()
+}
 
 /// The ownership obligation carried by one SSA value (§1.2).
 ///

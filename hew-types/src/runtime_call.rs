@@ -274,6 +274,11 @@ pub struct RuntimeSemanticContract {
     pub failures: &'static [RuntimeLogicalFailure],
 }
 
+const SIR_I64_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+    ty: RuntimeValueKind::I64,
+    effect: RuntimeArgumentEffect::Copy,
+}];
+
 impl ConsumeVerdict {
     /// `true` iff the verdict directs the callee to own/drop the argument —
     /// the projection back onto the historical `bool` (both consume flavours
@@ -787,6 +792,9 @@ pub enum RuntimeCallFamily {
     StringToBytes,
     StringToUppercase,
     U8ToString,
+    /// Compiler catalogue `println_i64` intercept. Physical lowering expands
+    /// this semantic unary operation to the audited `hew_print_value` ABI.
+    PrintlnI64,
     PrintlnString,
 
     // --- Supervisor --------------------------------------------------------
@@ -1186,6 +1194,7 @@ impl RuntimeCallFamily {
     #[must_use]
     pub fn from_catalog_endpoint(endpoint: &str) -> Option<Self> {
         match endpoint {
+            "println_i64" => Some(Self::PrintlnI64),
             "println_str" => Some(Self::PrintlnString),
             "to_string_u8" => Some(Self::U8ToString),
             _ => None,
@@ -1426,6 +1435,7 @@ impl RuntimeCallFamily {
             Self::StringToBytes => "hew_string_to_bytes",
             Self::StringToUppercase => "hew_string_to_uppercase",
             Self::U8ToString => "hew_u8_to_string",
+            Self::PrintlnI64 => "hew_print_value",
             Self::PrintlnString => "hew_println_str",
             // Supervisor
             Self::SupervisorDirectId => "hew_supervisor_direct_id",
@@ -1758,6 +1768,7 @@ impl RuntimeCallFamily {
             "hew_string_to_bytes" => Self::StringToBytes,
             "hew_string_to_uppercase" => Self::StringToUppercase,
             "hew_u8_to_string" => Self::U8ToString,
+            "hew_print_value" => Self::PrintlnI64,
             "hew_println_str" => Self::PrintlnString,
             // Supervisor
             "hew_supervisor_direct_id" => Self::SupervisorDirectId,
@@ -2341,6 +2352,11 @@ impl RuntimeCallFamily {
                 result: FreshOwned(String),
                 failures: NO_FAILURES,
             },
+            Self::PrintlnI64 => RuntimeSemanticContract {
+                arguments: SIR_I64_COPY,
+                result: Unit,
+                failures: NO_FAILURES,
+            },
             Self::PrintlnString => RuntimeSemanticContract {
                 arguments: STRING_BORROW,
                 result: Unit,
@@ -2689,6 +2705,7 @@ impl RuntimeCallFamily {
             | F::StringToBytes
             | F::StringToUppercase
             | F::U8ToString
+            | F::PrintlnI64
             | F::PrintlnString
             | F::SupervisorDirectId
             | F::SupervisorChildGet

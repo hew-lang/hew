@@ -60,14 +60,16 @@ pub fn canonicalize_module_constant_cfg(
 
     let mut candidate = module.clone();
     let facts = candidate.type_facts.clone();
+    let aggregate_shapes = candidate.aggregate_shapes.clone();
     // The callables are not touched by a CFG rewrite, so one index over them
     // serves every body. `verify_module` above already validated the table.
     let callables = candidate.callables.clone();
     let context = crate::verify::callable_context(&callables);
     let mut reports = Vec::with_capacity(candidate.functions.len());
     for function in &mut candidate.functions {
-        let report = canonicalize_verified_function(function, Some(&context), &facts)
-            .map_err(SirOptimizationError::InvalidOutput)?;
+        let report =
+            canonicalize_verified_function(function, Some(&context), &facts, &aggregate_shapes)
+                .map_err(SirOptimizationError::InvalidOutput)?;
         reports.push((function.callable, report));
     }
     let diagnostics = verify_module(&candidate);
@@ -83,6 +85,7 @@ fn canonicalize_verified_function(
     function: &mut SemFunction,
     callable_context: Option<&crate::verify::CallableContext<'_>>,
     facts: &TypeFactTable,
+    aggregate_shapes: &[crate::SemAggregateShape],
 ) -> Result<CfgCanonicalizationReport, Vec<SirDiagnostic>> {
     let before_folding = function.clone();
     let constants = direct_bool_constants(function);
@@ -128,8 +131,12 @@ fn canonicalize_verified_function(
     // public call boundary. This deliberately makes dead-block compaction a
     // separate audited transformation: later passes can follow this shape
     // without inventing a second validation convention.
-    let diagnostics =
-        crate::verify::verify_function_with_context(function, callable_context, facts);
+    let diagnostics = crate::verify::verify_function_with_context(
+        function,
+        callable_context,
+        facts,
+        aggregate_shapes,
+    );
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -144,8 +151,12 @@ fn canonicalize_verified_function(
 
     let post_fold_cfg = build_cfg_index(function);
     let (removed_blocks, block_remap) = compact_unreachable(function, post_fold_cfg.reachable());
-    let diagnostics =
-        crate::verify::verify_function_with_context(function, callable_context, facts);
+    let diagnostics = crate::verify::verify_function_with_context(
+        function,
+        callable_context,
+        facts,
+        aggregate_shapes,
+    );
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }

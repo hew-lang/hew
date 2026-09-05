@@ -9,10 +9,11 @@ use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeFactService,
 
 use crate::ownership::{Binding, BytesLiteralId, OwnKind, StringLiteralId, TypeFactTable};
 use crate::{
-    BlockArg, BlockId, CallResult, CallUnwind, CallableId, CallableInstance, CheckedFailure, Edge,
-    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, Provenance, SemAbiParam, SemBlock,
-    SemCallConv, SemCallable, SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp,
-    SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirInstanceKey, ValueDef, ValueId,
+    AggregateShapeId, AggregateShapeRef, BlockArg, BlockId, CallResult, CallUnwind, CallableId,
+    CallableInstance, CheckedFailure, Edge, FunctionSourceOrigin, GenericTemplateId, OpId, Operand,
+    Provenance, SemAbiParam, SemAggregateField, SemAggregateShape, SemBlock, SemCallConv,
+    SemCallable, SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind,
+    SemParamPassing, SemSignature, SemTerminator, SirInstanceKey, ValueDef, ValueId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,13 +294,22 @@ impl<'a> CallableTable<'a> {
         clippy::too_many_lines,
         reason = "one deterministic HIR collection pass keeps monomorphic and generic callable admission auditable together"
     )]
-    fn from_hir(module: &'a HirModule, facts: &mut TypeFactService) -> Self {
+    fn from_hir(
+        module: &'a HirModule,
+        facts: &mut TypeFactService,
+    ) -> (
+        Self,
+        Vec<SemAggregateShape>,
+        HashMap<ResolvedTy, AggregateShapeId>,
+    ) {
         let direct_symbols = hew_hir::dispatch::build_direct_call_symbol_index(&module.items);
         let mut pending = Vec::new();
         let mut ineligible = HashMap::new();
         let mut templates = HashMap::new();
         let mut generic_templates = Vec::new();
         let mut functions_by_item = HashMap::new();
+        let mut aggregate_shapes = Vec::new();
+        let mut aggregate_shapes_by_type = HashMap::new();
         for item in &module.items {
             let HirItem::Function(function) = item else {
                 continue;
@@ -356,13 +366,27 @@ impl<'a> CallableTable<'a> {
                 });
                 continue;
             }
-            let signature = match scalar_callable_signature(function, facts) {
+            let signature = match callable_signature(module, function, facts) {
                 Ok(signature) => signature,
                 Err(reason) => {
                     ineligible.insert(function.declaration.clone(), reason);
                     continue;
                 }
             };
+            let prior_shape_count = aggregate_shapes.len();
+            if let Err(reason) = require_signature_aggregate_shapes(
+                module,
+                facts,
+                &mut aggregate_shapes,
+                &mut aggregate_shapes_by_type,
+                &signature,
+            ) {
+                aggregate_shapes.truncate(prior_shape_count);
+                aggregate_shapes_by_type
+                    .retain(|_, id| usize::try_from(id.0).is_ok_and(|id| id < prior_shape_count));
+                ineligible.insert(function.declaration.clone(), reason);
+                continue;
+            }
             pending.push((
                 function,
                 function_source_origin(module, function),
@@ -413,17 +437,21 @@ impl<'a> CallableTable<'a> {
             });
         }
         generic_templates.sort_by(|left, right| left.id.cmp(&right.id));
-        Self {
-            callables,
-            generic_templates,
-            root_unit_callables,
-            entry_callable,
-            entry_exit_plan: module.entry_exit_plan.clone(),
-            monomorphic_by_declaration,
-            templates,
-            functions_by_item,
-            ineligible,
-        }
+        (
+            Self {
+                callables,
+                generic_templates,
+                root_unit_callables,
+                entry_callable,
+                entry_exit_plan: module.entry_exit_plan.clone(),
+                monomorphic_by_declaration,
+                templates,
+                functions_by_item,
+                ineligible,
+            },
+            aggregate_shapes,
+            aggregate_shapes_by_type,
+        )
     }
 
     fn callable(&self, id: CallableId) -> Option<&SemCallable> {
@@ -474,15 +502,140 @@ struct InstanceService<'a> {
     used_templates: std::collections::HashSet<GenericTemplateId>,
     pending: VecDeque<CallableId>,
     functions: Vec<SemFunction>,
+    aggregate_shapes: Vec<SemAggregateShape>,
+    aggregate_shapes_by_type: HashMap<ResolvedTy, AggregateShapeId>,
     string_literals: BTreeMap<StringLiteralId, String>,
     bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
+}
+
+/// Resolve one concrete record shape through the checker-minted declaration
+/// identity carried by its type. This is shared by callable admission and
+/// descriptor publication so a header cannot admit a nominal aggregate that
+/// body lowering would resolve by a different rule.
+fn concrete_record_fields(
+    module: &HirModule,
+    aggregate_ty: &ResolvedTy,
+) -> Result<(hew_types::NominalInstance, Vec<SemAggregateField>), String> {
+    let instance = aggregate_ty.nominal_instance().ok_or_else(|| {
+        format!(
+            "`{}` is not a checker-resolved named record",
+            aggregate_ty.user_facing()
+        )
+    })?;
+    let declaration = instance.nominal.declaration();
+    let (type_params, fields) = module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::TypeDecl(decl)
+                if decl.declaration == *declaration
+                    && !decl.is_opaque
+                    && decl.variants.is_empty() =>
+            {
+                Some((&decl.type_params, &decl.fields))
+            }
+            HirItem::Record(decl)
+                if decl.declaration == *declaration && !decl.fields.is_empty() =>
+            {
+                Some((&decl.type_params, &decl.fields))
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            format!(
+                "aggregate `{}` has no exact struct-form HIR declaration",
+                aggregate_ty.user_facing()
+            )
+        })?;
+    if type_params.len() != instance.args.len() {
+        return Err(format!(
+            "aggregate `{}` supplies {} type argument(s), declaration expects {}",
+            aggregate_ty.user_facing(),
+            instance.args.len(),
+            type_params.len()
+        ));
+    }
+    let fields = fields
+        .iter()
+        .map(|field| SemAggregateField {
+            name: field.name.clone(),
+            ty: hew_hir::substitute_type_params(&field.ty, type_params, &instance.args),
+        })
+        .collect();
+    Ok((instance, fields))
+}
+
+fn require_type_facts(facts: &mut TypeFactService, ty: &ResolvedTy) -> Result<(), String> {
+    facts
+        .require(ty)
+        .map(|_| ())
+        .map_err(|error| format!("type facts refused `{}`: {error}", ty.user_facing()))
+}
+
+fn require_aggregate_shape(
+    module: &HirModule,
+    facts: &mut TypeFactService,
+    shapes: &mut Vec<SemAggregateShape>,
+    shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
+    aggregate_ty: &ResolvedTy,
+) -> Result<AggregateShapeRef, String> {
+    require_type_facts(facts, aggregate_ty)?;
+    if let ResolvedTy::Tuple(fields) = aggregate_ty {
+        if fields.is_empty() {
+            return Err("empty tuples have no owned aggregate shape".to_string());
+        }
+        for field in fields {
+            require_type_facts(facts, field)?;
+        }
+        return Ok(AggregateShapeRef::Tuple);
+    }
+    if let Some(id) = shapes_by_type.get(aggregate_ty).copied() {
+        return Ok(AggregateShapeRef::Record(id));
+    }
+    let (instance, fields) = concrete_record_fields(module, aggregate_ty)?;
+    for field in &fields {
+        require_type_facts(facts, &field.ty)?;
+    }
+    let id = AggregateShapeId(
+        u32::try_from(shapes.len())
+            .map_err(|_| "SIR aggregate shape count exceeds u32".to_string())?,
+    );
+    shapes.push(SemAggregateShape {
+        id,
+        aggregate_ty: aggregate_ty.clone(),
+        instance,
+        fields,
+    });
+    shapes_by_type.insert(aggregate_ty.clone(), id);
+    Ok(AggregateShapeRef::Record(id))
+}
+
+fn require_signature_aggregate_shapes(
+    module: &HirModule,
+    facts: &mut TypeFactService,
+    shapes: &mut Vec<SemAggregateShape>,
+    shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
+    signature: &SemSignature,
+) -> Result<(), String> {
+    for ty in signature
+        .params
+        .iter()
+        .map(|parameter| &parameter.ty)
+        .chain(std::iter::once(&signature.return_ty))
+    {
+        if is_concrete_aggregate_type(module, ty) {
+            require_aggregate_shape(module, facts, shapes, shapes_by_type, ty)?;
+        }
+    }
+    Ok(())
 }
 
 impl<'a> InstanceService<'a> {
     fn new(module: &'a HirModule, facts: &TypeCheckOutput, demand: SirLoweringDemand) -> Self {
         let mut checked_facts =
             TypeFactService::new(facts.type_fact_context.clone(), facts.type_facts.clone());
-        let table = CallableTable::from_hir(module, &mut checked_facts);
+        let (table, aggregate_shapes, aggregate_shapes_by_type) =
+            CallableTable::from_hir(module, &mut checked_facts);
         let count = table.callables.len();
         Self {
             module,
@@ -495,6 +648,8 @@ impl<'a> InstanceService<'a> {
             used_templates: std::collections::HashSet::new(),
             pending: VecDeque::new(),
             functions: Vec::new(),
+            aggregate_shapes,
+            aggregate_shapes_by_type,
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),
         }
@@ -505,10 +660,24 @@ impl<'a> InstanceService<'a> {
     }
 
     fn require_type_facts(&mut self, ty: &ResolvedTy) -> Result<(), String> {
-        self.checked_facts
-            .require(ty)
-            .map(|_| ())
-            .map_err(|error| format!("type facts refused `{}`: {error}", ty.user_facing()))
+        require_type_facts(&mut self.checked_facts, ty)
+    }
+
+    /// Intern the exact checker-resolved shape of one concrete aggregate.
+    ///
+    /// Tuples are structural. Named records join to HIR only by the
+    /// checker-minted declaration identity carried by `NominalInstance`.
+    fn require_aggregate_shape(
+        &mut self,
+        aggregate_ty: &ResolvedTy,
+    ) -> Result<AggregateShapeRef, String> {
+        require_aggregate_shape(
+            self.module,
+            &mut self.checked_facts,
+            &mut self.aggregate_shapes,
+            &mut self.aggregate_shapes_by_type,
+            aggregate_ty,
+        )
     }
 
     fn intern_string(&mut self, value: &str) -> StringLiteralId {
@@ -803,11 +972,25 @@ impl<'a> InstanceService<'a> {
             ));
         }
         let substitution = TypeSubstitution::for_instance(template.function, &key.type_args)?;
-        let signature = scalar_callable_signature_with_substitution(
+        let signature = callable_signature_with_substitution(
+            self.module,
             template.function,
             &substitution,
             &mut self.checked_facts,
         )?;
+        let prior_shape_count = self.aggregate_shapes.len();
+        if let Err(reason) = require_signature_aggregate_shapes(
+            self.module,
+            &mut self.checked_facts,
+            &mut self.aggregate_shapes,
+            &mut self.aggregate_shapes_by_type,
+            &signature,
+        ) {
+            self.aggregate_shapes.truncate(prior_shape_count);
+            self.aggregate_shapes_by_type
+                .retain(|_, id| usize::try_from(id.0).is_ok_and(|id| id < prior_shape_count));
+            return Err(reason);
+        }
         let symbol =
             hew_hir::monomorph::function_monomorph_symbol(&template.symbol, &key.type_args);
         if let Some(existing) = self
@@ -919,6 +1102,7 @@ impl<'a> InstanceService<'a> {
             checked_facts,
             used_templates,
             mut functions,
+            aggregate_shapes,
             string_literals,
             bytes_literals,
             ..
@@ -946,6 +1130,7 @@ impl<'a> InstanceService<'a> {
             entry_exit_plan: table.entry_exit_plan,
             entry_callable: table.entry_callable,
             functions,
+            aggregate_shapes,
             type_facts,
             string_literals,
             bytes_literals,
@@ -1071,7 +1256,8 @@ fn generic_template_signature(function: &HirFn) -> Result<SemSignature, String> 
     })
 }
 
-fn scalar_callable_signature(
+fn callable_signature(
+    module: &HirModule,
     function: &HirFn,
     facts: &mut TypeFactService,
 ) -> Result<SemSignature, String> {
@@ -1081,10 +1267,11 @@ fn scalar_callable_signature(
                 .to_string(),
         );
     }
-    scalar_callable_signature_with_substitution(function, &TypeSubstitution::empty(), facts)
+    callable_signature_with_substitution(module, function, &TypeSubstitution::empty(), facts)
 }
 
-fn scalar_callable_signature_with_substitution(
+fn callable_signature_with_substitution(
+    module: &HirModule,
     function: &HirFn,
     substitution: &TypeSubstitution,
     facts: &mut TypeFactService,
@@ -1093,9 +1280,9 @@ fn scalar_callable_signature_with_substitution(
     let mut params = Vec::with_capacity(function.params.len());
     for (index, parameter) in function.params.iter().enumerate() {
         let ty = substitution.apply(&parameter.ty);
-        if !is_initial_call_value(&ty) {
+        if !is_supported_call_value(module, &ty) {
             return Err(format!(
-                "parameter {index} has non-scalar type `{}` after semantic substitution; aggregate/reference ABI lowering is deferred",
+                "parameter {index} has unsupported type `{}` after semantic substitution; SIR calls require an exact scalar, string, bytes, tuple, or record contract",
                 ty.user_facing()
             ));
         }
@@ -1113,9 +1300,9 @@ fn scalar_callable_signature_with_substitution(
         });
     }
     let return_ty = substitution.apply(&function.return_ty);
-    if !is_initial_call_return(&return_ty) {
+    if !is_supported_call_return(module, &return_ty) {
         return Err(format!(
-            "return type `{}` is outside SIR's initial scalar call-result domain after semantic substitution",
+            "return type `{}` is outside SIR's exact call-result domain after semantic substitution",
             return_ty.user_facing()
         ));
     }
@@ -1130,8 +1317,17 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty) || matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
 }
 
-fn is_initial_call_return(ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Unit) || is_initial_call_value(ty)
+fn is_concrete_aggregate_type(module: &HirModule, ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Tuple(fields) if !fields.is_empty())
+        || concrete_record_fields(module, ty).is_ok()
+}
+
+fn is_supported_call_value(module: &HirModule, ty: &ResolvedTy) -> bool {
+    is_initial_call_value(ty) || is_concrete_aggregate_type(module, ty)
+}
+
+fn is_supported_call_return(module: &HirModule, ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Unit) || is_supported_call_value(module, ty)
 }
 
 /// The first aggregate value family admitted into SIR.
@@ -1209,14 +1405,23 @@ fn lower_initial_value_transfer(
         require_initial_value_transfer(expr.intent, &ty, context)?;
         return builder.lower_expr(expr);
     }
-    if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
-        || !matches!(expr.intent, IntentKind::Read | IntentKind::Consume)
-    {
+    if !matches!(expr.intent, IntentKind::Read | IntentKind::Consume) {
         return Err(format!(
             "{context}: HIR {:?} intent cannot transfer `{}` in the owned SIR slice",
             expr.intent,
             ty.user_facing()
         ));
+    }
+    if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
+        builder
+            .service
+            .require_aggregate_shape(&ty)
+            .map_err(|reason| {
+                format!(
+                    "{context}: `{}` has no owned aggregate transfer contract: {reason}",
+                    ty.user_facing()
+                )
+            })?;
     }
     builder.lower_owned_transfer(expr, binding_use)
 }
@@ -1915,6 +2120,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
+            HirExprKind::StructInit { fields, base, .. } => {
+                self.lower_aggregate_make(expr, fields, base.as_deref())
+            }
+            HirExprKind::FieldAccess { object, field } => {
+                self.lower_aggregate_project(expr, object, field)
+            }
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(binding),
                 ..
@@ -2097,12 +2308,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 tuple_ty.user_facing()
             ));
         };
-        if !is_initial_value_type(&tuple_ty) {
-            return Err(format!(
-                "tuple literal type `{}` is outside SIR's initial no-drop scalar/tuple value domain",
-                tuple_ty.user_facing()
-            ));
-        }
         if expected_elements.len() != elements.len() {
             return Err(format!(
                 "tuple literal has {} element(s), but its resolved type `{}` has {} element type(s)",
@@ -2121,15 +2326,45 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     expected_ty.user_facing()
                 ));
             }
-            lowered_elements
-                .push(self.lower_read_operand(element, &format!("tuple literal element {index}"))?);
+            let value = if is_initial_value_type(&tuple_ty) {
+                self.lower_read_operand(element, &format!("tuple literal element {index}"))?
+            } else {
+                Operand {
+                    value: lower_initial_value_transfer(
+                        self,
+                        element,
+                        &format!("owned tuple field {index}"),
+                        OwnedBindingUse::Copy,
+                    )?,
+                }
+            };
+            lowered_elements.push(value);
         }
-        self.emit(
-            expr,
-            SemOpKind::TupleMake {
-                elements: lowered_elements,
-            },
-        )
+        if is_initial_value_type(&tuple_ty) {
+            self.emit(
+                expr,
+                SemOpKind::TupleMake {
+                    elements: lowered_elements,
+                },
+            )
+        } else {
+            let shape = self.service.require_aggregate_shape(&tuple_ty)?;
+            let consumed = lowered_elements
+                .iter()
+                .map(|field| field.value)
+                .collect::<Vec<_>>();
+            let aggregate = self.emit(
+                expr,
+                SemOpKind::AggregateMake {
+                    shape,
+                    fields: lowered_elements,
+                },
+            )?;
+            for field in consumed {
+                self.owned_live.remove(&field);
+            }
+            Ok(aggregate)
+        }
     }
 
     /// Lower a semantic tuple projection without exposing aggregate layout.
@@ -2146,12 +2381,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 tuple_ty.user_facing()
             ));
         };
-        if !is_initial_value_type(&tuple_ty) {
-            return Err(format!(
-                "tuple projection operand type `{}` is outside SIR's initial no-drop scalar/tuple value domain",
-                tuple_ty.user_facing()
-            ));
-        }
         let expected_ty = elements.get(index).ok_or_else(|| {
             format!(
                 "tuple projection index {index} is out of bounds for `{}` with {} element(s)",
@@ -2172,7 +2401,146 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             "tuple projection index exceeds SIR's target-independent u32 field range".to_string()
         })?;
         let tuple = self.lower_read_operand(tuple_expr, "tuple projection operand")?;
-        self.emit(expr, SemOpKind::TupleGet { tuple, index })
+        if is_initial_value_type(&tuple_ty) {
+            self.emit(expr, SemOpKind::TupleGet { tuple, index })
+        } else {
+            let shape = self.service.require_aggregate_shape(&tuple_ty)?;
+            self.emit(
+                expr,
+                SemOpKind::AggregateProjectCopy {
+                    shape,
+                    aggregate: tuple,
+                    field: index,
+                },
+            )
+        }
+    }
+
+    /// Lower one named aggregate construction in source evaluation order,
+    /// then present its operands in the declaration's exact field order.
+    fn lower_aggregate_make(
+        &mut self,
+        expr: &HirExpr,
+        fields: &[(String, HirExpr)],
+        base: Option<&HirExpr>,
+    ) -> Result<ValueId, String> {
+        if base.is_some() {
+            return Err(
+                "functional record update needs explicit per-field copy operations before aggregate construction"
+                    .to_string(),
+            );
+        }
+        let aggregate_ty = self.ty(&expr.ty);
+        let shape = self.service.require_aggregate_shape(&aggregate_ty)?;
+        let AggregateShapeRef::Record(id) = shape else {
+            return Err("struct initializer resolved to a non-record aggregate shape".to_string());
+        };
+        let declared_fields = self
+            .service
+            .aggregate_shapes
+            .get(usize::try_from(id.0).map_err(|_| "aggregate shape id exceeds usize")?)
+            .ok_or_else(|| format!("aggregate shape {} disappeared during lowering", id.0))?
+            .fields
+            .clone();
+        let mut ordered = vec![None; declared_fields.len()];
+        for (name, field) in fields {
+            let index = declared_fields
+                .iter()
+                .position(|declared| declared.name == *name)
+                .ok_or_else(|| {
+                    format!(
+                        "record initializer field `{name}` is absent from exact shape `{}`",
+                        aggregate_ty.user_facing()
+                    )
+                })?;
+            if ordered[index].is_some() {
+                return Err(format!("record initializer repeats field `{name}`"));
+            }
+            let actual_ty = self.ty(&field.ty);
+            if actual_ty != declared_fields[index].ty {
+                return Err(format!(
+                    "record initializer field `{name}` has `{}`, expected `{}`",
+                    actual_ty.user_facing(),
+                    declared_fields[index].ty.user_facing()
+                ));
+            }
+            ordered[index] = Some(Operand {
+                value: lower_initial_value_transfer(
+                    self,
+                    field,
+                    &format!("owned record field `{name}`"),
+                    OwnedBindingUse::Copy,
+                )?,
+            });
+        }
+        let fields = ordered
+            .into_iter()
+            .zip(&declared_fields)
+            .map(|(operand, declared)| {
+                operand.ok_or_else(|| {
+                    format!(
+                        "record initializer omits field `{}` from exact shape `{}`",
+                        declared.name,
+                        aggregate_ty.user_facing()
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let consumed = fields.iter().map(|field| field.value).collect::<Vec<_>>();
+        let aggregate = self.emit(expr, SemOpKind::AggregateMake { shape, fields })?;
+        for field in consumed {
+            self.owned_live.remove(&field);
+        }
+        Ok(aggregate)
+    }
+
+    /// Lower an ordinary named-field read as an explicit independent copy.
+    fn lower_aggregate_project(
+        &mut self,
+        expr: &HirExpr,
+        object: &HirExpr,
+        field: &str,
+    ) -> Result<ValueId, String> {
+        let aggregate_ty = self.ty(&object.ty);
+        let shape = self.service.require_aggregate_shape(&aggregate_ty)?;
+        let AggregateShapeRef::Record(id) = shape else {
+            return Err("named field access resolved to a non-record aggregate shape".to_string());
+        };
+        let descriptor = self
+            .service
+            .aggregate_shapes
+            .get(usize::try_from(id.0).map_err(|_| "aggregate shape id exceeds usize")?)
+            .ok_or_else(|| format!("aggregate shape {} disappeared during lowering", id.0))?;
+        let index = descriptor
+            .fields
+            .iter()
+            .position(|candidate| candidate.name == field)
+            .ok_or_else(|| {
+                format!(
+                    "field `{field}` is absent from exact aggregate shape `{}`",
+                    aggregate_ty.user_facing()
+                )
+            })?;
+        let expected_ty = descriptor.fields[index].ty.clone();
+        let result_ty = self.ty(&expr.ty);
+        if result_ty != expected_ty {
+            return Err(format!(
+                "field `{field}` from `{}` has `{}`, expected `{}`",
+                aggregate_ty.user_facing(),
+                result_ty.user_facing(),
+                expected_ty.user_facing()
+            ));
+        }
+        let aggregate = self.lower_read_operand(object, "aggregate projection operand")?;
+        self.emit(
+            expr,
+            SemOpKind::AggregateProjectCopy {
+                shape,
+                aggregate,
+                field: u32::try_from(index)
+                    .map_err(|_| "aggregate field index exceeds u32".to_string())?,
+            },
+        )
     }
 
     /// Lower an HIR direct call through the resolved SIR callable table.

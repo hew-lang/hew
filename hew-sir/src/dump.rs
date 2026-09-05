@@ -1,8 +1,8 @@
 use std::fmt::Write as _;
 
 use crate::{
-    CallResult, CallUnwind, LoweredModule, OwnKind, SemModule, SemOpKind, SemTerminator,
-    SirLoweringStatus,
+    AggregateShapeRef, CallResult, CallUnwind, LoweredModule, OwnKind, SemModule, SemOpKind,
+    SemTerminator, SirLoweringStatus,
 };
 
 /// Deterministic printer for a whole HIR→SIR lowering result.
@@ -111,6 +111,13 @@ const fn own_suffix(own: OwnKind) -> &'static str {
     }
 }
 
+fn aggregate_shape(shape: AggregateShapeRef) -> String {
+    match shape {
+        AggregateShapeRef::Tuple => "tuple".to_string(),
+        AggregateShapeRef::Record(id) => format!("record#{}", id.0),
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one arm per operation kind is the point of a closed textual rendering"
@@ -149,6 +156,29 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         }
         SemOpKind::TupleGet { tuple, index } => {
             writeln!(out, "tuple.get {}, {index}", operand(tuple)).expect("write to String");
+        }
+        SemOpKind::AggregateMake { shape, fields } => {
+            write!(out, "aggregate.make {}(", aggregate_shape(*shape)).expect("write to String");
+            for (index, field) in fields.iter().enumerate() {
+                if index != 0 {
+                    write!(out, ", ").expect("write to String");
+                }
+                write!(out, "{}", operand(field)).expect("write to String");
+            }
+            writeln!(out, ")").expect("write to String");
+        }
+        SemOpKind::AggregateProjectCopy {
+            shape,
+            aggregate,
+            field,
+        } => {
+            writeln!(
+                out,
+                "aggregate.project_copy {} {}, {field}",
+                aggregate_shape(*shape),
+                operand(aggregate)
+            )
+            .expect("write to String");
         }
         SemOpKind::Unary { op, value } => {
             writeln!(out, "{op:?} {}", operand(value)).expect("write to String");
@@ -196,8 +226,14 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::Fork { source } => {
             writeln!(out, "fork {}", operand(source)).expect("write to String");
         }
-        SemOpKind::Destructure { aggregate } => {
-            writeln!(out, "destructure {}", operand(aggregate)).expect("write to String");
+        SemOpKind::Destructure { shape, aggregate } => {
+            writeln!(
+                out,
+                "aggregate.destructure {} {}",
+                aggregate_shape(*shape),
+                operand(aggregate)
+            )
+            .expect("write to String");
         }
         SemOpKind::AllocPlace { place } => {
             writeln!(out, "alloc_place $p{}", place.0).expect("write to String");

@@ -119,6 +119,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         entry_exit_plan: None,
         entry_callable: None,
         functions,
+        aggregate_shapes: Vec::new(),
         type_facts: fact_service.into_rows(),
         string_literals: BTreeMap::new(),
         bytes_literals: BTreeMap::new(),

@@ -1,237 +1,51 @@
-//! Layout descriptor types for key/value identity in `HashMap` and `HashSet`.
+//! Hash identity metadata for descriptor-backed maps and sets.
 //!
-//! This module defines the FFI-safe layout descriptor structs that describe
-//! how the runtime must hash and compare opaque key blobs, and how it must
-//! manage opaque value blobs, for layout-backed maps and sets.
+//! Keys and values use the same value copy/drop descriptor as vector elements.
+//! A key adds borrowed hash/equality callbacks; neither callback owns its input.
+//! Descriptors are copied into each collection at construction, so the caller
+//! need not retain the descriptor storage.
 //!
-//! # Ownership contract (LESSONS `ffi-ownership-contracts` P0)
-//!
-//! - The `hash_fn` and `eq_fn` thunks receive read-only pointers to key blobs.
-//!   **Neither thunk owns nor frees the blob it receives.**
-//! - The runtime owns all Plain/BitCopy blob copies once they are inserted.
-//!
-//! # Acquisition / ownership contract for owned K and V (W4.001 Stage C0a;
-//! plan rev6 §4 "Acquisition / ownership contract")
-//!
-//! The kernel implements the following responsibilities verbatim. Codegen
-//! materialisers (Stage C HIR consumer) are bound by the *caller* side.
-//!
-//! | Kernel entry                              | K argument              | V argument              | Kernel responsibility                                                                                                                              |
-//! |-------------------------------------------|-------------------------|-------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|
-//! | `hew_hashmap_insert_layout` (vacant slot) | **owned** (transferred) | **owned** (transferred) | Raw-copy K and V bytes into the slot; possession transfers to the map. No clone, no drop.                                                          |
-//! | `hew_hashmap_insert_layout` (occupied)    | **owned** (eq to stored K — caller drops/recycles the duplicate `K_in`) | **owned** (transferred) | Drop the **old V** via `val_layout.drop_fn`; raw-copy new V into the slot. The slot K stays in place; the kernel **never** drops the stored K here. |
-//! | `hew_hashmap_get_layout`                  | **borrowed**            | n/a                     | Returns `*const c_void` pointing into the slot; lifetime valid until the next mutation. Caller must not free.                                       |
-//! | `hew_hashmap_get_clone_layout`            | **borrowed**            | n/a                     | Clones the stored V into caller-provided out storage via `val_layout.clone_fn` when V is non-Plain; caller owns the out value.                       |
-//! | `hew_hashmap_remove_layout`               | **borrowed**            | n/a                     | Invoke `key_layout.drop_fn` on the slot K and `val_layout.drop_fn` on the slot V before tombstoning. Caller's lookup K is untouched.                |
-//! | `hew_hashmap_free_layout`                 | n/a                     | n/a                     | Iterate occupied slots, invoke key + value `drop_fn` on each, then deallocate the entries buffer. Tombstoned slots already had their blobs dropped at remove-time. |
-//! | `hew_hashmap_clear_layout`                | n/a                     | n/a                     | Iterate occupied slots, invoke key + value `drop_fn` on each, reset every slot (including stale tombstones) to `EMPTY`, set `len = 0`. Entries buffer stays allocated for reuse. |
-//!
-//! **Invariants (P0):**
-//!
-//! 1. Insert transfers ownership of K and V into the map (vacant) or of V
-//!    only (occupied — the slot K is reused).
-//! 2. Standard `_get_layout` borrows; `_get_clone_layout` produces an owned V
-//!    by invoking the descriptor's semantic clone authority.
-//! 3. Remove drops stored K + V via the descriptor thunks; the lookup K
-//!    is borrowed and never dropped by the kernel.
-//! 4. Free drops every occupied K + V exactly once; tombstoned slots are
-//!    not re-dropped.
-//! 5. **Overwrite never drops K, always drops old V.** The duplicate K
-//!    the caller passed in is the caller's responsibility to drop or
-//!    recycle, hoisted to the HIR consumer per plan §4.
-//!
-//! # Fail-closed contract (LESSONS `boundary-fail-closed` P0)
-//!
-//! - `hash_fn` and `eq_fn` are stored as `Option<...>` rather than bare fn ptrs.
-//!   `None` means "no thunk provided".  The runtime (C-1b) **must** detect
-//!   `None` and abort fail-closed rather than silently returning a wrong result.
-//! - Constructing a `HewMapKeyLayout` with `None` thunks is valid Rust; runtime
-//!   enforcement is the runtime's responsibility.
-//!
-//! # Niche-optimization invariant
-//!
-//! `Option<HewMapKeyHashThunk>` and `Option<HewMapKeyEqThunk>` carry the same
-//! ABI width as the underlying fn pointer because Rust guarantees that fn
-//! pointers are non-null, enabling the null value as the `None` discriminant.
-//! Compile-time `const` asserts below lock this invariant.
+//! Insertion transfers the value on both vacant and occupied entries. It
+//! transfers the key only when vacant; the caller retains a duplicate key on
+//! replacement. Lookups borrow keys, and cloning lookups produce independent
+//! values. Removal, replacement, clear and destruction release stored owners
+//! through the value descriptor. A clone callback must roll back its own partial
+//! output before returning failure.
 
 use core::ffi::c_void;
 
-pub use crate::vec::HewTypeOwnershipKind;
+pub use crate::vec::{
+    HewTypeOwnershipKind, HewVecElemCloneThunk, HewVecElemDropThunk, HewVecElemLayout,
+};
 
-// ---------------------------------------------------------------------------
-// Hash and equality thunk type aliases
-// ---------------------------------------------------------------------------
-
-/// Thunk that hashes an opaque key blob.
+/// Hash a borrowed key's typed values, excluding padding bytes.
 ///
-/// - `key` — non-null read-only pointer to the key blob.  The thunk **must
-///   not** free or write through `key`.
-/// - Returns a `u64` hash value.  The hash function must be deterministic and
-///   must hash **typed field values only** — never padding bytes.
-///
-/// `unsafe` because the caller must guarantee `key` is valid for the
-/// type's layout (size + alignment).
+/// # Safety
+/// The input must be valid for the key's concrete value descriptor.
 pub type HewMapKeyHashThunk = unsafe extern "C" fn(key: *const c_void) -> u64;
 
-/// Thunk that compares two opaque key blobs for equality.
+/// Compare two borrowed keys of the same concrete type, returning non-zero
+/// exactly when their values are equal.
 ///
-/// - `lhs`, `rhs` — non-null read-only pointers to key blobs of the same type.
-///   The thunk **must not** free or write through either pointer.
-/// - Returns non-zero (`1`) when the blobs represent equal keys, zero when not.
-///
-/// `unsafe` because the caller must guarantee both pointers are valid for the
-/// type's layout (size + alignment).
+/// # Safety
+/// Both inputs must be valid for the key's concrete value descriptor.
 pub type HewMapKeyEqThunk = unsafe extern "C" fn(lhs: *const c_void, rhs: *const c_void) -> i32;
 
-// ---------------------------------------------------------------------------
-// Drop and clone thunk type aliases (W4.001 Stage C0a)
-// ---------------------------------------------------------------------------
-
-/// Thunk that drops an owned key or value blob in place.
+/// A shared value protocol plus key identity callbacks.
 ///
-/// - `blob` — non-null mutable pointer to the owned blob. The thunk runs the
-///   type's drop plan (e.g. `free` of an inner C string pointer, drop of inner
-///   Layout-managed sub-records) but **does not** deallocate the slot bytes
-///   themselves — the kernel owns the slot storage and either reuses or
-///   deallocates it.
-/// - The thunk is invoked exactly once per dropped slot blob, in the kernel's
-///   three drop contexts: (a) insert-overwrite (V only — see contract table),
-///   (b) remove (K + V), and (c) free (K + V on every OCCUPIED slot).
-///
-/// `extern "C" fn(*mut u8)` (Q281=A discipline: raw extern C function
-/// pointer, never a closure or trait object — round-trips through the
-/// `#[repr(C)]` descriptor cleanly).
-pub type HewMapValueDropThunk = extern "C" fn(blob: *mut c_void);
-
-/// Thunk that clones an owned value blob from `src` to `dst`.
-///
-/// Invoked by the cloning-get path and layout-map clone when the value
-/// descriptor declares non-Plain ownership. The runtime has already raw-copied
-/// `dst <- src` before invoking this thunk so `BitCopy` fields, enum tags, and
-/// inactive bytes are in place; the thunk deep-clones owned leaves in place.
-/// Returns 0 on success, non-zero after rolling back any partial clone.
-///
-/// `extern "C" fn(*const u8, *mut u8) -> i32` (Q281=A discipline).
-pub type HewMapValueCloneThunk = unsafe extern "C" fn(src: *const c_void, dst: *mut c_void) -> i32;
-
-// ---------------------------------------------------------------------------
-// Niche-optimization compile-time assertions
-// ---------------------------------------------------------------------------
-
-// Rust guarantees that fn pointers are non-null, so Option<fn(...)> uses the
-// null value as the None discriminant -- giving Option<fn> the same size as fn.
-// These asserts lock the invariant so a future Rust change would break loudly
-// here rather than silently at the C boundary.
-const _: () = assert!(
-    size_of::<Option<HewMapKeyHashThunk>>() == size_of::<HewMapKeyHashThunk>(),
-    "Option<HewMapKeyHashThunk> must be niche-optimised to the same size as HewMapKeyHashThunk",
-);
-const _: () = assert!(
-    size_of::<Option<HewMapKeyEqThunk>>() == size_of::<HewMapKeyEqThunk>(),
-    "Option<HewMapKeyEqThunk> must be niche-optimised to the same size as HewMapKeyEqThunk",
-);
-const _: () = assert!(
-    size_of::<Option<HewMapValueDropThunk>>() == size_of::<HewMapValueDropThunk>(),
-    "Option<HewMapValueDropThunk> must be niche-optimised to the same size as HewMapValueDropThunk",
-);
-const _: () = assert!(
-    size_of::<Option<HewMapValueCloneThunk>>() == size_of::<HewMapValueCloneThunk>(),
-    "Option<HewMapValueCloneThunk> must be niche-optimised to the same size as HewMapValueCloneThunk",
-);
-
-// ---------------------------------------------------------------------------
-// Layout descriptor structs
-// ---------------------------------------------------------------------------
-
-/// Describes the memory layout and identity semantics of a map key type.
-///
-/// The runtime uses `size` and `align` to allocate and copy key blobs, and
-/// `hash_fn` / `eq_fn` to hash and compare them.
-///
-/// Both thunk fields are `Option<...>` rather than bare fn ptrs (see module-level
-/// doc for the fail-closed contract).  Pass `None` only when the runtime is
-/// expected to abort fail-closed on first use.
-///
-/// # C layout
-///
-/// `#[repr(C)]` guarantees field order and alignment match the C struct:
-///
-/// ```c
-/// typedef struct {
-///     size_t                 size;
-///     size_t                 align;
-///     HewTypeOwnershipKind   ownership_kind;
-///     /* padding to pointer alignment */
-///     HewMapKeyHashThunk     hash_fn;   /* may be NULL */
-///     HewMapKeyEqThunk       eq_fn;     /* may be NULL */
-///     HewMapValueDropThunk   drop_fn;   /* may be NULL when ownership_kind == Plain */
-/// } HewMapKeyLayout;
-/// ```
+/// Missing hash/equality callbacks are rejected at construction. Plain values
+/// need no clone/drop callbacks. Owning values require a drop callback; copying
+/// also requires a clone callback. Hashing and equality borrow the complete
+/// value and never read padding or release its owners.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-#[allow(
-    dead_code,
-    reason = "consumed by C-1b runtime ABI and C-3a codegen synthesis"
-)]
 pub struct HewMapKeyLayout {
-    /// Size of the key blob in bytes.
-    pub size: usize,
-    /// Alignment of the key blob in bytes (must be a power of two).
-    pub align: usize,
-    /// Ownership/copy semantics of the key type.
-    pub ownership_kind: HewTypeOwnershipKind,
-    /// Hash thunk: `None` -> runtime must abort fail-closed on hash attempt.
+    /// Size, alignment and semantic copy/drop protocol shared with vectors.
+    pub value: HewVecElemLayout,
+    /// Hash the borrowed key value.
     pub hash_fn: Option<HewMapKeyHashThunk>,
-    /// Equality thunk: `None` -> runtime must abort fail-closed on eq attempt.
+    /// Compare two borrowed key values.
     pub eq_fn: Option<HewMapKeyEqThunk>,
-    /// Drop thunk invoked on stored K at remove + free (see ownership
-    /// contract above). `None` is valid only for `ownership_kind == Plain`;
-    /// `String` and `LayoutManaged` require `Some(_)` (fail-closed
-    /// constructor check in `hew_hashmap_new_with_layout`). W4.001 Stage C0a.
-    pub drop_fn: Option<HewMapValueDropThunk>,
-}
-
-/// Describes the memory layout and ownership semantics of a map value type.
-///
-/// Values have no identity thunks -- the runtime manages them purely by their
-/// opaque blob shape (size + align + copy semantics).
-///
-/// # C layout
-///
-/// ```c
-/// typedef struct {
-///     size_t                 size;
-///     size_t                 align;
-///     HewTypeOwnershipKind   ownership_kind;
-///     /* padding to pointer alignment */
-///     HewMapValueDropThunk   drop_fn;   /* may be NULL when ownership_kind == Plain */
-///     HewMapValueCloneThunk  clone_fn;  /* may be NULL only for Plain values */
-/// } HewMapValueLayout;
-/// ```
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-#[allow(
-    dead_code,
-    reason = "consumed by C-1b runtime ABI and C-3a codegen synthesis"
-)]
-pub struct HewMapValueLayout {
-    /// Size of the value blob in bytes.
-    pub size: usize,
-    /// Alignment of the value blob in bytes (must be a power of two).
-    pub align: usize,
-    /// Ownership/copy semantics of the value type.
-    pub ownership_kind: HewTypeOwnershipKind,
-    /// Drop thunk invoked on stored V at insert-overwrite + remove + free.
-    /// `None` is valid only for `ownership_kind == Plain`; `String` and
-    /// `LayoutManaged` require `Some(_)` (fail-closed constructor check).
-    /// W4.001 Stage C0a.
-    pub drop_fn: Option<HewMapValueDropThunk>,
-    /// Optional clone thunk consulted by the cloning-get and map-clone paths.
-    /// `None` is valid only for Plain values; owned `Option<V>` producers must
-    /// fail closed before constructing a non-Plain value layout without it.
-    /// W4.001 Stage C0a.
-    pub clone_fn: Option<HewMapValueCloneThunk>,
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +53,7 @@ pub struct HewMapValueLayout {
 // ---------------------------------------------------------------------------
 //
 // `hew-runtime/src/layout_intrinsics.rs` defines `#[no_mangle] pub static`
-// instances of `HewMapKeyLayout` / `HewMapValueLayout` for the supported
+// instances of `HewMapKeyLayout` / `HewVecElemLayout` for the supported
 // types (`i32, i64, u32, u64, f32, f64, bool, char, string, bytes, unit`).
 // Re-declaring them here as `extern "C"` statics lets codegen-rs and other
 // back-ends take the address of the descriptor
@@ -271,21 +85,21 @@ extern "C" {
     pub static hew_layout_key_string: HewMapKeyLayout;
     pub static hew_layout_key_bytes: HewMapKeyLayout;
 
-    // ---- HewMapValueLayout descriptors ----
-    pub static hew_layout_val_i32: HewMapValueLayout;
-    pub static hew_layout_val_i64: HewMapValueLayout;
-    pub static hew_layout_val_u32: HewMapValueLayout;
-    pub static hew_layout_val_u64: HewMapValueLayout;
-    pub static hew_layout_val_f32: HewMapValueLayout;
-    pub static hew_layout_val_f64: HewMapValueLayout;
-    pub static hew_layout_val_bool: HewMapValueLayout;
-    pub static hew_layout_val_char: HewMapValueLayout;
-    pub static hew_layout_val_string: HewMapValueLayout;
-    pub static hew_layout_val_bytes: HewMapValueLayout;
+    // ---- HewVecElemLayout descriptors ----
+    pub static hew_layout_val_i32: HewVecElemLayout;
+    pub static hew_layout_val_i64: HewVecElemLayout;
+    pub static hew_layout_val_u32: HewVecElemLayout;
+    pub static hew_layout_val_u64: HewVecElemLayout;
+    pub static hew_layout_val_f32: HewVecElemLayout;
+    pub static hew_layout_val_f64: HewVecElemLayout;
+    pub static hew_layout_val_bool: HewVecElemLayout;
+    pub static hew_layout_val_char: HewVecElemLayout;
+    pub static hew_layout_val_string: HewVecElemLayout;
+    pub static hew_layout_val_bytes: HewVecElemLayout;
     /// Zero-size value descriptor for the `HashSet<T>` = `HashMap<T, ()>`
     /// pattern. `size = 0, align = 1` (the kernel admits ZST V only at
     /// `align == 1` — see `hew-runtime/src/hashmap.rs:980-983`).
-    pub static hew_layout_val_unit: HewMapValueLayout;
+    pub static hew_layout_val_unit: HewVecElemLayout;
 }
 
 /// All key-layout descriptor symbols exported by `hew-runtime`.
@@ -356,9 +170,9 @@ mod tests {
     #[test]
     fn option_drop_thunk_has_same_size_as_raw_fn_ptr() {
         assert_eq!(
-            size_of::<Option<HewMapValueDropThunk>>(),
-            size_of::<HewMapValueDropThunk>(),
-            "Option<HewMapValueDropThunk> must have the same size as HewMapValueDropThunk \
+            size_of::<Option<HewVecElemDropThunk>>(),
+            size_of::<HewVecElemDropThunk>(),
+            "Option<HewVecElemDropThunk> must have the same size as HewVecElemDropThunk \
              (fn-pointer niche optimisation)",
         );
     }
@@ -366,57 +180,28 @@ mod tests {
     #[test]
     fn option_clone_thunk_has_same_size_as_raw_fn_ptr() {
         assert_eq!(
-            size_of::<Option<HewMapValueCloneThunk>>(),
-            size_of::<HewMapValueCloneThunk>(),
-            "Option<HewMapValueCloneThunk> must have the same size as HewMapValueCloneThunk \
+            size_of::<Option<HewVecElemCloneThunk>>(),
+            size_of::<HewVecElemCloneThunk>(),
+            "Option<HewVecElemCloneThunk> must have the same size as HewVecElemCloneThunk \
              (fn-pointer niche optimisation)",
         );
     }
 
-    // -- HewMapKeyLayout repr --
-
     #[test]
-    fn hashmap_key_layout_has_correct_repr() {
-        // Layout on 64-bit (x86_64 / aarch64) — W4.001 Stage C0a:
-        //   size:           usize  = 8
-        //   align:          usize  = 8
-        //   ownership_kind: u8     = 1  (+7 padding to reach pointer alignment)
-        //   hash_fn:        fn ptr = 8  (Option<fn> via niche opt)
-        //   eq_fn:          fn ptr = 8
-        //   drop_fn:        fn ptr = 8  (new — Stage C0a)
-        //   total = 8 + 8 + (1 + 7 pad) + 8 + 8 + 8 = 48 bytes; align = 8.
+    fn hashmap_key_layout_embeds_the_shared_value_protocol() {
+        assert_eq!(core::mem::offset_of!(HewMapKeyLayout, value), 0);
         assert_eq!(
-            size_of::<HewMapKeyLayout>(),
-            6 * size_of::<usize>(),
-            "HewMapKeyLayout must be exactly 6 pointer-sized slots (48 bytes on 64-bit) post-C0a",
+            core::mem::offset_of!(HewMapKeyLayout, hash_fn),
+            size_of::<HewVecElemLayout>(),
         );
+        assert_eq!(
+            core::mem::offset_of!(HewMapKeyLayout, eq_fn),
+            size_of::<HewVecElemLayout>() + size_of::<HewMapKeyHashThunk>(),
+        );
+        assert_eq!(size_of::<HewMapKeyLayout>(), 7 * size_of::<usize>());
         assert_eq!(
             align_of::<HewMapKeyLayout>(),
-            size_of::<usize>(),
-            "HewMapKeyLayout must be pointer-aligned (8 bytes on 64-bit)",
-        );
-    }
-
-    // -- HewMapValueLayout repr --
-
-    #[test]
-    fn hashmap_value_layout_has_correct_repr() {
-        // Layout on 64-bit (x86_64 / aarch64) — W4.001 Stage C0a:
-        //   size:           usize = 8
-        //   align:          usize = 8
-        //   ownership_kind: u8    = 1  (+7 padding to reach pointer alignment)
-        //   drop_fn:        fn ptr = 8 (new — Stage C0a)
-        //   clone_fn:       fn ptr = 8 (new — Stage C0a)
-        //   total = 8 + 8 + (1 + 7 pad) + 8 + 8 = 40 bytes; align = 8.
-        assert_eq!(
-            size_of::<HewMapValueLayout>(),
-            5 * size_of::<usize>(),
-            "HewMapValueLayout must be exactly 5 pointer-sized slots (40 bytes on 64-bit) post-C0a",
-        );
-        assert_eq!(
-            align_of::<HewMapValueLayout>(),
-            size_of::<usize>(),
-            "HewMapValueLayout must be pointer-aligned (8 bytes on 64-bit)",
+            align_of::<HewVecElemLayout>()
         );
     }
 

@@ -535,3 +535,39 @@ import is now unconditional, matching the cross-platform function signature.
 The integrated JSON/YAML tests pass, and the combined C ABI census reflects
 their managed text arguments and results. A fresh Windows build verifies the
 import repair; earlier Linux results do not substitute for that check.
+
+## Shared map and vector value protocols
+
+Map keys now add hash/equality callbacks to the same copy/drop descriptor used
+by vector elements. The duplicate map-value descriptor is removed. Map copying
+and key/value projections use the common callbacks, including owning composite
+keys; the separate String-only key-copy path and composite projection refusals
+are gone. Set copying inherits the same behaviour through its inner map.
+
+The complete runtime/C ABI suite passes. New composite-key/value tests exercise
+map growth, copying, extraction, removal and projections that outlive both source
+maps; set copies and projected elements also survive source destruction. These
+tests and the existing string-reference and recursive-container lifetime tests
+pass under ASan/LSan without suppressions. The Make sanitizer target can select
+integration tests while retaining its library-test default. Generated native
+map lowering and platform validation remain subsequent work.
+
+Borrowed map/set insertion now copies inputs before growth or replacement,
+including inputs borrowed from the same collection. Callers retain their input
+owners on either insertion outcome. Zero-sized value callbacks now track logical
+owners during copying, replacement and destruction. The complete runtime/C ABI
+suite and focused ownership integration tests pass, including unsuppressed
+ASan/LSan checks and the generated C ABI census.
+
+Descriptor-backed vector buffers now allocate, grow and release with the
+descriptor's alignment and capacity. Legacy scalar buffers retain their matching
+allocator. Descriptor sizes must preserve alignment between adjacent elements;
+logical zero-sized vector elements retain an aligned backing address.
+
+Aligned owning records exercise map/set projections and vector growth, copies,
+slices, buffer transfer, source reuse and truncation. Aligned zero-sized vector
+callbacks preserve both alignment and logical owner balance. Focused runtime and
+unsuppressed ASan/LSan checks pass. The broader runtime/C ABI run passed all other
+cases; its initial zero-sized test used alignment outside the existing map
+contract, so aligned ZST vector coverage is now separate from map ZST coverage.
+Cross-platform allocator validation follows integration.

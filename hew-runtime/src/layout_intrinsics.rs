@@ -1,63 +1,10 @@
-//! Hew runtime: static `HewMapKeyLayout` / `HewMapValueLayout` descriptors.
+//! Static scalar, string and byte-value protocols for maps and sets.
 //!
-//! W4.001 Stage C0b — the kernel ABI (descriptor structs + drop hooks) landed
-//! in Stage C0a (`hew-cabi/src/map.rs`, `hew-runtime/src/hashmap.rs`). This
-//! module is the first producer of *real* descriptor instances exercising
-//! that ABI: per-scalar / string / bytes / unit `#[no_mangle]` statics that
-//! `hew-cabi` re-declares for codegen-rs (Stage C consumer) and any parallel
-//! back-end to take the address of.
-//!
-//! **C0b boundary (plan §4 Stage C0b):** descriptors are *checker-visible
-//! artifacts only*. No HIR consumer reads them in C0b; the first production
-//! reader is Stage C's `HashMapLoweringFact` materialiser. DI-003
-//! fail-closed-by-absence is preserved — float K descriptors are shipped
-//! deliberately with `hash_fn = None` / `eq_fn = None` so that the
-//! constructor's existing guard (`hashmap.rs::validate_key_layout`) aborts
-//! before a float-keyed map can be built.
-//!
-//! # Symbol naming
-//!
-//! Two families, one per (K | V) role per type:
-//!
-//! - `hew_layout_key_<type>` — `HewMapKeyLayout` (carries hash + eq + drop).
-//! - `hew_layout_val_<type>` — `HewMapValueLayout` (carries drop + clone for
-//!   non-Plain values; never hashes, per the kernel's get-borrows contract).
-//!
-//! Scope per plan §4 Stage C0b:
-//!
-//! | type     | key descriptor              | value descriptor              |
-//! |----------|-----------------------------|-------------------------------|
-//! | i32      | `hew_layout_key_i32`        | `hew_layout_val_i32`          |
-//! | i64      | `hew_layout_key_i64`        | `hew_layout_val_i64`          |
-//! | u32      | `hew_layout_key_u32`        | `hew_layout_val_u32`          |
-//! | u64      | `hew_layout_key_u64`        | `hew_layout_val_u64`          |
-//! | f32      | `hew_layout_key_f32` *(fail-closed: hash/eq None)* | `hew_layout_val_f32` |
-//! | f64      | `hew_layout_key_f64` *(fail-closed: hash/eq None)* | `hew_layout_val_f64` |
-//! | bool     | `hew_layout_key_bool`       | `hew_layout_val_bool`         |
-//! | char     | `hew_layout_key_char`       | `hew_layout_val_char`         |
-//! | string   | `hew_layout_key_string`     | `hew_layout_val_string`       |
-//! | bytes    | `hew_layout_key_bytes`      | `hew_layout_val_bytes`        |
-//! | unit     | n/a (zero-size keys are inadmissible) | `hew_layout_val_unit` |
-//!
-//! Named-record descriptors are *not* shipped here: the existing per-record
-//! Layout machinery (Stage C-1c) materialises them on demand from the
-//! checker-authoritative record layout. Brief §"Surface 1" and plan §4 Stage
-//! C0b ("descriptors materialized on demand via the existing Named-record
-//! Layout machinery") explicitly defer that to the consumer.
-//!
-//! # Thunk discipline (Q281=A)
-//!
-//! Every thunk is a free-standing `extern "C" fn` named `hew_layout_<role>_<type>_<op>`.
-//! Closures or trait objects would not round-trip through `#[repr(C)]`
-//! `Option<fn>` cleanly; the niche-optimised null discriminant relies on the
-//! function pointer being a bare ABI-stable pointer.
-//!
-//! # WASM parity (#1820)
-//!
-//! These descriptors are linked into the wasm32-wasip1 runtime archive and are
-//! used by wasm HashMap/HashSet codegen for primitive keys and values. Record
-//! descriptors are still synthesized by codegen, with LLVM lowering their
-//! address-taken thunks through the wasm function table.
+//! Key descriptors add hash/equality callbacks to the same copy/drop descriptor
+//! used by vector elements. Hashing reads typed fields and complete string or
+//! byte contents; it never includes padding. Floating-point keys intentionally
+//! have no hash/equality callbacks because they do not satisfy the key contract.
+//! These pure descriptors and their callbacks also support wasm32-wasip1.
 
 #![allow(
     unsafe_op_in_unsafe_fn,
@@ -66,7 +13,7 @@
 
 use core::ffi::c_void;
 
-use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
+use hew_cabi::map::{HewMapKeyLayout, HewVecElemLayout};
 use hew_cabi::vec::HewTypeOwnershipKind;
 
 // ---------------------------------------------------------------------------
@@ -314,12 +261,15 @@ macro_rules! key_layout {
     ($name:ident, $ty:ty, $hash:expr, $eq:expr, $ownership:expr, $drop:expr) => {
         #[no_mangle]
         pub static $name: HewMapKeyLayout = HewMapKeyLayout {
-            size: core::mem::size_of::<$ty>(),
-            align: core::mem::align_of::<$ty>(),
-            ownership_kind: $ownership,
+            value: HewVecElemLayout {
+                size: core::mem::size_of::<$ty>(),
+                align: core::mem::align_of::<$ty>(),
+                ownership_kind: $ownership,
+                clone_fn: None,
+                drop_fn: $drop,
+            },
             hash_fn: $hash,
             eq_fn: $eq,
-            drop_fn: $drop,
         };
     };
 }
@@ -378,49 +328,61 @@ key_layout!(
 // bool: 1 byte, align 1.
 #[no_mangle]
 pub static hew_layout_key_bool: HewMapKeyLayout = HewMapKeyLayout {
-    size: 1,
-    align: 1,
-    ownership_kind: HewTypeOwnershipKind::Plain,
+    value: HewVecElemLayout {
+        size: 1,
+        align: 1,
+        ownership_kind: HewTypeOwnershipKind::Plain,
+        clone_fn: None,
+        drop_fn: None,
+    },
     hash_fn: Some(hew_layout_key_bool_hash),
     eq_fn: Some(hew_layout_key_bool_eq),
-    drop_fn: None,
 };
 
 // char: 4 bytes, align 4 (Unicode codepoint as u32).
 #[no_mangle]
 pub static hew_layout_key_char: HewMapKeyLayout = HewMapKeyLayout {
-    size: 4,
-    align: 4,
-    ownership_kind: HewTypeOwnershipKind::Plain,
+    value: HewVecElemLayout {
+        size: 4,
+        align: 4,
+        ownership_kind: HewTypeOwnershipKind::Plain,
+        clone_fn: None,
+        drop_fn: None,
+    },
     hash_fn: Some(hew_layout_key_char_hash),
     eq_fn: Some(hew_layout_key_char_eq),
-    drop_fn: None,
 };
 
 // string: pointer-sized opaque managed handle.
 #[no_mangle]
 pub static hew_layout_key_string: HewMapKeyLayout = HewMapKeyLayout {
-    size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
-    align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
-    ownership_kind: HewTypeOwnershipKind::String,
+    value: HewVecElemLayout {
+        size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
+        align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
+        ownership_kind: HewTypeOwnershipKind::String,
+        clone_fn: Some(hew_layout_string_clone),
+        drop_fn: Some(hew_layout_string_drop),
+    },
     hash_fn: Some(hew_layout_key_string_hash),
     eq_fn: Some(hew_layout_key_string_eq),
-    drop_fn: Some(hew_layout_string_drop),
 };
 
 // bytes: BytesTriple (ptr + offset + len), 16 bytes, align 8.
 #[no_mangle]
 pub static hew_layout_key_bytes: HewMapKeyLayout = HewMapKeyLayout {
-    size: core::mem::size_of::<BytesTripleRepr>(),
-    align: core::mem::align_of::<BytesTripleRepr>(),
-    ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+    value: HewVecElemLayout {
+        size: core::mem::size_of::<BytesTripleRepr>(),
+        align: core::mem::align_of::<BytesTripleRepr>(),
+        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        clone_fn: Some(hew_layout_bytes_clone),
+        drop_fn: Some(hew_layout_bytes_drop),
+    },
     hash_fn: Some(hew_layout_key_bytes_hash),
     eq_fn: Some(hew_layout_key_bytes_eq),
-    drop_fn: Some(hew_layout_bytes_drop),
 };
 
 // ---------------------------------------------------------------------------
-// Value descriptors (HewMapValueLayout)
+// Value descriptors (HewVecElemLayout)
 // ---------------------------------------------------------------------------
 //
 // Value descriptors carry no hash / eq (the kernel never hashes V — see
@@ -432,7 +394,7 @@ pub static hew_layout_key_bytes: HewMapKeyLayout = HewMapKeyLayout {
 macro_rules! val_layout_plain {
     ($name:ident, $ty:ty) => {
         #[no_mangle]
-        pub static $name: HewMapValueLayout = HewMapValueLayout {
+        pub static $name: HewVecElemLayout = HewVecElemLayout {
             size: core::mem::size_of::<$ty>(),
             align: core::mem::align_of::<$ty>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -450,7 +412,7 @@ val_layout_plain!(hew_layout_val_f32, f32);
 val_layout_plain!(hew_layout_val_f64, f64);
 
 #[no_mangle]
-pub static hew_layout_val_bool: HewMapValueLayout = HewMapValueLayout {
+pub static hew_layout_val_bool: HewVecElemLayout = HewVecElemLayout {
     size: 1,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -459,7 +421,7 @@ pub static hew_layout_val_bool: HewMapValueLayout = HewMapValueLayout {
 };
 
 #[no_mangle]
-pub static hew_layout_val_char: HewMapValueLayout = HewMapValueLayout {
+pub static hew_layout_val_char: HewVecElemLayout = HewVecElemLayout {
     size: 4,
     align: 4,
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -468,7 +430,7 @@ pub static hew_layout_val_char: HewMapValueLayout = HewMapValueLayout {
 };
 
 #[no_mangle]
-pub static hew_layout_val_string: HewMapValueLayout = HewMapValueLayout {
+pub static hew_layout_val_string: HewVecElemLayout = HewVecElemLayout {
     size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
     align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
     ownership_kind: HewTypeOwnershipKind::String,
@@ -477,7 +439,7 @@ pub static hew_layout_val_string: HewMapValueLayout = HewMapValueLayout {
 };
 
 #[no_mangle]
-pub static hew_layout_val_bytes: HewMapValueLayout = HewMapValueLayout {
+pub static hew_layout_val_bytes: HewVecElemLayout = HewVecElemLayout {
     size: core::mem::size_of::<BytesTripleRepr>(),
     align: core::mem::align_of::<BytesTripleRepr>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -489,7 +451,7 @@ pub static hew_layout_val_bytes: HewMapValueLayout = HewMapValueLayout {
 // size == 0 only when align == 1 (hashmap.rs:980-983); Plain ownership,
 // no drop, no clone.
 #[no_mangle]
-pub static hew_layout_val_unit: HewMapValueLayout = HewMapValueLayout {
+pub static hew_layout_val_unit: HewVecElemLayout = HewVecElemLayout {
     size: 0,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -519,12 +481,12 @@ mod tests {
     fn scalar_descriptors_have_thunks() {
         assert!(hew_layout_key_i32.hash_fn.is_some());
         assert!(hew_layout_key_i32.eq_fn.is_some());
-        assert!(hew_layout_key_i32.drop_fn.is_none());
-        assert_eq!(hew_layout_key_i32.size, 4);
-        assert_eq!(hew_layout_key_i32.align, 4);
+        assert!(hew_layout_key_i32.value.drop_fn.is_none());
+        assert_eq!(hew_layout_key_i32.value.size, 4);
+        assert_eq!(hew_layout_key_i32.value.align, 4);
 
         assert!(hew_layout_key_i64.hash_fn.is_some());
-        assert_eq!(hew_layout_key_i64.size, 8);
+        assert_eq!(hew_layout_key_i64.value.size, 8);
     }
 
     #[test]
@@ -540,10 +502,10 @@ mod tests {
 
     #[test]
     fn string_descriptor_has_drop() {
-        assert!(hew_layout_key_string.drop_fn.is_some());
+        assert!(hew_layout_key_string.value.drop_fn.is_some());
         assert!(hew_layout_val_string.drop_fn.is_some());
         assert_eq!(
-            hew_layout_key_string.ownership_kind,
+            hew_layout_key_string.value.ownership_kind,
             HewTypeOwnershipKind::String
         );
     }
@@ -551,14 +513,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn bytes_descriptor_has_drop_and_layout_managed_ownership() {
-        assert!(hew_layout_key_bytes.drop_fn.is_some());
+        assert!(hew_layout_key_bytes.value.drop_fn.is_some());
         assert!(hew_layout_val_bytes.drop_fn.is_some());
         assert_eq!(
-            hew_layout_key_bytes.ownership_kind,
+            hew_layout_key_bytes.value.ownership_kind,
             HewTypeOwnershipKind::LayoutManaged
         );
-        assert_eq!(hew_layout_key_bytes.size, 16);
-        assert_eq!(hew_layout_key_bytes.align, 8);
+        assert_eq!(hew_layout_key_bytes.value.size, 16);
+        assert_eq!(hew_layout_key_bytes.value.align, 8);
     }
 
     #[test]

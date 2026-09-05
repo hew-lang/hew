@@ -1443,13 +1443,14 @@ ASAN_SYMBOLIZER ?= $(shell ls /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | 
 # Empty ASAN_LSAN_OPTIONS disables suppressions for isolated ownership tests.
 ASAN_TEST_FILTER ?=
 ASAN_LSAN_OPTIONS ?= suppressions=lsan.supp
+ASAN_TEST_ARGS ?= --lib
 asan:
 	CARGO_TARGET_DIR=$(RUNTIME_ASAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
 	ASAN_OPTIONS="detect_leaks=1:use_sigaltstack=0" \
 	ASAN_SYMBOLIZER_PATH=$(ASAN_SYMBOLIZER) \
 	LSAN_OPTIONS="$(ASAN_LSAN_OPTIONS)" \
-	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib -- $(ASAN_TEST_FILTER) --test-threads=1
+	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime $(ASAN_TEST_ARGS) -- $(ASAN_TEST_FILTER) --test-threads=1
 
 # ASan gate for compiled .hew fixture binaries (Linux/nightly toolchain required).
 #

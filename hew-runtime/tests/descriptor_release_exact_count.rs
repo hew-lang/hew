@@ -6,8 +6,8 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 use std::sync::Mutex;
 
-use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVec, HewVecElemLayout};
+use hew_cabi::map::{HewMapKeyLayout, HewVecElemLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewVec};
 use hew_runtime::hashmap::{
     hew_hashmap_free_layout, hew_hashmap_insert_layout, hew_hashmap_new_with_layout,
 };
@@ -214,14 +214,17 @@ fn descriptor_release_exact_counts_cover_issue_2553_shapes() {
     reset(&MAP_INNER_DROPS, &MAP_INNER_EXPECTED, 4);
     let inner_layout = layout::<RecordOwningHeap>(drop_map_inner_record);
     let key_layout = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64),
         eq_fn: Some(eq_i64),
-        drop_fn: None,
     };
-    let value_layout = HewMapValueLayout {
+    let value_layout = HewVecElemLayout {
         size: size_of::<*mut HewVec>(),
         align: align_of::<*mut HewVec>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -311,14 +314,17 @@ fn suppressed_release_fails_exact_count_for_each_issue_2553_shape() {
     // SAFETY: descriptor and element agree.
     let vec = unsafe { make_vec(&inner_layout, &inner) };
     let key_layout = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64),
         eq_fn: Some(eq_i64),
-        drop_fn: None,
     };
-    let shallow_value_layout = HewMapValueLayout {
+    let shallow_value_layout = HewVecElemLayout {
         size: size_of::<*mut HewVec>(),
         align: align_of::<*mut HewVec>(),
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -417,14 +423,17 @@ fn injected_extra_release_helper() {
             // SAFETY: descriptor and value agree.
             let vec = unsafe { make_vec(&inner_layout, &inner) };
             let key_layout = HewMapKeyLayout {
-                size: size_of::<i64>(),
-                align: align_of::<i64>(),
-                ownership_kind: HewTypeOwnershipKind::Plain,
+                value: HewVecElemLayout {
+                    size: size_of::<i64>(),
+                    align: align_of::<i64>(),
+                    ownership_kind: HewTypeOwnershipKind::Plain,
+                    clone_fn: None,
+                    drop_fn: None,
+                },
                 hash_fn: Some(hash_i64),
                 eq_fn: Some(eq_i64),
-                drop_fn: None,
             };
-            let value_layout = HewMapValueLayout {
+            let value_layout = HewVecElemLayout {
                 size: size_of::<*mut HewVec>(),
                 align: align_of::<*mut HewVec>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,

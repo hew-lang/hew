@@ -20,7 +20,7 @@
 use std::ffi::c_void;
 use std::ptr;
 
-use hew_cabi::map::{HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewMapValueLayout};
+use hew_cabi::map::{HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewVecElemLayout};
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
     hew_hashmap_contains_key_layout, hew_hashmap_free_layout, hew_hashmap_get_layout,
@@ -84,39 +84,48 @@ unsafe extern "C" fn eq_point(lhs: *const c_void, rhs: *const c_void) -> i32 {
 
 fn key_layout_i64() -> HewMapKeyLayout {
     HewMapKeyLayout {
-        size: 8,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: 8,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     }
 }
 
 fn key_layout_i32() -> HewMapKeyLayout {
     HewMapKeyLayout {
-        size: 4,
-        align: 4,
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: 4,
+            align: 4,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i32 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i32 as HewMapKeyEqThunk),
-        drop_fn: None,
     }
 }
 
 fn key_layout_point() -> HewMapKeyLayout {
     HewMapKeyLayout {
-        size: 16,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: 16,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_point as HewMapKeyHashThunk),
         eq_fn: Some(eq_point as HewMapKeyEqThunk),
-        drop_fn: None,
     }
 }
 
-fn val_layout(size: usize, align: usize) -> HewMapValueLayout {
-    HewMapValueLayout {
+fn val_layout(size: usize, align: usize) -> HewVecElemLayout {
+    HewVecElemLayout {
         size,
         align,
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -378,12 +387,15 @@ fn layout_hashmap_null_val_layout_aborts() {
 #[should_panic(expected = "hash_fn is None")]
 fn layout_hashmap_null_hash_fn_aborts() {
     let kl = HewMapKeyLayout {
-        size: 8,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: 8,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: None,
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
     unsafe { validate_key_layout(&raw const kl) };
 }
@@ -392,12 +404,15 @@ fn layout_hashmap_null_hash_fn_aborts() {
 #[should_panic(expected = "eq_fn is None")]
 fn layout_hashmap_null_eq_fn_aborts() {
     let kl = HewMapKeyLayout {
-        size: 8,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: 8,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: None,
-        drop_fn: None,
     };
     unsafe { validate_key_layout(&raw const kl) };
 }
@@ -409,12 +424,15 @@ fn layout_hashmap_managed_key_without_drop_aborts() {
     // (it is a legitimate ownership kind). The new fail-closed gate fires
     // in validate_descriptor_ownership when drop_fn is missing.
     let kl = HewMapKeyLayout {
-        size: 8,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        value: HewVecElemLayout {
+            size: 8,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
     let vl = val_layout(8, 8);
     unsafe {
@@ -425,7 +443,7 @@ fn layout_hashmap_managed_key_without_drop_aborts() {
 #[test]
 #[should_panic(expected = "val_layout ownership_kind=LayoutManaged requires drop_fn")]
 fn layout_hashmap_managed_value_without_drop_aborts() {
-    let vl = HewMapValueLayout {
+    let vl = HewVecElemLayout {
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -442,26 +460,32 @@ fn layout_hashmap_managed_value_without_drop_aborts() {
 #[should_panic(expected = "zero-size keys are not admissible")]
 fn layout_hashmap_zero_size_key_aborts() {
     let kl = HewMapKeyLayout {
-        size: 0,
-        align: 1,
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: 0,
+            align: 1,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
     unsafe { validate_key_layout(&raw const kl) };
 }
 
 #[test]
-#[should_panic(expected = "key_layout.align is not a power of two")]
+#[should_panic(expected = "key_layout.value.align is not a power of two")]
 fn layout_hashmap_invalid_align_aborts() {
     let kl = HewMapKeyLayout {
-        size: 8,
-        align: 3,
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: 8,
+            align: 3,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
     unsafe { validate_key_layout(&raw const kl) };
 }
@@ -469,7 +493,7 @@ fn layout_hashmap_invalid_align_aborts() {
 #[test]
 #[should_panic(expected = "zero-size value layout must have align == 1")]
 fn layout_hashmap_zero_size_value_with_nonunit_align_aborts() {
-    let vl = HewMapValueLayout {
+    let vl = HewVecElemLayout {
         size: 0,
         align: 8, // invalid: size==0 requires align==1 (HashSet ZST contract)
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -486,12 +510,15 @@ fn layout_hashmap_stride_overflow_aborts() {
     // isize::MAX/4 stride budget. align=8 is fine; the size itself trips the
     // overflow guard.
     let kl = HewMapKeyLayout {
-        size: usize::MAX / 2,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: usize::MAX / 2,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
     let vl = val_layout(8, 8);
     unsafe {

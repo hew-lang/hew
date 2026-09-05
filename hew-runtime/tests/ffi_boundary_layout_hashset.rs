@@ -31,7 +31,7 @@ use std::ffi::c_void;
 use std::ptr;
 
 use hew_cabi::map::{HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout};
-use hew_cabi::vec::HewTypeOwnershipKind;
+use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
 use hew_runtime::hashmap::{validate_descriptor_ownership, validate_key_layout};
 use hew_runtime::hashset::{
     hew_hashset_clone_layout, hew_hashset_contains_layout, hew_hashset_free_layout,
@@ -67,12 +67,15 @@ unsafe extern "C" fn eq_point(lhs: *const c_void, rhs: *const c_void) -> i32 {
 
 fn elem_layout_point() -> HewMapKeyLayout {
     HewMapKeyLayout {
-        size: 16,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: 16,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_point as HewMapKeyHashThunk),
         eq_fn: Some(eq_point as HewMapKeyEqThunk),
-        drop_fn: None,
     }
 }
 
@@ -285,16 +288,19 @@ fn layout_hashset_null_elem_layout_aborts() {
 #[should_panic(expected = "key_layout ownership_kind=LayoutManaged requires drop_fn")]
 fn layout_hashset_managed_elem_without_drop_aborts() {
     let kl = HewMapKeyLayout {
-        size: 16,
-        align: 8,
-        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        value: HewVecElemLayout {
+            size: 16,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_point as HewMapKeyHashThunk),
         eq_fn: Some(eq_point as HewMapKeyEqThunk),
-        drop_fn: None,
     };
     // The hashset's ZST value layout is internal to hew_hashset_new_with_layout;
     // for this gate-level test we synthesize an equivalent value descriptor.
-    let vl = hew_cabi::map::HewMapValueLayout {
+    let vl = hew_cabi::map::HewVecElemLayout {
         size: 0,
         align: 1,
         ownership_kind: HewTypeOwnershipKind::Plain,

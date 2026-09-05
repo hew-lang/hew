@@ -4,7 +4,7 @@
 //! invariant 5: "Overwrite never drops K, always drops old V."
 //!
 //! This test installs a `HewMapKeyLayout` with a counter-incrementing
-//! `drop_fn` for K and a `HewMapValueLayout` with a counter-incrementing
+//! `drop_fn` for K and a `HewVecElemLayout` with a counter-incrementing
 //! `drop_fn` for V, then performs an insert + overwrite and asserts:
 //!
 //! - The OLD V's drop_fn was invoked exactly once (the overwrite-time drop).
@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewMapValueDropThunk, HewMapValueLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewVecElemDropThunk, HewVecElemLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -81,18 +81,21 @@ fn overwrite_drops_old_v_once_and_never_drops_stored_k() {
     // thunks only bump counters, which is the harmless-direction Plain
     // wouldn't even invoke.
     let kl = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        value: HewVecElemLayout {
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(k_drop_count as HewVecElemDropThunk),
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: Some(k_drop_count as HewMapValueDropThunk),
     };
-    let vl = HewMapValueLayout {
+    let vl = HewVecElemLayout {
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        drop_fn: Some(v_drop_count as HewMapValueDropThunk),
+        drop_fn: Some(v_drop_count as HewVecElemDropThunk),
         clone_fn: None,
     };
 
@@ -147,14 +150,17 @@ fn plain_v_overwrite_does_not_invoke_drop() {
     // Baseline: Plain ownership with drop_fn=None ⇒ no per-slot drop calls.
     V_DROP_COUNT.store(0, Ordering::SeqCst);
     let kl = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
-    let vl = HewMapValueLayout {
+    let vl = HewVecElemLayout {
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::Plain,

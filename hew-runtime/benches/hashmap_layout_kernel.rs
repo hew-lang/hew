@@ -48,7 +48,7 @@ use std::ffi::{c_char, c_void, CString};
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewMapValueDropThunk, HewMapValueLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewVecElemDropThunk, HewVecElemLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -112,20 +112,23 @@ unsafe extern "C" fn eq_cstr_slot(lhs: *const c_void, rhs: *const c_void) -> i32
     }
 }
 
-fn string_descriptors() -> (HewMapKeyLayout, HewMapValueLayout) {
+fn string_descriptors() -> (HewMapKeyLayout, HewVecElemLayout) {
     let kl = HewMapKeyLayout {
-        size: size_of::<*mut c_char>(),
-        align: align_of::<*mut c_char>(),
-        ownership_kind: HewTypeOwnershipKind::String,
+        value: HewVecElemLayout {
+            size: size_of::<*mut c_char>(),
+            align: align_of::<*mut c_char>(),
+            ownership_kind: HewTypeOwnershipKind::String,
+            clone_fn: None,
+            drop_fn: Some(cstring_slot_drop as HewVecElemDropThunk),
+        },
         hash_fn: Some(hash_cstr_slot as HewMapKeyHashThunk),
         eq_fn: Some(eq_cstr_slot as HewMapKeyEqThunk),
-        drop_fn: Some(cstring_slot_drop as HewMapValueDropThunk),
     };
-    let vl = HewMapValueLayout {
+    let vl = HewVecElemLayout {
         size: size_of::<*mut c_char>(),
         align: align_of::<*mut c_char>(),
         ownership_kind: HewTypeOwnershipKind::String,
-        drop_fn: Some(cstring_slot_drop as HewMapValueDropThunk),
+        drop_fn: Some(cstring_slot_drop as HewVecElemDropThunk),
         clone_fn: None,
     };
     (kl, vl)
@@ -158,16 +161,19 @@ unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
     i32::from(l == r)
 }
 
-fn i64_plain_descriptors() -> (HewMapKeyLayout, HewMapValueLayout) {
+fn i64_plain_descriptors() -> (HewMapKeyLayout, HewVecElemLayout) {
     let kl = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewVecElemLayout {
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
-    let vl = HewMapValueLayout {
+    let vl = HewVecElemLayout {
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::Plain,

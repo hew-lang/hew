@@ -224,6 +224,13 @@ fn permanent_eq_callback_fault() {
 }
 
 #[test]
+fn permanent_index_callback_fault() {
+    lower_source(include_str!(
+        "../../tests/core-acceptance/cases/map-index-callback-fault.hew"
+    ));
+}
+
+#[test]
 fn collection_clone_and_set_emptiness_compose_without_new_runtime_operations() {
     let module = lower_source(
         r#"
@@ -282,7 +289,7 @@ fn collection_clone_and_set_emptiness_compose_without_new_runtime_operations() {
 }
 
 #[test]
-fn map_lookup_borrows_a_field_and_ends_the_loan_on_the_missing_key_edge() {
+fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
     let module = lower_source(
         r#"
         type Holder { values: HashMap<i64, string> }
@@ -340,14 +347,28 @@ fn map_lookup_borrows_a_field_and_ends_the_loan_on_the_missing_key_edge() {
             )
             .count(),
         1,
-        "the missing-key edge must destroy the containing owner after ending its loan"
+        "the failure edge must destroy the containing owner after ending its loan"
     );
-    assert!(matches!(
-        fault.terminator,
-        SemTerminator::Trap {
-            kind: hew_sir::TrapKind::IndexOutOfBounds
-        }
-    ));
+    assert!(matches!(fault.terminator, SemTerminator::ResumeUnwind));
+
+    let fault_id = fault.id;
+    let mut replaced = module.clone();
+    replaced
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .unwrap()
+        .blocks
+        .iter_mut()
+        .find(|block| block.id == fault_id)
+        .unwrap()
+        .terminator = SemTerminator::Trap {
+        kind: hew_sir::TrapKind::IndexOutOfBounds,
+    };
+    assert!(verify_module(&replaced).iter().any(|diagnostic| matches!(
+        diagnostic.kind,
+        hew_sir::SirDiagnosticKind::FaultLifetime { .. }
+    )));
 }
 
 #[test]

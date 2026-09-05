@@ -1224,3 +1224,23 @@ Source SIR tests cover all callback families and reject abandoned/replaced fault
 Validation: complete Types suite, SIR/MIR unit suites, focused collection fault tests, complete codegen suite and scoped JSON Clippy pass. Native selected-key and callback-fault acceptance is pending the key descriptor emitter and permanent source fixtures being integrated separately; no native Map acceptance is claimed here.
 
 Removed the redundant User-only check inside generic direct-call resolution. Its sole caller continues to admit only checked User and ImplMethod targets, and resolution still uses the exact declaration and checker-resolved type arguments. Existing direct-call and generic free-function SIR tests pass. The package-level generic impl regression is being validated with the coordinated compiler-session fixture.
+
+### Native collection callback acceptance
+
+The composed selected-key emitter, runtime ABI and compiler fault consumers pass
+the complete native and paired generated/runtime ASan/LSan acceptance suites at
+O0 and O2 without suppressions. Generic selected methods, vector/variant/optional
+key equality, copy isolation, owned projections and callback-local cleanup execute
+successfully. Missing-key indexing retains its bounds failure.
+
+The older field-lookup cleanup oracle expected a newly created static trap.
+It now requires propagation of the active fault and explicitly rejects replacing
+that fault, while retaining its loan-before-owner-cleanup assertions. A separate
+native and paired safety indexing control preserves DivideByZero from a selected
+Hash callback instead of replacing it with IndexOutOfBounds. Focused SIR source
+and native/safety controls pass.
+
+The generic impl call guard is repaired, but package execution now reaches the
+next unsupported boundary: mutating a collection through a record field. The
+shared receiver-place implementation is in progress; package acceptance remains
+unproven and no source workaround is introduced.

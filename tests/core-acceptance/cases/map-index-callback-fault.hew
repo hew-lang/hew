@@ -1,0 +1,25 @@
+type Key {
+    label: string,
+    divisor: i64,
+}
+
+type Holder {
+    values: HashMap<Key, Vec<string>>,
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        let local = self.label.to_upper();
+        let bytes = local.to_bytes();
+        bytes.len() / self.divisor
+    }
+}
+
+fn main() -> i64 {
+    var values: HashMap<Key, Vec<string>> = HashMap.new();
+    values.insert(Key { label: "stored".to_upper(), divisor: 1 }, ["payload".to_upper()]);
+    let holder = Holder { values: values };
+    let key = Key { label: "lookup".to_upper(), divisor: 0 };
+    println(holder.values[key][0]);
+    0
+}

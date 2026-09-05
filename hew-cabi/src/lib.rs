@@ -14,4 +14,5 @@
 pub mod cabi;
 pub mod map;
 pub mod sink;
+pub mod string;
 pub mod vec;

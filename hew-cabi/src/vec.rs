@@ -5,7 +5,8 @@
 //! hew-runtime.  The actual `hew_vec_*` function bodies live in hew-runtime;
 //! here we provide `extern "C"` declarations that resolve at link time.
 
-use core::ffi::{c_char, c_void};
+use crate::string::HewString;
+use core::ffi::c_void;
 use core::mem;
 
 /// Descriptor-level ownership discipline for runtime-managed aggregate values.
@@ -53,15 +54,13 @@ pub struct HewTypeLayout {
 pub enum ElemKind {
     /// Plain value type (i32, i64, f64, structs, etc.) — no special handling.
     Plain = 0,
-    /// String (`*const c_char`) — elements are header-aware, refcounted
-    /// buffers. On ingress (`hew_vec_push_str`/`set_str`) the producer's bytes
-    /// are **copied in** to a fresh header-bearing allocation (internal
-    /// producers hand over headerless buffers that cannot be retained). On
-    /// internal propagation (`clone`/`slice`/`append`/`get_str`) an element is
-    /// **retained** (refcount bump, same buffer); on removal or drop
-    /// (`free`/`truncate`/`pop_str`) it is **released** (refcount decrement,
-    /// free at zero). Built only through the typed `hew_vec_new_str` family —
-    /// the untyped `hew_vec_new_generic` rejects this kind fail-closed.
+    /// Managed string (`*const HewString`). Push/set retain the borrowed input;
+    /// clone/slice/append retain each stored owner. Get returns a retained owner
+    /// and pop transfers the removed owner to the caller. The caller releases
+    /// either result with `string_release`; free/truncate release stored owners.
+    /// Null is the canonical empty string and remains a valid element.
+    /// Built only through the typed `hew_vec_new_str` family; the untyped
+    /// `hew_vec_new_generic` rejects this kind.
     String = 1,
 }
 
@@ -261,7 +260,8 @@ extern "C" {
     pub fn hew_vec_push_i64(v: *mut HewVec, val: i64);
     pub fn hew_vec_push_f32(v: *mut HewVec, val: f32);
     pub fn hew_vec_push_f64(v: *mut HewVec, val: f64);
-    pub fn hew_vec_push_str(v: *mut HewVec, val: *const c_char);
+    /// Retain a borrowed managed string, including canonical empty.
+    pub fn hew_vec_push_str(v: *mut HewVec, val: *const HewString);
     pub fn hew_vec_push_ptr(v: *mut HewVec, val: *mut c_void);
     pub fn hew_vec_push_generic(v: *mut HewVec, data: *const c_void);
     pub fn hew_vec_push_layout(v: *mut HewVec, data: *const c_void, layout: *const HewTypeLayout);
@@ -283,7 +283,8 @@ extern "C" {
     pub fn hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64;
     pub fn hew_vec_get_f32(v: *mut HewVec, index: i64) -> f32;
     pub fn hew_vec_get_f64(v: *mut HewVec, index: i64) -> f64;
-    pub fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char;
+    /// Return one retained managed owner; the caller must release it.
+    pub fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const HewString;
     pub fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void;
     pub fn hew_vec_get_generic(v: *const HewVec, index: i64) -> *const c_void;
     pub fn hew_vec_get_layout(
@@ -309,7 +310,8 @@ extern "C" {
     pub fn hew_vec_set_i64(v: *mut HewVec, index: i64, val: i64);
     pub fn hew_vec_set_f32(v: *mut HewVec, index: i64, val: f32);
     pub fn hew_vec_set_f64(v: *mut HewVec, index: i64, val: f64);
-    pub fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const c_char);
+    /// Retain the borrowed replacement and release the previous stored owner.
+    pub fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const HewString);
     pub fn hew_vec_set_generic(v: *mut HewVec, index: i64, data: *const c_void);
     pub fn hew_vec_set_layout(
         v: *mut HewVec,
@@ -330,7 +332,8 @@ extern "C" {
     pub fn hew_vec_pop_i64(v: *mut HewVec) -> i64;
     pub fn hew_vec_pop_f32(v: *mut HewVec) -> f32;
     pub fn hew_vec_pop_f64(v: *mut HewVec) -> f64;
-    pub fn hew_vec_pop_str(v: *mut HewVec) -> *const c_char;
+    /// Transfer the removed managed owner to the caller for release.
+    pub fn hew_vec_pop_str(v: *mut HewVec) -> *const HewString;
     pub fn hew_vec_pop_generic(v: *mut HewVec, out: *mut c_void) -> i32;
     pub fn hew_vec_pop_layout(
         v: *mut HewVec,
@@ -368,7 +371,8 @@ extern "C" {
     pub fn hew_vec_contains_i32(v: *const HewVec, val: i32) -> i32;
     pub fn hew_vec_contains_i64(v: *const HewVec, val: i64) -> i32;
     pub fn hew_vec_contains_f64(v: *const HewVec, val: f64) -> i32;
-    pub fn hew_vec_contains_str(v: *const HewVec, val: *const c_char) -> i32;
+    /// Compare complete managed text, including embedded NUL and empty values.
+    pub fn hew_vec_contains_str(v: *const HewVec, val: *const HewString) -> i32;
     pub fn hew_vec_contains_layout(
         v: *const HewVec,
         data: *const c_void,

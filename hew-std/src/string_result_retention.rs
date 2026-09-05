@@ -241,7 +241,7 @@ fn toml_results_are_transferred() {
 }
 
 #[test]
-fn markdown_and_regex_results_are_transferred() {
+fn markdown_results_are_transferred() {
     let markdown = CString::new("# heading\n\n<script>bad()</script>").unwrap();
     assert_transferred(
         "hew_markdown_to_html",
@@ -259,27 +259,47 @@ fn markdown_and_regex_results_are_transferred() {
             assert!(!text.contains("<script>"));
         },
     );
+}
 
-    let pattern = CString::new("[a-z]+[0-9]+").unwrap();
-    let text = CString::new("before abc123 after").unwrap();
-    let replacement = CString::new("MATCH").unwrap();
-    // SAFETY: `pattern` is a live NUL-terminated regex.
-    let regex = unsafe { crate::regex::hew_regex_new(pattern.as_ptr()) };
-    assert!(!regex.is_null());
-    assert_transferred(
-        "hew_regex_find",
-        // SAFETY: regex/text stay live through the measurement.
-        || unsafe { crate::regex::hew_regex_find(regex, text.as_ptr()) },
-        |result| assert_eq!(result.to_str().unwrap(), "abc123"),
-    );
-    assert_transferred(
-        "hew_regex_replace",
-        // SAFETY: regex/text/replacement stay live through the measurement.
-        || unsafe { crate::regex::hew_regex_replace(regex, text.as_ptr(), replacement.as_ptr()) },
-        |result| assert_eq!(result.to_str().unwrap(), "before MATCH after"),
-    );
-    // SAFETY: both producer calls borrowed the regex handle.
-    unsafe { crate::regex::hew_regex_free(regex) };
+#[test]
+fn regex_managed_results_survive_inputs_and_handle() {
+    use crate::regex::*;
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::{string_as_str, string_release};
+
+    let pattern = ManagedString::new("(?P<part>a\0[0-9]+)");
+    let text = ManagedString::new("left a\u{0}1 right a\u{0}22 tail");
+    let replacement = ManagedString::new("R\0雪");
+    // SAFETY: pattern is a live managed string borrowed during compilation.
+    let re = unsafe { hew_regex_new(pattern.as_ptr()) };
+    assert!(!re.is_null());
+    drop(pattern);
+    // SAFETY: re and input handles are live; each output transfers an independent owner.
+    unsafe {
+        let first = hew_regex_find(re, text.as_ptr());
+        let second = hew_regex_find(re, text.as_ptr());
+        assert_ne!(first, second);
+        assert_eq!(string_as_str(first), "a\u{0}1");
+        string_release(first);
+        let third = hew_regex_find(re, text.as_ptr());
+        let captured = hew_regex_capture(re, text.as_ptr(), 1);
+        let replaced = hew_regex_replace(re, text.as_ptr(), replacement.as_ptr());
+        let later = hew_regex_replace(re, text.as_ptr(), replacement.as_ptr());
+        assert_ne!(replaced, later);
+        string_release(later);
+        hew_regex_free(re);
+        drop(text);
+        drop(replacement);
+
+        assert_eq!(string_as_str(second), "a\u{0}1");
+        assert_eq!(string_as_str(third), "a\u{0}1");
+        assert_eq!(string_as_str(captured), "a\u{0}1");
+        assert_eq!(string_as_str(replaced), "left R\0雪 right R\0雪 tail");
+        string_release(second);
+        string_release(third);
+        hew_regex_free_capture(captured);
+        string_release(replaced);
+    }
 }
 
 fn borrowed_triple(data: &mut [u8]) -> BytesTriple {

@@ -571,3 +571,30 @@ unsuppressed ASan/LSan checks pass. The broader runtime/C ABI run passed all oth
 cases; its initial zero-sized test used alignment outside the existing map
 contract, so aligned ZST vector coverage is now separate from map ZST coverage.
 Cross-platform allocator validation follows integration.
+
+## Managed regex and DNS text boundaries
+
+Regex pattern, subject, replacement and capture-name arguments now borrow
+managed strings; match/replacement/capture results own managed references.
+Vector-producing regex and DNS paths retain each string on insertion and
+release the producer's reference. Direct Vec getters release their returned
+owners after reading, including canonical empty elements. The CABI String
+push/get/set/pop/contains declarations now match the runtime's HewString
+parameters and results, with corrected retention and transfer documentation.
+Descriptor types, collection layouts and runtime operations are unchanged.
+
+Capture presence stays encoded by vector length, preserving a present empty
+capture separately from absence. The scalar compiler-facing capture helper
+returns a string and therefore cannot distinguish empty from absent under
+canonical-null representation; its contract now directs presence-sensitive
+callers to the vector-returning capture API. No compiler route was added.
+DNS rejects embedded NUL hostnames without resolving a valid prefix and keeps
+existing empty/failure/deadline behaviour.
+
+The full standard-library suite passes, including the formerly failing DNS
+and regex Vec-string cases. Direct tests cover NUL-bearing text, multiple
+matches, empty capture presence, getter/setter/pop ownership after parent
+release, and DNS results after the input and runtime are dropped. Focused
+address/leak sanitizers pass without suppressions; scoped CABI/stdlib JSON
+Clippy passes. Combined census and platform/native acceptance remain with
+the integration owner.

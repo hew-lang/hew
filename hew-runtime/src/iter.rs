@@ -11,7 +11,7 @@
     reason = "data buffer allocated via libc::realloc which guarantees max alignment"
 )]
 
-use core::ffi::{c_char, c_void};
+use core::ffi::c_void;
 
 use crate::vec::HewVec;
 
@@ -194,19 +194,23 @@ pub unsafe extern "C" fn hew_iter_value_f64(iter: *const HewIter) -> f64 {
     }
 }
 
-/// Return the current string value (pointer to the C string stored in the vec).
+/// Return the current borrowed managed string handle.
 ///
 /// # Safety
 ///
-/// `iter` must be a valid `HewIter` whose underlying vec holds `*const c_char`.
+/// `iter` must be a valid `HewIter` whose underlying vec holds managed strings.
 /// `hew_iter_next` must have returned 1 before calling this.
 #[no_mangle]
-pub unsafe extern "C" fn hew_iter_value_str(iter: *const HewIter) -> *const c_char {
+pub unsafe extern "C" fn hew_iter_value_str(
+    iter: *const HewIter,
+) -> *const hew_cabi::string::HewString {
     // SAFETY: caller guarantees `iter` is valid and positioned via next().
     unsafe {
         let idx = (*iter).index - 1;
         let data = (*(*iter).vec).data;
-        data.cast::<*const c_char>().add(idx).read()
+        data.cast::<*const hew_cabi::string::HewString>()
+            .add(idx)
+            .read()
     }
 }
 
@@ -233,7 +237,7 @@ mod tests {
         hew_vec_free, hew_vec_new, hew_vec_new_f64, hew_vec_new_i64, hew_vec_new_str,
         hew_vec_push_f64, hew_vec_push_i32, hew_vec_push_i64, hew_vec_push_str,
     };
-    use std::ffi::{CStr, CString};
+    use hew_cabi::string::{string_as_str, string_from_str, string_release};
 
     // -- Empty vec ----------------------------------------------------------
 
@@ -406,27 +410,27 @@ mod tests {
         // SAFETY: FFI calls use valid pointers and valid C strings.
         unsafe {
             let v = hew_vec_new_str();
-            let s1 = CString::new("hello").unwrap();
-            let s2 = CString::new("").unwrap();
-            let s3 = CString::new("world").unwrap();
-            hew_vec_push_str(v, s1.as_ptr());
-            hew_vec_push_str(v, s2.as_ptr());
-            hew_vec_push_str(v, s3.as_ptr());
+            let s1 = string_from_str("hello");
+            let s2 = string_from_str("");
+            let s3 = string_from_str("world");
+            hew_vec_push_str(v, s1);
+            hew_vec_push_str(v, s2);
+            hew_vec_push_str(v, s3);
+            string_release(s1);
+            string_release(s2);
+            string_release(s3);
 
             let it = hew_iter_vec(v);
 
             assert_eq!(hew_iter_next(it), 1);
             // SAFETY: value_str returns a strdup'd pointer valid for the vec's lifetime.
-            let val = CStr::from_ptr(hew_iter_value_str(it));
-            assert_eq!(val.to_str().unwrap(), "hello");
+            assert_eq!(string_as_str(hew_iter_value_str(it)), "hello");
 
             assert_eq!(hew_iter_next(it), 1);
-            let val = CStr::from_ptr(hew_iter_value_str(it));
-            assert_eq!(val.to_str().unwrap(), "");
+            assert_eq!(string_as_str(hew_iter_value_str(it)), "");
 
             assert_eq!(hew_iter_next(it), 1);
-            let val = CStr::from_ptr(hew_iter_value_str(it));
-            assert_eq!(val.to_str().unwrap(), "world");
+            assert_eq!(string_as_str(hew_iter_value_str(it)), "world");
 
             assert_eq!(hew_iter_next(it), 0);
 

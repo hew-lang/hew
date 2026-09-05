@@ -1655,7 +1655,7 @@ mod tests {
     /// Free a `malloc_cstring`'d test string via the runtime's string drop.
     unsafe fn hew_string_drop_for_test(s: *mut c_char) {
         // SAFETY: s came from malloc_cstring; hew_string_drop is its deallocator.
-        unsafe { crate::string::hew_string_drop(s) };
+        unsafe { crate::cabi::free_cstring(s) };
     }
 
     /// The bytes the encoder emits are canonical CBOR a vanilla `ciborium`

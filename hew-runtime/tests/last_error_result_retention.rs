@@ -56,7 +56,6 @@ use std::ffi::{c_char, CStr, CString};
 use hew_cabi::cabi::cstring_ensure_unique;
 use hew_runtime::process::hew_process_last_error;
 use hew_runtime::stream_error::hew_stream_last_error;
-use hew_runtime::string::hew_string_drop;
 
 /// Record an error in the runtime's thread-local process-error slot without
 /// touching the filesystem or spawning anything: a negative `argc` is rejected
@@ -129,8 +128,8 @@ fn assert_result_is_transferred(
     // SAFETY: each pointer is a live, solely-owned header-aware Hew string
     // (R2), so this is its balancing release.
     unsafe {
-        hew_string_drop(first);
-        hew_string_drop(second);
+        hew_cabi::cabi::free_cstring(first);
+        hew_cabi::cabi::free_cstring(second);
     }
     induce();
     // SAFETY: as above.
@@ -147,7 +146,7 @@ fn assert_result_is_transferred(
          result, so the callee retained a pointer into the freed buffer"
     );
     // SAFETY: `third` is live and solely owned.
-    unsafe { hew_string_drop(third) };
+    unsafe { hew_cabi::cabi::free_cstring(third) };
 }
 
 /// `hew_process_last_error` transfers: it copies the thread-local message into

@@ -15,6 +15,7 @@ use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use hew_cabi::cabi::{cstring_ensure_unique, free_cstring, str_to_malloc};
+use hew_cabi::string::{string_as_bytes, string_release, HewString};
 use hew_runtime::env::{
     hew_args_get, hew_cwd, hew_env_get, hew_env_remove, hew_env_set, hew_home_dir, hew_hostname,
     hew_temp_dir,
@@ -88,6 +89,28 @@ fn assert_result_is_transferred(symbol: &str, mut call: impl FnMut() -> *mut c_c
     );
     // SAFETY: R2's same producer invariant applies to this fresh result.
     unsafe { free_cstring(third) };
+}
+
+fn assert_managed_result_is_transferred(symbol: &str, mut call: impl FnMut() -> *mut HewString) {
+    let first = call();
+    let second = call();
+    assert_ne!(
+        first, second,
+        "{symbol}: two non-empty results must be distinct"
+    );
+    // SAFETY: both calls return live managed owners.
+    let expected = unsafe { string_as_bytes(first) }.to_vec();
+    // SAFETY: `first` and `second` are the two independent owners returned above.
+    unsafe {
+        string_release(first);
+        string_release(second);
+    }
+    let third = call();
+    // SAFETY: the third result remains live for the assertion and release.
+    unsafe {
+        assert_eq!(string_as_bytes(third), expected);
+        string_release(third);
+    }
 }
 
 #[test]
@@ -297,13 +320,13 @@ fn io_read_line_result_is_transferred() {
     if std::env::var_os(STDIN_CHILD).is_some() {
         // Three equal, independently queued lines keep the stdin source alive
         // for R3 while each `read_line` consumes exactly one record.
-        assert_result_is_transferred("hew_io_read_line", || hew_io_read_line());
+        assert_managed_result_is_transferred("hew_io_read_line", || hew_io_read_line());
     } else {
         run_stdin_child("io_read_line_result_is_transferred", b"line\nline\nline\n");
     }
 }
 
-unsafe fn read_all_from_replaced_stdin(input: &[u8]) -> *mut c_char {
+unsafe fn read_all_from_replaced_stdin(input: &[u8]) -> *mut HewString {
     let mut pipe_fds = [0; 2];
     // SAFETY: `pipe_fds` has space for the read/write descriptors.
     // SAFETY: `pipe_fds` has space for the read/write descriptors.
@@ -351,7 +374,7 @@ unsafe fn read_all_from_replaced_stdin(input: &[u8]) -> *mut c_char {
 #[test]
 fn io_read_all_result_is_transferred() {
     if std::env::var_os(STDIN_CHILD).is_some() {
-        assert_result_is_transferred("hew_io_read_all", || {
+        assert_managed_result_is_transferred("hew_io_read_all", || {
             // SAFETY: this test-only helper restores stdin before returning.
             unsafe { read_all_from_replaced_stdin(b"read-all retention witness") }
         });

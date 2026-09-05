@@ -13,6 +13,7 @@ use crate::{
     cabi::{free_cstring, str_to_malloc},
     util::cstr_to_str,
 };
+use hew_cabi::string::{string_as_str, HewString};
 use std::os::raw::c_char;
 use std::process::Command;
 
@@ -52,10 +53,10 @@ fn bytes_to_malloc(bytes: &[u8]) -> *mut c_char {
 /// owner (refcount share / static passthrough), not a headerless `strdup`, so it
 /// must be released through the universal `String` consumer — never bare
 /// `libc::free`, which would free `data` instead of the allocation base.
-unsafe fn free_c_string(ptr: *const c_char) {
+unsafe fn free_managed_string(ptr: *const HewString) {
     // SAFETY: ptr is null or a retained String owner from hew_vec_get_str;
-    // hew_string_drop performs the static-literal skip before any header access.
-    unsafe { crate::string::hew_string_drop(ptr.cast_mut()) }; // CSTRING-FREE: str-open (release hew_vec_get_str retained owner, P2b-vec)
+    // hew_string_drop releases that managed allocation share.
+    unsafe { crate::string::hew_string_drop(ptr.cast_mut()) };
 }
 
 /// Build a [`HewProcessResult`] from an [`std::process::Output`].
@@ -161,16 +162,10 @@ unsafe fn hewvec_string_args(arg_vec: *mut HewVec, context: &str) -> Option<Vec<
         // SAFETY: index_i64 was derived from an in-bounds usize index; get_str
         // returns a retained header-aware String owner for this slot.
         let raw_arg = unsafe { crate::vec::hew_vec_get_str(arg_vec, index_i64) };
-        let arg_context = format!("{context}: args[{index}]");
-        // SAFETY: raw_arg is the retained owner returned by hew_vec_get_str.
-        let Some(arg_text) = (unsafe { cstr_to_str(&raw_arg, &arg_context) }) else {
-            // SAFETY: raw_arg is a retained owner and must be released here.
-            unsafe { free_c_string(raw_arg) };
-            return None;
-        };
-        owned_args.push(arg_text.to_owned());
+        // SAFETY: raw_arg is the retained managed owner returned by get_str.
+        owned_args.push(unsafe { string_as_str(raw_arg) }.to_owned());
         // SAFETY: raw_arg is a retained owner and must be released here.
-        unsafe { free_c_string(raw_arg) };
+        unsafe { free_managed_string(raw_arg) };
     }
 
     Some(owned_args)
@@ -655,19 +650,23 @@ mod tests {
     #[cfg(unix)]
     fn run_argv_preserves_spaced_and_empty_arguments() {
         let cmd = CString::new("printf").unwrap();
-        let fmt = CString::new("<%s>|<%s>|<%s>").unwrap();
-        let spaced = CString::new("hello world").unwrap();
-        let empty = CString::new("").unwrap();
-        let tail = CString::new("tail").unwrap();
+        let fmt = hew_cabi::string::string_from_str("<%s>|<%s>|<%s>");
+        let spaced = hew_cabi::string::string_from_str("hello world");
+        let empty = hew_cabi::string::string_from_str("");
+        let tail = hew_cabi::string::string_from_str("tail");
         // SAFETY: hew_vec_new_str allocates a valid Vec<String> handle.
         let argv = unsafe { crate::vec::hew_vec_new_str() };
 
         // SAFETY: argv is a valid string vec and all CString pointers are valid.
         unsafe {
-            crate::vec::hew_vec_push_str(argv, fmt.as_ptr());
-            crate::vec::hew_vec_push_str(argv, spaced.as_ptr());
-            crate::vec::hew_vec_push_str(argv, empty.as_ptr());
-            crate::vec::hew_vec_push_str(argv, tail.as_ptr());
+            crate::vec::hew_vec_push_str(argv, fmt);
+            crate::vec::hew_vec_push_str(argv, spaced);
+            crate::vec::hew_vec_push_str(argv, empty);
+            crate::vec::hew_vec_push_str(argv, tail);
+            hew_cabi::string::string_release(fmt);
+            hew_cabi::string::string_release(spaced);
+            hew_cabi::string::string_release(empty);
+            hew_cabi::string::string_release(tail);
         }
 
         // SAFETY: cmd and argv are valid handles for the C ABI.
@@ -802,11 +801,14 @@ mod tests {
     #[cfg(unix)]
     fn spawn_argv_launches_and_waits() {
         let cmd = CString::new("echo").unwrap();
-        let arg = CString::new("spawned-argv").unwrap();
+        let arg = hew_cabi::string::string_from_str("spawned-argv");
         // SAFETY: hew_vec_new_str allocates a valid Vec<String> handle.
         let argv = unsafe { crate::vec::hew_vec_new_str() };
         // SAFETY: argv is a valid string vec and arg is a valid C string.
-        unsafe { crate::vec::hew_vec_push_str(argv, arg.as_ptr()) };
+        unsafe {
+            crate::vec::hew_vec_push_str(argv, arg);
+            hew_cabi::string::string_release(arg);
+        };
         // SAFETY: cmd and argv are valid handles for the C ABI.
         let proc = unsafe { hew_process_spawn_argv(cmd.as_ptr(), argv) };
         assert!(!proc.is_null());

@@ -25,6 +25,7 @@ use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 // Re-export the C ABI functions under test.
+use hew_cabi::string::{string_as_str, string_from_str, string_release, HewString};
 use hew_runtime::actor::{hew_actor_free, hew_actor_send, hew_actor_spawn};
 use hew_runtime::iter::{
     hew_iter_free, hew_iter_next, hew_iter_reset, hew_iter_value_i32, hew_iter_vec,
@@ -61,14 +62,35 @@ use hew_runtime::{hew_clear_error, hew_last_error};
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-/// Create a C string literal and return a raw pointer.
-fn cstr(s: &str) -> CString {
-    CString::new(s).expect("CString::new failed")
+struct ManagedString(*mut HewString);
+
+impl ManagedString {
+    fn as_ptr(&self) -> *const HewString {
+        self.0
+    }
 }
 
-/// Read a C string pointer into a Rust `&str` (panics on null/invalid UTF-8).
-unsafe fn read_cstr<'a>(p: *const c_char) -> &'a str {
+impl Drop for ManagedString {
+    fn drop(&mut self) {
+        // SAFETY: this wrapper owns exactly one managed string share.
+        unsafe { string_release(self.0) };
+    }
+}
+
+/// Create one managed Hew string owner for an FFI call.
+fn cstr(s: &str) -> ManagedString {
+    ManagedString(string_from_str(s))
+}
+
+/// Read a managed string pointer into a Rust `&str`.
+unsafe fn read_cstr<'a>(p: *const HewString) -> &'a str {
+    // SAFETY: callers retain a live owner for the returned borrow.
+    unsafe { string_as_str(p) }
+}
+
+unsafe fn read_foreign_cstr<'a>(p: *const c_char) -> &'a str {
     assert!(!p.is_null(), "unexpected null C string");
+    // SAFETY: callers identify an explicitly NUL-terminated foreign result.
     unsafe { CStr::from_ptr(p) }
         .to_str()
         .expect("invalid UTF-8")
@@ -85,10 +107,8 @@ unsafe fn read_cstr<'a>(p: *const c_char) -> &'a str {
 /// — never via bare `libc::free`, which would interior-free `base+16` and
 /// corrupt the heap. Genuinely raw `libc::malloc` results (e.g.
 /// `hew_reply_wait` payloads) keep bare `libc::free`.
-unsafe fn free_hew_string(p: *mut c_char) {
-    if !p.is_null() {
-        unsafe { hew_string_drop(p) };
-    }
+unsafe fn free_hew_string(p: *mut HewString) {
+    unsafe { hew_string_drop(p) };
 }
 
 /// Read a *retained* string-vec element owner (`hew_vec_get_str` /
@@ -97,13 +117,9 @@ unsafe fn free_hew_string(p: *mut c_char) {
 /// (refcount bump) the caller MUST release; reading inline through `read_cstr`
 /// and discarding the pointer leaks that owner (`ASan` flags the leak). The value
 /// is copied out first so it outlives the release.
-unsafe fn read_str_and_drop(p: *const c_char) -> String {
-    assert!(!p.is_null(), "unexpected null string element");
-    // SAFETY: `p` is a live, NUL-terminated, retained element owner.
-    let owned = unsafe { CStr::from_ptr(p) }
-        .to_str()
-        .expect("invalid UTF-8")
-        .to_owned();
+unsafe fn read_str_and_drop(p: *const HewString) -> String {
+    // SAFETY: `p` is a live retained managed element owner.
+    let owned = unsafe { string_as_str(p) }.to_owned();
     // SAFETY: `p` is a retained header-aware owner; release exactly once.
     unsafe { free_hew_string(p.cast_mut()) };
     owned
@@ -805,7 +821,7 @@ fn actor_free_null_reports_error() {
         hew_clear_error();
         assert_eq!(hew_actor_free(ptr::null_mut()), -1);
         assert_eq!(
-            read_cstr(hew_last_error()),
+            read_foreign_cstr(hew_last_error()),
             "hew_actor_free: null actor pointer"
         );
     }
@@ -1715,7 +1731,8 @@ mod string_extended {
         unsafe {
             let d = cstr(",");
             let v = hew_string_split(ptr::null(), d.as_ptr());
-            assert_eq!(hew_vec_len(v), 0);
+            assert_eq!(hew_vec_len(v), 1);
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "");
             hew_vec_free(v);
         }
     }
@@ -1725,8 +1742,13 @@ mod string_extended {
         unsafe {
             let s = cstr("hello");
             let v = hew_string_split(s.as_ptr(), ptr::null());
-            assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "hello");
+            assert_eq!(hew_vec_len(v), 5);
+            for (index, expected) in ["h", "e", "l", "l", "o"].iter().enumerate() {
+                assert_eq!(
+                    read_str_and_drop(hew_vec_get_str(v, index as i64)),
+                    *expected
+                );
+            }
             hew_vec_free(v);
         }
     }
@@ -2432,14 +2454,14 @@ mod utf8_string_tests {
 
     #[test]
     fn char_count_ascii() {
-        let s = CString::new("hello").unwrap();
+        let s = cstr("hello");
         assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 5);
     }
 
     #[test]
     fn char_count_multibyte() {
         // "héllo" — é is 2 bytes, so 5 codepoints, 6 bytes
-        let s = CString::new("héllo").unwrap();
+        let s = cstr("héllo");
         assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 5);
         assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 6);
     }
@@ -2447,7 +2469,7 @@ mod utf8_string_tests {
     #[test]
     fn char_count_cjk() {
         // "日本語" — 3 codepoints, 9 bytes
-        let s = CString::new("日本語").unwrap();
+        let s = cstr("日本語");
         assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 3);
         assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 9);
     }
@@ -2455,14 +2477,14 @@ mod utf8_string_tests {
     #[test]
     fn char_count_emoji() {
         // "🦀" — 1 codepoint, 4 bytes
-        let s = CString::new("🦀").unwrap();
+        let s = cstr("🦀");
         assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 1);
         assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 4);
     }
 
     #[test]
     fn char_count_empty() {
-        let s = CString::new("").unwrap();
+        let s = cstr("");
         assert_eq!(unsafe { hew_string_char_count(s.as_ptr()) }, 0);
     }
 
@@ -2475,7 +2497,7 @@ mod utf8_string_tests {
 
     #[test]
     fn byte_length_ascii() {
-        let s = CString::new("hello").unwrap();
+        let s = cstr("hello");
         assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 5);
         // Should match hew_string_length
         assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, unsafe {
@@ -2492,25 +2514,25 @@ mod utf8_string_tests {
 
     #[test]
     fn is_ascii_true() {
-        let s = CString::new("hello world 123!").unwrap();
+        let s = cstr("hello world 123!");
         assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 1);
     }
 
     #[test]
     fn is_ascii_false_accented() {
-        let s = CString::new("héllo").unwrap();
+        let s = cstr("héllo");
         assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 0);
     }
 
     #[test]
     fn is_ascii_false_cjk() {
-        let s = CString::new("日本語").unwrap();
+        let s = cstr("日本語");
         assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 0);
     }
 
     #[test]
     fn is_ascii_false_emoji() {
-        let s = CString::new("hello 🦀").unwrap();
+        let s = cstr("hello 🦀");
         assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 0);
     }
 
@@ -2521,7 +2543,7 @@ mod utf8_string_tests {
 
     #[test]
     fn is_ascii_empty() {
-        let s = CString::new("").unwrap();
+        let s = cstr("");
         assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 1);
     }
 
@@ -2529,7 +2551,7 @@ mod utf8_string_tests {
 
     #[test]
     fn char_at_utf8_ascii() {
-        let s = CString::new("hello").unwrap();
+        let s = cstr("hello");
         assert_eq!(
             unsafe { hew_string_char_at_utf8(s.as_ptr(), 0) },
             'h' as i32
@@ -2543,7 +2565,7 @@ mod utf8_string_tests {
     #[test]
     fn char_at_utf8_multibyte() {
         // "héllo" — codepoint index 1 is 'é'
-        let s = CString::new("héllo").unwrap();
+        let s = cstr("héllo");
         assert_eq!(
             unsafe { hew_string_char_at_utf8(s.as_ptr(), 0) },
             'h' as i32
@@ -2560,7 +2582,7 @@ mod utf8_string_tests {
 
     #[test]
     fn char_at_utf8_cjk() {
-        let s = CString::new("日本語").unwrap();
+        let s = cstr("日本語");
         assert_eq!(
             unsafe { hew_string_char_at_utf8(s.as_ptr(), 0) },
             '日' as i32
@@ -2577,7 +2599,7 @@ mod utf8_string_tests {
 
     #[test]
     fn char_at_utf8_emoji() {
-        let s = CString::new("🦀").unwrap();
+        let s = cstr("🦀");
         assert_eq!(
             unsafe { hew_string_char_at_utf8(s.as_ptr(), 0) },
             '🦀' as i32
@@ -2586,7 +2608,7 @@ mod utf8_string_tests {
 
     #[test]
     fn char_at_utf8_out_of_bounds() {
-        let s = CString::new("hi").unwrap();
+        let s = cstr("hi");
         assert_eq!(unsafe { hew_string_char_at_utf8(s.as_ptr(), 2) }, -1);
         assert_eq!(unsafe { hew_string_char_at_utf8(s.as_ptr(), -1) }, -1);
     }
@@ -2600,10 +2622,10 @@ mod utf8_string_tests {
 
     #[test]
     fn substring_utf8_ascii() {
-        let s = CString::new("hello world").unwrap();
+        let s = cstr("hello world");
         let result = unsafe { hew_string_substring_utf8(s.as_ptr(), 0, 5) };
         assert!(!result.is_null());
-        let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        let rs = unsafe { read_cstr(result) };
         assert_eq!(rs, "hello");
         unsafe { free_hew_string(result) };
     }
@@ -2611,27 +2633,27 @@ mod utf8_string_tests {
     #[test]
     fn substring_utf8_multibyte() {
         // "héllo" — take codepoints [1, 4) = "éll"
-        let s = CString::new("héllo").unwrap();
+        let s = cstr("héllo");
         let result = unsafe { hew_string_substring_utf8(s.as_ptr(), 1, 4) };
         assert!(!result.is_null());
-        let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        let rs = unsafe { read_cstr(result) };
         assert_eq!(rs, "éll");
         unsafe { free_hew_string(result) };
     }
 
     #[test]
     fn substring_utf8_cjk() {
-        let s = CString::new("日本語").unwrap();
+        let s = cstr("日本語");
         let result = unsafe { hew_string_substring_utf8(s.as_ptr(), 1, 3) };
         assert!(!result.is_null());
-        let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        let rs = unsafe { read_cstr(result) };
         assert_eq!(rs, "本語");
         unsafe { free_hew_string(result) };
     }
 
     #[test]
     fn substring_utf8_invalid_range() {
-        let s = CString::new("hello").unwrap();
+        let s = cstr("hello");
         assert!(unsafe { hew_string_substring_utf8(s.as_ptr(), 3, 1) }.is_null());
         assert!(unsafe { hew_string_substring_utf8(s.as_ptr(), -1, 3) }.is_null());
     }
@@ -2645,40 +2667,40 @@ mod utf8_string_tests {
 
     #[test]
     fn reverse_utf8_ascii() {
-        let s = CString::new("hello").unwrap();
+        let s = cstr("hello");
         let result = unsafe { hew_string_reverse_utf8(s.as_ptr()) };
         assert!(!result.is_null());
-        let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        let rs = unsafe { read_cstr(result) };
         assert_eq!(rs, "olleh");
         unsafe { free_hew_string(result) };
     }
 
     #[test]
     fn reverse_utf8_multibyte() {
-        let s = CString::new("héllo").unwrap();
+        let s = cstr("héllo");
         let result = unsafe { hew_string_reverse_utf8(s.as_ptr()) };
         assert!(!result.is_null());
-        let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        let rs = unsafe { read_cstr(result) };
         assert_eq!(rs, "olléh");
         unsafe { free_hew_string(result) };
     }
 
     #[test]
     fn reverse_utf8_cjk() {
-        let s = CString::new("日本語").unwrap();
+        let s = cstr("日本語");
         let result = unsafe { hew_string_reverse_utf8(s.as_ptr()) };
         assert!(!result.is_null());
-        let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        let rs = unsafe { read_cstr(result) };
         assert_eq!(rs, "語本日");
         unsafe { free_hew_string(result) };
     }
 
     #[test]
     fn reverse_utf8_emoji() {
-        let s = CString::new("a🦀b").unwrap();
+        let s = cstr("a🦀b");
         let result = unsafe { hew_string_reverse_utf8(s.as_ptr()) };
         assert!(!result.is_null());
-        let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        let rs = unsafe { read_cstr(result) };
         assert_eq!(rs, "b🦀a");
         unsafe { free_hew_string(result) };
     }
@@ -2705,7 +2727,7 @@ mod utf8_string_tests {
 
     #[test]
     fn to_bytes_ascii() {
-        let s = CString::new("hi").unwrap();
+        let s = cstr("hi");
         let t = unsafe { hew_string_to_bytes(s.as_ptr()) };
         assert!(!t.ptr.is_null());
         assert_eq!(t.len, 2);
@@ -2716,7 +2738,7 @@ mod utf8_string_tests {
     #[test]
     fn to_bytes_multibyte() {
         // "é" is 2 bytes: 0xC3 0xA9
-        let s = CString::new("é").unwrap();
+        let s = cstr("é");
         let t = unsafe { hew_string_to_bytes(s.as_ptr()) };
         assert!(!t.ptr.is_null());
         assert_eq!(t.len, 2);
@@ -2836,7 +2858,6 @@ mod file_io_tests {
         hew_file_append, hew_file_delete, hew_file_exists, hew_file_read, hew_file_size,
         hew_file_write, hew_path_exists,
     };
-    use hew_runtime::string::hew_string_drop;
 
     fn tmp_path(name: &str) -> std::path::PathBuf {
         let pid = std::process::id();
@@ -2859,7 +2880,7 @@ mod file_io_tests {
         // `str_to_malloc`; release it through the public `hew_string_drop`
         // consumer (recovers the base, validates the header), never bare
         // `libc::free` which would interior-free `base+16`.
-        unsafe { hew_string_drop(p) };
+        unsafe { hew_cabi::cabi::free_cstring(p) };
         s
     }
 
@@ -4057,7 +4078,7 @@ mod circuit_breaker_tests {
 
             // Add a child
             let mut state: i32 = 0;
-            let name = cstr("test-child");
+            let name = CString::new("test-child").unwrap();
             let child_spec = HewChildSpec {
                 name: name.as_ptr(),
                 init_state: (&raw mut state).cast(),

@@ -1921,11 +1921,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_bool_to_string( bool) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_bool_to_string( bool) -> *mut c_char"
+        "native": "fn hew_bool_to_string( bool) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_bool_to_string( bool) -> *mut HewString"
       },
       "symbol": "hew_bool_to_string"
     },
@@ -2048,6 +2048,36 @@
         "wasm32-wasip1": "fn hew_bytes_contains( *const BytesTriple, u8) -> bool"
       },
       "symbol": "hew_bytes_contains"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "internal",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_bytes_decode_utf8( *const BytesTriple, *mut *mut hew_cabi::string::HewString, *mut usize, *mut usize, ) -> u8",
+        "wasm32-wasip1": "fn hew_bytes_decode_utf8( *const BytesTriple, *mut *mut hew_cabi::string::HewString, *mut usize, *mut usize, ) -> u8"
+      },
+      "symbol": "hew_bytes_decode_utf8"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "internal",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_bytes_decode_utf8_lossy( *const BytesTriple, ) -> *mut hew_cabi::string::HewString",
+        "wasm32-wasip1": "fn hew_bytes_decode_utf8_lossy( *const BytesTriple, ) -> *mut hew_cabi::string::HewString"
+      },
+      "symbol": "hew_bytes_decode_utf8_lossy"
     },
     {
       "availability": [
@@ -2258,21 +2288,6 @@
         "wasm32-wasip1": "fn hew_bytes_slice( *mut u8, u32, u32, i64, i64, ) -> BytesTriple"
       },
       "symbol": "hew_bytes_slice"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_bytes_to_string( *const BytesTriple) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_bytes_to_string( *const BytesTriple) -> *mut c_char"
-      },
-      "symbol": "hew_bytes_to_string"
     },
     {
       "availability": [
@@ -3236,11 +3251,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_char_to_string( i32) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_char_to_string( i32) -> *mut c_char"
+        "native": "fn hew_char_to_string( i32) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_char_to_string( i32) -> *mut HewString"
       },
       "symbol": "hew_char_to_string"
     },
@@ -5724,11 +5739,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_float_to_string( f64) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_float_to_string( f64) -> *mut c_char"
+        "native": "fn hew_float_to_string( f64) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_float_to_string( f64) -> *mut HewString"
       },
       "symbol": "hew_float_to_string"
     },
@@ -6960,11 +6975,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_i64_to_string( i64) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_i64_to_string( i64) -> *mut c_char"
+        "native": "fn hew_i64_to_string( i64) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_i64_to_string( i64) -> *mut HewString"
       },
       "symbol": "hew_i64_to_string"
     },
@@ -7014,11 +7029,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_int_to_string( i32) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_int_to_string( i32) -> *mut c_char"
+        "native": "fn hew_int_to_string( i32) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_int_to_string( i32) -> *mut HewString"
       },
       "symbol": "hew_int_to_string"
     },
@@ -7106,10 +7121,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_io_read_all() -> *mut c_char"
+        "native": "fn hew_io_read_all() -> *mut HewString"
       },
       "symbol": "hew_io_read_all"
     },
@@ -7119,10 +7134,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_io_read_line() -> *mut c_char"
+        "native": "fn hew_io_read_line() -> *mut HewString"
       },
       "symbol": "hew_io_read_line"
     },
@@ -7132,10 +7147,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_io_write( *const c_char)"
+        "native": "fn hew_io_write( *const HewString)"
       },
       "symbol": "hew_io_write"
     },
@@ -7145,10 +7160,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_io_write_err( *const c_char)"
+        "native": "fn hew_io_write_err( *const HewString)"
       },
       "symbol": "hew_io_write_err"
     },
@@ -7327,10 +7342,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_iter_value_str( *const HewIter) -> *const c_char"
+        "native": "fn hew_iter_value_str( *const HewIter, ) -> *const hew_cabi::string::HewString"
       },
       "symbol": "hew_iter_value_str"
     },
@@ -10479,11 +10494,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_println_str( *const c_char)",
-        "wasm32-wasip1": "fn hew_println_str( *const c_char)"
+        "native": "fn hew_println_str( *const HewString)",
+        "wasm32-wasip1": "fn hew_println_str( *const HewString)"
       },
       "symbol": "hew_println_str"
     },
@@ -14208,21 +14223,6 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_string_builder_append_cstr( *mut c_void, *const c_char, )",
-        "wasm32-wasip1": "fn hew_string_builder_append_cstr( *mut c_void, *const c_char, )"
-      },
-      "symbol": "hew_string_builder_append_cstr"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
@@ -14271,6 +14271,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_string_builder_append_string( *mut c_void, *const HewString, )",
+        "wasm32-wasip1": "fn hew_string_builder_append_string( *mut c_void, *const HewString, )"
+      },
+      "symbol": "hew_string_builder_append_string"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_string_builder_append_u64( *mut c_void, u64)",
         "wasm32-wasip1": "fn hew_string_builder_append_u64( *mut c_void, u64)"
       },
@@ -14283,11 +14298,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_builder_finish( *mut c_void) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_builder_finish( *mut c_void) -> *mut c_char"
+        "native": "fn hew_string_builder_finish( *mut c_void) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_builder_finish( *mut c_void) -> *mut HewString"
       },
       "symbol": "hew_string_builder_finish"
     },
@@ -14313,11 +14328,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_byte_length( *const c_char) -> i64",
-        "wasm32-wasip1": "fn hew_string_byte_length( *const c_char) -> i64"
+        "native": "fn hew_string_byte_length( *const HewString) -> i64",
+        "wasm32-wasip1": "fn hew_string_byte_length( *const HewString) -> i64"
       },
       "symbol": "hew_string_byte_length"
     },
@@ -14328,11 +14343,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_char_at( *const c_char, i32) -> i32",
-        "wasm32-wasip1": "fn hew_string_char_at( *const c_char, i32) -> i32"
+        "native": "fn hew_string_char_at( *const HewString, i64) -> i32",
+        "wasm32-wasip1": "fn hew_string_char_at( *const HewString, i64) -> i32"
       },
       "symbol": "hew_string_char_at"
     },
@@ -14343,11 +14358,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_char_at_utf8( *const c_char, i32) -> i32",
-        "wasm32-wasip1": "fn hew_string_char_at_utf8( *const c_char, i32) -> i32"
+        "native": "fn hew_string_char_at_utf8( *const HewString, i64) -> i32",
+        "wasm32-wasip1": "fn hew_string_char_at_utf8( *const HewString, i64) -> i32"
       },
       "symbol": "hew_string_char_at_utf8"
     },
@@ -14358,11 +14373,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_char_count( *const c_char) -> i32",
-        "wasm32-wasip1": "fn hew_string_char_count( *const c_char) -> i32"
+        "native": "fn hew_string_char_count( *const HewString) -> i64",
+        "wasm32-wasip1": "fn hew_string_char_count( *const HewString) -> i64"
       },
       "symbol": "hew_string_char_count"
     },
@@ -14373,11 +14388,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_chars( *const c_char) -> *mut HewVec",
-        "wasm32-wasip1": "fn hew_string_chars( *const c_char) -> *mut HewVec"
+        "native": "fn hew_string_chars( *const HewString) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_string_chars( *const HewString) -> *mut HewVec"
       },
       "symbol": "hew_string_chars"
     },
@@ -14388,11 +14403,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_clone( *const c_char) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_clone( *const c_char) -> *mut c_char"
+        "native": "fn hew_string_clone( *const HewString) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_clone( *const HewString) -> *mut HewString"
       },
       "symbol": "hew_string_clone"
     },
@@ -14403,11 +14418,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_compare( *const c_char, *const c_char) -> i32",
-        "wasm32-wasip1": "fn hew_string_compare( *const c_char, *const c_char) -> i32"
+        "native": "fn hew_string_compare( *const HewString, *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_string_compare( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_string_compare"
     },
@@ -14418,11 +14433,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_concat( *const c_char, *const c_char) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_concat( *const c_char, *const c_char) -> *mut c_char"
+        "native": "fn hew_string_concat( *const HewString, *const HewString, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_concat( *const HewString, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_string_concat"
     },
@@ -14433,11 +14448,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_contains( *const c_char, *const c_char) -> bool",
-        "wasm32-wasip1": "fn hew_string_contains( *const c_char, *const c_char) -> bool"
+        "native": "fn hew_string_contains( *const HewString, *const HewString, ) -> bool",
+        "wasm32-wasip1": "fn hew_string_contains( *const HewString, *const HewString, ) -> bool"
       },
       "symbol": "hew_string_contains"
     },
@@ -14448,11 +14463,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_drop( *mut c_char)",
-        "wasm32-wasip1": "fn hew_string_drop( *mut c_char)"
+        "native": "fn hew_string_drop( *mut HewString)",
+        "wasm32-wasip1": "fn hew_string_drop( *mut HewString)"
       },
       "symbol": "hew_string_drop"
     },
@@ -14463,11 +14478,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_ends_with( *const c_char, *const c_char) -> bool",
-        "wasm32-wasip1": "fn hew_string_ends_with( *const c_char, *const c_char) -> bool"
+        "native": "fn hew_string_ends_with( *const HewString, *const HewString, ) -> bool",
+        "wasm32-wasip1": "fn hew_string_ends_with( *const HewString, *const HewString, ) -> bool"
       },
       "symbol": "hew_string_ends_with"
     },
@@ -14478,11 +14493,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_equals( *const c_char, *const c_char) -> i32",
-        "wasm32-wasip1": "fn hew_string_equals( *const c_char, *const c_char) -> i32"
+        "native": "fn hew_string_equals( *const HewString, *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_string_equals( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_string_equals"
     },
@@ -14493,11 +14508,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_find( *const c_char, *const c_char) -> i32",
-        "wasm32-wasip1": "fn hew_string_find( *const c_char, *const c_char) -> i32"
+        "native": "fn hew_string_find( *const HewString, *const HewString) -> i64",
+        "wasm32-wasip1": "fn hew_string_find( *const HewString, *const HewString) -> i64"
       },
       "symbol": "hew_string_find"
     },
@@ -14508,11 +14523,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_from_char( i32) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_from_char( i32) -> *mut c_char"
+        "native": "fn hew_string_from_char( i32) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_from_char( i32) -> *mut HewString"
       },
       "symbol": "hew_string_from_char"
     },
@@ -14523,11 +14538,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_hash_fnv1a( *const c_char) -> u64",
-        "wasm32-wasip1": "fn hew_string_hash_fnv1a( *const c_char) -> u64"
+        "native": "fn hew_string_hash_fnv1a( *const HewString) -> u64",
+        "wasm32-wasip1": "fn hew_string_hash_fnv1a( *const HewString) -> u64"
       },
       "symbol": "hew_string_hash_fnv1a"
     },
@@ -14538,11 +14553,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_index( *const c_char, i64) -> i32",
-        "wasm32-wasip1": "fn hew_string_index( *const c_char, i64) -> i32"
+        "native": "fn hew_string_index( *const HewString, i64) -> i32",
+        "wasm32-wasip1": "fn hew_string_index( *const HewString, i64) -> i32"
       },
       "symbol": "hew_string_index"
     },
@@ -14553,11 +14568,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_is_alpha( *const c_char) -> bool",
-        "wasm32-wasip1": "fn hew_string_is_alpha( *const c_char) -> bool"
+        "native": "fn hew_string_is_alpha( *const HewString) -> bool",
+        "wasm32-wasip1": "fn hew_string_is_alpha( *const HewString) -> bool"
       },
       "symbol": "hew_string_is_alpha"
     },
@@ -14568,11 +14583,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_is_alphanumeric( *const c_char) -> bool",
-        "wasm32-wasip1": "fn hew_string_is_alphanumeric( *const c_char) -> bool"
+        "native": "fn hew_string_is_alphanumeric( *const HewString) -> bool",
+        "wasm32-wasip1": "fn hew_string_is_alphanumeric( *const HewString) -> bool"
       },
       "symbol": "hew_string_is_alphanumeric"
     },
@@ -14583,11 +14598,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_is_ascii( *const c_char) -> i32",
-        "wasm32-wasip1": "fn hew_string_is_ascii( *const c_char) -> i32"
+        "native": "fn hew_string_is_ascii( *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_string_is_ascii( *const HewString) -> i32"
       },
       "symbol": "hew_string_is_ascii"
     },
@@ -14598,11 +14613,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_is_digit( *const c_char) -> bool",
-        "wasm32-wasip1": "fn hew_string_is_digit( *const c_char) -> bool"
+        "native": "fn hew_string_is_digit( *const HewString) -> bool",
+        "wasm32-wasip1": "fn hew_string_is_digit( *const HewString) -> bool"
       },
       "symbol": "hew_string_is_digit"
     },
@@ -14613,11 +14628,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_is_empty( *const c_char) -> bool",
-        "wasm32-wasip1": "fn hew_string_is_empty( *const c_char) -> bool"
+        "native": "fn hew_string_is_empty( *const HewString) -> bool",
+        "wasm32-wasip1": "fn hew_string_is_empty( *const HewString) -> bool"
       },
       "symbol": "hew_string_is_empty"
     },
@@ -14628,11 +14643,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_join( *mut HewVec, *const c_char, ) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_join( *mut HewVec, *const c_char, ) -> *mut c_char"
+        "native": "fn hew_string_join( *mut HewVec, *const HewString, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_join( *mut HewVec, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_string_join"
     },
@@ -14643,11 +14658,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_length( *const c_char) -> i64",
-        "wasm32-wasip1": "fn hew_string_length( *const c_char) -> i64"
+        "native": "fn hew_string_length( *const HewString) -> i64",
+        "wasm32-wasip1": "fn hew_string_length( *const HewString) -> i64"
       },
       "symbol": "hew_string_length"
     },
@@ -14658,11 +14673,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_lines( *const c_char) -> *mut HewVec",
-        "wasm32-wasip1": "fn hew_string_lines( *const c_char) -> *mut HewVec"
+        "native": "fn hew_string_lines( *const HewString) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_string_lines( *const HewString) -> *mut HewVec"
       },
       "symbol": "hew_string_lines"
     },
@@ -14673,11 +14688,11 @@
       ],
       "classification": "internal",
       "extent": "length-or-count",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_literal_new( *const u8, u32, *mut *mut c_char)",
-        "wasm32-wasip1": "fn hew_string_literal_new( *const u8, u32, *mut *mut c_char)"
+        "native": "fn hew_string_literal_new( *const u8, u32, *mut *mut HewString, )",
+        "wasm32-wasip1": "fn hew_string_literal_new( *const u8, u32, *mut *mut HewString, )"
       },
       "symbol": "hew_string_literal_new"
     },
@@ -14688,11 +14703,11 @@
       ],
       "classification": "stable",
       "extent": "length-or-count",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_repeat( *const c_char, i32) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_repeat( *const c_char, i32) -> *mut c_char"
+        "native": "fn hew_string_repeat( *const HewString, i64) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_repeat( *const HewString, i64) -> *mut HewString"
       },
       "symbol": "hew_string_repeat"
     },
@@ -14703,11 +14718,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_replace( *const c_char, *const c_char, *const c_char, ) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_replace( *const c_char, *const c_char, *const c_char, ) -> *mut c_char"
+        "native": "fn hew_string_replace( *const HewString, *const HewString, *const HewString, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_replace( *const HewString, *const HewString, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_string_replace"
     },
@@ -14718,11 +14733,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_reverse_utf8( *const c_char) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_reverse_utf8( *const c_char) -> *mut c_char"
+        "native": "fn hew_string_reverse_utf8( *const HewString) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_reverse_utf8( *const HewString) -> *mut HewString"
       },
       "symbol": "hew_string_reverse_utf8"
     },
@@ -14733,11 +14748,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_slice( *const c_char, i32, i32) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_slice( *const c_char, i32, i32) -> *mut c_char"
+        "native": "fn hew_string_slice( *const HewString, i64, i64, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_slice( *const HewString, i64, i64, ) -> *mut HewString"
       },
       "symbol": "hew_string_slice"
     },
@@ -14748,11 +14763,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_slice_codepoints( *const c_char, i64, i64, ) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_slice_codepoints( *const c_char, i64, i64, ) -> *mut c_char"
+        "native": "fn hew_string_slice_codepoints( *const HewString, i64, i64, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_slice_codepoints( *const HewString, i64, i64, ) -> *mut HewString"
       },
       "symbol": "hew_string_slice_codepoints"
     },
@@ -14763,11 +14778,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_split( *const c_char, *const c_char, ) -> *mut HewVec",
-        "wasm32-wasip1": "fn hew_string_split( *const c_char, *const c_char, ) -> *mut HewVec"
+        "native": "fn hew_string_split( *const HewString, *const HewString, ) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_string_split( *const HewString, *const HewString, ) -> *mut HewVec"
       },
       "symbol": "hew_string_split"
     },
@@ -14778,11 +14793,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_starts_with( *const c_char, *const c_char) -> bool",
-        "wasm32-wasip1": "fn hew_string_starts_with( *const c_char, *const c_char) -> bool"
+        "native": "fn hew_string_starts_with( *const HewString, *const HewString, ) -> bool",
+        "wasm32-wasip1": "fn hew_string_starts_with( *const HewString, *const HewString, ) -> bool"
       },
       "symbol": "hew_string_starts_with"
     },
@@ -14793,11 +14808,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_substring_utf8( *const c_char, i32, i32, ) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_substring_utf8( *const c_char, i32, i32, ) -> *mut c_char"
+        "native": "fn hew_string_substring_utf8( *const HewString, i64, i64, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_substring_utf8( *const HewString, i64, i64, ) -> *mut HewString"
       },
       "symbol": "hew_string_substring_utf8"
     },
@@ -14808,11 +14823,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_to_bytes( *const c_char) -> BytesTriple",
-        "wasm32-wasip1": "fn hew_string_to_bytes( *const c_char) -> BytesTriple"
+        "native": "fn hew_string_to_bytes( *const HewString) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_string_to_bytes( *const HewString) -> BytesTriple"
       },
       "symbol": "hew_string_to_bytes"
     },
@@ -14823,11 +14838,11 @@
       ],
       "classification": "internal",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_to_bytes_owned( *const c_char, *mut BytesTriple, )",
-        "wasm32-wasip1": "fn hew_string_to_bytes_owned( *const c_char, *mut BytesTriple, )"
+        "native": "fn hew_string_to_bytes_owned( *const HewString, *mut BytesTriple, )",
+        "wasm32-wasip1": "fn hew_string_to_bytes_owned( *const HewString, *mut BytesTriple, )"
       },
       "symbol": "hew_string_to_bytes_owned"
     },
@@ -14838,11 +14853,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_to_int( *const c_char) -> i64",
-        "wasm32-wasip1": "fn hew_string_to_int( *const c_char) -> i64"
+        "native": "fn hew_string_to_int( *const HewString) -> i64",
+        "wasm32-wasip1": "fn hew_string_to_int( *const HewString) -> i64"
       },
       "symbol": "hew_string_to_int"
     },
@@ -14853,11 +14868,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_to_lowercase( *const c_char) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_to_lowercase( *const c_char) -> *mut c_char"
+        "native": "fn hew_string_to_lowercase( *const HewString) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_to_lowercase( *const HewString) -> *mut HewString"
       },
       "symbol": "hew_string_to_lowercase"
     },
@@ -14868,11 +14883,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_to_uppercase( *const c_char) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_to_uppercase( *const c_char) -> *mut c_char"
+        "native": "fn hew_string_to_uppercase( *const HewString) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_to_uppercase( *const HewString) -> *mut HewString"
       },
       "symbol": "hew_string_to_uppercase"
     },
@@ -14883,11 +14898,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_string_trim( *const c_char) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_string_trim( *const c_char) -> *mut c_char"
+        "native": "fn hew_string_trim( *const HewString) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_trim( *const HewString) -> *mut HewString"
       },
       "symbol": "hew_string_trim"
     },
@@ -17216,11 +17231,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_u64_to_string( u64) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_u64_to_string( u64) -> *mut c_char"
+        "native": "fn hew_u64_to_string( u64) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_u64_to_string( u64) -> *mut HewString"
       },
       "symbol": "hew_u64_to_string"
     },
@@ -17231,11 +17246,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_u8_to_string( u8) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_u8_to_string( u8) -> *mut c_char"
+        "native": "fn hew_u8_to_string( u8) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_u8_to_string( u8) -> *mut HewString"
       },
       "symbol": "hew_u8_to_string"
     },
@@ -17246,11 +17261,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_uint_to_string( u32) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_uint_to_string( u32) -> *mut c_char"
+        "native": "fn hew_uint_to_string( u32) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_uint_to_string( u32) -> *mut HewString"
       },
       "symbol": "hew_uint_to_string"
     },
@@ -17786,11 +17801,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_contains_str( *const HewVec, *const c_char) -> i32",
-        "wasm32-wasip1": "fn hew_vec_contains_str( *const HewVec, *const c_char) -> i32"
+        "native": "fn hew_vec_contains_str( *const HewVec, *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_vec_contains_str( *const HewVec, *const HewString) -> i32"
       },
       "symbol": "hew_vec_contains_str"
     },
@@ -18056,11 +18071,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_get_str( *mut HewVec, i64) -> *const c_char",
-        "wasm32-wasip1": "fn hew_vec_get_str( *mut HewVec, i64) -> *const c_char"
+        "native": "fn hew_vec_get_str( *mut HewVec, i64) -> *const HewString",
+        "wasm32-wasip1": "fn hew_vec_get_str( *mut HewVec, i64) -> *const HewString"
       },
       "symbol": "hew_vec_get_str"
     },
@@ -18116,11 +18131,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_join_str( *mut HewVec, *const c_char, ) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_vec_join_str( *mut HewVec, *const c_char, ) -> *mut c_char"
+        "native": "fn hew_vec_join_str( *mut HewVec, *const HewString, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_vec_join_str( *mut HewVec, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_vec_join_str"
     },
@@ -18536,11 +18551,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_pop_str( *mut HewVec) -> *const c_char",
-        "wasm32-wasip1": "fn hew_vec_pop_str( *mut HewVec) -> *const c_char"
+        "native": "fn hew_vec_pop_str( *mut HewVec) -> *const HewString",
+        "wasm32-wasip1": "fn hew_vec_pop_str( *mut HewVec) -> *const HewString"
       },
       "symbol": "hew_vec_pop_str"
     },
@@ -18761,11 +18776,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_push_str( *mut HewVec, *const c_char)",
-        "wasm32-wasip1": "fn hew_vec_push_str( *mut HewVec, *const c_char)"
+        "native": "fn hew_vec_push_str( *mut HewVec, *const HewString)",
+        "wasm32-wasip1": "fn hew_vec_push_str( *mut HewVec, *const HewString)"
       },
       "symbol": "hew_vec_push_str"
     },
@@ -18956,11 +18971,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_remove_at_str( *mut HewVec, i64) -> *const c_char",
-        "wasm32-wasip1": "fn hew_vec_remove_at_str( *mut HewVec, i64) -> *const c_char"
+        "native": "fn hew_vec_remove_at_str( *mut HewVec, i64, ) -> *const HewString",
+        "wasm32-wasip1": "fn hew_vec_remove_at_str( *mut HewVec, i64, ) -> *const HewString"
       },
       "symbol": "hew_vec_remove_at_str"
     },
@@ -19256,11 +19271,11 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_set_str( *mut HewVec, i64, *const c_char)",
-        "wasm32-wasip1": "fn hew_vec_set_str( *mut HewVec, i64, *const c_char)"
+        "native": "fn hew_vec_set_str( *mut HewVec, i64, *const HewString)",
+        "wasm32-wasip1": "fn hew_vec_set_str( *mut HewVec, i64, *const HewString)"
       },
       "symbol": "hew_vec_set_str"
     },

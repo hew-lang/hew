@@ -64,7 +64,7 @@
     reason = "FFI thunk module; SAFETY documented per-thunk."
 )]
 
-use core::ffi::{c_char, c_void};
+use core::ffi::c_void;
 
 use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
 use hew_cabi::vec::HewTypeOwnershipKind;
@@ -165,34 +165,24 @@ unsafe extern "C" fn hew_layout_key_char_eq(lhs: *const c_void, rhs: *const c_vo
 // String hash / eq thunks
 // ---------------------------------------------------------------------------
 //
-// The K blob is `*const c_char` (8 bytes on 64-bit, pointer alignment). We
-// reload the pointer from the blob and hash / compare the NUL-terminated
-// payload it points at. Caller (kernel) guarantees the slot's pointer was
-// produced by the descriptor's String-ownership insert path, so it is either
-// null (vacant slot — never invoked) or a heap / static C string.
+// The K blob is one pointer-sized managed string handle. Hash and equality use
+// the carrier's complete length-bounded byte range, including embedded NUL.
+// Null is a valid occupied key because it is the canonical empty string.
 
 unsafe extern "C" fn hew_layout_key_string_hash(key: *const c_void) -> u64 {
-    let p: *const c_char = core::ptr::read(key.cast::<*const c_char>());
-    if p.is_null() {
-        // Null key reaching the hash thunk would be a kernel bug (only
-        // OCCUPIED slots are hashed) — fail closed loudly rather than
-        // silently hashing zero.
-        crate::set_last_error("hew_layout_key_string_hash: null inner pointer in OCCUPIED slot");
-        std::process::abort();
-    }
-    let len = libc::strlen(p);
-    let slice = core::slice::from_raw_parts(p.cast::<u8>(), len);
-    fnv1a_64(slice)
+    let p: *const hew_cabi::string::HewString =
+        core::ptr::read(key.cast::<*const hew_cabi::string::HewString>());
+    // SAFETY: the descriptor contract supplies null or a live managed handle.
+    fnv1a_64(unsafe { hew_cabi::string::string_as_bytes(p) })
 }
 
 unsafe extern "C" fn hew_layout_key_string_eq(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    let lp: *const c_char = core::ptr::read(lhs.cast::<*const c_char>());
-    let rp: *const c_char = core::ptr::read(rhs.cast::<*const c_char>());
-    if lp.is_null() || rp.is_null() {
-        crate::set_last_error("hew_layout_key_string_eq: null inner pointer in OCCUPIED slot");
-        std::process::abort();
-    }
-    i32::from(libc::strcmp(lp, rp) == 0)
+    let lp: *const hew_cabi::string::HewString =
+        core::ptr::read(lhs.cast::<*const hew_cabi::string::HewString>());
+    let rp: *const hew_cabi::string::HewString =
+        core::ptr::read(rhs.cast::<*const hew_cabi::string::HewString>());
+    // SAFETY: the descriptor contract supplies null or live managed handles.
+    crate::string::hew_string_equals(lp, rp)
 }
 
 // ---------------------------------------------------------------------------
@@ -254,26 +244,28 @@ unsafe extern "C" fn hew_layout_key_bytes_eq(lhs: *const c_void, rhs: *const c_v
 // release the heap allocation owned by the K / V blob *without* freeing the
 // blob storage itself — the kernel owns the slot bytes.
 //
-// `String` drops the inner `*const c_char` via `hew_string_drop` (which
-// no-ops on null and on static binary-section strings).
+// `String` drops the inner managed handle via `hew_string_drop` (which
+// treats null as the canonical empty value).
 //
 // `Bytes` drops the inner triple's `ptr` via `hew_bytes_drop` (which decrements
 // the refcount and frees the buffer when the count hits zero).
 
 extern "C" fn hew_layout_string_drop(blob: *mut c_void) {
-    // SAFETY: blob is non-null and points to a `*mut c_char` slot owned by
+    // SAFETY: blob is non-null and points to a managed-string handle slot owned by
     // the kernel. Reading the pointer-by-value is a fixed-size load; passing
     // it to `hew_string_drop` is correct per that fn's null-safe contract.
     unsafe {
-        let p: *mut c_char = core::ptr::read(blob.cast::<*mut c_char>());
+        let p: *mut hew_cabi::string::HewString =
+            core::ptr::read(blob.cast::<*mut hew_cabi::string::HewString>());
         crate::string::hew_string_drop(p);
     }
 }
 
 unsafe extern "C" fn hew_layout_string_clone(src: *const c_void, dst: *mut c_void) -> i32 {
     // SAFETY: src/dst point at pointer-sized string slots. The runtime already
-    // copied dst <- src; overwrite dst with an independent header-aware clone.
-    let src_ptr: *const c_char = unsafe { core::ptr::read(src.cast::<*const c_char>()) };
+    // copied dst <- src; overwrite dst with an independently retained owner.
+    let src_ptr: *const hew_cabi::string::HewString =
+        unsafe { core::ptr::read(src.cast::<*const hew_cabi::string::HewString>()) };
     // SAFETY: `src_ptr` is null or a valid Hew string per the descriptor's
     // String ownership contract.
     let cloned = unsafe { crate::string::hew_string_clone(src_ptr) };
@@ -281,7 +273,7 @@ unsafe extern "C" fn hew_layout_string_clone(src: *const c_void, dst: *mut c_voi
         return 1;
     }
     // SAFETY: `dst` is writable pointer-sized string storage.
-    unsafe { core::ptr::write(dst.cast::<*mut c_char>(), cloned) };
+    unsafe { core::ptr::write(dst.cast::<*mut hew_cabi::string::HewString>(), cloned) };
     0
 }
 
@@ -405,11 +397,11 @@ pub static hew_layout_key_char: HewMapKeyLayout = HewMapKeyLayout {
     drop_fn: None,
 };
 
-// string: pointer-sized blob (`*const c_char`).
+// string: pointer-sized opaque managed handle.
 #[no_mangle]
 pub static hew_layout_key_string: HewMapKeyLayout = HewMapKeyLayout {
-    size: core::mem::size_of::<*const c_char>(),
-    align: core::mem::align_of::<*const c_char>(),
+    size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
+    align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
     ownership_kind: HewTypeOwnershipKind::String,
     hash_fn: Some(hew_layout_key_string_hash),
     eq_fn: Some(hew_layout_key_string_eq),
@@ -477,8 +469,8 @@ pub static hew_layout_val_char: HewMapValueLayout = HewMapValueLayout {
 
 #[no_mangle]
 pub static hew_layout_val_string: HewMapValueLayout = HewMapValueLayout {
-    size: core::mem::size_of::<*const c_char>(),
-    align: core::mem::align_of::<*const c_char>(),
+    size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
+    align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
     ownership_kind: HewTypeOwnershipKind::String,
     drop_fn: Some(hew_layout_string_drop),
     clone_fn: Some(hew_layout_string_clone),
@@ -602,17 +594,40 @@ mod tests {
 
     #[test]
     fn string_hash_matches_fnv1a_64_of_payload() {
-        // Build a C-string blob (the K blob is a *const c_char).
-        let s = c"hello";
-        let p: *const c_char = s.as_ptr();
-        let blob: *const *const c_char = &raw const p;
-        // SAFETY: `blob` points to a properly-aligned `*const c_char`
-        // local that holds a valid NUL-terminated C string pointer.
+        let p = hew_cabi::string::string_from_str("hello");
+        let blob = &raw const p;
+        // SAFETY: `blob` points to a properly aligned live managed-string slot.
         unsafe {
             let h = hew_layout_key_string_hash(blob.cast());
             assert_eq!(h, fnv1a_64(b"hello"));
             let eq = hew_layout_key_string_eq(blob.cast(), blob.cast());
             assert_eq!(eq, 1);
+            hew_cabi::string::string_release(p);
+        }
+    }
+
+    #[test]
+    fn string_key_hash_and_equality_include_embedded_nul() {
+        let left = hew_cabi::string::string_from_str("a\0b");
+        let same = hew_cabi::string::string_from_str("a\0b");
+        let prefix = hew_cabi::string::string_from_str("a");
+        // SAFETY: all blobs point to aligned live managed-string slots.
+        unsafe {
+            assert_eq!(
+                hew_layout_key_string_hash((&raw const left).cast()),
+                fnv1a_64(b"a\0b")
+            );
+            assert_eq!(
+                hew_layout_key_string_eq((&raw const left).cast(), (&raw const same).cast()),
+                1
+            );
+            assert_eq!(
+                hew_layout_key_string_eq((&raw const left).cast(), (&raw const prefix).cast()),
+                0
+            );
+            hew_cabi::string::string_release(left);
+            hew_cabi::string::string_release(same);
+            hew_cabi::string::string_release(prefix);
         }
     }
 }

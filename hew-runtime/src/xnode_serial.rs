@@ -515,7 +515,7 @@ mod tests {
         unsafe { crate::cbor_serial::hew_cbor_de_free(reader) };
         if failed != 0 {
             // SAFETY: drop the empty owned string the reader handed back.
-            unsafe { crate::string::hew_string_drop(s) };
+            unsafe { crate::cabi::free_cstring(s) };
             return std::ptr::null_mut();
         }
         // SAFETY: malloc for a `*mut c_char` slot.
@@ -523,7 +523,7 @@ mod tests {
             unsafe { libc::malloc(std::mem::size_of::<*mut c_char>()) }.cast::<*mut c_char>();
         if slot.is_null() {
             // SAFETY: reclaim the owned string on alloc failure.
-            unsafe { crate::string::hew_string_drop(s) };
+            unsafe { crate::cabi::free_cstring(s) };
             return std::ptr::null_mut();
         }
         // SAFETY: slot is a fresh owned-pointer slot.
@@ -639,7 +639,7 @@ mod tests {
         );
         // SAFETY: b_str_ptr is an owned string; b_val is its malloc'd slot.
         unsafe {
-            crate::string::hew_string_drop(b_str_ptr);
+            crate::cabi::free_cstring(b_str_ptr);
             libc::free(b_val);
         }
 

@@ -233,7 +233,6 @@ stable = [
   "hew_bytes_push",
   "hew_bytes_set",
   "hew_bytes_slice",
-  "hew_bytes_to_string",
   "hew_cancel_token_cancel",
   "hew_cancel_token_is_requested",
   "hew_cancel_token_new_child",
@@ -644,10 +643,10 @@ stable = [
   "hew_string_abort_oob",
   "hew_string_builder_append_bool",
   "hew_string_builder_append_char",
-  "hew_string_builder_append_cstr",
   "hew_string_builder_append_f64",
   "hew_string_builder_append_i64",
   "hew_string_builder_append_identity",
+  "hew_string_builder_append_string",
   "hew_string_builder_append_u64",
   "hew_string_builder_finish",
   "hew_string_builder_new",
@@ -1594,6 +1593,8 @@ internal = [
   "hew_fault_new",
   "hew_fault_report",
   # Private physical operations initialize owned output storage.
+  "hew_bytes_decode_utf8",
+  "hew_bytes_decode_utf8_lossy",
   "hew_bytes_literal_new",
   "hew_bytes_push_owned",
   "hew_string_literal_new",
@@ -2038,17 +2039,6 @@ result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_location_format"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-# hew-runtime/src/bytes.rs:818-852 allocates a fresh header-aware string on both
-# the empty and non-empty paths (`alloc_cstring_from_str`); result reaches
-# `hew_string_drop`. The caller owes exactly one balancing drop.
-[[ownership.contracts]]
-symbol = "hew_bytes_to_string"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
@@ -2822,13 +2812,6 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
-symbol = "hew_string_builder_append_cstr"
-result = "none"
-params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
 symbol = "hew_string_builder_append_f64"
 result = "none"
 params = ["borrow", "borrow"]
@@ -2837,6 +2820,13 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_string_builder_append_i64"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_builder_append_string"
 result = "none"
 params = ["borrow", "borrow"]
 release-symbol = ""
@@ -6780,6 +6770,21 @@ discharge-depth = "none"
 # These return void: the final physical literal operation owns output
 # initialization. The legacy return-provenance table cannot describe owners
 # written through an output pointer; all three ABI arguments are borrowed.
+[[ownership.contracts]]
+symbol = "hew_bytes_decode_utf8"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_decode_utf8_lossy"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
 [[ownership.contracts]]
 symbol = "hew_bytes_literal_new"
 result = "none"

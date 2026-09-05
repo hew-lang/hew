@@ -826,7 +826,7 @@ pub unsafe extern "C" fn hew_bytes_eq(
     a_slice == b_slice
 }
 
-/// Convert a `Bytes` value to a NUL-terminated UTF-8 C string (lossy).
+/// Convert a `Bytes` value to a managed UTF-8 string (lossy).
 ///
 /// This is the canonical `Bytes -> String` runtime conversion. It takes a
 /// POINTER to the caller's `BytesTriple` (the address of the `bytes` value's
@@ -835,9 +835,8 @@ pub unsafe extern "C" fn hew_bytes_eq(
 /// small-struct classification vs Rust's repr(C) two-register pair), so codegen
 /// passes the triple's address (the uniform by-pointer bytes-param convention).
 ///
-/// Invalid UTF-8 sequences are replaced with U+FFFD. The returned pointer is
-/// allocated via `libc::malloc`; the caller (typically the Hew string GC)
-/// must `libc::free` it.
+/// Invalid UTF-8 sequences are replaced with U+FFFD. The caller owns the
+/// returned managed string handle and releases it with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -845,7 +844,9 @@ pub unsafe extern "C" fn hew_bytes_eq(
 /// `ptr + offset` must be valid for `len` bytes. A null `ptr` (or a null
 /// `triple` pointer) is treated as the empty byte region.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_to_string(triple: *const BytesTriple) -> *mut std::ffi::c_char {
+pub unsafe extern "C" fn hew_bytes_decode_utf8_lossy(
+    triple: *const BytesTriple,
+) -> *mut hew_cabi::string::HewString {
     let triple = if triple.is_null() {
         BytesTriple {
             ptr: std::ptr::null_mut(),
@@ -858,13 +859,7 @@ pub unsafe extern "C" fn hew_bytes_to_string(triple: *const BytesTriple) -> *mut
         unsafe { *triple }
     };
     if triple.len == 0 || triple.ptr.is_null() {
-        // Return an empty NUL-terminated, header-aware string.
-        let out = crate::cabi::alloc_cstring_from_str(""); // CSTRING-ALLOC: str-open (hew_bytes_to_string empty path — header-aware String result; reaches hew_string_drop)
-        if out.is_null() {
-            // SAFETY: abort is always safe.
-            unsafe { libc::abort() };
-        }
-        return out;
+        return std::ptr::null_mut();
     }
 
     // SAFETY: ptr + offset is valid for len bytes per caller contract.
@@ -872,13 +867,73 @@ pub unsafe extern "C" fn hew_bytes_to_string(triple: *const BytesTriple) -> *mut
         std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
     };
     let s = String::from_utf8_lossy(data);
-    // Header-aware (S1): the result reaches hew_string_drop / free_cstring.
-    let out = crate::cabi::alloc_cstring_from_str(&s); // CSTRING-ALLOC: str-open (hew_bytes_to_string — header-aware String result; reaches hew_string_drop)
-    if out.is_null() {
-        // SAFETY: abort is always safe.
-        unsafe { libc::abort() };
+    hew_cabi::string::string_from_str(&s)
+}
+
+/// Validate a byte region as UTF-8 and initialize either a managed string or
+/// the exact [`std::str::Utf8Error`] position facts.
+///
+/// Returns `0` after initializing `value_out`. Returns `1` after setting
+/// `value_out` to the canonical empty pointer and initializing the two error
+/// outputs. `error_len_out == 0` represents an incomplete trailing sequence;
+/// otherwise it is the invalid sequence length. Invalid data is a value-level
+/// result, never a native fault.
+///
+/// # Safety
+///
+/// `triple` must be null (empty) or point to a valid [`BytesTriple`]. Every
+/// output pointer must be aligned, uniquely writable, and distinct.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_decode_utf8(
+    triple: *const BytesTriple,
+    value_out: *mut *mut hew_cabi::string::HewString,
+    valid_up_to_out: *mut usize,
+    error_len_out: *mut usize,
+) -> u8 {
+    if value_out.is_null() || valid_up_to_out.is_null() || error_len_out.is_null() {
+        std::process::abort();
     }
-    out
+    let triple = if triple.is_null() {
+        BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        }
+    } else {
+        // SAFETY: the caller supplies a readable initialized triple.
+        unsafe { *triple }
+    };
+    let bytes = if triple.len == 0 {
+        &[][..]
+    } else {
+        if triple.ptr.is_null() {
+            std::process::abort();
+        }
+        // SAFETY: the triple contract covers the active byte range.
+        unsafe {
+            std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
+        }
+    };
+    match hew_cabi::string::string_from_utf8(bytes) {
+        Ok(value) => {
+            // SAFETY: all outputs are uniquely writable by contract.
+            unsafe {
+                value_out.write(value);
+                valid_up_to_out.write(0);
+                error_len_out.write(0);
+            }
+            0
+        }
+        Err(error) => {
+            // SAFETY: all outputs are uniquely writable by contract.
+            unsafe {
+                value_out.write(std::ptr::null_mut());
+                valid_up_to_out.write(error.valid_up_to());
+                error_len_out.write(error.error_len().unwrap_or(0));
+            }
+            1
+        }
+    }
 }
 
 /// Create a `BytesTriple` from a NUL-terminated C string.
@@ -1508,10 +1563,8 @@ mod tests {
                 offset: 0,
                 len: 0,
             };
-            let s = hew_bytes_to_string(std::ptr::addr_of!(empty_triple));
-            assert!(!s.is_null());
-            assert_eq!(*s, 0);
-            crate::cabi::free_cstring(s); // CSTRING-FREE: str-open (test frees hew_bytes_to_string output)
+            let s = hew_bytes_decode_utf8_lossy(std::ptr::addr_of!(empty_triple));
+            assert!(s.is_null());
 
             assert!(hew_bytes_eq(std::ptr::null(), 0, 0, std::ptr::null(), 0, 0,));
         }
@@ -1612,15 +1665,15 @@ mod tests {
         let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
 
         // SAFETY: triple.ptr + offset is valid for triple.len bytes.
-        let cstr = unsafe { hew_bytes_to_string(std::ptr::addr_of!(triple)) };
-        assert!(!cstr.is_null());
+        let string = unsafe { hew_bytes_decode_utf8_lossy(std::ptr::addr_of!(triple)) };
+        assert!(!string.is_null());
 
-        // SAFETY: cstr is a valid NUL-terminated C string.
-        let s = unsafe { std::ffi::CStr::from_ptr(cstr) };
-        assert_eq!(s.to_str().unwrap(), "hello world");
+        // SAFETY: `string` remains a live managed string handle.
+        let decoded = unsafe { hew_cabi::string::string_as_str(string) };
+        assert_eq!(decoded, "hello world");
 
-        // SAFETY: cstr is a valid NUL-terminated string.
-        let round_trip = unsafe { hew_bytes_from_str(cstr.cast::<u8>()) };
+        // SAFETY: `string` is a live managed string handle.
+        let round_trip = unsafe { crate::string::hew_string_to_bytes(string) };
         assert_eq!(round_trip.len, 11);
 
         // SAFETY: round_trip.ptr + offset is valid for round_trip.len bytes.
@@ -1634,9 +1687,88 @@ mod tests {
 
         // SAFETY: All pointers are valid.
         unsafe {
-            crate::cabi::free_cstring(cstr); // CSTRING-FREE: str-open (test frees hew_bytes_to_string output)
+            hew_cabi::string::string_release(string);
             hew_bytes_drop(triple.ptr);
             hew_bytes_drop(round_trip.ptr);
+        }
+    }
+
+    #[test]
+    fn decode_utf8_preserves_multibyte_and_embedded_nul() {
+        let data = b"A\0\xc3\xa9\xf0\x9f\xa6\x80";
+        // SAFETY: test bytes remain readable and the result is released below.
+        let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
+        let mut value = std::ptr::null_mut();
+        let mut valid_up_to = usize::MAX;
+        let mut error_len = usize::MAX;
+
+        // SAFETY: triple is valid and outputs are distinct writable slots.
+        let status = unsafe {
+            hew_bytes_decode_utf8(
+                std::ptr::addr_of!(triple),
+                std::ptr::addr_of_mut!(value),
+                std::ptr::addr_of_mut!(valid_up_to),
+                std::ptr::addr_of_mut!(error_len),
+            )
+        };
+        assert_eq!(status, 0);
+        assert_eq!(valid_up_to, 0);
+        assert_eq!(error_len, 0);
+        // SAFETY: successful decode initialized one live managed string.
+        assert_eq!(unsafe { hew_cabi::string::string_as_bytes(value) }, data);
+
+        // SAFETY: release both independent owners.
+        unsafe {
+            hew_cabi::string::string_release(value);
+            hew_bytes_drop(triple.ptr);
+        }
+    }
+
+    #[test]
+    fn decode_utf8_reports_invalid_and_incomplete_sequences() {
+        for (data, expected_valid, expected_len) in
+            [(&b"a\xff"[..], 1, 1), (&b"a\xf0\x9f"[..], 1, 0)]
+        {
+            // SAFETY: test bytes remain readable and the result is released below.
+            let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
+            let mut value = std::ptr::without_provenance_mut(1);
+            let mut valid_up_to = usize::MAX;
+            let mut error_len = usize::MAX;
+
+            // SAFETY: triple is valid and outputs are distinct writable slots.
+            let status = unsafe {
+                hew_bytes_decode_utf8(
+                    std::ptr::addr_of!(triple),
+                    std::ptr::addr_of_mut!(value),
+                    std::ptr::addr_of_mut!(valid_up_to),
+                    std::ptr::addr_of_mut!(error_len),
+                )
+            };
+            assert_eq!(status, 1);
+            assert!(value.is_null());
+            assert_eq!(valid_up_to, expected_valid);
+            assert_eq!(error_len, expected_len);
+
+            // SAFETY: the invalid path creates no string owner; release bytes only.
+            unsafe { hew_bytes_drop(triple.ptr) };
+        }
+    }
+
+    #[test]
+    fn decode_utf8_lossy_is_explicit() {
+        let data = b"a\xffb";
+        // SAFETY: test bytes remain readable and both results are released below.
+        let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
+        // SAFETY: `triple` owns a readable active byte range.
+        let value = unsafe { hew_bytes_decode_utf8_lossy(std::ptr::addr_of!(triple)) };
+        // SAFETY: lossy decode initialized one live managed string.
+        let decoded = unsafe { hew_cabi::string::string_as_str(value) };
+        assert_eq!(decoded, "a\u{fffd}b");
+
+        // SAFETY: release both independent owners.
+        unsafe {
+            hew_cabi::string::string_release(value);
+            hew_bytes_drop(triple.ptr);
         }
     }
 

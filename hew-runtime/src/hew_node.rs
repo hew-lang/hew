@@ -8409,7 +8409,7 @@ mod tests {
                 .to_string_lossy()
                 .into_owned();
             // SAFETY: p was allocated by malloc_cstring; free via hew_string_drop.
-            unsafe { crate::string::hew_string_drop(p) };
+            unsafe { crate::cabi::free_cstring(p) };
             s
         };
 
@@ -8683,7 +8683,7 @@ mod tests {
                 .to_string_lossy()
                 .into_owned();
             // SAFETY: p was allocated by malloc_cstring; free via hew_string_drop.
-            unsafe { crate::string::hew_string_drop(p) };
+            unsafe { crate::cabi::free_cstring(p) };
             s
         };
 

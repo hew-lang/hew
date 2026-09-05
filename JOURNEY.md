@@ -1322,3 +1322,19 @@ compose with the resolver fix, but does not claim runtime acceptance.
 SIR resolves a mutable local place before evaluating runtime arguments, then takes the current root version apart after those arguments finish. Field assignment and Vec/Map/Set receiver transforms share the same checked record and tuple path, extraction and reconstruction. The runtime consumes the leaf; retained siblings remain in the existing owned-live relation until normal reconstruction or fault cleanup. Argument temporaries are classified before extraction so retained sibling owners are not mistaken for temporary arguments.
 
 The focused runtime-place controls cover generic impl-local records, nested records and tuples, receiver reads and parent replacement in later arguments, returned Map/Set values, copy independence, bounds and callback cleanup, and rejected immutable or malformed places. Existing vector iteration and field assignment controls and the SIR/MIR/codegen unit suites pass. Native field fixtures and package-level generic impl acceptance are pending composition with the integration branch.
+
+## Native collection milestone accepted locally
+
+The combined compiler passes all native acceptance cases and paired generated
+code/runtime ASan/LSan at both optimization levels after shared field mutation
+lowering. This includes nested owning siblings, receiver-reading arguments,
+independent parent copies, callback-fault propagation and logical zero-sized
+keys. Imported private generic Store methods now lower through Session and
+execute the package's original generation-stamp oracle at O0 and O2.
+
+The combined SIR, physical MIR, LLVM and compiler-session suites pass, as do the
+complete runtime/C ABI and standard-library suites. Full lint was rerun and
+retains the known source-lowering gaps in JobState and starts_with plus the
+pinned grammar mismatch; Rust lint is clean. This is a native collection
+milestone, not completion of the remaining callable, resource, actor or sandbox
+work. Ordinary selected equality is isolated in its own implementation branch.

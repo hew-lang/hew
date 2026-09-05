@@ -18,7 +18,7 @@
 use core::ffi::c_void;
 use core::ptr;
 
-use hew_cabi::map::{HewMapKeyLayout, HewVecElemLayout};
+use hew_cabi::map::{HewMapKeyLayout, HewValueLayout};
 use hew_cabi::vec::HewTypeOwnershipKind;
 
 use crate::hashmap::{
@@ -79,7 +79,7 @@ use crate::vec::HewVec;
 /// The pointer must therefore remain valid for the entire lifetime of the map.
 /// A `static` binding provides program-lifetime validity without any
 /// heap allocation.
-static VALUE_LAYOUT: HewVecElemLayout = HewVecElemLayout {
+static VALUE_LAYOUT: HewValueLayout = HewValueLayout {
     size: 0,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,

@@ -1638,7 +1638,7 @@ hew_abandon$<mangle_resolved_ty(T)>(slot: ptr) -> void          // only for a T 
 ```
 
 The ABI is the runtime's existing thunk contract, not a new one:
-`HewVecElemCloneThunk = fn(src, dst) -> i32` (`hew-cabi/src/vec.rs:156`;
+`HewValueCloneThunk = fn(src, dst) -> i32` (`hew-cabi/src/vec.rs:156`;
 `hew_vec_push_owned` aborts on a non-zero status, vec.rs:2650-2657;
 `hew_hashmap_clone_layout` likewise, hashmap.rs:985-987) and the in-place
 drop thunk `fn(slot)`. A `void` copy glue would leave the status register
@@ -1779,15 +1779,23 @@ carry `clone_fn = None` (§5.3); no SIR op can ask for the missing symbol
 because 6b refused every `copy_value` of such a type, so a glue table lookup
 that misses is `E_MIR_ICE` at module assembly.
 
-### 5.3 Runtime element-glue protocol
+### 5.3 Runtime value-glue protocol
 
-The seam is `hew_arc_new(data, size, align, drop_fn: Option<unsafe extern "C"
-fn(*mut u8)>)` (`hew-runtime/src/arc.rs:102`) and the element descriptor
-`HewVecElemLayout { size, align, ownership_kind, clone_fn, drop_fn }`
-(`hew-cabi/src/vec.rs:207`; `HewTypeOwnershipKind::LayoutManaged` is documented
-"not implemented yet", vec.rs:21). [P2]:
+The canonical shared descriptor is
+`HewValueLayout { size, align, ownership_kind, clone_fn, drop_fn }` in
+`hew-cabi/src/value.rs`, with `HewValueCloneThunk` and `HewValueDropThunk`.
+Vectors store this descriptor inline; map keys add hash/equality callbacks
+beside the same value descriptor, and map values use it directly. The legacy
+thunk-less `HewTypeLayout` remains separate for `BitCopy` operations.
 
-- Every collection constructor takes an element descriptor whose `drop_fn =
+The descriptor supplies storage facts and semantic copy/drop callbacks, not a
+second ownership decision. Callers copy the complete representation before a
+clone thunk replaces owning fields; failure rolls back the partial clone.
+Drop glue releases nested owners without deallocating the caller's storage.
+`hew_arc_new(data, size, align, drop_fn)` remains a separate byte-copy creation
+ABI; it does not acquire semantic cloning merely by sharing these concepts.
+
+- Every collection constructor takes a value descriptor whose `drop_fn =
   hew_drop$T` (the §5.1 wrapper for leaves) and `clone_fn = hew_copy$T`
   **when `clone ≠ None`, else `None`** (a `Vec<Conn>` descriptor has a drop
   thunk and no clone thunk; a clone through such a descriptor aborts

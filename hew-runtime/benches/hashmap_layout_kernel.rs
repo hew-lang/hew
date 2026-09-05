@@ -48,7 +48,7 @@ use std::ffi::{c_char, c_void, CString};
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewVecElemDropThunk, HewVecElemLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueDropThunk, HewValueLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -112,23 +112,23 @@ unsafe extern "C" fn eq_cstr_slot(lhs: *const c_void, rhs: *const c_void) -> i32
     }
 }
 
-fn string_descriptors() -> (HewMapKeyLayout, HewVecElemLayout) {
+fn string_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
-        value: HewVecElemLayout {
+        value: HewValueLayout {
             size: size_of::<*mut c_char>(),
             align: align_of::<*mut c_char>(),
             ownership_kind: HewTypeOwnershipKind::String,
             clone_fn: None,
-            drop_fn: Some(cstring_slot_drop as HewVecElemDropThunk),
+            drop_fn: Some(cstring_slot_drop as HewValueDropThunk),
         },
         hash_fn: Some(hash_cstr_slot as HewMapKeyHashThunk),
         eq_fn: Some(eq_cstr_slot as HewMapKeyEqThunk),
     };
-    let vl = HewVecElemLayout {
+    let vl = HewValueLayout {
         size: size_of::<*mut c_char>(),
         align: align_of::<*mut c_char>(),
         ownership_kind: HewTypeOwnershipKind::String,
-        drop_fn: Some(cstring_slot_drop as HewVecElemDropThunk),
+        drop_fn: Some(cstring_slot_drop as HewValueDropThunk),
         clone_fn: None,
     };
     (kl, vl)
@@ -161,9 +161,9 @@ unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
     i32::from(l == r)
 }
 
-fn i64_plain_descriptors() -> (HewMapKeyLayout, HewVecElemLayout) {
+fn i64_plain_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
-        value: HewVecElemLayout {
+        value: HewValueLayout {
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -173,7 +173,7 @@ fn i64_plain_descriptors() -> (HewMapKeyLayout, HewVecElemLayout) {
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
-    let vl = HewVecElemLayout {
+    let vl = HewValueLayout {
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::Plain,

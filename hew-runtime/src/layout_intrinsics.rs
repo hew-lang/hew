@@ -1,7 +1,7 @@
 //! Static scalar, string and byte-value protocols for maps and sets.
 //!
 //! Key descriptors add hash/equality callbacks to the same copy/drop descriptor
-//! used by vector elements. Hashing reads typed fields and complete string or
+//! used by all managed values. Hashing reads typed fields and complete string or
 //! byte contents; it never includes padding. Floating-point keys intentionally
 //! have no hash/equality callbacks because they do not satisfy the key contract.
 //! These pure descriptors and their callbacks also support wasm32-wasip1.
@@ -13,8 +13,8 @@
 
 use core::ffi::c_void;
 
-use hew_cabi::map::{HewMapKeyLayout, HewVecElemLayout};
-use hew_cabi::vec::HewTypeOwnershipKind;
+use hew_cabi::map::HewMapKeyLayout;
+use hew_cabi::value::{HewTypeOwnershipKind, HewValueLayout};
 
 // ---------------------------------------------------------------------------
 // FNV-1a-64 helpers
@@ -261,7 +261,7 @@ macro_rules! key_layout {
     ($name:ident, $ty:ty, $hash:expr, $eq:expr, $ownership:expr, $drop:expr) => {
         #[no_mangle]
         pub static $name: HewMapKeyLayout = HewMapKeyLayout {
-            value: HewVecElemLayout {
+            value: HewValueLayout {
                 size: core::mem::size_of::<$ty>(),
                 align: core::mem::align_of::<$ty>(),
                 ownership_kind: $ownership,
@@ -328,7 +328,7 @@ key_layout!(
 // bool: 1 byte, align 1.
 #[no_mangle]
 pub static hew_layout_key_bool: HewMapKeyLayout = HewMapKeyLayout {
-    value: HewVecElemLayout {
+    value: HewValueLayout {
         size: 1,
         align: 1,
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -342,7 +342,7 @@ pub static hew_layout_key_bool: HewMapKeyLayout = HewMapKeyLayout {
 // char: 4 bytes, align 4 (Unicode codepoint as u32).
 #[no_mangle]
 pub static hew_layout_key_char: HewMapKeyLayout = HewMapKeyLayout {
-    value: HewVecElemLayout {
+    value: HewValueLayout {
         size: 4,
         align: 4,
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -356,7 +356,7 @@ pub static hew_layout_key_char: HewMapKeyLayout = HewMapKeyLayout {
 // string: pointer-sized opaque managed handle.
 #[no_mangle]
 pub static hew_layout_key_string: HewMapKeyLayout = HewMapKeyLayout {
-    value: HewVecElemLayout {
+    value: HewValueLayout {
         size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
         align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
         ownership_kind: HewTypeOwnershipKind::String,
@@ -370,7 +370,7 @@ pub static hew_layout_key_string: HewMapKeyLayout = HewMapKeyLayout {
 // bytes: BytesTriple (ptr + offset + len), 16 bytes, align 8.
 #[no_mangle]
 pub static hew_layout_key_bytes: HewMapKeyLayout = HewMapKeyLayout {
-    value: HewVecElemLayout {
+    value: HewValueLayout {
         size: core::mem::size_of::<BytesTripleRepr>(),
         align: core::mem::align_of::<BytesTripleRepr>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -382,7 +382,7 @@ pub static hew_layout_key_bytes: HewMapKeyLayout = HewMapKeyLayout {
 };
 
 // ---------------------------------------------------------------------------
-// Value descriptors (HewVecElemLayout)
+// Value descriptors (HewValueLayout)
 // ---------------------------------------------------------------------------
 //
 // Value descriptors carry no hash / eq (the kernel never hashes V — see
@@ -394,7 +394,7 @@ pub static hew_layout_key_bytes: HewMapKeyLayout = HewMapKeyLayout {
 macro_rules! val_layout_plain {
     ($name:ident, $ty:ty) => {
         #[no_mangle]
-        pub static $name: HewVecElemLayout = HewVecElemLayout {
+        pub static $name: HewValueLayout = HewValueLayout {
             size: core::mem::size_of::<$ty>(),
             align: core::mem::align_of::<$ty>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -412,7 +412,7 @@ val_layout_plain!(hew_layout_val_f32, f32);
 val_layout_plain!(hew_layout_val_f64, f64);
 
 #[no_mangle]
-pub static hew_layout_val_bool: HewVecElemLayout = HewVecElemLayout {
+pub static hew_layout_val_bool: HewValueLayout = HewValueLayout {
     size: 1,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -421,7 +421,7 @@ pub static hew_layout_val_bool: HewVecElemLayout = HewVecElemLayout {
 };
 
 #[no_mangle]
-pub static hew_layout_val_char: HewVecElemLayout = HewVecElemLayout {
+pub static hew_layout_val_char: HewValueLayout = HewValueLayout {
     size: 4,
     align: 4,
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -430,7 +430,7 @@ pub static hew_layout_val_char: HewVecElemLayout = HewVecElemLayout {
 };
 
 #[no_mangle]
-pub static hew_layout_val_string: HewVecElemLayout = HewVecElemLayout {
+pub static hew_layout_val_string: HewValueLayout = HewValueLayout {
     size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
     align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
     ownership_kind: HewTypeOwnershipKind::String,
@@ -439,7 +439,7 @@ pub static hew_layout_val_string: HewVecElemLayout = HewVecElemLayout {
 };
 
 #[no_mangle]
-pub static hew_layout_val_bytes: HewVecElemLayout = HewVecElemLayout {
+pub static hew_layout_val_bytes: HewValueLayout = HewValueLayout {
     size: core::mem::size_of::<BytesTripleRepr>(),
     align: core::mem::align_of::<BytesTripleRepr>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -451,7 +451,7 @@ pub static hew_layout_val_bytes: HewVecElemLayout = HewVecElemLayout {
 // size == 0 only when align == 1 (hashmap.rs:980-983); Plain ownership,
 // no drop, no clone.
 #[no_mangle]
-pub static hew_layout_val_unit: HewVecElemLayout = HewVecElemLayout {
+pub static hew_layout_val_unit: HewValueLayout = HewValueLayout {
     size: 0,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,

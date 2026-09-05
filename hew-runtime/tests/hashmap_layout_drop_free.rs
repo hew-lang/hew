@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewVecElemDropThunk, HewVecElemLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueDropThunk, HewValueLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -56,23 +56,23 @@ unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
     i32::from(l == r)
 }
 
-fn make_descriptors() -> (HewMapKeyLayout, HewVecElemLayout) {
+fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
-        value: HewVecElemLayout {
+        value: HewValueLayout {
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
             clone_fn: None,
-            drop_fn: Some(k_drop_count as HewVecElemDropThunk),
+            drop_fn: Some(k_drop_count as HewValueDropThunk),
         },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
-    let vl = HewVecElemLayout {
+    let vl = HewValueLayout {
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        drop_fn: Some(v_drop_count as HewVecElemDropThunk),
+        drop_fn: Some(v_drop_count as HewValueDropThunk),
         clone_fn: None,
     };
     (kl, vl)
@@ -156,7 +156,7 @@ fn free_plain_descriptor_invokes_no_drops() {
     K_DROP_COUNT.store(0, Ordering::SeqCst);
     V_DROP_COUNT.store(0, Ordering::SeqCst);
     let kl = HewMapKeyLayout {
-        value: HewVecElemLayout {
+        value: HewValueLayout {
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -166,7 +166,7 @@ fn free_plain_descriptor_invokes_no_drops() {
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
-    let vl = HewVecElemLayout {
+    let vl = HewValueLayout {
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::Plain,

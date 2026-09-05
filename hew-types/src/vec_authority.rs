@@ -455,7 +455,7 @@ pub fn resolve_runtime_symbol(
     // no unowned-container field) because that admissibility check
     // is blind to indirection — but its runtime representation is a bare
     // pointer slot built by `hew_vec_new_ptr`, not the owned family's
-    // `HewVecElemLayout`-descriptor buffer. Honouring `is_owned` here would
+    // `HewValueLayout`-descriptor buffer. Honouring `is_owned` here would
     // route `push`/`pop`/`get`/... to `hew_vec_*_owned` against a buffer the
     // constructor built pointer-plain, corrupting the ABI the moment
     // construction is ever admitted for that element. Pinning the exclusion

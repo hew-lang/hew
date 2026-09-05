@@ -27,7 +27,7 @@
 
 // Re-export types from hew-cabi so `crate::vec::HewVec` etc. continue to work.
 pub use hew_cabi::vec::{
-    ElemKind, HewTypeLayout, HewTypeOwnershipKind, HewVec, HewVecElemLayout, HewVecEqThunk,
+    ElemKind, HewTypeLayout, HewTypeOwnershipKind, HewValueLayout, HewVec, HewVecEqThunk,
 };
 
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
@@ -271,28 +271,28 @@ unsafe fn validate_type_layout(layout: *const HewTypeLayout) {
 ///
 /// # Safety
 ///
-/// `layout` must point to a valid `HewVecElemLayout`.
-unsafe fn validate_elem_layout(layout: *const HewVecElemLayout) {
+/// `layout` must point to a valid `HewValueLayout`.
+unsafe fn validate_elem_layout(layout: *const HewValueLayout) {
     // SAFETY: caller guarantees `layout` is valid.
     unsafe {
         let descriptor = &*layout;
         if descriptor.align == 0 || !descriptor.align.is_power_of_two() {
-            let msg = b"PANIC: HewVecElemLayout align must be a non-zero power of two\n\0";
+            let msg = b"PANIC: HewValueLayout align must be a non-zero power of two\n\0";
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         }
         if !descriptor.size.is_multiple_of(descriptor.align) {
-            write_stderr(b"PANIC: HewVecElemLayout size must preserve element alignment\n");
+            write_stderr(b"PANIC: HewValueLayout size must preserve element alignment\n");
             libc::abort();
         }
         if descriptor.ownership_kind == HewTypeOwnershipKind::Bytes {
-            let msg = b"PANIC: HewVecElemLayout ownership_kind=Bytes is not valid for Vec\n\0";
+            let msg = b"PANIC: HewValueLayout ownership_kind=Bytes is not valid for Vec\n\0";
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         }
         if descriptor.ownership_kind != HewTypeOwnershipKind::Plain && descriptor.drop_fn.is_none()
         {
-            let msg = b"PANIC: HewVecElemLayout non-Plain ownership requires drop_fn\n\0";
+            let msg = b"PANIC: HewValueLayout non-Plain ownership requires drop_fn\n\0";
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         }
@@ -545,7 +545,7 @@ pub unsafe extern "C" fn hew_vec_from_u8_data(data: *const u8, len: u32) -> *mut
 /// Create a new `HewVec` backed by a runtime type layout descriptor.
 ///
 /// The thunk-less compatibility descriptor is widened into the Vec's
-/// authoritative [`HewVecElemLayout`] storage. Only Plain and String ownership
+/// authoritative [`HewValueLayout`] storage. Only Plain and String ownership
 /// are admissible through this entry point; layout-managed elements must use
 /// [`hew_vec_new_with_elem_layout`] and provide a drop thunk.
 ///
@@ -561,7 +561,7 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
         validate_type_layout(layout);
         let descriptor = &*layout;
         if descriptor.ownership_kind == HewTypeOwnershipKind::LayoutManaged {
-            let msg = b"PANIC: HewTypeLayout LayoutManaged requires HewVecElemLayout thunks\n\0";
+            let msg = b"PANIC: HewTypeLayout LayoutManaged requires HewValueLayout thunks\n\0";
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         }
@@ -582,7 +582,7 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
                 libc::abort();
             }
         };
-        (*v).layout_storage = HewVecElemLayout {
+        (*v).layout_storage = HewValueLayout {
             size: descriptor.size,
             align: descriptor.align,
             ownership_kind: descriptor.ownership_kind,
@@ -1189,7 +1189,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_layout(
 
 /// Allocate a new `HewVec` populated from `v[start..end)` for owned
 /// descriptor-backed elements. Each selected element is deep-cloned through the
-/// stamped `HewVecElemLayout.clone_fn`, so the returned vec owns independent
+/// stamped `HewValueLayout.clone_fn`, so the returned vec owns independent
 /// element heaps and frees through `hew_vec_free_owned`.
 ///
 /// # Safety
@@ -2500,7 +2500,7 @@ pub unsafe extern "C" fn hew_vec_pop_layout(
 // These ops back `Vec<T>` where `T` owns heap (strings, owned-payload or
 // recursive enums, records with owned fields). They are the descriptor-driven
 // twin of the HashMap owned-value path. The per-element ownership contract is
-// pinned on `HewVecElemLayout` (`hew-cabi/src/vec.rs`):
+// pinned on `HewValueLayout` (`hew-cabi/src/value.rs`):
 //
 //   * push  — memcpy `src` bytes into the new slot, then `clone_fn(src, slot)`
 //             to deep-copy owned heap. The Vec now owns the element.
@@ -2549,7 +2549,7 @@ unsafe fn abort_owned_thunk_missing(which: &str) -> ! {
 /// # Safety
 ///
 /// `v` must point to a valid, non-null `HewVec`.
-unsafe fn owned_descriptor<'a>(v: *const HewVec) -> &'a HewVecElemLayout {
+unsafe fn owned_descriptor<'a>(v: *const HewVec) -> &'a HewValueLayout {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let layout = (*v).layout;
@@ -2562,7 +2562,7 @@ unsafe fn owned_descriptor<'a>(v: *const HewVec) -> &'a HewVecElemLayout {
 
 /// Resolve the descriptor's semantic copy action. Plain values need no thunk;
 /// a non-plain value must never silently fall back to a byte copy.
-unsafe fn owned_clone_fn(layout: &HewVecElemLayout) -> Option<hew_cabi::vec::HewVecElemCloneThunk> {
+unsafe fn owned_clone_fn(layout: &HewValueLayout) -> Option<hew_cabi::value::HewValueCloneThunk> {
     match layout.clone_fn {
         Some(f) => Some(f),
         None if layout.ownership_kind == HewTypeOwnershipKind::Plain => None,
@@ -2572,7 +2572,7 @@ unsafe fn owned_clone_fn(layout: &HewVecElemLayout) -> Option<hew_cabi::vec::Hew
 }
 
 /// Resolve the descriptor's cleanup action; only plain values need no thunk.
-unsafe fn owned_drop_fn(layout: &HewVecElemLayout) -> Option<hew_cabi::vec::HewVecElemDropThunk> {
+unsafe fn owned_drop_fn(layout: &HewValueLayout) -> Option<hew_cabi::value::HewValueDropThunk> {
     match layout.drop_fn {
         Some(f) => Some(f),
         None if layout.ownership_kind == HewTypeOwnershipKind::Plain => None,
@@ -2581,7 +2581,7 @@ unsafe fn owned_drop_fn(layout: &HewVecElemLayout) -> Option<hew_cabi::vec::HewV
     }
 }
 
-/// Create a new owned-element `HewVec` backed by a `HewVecElemLayout`.
+/// Create a new owned-element `HewVec` backed by a `HewValueLayout`.
 ///
 /// Copies the descriptor into the vec's inline `layout_storage` so `layout`
 /// never dangles. Non-Plain descriptors require a drop thunk; clone operations
@@ -2593,7 +2593,7 @@ unsafe fn owned_drop_fn(layout: &HewVecElemLayout) -> Option<hew_cabi::vec::HewV
 /// The returned pointer must eventually be freed with [`hew_vec_free_owned`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
-    layout: *const HewVecElemLayout,
+    layout: *const HewValueLayout,
 ) -> *mut HewVec {
     cabi_guard!(layout.is_null(), ptr::null_mut());
     // SAFETY: null was rejected above.
@@ -2601,7 +2601,7 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
         validate_elem_layout(layout);
         let descriptor = &*layout;
         let elem_size = i64::try_from(descriptor.size).unwrap_or_else(|_| {
-            let msg = b"PANIC: HewVecElemLayout size exceeds Hew ABI range\n\0";
+            let msg = b"PANIC: HewValueLayout size exceeds Hew ABI range\n\0";
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         });
@@ -4335,7 +4335,7 @@ mod tests {
         );
         let stderr = String::from_utf8_lossy(&status.stderr);
         assert!(
-            stderr.contains("HewTypeLayout LayoutManaged requires HewVecElemLayout thunks"),
+            stderr.contains("HewTypeLayout LayoutManaged requires HewValueLayout thunks"),
             "LayoutManaged remove must report the fail-closed diagnostic; got: {stderr}"
         );
     }
@@ -4758,7 +4758,7 @@ mod tests {
         );
         let stderr = String::from_utf8_lossy(&status.stderr);
         assert!(
-            stderr.contains("HewTypeLayout LayoutManaged requires HewVecElemLayout thunks"),
+            stderr.contains("HewTypeLayout LayoutManaged requires HewValueLayout thunks"),
             "LayoutManaged clone must report the fail-closed diagnostic; got: {stderr}"
         );
     }
@@ -4898,7 +4898,7 @@ mod vec_owned_tests {
 
     #[test]
     fn zero_sized_elements_preserve_length_without_reading_or_writing_payload() {
-        let layout = HewVecElemLayout {
+        let layout = HewValueLayout {
             size: 0,
             align: 1,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -4939,7 +4939,7 @@ mod vec_owned_tests {
 
     #[test]
     fn plain_descriptor_uses_the_same_value_operations_without_thunks() {
-        let layout = HewVecElemLayout {
+        let layout = HewValueLayout {
             size: size_of::<(i64, i64)>(),
             align: align_of::<(i64, i64)>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -5090,8 +5090,8 @@ mod vec_owned_tests {
         unsafe { drop_thunk(slot) };
     }
 
-    fn owned_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn owned_layout() -> HewValueLayout {
+        HewValueLayout {
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5145,7 +5145,7 @@ mod vec_owned_tests {
         // transfers `source`'s heap pointer into the Vec slot, so source is not
         // freed separately afterwards.
         unsafe {
-            let layout = HewVecElemLayout {
+            let layout = HewValueLayout {
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5186,7 +5186,7 @@ mod vec_owned_tests {
         // SAFETY: every pointer and descriptor below names a live value of the
         // declared layout. The output owns the payload after `take` returns.
         unsafe {
-            let layout = HewVecElemLayout {
+            let layout = HewValueLayout {
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5235,7 +5235,7 @@ mod vec_owned_tests {
         // SAFETY: descriptor and element pointers are valid; ownership of the
         // pushed elements transfers to the taken vec wholesale.
         unsafe {
-            let layout = HewVecElemLayout {
+            let layout = HewValueLayout {
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5582,7 +5582,7 @@ mod vec_owned_tests {
         {
             return;
         }
-        let layout = HewVecElemLayout {
+        let layout = HewValueLayout {
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

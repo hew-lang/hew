@@ -22,7 +22,7 @@ use std::ffi::c_void;
 use std::ptr;
 use std::rc::Rc;
 
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
 
 use crate::channel_common::{
     decode_elem_envelope, drop_elem_envelope, elem_layout_witness, encode_elem_envelope,
@@ -70,7 +70,7 @@ struct ChannelInner {
     receiver_closed: bool,
     /// Witness for layout-managed envelopes. The final inner-state drop uses
     /// it to release every queued deep value exactly once.
-    elem_layout: Option<HewVecElemLayout>,
+    elem_layout: Option<HewValueLayout>,
 }
 
 impl Drop for ChannelInner {
@@ -322,7 +322,7 @@ impl Clone for WasmChannelSender {
 fn try_send_bytes(
     sender: &HewWasmChannelSender,
     bytes: Vec<u8>,
-    layout: Option<&HewVecElemLayout>,
+    layout: Option<&HewValueLayout>,
     api_name: &str,
 ) -> Result<(), TrySendError> {
     if let Some(layout) = layout.filter(|l| l.ownership_kind == HewTypeOwnershipKind::LayoutManaged)
@@ -368,7 +368,7 @@ fn try_send_bytes(
 fn send_bytes(
     sender: &HewWasmChannelSender,
     bytes: Vec<u8>,
-    layout: Option<&HewVecElemLayout>,
+    layout: Option<&HewValueLayout>,
     api_name: &str,
 ) {
     match try_send_bytes(sender, bytes, layout, api_name) {
@@ -395,13 +395,13 @@ fn send_bytes(
 /// # Safety
 ///
 /// `sender` must be a valid pointer. `data` must point to one live element of
-/// the witness's type. `layout` must point to a valid `HewVecElemLayout` for
+/// the witness's type. `layout` must point to a valid `HewValueLayout` for
 /// the duration of the call (in practice a codegen static).
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub unsafe extern "C" fn hew_channel_send_layout(
     sender: *mut HewWasmChannelSender,
     data: *const c_void,
-    layout: *const HewVecElemLayout,
+    layout: *const HewValueLayout,
 ) {
     cabi_guard!(sender.is_null() || data.is_null());
     // SAFETY: caller guarantees the witness pointee lives for the call.
@@ -461,12 +461,12 @@ impl Drop for WasmChannelReceiver {
 ///
 /// `receiver` must be a valid pointer. `out` must point to one writable
 /// element slot of the witness's type. `layout` must point to a valid
-/// `HewVecElemLayout` for the duration of the call.
+/// `HewValueLayout` for the duration of the call.
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub unsafe extern "C" fn hew_channel_try_recv_layout(
     receiver: *mut HewWasmChannelReceiver,
     out: *mut c_void,
-    layout: *const HewVecElemLayout,
+    layout: *const HewValueLayout,
 ) -> i32 {
     cabi_guard!(receiver.is_null() || out.is_null(), 0);
     // SAFETY: caller guarantees the witness pointee lives for the call.
@@ -542,8 +542,8 @@ mod tests {
     use hew_cabi::string::{string_as_str, string_release, HewString};
     use std::ffi::CStr;
 
-    fn plain_layout(size: usize, align: usize) -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn plain_layout(size: usize, align: usize) -> HewValueLayout {
+        HewValueLayout {
             size,
             align,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -552,8 +552,8 @@ mod tests {
         }
     }
 
-    fn string_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn string_layout() -> HewValueLayout {
+        HewValueLayout {
             size: size_of::<*const HewString>(),
             align: align_of::<*const HewString>(),
             ownership_kind: HewTypeOwnershipKind::String,
@@ -596,8 +596,8 @@ mod tests {
         WASM_OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn wasm_owned_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn wasm_owned_layout() -> HewValueLayout {
+        HewValueLayout {
             size: size_of::<WasmOwnedElem>(),
             align: align_of::<WasmOwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

@@ -4,6 +4,7 @@
 //! need to implement `#[no_mangle] extern "C"` functions:
 //!
 //! - String conversion helpers (`malloc_cstring`, `str_to_malloc`, `cstr_to_str`)
+//! - `HewValueLayout` and semantic value copy/drop callbacks
 //! - `HewVec` type definition and byte-conversion helpers
 //! - `HewSink` construction helpers for custom sink implementations
 //!
@@ -15,4 +16,5 @@ pub mod cabi;
 pub mod map;
 pub mod sink;
 pub mod string;
+pub mod value;
 pub mod vec;

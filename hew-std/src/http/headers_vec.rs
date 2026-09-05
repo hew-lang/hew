@@ -1,4 +1,4 @@
-//! Shared `HewVecElemLayout` descriptor for `Vec<(string, string)>` HTTP header pairs.
+//! Shared `HewValueLayout` descriptor for `Vec<(string, string)>` HTTP header pairs.
 //!
 //! `hew_http_response_headers` and `hew_http_request_headers` both return a
 //! `Vec<(string, string)>` backed by this descriptor.  The Hew drop spine calls
@@ -18,7 +18,7 @@ use std::ffi::{c_char, c_void};
 
 use hew_cabi::{
     cabi::{cstring_retain, free_cstring},
-    vec::{HewTypeOwnershipKind, HewVecElemCloneThunk, HewVecElemDropThunk, HewVecElemLayout},
+    value::{HewTypeOwnershipKind, HewValueCloneThunk, HewValueDropThunk, HewValueLayout},
 };
 
 /// In-memory layout of one `(string, string)` element: two adjacent `*mut c_char`
@@ -88,20 +88,20 @@ pub(crate) unsafe extern "C" fn string_pair_drop_thunk(slot: *mut c_void) {
     }
 }
 
-/// Build the `HewVecElemLayout` descriptor for `Vec<(string, string)>` header pairs.
+/// Build the `HewValueLayout` descriptor for `Vec<(string, string)>` header pairs.
 ///
 /// Inlined at each call site so it lives on the caller's stack and is passed by
 /// pointer to `hew_vec_new_with_elem_layout`, which copies it into the vec's
 /// inline storage.  The resulting `HewVec` uses `hew_vec_push_owned` for push
 /// and `hew_vec_free_owned` for free/drop.
 #[inline]
-pub(crate) fn string_pair_elem_layout() -> HewVecElemLayout {
-    HewVecElemLayout {
+pub(crate) fn string_pair_elem_layout() -> HewValueLayout {
+    HewValueLayout {
         size: std::mem::size_of::<HewStringPair>(),
         align: std::mem::align_of::<HewStringPair>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        clone_fn: Some(string_pair_clone_thunk as HewVecElemCloneThunk),
-        drop_fn: Some(string_pair_drop_thunk as HewVecElemDropThunk),
+        clone_fn: Some(string_pair_clone_thunk as HewValueCloneThunk),
+        drop_fn: Some(string_pair_drop_thunk as HewValueDropThunk),
     }
 }
 

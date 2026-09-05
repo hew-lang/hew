@@ -38,7 +38,7 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use hew_cabi::sink::TrySendResult;
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
 
 use crate::actor::HewActor;
 use crate::lifetime::live_actors::ActorIncarnation;
@@ -102,7 +102,7 @@ struct Inner {
     /// post-close send, and a parked producer woken by `close_stream`.
     /// `None` for Plain/String/Bytes elements — their envelopes own no heap
     /// beyond the `Vec<u8>` itself.
-    elem_layout: Option<HewVecElemLayout>,
+    elem_layout: Option<HewValueLayout>,
 }
 
 /// Shared in-memory pipe state, held by `Arc` from BOTH the stream backing and
@@ -196,7 +196,7 @@ impl ChannelCore {
     /// core aborts fail-closed — the ownership state of envelopes built under
     /// two witnesses is unknowable (one element type per pipe is a compiler
     /// invariant).
-    pub fn stamp_elem_layout(&self, layout: &HewVecElemLayout) {
+    pub fn stamp_elem_layout(&self, layout: &HewValueLayout) {
         let mut inner = self.locked();
         match &inner.elem_layout {
             None => inner.elem_layout = Some(*layout),
@@ -216,7 +216,7 @@ impl ChannelCore {
     /// the envelope's owned heap is dropped via `drop_fn` exactly once; for
     /// every other element kind the `Vec<u8>` drop is sufficient. Runs OUTSIDE
     /// the core lock (the thunk may free arbitrary owned heap).
-    fn drop_envelope(layout: Option<&HewVecElemLayout>, mut env: Vec<u8>) {
+    fn drop_envelope(layout: Option<&HewValueLayout>, mut env: Vec<u8>) {
         let Some(l) = layout else {
             return;
         };
@@ -1199,8 +1199,8 @@ mod tests {
         .fetch_add(1, Ordering::SeqCst);
     }
 
-    fn blocking_elem_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn blocking_elem_layout() -> HewValueLayout {
+        HewValueLayout {
             size: size_of::<u64>(),
             align: align_of::<u64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -1367,8 +1367,8 @@ mod tests {
         OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn owned_elem_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn owned_elem_layout() -> HewValueLayout {
+        HewValueLayout {
             size: size_of::<OwnedElem>(),
             align: align_of::<OwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

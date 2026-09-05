@@ -31,7 +31,7 @@ use std::ffi::c_void;
 use std::ptr;
 
 use hew_cabi::map::{HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout};
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
 use hew_runtime::hashmap::{validate_descriptor_ownership, validate_key_layout};
 use hew_runtime::hashset::{
     hew_hashset_clone_layout, hew_hashset_contains_layout, hew_hashset_free_layout,
@@ -67,7 +67,7 @@ unsafe extern "C" fn eq_point(lhs: *const c_void, rhs: *const c_void) -> i32 {
 
 fn elem_layout_point() -> HewMapKeyLayout {
     HewMapKeyLayout {
-        value: HewVecElemLayout {
+        value: HewValueLayout {
             size: 16,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -288,7 +288,7 @@ fn layout_hashset_null_elem_layout_aborts() {
 #[should_panic(expected = "key_layout ownership_kind=LayoutManaged requires drop_fn")]
 fn layout_hashset_managed_elem_without_drop_aborts() {
     let kl = HewMapKeyLayout {
-        value: HewVecElemLayout {
+        value: HewValueLayout {
             size: 16,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -300,7 +300,7 @@ fn layout_hashset_managed_elem_without_drop_aborts() {
     };
     // The hashset's ZST value layout is internal to hew_hashset_new_with_layout;
     // for this gate-level test we synthesize an equivalent value descriptor.
-    let vl = hew_cabi::map::HewVecElemLayout {
+    let vl = hew_cabi::map::HewValueLayout {
         size: 0,
         align: 1,
         ownership_kind: HewTypeOwnershipKind::Plain,

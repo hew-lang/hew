@@ -1,6 +1,6 @@
 //! Hash identity metadata for descriptor-backed maps and sets.
 //!
-//! Keys and values use the same value copy/drop descriptor as vector elements.
+//! Keys and values use the shared value copy/drop descriptor.
 //! A key adds borrowed hash/equality callbacks; neither callback owns its input.
 //! Descriptors are copied into each collection at construction, so the caller
 //! need not retain the descriptor storage.
@@ -14,8 +14,8 @@
 
 use core::ffi::c_void;
 
-pub use crate::vec::{
-    HewTypeOwnershipKind, HewVecElemCloneThunk, HewVecElemDropThunk, HewVecElemLayout,
+pub use crate::value::{
+    HewTypeOwnershipKind, HewValueCloneThunk, HewValueDropThunk, HewValueLayout,
 };
 
 /// Hash a borrowed key's typed values, excluding padding bytes.
@@ -40,8 +40,8 @@ pub type HewMapKeyEqThunk = unsafe extern "C" fn(lhs: *const c_void, rhs: *const
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HewMapKeyLayout {
-    /// Size, alignment and semantic copy/drop protocol shared with vectors.
-    pub value: HewVecElemLayout,
+    /// Size, alignment and semantic copy/drop protocol for the key value.
+    pub value: HewValueLayout,
     /// Hash the borrowed key value.
     pub hash_fn: Option<HewMapKeyHashThunk>,
     /// Compare two borrowed key values.
@@ -53,7 +53,7 @@ pub struct HewMapKeyLayout {
 // ---------------------------------------------------------------------------
 //
 // `hew-runtime/src/layout_intrinsics.rs` defines `#[no_mangle] pub static`
-// instances of `HewMapKeyLayout` / `HewVecElemLayout` for the supported
+// instances of `HewMapKeyLayout` / `HewValueLayout` for the supported
 // types (`i32, i64, u32, u64, f32, f64, bool, char, string, bytes, unit`).
 // Re-declaring them here as `extern "C"` statics lets codegen-rs and other
 // back-ends take the address of the descriptor
@@ -85,21 +85,21 @@ extern "C" {
     pub static hew_layout_key_string: HewMapKeyLayout;
     pub static hew_layout_key_bytes: HewMapKeyLayout;
 
-    // ---- HewVecElemLayout descriptors ----
-    pub static hew_layout_val_i32: HewVecElemLayout;
-    pub static hew_layout_val_i64: HewVecElemLayout;
-    pub static hew_layout_val_u32: HewVecElemLayout;
-    pub static hew_layout_val_u64: HewVecElemLayout;
-    pub static hew_layout_val_f32: HewVecElemLayout;
-    pub static hew_layout_val_f64: HewVecElemLayout;
-    pub static hew_layout_val_bool: HewVecElemLayout;
-    pub static hew_layout_val_char: HewVecElemLayout;
-    pub static hew_layout_val_string: HewVecElemLayout;
-    pub static hew_layout_val_bytes: HewVecElemLayout;
+    // ---- HewValueLayout descriptors ----
+    pub static hew_layout_val_i32: HewValueLayout;
+    pub static hew_layout_val_i64: HewValueLayout;
+    pub static hew_layout_val_u32: HewValueLayout;
+    pub static hew_layout_val_u64: HewValueLayout;
+    pub static hew_layout_val_f32: HewValueLayout;
+    pub static hew_layout_val_f64: HewValueLayout;
+    pub static hew_layout_val_bool: HewValueLayout;
+    pub static hew_layout_val_char: HewValueLayout;
+    pub static hew_layout_val_string: HewValueLayout;
+    pub static hew_layout_val_bytes: HewValueLayout;
     /// Zero-size value descriptor for the `HashSet<T>` = `HashMap<T, ()>`
     /// pattern. `size = 0, align = 1` (the kernel admits ZST V only at
     /// `align == 1` — see `hew-runtime/src/hashmap.rs:980-983`).
-    pub static hew_layout_val_unit: HewVecElemLayout;
+    pub static hew_layout_val_unit: HewValueLayout;
 }
 
 /// All key-layout descriptor symbols exported by `hew-runtime`.
@@ -170,9 +170,9 @@ mod tests {
     #[test]
     fn option_drop_thunk_has_same_size_as_raw_fn_ptr() {
         assert_eq!(
-            size_of::<Option<HewVecElemDropThunk>>(),
-            size_of::<HewVecElemDropThunk>(),
-            "Option<HewVecElemDropThunk> must have the same size as HewVecElemDropThunk \
+            size_of::<Option<HewValueDropThunk>>(),
+            size_of::<HewValueDropThunk>(),
+            "Option<HewValueDropThunk> must have the same size as HewValueDropThunk \
              (fn-pointer niche optimisation)",
         );
     }
@@ -180,9 +180,9 @@ mod tests {
     #[test]
     fn option_clone_thunk_has_same_size_as_raw_fn_ptr() {
         assert_eq!(
-            size_of::<Option<HewVecElemCloneThunk>>(),
-            size_of::<HewVecElemCloneThunk>(),
-            "Option<HewVecElemCloneThunk> must have the same size as HewVecElemCloneThunk \
+            size_of::<Option<HewValueCloneThunk>>(),
+            size_of::<HewValueCloneThunk>(),
+            "Option<HewValueCloneThunk> must have the same size as HewValueCloneThunk \
              (fn-pointer niche optimisation)",
         );
     }
@@ -192,17 +192,14 @@ mod tests {
         assert_eq!(core::mem::offset_of!(HewMapKeyLayout, value), 0);
         assert_eq!(
             core::mem::offset_of!(HewMapKeyLayout, hash_fn),
-            size_of::<HewVecElemLayout>(),
+            size_of::<HewValueLayout>(),
         );
         assert_eq!(
             core::mem::offset_of!(HewMapKeyLayout, eq_fn),
-            size_of::<HewVecElemLayout>() + size_of::<HewMapKeyHashThunk>(),
+            size_of::<HewValueLayout>() + size_of::<HewMapKeyHashThunk>(),
         );
         assert_eq!(size_of::<HewMapKeyLayout>(), 7 * size_of::<usize>());
-        assert_eq!(
-            align_of::<HewMapKeyLayout>(),
-            align_of::<HewVecElemLayout>()
-        );
+        assert_eq!(align_of::<HewMapKeyLayout>(), align_of::<HewValueLayout>());
     }
 
     // -- HewTypeOwnershipKind discriminant values (ABI contract) --

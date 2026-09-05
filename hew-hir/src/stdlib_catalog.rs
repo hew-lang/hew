@@ -111,7 +111,7 @@ pub enum BuiltinLinkage {
         pid_accessor: &'static str,
     },
     /// Catalog row that *declares* a `#[no_mangle] pub static` runtime symbol
-    /// (a `HewMapKeyLayout` or `HewVecElemLayout` instance) rather than a
+    /// (a `HewMapKeyLayout` or `HewValueLayout` instance) rather than a
     /// function. Used by W4.001 Stage C0b layout-descriptor entries.
     ///
     /// **Not a callable**: codegen does not predeclare an LLVM function for
@@ -132,13 +132,13 @@ pub enum BuiltinLinkage {
 
 /// Which descriptor flavour a `LayoutDescriptorSymbol` row names.
 ///
-/// Mirrors the two cabi structs (`HewMapKeyLayout`, `HewVecElemLayout`) so
+/// Mirrors the two cabi structs (`HewMapKeyLayout`, `HewValueLayout`) so
 /// the coverage test can enumerate K-vs-V scope separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutDescriptorRole {
     /// `HewMapKeyLayout` static (`hew_layout_key_<type>`).
     Key,
-    /// `HewVecElemLayout` static (`hew_layout_val_<type>`).
+    /// `HewValueLayout` static (`hew_layout_val_<type>`).
     Value,
 }
 
@@ -1716,7 +1716,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // W3.041 sub-lane A: 7 layout HashMap rows for Copy named-record keys with
     // any admitted value type (scalar or layout).  All use
     // `CalleeNameDispatchOnly` because the runtime ABI takes hidden
-    // `HewMapKeyLayout*` / `HewVecElemLayout*` operands synthesised by codegen
+    // `HewMapKeyLayout*` / `HewValueLayout*` operands synthesised by codegen
     // from the checker-authoritative `HashMapLoweringFact`.  The `params` here
     // are placeholder shape metadata only — typecheck routes through
     // `check_hashmap_method` which performs full K/V validation; HIR/MIR/codegen
@@ -1843,7 +1843,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // ── Layout descriptor symbols (W4.001 Stage C0b) ─────────────────────────
     //
     // `#[no_mangle] pub static` instances of `HewMapKeyLayout` /
-    // `HewVecElemLayout` exported by `hew-runtime/src/layout_intrinsics.rs`
+    // `HewValueLayout` exported by `hew-runtime/src/layout_intrinsics.rs`
     // and re-declared by `hew-cabi/src/map.rs`. Catalog rows here are
     // checker-visible declarations only — Stage C is the first production
     // reader (plan §4 Stage C0b boundary).

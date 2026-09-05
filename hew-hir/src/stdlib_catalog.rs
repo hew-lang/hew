@@ -2122,20 +2122,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_vec_contains_str",
         },
     ),
-    // W4.039: bytes -> string canonicalisation. Single `hew_bytes_to_string`
-    // runtime export consumes the BytesTriple value directly; the catalog
-    // declares the LLVM extern with a single `bytes` parameter, which codegen
-    // materialises as `{ptr, i32, i32}` (ABI-equivalent to a
-    // `#[repr(C)] BytesTriple` passed by value).
-    direct(
-        "hew_bytes_to_string",
-        BuiltinClass::ClassA,
-        BYTES,
-        BuiltinTy::String,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_bytes_to_string",
-        },
-    ),
     direct(
         "hew_vec_append",
         BuiltinClass::ClassA,

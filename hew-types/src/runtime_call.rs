@@ -1073,14 +1073,6 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         result: CanonicalExternTy::Unit,
     },
     CanonicalStdlibExternSignature {
-        module: "std.io",
-        signature_key: "bytes::to_string",
-        symbol: "hew_bytes_to_string",
-        family: None,
-        params: EMPTY,
-        result: CanonicalExternTy::String,
-    },
-    CanonicalStdlibExternSignature {
         module: "std.string",
         signature_key: "string::byte_len",
         symbol: "hew_string_byte_length",
@@ -3768,7 +3760,6 @@ mod tests {
                 "bytes::pop",
                 "bytes::push",
                 "bytes::set",
-                "bytes::to_string",
                 "string::byte_len",
                 "string::find",
                 "string::char_at",

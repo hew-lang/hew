@@ -92,6 +92,7 @@
 //! ```
 
 import std.net;
+import std.encoding.utf8;
 
 /// A QUIC endpoint bound to a local UDP address.
 ///
@@ -337,9 +338,10 @@ trait QUICStreamMethods {
 
     /// Block until data arrives and return it as a UTF-8 string.
     ///
-    /// Convenience wrapper around `recv` that converts the received bytes to
-    /// a `string`.  Returns an empty string on stream close or error.
-    fn recv_string(self) -> string;
+    /// Validates one received buffer; malformed or incomplete UTF-8 is an
+    /// error. An empty buffer follows `recv`'s stream-close/error convention.
+    /// Retain raw bytes across reads when decoding streaming text.
+    fn recv_string(self) -> Result<string, utf8.Utf8Error>;
 
     /// Return a non-destructive snapshot of stream state.
     fn observe(self) -> QUICStreamObservation;
@@ -369,7 +371,7 @@ impl QUICStreamMethods for QUICStream {
     fn send_string(strm: QUICStream, msg: string) -> Result<(), net.NetError> {
         stream_send_string(strm, msg)
     }
-    fn recv_string(strm: QUICStream) -> string {
+    fn recv_string(strm: QUICStream) -> Result<string, utf8.Utf8Error> {
         stream_recv_string(strm)
     }
     fn observe(strm: QUICStream) -> QUICStreamObservation {
@@ -699,13 +701,11 @@ pub fn stream_send_string(strm: QUICStream, msg: string) -> Result<(), net.NetEr
 
 /// Receive a UTF-8 string from a QUIC stream.
 ///
-/// Delegates to `hew_quic_stream_recv` and converts the resulting bytes to a
-/// `string` using the runtime string helper.
-pub fn stream_recv_string(strm: QUICStream) -> string {
-    unsafe {
-        let payload = hew_quic_stream_recv(strm);
-        hew_bytes_to_string(payload)
-    }
+/// Validates the returned byte buffer, reporting malformed or incomplete
+/// UTF-8. Empty input follows `recv`'s stream-close/error convention.
+pub fn stream_recv_string(strm: QUICStream) -> Result<string, utf8.Utf8Error> {
+    let payload = strm.recv();
+    utf8.decode(payload)
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
@@ -763,5 +763,4 @@ extern "C" {
 
     // string conversion helpers (shared runtime builtins)
     fn hew_string_to_bytes(s: string) -> bytes;
-    fn hew_bytes_to_string(data: bytes) -> string;
 }

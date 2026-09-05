@@ -152,7 +152,6 @@ fn catalog_contains_bytes_constructor_and_method_targets() {
         "hew_bytes_is_empty",
         "hew_bytes_clear",
         "hew_bytes_contains",
-        "hew_bytes_to_string",
         "hew_bytes_append",
     ] {
         assert!(names.contains(name), "missing bytes catalog row `{name}`");

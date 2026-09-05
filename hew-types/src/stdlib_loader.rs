@@ -960,10 +960,10 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
                 // like `port as i32`. The cast form preserves arity and the
                 // argument's identity; it is used at the stdlib `int` → C-ABI
                 // narrowing seam (INTERNAL-ABI). A compound body such as
-                // `hew_bytes_to_string(hew_tcp_read(conn))` must NOT be
+                // `encode(hew_tcp_read(conn))` must NOT be
                 // registered as a single-step C pass-through, because the
                 // enricher would then rewrite `conn.read_string()` to
-                // `hew_bytes_to_string(conn)` — dropping the inner call and
+                // `encode(conn)` — dropping the inner call and
                 // passing an i32 fd where bytes are expected.
                 let all_direct = args.iter().all(|arg| is_pass_through_arg(&arg.expr().0));
                 if all_direct {
@@ -1537,6 +1537,37 @@ mod tests {
     }
 
     #[test]
+    fn imported_network_text_reads_preserve_validation_errors() {
+        let parsed = parse(
+            r"
+            import std.net;
+            import std.net.quic;
+            import std.encoding.utf8;
+            fn tcp(conn: net.Connection) {
+                let _: Result<string, utf8.Utf8Error> = conn.read_string();
+                let _: Result<string, net.ReadStringError> = conn.try_read_string();
+            }
+            fn quic_read(stream: quic.QUICStream) {
+                let _: Result<string, utf8.Utf8Error> = stream.recv_string();
+                let _: Result<string, utf8.Utf8Error> = quic.stream_recv_string(stream);
+            }
+            fn describe(error: net.ReadStringError) -> string {
+                match error {
+                    .Network(reason) => to_string(reason),
+                    .InvalidUtf8(reason) => to_string(reason),
+                }
+            }
+        ",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let output = crate::Checker::new(crate::module_registry::ModuleRegistry::new(vec![
+            test_root(),
+        ]))
+        .check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+    }
+
+    #[test]
     fn load_net_module_skips_nontrivial_handle_wrappers() {
         let info = load_module("std::net", &test_root());
         assert!(info.is_some(), "should load net module");
@@ -1554,12 +1585,11 @@ mod tests {
 
         let rewrites_read_string = info.handle_methods.iter().any(|m| {
             m.type_name == "net.Connection"
-                && m.method_name == "read_string"
-                && m.c_symbol == "hew_bytes_to_string"
+                && matches!(m.method_name.as_str(), "read_string" | "try_read_string")
         });
         assert!(
             !rewrites_read_string,
-            "net.Connection.read_string should remain a Hew wrapper, not alias hew_bytes_to_string"
+            "net.Connection text reads must retain their source-level validation and error handling"
         );
 
         let rewrites_write_string = info.handle_methods.iter().any(|m| {

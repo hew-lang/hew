@@ -50,6 +50,7 @@ pub fn read_all() -> string {
 
 // ── Declarative bytes receiver FFI ───────────────────────────────────
 //
+// Decode bytes explicitly with std.encoding.utf8.decode or decode_lossy.
 // Every method routes to a dedicated hew_bytes_* runtime entry operating on
 // the bytes ABI directly.
 impl bytes {
@@ -78,10 +79,6 @@ impl bytes {
     #[extern_symbol(hew_bytes_contains)]
     fn contains(buf: bytes, byte: u8) -> bool {
         false
-    }
-    #[extern_symbol(hew_bytes_to_string)]
-    fn to_string(buf: bytes) -> string {
-        ""
     }
     #[extern_symbol(hew_bytes_append)]
     fn append(buf: bytes, other: bytes) {}

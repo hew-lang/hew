@@ -95,7 +95,6 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
             let _: bool = buf.is_empty();
             buf.clear();
             let _: bool = buf.contains(66);
-            let _: string = buf.to_string();
             buf.append(other);
         }
     ";
@@ -120,7 +119,6 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
         "hew_bytes_is_empty",
         "hew_bytes_clear",
         "hew_bytes_contains",
-        "hew_bytes_to_string",
         "hew_bytes_append",
     ] {
         assert!(
@@ -151,4 +149,36 @@ fn bytes_remove_fails_closed_without_a_checked_in_runtime_symbol() {
         "unsupported bytes.remove must not record a rewrite; got: {:#?}",
         output.method_call_rewrites
     );
+}
+
+#[test]
+fn bytes_text_conversion_requires_explicit_utf8_decoding() {
+    let removed = typecheck("fn sample(data: bytes) -> string { data.to_string() }");
+    assert!(
+        removed
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedMethod),
+        "{:?}",
+        removed.errors
+    );
+    let validating = typecheck(
+        r"
+        import std.encoding.utf8;
+        fn sample(data: bytes) -> string fails utf8.Utf8Error { utf8.decode(data)? }
+    ",
+    );
+    assert!(validating.errors.is_empty(), "{:?}", validating.errors);
+    assert!(validating
+        .method_call_rewrites
+        .values()
+        .any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                target: hew_types::CallTarget::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::BytesDecodeUtf8
+                ),
+                ..
+            }
+        )));
 }

@@ -93,65 +93,50 @@ pub fn decode(s: string) -> bytes {
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────
-/// Map a 6-bit index (0–63) to its Base64 ASCII code.
-///
-/// RFC 4648 §4 (standard): A–Z, a–z, 0–9, '+', '/'
-/// RFC 4648 §5 (URL-safe):  A–Z, a–z, 0–9, '-', '_'
-fn b64_char(idx: i32, url_safe: bool) -> i32 { // INTERNAL-ABI: byte-level 6-bit index arithmetic; values 0-127 fit i32
-    if idx < 26 {
-        return 65 + idx;
-    } // A-Z
-    if idx < 52 {
-        return 97 + idx - 26;
-    } // a-z
-    if idx < 62 {
-        return 48 + idx - 52;
-    } // 0-9
-    if idx == 62 {
-        if url_safe {
-            return 45;
-        } // '-'
-        return 43; // '+'
-    }
-    if url_safe {
-        return 95;
-    } // '_'
-    47 as i32 // '/'
+/// Map a 6-bit index (0–63) to its Base64 alphabet character.
+fn b64_char(idx: i32, url_safe: bool) -> string {
+    let alphabet = if url_safe {
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    } else {
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    };
+    let index = idx as i64;
+    alphabet.slice(index, index + 1)
 }
 
 /// Encode binary data to a Base64 string using the standard or URL-safe alphabet.
 fn encode_impl(data: bytes, url_safe: bool) -> string {
     let dlen = data.len();
-    let out: bytes = bytes.new();
+    var out = "";
     var i = 0;
     // Process complete 3-byte groups
     while i + 3 <= dlen {
         let a = data[i];
         let b = data[i + 1];
         let c = data[i + 2];
-        out.push(b64_char(a as i32 >> 2, url_safe) as u8);
-        out.push(b64_char((a as i32 & 3) << 4 | b as i32 >> 4, url_safe) as u8);
-        out.push(b64_char((b as i32 & 15) << 2 | c as i32 >> 6, url_safe) as u8);
-        out.push(b64_char(c as i32 & 63, url_safe) as u8);
+        out = out + b64_char(a as i32 >> 2, url_safe);
+        out = out + b64_char((a as i32 & 3) << 4 | b as i32 >> 4, url_safe);
+        out = out + b64_char((b as i32 & 15) << 2 | c as i32 >> 6, url_safe);
+        out = out + b64_char(c as i32 & 63, url_safe);
         i = i + 3;
     }
     // Handle remaining bytes (always pad with '=')
     let remaining = dlen - i;
     if remaining == 1 {
         let a = data[i];
-        out.push(b64_char(a as i32 >> 2, url_safe) as u8);
-        out.push(b64_char((a as i32 & 3) << 4, url_safe) as u8);
-        out.push(61); // '='
-        out.push(61);
+        out = out + b64_char(a as i32 >> 2, url_safe);
+        out = out + b64_char((a as i32 & 3) << 4, url_safe);
+        out = out + "="; // '='
+        out = out + "=";
     } else if remaining == 2 {
         let a = data[i];
         let b = data[i + 1];
-        out.push(b64_char(a as i32 >> 2, url_safe) as u8);
-        out.push(b64_char((a as i32 & 3) << 4 | b as i32 >> 4, url_safe) as u8);
-        out.push(b64_char((b as i32 & 15) << 2, url_safe) as u8);
-        out.push(61); // '='
+        out = out + b64_char(a as i32 >> 2, url_safe);
+        out = out + b64_char((a as i32 & 3) << 4 | b as i32 >> 4, url_safe);
+        out = out + b64_char((b as i32 & 15) << 2, url_safe);
+        out = out + "="; // '='
     }
-    out.to_string()
+    out
 }
 
 /// Map a single-character string to its 6-bit Base64 value.

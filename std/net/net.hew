@@ -9,7 +9,8 @@
 //! `net.NetError` is the stable user-facing error enum for all network
 //! failures — TCP, TLS, QUIC, HTTP, WebSocket, and DNS.  Use the `try_*`
 //! wrappers with `Result<T, net.NetError>` and the `?` operator for
-//! structured error propagation:
+//! structured error propagation. Text reads additionally report UTF-8 validation
+//! through `ReadStringError`:
 //!
 //! ```
 //! import std.net;
@@ -49,6 +50,7 @@
 //! ```
 
 import std.string;
+import std.encoding.utf8;
 
 import std.stream;
 
@@ -86,6 +88,21 @@ pub enum NetError {
     InvalidArgument(string),
     /// Any other network-level failure.
     Other(i64),
+}
+
+/// A text read failed during network I/O or UTF-8 validation.
+pub enum ReadStringError {
+    Network(NetError),
+    InvalidUtf8(utf8.Utf8Error),
+}
+
+impl Display for ReadStringError {
+    fn fmt(err: ReadStringError) -> string {
+        match err {
+            ReadStringError.Network(error) => to_string(error),
+            ReadStringError.InvalidUtf8(error) => to_string(error),
+        }
+    }
 }
 
 /// Failure to transfer a TCP connection into active mode.
@@ -509,13 +526,16 @@ trait ConnectionMethods {
 
     /// Read a UTF-8 string from the connection.
     ///
-    /// Convenience wrapper that reads bytes and converts to string.
-    fn read_string(self) -> string;
+    /// Validates one returned byte buffer. Invalid or incomplete UTF-8 is
+    /// an error; use raw reads and retain partial bytes for streaming text.
+    /// An empty buffer still follows `read`'s EOF/disconnect convention.
+    fn read_string(self) -> Result<string, utf8.Utf8Error>;
 
     /// Read a UTF-8 string from the connection, separating EOF from failure.
     ///
-    /// `Ok("")` is an orderly EOF; `Err(NetError)` is a read failure.
-    fn try_read_string(self) -> Result<string, NetError>;
+    /// `Ok("")` is an orderly EOF. Errors distinguish network I/O from
+    /// invalid or incomplete UTF-8 in the returned byte buffer.
+    fn try_read_string(self) -> Result<string, ReadStringError>;
 
     /// Write raw bytes to the connection.
     ///
@@ -629,21 +649,19 @@ impl ConnectionMethods for Connection {
             }
         }
     }
-    /// Read a UTF-8 string from the connection.
-    fn read_string(conn: Connection) -> string {
-        unsafe {
-            hew_bytes_to_string(unsafe {
-                hew_tcp_read(conn)
-            })
-        }
+    /// Read and validate one UTF-8 byte buffer from the connection.
+    fn read_string(conn: Connection) -> Result<string, utf8.Utf8Error> {
+        let data = conn.read();
+        utf8.decode(data)
     }
-    /// Read a UTF-8 string, reporting a read failure separately from EOF.
-    fn try_read_string(conn: Connection) -> Result<string, NetError> {
+    /// Read UTF-8, preserving both transport and validation failures.
+    fn try_read_string(conn: Connection) -> Result<string, ReadStringError> {
         match conn.try_read() {
-            .Ok(data) => Ok(unsafe {
-                hew_bytes_to_string(data)
-            }),
-            .Err(err) => Err(err),
+            .Ok(data) => match utf8.decode(data) {
+                .Ok(text) => Ok(text),
+                .Err(error) => Err(ReadStringError.InvalidUtf8(error)),
+            },
+            .Err(error) => Err(ReadStringError.Network(error)),
         }
     }
     /// Write raw bytes to the connection.
@@ -876,7 +894,6 @@ extern "C" {
     // none is declared (mirrors `hew_remote_pid_send`, whose real symbol
     // `hew_actor_send_by_id` is interned in codegen rather than declared in Hew).
     fn hew_tcp_detach(conn: Connection);
-    fn hew_bytes_to_string(data: bytes) -> string;
     fn hew_string_to_bytes(s: string) -> bytes;
     fn hew_tcp_listener_close(consume listener: Listener) -> i32;
     fn hew_tcp_close(consume conn: Connection) -> i32;

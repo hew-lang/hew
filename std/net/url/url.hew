@@ -20,6 +20,7 @@
 //! ```
 
 import std.string;
+import std.encoding.utf8;
 
 /// A parsed URL.
 ///
@@ -186,7 +187,7 @@ fn encode_impl(s: string) -> string {
     for i in 0 .. data.len() {
         let b = data[i];
         if is_unreserved_byte(b) {
-            out = out + s.slice(i, i + 1);
+            out = out + string.from_char(b as i64);
         } else {
             out = out + percent_encode_byte(b);
         }
@@ -196,7 +197,7 @@ fn encode_impl(s: string) -> string {
 
 /// Decode a percent-encoded string.
 ///
-/// Returns an empty string on decode error.
+/// Returns an empty string on invalid UTF-8. Valid decoded NUL is preserved.
 ///
 /// # Examples
 ///
@@ -213,9 +214,6 @@ pub fn decode(s: string) -> string {
 
 fn decode_impl(s: string) -> string {
     let data = s.to_bytes();
-    if !valid_percent_utf8(data) {
-        return "";
-    }
     let out: bytes = bytes.new();
     var i = 0;
     while i < data.len() {
@@ -234,9 +232,7 @@ fn decode_impl(s: string) -> string {
         out.push(b);
         i = i + 1;
     }
-    // bytes.to_string is a C-string conversion: a decoded %00 truncates the
-    // result there, matching the documented decode contract.
-    out.to_string()
+    utf8.decode(out) handle error { "" }
 }
 
 /// Decode an `application/x-www-form-urlencoded` query string into
@@ -282,9 +278,6 @@ fn decode_query_impl(params: string) -> Vec<(string, string)> {
 
 fn decode_form_component(s: string) -> string {
     let data = s.to_bytes();
-    if !valid_percent_utf8(data) {
-        return "";
-    }
     let out: bytes = bytes.new();
     var i = 0;
     while i < data.len() {
@@ -306,74 +299,7 @@ fn decode_form_component(s: string) -> string {
         out.push(b);
         i = i + 1;
     }
-    out.to_string()
-}
-
-/// Validate that the percent-encoded bytes in `data` decode to complete,
-/// well-formed UTF-8 sequences. Literal bytes may not interrupt a multi-byte
-/// sequence. Returns `false` on any malformed sequence (decode returns `""`).
-fn valid_percent_utf8(data: bytes) -> bool {
-    var remaining = 0;
-    var min = 128 as i32;
-    var max = 191 as i32;
-    var i = 0;
-    while i < data.len() {
-        var decoded = -1 as i32;
-        if data[i] == 37 && i + 2 < data.len() {
-            let hi = hex_nibble(data[i + 1]);
-            let lo = hex_nibble(data[i + 2]);
-            if hi >= 0 && lo >= 0 {
-                decoded = hi * 16 + lo;
-            }
-        }
-        if decoded < 0 {
-            if remaining != 0 {
-                return false;
-            }
-            i = i + 1;
-            continue;
-        }
-        if remaining == 0 {
-            if decoded <= 127 {
-                // ASCII byte
-            } else if decoded >= 194 && decoded <= 223 {
-                remaining = 1;
-            } else if decoded == 224 {
-                remaining = 2;
-                min = 160 as i32;
-                max = 191 as i32;
-            } else if decoded >= 225 && decoded <= 236 {
-                remaining = 2;
-            } else if decoded == 237 {
-                remaining = 2;
-                min = 128 as i32;
-                max = 159 as i32;
-            } else if decoded >= 238 && decoded <= 239 {
-                remaining = 2;
-            } else if decoded == 240 {
-                remaining = 3;
-                min = 144 as i32;
-                max = 191 as i32;
-            } else if decoded >= 241 && decoded <= 243 {
-                remaining = 3;
-            } else if decoded == 244 {
-                remaining = 3;
-                min = 128 as i32;
-                max = 143 as i32;
-            } else {
-                return false;
-            }
-        } else {
-            if decoded < min || decoded > max {
-                return false;
-            }
-            remaining = remaining - 1;
-            min = 128 as i32;
-            max = 191 as i32;
-        }
-        i = i + 3;
-    }
-    remaining == 0
+    utf8.decode(out) handle error { "" }
 }
 
 /// Build a percent-encoded query string from a newline-separated list of

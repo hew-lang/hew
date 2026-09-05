@@ -1593,8 +1593,9 @@ internal = [
   "hew_fault_inject_drop",
   "hew_fault_new",
   "hew_fault_report",
-  # Private physical literal operations initialize owned output storage.
+  # Private physical operations initialize owned output storage.
   "hew_bytes_literal_new",
+  "hew_bytes_push_owned",
   "hew_string_literal_new",
   "hew_is_shutting_down",
   # SYSTEM-LANE PROVENANCE BOUNDARY (both entries). These are the stable-pid
@@ -6787,6 +6788,16 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_string_literal_new"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# The pointers borrow header storage, not its owned payload. The semantic
+# receiver-transform contract moves the old owner into the initialized output;
+# the legacy return-provenance table cannot express this output-pointer effect.
+[[ownership.contracts]]
+symbol = "hew_bytes_push_owned"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
 release-symbol = ""

@@ -379,7 +379,10 @@ pub unsafe extern "C" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
 
     if end >= cap {
         // Need to grow.
-        let needed = end + 1;
+        let needed = triple
+            .len
+            .checked_add(1)
+            .unwrap_or_else(|| std::process::abort());
         let new_cap = grow_capacity(cap, needed);
         // If offset > 0, compact first by moving data to start.
         if triple.offset > 0 {
@@ -401,6 +404,39 @@ pub unsafe extern "C" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
         unsafe { *triple.ptr.add(end as usize) = byte };
         triple.len += 1;
     }
+}
+
+/// Transfer bytes into an output owner after appending a byte.
+///
+/// This compiler-private entry point implements the semantic receiver
+/// transformation without returning a C aggregate or mutating a borrowed
+/// value. Shared buffers retain the existing copy-on-write behaviour.
+/// Allocation exhaustion follows the ordinary push operation's abort policy.
+///
+/// # Safety
+///
+/// `old` must point to a uniquely writable, initialized owning `BytesTriple`.
+/// `out` must point to distinct, aligned, uniquely writable uninitialized
+/// storage. Both pointers must remain valid throughout the call. The old
+/// header is cleared and its owner is transferred to `out` on return.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_push_owned(
+    old: *mut BytesTriple,
+    byte: u8,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: old is initialized and uniquely writable by the caller's contract.
+    let mut value = unsafe {
+        old.replace(BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        })
+    };
+    // SAFETY: value now owns the reference taken from old.
+    unsafe { hew_bytes_push(&mut value, byte) };
+    // SAFETY: out is distinct, uninitialized storage for the transferred owner.
+    unsafe { out.write(value) };
 }
 
 /// Trap with a bytes empty-buffer panic message.
@@ -1224,6 +1260,60 @@ mod tests {
 
         // SAFETY: triple.ptr is valid.
         unsafe { hew_bytes_drop(triple.ptr) };
+    }
+
+    #[test]
+    fn push_owned_transfers_empty_input_into_initialized_output() {
+        let mut old = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
+        // SAFETY: old owns empty bytes; out is distinct uninitialized storage.
+        unsafe { hew_bytes_push_owned(&raw mut old, b'A', out.as_mut_ptr()) };
+        // SAFETY: the operation initializes out on return.
+        let updated = unsafe { out.assume_init() };
+        assert!(old.ptr.is_null());
+        assert_eq!((old.offset, old.len), (0, 0));
+        assert_eq!(updated.len, 1);
+        // SAFETY: updated owns one initialized byte, then is released once.
+        unsafe {
+            assert_eq!(*updated.ptr.add(updated.offset as usize), b'A');
+            hew_bytes_drop(updated.ptr);
+        }
+    }
+
+    #[test]
+    fn push_owned_preserves_shared_slice_and_clears_moved_header() {
+        // SAFETY: the source literal has two readable bytes.
+        let original = unsafe { hew_bytes_from_static(b"xA".as_ptr(), 2) };
+        let mut old = BytesTriple {
+            ptr: original.ptr,
+            offset: 1,
+            len: 1,
+        };
+        // SAFETY: retain the shared allocation for the slice's owning header.
+        unsafe { hew_bytes_clone_ref(original.ptr) };
+        let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
+        // SAFETY: old owns its retained reference; out is distinct and uninitialized.
+        unsafe { hew_bytes_push_owned(&raw mut old, b'B', out.as_mut_ptr()) };
+        // SAFETY: the operation initializes out on return.
+        let updated = unsafe { out.assume_init() };
+        assert!(old.ptr.is_null());
+        assert_eq!((old.offset, old.len), (0, 0));
+        assert_eq!(original.len, 2);
+        assert_eq!(updated.len, 2);
+        // SAFETY: both values own their active regions and are released once.
+        unsafe {
+            assert_eq!(std::slice::from_raw_parts(original.ptr, 2), b"xA");
+            assert_eq!(
+                std::slice::from_raw_parts(updated.ptr.add(updated.offset as usize), 2),
+                b"AB"
+            );
+            hew_bytes_drop(original.ptr);
+            hew_bytes_drop(updated.ptr);
+        }
     }
 
     #[test]

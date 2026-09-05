@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1494u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1495u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1494] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1495] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -785,6 +785,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1494] = {
      "{\"native\": \"fn hew_bytes_push( &mut BytesTriple, u8)\", "
      "\"wasm32-wasip1\": \"fn hew_bytes_push( &mut BytesTriple, u8)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_bytes_push_owned",
+     "{\"native\": \"fn hew_bytes_push_owned( *mut BytesTriple, u8, *mut "
+     "BytesTriple, )\", \"wasm32-wasip1\": \"fn hew_bytes_push_owned( *mut "
+     "BytesTriple, u8, *mut BytesTriple, )\"}",
+     "native,wasm32-wasip1", "internal", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_bytes_set",
      "{\"native\": \"fn hew_bytes_set( &mut BytesTriple, i64, u8)\", "

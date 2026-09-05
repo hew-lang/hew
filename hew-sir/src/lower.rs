@@ -2046,6 +2046,24 @@ struct LoopScope {
     preserved: BTreeSet<ValueId>,
 }
 
+/// A checked local root and concrete aggregate projections. Resolving this
+/// path does not read or consume the current binding version.
+struct MutablePlace {
+    binding: BindingId,
+    root_ty: ResolvedTy,
+    leaf_ty: ResolvedTy,
+    projections: Vec<(ResolvedTy, AggregateShapeRef, usize)>,
+}
+
+/// Fields retained while one leaf is transferred or replaced. The existing
+/// owned-live relation carries their cleanup obligations across a call.
+struct AggregateParent {
+    ty: ResolvedTy,
+    shape: AggregateShapeRef,
+    index: usize,
+    fields: Vec<ValueDef>,
+}
+
 struct Builder<'hir, 'service> {
     function: &'hir HirFn,
     service: &'service mut InstanceService<'hir>,
@@ -2712,7 +2730,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn lower_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
-        if matches!(target.kind, HirExprKind::FieldAccess { .. }) {
+        if matches!(
+            target.kind,
+            HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
+        ) {
             return self.lower_field_assignment(target, value);
         }
         let HirExprKind::BindingRef {
@@ -2756,101 +2777,133 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.record_binding_version(binding, new)
     }
 
-    /// A field update transfers the old aggregate into its fields, replaces
-    /// one leaf and reconstructs the parents. Siblings retain their owners;
-    /// the usual assignment and call cleanup paths cover RHS failure.
+    /// Assignment and runtime receiver mutation resolve and rebuild the same
+    /// mutable place. Evaluate the RHS before taking its current root apart.
     fn lower_field_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
-        let mut root = target;
-        let mut path = Vec::new();
-        while let HirExprKind::FieldAccess { object, field } = &root.kind {
-            path.push(field.as_str());
-            root = object;
-        }
-        path.reverse();
-        let HirExprKind::BindingRef {
-            resolved: ResolvedRef::Binding(binding),
-            ..
-        } = root.kind
-        else {
-            return Err("record field assignment requires a local binding root".into());
-        };
-        let declaration = *self.binding_declarations.get(&binding).ok_or_else(|| {
-            format!("field assignment root `{binding}` has no source declaration")
-        })?;
-        if !self.source_bindings[declaration].mutable {
-            return Err(format!("field assignment root `{binding}` is not mutable"));
-        }
-        let root_ty = self.ty(&root.ty);
-        let mut leaf_ty = root_ty.clone();
-        let mut projections = Vec::new();
-        for name in path {
-            let shape = self.service.require_aggregate_shape(&leaf_ty)?;
-            let AggregateShapeRef::Record(id) = shape else {
-                return Err("named field assignment requires a record contract".into());
-            };
-            let fields = &self.service.aggregate_shapes[id.0 as usize].fields;
-            let index = fields
-                .iter()
-                .position(|field| field.name == name)
-                .ok_or_else(|| {
-                    format!("record `{}` has no field `{name}`", leaf_ty.user_facing())
-                })?;
-            let field_ty = fields[index].ty.clone();
-            projections.push((leaf_ty, shape, index));
-            leaf_ty = field_ty;
-        }
-        if leaf_ty != self.ty(&value.ty) || leaf_ty != self.ty(&target.ty) {
+        let place = self.resolve_mutable_place(target)?;
+        if place.leaf_ty != self.ty(&value.ty) {
             return Err("record field assignment has an incorrect replacement type".into());
         }
-        // Evaluate before taking apart the receiver: the expression can read
-        // or mutate that same source and can leave through a cleanup edge.
         let replacement = lower_initial_value_transfer(
             self,
             value,
             "record field assignment",
             OwnedBindingUse::Copy,
         )?;
+        let provenance = Provenance::Site(target.site);
+        let (previous, parents) = self.take_mutable_place(&place, &provenance)?;
+        if self.owned_live.contains_key(&previous) {
+            self.emit_destroy(previous)?;
+        }
+        self.replace_aggregate_leaf(place.binding, replacement, parents, &provenance)
+    }
+
+    fn resolve_mutable_place(&mut self, target: &HirExpr) -> Result<MutablePlace, String> {
+        let mut root = target;
+        let mut projections = Vec::new();
+        loop {
+            let (object, shape, index) = match &root.kind {
+                HirExprKind::FieldAccess { object, field } => {
+                    let (shape, index) = self.aggregate_projection_shape(root, object, field)?;
+                    (object.as_ref(), shape, index)
+                }
+                HirExprKind::TupleIndex { tuple, index } => {
+                    let index = self.tuple_projection_index(root, tuple, *index)?;
+                    let shape = self.service.require_aggregate_shape(&self.ty(&tuple.ty))?;
+                    (tuple.as_ref(), shape, index)
+                }
+                _ => break,
+            };
+            projections.push((
+                self.ty(&object.ty),
+                shape,
+                usize::try_from(index).map_err(|_| "mutable place field exceeds usize")?,
+            ));
+            root = object;
+        }
+        projections.reverse();
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = root.kind
+        else {
+            return Err("mutable place requires a local binding root".into());
+        };
+        let declaration = *self
+            .binding_declarations
+            .get(&binding)
+            .ok_or_else(|| format!("mutable place root `{binding}` has no source declaration"))?;
+        if !self.source_bindings[declaration].mutable {
+            return Err(format!("mutable place root `{binding}` is not mutable"));
+        }
+        Ok(MutablePlace {
+            binding,
+            root_ty: self.ty(&root.ty),
+            leaf_ty: self.ty(&target.ty),
+            projections,
+        })
+    }
+
+    /// Take the binding version left by argument evaluation. Destructuring
+    /// transfers siblings into the ordinary owned-live relation; it does not
+    /// snapshot the field container or introduce a second cleanup ledger.
+    fn take_mutable_place(
+        &mut self,
+        place: &MutablePlace,
+        provenance: &Provenance,
+    ) -> Result<(ValueId, Vec<AggregateParent>), String> {
         let mut current = *self
             .bindings
-            .get(&binding)
-            .ok_or_else(|| format!("field assignment root `{binding}` is unavailable"))?;
+            .get(&place.binding)
+            .ok_or_else(|| format!("mutable place root `{}` is unavailable", place.binding))?;
+        if self.value_ty(current).as_ref() != Some(&place.root_ty) {
+            return Err("mutable place root changed its concrete type".into());
+        }
+        if self.value_own_kind(current) == Some(OwnKind::Owned)
+            && !self.owned_live.contains_key(&current)
+        {
+            return Err("mutable place root has no live owned value".into());
+        }
         if self.value_own_kind(current) == Some(OwnKind::Guaranteed) {
             current = self.emit_typed(
-                Provenance::Site(target.site),
-                &root_ty,
+                provenance.clone(),
+                &place.root_ty,
                 SemOpKind::CopyValue {
                     source: Operand { value: current },
                 },
             )?;
         }
-        let updated = self.replace_aggregate_leaf(
-            current,
-            replacement,
-            projections,
-            &Provenance::Site(target.site),
-        )?;
-        self.bindings.insert(binding, updated);
-        self.record_binding_version(binding, updated)
+        let mut parents = Vec::new();
+        for (ty, shape, index) in &place.projections {
+            let fields = self.emit_destructure_value(current, ty, *shape, provenance.clone())?;
+            current = fields[*index].id;
+            parents.push(AggregateParent {
+                ty: ty.clone(),
+                shape: *shape,
+                index: *index,
+                fields,
+            });
+        }
+        Ok((current, parents))
     }
 
+    /// Publish the updated leaf through the same parent reconstruction for
+    /// ordinary field assignment and runtime transforms.
     fn replace_aggregate_leaf(
         &mut self,
-        mut current: ValueId,
+        binding: BindingId,
         replacement: ValueId,
-        projections: Vec<(ResolvedTy, AggregateShapeRef, usize)>,
+        parents: Vec<AggregateParent>,
         provenance: &Provenance,
-    ) -> Result<ValueId, String> {
-        let mut parents = Vec::new();
-        for (ty, shape, index) in projections {
-            let fields = self.emit_destructure_value(current, &ty, shape, provenance.clone())?;
-            current = fields[index].id;
-            parents.push((ty, shape, index, fields));
-        }
-        if self.owned_live.contains_key(&current) {
-            self.emit_destroy(current)?;
-        }
+    ) -> Result<(), String> {
         let mut updated = replacement;
-        for (ty, shape, index, fields) in parents.into_iter().rev() {
+        for AggregateParent {
+            ty,
+            shape,
+            index,
+            fields,
+        } in parents.into_iter().rev()
+        {
             let operands: Vec<_> = fields
                 .into_iter()
                 .enumerate()
@@ -2870,7 +2923,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.owned_live.remove(&field.value);
             }
         }
-        Ok(updated)
+        self.bindings.insert(binding, updated);
+        self.record_binding_version(binding, updated)
     }
 
     /// Lower an expression whose value is intentionally discarded.
@@ -4980,7 +5034,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
-        let mut transformed_binding = None;
+        let mut transformed_place = None;
         let mut lowered_args = Vec::with_capacity(args.len());
         let mut loans = Vec::new();
         let read_only = contract
@@ -5018,35 +5072,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     (operand.value, crate::BoundaryDecision::Copy)
                 }
                 RuntimeArgumentEffect::Move => {
-                    let HirExprKind::BindingRef {
-                        resolved: ResolvedRef::Binding(binding),
-                        ..
-                    } = &arg.kind
-                    else {
-                        return Err(format!(
-                            "runtime family `{family:?}` moving argument {index} must name a local binding"
-                        ));
-                    };
-                    let declaration = *self.binding_declarations.get(binding).ok_or_else(|| {
-                        format!("runtime transform binding `{binding}` has no source declaration")
-                    })?;
-                    if !self.source_bindings[declaration].mutable {
-                        return Err(format!(
-                            "runtime transform binding `{binding}` must be mutable"
-                        ));
+                    if index != 0 || transformed_place.is_some() {
+                        return Err("runtime transform must move only its receiver".into());
                     }
-                    let source = *self.bindings.get(binding).ok_or_else(|| {
-                        format!("runtime transform binding `{binding}` is unavailable")
-                    })?;
-                    if self.value_own_kind(source) != Some(OwnKind::Owned)
-                        || !self.owned_live.contains_key(&source)
+                    let place = self.resolve_mutable_place(arg)?;
+                    if OwnKind::of_ty(&place.leaf_ty, self.service.checked_facts.rows())?
+                        != OwnKind::Owned
                     {
-                        return Err(format!(
-                            "runtime transform binding `{binding}` has no live owned value"
-                        ));
+                        return Err("runtime transform receiver must be an owned value".into());
                     }
-                    transformed_binding = Some(*binding);
-                    (source, crate::BoundaryDecision::Move)
+                    transformed_place = Some(place);
+                    // The receiver is retaken after later arguments finish;
+                    // no operand or snapshot is emitted for it here.
+                    continue;
                 }
             };
             lowered_args.push(crate::BoundaryOperand {
@@ -5055,28 +5093,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             });
         }
 
-        // Arguments may read the receiver (xs.push(xs[0])); finish those
-        // reads before transferring its sole owner to the operation.
-        if let Some(binding) = transformed_binding {
-            let source = *self
-                .bindings
-                .get(&binding)
-                .ok_or_else(|| "runtime receiver binding disappeared".to_string())?;
-            self.owned_live.remove(&source);
-            let moved = self.emit_typed(
-                Provenance::Site(expr.site),
-                &parameter_types[0],
-                SemOpKind::Move {
-                    source: Operand { value: source },
-                },
-            )?;
-            self.owned_live.remove(&moved);
-            lowered_args[0].operand.value = moved;
-        }
-        let live_at_call = self.owned_live.clone();
-        // Argument evaluation can replace an outer binding. Its new owner
-        // survives the call; only unbound expression owners are temporaries.
-        let argument_temporaries: Vec<_> = live_at_call
+        // Classify expression temporaries before extracting retained parent
+        // fields. Those new sibling IDs must survive to reconstruction.
+        let argument_temporaries: Vec<_> = self
+            .owned_live
             .keys()
             .filter(|value| {
                 !live_before_arguments.contains(value)
@@ -5084,6 +5104,29 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             })
             .copied()
             .collect();
+        let mut retained_parents = Vec::new();
+        if let Some(place) = &transformed_place {
+            let provenance = Provenance::Site(expr.site);
+            let (source, parents) = self.take_mutable_place(place, &provenance)?;
+            retained_parents = parents;
+            self.owned_live.remove(&source);
+            let moved = self.emit_typed(
+                provenance,
+                &place.leaf_ty,
+                SemOpKind::Move {
+                    source: Operand { value: source },
+                },
+            )?;
+            self.owned_live.remove(&moved);
+            lowered_args.insert(
+                0,
+                crate::BoundaryOperand {
+                    operand: Operand { value: moved },
+                    decision: crate::BoundaryDecision::Move,
+                },
+            );
+        }
+        let live_at_call = self.owned_live.clone();
         if let RuntimeResultEffect::FreshOwnedVariant(kind) = contract.result {
             self.service
                 .require_runtime_variant_result_shapes(kind, &instantiated.result_ty)?;
@@ -5203,8 +5246,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 contract.result,
                 RuntimeResultEffect::UpdatedReceiverAndValue(_)
             ) {
-                let binding = transformed_binding
-                    .ok_or_else(|| "runtime transform has no source binding".to_string())?;
+                let place = transformed_place
+                    .ok_or_else(|| "runtime transform has no mutable source place".to_string())?;
                 let ty = self
                     .value_ty(continuation)
                     .ok_or_else(|| "runtime transform result disappeared".to_string())?;
@@ -5215,16 +5258,24 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     shape,
                     Provenance::Site(expr.site),
                 )?;
-                self.bindings.insert(binding, results[0].id);
-                self.record_binding_version(binding, results[0].id)?;
+                self.replace_aggregate_leaf(
+                    place.binding,
+                    results[0].id,
+                    retained_parents,
+                    &Provenance::Site(expr.site),
+                )?;
                 return Ok(Some(results[1].id));
             }
             if matches!(contract.result, RuntimeResultEffect::UpdatedReceiver(_)) {
-                let binding = transformed_binding.ok_or_else(|| {
-                    format!("runtime family `{family:?}` has no transformed source binding")
+                let place = transformed_place.ok_or_else(|| {
+                    format!("runtime family `{family:?}` has no transformed source place")
                 })?;
-                self.bindings.insert(binding, continuation);
-                self.record_binding_version(binding, continuation)?;
+                self.replace_aggregate_leaf(
+                    place.binding,
+                    continuation,
+                    retained_parents,
+                    &Provenance::Site(expr.site),
+                )?;
                 return Ok(None);
             }
         }

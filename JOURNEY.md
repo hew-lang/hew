@@ -1316,3 +1316,9 @@ or package fixture API was changed.
 `cargo fmt --all`, `git diff --check`, and `make lint-rust
 CLIPPY_ARGS='-p hew-compile -p hew-cli'` pass. The test checkpoint is ready to
 compose with the resolver fix, but does not claim runtime acceptance.
+
+### Mutable collection fields share aggregate assignment reconstruction
+
+SIR resolves a mutable local place before evaluating runtime arguments, then takes the current root version apart after those arguments finish. Field assignment and Vec/Map/Set receiver transforms share the same checked record and tuple path, extraction and reconstruction. The runtime consumes the leaf; retained siblings remain in the existing owned-live relation until normal reconstruction or fault cleanup. Argument temporaries are classified before extraction so retained sibling owners are not mistaken for temporary arguments.
+
+The focused runtime-place controls cover generic impl-local records, nested records and tuples, receiver reads and parent replacement in later arguments, returned Map/Set values, copy independence, bounds and callback cleanup, and rejected immutable or malformed places. Existing vector iteration and field assignment controls and the SIR/MIR/codegen unit suites pass. Native field fixtures and package-level generic impl acceptance are pending composition with the integration branch.

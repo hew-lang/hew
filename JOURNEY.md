@@ -984,3 +984,10 @@ The focused hew-compile tests
 imported_generic_impl_bodies_publish_each_checker_owned_declaration and
 cross_module_span_key_collision_unary_minus_and_string_lit_do_not_collide
 pass through Make. Native package-fixture validation is in progress.
+
+Native validation: make hew-debug succeeded. Running the package fixture stops
+before execution with E_SIR_UNSUPPORTED: the imported generic Store::add
+callee is not an ordinary user-function call in the current SIR domain. The
+private generic impl identity is preserved and both focused compiler tests
+pass; generation output is not claimed as natively verified at this checkpoint.
+The compiler limitation is outside this source-fixture-only change.

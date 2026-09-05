@@ -585,8 +585,32 @@ fn layout_hashmap_managed_value_without_drop_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "zero-size keys are not admissible")]
-fn layout_hashmap_zero_size_key_aborts() {
+fn layout_hashmap_zero_size_key_keeps_nonzero_metadata_stride() {
+    unsafe extern "C" fn hash_unit(
+        _key: *const c_void,
+        out: *mut u64,
+        fault_out: *mut *mut c_void,
+    ) -> i32 {
+        // SAFETY: the callback ABI supplies writable result and fault slots.
+        unsafe {
+            out.write(0);
+            fault_out.write(core::ptr::null_mut());
+        }
+        0
+    }
+    unsafe extern "C" fn eq_unit(
+        _lhs: *const c_void,
+        _rhs: *const c_void,
+        out: *mut bool,
+        fault_out: *mut *mut c_void,
+    ) -> i32 {
+        // SAFETY: the callback ABI supplies writable result and fault slots.
+        unsafe {
+            out.write(true);
+            fault_out.write(core::ptr::null_mut());
+        }
+        0
+    }
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             size: 0,
@@ -595,10 +619,15 @@ fn layout_hashmap_zero_size_key_aborts() {
             clone_fn: None,
             drop_fn: None,
         },
-        hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
-        eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
+        hash_fn: Some(hash_unit),
+        eq_fn: Some(eq_unit),
     };
-    unsafe { validate_key_layout(&raw const kl) };
+    let vl = val_layout(0, 1);
+    assert_eq!(
+        unsafe { validate_and_compute_slot_layout(&raw const kl, &raw const vl) },
+        (1, 1, 1, 1)
+    );
+    assert_eq!(kl.value.size, 0);
 }
 
 #[test]

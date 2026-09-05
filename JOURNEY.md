@@ -1244,3 +1244,31 @@ The generic impl call guard is repaired, but package execution now reaches the
 next unsupported boundary: mutating a collection through a record field. The
 shared receiver-place implementation is in progress; package acceptance remains
 unproven and no source workaround is introduced.
+
+## Logical zero-sized collection keys
+
+Start from `d8000b815`. Empty record keys now pass the shared key-layout
+validator with their logical size unchanged. Slot metadata already guarantees
+positive stride and aligned, non-null key addresses. Clone and drop callbacks
+continue to represent logical owners even when the key occupies no bytes.
+An empty key in the last slot may use the aligned one-past address; callbacks
+must not read payload bytes that do not exist.
+
+The related entries projection now allocates nonzero scratch storage for an
+empty pair while keeping its descriptor size zero, matching the existing Vec
+allocation convention. No callback ABI or compiler admission changes are needed.
+
+Focused tests cover replacement and tombstone reuse, aligned Map/Set keys,
+empty projections and their copies, last-owner release, null-key rejection,
+exact hash/equality fault propagation and staged-clone rollback. A private
+resize test exercises successful ownership transfer and hash-fault rollback:
+valid equal empty keys cannot naturally fill a table enough to trigger growth.
+The descriptor/projection/fault regression suites and CABI library tests pass.
+The new zero-sized-key cases also pass ASan/LSan without suppressions on Linux.
+Windows and macOS execution was not run; allocation uses the same Rust Layout
+and allocator APIs across targets. Permanent native empty-record coverage stays
+with integration.
+
+Scoped runtime/CABI JSON Clippy and Rust formatting pass after using explicit
+raw descriptor pointers in the new fixtures. The final focused unit and FFI
+boundary tests pass on the formatted source.

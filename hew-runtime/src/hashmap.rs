@@ -19,6 +19,10 @@ use core::ptr;
 use hew_cabi::map::{HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueLayout};
 use hew_cabi::vec::{HewTypeOwnershipKind, HewVec};
 
+#[cfg(test)]
+#[path = "hashmap_zero_sized_tests.rs"]
+mod zero_sized_tests;
+
 /// Invoke a borrowed hash callback without reading its result on failure.
 unsafe fn key_hash(
     hash: HewMapKeyHashThunk,
@@ -391,8 +395,10 @@ unsafe fn slot_val(entries: *mut u8, idx: usize, stride: usize, val_offset: usiz
 ///
 /// # Panics
 ///
-/// Panics if `key_layout` is null, `hash_fn`/`eq_fn` are `None`, `size == 0`,
-/// or `align` is not a power of two.
+/// Panics if `key_layout` is null, `hash_fn`/`eq_fn` are `None`, or `align`
+/// is not a power of two. Zero-sized keys retain their logical descriptor:
+/// the state byte provides nonzero slot stride, and callbacks receive aligned,
+/// non-null key addresses even when no payload bytes exist.
 ///
 /// **W4.001 Stage C0a:** `LayoutManaged` ownership is no longer rejected
 /// here. The new descriptor-consistency check in `new_layout` rejects
@@ -416,10 +422,6 @@ pub unsafe fn validate_key_layout(key_layout: *const HewMapKeyLayout) {
     if kl.eq_fn.is_none() {
         crate::set_last_error("HewLayoutHashMap: key_layout.eq_fn is None");
         panic!("HewLayoutHashMap: key_layout.eq_fn is None");
-    }
-    if kl.value.size == 0 {
-        crate::set_last_error("HewLayoutHashMap: zero-size keys are not admissible");
-        panic!("HewLayoutHashMap: zero-size keys are not admissible");
     }
     if !kl.value.align.is_power_of_two() {
         crate::set_last_error("HewLayoutHashMap: key_layout.value.align is not a power of two");
@@ -862,7 +864,7 @@ unsafe fn layout_resize(
 /// Create a new layout-backed `HewLayoutHashMap`.
 ///
 /// Fail-closed gates (council Rev 2/3 + W4.001 Stage C0a): aborts on null
-/// layout pointers, missing hash/eq thunks, zero-size key, non-power-of-two
+/// layout pointers, missing hash/eq thunks, non-power-of-two
 /// alignment, malformed ZST value layout, owned ownership without matching
 /// `drop_fn` (`String`/`LayoutManaged` require `Some(_)`), or stride overflow.
 ///
@@ -2009,7 +2011,9 @@ pub unsafe extern "C" fn hew_hashmap_entries_layout(
     if vec.is_null() {
         return core::ptr::null_mut();
     }
-    let scratch_layout = std::alloc::Layout::from_size_align(pair.size, pair.align)
+    // Logical empty pairs still need a non-null aligned address for callbacks
+    // and the vector's move protocol. Only allocation geometry is enlarged.
+    let scratch_layout = std::alloc::Layout::from_size_align(pair.size.max(1), pair.align)
         .unwrap_or_else(|_| abort_layout_clone("hew_hashmap_entries_layout: invalid pair layout"));
 
     for idx in 0..map.cap {
@@ -2019,8 +2023,8 @@ pub unsafe extern "C" fn hew_hashmap_entries_layout(
         if state != OCCUPIED {
             continue;
         }
-        // SAFETY: scratch_layout was built by Layout::from_size_align above and
-        // pair.size is non-zero for any pair carrying a key and a value.
+        // SAFETY: scratch_layout has nonzero allocation size and preserves the
+        // pair's alignment, including when both logical fields are zero-sized.
         let scratch = unsafe { std::alloc::alloc_zeroed(scratch_layout) };
         if scratch.is_null() {
             std::alloc::handle_alloc_error(scratch_layout);

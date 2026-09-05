@@ -35,11 +35,10 @@
     reason = "tests read a u32 refcount out of a byte-addressed header"
 )]
 
-use std::ffi::{c_char, c_void};
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use hew_cabi::cabi::CSTRING_HEADER_SIZE;
-use hew_runtime::cabi::malloc_cstring;
+use hew_cabi::string::{string_from_str, HewString};
 use hew_runtime::hashmap::{
     hew_hashmap_clone_layout, hew_hashmap_free_layout, hew_hashmap_insert_layout,
     hew_hashmap_new_with_layout, hew_hashmap_remove_layout,
@@ -54,11 +53,8 @@ use hew_runtime::string::{hew_string_clone, hew_string_drop};
 /// Allocate a fresh header-aware Hew string (`rc == 1`) the same way codegen's
 /// string producers do. The returned pointer is a sole owner; it must be
 /// released through `hew_string_drop` (never bare `free`).
-fn make_string(s: &str) -> *mut c_char {
-    // SAFETY: `s.as_ptr()` is readable for `s.len()` bytes; `malloc_cstring`
-    // copies exactly that many and NUL-terminates, returning a header-aware
-    // allocation.
-    unsafe { malloc_cstring(s.as_ptr(), s.len()) }
+fn make_string(s: &str) -> *mut HewString {
+    string_from_str(s)
 }
 
 /// Read the live refcount of a header-aware string element WITHOUT perturbing
@@ -68,13 +64,15 @@ fn make_string(s: &str) -> *mut c_char {
 /// # Safety
 /// `data` must be a live header-aware element produced by the `hew-cabi`
 /// allocator.
-unsafe fn element_refcount(data: *const c_char) -> u32 {
-    // SAFETY: header-aware element; rc lives at base+8 (base = data - 16).
-    unsafe {
-        let base = data.cast::<u8>().sub(CSTRING_HEADER_SIZE);
-        let rc = base.add(8).cast::<AtomicU32>();
-        (*rc).load(Ordering::Relaxed)
-    }
+unsafe fn element_refcount(data: *const HewString) -> u32 {
+    // SAFETY: the managed handle is the header base and the refcount follows
+    // its native-width byte-length field.
+    let rc = unsafe {
+        data.cast::<u8>()
+            .add(core::mem::size_of::<usize>())
+            .cast::<AtomicU32>()
+    };
+    unsafe { (*rc).load(Ordering::Relaxed) }
 }
 
 /// Insert `key -> val` into a `map<string, string>` by MOVE. `key`/`val` are
@@ -86,11 +84,11 @@ unsafe fn element_refcount(data: *const c_char) -> u32 {
 /// must be live header-aware strings whose ownership transfers to the map.
 unsafe fn insert_move(
     m: *mut hew_runtime::hashmap::HewLayoutHashMap,
-    key: *mut c_char,
-    val: *mut c_char,
+    key: *mut HewString,
+    val: *mut HewString,
 ) -> bool {
-    let key_slot: *const c_char = key;
-    let val_slot: *const c_char = val;
+    let key_slot: *const HewString = key;
+    let val_slot: *const HewString = val;
     // SAFETY: the slot locals are pointer-sized blobs matching the String
     // descriptor; insert copies their bits into the map (MOVE).
     unsafe {
@@ -196,7 +194,7 @@ fn hashmap_string_remove_releases_owners() {
         assert_eq!(element_refcount(v), 2, "clone retains value: 1→2");
 
         // Remove from the original by probing with the same-content key blob.
-        let probe: *const c_char = k;
+        let probe: *const HewString = k;
         let removed = hew_hashmap_remove_layout(m, (&raw const probe).cast::<c_void>());
         assert!(removed, "key was present, remove reports true");
         assert_eq!(
@@ -256,8 +254,8 @@ fn hashmap_string_overwrite_releases_old_value_keeps_key() {
         // duplicate ourselves to model the caller's retained-K responsibility.
         let dup_key = make_string("gamma");
         let v2 = make_string("second");
-        let dup_key_slot: *const c_char = dup_key;
-        let v2_slot: *const c_char = v2;
+        let dup_key_slot: *const HewString = dup_key;
+        let v2_slot: *const HewString = v2;
         let was_new = hew_hashmap_insert_layout(
             m,
             (&raw const dup_key_slot).cast::<c_void>(),
@@ -302,7 +300,7 @@ fn hashset_string_element_clone_retains_and_free_releases() {
         let e = make_string("delta");
         assert_eq!(element_refcount(e), 1, "fresh element is a sole owner");
 
-        let e_slot: *const c_char = e;
+        let e_slot: *const HewString = e;
         let was_new = hew_hashset_insert_layout(s, (&raw const e_slot).cast::<c_void>());
         assert!(was_new, "vacant insert reports a new element");
         assert_eq!(
@@ -320,7 +318,7 @@ fn hashset_string_element_clone_retains_and_free_releases() {
         );
 
         // Remove from the original: releases the original's owner (2→1).
-        let probe: *const c_char = e;
+        let probe: *const HewString = e;
         let removed = hew_hashset_remove_layout(s, (&raw const probe).cast::<c_void>());
         assert!(removed, "element present, remove reports true");
         assert_eq!(

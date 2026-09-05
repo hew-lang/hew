@@ -8,7 +8,8 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use std::os::raw::c_char;
+use hew_cabi::string::{string_as_bytes, HewString};
+use std::io::Write;
 
 /// Flush the C stdio `stdout` stream.
 ///
@@ -132,22 +133,18 @@ unsafe fn print_str(bits: u64, newline: bool) {
     let Ok(ptr_bits) = usize::try_from(bits) else {
         std::process::abort();
     };
-    let s = ptr_bits as *const c_char;
-    if s.is_null() {
-        if newline {
-            // SAFETY: Format string is a valid NUL-terminated C literal.
-            unsafe { libc::printf(c"\n".as_ptr()) };
-            flush_stdout();
-        }
-        return;
-    }
-
-    let fmt = if newline { c"%s\n" } else { c"%s" };
-    // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
-    unsafe { libc::printf(fmt.as_ptr(), s) };
+    let value = ptr_bits as *const HewString;
+    // SAFETY: the compiler supplies a live managed string handle; null is empty.
+    let bytes = unsafe { string_as_bytes(value) };
+    // Preserve call order when scalar prints use C stdio and strings use exact
+    // length-bounded Rust writes.
+    flush_stdout();
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(bytes);
     if newline {
-        flush_stdout();
+        let _ = stdout.write_all(b"\n");
     }
+    let _ = stdout.flush();
 }
 
 unsafe fn print_u8(x: u8, newline: bool) {
@@ -227,13 +224,13 @@ pub unsafe extern "C" fn hew_println_int(value: i64) {
 ///
 /// # Safety
 ///
-/// `value` must be null or point to a valid NUL-terminated C string.
+/// `value` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_println_str(value: *const c_char) {
+pub unsafe extern "C" fn hew_println_str(value: *const HewString) {
     let Ok(bits) = u64::try_from(value as usize) else {
         std::process::abort();
     };
-    // SAFETY: caller upholds the C string contract for non-null pointers.
+    // SAFETY: caller upholds the managed string contract for non-null pointers.
     unsafe { hew_print_value(PrintKind::Str as u8, bits, true) };
 }
 

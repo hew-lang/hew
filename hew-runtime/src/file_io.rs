@@ -14,7 +14,9 @@ use crate::stream_error::{
     io_error_kind_tag, set_last_error_with_errno, set_last_error_with_errno_and_kind,
     take_last_error,
 };
-use std::ffi::{c_char, CStr, CString};
+#[cfg(test)]
+use std::ffi::CString;
+use std::ffi::{c_char, CStr};
 
 fn clear_file_io_error() {
     crate::hew_clear_error();
@@ -499,9 +501,12 @@ pub unsafe extern "C" fn hew_fs_list_dir(path: *const c_char) -> *mut crate::vec
         names.push(name_str);
     }
     for name in names {
-        let c_name = CString::new(name).expect("file names cannot contain NUL");
-        // SAFETY: v is a valid HewVec; c_name is a valid NUL-terminated C string.
-        unsafe { crate::vec::hew_vec_push_str(v, c_name.as_ptr()) };
+        let managed_name = hew_cabi::string::string_from_str(&name);
+        // SAFETY: the vec retains one owner; release the local owner afterwards.
+        unsafe {
+            crate::vec::hew_vec_push_str(v, managed_name);
+            hew_cabi::string::string_release(managed_name);
+        }
     }
     clear_file_io_error();
     v
@@ -1224,7 +1229,7 @@ mod tests {
                  drain this instead of assuming the errno read already did"
             );
             let message = CStr::from_ptr(msg_ptr).to_str().unwrap_or("").to_owned();
-            crate::string::hew_string_drop(msg_ptr);
+            crate::cabi::free_cstring(msg_ptr);
             assert!(
                 message.contains("hew_file_read_bytes"),
                 "expected the current failed read's own message, got {message:?}"

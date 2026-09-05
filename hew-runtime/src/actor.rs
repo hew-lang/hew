@@ -14485,7 +14485,7 @@ mod tests {
             // SAFETY: the envelope stores a `*mut c_char` string handle in the
             // first pointer-sized slot of `payload` (set by the test below);
             // load it and release one owner.
-            let handle = unsafe { *payload.cast::<*mut std::ffi::c_char>() };
+            let handle = unsafe { *payload.cast::<*mut hew_cabi::string::HewString>() };
             // SAFETY: `handle` is a live header-aware String produced by
             // `hew_string_from_char` (or a clone of it), released exactly once.
             unsafe { crate::string::hew_string_drop(handle) };
@@ -14503,8 +14503,8 @@ mod tests {
             // the block and freed exactly once.
             unsafe {
                 let s = crate::string::hew_string_from_char(i32::from(b'x'));
-                let slot = std::mem::size_of::<*mut std::ffi::c_char>();
-                let buf = libc::malloc(slot).cast::<*mut std::ffi::c_char>();
+                let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
+                let buf = libc::malloc(slot).cast::<*mut hew_cabi::string::HewString>();
                 assert!(!buf.is_null());
                 *buf = s;
                 let env = crate::mailbox::hew_msg_envelope_new(
@@ -14516,7 +14516,7 @@ mod tests {
                 // Handler escapes the borrowed view into an owned sink. The
                 // gated retain hands it a private owner (refcount bump).
                 let borrowed = crate::mailbox::hew_msg_envelope_payload_ptr(env);
-                let received_handle = *borrowed.cast::<*mut std::ffi::c_char>();
+                let received_handle = *borrowed.cast::<*mut hew_cabi::string::HewString>();
                 let retained = crate::string::hew_string_clone(received_handle);
 
                 // Sink's owned-drop releases the handler's clone (1st decrement).
@@ -14537,8 +14537,8 @@ mod tests {
             // copy mode emits no clone, so the envelope release is the sole free.
             unsafe {
                 let s = crate::string::hew_string_from_char(i32::from(b'y'));
-                let slot = std::mem::size_of::<*mut std::ffi::c_char>();
-                let buf = libc::malloc(slot).cast::<*mut std::ffi::c_char>();
+                let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
+                let buf = libc::malloc(slot).cast::<*mut hew_cabi::string::HewString>();
                 assert!(!buf.is_null());
                 *buf = s;
                 let env = crate::mailbox::hew_msg_envelope_new(

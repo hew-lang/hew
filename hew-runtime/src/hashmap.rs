@@ -13,7 +13,7 @@
     reason = "hew_hashmap_len_layout casts usize→i64; workspace caps len well below i64::MAX so the cast is lossless"
 )]
 
-use core::ffi::{c_char, c_void};
+use core::ffi::c_void;
 use core::ptr;
 
 use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
@@ -918,17 +918,18 @@ fn abort_layout_clone(reason: impl Into<String>) -> ! {
 
 unsafe fn clone_layout_string_blob(src: *const u8, dst: *mut u8, label: &str) {
     // SAFETY: caller guarantees `src` points to a slot blob containing a
-    // C-string pointer and `dst` points to writable slot storage for the same
+    // managed-string handle and `dst` points to writable slot storage for the same
     // blob shape.
-    let src_ptr: *const c_char = unsafe { ptr::read_unaligned(src.cast::<*const c_char>()) };
-    // SAFETY: `src_ptr` is either null or a valid NUL-terminated string by the
+    let src_ptr: *const hew_cabi::string::HewString =
+        unsafe { ptr::read_unaligned(src.cast::<*const hew_cabi::string::HewString>()) };
+    // SAFETY: `src_ptr` is either null or a live managed string by the
     // descriptor's String ownership contract.
     let cloned = unsafe { crate::string::hew_string_clone(src_ptr) };
     if !src_ptr.is_null() && cloned.is_null() {
         abort_layout_clone(format!("{label}: string clone allocation failed"));
     }
     // SAFETY: `dst` is writable for a pointer-sized String blob.
-    unsafe { ptr::write_unaligned(dst.cast::<*mut c_char>(), cloned) };
+    unsafe { ptr::write_unaligned(dst.cast::<*mut hew_cabi::string::HewString>(), cloned) };
 }
 
 unsafe fn clone_layout_key_blob(
@@ -1900,13 +1901,14 @@ pub unsafe extern "C" fn hew_hashmap_keys_layout(m: *const HewLayoutHashMap) -> 
                 if state != OCCUPIED {
                     continue;
                 }
-                // SAFETY: occupied slot stores a *const c_char in the key blob.
+                // SAFETY: occupied slot stores a managed string handle in the key blob.
                 let key_blob = unsafe { slot_key(map.entries, idx, map.stride, map.key_offset) };
-                // SAFETY: blob holds a `*const c_char` (may be null).
-                let key_ptr: *const c_char =
-                    unsafe { ptr::read_unaligned(key_blob.cast::<*const c_char>()) };
-                // hew_vec_push_str makes an independent header-aware copy.
-                // SAFETY: key_ptr is a valid C string (or null).
+                // SAFETY: blob holds a managed string handle (may be null).
+                let key_ptr: *const hew_cabi::string::HewString = unsafe {
+                    ptr::read_unaligned(key_blob.cast::<*const hew_cabi::string::HewString>())
+                };
+                // hew_vec_push_str retains an independent owner.
+                // SAFETY: key_ptr is a live managed string (or null).
                 unsafe { crate::vec::hew_vec_push_str(vec, key_ptr) };
             }
             vec
@@ -2086,13 +2088,14 @@ pub unsafe extern "C" fn hew_hashmap_values_layout(m: *const HewLayoutHashMap) -
                 if state != OCCUPIED {
                     continue;
                 }
-                // SAFETY: occupied slot stores a *const c_char in the value blob.
+                // SAFETY: occupied slot stores a managed string handle in the value blob.
                 let val_blob = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
-                // SAFETY: blob holds a `*const c_char` (may be null).
-                let val_ptr: *const c_char =
-                    unsafe { ptr::read_unaligned(val_blob.cast::<*const c_char>()) };
-                // hew_vec_push_str makes an independent header-aware copy.
-                // SAFETY: val_ptr is a valid C string (or null).
+                // SAFETY: blob holds a managed string handle (may be null).
+                let val_ptr: *const hew_cabi::string::HewString = unsafe {
+                    ptr::read_unaligned(val_blob.cast::<*const hew_cabi::string::HewString>())
+                };
+                // hew_vec_push_str retains an independent owner.
+                // SAFETY: val_ptr is a live managed string (or null).
                 unsafe { crate::vec::hew_vec_push_str(vec, val_ptr) };
             }
             vec

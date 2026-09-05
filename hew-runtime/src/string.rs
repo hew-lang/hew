@@ -1,23 +1,22 @@
 //! Hew runtime: `string` module.
 //!
 //! String operations exposed with C ABI for use by compiled Hew programs.
-//! Returned strings are header-aware, refcounted allocations produced through
-//! the shared `hew-cabi` C-string allocator (`alloc_cstring*`); callers MUST
-//! release them through [`hew_string_drop`] (which decrements the refcount and
-//! frees at zero), never bare `libc::free`. `String` is immutable-shareable, so
-//! [`hew_string_clone`] is a refcount **retain** (it shares one buffer), not a
-//! deep copy.
+//! Every ordinary Hew string is an immutable, length-carrying, valid UTF-8
+//! [`HewString`] allocation. Null is the canonical empty value. Owned handles
+//! are released through [`hew_string_drop`], and [`hew_string_clone`] retains
+//! the same immutable allocation. Foreign C strings cross only explicitly
+//! named adapter boundaries; they are never accepted as managed handles.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::cabi::{
-    alloc_cstring_data, cstr_to_str, cstring_retain, free_cstring, is_managed_cstring,
-    malloc_cstring,
-};
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
 use crate::trap_code::{fmt_decimal_i64, fmt_decimal_usize, runtime_bounds_trap};
+use hew_cabi::string::{
+    string_alloc_utf8_unchecked, string_as_bytes, string_as_str, string_from_str, string_release,
+    string_retain, HewString,
+};
 use std::ffi::{c_void, CStr};
 use std::fmt::Write as _;
 use std::os::raw::c_char;
@@ -34,17 +33,19 @@ pub struct HewStringBuilder {
 ///
 /// # Safety
 ///
-/// `data` must contain `len` readable, NUL-free UTF-8 bytes, or be null when
+/// `data` must contain `len` readable UTF-8 bytes, including any embedded NUL,
+/// or be null when
 /// `len` is zero. `out` must be aligned, uniquely writable storage for an
 /// uninitialized string pointer. Release the resulting owner with
 /// [`hew_string_drop`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_literal_new(data: *const u8, len: u32, out: *mut *mut c_char) {
-    // SAFETY: the compiler supplies a valid byte range, including empty input.
-    let value = unsafe { malloc_cstring(data, len as usize) };
-    if value.is_null() {
-        std::process::abort();
-    }
+pub unsafe extern "C" fn hew_string_literal_new(
+    data: *const u8,
+    len: u32,
+    out: *mut *mut HewString,
+) {
+    // SAFETY: compiler literals are valid UTF-8 and readable for `len` bytes.
+    let value = unsafe { string_alloc_utf8_unchecked(data, len as usize) };
     // SAFETY: the caller supplies unique output storage, not an existing owner.
     unsafe { out.write(value) };
 }
@@ -81,25 +82,22 @@ pub extern "C" fn hew_string_builder_new() -> *mut c_void {
     Box::into_raw(Box::new(HewStringBuilder::default())).cast()
 }
 
-/// Append a borrowed C string.
+/// Append a borrowed managed Hew string.
 ///
 /// # Safety
 ///
-/// `builder` must be live and `value` must be null or NUL-terminated.
+/// `builder` must be live and `value` must be a managed string handle.
 #[no_mangle]
 #[expect(
     clippy::undocumented_unsafe_blocks,
     reason = "the function validates null and borrows both inputs for the call"
 )]
-pub unsafe extern "C" fn hew_string_builder_append_cstr(
+pub unsafe extern "C" fn hew_string_builder_append_string(
     builder: *mut c_void,
-    value: *const c_char,
+    value: *const HewString,
 ) {
-    if value.is_null() {
-        unsafe { structural_builder_append(builder, b"<null>") };
-        return;
-    }
-    let bytes = unsafe { CStr::from_ptr(value) }.to_bytes();
+    // SAFETY: the caller supplies a live managed value; null is canonical empty.
+    let bytes = unsafe { string_as_bytes(value) };
     unsafe { structural_builder_append(builder, bytes) };
 }
 
@@ -219,25 +217,17 @@ pub unsafe extern "C" fn hew_string_builder_append_identity(
 #[no_mangle]
 #[expect(
     clippy::undocumented_unsafe_blocks,
-    reason = "this boundary consumes the unique builder allocation and initializes the returned C string"
+    reason = "this boundary consumes the unique builder allocation and initializes the returned managed string"
 )]
-pub unsafe extern "C" fn hew_string_builder_finish(builder: *mut c_void) -> *mut c_char {
+pub unsafe extern "C" fn hew_string_builder_finish(builder: *mut c_void) -> *mut HewString {
     if builder.is_null() {
         unsafe { libc::abort() };
     }
     let builder = unsafe { Box::from_raw(builder.cast::<HewStringBuilder>()) };
-    let Some(alloc_size) = builder.bytes.len().checked_add(1) else {
+    let Ok(text) = std::str::from_utf8(&builder.bytes) else {
         unsafe { libc::abort() };
     };
-    let result = alloc_cstring_data(alloc_size).cast::<u8>();
-    cabi_guard!(result.is_null(), result.cast::<c_char>());
-    if !builder.bytes.is_empty() {
-        unsafe {
-            std::ptr::copy_nonoverlapping(builder.bytes.as_ptr(), result, builder.bytes.len());
-        }
-    }
-    unsafe { *result.add(builder.bytes.len()) = 0 };
-    result.cast()
+    string_from_str(text)
 }
 
 /// Write a message to stderr.
@@ -268,196 +258,155 @@ unsafe fn string_bounds_trap(message: &str) -> ! {
     }
 }
 
-/// Helper: get byte length of a C string, returning 0 for null pointers.
+/// Concatenate two managed strings. Caller owns the result.
 ///
 /// # Safety
 ///
-/// `s` must be null or a valid NUL-terminated C string.
-unsafe fn cstr_len(s: *const c_char) -> usize {
-    if s.is_null() {
-        return 0;
-    }
-    // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
-    unsafe { libc::strlen(s) }
+/// Both handles must be null or live managed strings.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_concat(
+    a: *const HewString,
+    b: *const HewString,
+) -> *mut HewString {
+    // SAFETY: both arguments satisfy the managed-handle contract.
+    let (a, b) = unsafe { (string_as_str(a), string_as_str(b)) };
+    let Some(capacity) = a.len().checked_add(b.len()) else {
+        std::process::abort();
+    };
+    let mut joined = String::with_capacity(capacity);
+    joined.push_str(a);
+    joined.push_str(b);
+    string_from_str(&joined)
 }
 
-/// Concatenate two C strings. Caller must free the result with `hew_string_drop`.
+/// Extract a substring by codepoint range `[start, end)`. The caller owns the result.
 ///
 /// # Safety
 ///
-/// Both `a` and `b` must be valid NUL-terminated C strings (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_concat(a: *const c_char, b: *const c_char) -> *mut c_char {
-    // SAFETY: cstr_len handles null check internally; a and b are valid per contract.
-    let la = unsafe { cstr_len(a) };
-    // SAFETY: cstr_len handles null check internally; b is valid per contract.
-    let lb = unsafe { cstr_len(b) };
-    let Some(total) = la.checked_add(lb) else {
-        // SAFETY: abort is always safe to call.
-        unsafe { libc::abort() };
-    };
-    let Some(alloc_size) = total.checked_add(1) else {
-        // SAFETY: abort is always safe to call.
-        unsafe { libc::abort() };
-    };
-    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
-    let result = alloc_cstring_data(alloc_size).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_concat — header-aware)
-    cabi_guard!(result.is_null(), result.cast::<c_char>());
-    if la > 0 {
-        // SAFETY: a is valid for la bytes; result has total+1 bytes allocated.
-        unsafe { std::ptr::copy_nonoverlapping(a.cast::<u8>(), result, la) };
-    }
-    if lb > 0 {
-        // SAFETY: b is valid for lb bytes; result+la is within the allocation.
-        unsafe { std::ptr::copy_nonoverlapping(b.cast::<u8>(), result.add(la), lb) };
-    }
-    // SAFETY: result + total is within the allocated region of total+1 bytes.
-    unsafe { *result.add(total) = 0 };
-    result.cast::<c_char>()
-}
-
-/// Extract a substring `[start, end)`. Caller must free the result with `hew_string_drop`.
-///
-/// # Safety
-///
-/// `s` must be a valid NUL-terminated C string (or null).
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "Matching C ABI: string lengths are bounded by i32 in the Hew runtime"
-)]
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_slice(s: *const c_char, start: i32, end: i32) -> *mut c_char {
-    // SAFETY: malloc_copy with len=0 is safe regardless of src.
-    cabi_guard!(s.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let len = unsafe { cstr_len(s) } as i32;
+pub unsafe extern "C" fn hew_string_slice(
+    s: *const HewString,
+    start: i64,
+    end: i64,
+) -> *mut HewString {
+    // SAFETY: `s` is a live managed string handle; null is empty.
+    let text = unsafe { string_as_str(s) };
+    let len = i64::try_from(text.chars().count()).unwrap_or_else(|_| std::process::abort());
     let start = start.max(0);
     let end = end.min(len);
     if start >= end {
-        // SAFETY: Allocating an empty string.
-        return unsafe { malloc_cstring(core::ptr::null(), 0) };
+        return core::ptr::null_mut();
     }
-    let slice_len = (end - start) as usize;
-    // SAFETY: start is non-negative and < len, so s + start is within the string;
-    // SAFETY: slice_len bytes are readable because end <= len.
-    unsafe { malloc_cstring(s.cast::<u8>().add(start as usize), slice_len) }
+    let (Ok(start), Ok(count)) = (usize::try_from(start), usize::try_from(end - start)) else {
+        return core::ptr::null_mut();
+    };
+    let result: String = text.chars().skip(start).take(count).collect();
+    string_from_str(&result)
 }
 
-/// Find the first occurrence of `substr` in `s`. Returns byte offset or -1.
+/// Find the first occurrence of `substr` in `s`. Returns its codepoint offset or -1.
 ///
 /// # Safety
 ///
-/// Both `s` and `substr` must be valid NUL-terminated C strings (or null).
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "String offsets are bounded by i32 in the Hew runtime ABI"
-)]
+/// Both arguments must be null or live managed string handles.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_find(s: *const c_char, substr: *const c_char) -> i32 {
-    cabi_guard!(s.is_null() || substr.is_null(), -1);
-    // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
-    let p = unsafe { libc::strstr(s, substr) };
-    cabi_guard!(p.is_null(), -1);
-    // SAFETY: p points within s, so the offset is non-negative and fits in isize.
-    unsafe { p.offset_from(s) as i32 }
+pub unsafe extern "C" fn hew_string_find(s: *const HewString, substr: *const HewString) -> i64 {
+    // SAFETY: both arguments are live managed string handles; null is empty.
+    let (text, needle) = unsafe { (string_as_str(s), string_as_str(substr)) };
+    let Some(byte_offset) = text.find(needle) else {
+        return -1;
+    };
+    i64::try_from(text[..byte_offset].chars().count()).unwrap_or_else(|_| std::process::abort())
 }
 
 /// Check if `s` starts with `prefix`.
 ///
 /// # Safety
 ///
-/// Both `s` and `prefix` must be valid NUL-terminated C strings (or null).
+/// Both arguments must be null or live managed string handles.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_starts_with(s: *const c_char, prefix: *const c_char) -> bool {
-    cabi_guard!(s.is_null() || prefix.is_null(), false);
-    // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
-    let plen = unsafe { cstr_len(prefix) };
-    // SAFETY: s and prefix are valid C strings; plen is derived from prefix.
-    unsafe { libc::strncmp(s, prefix, plen) == 0 }
+pub unsafe extern "C" fn hew_string_starts_with(
+    s: *const HewString,
+    prefix: *const HewString,
+) -> bool {
+    // SAFETY: both arguments are live managed handles.
+    unsafe { string_as_str(s) }.starts_with(unsafe { string_as_str(prefix) })
 }
 
 /// Check if `s` ends with `suffix`.
 ///
 /// # Safety
 ///
-/// Both `s` and `suffix` must be valid NUL-terminated C strings (or null).
+/// Both arguments must be null or live managed string handles.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_ends_with(s: *const c_char, suffix: *const c_char) -> bool {
-    cabi_guard!(s.is_null() || suffix.is_null(), false);
-    // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
-    let slen = unsafe { cstr_len(s) };
-    // SAFETY: suffix is a valid NUL-terminated C string per caller contract.
-    let xlen = unsafe { cstr_len(suffix) };
-    if xlen > slen {
-        return false;
-    }
-    // SAFETY: s + (slen - xlen) is within the string; suffix is a valid C string.
-    unsafe { libc::strcmp(s.add(slen - xlen), suffix) == 0 }
+pub unsafe extern "C" fn hew_string_ends_with(
+    s: *const HewString,
+    suffix: *const HewString,
+) -> bool {
+    // SAFETY: both arguments are live managed handles.
+    unsafe { string_as_str(s) }.ends_with(unsafe { string_as_str(suffix) })
 }
 
 /// Check if `s` contains `substr`.
 ///
 /// # Safety
 ///
-/// Both `s` and `substr` must be valid NUL-terminated C strings (or null).
+/// Both arguments must be null or live managed string handles.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_contains(s: *const c_char, substr: *const c_char) -> bool {
-    cabi_guard!(s.is_null() || substr.is_null(), false);
-    // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
-    !unsafe { libc::strstr(s, substr) }.is_null()
+pub unsafe extern "C" fn hew_string_contains(
+    s: *const HewString,
+    substr: *const HewString,
+) -> bool {
+    // SAFETY: both arguments are live managed handles.
+    unsafe { string_as_str(s) }.contains(unsafe { string_as_str(substr) })
 }
 
 /// Check if all bytes in `s` are ASCII digits. Returns `false` for empty strings.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_is_digit(s: *const c_char) -> bool {
-    cabi_guard!(s.is_null(), false);
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    !bytes.is_empty() && bytes.iter().all(u8::is_ascii_digit)
+pub unsafe extern "C" fn hew_string_is_digit(s: *const HewString) -> bool {
+    // SAFETY: `s` is a live managed handle.
+    let text = unsafe { string_as_str(s) };
+    !text.is_empty() && text.chars().all(char::is_numeric)
 }
 
 /// Check if all bytes in `s` are ASCII alphabetic. Returns `false` for empty strings.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_is_alpha(s: *const c_char) -> bool {
-    cabi_guard!(s.is_null(), false);
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    !bytes.is_empty() && bytes.iter().all(u8::is_ascii_alphabetic)
+pub unsafe extern "C" fn hew_string_is_alpha(s: *const HewString) -> bool {
+    // SAFETY: `s` is a live managed handle.
+    let text = unsafe { string_as_str(s) };
+    !text.is_empty() && text.chars().all(char::is_alphabetic)
 }
 
 /// Check if all bytes in `s` are ASCII alphanumeric. Returns `false` for empty strings.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_is_alphanumeric(s: *const c_char) -> bool {
-    cabi_guard!(s.is_null(), false);
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    !bytes.is_empty() && bytes.iter().all(u8::is_ascii_alphanumeric)
+pub unsafe extern "C" fn hew_string_is_alphanumeric(s: *const HewString) -> bool {
+    // SAFETY: `s` is a live managed handle.
+    let text = unsafe { string_as_str(s) };
+    !text.is_empty() && text.chars().all(char::is_alphanumeric)
 }
 
 /// Check if a string is empty (zero length).
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_is_empty(s: *const c_char) -> bool {
-    cabi_guard!(s.is_null(), true);
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    unsafe { *s == 0 }
+pub unsafe extern "C" fn hew_string_is_empty(s: *const HewString) -> bool {
+    // SAFETY: `s` is a live managed handle; null is empty.
+    unsafe { string_as_bytes(s) }.is_empty()
 }
 
 /// Convert an `i32` to its decimal string representation. Caller must free the result with `hew_string_drop`.
@@ -466,7 +415,7 @@ pub unsafe extern "C" fn hew_string_is_empty(s: *const c_char) -> bool {
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
-pub unsafe extern "C" fn hew_int_to_string(n: i32) -> *mut c_char {
+pub unsafe extern "C" fn hew_int_to_string(n: i32) -> *mut HewString {
     let mut buf = [0u8; 32];
     let len = {
         use std::io::Write;
@@ -475,7 +424,7 @@ pub unsafe extern "C" fn hew_int_to_string(n: i32) -> *mut c_char {
         32 - w.len()
     };
     // SAFETY: buf contains len valid UTF-8 bytes from write!.
-    unsafe { malloc_cstring(buf.as_ptr(), len) }
+    unsafe { string_alloc_utf8_unchecked(buf.as_ptr(), len) }
 }
 
 /// Convert a `u8` to its decimal string representation. Caller must free the result with `hew_string_drop`.
@@ -484,7 +433,7 @@ pub unsafe extern "C" fn hew_int_to_string(n: i32) -> *mut c_char {
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
-pub unsafe extern "C" fn hew_u8_to_string(n: u8) -> *mut c_char {
+pub unsafe extern "C" fn hew_u8_to_string(n: u8) -> *mut HewString {
     let mut buf = [0u8; 4]; // max 3 digits for 0..=255
     let len = {
         use std::io::Write;
@@ -493,7 +442,7 @@ pub unsafe extern "C" fn hew_u8_to_string(n: u8) -> *mut c_char {
         4 - w.len()
     };
     // SAFETY: buf contains len valid UTF-8 bytes from write!.
-    unsafe { malloc_cstring(buf.as_ptr(), len) }
+    unsafe { string_alloc_utf8_unchecked(buf.as_ptr(), len) }
 }
 
 /// Convert a `u32` to its decimal string representation. Caller must free the result with `hew_string_drop`.
@@ -502,7 +451,7 @@ pub unsafe extern "C" fn hew_u8_to_string(n: u8) -> *mut c_char {
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
-pub unsafe extern "C" fn hew_uint_to_string(n: u32) -> *mut c_char {
+pub unsafe extern "C" fn hew_uint_to_string(n: u32) -> *mut HewString {
     let mut buf = [0u8; 32];
     let len = {
         use std::io::Write;
@@ -511,7 +460,7 @@ pub unsafe extern "C" fn hew_uint_to_string(n: u32) -> *mut c_char {
         32 - w.len()
     };
     // SAFETY: buf contains len valid UTF-8 bytes from write!.
-    unsafe { malloc_cstring(buf.as_ptr(), len) }
+    unsafe { string_alloc_utf8_unchecked(buf.as_ptr(), len) }
 }
 
 /// Convert an `i64` to its decimal string representation. Caller must free the result with `hew_string_drop`.
@@ -520,7 +469,7 @@ pub unsafe extern "C" fn hew_uint_to_string(n: u32) -> *mut c_char {
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
-pub unsafe extern "C" fn hew_i64_to_string(n: i64) -> *mut c_char {
+pub unsafe extern "C" fn hew_i64_to_string(n: i64) -> *mut HewString {
     let mut buf = [0u8; 32];
     let len = {
         use std::io::Write;
@@ -529,7 +478,7 @@ pub unsafe extern "C" fn hew_i64_to_string(n: i64) -> *mut c_char {
         32 - w.len()
     };
     // SAFETY: buf contains len valid UTF-8 bytes from write!.
-    unsafe { malloc_cstring(buf.as_ptr(), len) }
+    unsafe { string_alloc_utf8_unchecked(buf.as_ptr(), len) }
 }
 
 /// Convert a `u64` to its decimal string representation. Caller must free the result with `hew_string_drop`.
@@ -538,7 +487,7 @@ pub unsafe extern "C" fn hew_i64_to_string(n: i64) -> *mut c_char {
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
-pub unsafe extern "C" fn hew_u64_to_string(n: u64) -> *mut c_char {
+pub unsafe extern "C" fn hew_u64_to_string(n: u64) -> *mut HewString {
     let mut buf = [0u8; 32];
     let len = {
         use std::io::Write;
@@ -547,7 +496,7 @@ pub unsafe extern "C" fn hew_u64_to_string(n: u64) -> *mut c_char {
         32 - w.len()
     };
     // SAFETY: buf contains len valid UTF-8 bytes from write!.
-    unsafe { malloc_cstring(buf.as_ptr(), len) }
+    unsafe { string_alloc_utf8_unchecked(buf.as_ptr(), len) }
 }
 
 fn parse_strict_i64(bytes: &[u8]) -> i64 {
@@ -557,17 +506,15 @@ fn parse_strict_i64(bytes: &[u8]) -> i64 {
         .unwrap_or(0)
 }
 
-/// Parse a C string as an `int`/`i64` using `std::string.to_int` semantics.
+/// Parse a managed string as an `int`/`i64` using `std::string.to_int` semantics.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null, which returns 0).
+/// `s` must be null or a live managed string handle. Empty returns 0.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_to_int(s: *const c_char) -> i64 {
-    cabi_guard!(s.is_null(), 0);
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    parse_strict_i64(bytes)
+pub unsafe extern "C" fn hew_string_to_int(s: *const HewString) -> i64 {
+    // SAFETY: `s` is a live managed handle; null is empty.
+    parse_strict_i64(unsafe { string_as_bytes(s) })
 }
 
 /// Convert an `f64` to its string representation. Caller must free the result with `hew_string_drop`.
@@ -576,7 +523,7 @@ pub unsafe extern "C" fn hew_string_to_int(s: *const c_char) -> i64 {
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
-pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut c_char {
+pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut HewString {
     // Match C's %g format: compact representation with scientific notation
     // for very large/small values, trailing zeros trimmed.
     unsafe extern "C" {
@@ -600,7 +547,7 @@ pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut c_char {
     #[expect(clippy::cast_sign_loss, reason = "len >= 0 checked above")]
     let len = (len as usize).min(buf.len());
     // SAFETY: buf contains len valid bytes from snprintf.
-    unsafe { malloc_cstring(buf.as_ptr(), len) }
+    unsafe { string_alloc_utf8_unchecked(buf.as_ptr(), len) }
 }
 
 /// Convert a `bool` to `"true"` or `"false"`. Caller must free the result with `hew_string_drop`.
@@ -609,153 +556,50 @@ pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut c_char {
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bool_to_string(b: bool) -> *mut c_char {
+pub unsafe extern "C" fn hew_bool_to_string(b: bool) -> *mut HewString {
     let s = if b { "true" } else { "false" };
     // SAFETY: s points to valid static string bytes with known length.
-    unsafe { malloc_cstring(s.as_ptr(), s.len()) }
+    string_from_str(s)
 }
 
 /// Trim leading and trailing ASCII whitespace. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_trim(s: *const c_char) -> *mut c_char {
-    // SAFETY: Allocating an empty string with len=0.
-    cabi_guard!(s.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    let start = bytes
-        .iter()
-        .position(|&b| !b.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|&b| !b.is_ascii_whitespace())
-        .map_or(start, |i| i + 1);
-    let trimmed = &bytes[start..end];
-    // SAFETY: trimmed points into the valid CStr buffer with trimmed.len() bytes.
-    unsafe { malloc_cstring(trimmed.as_ptr(), trimmed.len()) }
+pub unsafe extern "C" fn hew_string_trim(s: *const HewString) -> *mut HewString {
+    // SAFETY: `s` is a live managed handle; null is empty.
+    string_from_str(unsafe { string_as_str(s) }.trim())
 }
 
 /// Replace all occurrences of `old_str` with `new_str`. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
-/// All three pointers must be valid NUL-terminated C strings (or null).
-#[expect(
-    clippy::similar_names,
-    reason = "count_times_nlen and count_times_olen are intentionally parallel"
-)]
+/// All three arguments must be null or live managed string handles.
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_replace(
-    s: *const c_char,
-    old_str: *const c_char,
-    new_str: *const c_char,
-) -> *mut c_char {
-    // SAFETY: Allocating an empty string with len=0.
-    cabi_guard!(s.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
-    // SAFETY: s is valid per caller contract.
-    let slen = unsafe { cstr_len(s) };
-    let olen = if old_str.is_null() {
-        0
-    } else {
-        // SAFETY: old_str is non-null and valid per caller contract.
-        unsafe { cstr_len(old_str) }
+    s: *const HewString,
+    old_str: *const HewString,
+    new_str: *const HewString,
+) -> *mut HewString {
+    // SAFETY: all arguments are live managed handles; null is empty.
+    let (text, old, new) = unsafe {
+        (
+            string_as_str(s),
+            string_as_str(old_str),
+            string_as_str(new_str),
+        )
     };
-    let nlen = if new_str.is_null() {
-        0
-    } else {
-        // SAFETY: new_str is non-null and valid per caller contract.
-        unsafe { cstr_len(new_str) }
-    };
-
-    // If old_str is empty or null, just duplicate s.
-    if olen == 0 {
-        // SAFETY: s is valid for slen bytes per caller contract.
-        return unsafe { malloc_cstring(s.cast::<u8>(), slen) };
+    if old.is_empty() {
+        return string_from_str(text);
     }
-
-    // Count occurrences.
-    let mut count: usize = 0;
-    let mut p = s;
-    loop {
-        // SAFETY: p is within the original string; old_str is valid and non-empty.
-        let q = unsafe { libc::strstr(p, old_str) };
-        if q.is_null() {
-            break;
-        }
-        count += 1;
-        // SAFETY: q points into s; advancing by olen stays within bounds.
-        p = unsafe { q.add(olen) };
-    }
-
-    // Use checked arithmetic to prevent overflow
-    let Some(count_times_nlen) = count.checked_mul(nlen) else {
-        // SAFETY: abort is always safe to call.
-        unsafe { libc::abort() };
-    };
-    let Some(count_times_olen) = count.checked_mul(olen) else {
-        // SAFETY: abort is always safe to call.
-        unsafe { libc::abort() };
-    };
-    let result_len = match slen.checked_add(count_times_nlen) {
-        Some(v) => match v.checked_sub(count_times_olen) {
-            Some(result) => result,
-            // SAFETY: abort is always safe to call.
-            None => unsafe { libc::abort() },
-        },
-        // SAFETY: abort is always safe to call.
-        None => unsafe { libc::abort() },
-    };
-    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
-    let result = alloc_cstring_data(result_len + 1).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_replace — header-aware)
-    if result.is_null() {
-        return result.cast::<c_char>();
-    }
-
-    let mut dst = result;
-    p = s;
-    loop {
-        // SAFETY: p is within the original string; old_str is valid and non-empty.
-        let q = unsafe { libc::strstr(p, old_str) };
-        if q.is_null() {
-            break;
-        }
-        // SAFETY: q >= p since q was found at or after p; cast_unsigned is correct.
-        let chunk = unsafe { q.offset_from(p) }.cast_unsigned();
-        if chunk > 0 {
-            // SAFETY: p is valid for chunk bytes; dst has enough space in the allocation.
-            unsafe { std::ptr::copy_nonoverlapping(p.cast::<u8>(), dst, chunk) };
-            // SAFETY: Advancing dst within the allocated buffer.
-            dst = unsafe { dst.add(chunk) };
-        }
-        if nlen > 0 {
-            // SAFETY: new_str is valid for nlen bytes; dst has enough space.
-            unsafe { std::ptr::copy_nonoverlapping(new_str.cast::<u8>(), dst, nlen) };
-            // SAFETY: Advancing dst within the allocated buffer.
-            dst = unsafe { dst.add(nlen) };
-        }
-        // SAFETY: q + olen is within the original string.
-        p = unsafe { q.add(olen) };
-    }
-    // Copy the remaining tail (including NUL terminator).
-    // SAFETY: p points to the remaining portion of s.
-    let tail_len = unsafe { cstr_len(p) };
-    if tail_len > 0 {
-        // SAFETY: p is valid for tail_len bytes; dst has enough space.
-        unsafe { std::ptr::copy_nonoverlapping(p.cast::<u8>(), dst, tail_len) };
-        // SAFETY: Advancing dst within the allocated buffer.
-        dst = unsafe { dst.add(tail_len) };
-    }
-    // SAFETY: dst is at the end of written content, within the allocation.
-    unsafe { *dst = 0 };
-    result.cast::<c_char>()
+    string_from_str(&text.replace(old, new))
 }
 
 /// Convert a Unicode codepoint to its UTF-8 string representation.
-/// Returns a fresh, NUL-terminated C string. Caller must free with `hew_string_drop`.
+/// Returns a fresh managed string. The caller owns the result.
 ///
 /// `c` is a Unicode scalar value passed as `i32` (codepoints fit in `[0, 0x10_FFFF]`).
 /// Invalid codepoints (values that `char::from_u32` rejects) produce the replacement
@@ -769,100 +613,72 @@ pub unsafe extern "C" fn hew_string_replace(
     reason = "C ABI passes codepoints as i32; reinterpreting as u32 for char::from_u32 is correct"
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_char_to_string(c: i32) -> *mut c_char {
+pub unsafe extern "C" fn hew_char_to_string(c: i32) -> *mut HewString {
     // Decode the Unicode scalar; fall back to U+FFFD for invalid codepoints.
     let ch = char::from_u32(c as u32).unwrap_or('\u{FFFD}');
-    let mut buf = [0u8; 5]; // 4 UTF-8 bytes + NUL terminator
-    let encoded = ch.encode_utf8(&mut buf[..4]);
+    let mut buf = [0u8; 4];
+    let encoded = ch.encode_utf8(&mut buf);
     let nbytes = encoded.len();
-    // NUL-terminate: buf[nbytes] is already 0 from the zero-initialiser.
-    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
     // SAFETY: buf contains nbytes valid UTF-8 bytes for this codepoint; buf is alive
     // for the duration of the call.
-    // CSTRING-ALLOC: str-open (hew_char_to_string — header-aware)
-    unsafe { malloc_cstring(buf.as_ptr(), nbytes) }
+    unsafe { string_alloc_utf8_unchecked(buf.as_ptr(), nbytes) }
 }
 
-/// Return the byte length of a C string.
+/// Return the number of Unicode codepoints in a managed string.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null, which returns 0).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_length(s: *const c_char) -> i64 {
-    // SAFETY: cstr_len handles null check internally.
-    let length = unsafe { cstr_len(s) };
-    // Hew lengths use i64. Never truncate a host-sized length at the ABI.
+pub unsafe extern "C" fn hew_string_length(s: *const HewString) -> i64 {
+    // SAFETY: the caller supplies a live managed string handle.
+    let length = unsafe { string_as_str(s) }.chars().count();
     i64::try_from(length).unwrap_or_else(|_| std::process::abort())
 }
 
-/// Lexicographic comparison of two C strings.
+/// Lexicographic comparison of two managed strings by their UTF-8 bytes.
 /// Returns −1 if `a < b`, 0 if `a == b`, 1 if `a > b`.
-/// Null is treated as less than any non-null string; two nulls are equal.
+/// Null is the canonical empty string.
 ///
 /// # Safety
 ///
-/// Both `a` and `b` must be valid NUL-terminated C strings (or null).
+/// Both arguments must be null or live managed string handles.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_compare(a: *const c_char, b: *const c_char) -> i32 {
-    if a.is_null() && b.is_null() {
-        return 0;
-    }
-    if a.is_null() {
-        return -1;
-    }
-    if b.is_null() {
-        return 1;
-    }
-    // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
-    let cmp = unsafe { libc::strcmp(a, b) };
-    if cmp < 0 {
-        -1
-    } else {
-        i32::from(cmp > 0)
+pub unsafe extern "C" fn hew_string_compare(a: *const HewString, b: *const HewString) -> i32 {
+    // SAFETY: both arguments satisfy the managed-handle contract.
+    match unsafe { string_as_bytes(a) }.cmp(unsafe { string_as_bytes(b) }) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
     }
 }
 
-/// Compare two C strings for equality. Returns 1 if equal, 0 otherwise.
+/// Compare two managed strings for equality. Returns 1 if equal, 0 otherwise.
 ///
 /// # Safety
 ///
-/// Both `a` and `b` must be valid NUL-terminated C strings (or null).
+/// Both arguments must be null or live managed string handles.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_equals(a: *const c_char, b: *const c_char) -> i32 {
-    cabi_guard!(a.is_null() && b.is_null(), 1);
-    cabi_guard!(a.is_null() || b.is_null(), 0);
-    // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
-    i32::from(unsafe { libc::strcmp(a, b) } == 0)
+pub unsafe extern "C" fn hew_string_equals(a: *const HewString, b: *const HewString) -> i32 {
+    // SAFETY: both arguments satisfy the managed-handle contract.
+    i32::from(unsafe { string_as_bytes(a) } == unsafe { string_as_bytes(b) })
 }
 
-/// FNV-1a-64 hash of a C string's NUL-terminated payload bytes.
+/// FNV-1a-64 hash of a managed string's complete UTF-8 byte range.
 ///
-/// This is the hash twin of [`hew_string_equals`]: it hashes exactly the byte
-/// range `strcmp` compares (`s[0..strlen(s)]`), so two strings that compare
-/// equal hash equal. The codegen per-record hash thunk calls this when it
-/// reaches a `string` field of a layout `HashMap` key — loading the field's
-/// `*const c_char` and hashing the payload it points at, rather than mixing the
-/// pointer word (which would make distinct-but-equal record keys collide-or-miss
-/// against the equality witness). A null pointer hashes to the FNV offset basis
-/// (consistent with hashing the empty byte range).
+/// This is the hash twin of [`hew_string_equals`], including bytes after an
+/// embedded NUL. A null handle hashes like the empty byte range.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string, or null.
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_hash_fnv1a(s: *const c_char) -> u64 {
+pub unsafe extern "C" fn hew_string_hash_fnv1a(s: *const HewString) -> u64 {
     const FNV_OFFSET_64: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME_64: u64 = 0x0000_0100_0000_01b3;
     let mut h = FNV_OFFSET_64;
-    if s.is_null() {
-        return h;
-    }
-    // SAFETY: `s` is a valid NUL-terminated C string per caller contract.
-    let len = unsafe { libc::strlen(s) };
-    // SAFETY: `s[0..len]` are valid bytes (the payload up to the NUL).
-    let slice = unsafe { core::slice::from_raw_parts(s.cast::<u8>(), len) };
-    for &b in slice {
+    // SAFETY: the caller supplies a live managed string handle.
+    for &b in unsafe { string_as_bytes(s) } {
         h ^= u64::from(b);
         h = h.wrapping_mul(FNV_PRIME_64);
     }
@@ -874,89 +690,32 @@ pub unsafe extern "C" fn hew_string_hash_fnv1a(s: *const c_char) -> u64 {
 ///
 /// # Safety
 ///
-/// Both `s` and `delim` must be valid NUL-terminated C strings (or null).
+/// Both arguments must be null or live managed string handles.
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_split(
-    s: *const c_char,
-    delim: *const c_char,
+    s: *const HewString,
+    delim: *const HewString,
 ) -> *mut crate::vec::HewVec {
     // SAFETY: hew_vec_new_str has no preconditions.
     let v = unsafe { crate::vec::hew_vec_new_str() };
-    cabi_guard!(s.is_null(), v);
-    if delim.is_null() {
-        // SAFETY: s is valid per caller contract.
-        unsafe { crate::vec::hew_vec_push_str(v, s) };
-        return v;
-    }
-    // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
-    let s_bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    // SAFETY: delim is a valid NUL-terminated C string per caller contract.
-    let d_bytes = unsafe { CStr::from_ptr(delim) }.to_bytes();
-    let dlen = d_bytes.len();
-
-    if dlen == 0 {
-        // Empty separator: split into individual Unicode codepoints, each as a
-        // single-character UTF-8 string. An empty input produces an empty vec.
-        // SAFETY: s is a valid NUL-terminated C string per caller contract.
-        let Ok(rust_str) = (unsafe { CStr::from_ptr(s) }).to_str() else {
-            // Invalid UTF-8 — return empty vec; caller cannot meaningfully split it.
-            return v;
-        };
-        for ch in rust_str.chars() {
-            let mut buf = [0u8; 5]; // 4 UTF-8 bytes + NUL terminator
-            let encoded = ch.encode_utf8(&mut buf[..4]);
-            let nbytes = encoded.len();
-            // SAFETY: buf contains nbytes valid UTF-8 bytes for this codepoint.
-            let part = unsafe { malloc_cstring(buf.as_ptr(), nbytes) };
-            if part.is_null() {
-                // SAFETY: abort is always safe to call.
-                unsafe { libc::abort() };
-            }
-            // SAFETY: v is a valid HewVec and part is a valid C string.
-            unsafe { crate::vec::hew_vec_push_str(v, part) };
-            // SAFETY: part was allocated by malloc_cstring and copied-in by push_str.
-            unsafe { free_cstring(part) }; // CSTRING-FREE: str-open (hew_string_split empty-sep codepoint, copied-in by push_str)
+    // SAFETY: both arguments are live managed handles; null is empty.
+    let (text, separator) = unsafe { (string_as_str(s), string_as_str(delim)) };
+    let push = |part: &str| {
+        let part = string_from_str(part);
+        // SAFETY: the vec retains one owner and `part` is then released.
+        unsafe {
+            crate::vec::hew_vec_push_str(v, part);
+            string_release(part);
         }
-        return v;
-    }
-
-    let mut start = 0;
-    while start <= s_bytes.len() {
-        let rest = &s_bytes[start..];
-        let found = rest.windows(dlen).position(|w| w == d_bytes);
-        if let Some(pos) = found {
-            // SAFETY: Allocating a substring via malloc_copy and pushing.
-            let part = unsafe { malloc_cstring(s_bytes[start..start + pos].as_ptr(), pos) };
-            if part.is_null() {
-                // SAFETY: abort is always safe to call.
-                unsafe {
-                    libc::abort();
-                }
-            }
-            // SAFETY: v is a valid HewVec and part is a valid C string.
-            unsafe { crate::vec::hew_vec_push_str(v, part) };
-            // SAFETY: part was allocated header-aware by malloc_cstring and was
-            // copied (not shared) into the vec by push_str — release our sole
-            // owner directly.
-            unsafe { free_cstring(part) }; // CSTRING-FREE: str-open (hew_string_split part = malloc_cstring temp, copied-in by push_str)
-            start += pos + dlen;
-        } else {
-            let tail_len = s_bytes.len() - start;
-            // SAFETY: Tail slice is within s_bytes bounds.
-            let part = unsafe { malloc_cstring(s_bytes[start..].as_ptr(), tail_len) };
-            if part.is_null() {
-                // SAFETY: abort is always safe to call.
-                unsafe {
-                    libc::abort();
-                }
-            }
-            // SAFETY: v is a valid HewVec and part is a valid C string.
-            unsafe { crate::vec::hew_vec_push_str(v, part) };
-            // SAFETY: part was allocated header-aware by malloc_cstring and was
-            // copied (not shared) into the vec by push_str — release our sole
-            // owner directly.
-            unsafe { free_cstring(part) }; // CSTRING-FREE: str-open (hew_string_split tail part, copied-in by push_str)
-            break;
+    };
+    if separator.is_empty() {
+        for ch in text.chars() {
+            let mut bytes = [0_u8; 4];
+            push(ch.encode_utf8(&mut bytes));
+        }
+    } else {
+        for part in text.split(separator) {
+            push(part);
         }
     }
     v
@@ -967,75 +726,35 @@ pub unsafe extern "C" fn hew_string_split(
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_lines(s: *const c_char) -> *mut crate::vec::HewVec {
+pub unsafe extern "C" fn hew_string_lines(s: *const HewString) -> *mut crate::vec::HewVec {
     // SAFETY: hew_vec_new_str has no preconditions.
     let v = unsafe { crate::vec::hew_vec_new_str() };
-    cabi_guard!(s.is_null(), v);
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let s_bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-
-    let mut start = 0;
-    for i in 0..s_bytes.len() {
-        if s_bytes[i] == b'\n' {
-            let mut end = i;
-            if end > start && s_bytes[end - 1] == b'\r' {
-                end -= 1;
-            }
-            let len = end - start;
-            // SAFETY: Allocating a substring via malloc_copy and pushing.
-            let part = unsafe { malloc_cstring(s_bytes[start..end].as_ptr(), len) };
-            if part.is_null() {
-                // SAFETY: abort is always safe to call.
-                unsafe { libc::abort() };
-            }
-            // SAFETY: v is a valid HewVec and part is a valid C string.
-            unsafe { crate::vec::hew_vec_push_str(v, part) };
-            // SAFETY: part was allocated header-aware by malloc_cstring and was
-            // copied (not shared) into the vec by push_str — release our sole
-            // owner directly.
-            unsafe { free_cstring(part) }; // CSTRING-FREE: str-open (hew_string_lines part, copied-in by push_str)
-            start = i + 1;
+    // SAFETY: `s` is a live managed handle; null is empty.
+    for line in unsafe { string_as_str(s) }.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let part = string_from_str(line);
+        // SAFETY: the vec retains one owner and `part` is then released.
+        unsafe {
+            crate::vec::hew_vec_push_str(v, part);
+            string_release(part);
         }
     }
-    // Push the last line (after the final \n, or the whole string if no \n)
-    let mut end = s_bytes.len();
-    if end > start && s_bytes[end - 1] == b'\r' {
-        end -= 1;
-    }
-    let len = end - start;
-    // SAFETY: Allocating a substring via malloc_copy and pushing.
-    let part = unsafe { malloc_cstring(s_bytes[start..end].as_ptr(), len) };
-    if part.is_null() {
-        // SAFETY: abort is always safe to call.
-        unsafe { libc::abort() };
-    }
-    // SAFETY: v is a valid HewVec and part is a valid C string.
-    unsafe { crate::vec::hew_vec_push_str(v, part) };
-    // SAFETY: part was allocated header-aware by malloc_cstring and was copied
-    // (not shared) into the vec by push_str — release our sole owner directly.
-    unsafe { free_cstring(part) }; // CSTRING-FREE: str-open (hew_string_lines tail part, copied-in by push_str)
     v
 }
 
 /// Returns a `Vec<i32>` containing the Unicode scalar value of each character in `s`.
 ///
-/// Characters are decoded as UTF-8.  Invalid UTF-8 sequences cause an early return
-/// of whatever elements were collected before the error.
-///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_chars(s: *const c_char) -> *mut crate::vec::HewVec {
+pub unsafe extern "C" fn hew_string_chars(s: *const HewString) -> *mut crate::vec::HewVec {
     // SAFETY: hew_vec_new has no preconditions.
     let v = unsafe { crate::vec::hew_vec_new() };
-    cabi_guard!(s.is_null(), v);
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let Ok(rust_str) = (unsafe { CStr::from_ptr(s) }).to_str() else {
-        return v;
-    };
+    // SAFETY: `s` is a live managed handle; null is empty.
+    let rust_str = unsafe { string_as_str(s) };
     for ch in rust_str.chars() {
         // SAFETY: v is a valid HewVec allocated above.
         // ch as i32: Unicode scalar values are ≤ 0x10_FFFF, which fits in i32.
@@ -1049,152 +768,77 @@ pub unsafe extern "C" fn hew_string_chars(s: *const c_char) -> *mut crate::vec::
 ///
 /// # Safety
 ///
-/// `v` must be a valid `HewVec` of C strings. `sep` must be a valid NUL-terminated
-/// C string (or null, treated as empty separator).
+/// `v` must be a valid `HewVec` of managed string handles. `sep` must be null
+/// or a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_join_str(
     v: *mut crate::vec::HewVec,
-    sep: *const c_char,
-) -> *mut c_char {
-    // SAFETY: Allocating an empty string as fallback.
-    cabi_guard!(v.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
+    sep: *const HewString,
+) -> *mut HewString {
+    cabi_guard!(v.is_null(), core::ptr::null_mut());
     // SAFETY: v is a valid HewVec per caller contract.
     let len = unsafe { crate::vec::hew_vec_len(v) };
     if len == 0 {
-        // SAFETY: Allocating an empty string.
-        return unsafe { malloc_cstring(core::ptr::null(), 0) };
+        return core::ptr::null_mut();
     }
-    let sep_bytes = if sep.is_null() {
-        &[] as &[u8]
-    } else {
-        // SAFETY: sep is a valid NUL-terminated C string per caller contract.
-        unsafe { CStr::from_ptr(sep) }.to_bytes()
-    };
-
-    // Compute total length
-    let mut total: usize = 0;
+    // SAFETY: `sep` is a live managed handle; null is empty.
+    let separator = unsafe { string_as_str(sep) };
+    let mut result = String::new();
     for i in 0..len {
-        // SAFETY: i is within bounds per hew_vec_len contract.
-        // hew_vec_get_str returns a retained owner — release after measuring.
+        // SAFETY: `v` is a live vector of string handles and `i` is in bounds.
         let s = unsafe { crate::vec::hew_vec_get_str(v, i) };
-        if !s.is_null() {
-            // SAFETY: s is a valid NUL-terminated C string.
-            total += unsafe { CStr::from_ptr(s) }.to_bytes().len();
-            // SAFETY: s is a retained String owner from hew_vec_get_str — release
-            // one owner via the header-aware path (free-at-zero / static skip).
-            unsafe { hew_string_drop(s.cast_mut()) }; // CSTRING-FREE: str-open (hew_vec_get_str retained owner — release via hew_string_drop, P2b-vec)
+        if i != 0 {
+            result.push_str(separator);
         }
-        if i < len - 1 {
-            total += sep_bytes.len();
+        // SAFETY: the retained owner remains live while borrowed, then is released.
+        unsafe {
+            result.push_str(string_as_str(s));
+            hew_string_drop(s.cast_mut());
         }
     }
-
-    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
-    let buf = alloc_cstring_data(total + 1).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_vec_join_str result buffer — header-aware)
-    if buf.is_null() {
-        // SAFETY: abort is always safe to call.
-        unsafe { libc::abort() };
-    }
-    let mut offset = 0;
-    for i in 0..len {
-        // SAFETY: i is within bounds per hew_vec_len contract.
-        // hew_vec_get_str returns a retained owner — release after copying.
-        let s = unsafe { crate::vec::hew_vec_get_str(v, i) };
-        if !s.is_null() {
-            // SAFETY: s is a valid NUL-terminated C string.
-            let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-            // SAFETY: offset + bytes.len() <= total.
-            unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.add(offset), bytes.len()) };
-            offset += bytes.len();
-            // SAFETY: s is a retained String owner from hew_vec_get_str — release
-            // one owner via the header-aware path (free-at-zero / static skip).
-            unsafe { hew_string_drop(s.cast_mut()) }; // CSTRING-FREE: str-open (hew_vec_get_str retained owner — release via hew_string_drop, P2b-vec)
-        }
-        if i < len - 1 {
-            // SAFETY: offset + sep_bytes.len() <= total.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    sep_bytes.as_ptr(),
-                    buf.add(offset),
-                    sep_bytes.len(),
-                );
-            }
-            offset += sep_bytes.len();
-        }
-    }
-    // SAFETY: offset == total, NUL-terminate.
-    unsafe { *buf.add(total) = 0 };
-    buf.cast::<c_char>()
+    string_from_str(&result)
 }
 
-/// Convert a C string to ASCII lowercase. Caller must free the result with `hew_string_drop`.
+/// Convert a managed string to Unicode lowercase. The caller owns the result.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_to_lowercase(s: *const c_char) -> *mut c_char {
-    // SAFETY: Allocating an empty string.
-    cabi_guard!(s.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    let len = bytes.len();
-    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
-    let result = alloc_cstring_data(len + 1).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_to_lowercase — header-aware)
-    cabi_guard!(result.is_null(), result.cast::<c_char>());
-    for (i, &b) in bytes.iter().enumerate() {
-        // SAFETY: i < len, result is valid for len bytes.
-        unsafe { *result.add(i) = b.to_ascii_lowercase() };
-    }
-    // SAFETY: NUL-terminating the result.
-    unsafe { *result.add(len) = 0 };
-    result.cast::<c_char>()
+pub unsafe extern "C" fn hew_string_to_lowercase(s: *const HewString) -> *mut HewString {
+    // SAFETY: the caller supplies a live managed string handle.
+    string_from_str(&unsafe { string_as_str(s) }.to_lowercase())
 }
 
-/// Convert a C string to ASCII uppercase. Caller must free the result with `hew_string_drop`.
+/// Convert a managed string to Unicode uppercase. The caller owns the result.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_to_uppercase(s: *const c_char) -> *mut c_char {
-    // SAFETY: Allocating an empty string.
-    cabi_guard!(s.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    let len = bytes.len();
-    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
-    let result = alloc_cstring_data(len + 1).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_to_uppercase — header-aware)
-    cabi_guard!(result.is_null(), result.cast::<c_char>());
-    for (i, &b) in bytes.iter().enumerate() {
-        // SAFETY: i < len, result is valid for len bytes.
-        unsafe { *result.add(i) = b.to_ascii_uppercase() };
-    }
-    // SAFETY: NUL-terminating the result.
-    unsafe { *result.add(len) = 0 };
-    result.cast::<c_char>()
+pub unsafe extern "C" fn hew_string_to_uppercase(s: *const HewString) -> *mut HewString {
+    // SAFETY: the caller supplies a live managed string handle.
+    string_from_str(&unsafe { string_as_str(s) }.to_uppercase())
 }
 
-/// Return the byte at `idx` as an `i32`, or -1 if out of bounds.
+/// Return the Unicode scalar at codepoint offset `idx`, or -1 if out of bounds.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "Matching C ABI: index and return value are i32 per Hew convention"
-)]
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_char_at(s: *const c_char, idx: i32) -> i32 {
-    cabi_guard!(s.is_null() || idx < 0, -1);
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let len = unsafe { cstr_len(s) };
-    let i = idx as usize;
-    if i >= len {
+pub unsafe extern "C" fn hew_string_char_at(s: *const HewString, idx: i64) -> i32 {
+    if idx < 0 {
         return -1;
     }
-    // SAFETY: i < len, so s + i is within the string.
-    i32::from(unsafe { *s.cast::<u8>().add(i) })
+    let Ok(idx) = usize::try_from(idx) else {
+        return -1;
+    };
+    // SAFETY: `s` is a live managed handle; null is empty.
+    unsafe { string_as_str(s) }
+        .chars()
+        .nth(idx)
+        .map_or(-1, |ch| ch as i32)
 }
 
 /// Legacy exported abort for byte-indexed string access.
@@ -1227,7 +871,7 @@ pub unsafe extern "C" fn hew_string_abort_oob(index: i64, len: i64) -> ! {
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions beyond a valid `i32`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_from_char(c: i32) -> *mut c_char {
+pub unsafe extern "C" fn hew_string_from_char(c: i32) -> *mut HewString {
     // Delegate to the canonical codepoint-to-string function.
     // SAFETY: hew_char_to_string has the same ABI contract and handles all codepoints.
     unsafe { hew_char_to_string(c) }
@@ -1237,116 +881,78 @@ pub unsafe extern "C" fn hew_string_from_char(c: i32) -> *mut c_char {
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "count is validated to be non-negative before cast"
-)]
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_repeat(s: *const c_char, count: i32) -> *mut c_char {
-    // SAFETY: Allocating an empty string.
-    cabi_guard!(s.is_null() || count <= 0, unsafe {
-        malloc_cstring(core::ptr::null(), 0)
-    });
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let len = unsafe { cstr_len(s) };
-    let n = count as usize;
-    let Some(total) = len.checked_mul(n) else {
-        // SAFETY: abort is always safe to call.
-        unsafe { libc::abort() };
-    };
-    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
-    let result = alloc_cstring_data(total + 1).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_repeat — header-aware)
-    cabi_guard!(result.is_null(), result.cast::<c_char>());
-    for i in 0..n {
-        // SAFETY: Each copy writes len bytes at offset i*len, within total bytes.
-        unsafe { std::ptr::copy_nonoverlapping(s.cast::<u8>(), result.add(i * len), len) };
+pub unsafe extern "C" fn hew_string_repeat(s: *const HewString, count: i64) -> *mut HewString {
+    if count <= 0 {
+        return core::ptr::null_mut();
     }
-    // SAFETY: NUL-terminating.
-    unsafe { *result.add(total) = 0 };
-    result.cast::<c_char>()
+    // SAFETY: `s` is a live managed handle; null is empty.
+    let count = usize::try_from(count).unwrap_or_else(|_| std::process::abort());
+    // SAFETY: `s` is a live managed string handle.
+    let text = unsafe { string_as_str(s) };
+    string_from_str(&text.repeat(count))
 }
 
 /// Release one owner of a string. `String` is refcounted (P2a): this decrements
 /// the refcount and frees the allocation only when the last owner drops it.
-/// Safe to call with null, an immortal literal, or a borrowed FFI view: only
-/// exact live pointers in the allocation-provenance registry are released.
+/// Null is the canonical empty value and is a no-op.
 ///
 /// # Safety
 ///
-/// `s` must be null, a pointer into the binary's read-only data, or a
-/// pointer previously returned by the `hew-cabi` header-aware allocator
-/// (`malloc_cstring` / `str_to_malloc` / `alloc_cstring*`).
+/// `s` must be null or one owned handle returned by the managed string
+/// allocator. Foreign or interior pointers are never accepted.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_drop(s: *mut c_char) {
-    if !is_managed_cstring(s) {
-        return;
-    }
-    // SAFETY: the provenance query established that this is an exact live
-    // managed pointer before free_cstring consults its header.
-    unsafe { free_cstring(s) }; // CSTRING-FREE: str-open (universal managed-String release)
+pub unsafe extern "C" fn hew_string_drop(s: *mut HewString) {
+    // SAFETY: the caller transfers one managed owner; null is canonical empty.
+    unsafe { string_release(s) };
 }
 
 /// Retain (share) a string. `String` is immutable-shareable, so cloning is a
-/// refcount bump that returns the **same** data pointer — both owners alias one
+/// refcount bump that returns the same opaque handle — both owners alias one
 /// buffer (the copy-on-write win). The result must still be released with
 /// [`hew_string_drop`], which decrements the refcount and frees only when the
 /// last owner drops it.
 ///
-/// Static string literals and borrowed FFI views carry no registry entry, so
-/// retain returns the same non-owning pointer without touching adjacent memory.
-///
 /// # Safety
 ///
-/// `s` must be null, a pointer into the binary's read-only data, or a live
-/// header-aware string produced by the `hew-cabi` allocator.
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_clone(s: *const c_char) -> *mut c_char {
-    if !is_managed_cstring(s) {
-        return s.cast_mut();
-    }
-    // Header-aware heap string: retain (bump rc) and alias the same buffer.
-    // SAFETY: the provenance query established a live managed allocation.
-    unsafe { cstring_retain(s.cast_mut()) }; // CSTRING-RETAIN: str-open (managed COW share)
-    s.cast_mut()
+pub unsafe extern "C" fn hew_string_clone(s: *const HewString) -> *mut HewString {
+    // SAFETY: the caller borrows a live managed value; null is canonical empty.
+    unsafe { string_retain(s) }
 }
 
 // ---------------------------------------------------------------------------
 // UTF-8 aware string operations
 // ---------------------------------------------------------------------------
 
-/// Count Unicode codepoints (not bytes) in a C string.
+/// Count Unicode codepoints (not bytes) in a managed string.
 ///
-/// For ASCII strings this equals the byte length. Returns 0 for null or
-/// invalid UTF-8.
+/// For ASCII strings this equals the byte length. Null is canonical empty.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "Codepoint count is bounded by byte length which fits in i32 for Hew strings"
-)]
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_char_count(s: *const c_char) -> i32 {
-    // SAFETY: Caller guarantees s is valid or null.
-    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
-        return 0;
-    };
-    rust_str.chars().count() as i32
+pub unsafe extern "C" fn hew_string_char_count(s: *const HewString) -> i64 {
+    // SAFETY: `s` is a live managed handle; null is empty.
+    let count = unsafe { string_as_str(s) }.chars().count();
+    i64::try_from(count).unwrap_or_else(|_| std::process::abort())
 }
 
-/// Return the byte length of a C string (explicit alias for
-/// [`hew_string_length`]).
+/// Return the UTF-8 byte length of a managed string.
+///
+/// This differs from [`hew_string_length`] for multibyte codepoints.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null, which returns 0).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_byte_length(s: *const c_char) -> i64 {
-    // SAFETY: Forwarding to hew_string_length with same contract.
-    unsafe { hew_string_length(s) }
+pub unsafe extern "C" fn hew_string_byte_length(s: *const HewString) -> i64 {
+    // SAFETY: the caller supplies a live managed string handle.
+    let length = unsafe { string_as_bytes(s) }.len();
+    i64::try_from(length).unwrap_or_else(|_| std::process::abort())
 }
 
 /// Returns 1 if all bytes are ASCII, 0 otherwise. Returns 1 for null (vacuous
@@ -1354,100 +960,80 @@ pub unsafe extern "C" fn hew_string_byte_length(s: *const c_char) -> i64 {
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_is_ascii(s: *const c_char) -> i32 {
-    cabi_guard!(s.is_null(), 1);
-    // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
-    let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    i32::from(bytes.is_ascii())
+pub unsafe extern "C" fn hew_string_is_ascii(s: *const HewString) -> i32 {
+    // SAFETY: `s` is a live managed handle; null is empty.
+    i32::from(unsafe { string_as_bytes(s) }.is_ascii())
 }
 
 /// Get the Unicode codepoint at the given codepoint index. Returns -1 if
-/// `s` is null, not valid UTF-8, or `index` is out of bounds.
+/// `index` is out of bounds. Null is canonical empty.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "index is validated to be non-negative before cast to usize"
-)]
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_char_at_utf8(s: *const c_char, index: i32) -> i32 {
+pub unsafe extern "C" fn hew_string_char_at_utf8(s: *const HewString, index: i64) -> i32 {
     if index < 0 {
         return -1;
     }
-    // SAFETY: Caller guarantees s is valid or null.
-    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
+    let Ok(index) = usize::try_from(index) else {
         return -1;
     };
-    match rust_str.chars().nth(index as usize) {
+    // SAFETY: `s` is a live managed handle; null is empty.
+    let rust_str = unsafe { string_as_str(s) };
+    match rust_str.chars().nth(index) {
         Some(ch) => ch as i32,
         None => -1,
     }
 }
 
-/// Slice a UTF-8 string by codepoint indices `[start, end)`. Returns a
-/// heap-allocated C string. Returns null on error (null input, invalid UTF-8,
-/// or invalid indices).
+/// Slice a string by codepoint indices `[start, end)`. Returns null for invalid
+/// indices; null input is canonical empty.
 ///
 /// Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "start and end are validated to be non-negative before cast to usize"
-)]
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_substring_utf8(
-    s: *const c_char,
-    start: i32,
-    end: i32,
-) -> *mut c_char {
+    s: *const HewString,
+    start: i64,
+    end: i64,
+) -> *mut HewString {
     if start < 0 || end < 0 || start > end {
         return core::ptr::null_mut();
     }
-    // SAFETY: Caller guarantees s is valid or null.
-    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
+    let (Ok(start), Ok(count)) = (usize::try_from(start), usize::try_from(end - start)) else {
         return core::ptr::null_mut();
     };
-    let result: String = rust_str
-        .chars()
-        .skip(start as usize)
-        .take((end - start) as usize)
-        .collect();
-    let bytes = result.as_bytes();
-    // SAFETY: bytes points to valid UTF-8 with known length.
-    unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
+    // SAFETY: `s` is a live managed handle; null is empty.
+    let rust_str = unsafe { string_as_str(s) };
+    let result: String = rust_str.chars().skip(start).take(count).collect();
+    string_from_str(&result)
 }
 
-/// Reverse a UTF-8 string by codepoints (not bytes). Returns a heap-allocated
-/// C string. Returns null for null input or invalid UTF-8.
+/// Reverse a managed string by codepoints (not bytes).
 ///
 /// Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_reverse_utf8(s: *const c_char) -> *mut c_char {
-    // SAFETY: Caller guarantees s is valid or null.
-    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
-        return core::ptr::null_mut();
-    };
+pub unsafe extern "C" fn hew_string_reverse_utf8(s: *const HewString) -> *mut HewString {
+    // SAFETY: `s` is a live managed handle; null is empty.
+    let rust_str = unsafe { string_as_str(s) };
     let reversed: String = rust_str.chars().rev().collect();
-    let bytes = reversed.as_bytes();
-    // SAFETY: bytes points to valid UTF-8 with known length.
-    unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
+    string_from_str(&reversed)
 }
 
 /// Convert a string to a `bytes` value (the canonical by-value
 /// [`crate::bytes::BytesTriple`] codegen materialises for a `bytes` return).
 ///
-/// The string's bytes (excluding the NUL terminator) are copied into a fresh,
+/// The string's complete byte range, including any embedded NUL, is copied into a fresh,
 /// refcount-1 buffer the caller owns; the Hew drop spine releases it via
 /// `hew_bytes_drop`. Returns an empty triple (`null` ptr, len 0) for null or
 /// empty input. This is the `string -> bytes` analogue of
@@ -1455,27 +1041,29 @@ pub unsafe extern "C" fn hew_string_reverse_utf8(s: *const c_char) -> *mut c_cha
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> crate::bytes::BytesTriple {
-    // SAFETY: `s` is a valid NUL-terminated C string (or null) per caller
-    // contract — exactly `hew_bytes_from_str`'s precondition.
-    unsafe { crate::bytes::hew_bytes_from_str(s.cast::<u8>()) }
+pub unsafe extern "C" fn hew_string_to_bytes(s: *const HewString) -> crate::bytes::BytesTriple {
+    // SAFETY: the caller supplies a live managed string handle.
+    let bytes = unsafe { string_as_bytes(s) };
+    let len = u32::try_from(bytes.len()).unwrap_or_else(|_| std::process::abort());
+    // SAFETY: `bytes` is readable for its exact checked length.
+    unsafe { crate::bytes::hew_bytes_from_static(bytes.as_ptr(), len) }
 }
 
 /// Initialize an owned bytes result through the private physical calling ABI.
 ///
 /// The input remains borrowed. The output owns a fresh copy of its UTF-8 bytes,
-/// excluding the NUL terminator, and must be released with `hew_bytes_drop`.
+/// including any embedded NUL, and must be released with `hew_bytes_drop`.
 /// Using output storage avoids target-specific C aggregate return conventions.
 ///
 /// # Safety
 ///
-/// `value` must be a valid NUL-terminated string. `out` must point to aligned,
+/// `value` must be null or a live managed string handle. `out` must point to aligned,
 /// writable, uninitialized storage distinct from the input allocation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_to_bytes_owned(
-    value: *const c_char,
+    value: *const HewString,
     out: *mut crate::bytes::BytesTriple,
 ) {
     // SAFETY: the caller supplies a valid borrowed string and unique output
@@ -1490,13 +1078,13 @@ pub unsafe extern "C" fn hew_string_to_bytes_owned(
 ///
 /// # Safety
 ///
-/// `v` must be a valid `HewVec` of C strings. `sep` must be a valid NUL-terminated
-/// C string (or null, treated as empty separator).
+/// `v` must be a valid `HewVec` of managed string handles. `sep` must be null
+/// or a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_join(
     v: *mut crate::vec::HewVec,
-    sep: *const c_char,
-) -> *mut c_char {
+    sep: *const HewString,
+) -> *mut HewString {
     // SAFETY: forwarding identical contract to hew_vec_join_str.
     unsafe { hew_vec_join_str(v, sep) }
 }
@@ -1509,9 +1097,9 @@ pub unsafe extern "C" fn hew_string_join(
 // sugar (Q-CS1 locked semantics): codepoint-offset, panic on invalid bounds,
 // fresh owned slice. They intentionally do NOT reuse:
 //
-// - `hew_string_char_at`        — byte-indexed + returns -1.
+// - `hew_string_char_at`        — codepoint-indexed + returns -1.
 // - `hew_string_char_at_utf8`   — codepoint-indexed but returns -1 sentinel.
-// - `hew_string_slice`          — byte-clamping + returns empty on OOB.
+// - `hew_string_slice`          — codepoint-clamping + returns empty on OOB.
 // - `hew_string_substring_utf8` — codepoint-based but returns null on error.
 //
 // LESSONS: boundary-fail-closed (P0) — sentinel/clamp returns silently
@@ -1526,7 +1114,7 @@ pub unsafe extern "C" fn hew_string_join(
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_string_abort_index_oob() -> ! {
     // SAFETY: this exported fallback has no operand context.
-    unsafe { string_bounds_trap("PANIC: string index/slice out of bounds or invalid UTF-8\n") }
+    unsafe { string_bounds_trap("PANIC: string index/slice out of bounds\n") }
 }
 
 unsafe fn string_index_oob_trap(index: i64, len: Option<usize>) -> ! {
@@ -1580,13 +1168,13 @@ unsafe fn string_slice_oob_trap(start: i64, end: i64, len: Option<usize>) -> ! {
 ///
 /// Semantics (Q-CS1):
 /// - O(n) walk of the UTF-8 stream.
-/// - Aborts if `s` is null, contains invalid UTF-8, `index < 0`, or
+/// - Aborts if `index < 0` or
 ///   `index >= char_count(s)`. No `-1` sentinel.
 /// - Returns a Unicode scalar value as `i32` (1:1 with Hew's `char`).
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null, which aborts).
+/// `s` must be null or a live managed string handle.
 #[expect(
     clippy::cast_sign_loss,
     reason = "index is bounds-checked >= 0 above before cast to usize"
@@ -1597,16 +1185,13 @@ unsafe fn string_slice_oob_trap(start: i64, end: i64, len: Option<usize>) -> ! {
               real string codepoint counts never exceed usize::MAX"
 )]
 #[no_mangle]
-pub unsafe extern "C-unwind" fn hew_string_index(s: *const c_char, index: i64) -> i32 {
-    if s.is_null() || index < 0 {
+pub unsafe extern "C-unwind" fn hew_string_index(s: *const HewString, index: i64) -> i32 {
+    if index < 0 {
         // SAFETY: this is the terminal index bounds path.
         unsafe { string_index_oob_trap(index, None) };
     }
-    // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
-    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
-        // SAFETY: this is the terminal invalid-UTF-8 path.
-        unsafe { string_bounds_trap("PANIC: string[i] invalid UTF-8\n") };
-    };
+    // SAFETY: `s` is a live managed handle; null is empty and UTF-8 is invariant.
+    let rust_str = unsafe { string_as_str(s) };
     // i64 -> usize: index is non-negative; truncation only matters when
     // index > usize::MAX which is unrepresentable in a real string.
     let idx = index as usize;
@@ -1618,19 +1203,19 @@ pub unsafe extern "C-unwind" fn hew_string_index(s: *const c_char, index: i64) -
     ch as i32
 }
 
-/// Slice `s` by codepoint range `[start, end)`, returning a freshly malloc'd
-/// owned C string. Caller must `free` the result (via `hew_string_drop`).
+/// Slice `s` by codepoint range `[start, end)`, returning a fresh managed
+/// string owner.
 ///
 /// Semantics (Q-CS1):
 /// - O(n) walk; fresh owned allocation (LESSONS:
 ///   stdlib-borrowed-param-return-guard P0 — the returned pointer never
 ///   aliases the input).
-/// - Aborts if `s` is null, contains invalid UTF-8, `start < 0`, `end < 0`,
+/// - Aborts if `start < 0`, `end < 0`,
 ///   `start > end`, or `end > char_count(s)`. No null / empty fallback.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null, which aborts).
+/// `s` must be null or a live managed string handle.
 #[expect(
     clippy::cast_sign_loss,
     reason = "start and end are bounds-checked >= 0 above before cast to usize"
@@ -1642,19 +1227,16 @@ pub unsafe extern "C-unwind" fn hew_string_index(s: *const c_char, index: i64) -
 )]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_string_slice_codepoints(
-    s: *const c_char,
+    s: *const HewString,
     start: i64,
     end: i64,
-) -> *mut c_char {
-    if s.is_null() || start < 0 || end < 0 || start > end {
+) -> *mut HewString {
+    if start < 0 || end < 0 || start > end {
         // SAFETY: this is the terminal slice bounds path.
         unsafe { string_slice_oob_trap(start, end, None) };
     }
-    // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
-    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
-        // SAFETY: this is the terminal invalid-UTF-8 path.
-        unsafe { string_bounds_trap("PANIC: string slice invalid UTF-8\n") };
-    };
+    // SAFETY: `s` is a live managed handle; null is empty and UTF-8 is invariant.
+    let rust_str = unsafe { string_as_str(s) };
     let start_idx = start as usize;
     let end_idx = end as usize;
     let char_len = rust_str.chars().count();
@@ -1667,11 +1249,7 @@ pub unsafe extern "C-unwind" fn hew_string_slice_codepoints(
     for ch in rust_str.chars().skip(start_idx).take(take_n) {
         buf.push(ch);
     }
-    let bytes = buf.as_bytes();
-    // SAFETY: bytes points to valid UTF-8 (built from `char` pushes) with
-    // known length. malloc_cstring NUL-terminates a fresh allocation —
-    // disjoint from the input pointer.
-    unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
+    string_from_str(&buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -1865,9 +1443,50 @@ pub unsafe extern "C" fn hew_unicode_to_lower(cp: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "macos")]
-    use crate::cabi::alloc_cstring_from_str;
-    use std::ffi::CString;
+
+    struct CString(*mut HewString);
+
+    impl CString {
+        #[expect(
+            clippy::unnecessary_wraps,
+            reason = "compatibility adapter preserves the old test fixture call shape"
+        )]
+        fn new(value: impl AsRef<str>) -> Result<Self, core::convert::Infallible> {
+            Ok(Self(string_from_str(value.as_ref())))
+        }
+
+        fn as_ptr(&self) -> *const HewString {
+            self.0
+        }
+    }
+
+    impl Drop for CString {
+        fn drop(&mut self) {
+            // SAFETY: the fixture owns one managed string share.
+            unsafe { string_release(self.0) };
+        }
+    }
+
+    struct CStr<'a>(&'a str);
+
+    impl<'a> CStr<'a> {
+        unsafe fn from_ptr(value: *const HewString) -> Self {
+            // SAFETY: test callers retain a live owner for the wrapper lifetime.
+            Self(unsafe { string_as_str(value) })
+        }
+
+        fn to_bytes(&self) -> &'a [u8] {
+            self.0.as_bytes()
+        }
+
+        #[expect(
+            clippy::unnecessary_wraps,
+            reason = "compatibility adapter preserves the old test fixture call shape"
+        )]
+        fn to_str(&self) -> Result<&'a str, core::str::Utf8Error> {
+            Ok(self.0)
+        }
+    }
 
     #[test]
     fn to_bytes_owned_output_survives_source_release() {
@@ -1877,7 +1496,7 @@ mod tests {
         unsafe {
             hew_string_literal_new(b"A\xc3\xa9".as_ptr(), 3, &raw mut source);
             hew_string_to_bytes_owned(source, output.as_mut_ptr());
-            assert_eq!(CStr::from_ptr(source).to_bytes(), b"A\xc3\xa9");
+            assert_eq!(string_as_bytes(source), b"A\xc3\xa9");
             hew_string_drop(source);
             let bytes = output.assume_init();
             assert_eq!(bytes.len, 3);
@@ -1892,9 +1511,9 @@ mod tests {
     #[test]
     fn to_bytes_owned_empty_input_initializes_empty_output() {
         let mut output = std::mem::MaybeUninit::<crate::bytes::BytesTriple>::uninit();
-        // SAFETY: input is a valid empty C string and output is writable.
+        // SAFETY: null is canonical empty and output is writable.
         unsafe {
-            hew_string_to_bytes_owned(c"".as_ptr(), output.as_mut_ptr());
+            hew_string_to_bytes_owned(core::ptr::null(), output.as_mut_ptr());
             let bytes = output.assume_init();
             assert_eq!(bytes.len, 0);
             assert_eq!(bytes.offset, 0);
@@ -1909,13 +1528,12 @@ mod tests {
         // SAFETY: source has five readable bytes and output is writable.
         unsafe { hew_string_literal_new(source.as_ptr(), 5, &raw mut output) };
         assert!(!output.is_null());
-        assert!(is_managed_cstring(output));
         source[0] = b'j';
         // SAFETY: output is a live managed string; cloning retains an owner.
         unsafe {
             let copy = hew_string_clone(output);
             hew_string_drop(output);
-            assert_eq!(CStr::from_ptr(copy).to_bytes(), b"hello");
+            assert_eq!(string_as_bytes(copy), b"hello");
             hew_string_drop(copy);
         }
         assert_eq!(source, *b"jello!");
@@ -1926,110 +1544,14 @@ mod tests {
         let mut output = std::ptr::null_mut();
         // SAFETY: zero length permits null input; output is writable.
         unsafe { hew_string_literal_new(std::ptr::null(), 0, &raw mut output) };
-        assert!(!output.is_null());
-        assert!(is_managed_cstring(output));
-        // SAFETY: output is a live NUL-terminated managed allocation.
-        unsafe {
-            assert_eq!(CStr::from_ptr(output).to_bytes(), b"");
-            hew_string_drop(output);
-        }
+        assert!(output.is_null());
     }
 
-    // ── managed-string provenance ─────────────────────────────────────────
-
-    /// Read the live refcount of a header-aware Hew string by reading the
-    /// `rc:AtomicU32` field at offset 8 of the 16-byte header preceding `data`
-    /// (`[magic:u64 | rc:AtomicU32 | reserved:u32]`).
-    ///
-    /// # Safety
-    /// `data` must be a live header-aware allocation from `alloc_cstring*`.
-    #[cfg(target_os = "macos")]
-    unsafe fn header_rc(data: *const c_char) -> u32 {
-        // SAFETY: data is a live header-aware allocation; rc lives at base+8.
-        unsafe { *((data as usize - 16 + 8) as *const u32) }
-    }
-
-    /// Proof #1: ownership classification is allocation-derived, not based on
-    /// an executable address range. A managed allocation is registered while
-    /// a genuine literal is not, on every object format.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_string_provenance_classifies_heap_and_literal() {
-        let heap = alloc_cstring_from_str("a freshly allocated heap string");
-        assert!(!heap.is_null());
-        assert!(
-            is_managed_cstring(heap),
-            "heap string {heap:p} must carry managed allocation provenance",
-        );
-        // SAFETY: heap is a live header-aware allocation.
-        unsafe { free_cstring(heap) };
-
-        // Genuine literal → unmanaged/immortal without reading its prefix.
-        let lit: &str = "a genuine string literal that lives in read-only data";
-        assert!(
-            !is_managed_cstring(lit.as_ptr().cast()),
-            "string literal {:p} must not acquire heap ownership",
-            lit.as_ptr(),
-        );
-    }
-
-    /// Proof #2: the COW refcount path is now LIVE on macOS. `hew_string_clone`
-    /// on a heap string bumps the refcount (1→2) and aliases the same buffer;
-    /// `hew_string_drop` decrements (2→1) without freeing while a co-owner
-    /// remains, and frees only at the final release (1→0). On the pre-fix base
-    /// the heap string classified static, so clone returned the pointer WITHOUT
-    /// a retain (rc stayed 1) and drop was a silent no-op (leak).
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_heap_string_clone_bumps_refcount() {
-        let s = alloc_cstring_from_str("shared heap string");
-        assert!(!s.is_null());
-        // SAFETY: s is a live header-aware allocation.
-        let rc_fresh = unsafe { header_rc(s) };
-        assert_eq!(rc_fresh, 1, "fresh allocation starts at rc 1");
-
-        // Clone → COW alias (same pointer) with a refcount bump.
-        // SAFETY: s is a valid NUL-terminated header-aware C string.
-        let cloned = unsafe { hew_string_clone(s) };
-        assert_eq!(cloned, s, "String clone is a COW alias of the same buffer");
-        // SAFETY: s is a live header-aware allocation.
-        let rc_after_clone = unsafe { header_rc(s) };
-        assert_eq!(
-            rc_after_clone, 2,
-            "clone must retain: refcount 1→2 (no-op on the pre-fix base)",
-        );
-
-        // First drop releases one owner; the buffer survives (co-owner remains).
-        // SAFETY: s is a live header-aware allocation, not static.
-        unsafe { hew_string_drop(s) };
-        // SAFETY: s aliases the still-live allocation at rc 1.
-        let rc_after_first_drop = unsafe { header_rc(s) };
-        assert_eq!(
-            rc_after_first_drop, 1,
-            "first drop: refcount 2→1, not freed"
-        );
-        // Buffer is still valid and readable through the surviving alias.
-        // SAFETY: cloned aliases s, still live at rc 1.
-        let alive = unsafe { CStr::from_ptr(cloned) }
-            .to_string_lossy()
-            .into_owned();
-        assert_eq!(alive, "shared heap string");
-
-        // Final drop releases the last owner and frees (rc 1→0).
-        // SAFETY: cloned aliases the still-live allocation at rc 1.
-        unsafe { hew_string_drop(cloned) };
-    }
-
-    unsafe fn read_and_free(ptr: *mut c_char) -> String {
-        if ptr.is_null() {
-            return String::new();
-        }
-        // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
-        let s = unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned();
-        // SAFETY: ptr was allocated header-aware by the FFI string producer.
-        unsafe { free_cstring(ptr) }; // CSTRING-FREE: str-open (test read_and_free of String FFI output)
+    unsafe fn read_and_free(ptr: *mut HewString) -> String {
+        // SAFETY: ptr is a live managed string owner.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: release the sole result owner.
+        unsafe { string_release(ptr) };
         s
     }
 
@@ -2539,8 +2061,8 @@ mod tests {
             .unwrap()
             .to_owned();
         // SAFETY: joined was allocated header-aware by hew_string_join.
-        unsafe { free_cstring(joined) }; // CSTRING-FREE: str-open (test frees hew_string_join output)
-                                         // SAFETY: v is a valid HewVec.
+        unsafe { hew_string_drop(joined) };
+        // SAFETY: v is a valid HewVec.
         unsafe { crate::vec::hew_vec_free(v) };
         assert_eq!(result, "a,b,c");
     }
@@ -2577,21 +2099,14 @@ mod tests {
         // disjoint from the input. We free the input first, then read
         // the slice — if the slice borrowed from the input this would
         // be use-after-free.
-        // SAFETY: requesting 6 bytes from malloc.
-        let input = unsafe { libc::malloc(6) }.cast::<c_char>();
-        // SAFETY: input is a fresh 6-byte allocation; source is 6 bytes
-        // including the trailing NUL.
-        unsafe {
-            libc::memcpy(input.cast(), c"hello".as_ptr().cast(), 6);
-        }
-        // SAFETY: input is a valid NUL-terminated C string per the memcpy.
+        let input = string_from_str("hello");
+        // SAFETY: input is a live managed string.
         let slice = unsafe { hew_string_slice_codepoints(input, 1, 4) };
         assert!(!slice.is_null());
         assert_ne!(slice as usize, input as usize);
-        // SAFETY: input was malloc'd above.
-        unsafe { libc::free(input.cast()) }; // CSTRING-FREE: libc-bytes (test-local raw libc::malloc(6); not a Hew String)
-                                             // After freeing the input, slice is still valid.
-                                             // SAFETY: read_and_free takes ownership of the malloc'd slice.
+        // SAFETY: release the input before proving the owned slice survives.
+        unsafe { string_release(input) };
+        // SAFETY: `slice` is the independent owner returned above.
         assert_eq!(unsafe { read_and_free(slice) }, "ell");
     }
 

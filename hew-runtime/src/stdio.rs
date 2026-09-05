@@ -2,33 +2,25 @@
 //!
 //! Standard I/O operations (stdout, stderr, stdin) with C ABI.
 //!
-//! All functions that return `*mut c_char` allocate via `libc::malloc`. The
-//! caller owns the returned pointer and must free it with `libc::free`.
+//! All string values use the managed, length-bounded Hew string carrier.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::cabi::str_to_malloc;
-use std::ffi::{c_char, CStr};
+use hew_cabi::string::{string_as_bytes, string_from_str, HewString};
 use std::io::{self, Read, Write};
 
 /// Write a string to stdout without a trailing newline.
 ///
 /// # Safety
 ///
-/// `s` must be a valid, NUL-terminated C string (or null, which writes nothing).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_io_write(s: *const c_char) {
-    if s.is_null() {
-        return;
-    }
-    // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
-    let c_str = unsafe { CStr::from_ptr(s) };
-    let Ok(rust_str) = c_str.to_str() else {
-        return;
-    };
-    let _ = io::stdout().write_all(rust_str.as_bytes());
+pub unsafe extern "C" fn hew_io_write(s: *const HewString) {
+    // SAFETY: the caller supplies a live managed string handle; null is empty.
+    let bytes = unsafe { string_as_bytes(s) };
+    let _ = io::stdout().write_all(bytes);
     let _ = io::stdout().flush();
 }
 
@@ -36,24 +28,19 @@ pub unsafe extern "C" fn hew_io_write(s: *const c_char) {
 ///
 /// # Safety
 ///
-/// `s` must be a valid, NUL-terminated C string (or null, which writes nothing).
+/// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_io_write_err(s: *const c_char) {
-    if s.is_null() {
-        return;
-    }
-    // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
-    let c_str = unsafe { CStr::from_ptr(s) };
-    let Ok(rust_str) = c_str.to_str() else {
-        return;
-    };
-    let _ = io::stderr().write_all(rust_str.as_bytes());
+pub unsafe extern "C" fn hew_io_write_err(s: *const HewString) {
+    // SAFETY: the caller supplies a live managed string handle; null is empty.
+    let bytes = unsafe { string_as_bytes(s) };
+    let _ = io::stderr().write_all(bytes);
     let _ = io::stderr().flush();
 }
 
 /// Read a single line from stdin, stripping the trailing newline.
 ///
-/// Returns a null pointer on EOF or error.
+/// Returns a managed string owner. Null represents both an empty line and the
+/// existing EOF/error sentinel; a future typed I/O result must separate them.
 ///
 /// # Safety
 ///
@@ -61,9 +48,10 @@ pub unsafe extern "C" fn hew_io_write_err(s: *const c_char) {
 ///
 /// # Ownership
 ///
-/// The caller owns the returned pointer and must free it with `libc::free`.
+/// The caller owns the returned handle and must release it with
+/// `hew_string_drop`.
 #[no_mangle]
-pub extern "C" fn hew_io_read_line() -> *mut c_char {
+pub extern "C" fn hew_io_read_line() -> *mut HewString {
     let mut buf = String::new();
     match io::stdin().read_line(&mut buf) {
         Ok(0) | Err(_) => std::ptr::null_mut(),
@@ -75,18 +63,16 @@ pub extern "C" fn hew_io_read_line() -> *mut c_char {
                     buf.pop();
                 }
             }
-            if buf.contains('\0') {
-                return std::ptr::null_mut();
-            }
-            str_to_malloc(&buf)
+            string_from_str(&buf)
         }
     }
 }
 
-/// Read all available data from stdin and return as a `malloc`-allocated,
-/// NUL-terminated C string.
+/// Read all available valid UTF-8 data from stdin into a managed string.
 ///
-/// Returns a null pointer on error or if the input contains interior NUL bytes.
+/// Embedded NUL bytes are preserved. Null represents both empty input and the
+/// existing read/UTF-8 error sentinel; a future typed I/O result must separate
+/// them.
 ///
 /// # Safety
 ///
@@ -94,17 +80,13 @@ pub extern "C" fn hew_io_read_line() -> *mut c_char {
 ///
 /// # Ownership
 ///
-/// The caller owns the returned pointer and must free it with `libc::free`.
+/// The caller owns the returned handle and must release it with
+/// `hew_string_drop`.
 #[no_mangle]
-pub extern "C" fn hew_io_read_all() -> *mut c_char {
+pub extern "C" fn hew_io_read_all() -> *mut HewString {
     let mut buf = String::new();
     match io::stdin().read_to_string(&mut buf) {
-        Ok(_) => {
-            if buf.contains('\0') {
-                return std::ptr::null_mut();
-            }
-            str_to_malloc(&buf)
-        }
+        Ok(_) => string_from_str(&buf),
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -116,7 +98,10 @@ pub extern "C" fn hew_io_read_all() -> *mut c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+
+    fn managed(text: &str) -> *mut HewString {
+        string_from_str(text)
+    }
 
     #[test]
     fn write_null_is_noop() {
@@ -134,29 +119,33 @@ mod tests {
 
     #[test]
     fn write_valid_string() {
-        let s = CString::new("hello from test").unwrap();
-        // SAFETY: CString guarantees a valid NUL-terminated pointer.
-        unsafe { hew_io_write(s.as_ptr()) };
+        let s = managed("hello from test");
+        // SAFETY: `s` is a live managed owner and is released exactly once.
+        unsafe {
+            hew_io_write(s);
+            hew_cabi::string::string_release(s);
+        }
     }
 
     #[test]
     fn write_err_valid_string() {
-        let s = CString::new("error from test").unwrap();
-        // SAFETY: CString guarantees a valid NUL-terminated pointer.
-        unsafe { hew_io_write_err(s.as_ptr()) };
+        let s = managed("error from test");
+        // SAFETY: `s` is a live managed owner and is released exactly once.
+        unsafe {
+            hew_io_write_err(s);
+            hew_cabi::string::string_release(s);
+        }
     }
 
     #[test]
     fn write_empty_string() {
-        let s = CString::new("").unwrap();
-        // SAFETY: Empty CString is still a valid NUL-terminated pointer.
-        unsafe { hew_io_write(s.as_ptr()) };
+        // SAFETY: null is the canonical managed empty string.
+        unsafe { hew_io_write(std::ptr::null()) };
     }
 
     #[test]
     fn write_err_empty_string() {
-        let s = CString::new("").unwrap();
-        // SAFETY: Empty CString is still a valid NUL-terminated pointer.
-        unsafe { hew_io_write_err(s.as_ptr()) };
+        // SAFETY: null is the canonical managed empty string.
+        unsafe { hew_io_write_err(std::ptr::null()) };
     }
 }

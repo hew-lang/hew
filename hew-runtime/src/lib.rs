@@ -572,7 +572,7 @@ pub mod profiler {
 
 // Global allocator — only on native targets. On WASM, the default Rust
 // allocator is used (via wasi-libc's malloc).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
 #[global_allocator]
 static GLOBAL: profiler::allocator::ProfilingAllocator = profiler::allocator::ProfilingAllocator;
 

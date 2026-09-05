@@ -16,11 +16,10 @@
 //! `[refcount:u32 | capacity:u32 | data...]`. Reading those two words is a
 //! non-mutating ownership oracle at the actual allocation site.
 
-use std::ffi::{c_char, CStr};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use hew_cabi::string::{string_as_bytes, string_from_str, HewString};
 use hew_runtime::bytes::{hew_bytes_drop, hew_bytes_push, hew_bytes_set, BytesTriple};
-use hew_runtime::cabi::alloc_cstring_from_str;
 use hew_runtime::string::{hew_string_drop, hew_string_to_bytes};
 
 const BYTES_HEADER_SIZE: usize = 8;
@@ -69,10 +68,8 @@ unsafe fn active_bytes(triple: &BytesTriple) -> &[u8] {
     }
 }
 
-fn runtime_string(text: &str) -> *mut c_char {
-    let ptr = alloc_cstring_from_str(text);
-    assert!(!ptr.is_null(), "runtime string allocation failed");
-    ptr
+fn runtime_string(text: &str) -> *mut HewString {
+    string_from_str(text)
 }
 
 #[test]
@@ -89,8 +86,9 @@ fn empty_result_has_no_storage_or_release_obligation() {
     // SAFETY: null is explicitly accepted by `hew_bytes_drop`.
     unsafe { hew_bytes_drop(result.ptr) };
     // SAFETY: the bytes no-op cannot affect the independently-owned source.
-    assert_eq!(unsafe { CStr::from_ptr(source) }.to_bytes(), b"");
+    assert_eq!(unsafe { string_as_bytes(source) }, b"");
     // SAFETY: this is the source string's one balancing release.
+    // SAFETY: `source` is the final live owner returned by the test constructor.
     unsafe { hew_string_drop(source) };
 }
 
@@ -105,28 +103,19 @@ fn live_results_and_source_are_independent_and_release_in_both_orders() {
     assert!(!first.ptr.is_null() && !second.ptr.is_null());
     assert_ne!(first.ptr, second.ptr, "two live results aliased storage");
     assert_ne!(
-        first.ptr.cast::<c_char>(),
-        source,
+        first.ptr.cast::<()>(),
+        source.cast::<()>(),
         "result retained the source storage"
     );
     assert_ne!(
-        second.ptr.cast::<c_char>(),
-        source,
+        second.ptr.cast::<()>(),
+        source.cast::<()>(),
         "second result retained the source storage"
     );
     // SAFETY: both results are live non-null bytes allocations.
     unsafe {
         assert_eq!(owner_count(first.ptr), 1);
         assert_eq!(owner_count(second.ptr), 1);
-        assert_eq!(active_bytes(&first), b"source-owner");
-        assert_eq!(active_bytes(&second), b"source-owner");
-    }
-
-    // Mutating the source after both calls cannot change either result.
-    // SAFETY: this test owns the unique, writable runtime string allocation.
-    unsafe { *source.cast::<u8>() = b'S' };
-    // SAFETY: both results remain live.
-    unsafe {
         assert_eq!(active_bytes(&first), b"source-owner");
         assert_eq!(active_bytes(&second), b"source-owner");
     }
@@ -138,15 +127,15 @@ fn live_results_and_source_are_independent_and_release_in_both_orders() {
     unsafe {
         assert_eq!(active_bytes(&first), b"Bource-owner");
         assert_eq!(active_bytes(&second), b"source-owner");
-        assert_eq!(CStr::from_ptr(source).to_bytes(), b"Source-owner");
+        assert_eq!(string_as_bytes(source), b"source-owner");
     }
 
     // Bytes-first order: release one result, then prove the source is intact.
     // SAFETY: R2 measured exactly one owner for `first`.
     unsafe { hew_bytes_drop(first.ptr) };
     // SAFETY: the source is still live.
-    let source_bytes = unsafe { CStr::from_ptr(source) }.to_bytes();
-    assert_eq!(source_bytes, b"Source-owner");
+    let source_bytes = unsafe { string_as_bytes(source) };
+    assert_eq!(source_bytes, b"source-owner");
 
     // Source-first order: release the source, then prove the other result is
     // still readable and independently releasable.
@@ -159,29 +148,25 @@ fn live_results_and_source_are_independent_and_release_in_both_orders() {
 }
 
 #[test]
-fn embedded_nul_stops_the_c_string_without_aliasing_its_storage() {
-    let mut source = b"ab\0hidden-tail\0".to_vec();
-    // SAFETY: `source` is NUL-terminated and remains live for the call.
-    let result = unsafe { hew_string_to_bytes(source.as_ptr().cast()) };
-    assert_eq!(result.len, 2);
+fn embedded_nul_and_trailing_data_are_copied_without_aliasing() {
+    let source = runtime_string("ab\0hidden-tail\0");
+    // SAFETY: `source` is a live managed string.
+    let result = unsafe { hew_string_to_bytes(source) };
+    assert_eq!(result.len, 15);
     assert_ne!(
         result.ptr,
-        source.as_mut_ptr(),
+        source.cast::<u8>(),
         "the result aliases the raw C-string source"
     );
     // SAFETY: `result` is a live non-empty bytes allocation.
     unsafe {
         assert_eq!(owner_count(result.ptr), 1);
-        assert_eq!(active_bytes(&result), b"ab");
+        assert_eq!(active_bytes(&result), b"ab\0hidden-tail\0");
     }
-
-    source[0] = b'z';
-    source[3] = b'X';
-    drop(source);
-    // The hidden tail was not copied, and releasing the entire source does
-    // not affect the result.
+    // SAFETY: `source` is the final live owner and the copied bytes are independent.
+    unsafe { hew_string_drop(source) };
     // SAFETY: `result` is independently live.
-    assert_eq!(unsafe { active_bytes(&result) }, b"ab");
+    assert_eq!(unsafe { active_bytes(&result) }, b"ab\0hidden-tail\0");
     // SAFETY: R2 measured exactly one result owner.
     unsafe { hew_bytes_drop(result.ptr) };
 }
@@ -202,14 +187,14 @@ fn capacity_changing_mutation_never_writes_back_into_the_source() {
         assert!(capacity(result.ptr) >= 17);
         assert_eq!(owner_count(result.ptr), 1);
         assert_eq!(active_bytes(&result), b"0123456789abcdef!");
-        assert_eq!(CStr::from_ptr(source).to_bytes(), b"0123456789abcdef");
+        assert_eq!(string_as_bytes(source), b"0123456789abcdef");
     }
 
     // Release result first, then read and release source.
     // SAFETY: the post-growth result still carries exactly one owner.
     unsafe { hew_bytes_drop(result.ptr) };
     // SAFETY: source storage is independent and remains live.
-    let source_bytes = unsafe { CStr::from_ptr(source) }.to_bytes();
+    let source_bytes = unsafe { string_as_bytes(source) };
     assert_eq!(source_bytes, b"0123456789abcdef");
     // SAFETY: this is the source's one balancing release.
     unsafe { hew_string_drop(source) };
@@ -229,7 +214,7 @@ fn run_release_loop(rounds: usize) {
         }
     }
     // SAFETY: all result storage was independent, so the source remains live.
-    assert_eq!(unsafe { CStr::from_ptr(source) }.to_bytes(), b"loop");
+    assert_eq!(unsafe { string_as_bytes(source) }, b"loop");
     // SAFETY: this is the source's one balancing release.
     unsafe { hew_string_drop(source) };
 }

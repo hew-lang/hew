@@ -15,10 +15,9 @@
 
 use std::ffi::{c_char, CStr};
 
-use hew_cabi::cabi::cstring_ensure_unique;
+use hew_cabi::cabi::{cstring_ensure_unique, free_cstring};
 use hew_runtime::hew_node::{hew_location_format, hew_node_id_format};
 use hew_runtime::node_identity::{HewNodeId, HewRemotePid};
-use hew_runtime::string::hew_string_drop;
 
 fn assert_result_is_transferred<T: Copy>(
     symbol: &str,
@@ -56,8 +55,8 @@ fn assert_result_is_transferred<T: Copy>(
     // SAFETY: R2 established that each pointer carries exactly the caller's
     // one share, so the named release balances each allocation.
     unsafe {
-        hew_string_drop(first);
-        hew_string_drop(second);
+        free_cstring(first);
+        free_cstring(second);
     }
 
     // R3 — a later call still returns the same value after the prior results
@@ -72,7 +71,7 @@ fn assert_result_is_transferred<T: Copy>(
     assert_eq!(unsafe { CStr::from_ptr(third) }.to_str(), Ok(expected));
     // SAFETY: the same R2 allocator path created `third` as a fresh rc=1
     // allocation; this is its one balancing release.
-    unsafe { hew_string_drop(third) };
+    unsafe { free_cstring(third) };
 }
 
 #[test]

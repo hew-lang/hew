@@ -165,10 +165,7 @@ pub fn synthetic_cursor_layout_key(
     builtin: hew_types::BuiltinType,
     type_args: &[ResolvedTy],
 ) -> Option<String> {
-    if !matches!(
-        builtin,
-        hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter
-    ) {
+    if !matches!(builtin, hew_types::BuiltinType::HashMapIter) {
         return None;
     }
     let canonical_args: Vec<ResolvedTy> = type_args
@@ -195,10 +192,7 @@ pub fn compiler_record_layout_key(
     builtin: hew_types::BuiltinType,
     type_args: &[ResolvedTy],
 ) -> Option<String> {
-    if matches!(
-        builtin,
-        hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter
-    ) {
+    if matches!(builtin, hew_types::BuiltinType::HashMapIter) {
         return synthetic_cursor_layout_key(builtin, type_args);
     }
     let registration = crate::builtin_type_classes::compiler_record_layout_registration(builtin)?;
@@ -1120,11 +1114,6 @@ mod tests {
 
     #[test]
     fn synthetic_cursor_layout_keys_do_not_collide_with_user_same_leaf_records() {
-        let vec_args = vec![ResolvedTy::String];
-        let synthetic_vec = synthetic_cursor_layout_key(hew_types::BuiltinType::VecIter, &vec_args)
-            .expect("VecIter is a synthetic cursor");
-        assert_ne!(synthetic_vec, mangle_layout_key("VecIter", &vec_args));
-
         let map_args = vec![ResolvedTy::String, ResolvedTy::I64];
         let synthetic_map =
             synthetic_cursor_layout_key(hew_types::BuiltinType::HashMapIter, &map_args)

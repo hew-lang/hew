@@ -7114,49 +7114,20 @@ impl Checker {
                 if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
                     return Ty::Error;
                 }
-                if let Ok(elem_resolved) = ResolvedTy::from_ty(&resolved_elem) {
-                    self.record_method_call_receiver_kind(
-                        span,
-                        MethodCallReceiverKind::PrimitiveTraitImpl {
-                            trait_name: "IntoIterator".to_string(),
-                            canonical_receiver: "Vec".to_string(),
-                        },
-                    );
-                    self.record_method_call_rewrite(
-                        span,
-                        MethodCallRewrite::BuiltinVecIntoIter {
-                            elem_ty: elem_resolved,
-                        },
-                    );
-                }
+                self.record_method_call_receiver_kind(
+                    span,
+                    MethodCallReceiverKind::PrimitiveTraitImpl {
+                        trait_name: "IntoIterator".to_string(),
+                        canonical_receiver: "Vec".to_string(),
+                    },
+                );
+                self.record_method_call_rewrite(span, MethodCallRewrite::BuiltinVecIntoIter);
                 Ty::builtin_named(BuiltinType::VecIter, vec![resolved_elem])
             }
             "iter" => {
-                // `Vec<T>::iter()` yields the SAME `VecIter<T>` surface as
-                // `into_iter()` without consuming the receiver, leaving the
-                // source vec a live, independent owner. A `VecIter<T>` is a
-                // first-class value with no lifetime — it can coexist with the
-                // source, observe nothing of the source's later mutations, be
-                // bound to an outer scope, returned, or held across a suspension
-                // — so the cursor must NOT borrow the source's buffer. Hew's
-                // `Vec` is a single-owner heap handle (no buffer refcount); a
-                // shared handle would double-free when the source and cursor
-                // both drop, alias the source's later mutations, or dangle if the
-                // source's buffer is freed under the cursor. Instead the HIR
-                // rewrite gives the cursor an INDEPENDENT CLONE of the source for
-                // a place receiver (see `lower_builtin_vec_iter`): a
-                // deep/retaining `hew_vec_clone` snapshot the cursor solely owns
-                // and frees exactly once on its own drop. Per-element ownership is
-                // identical to `into_iter` — `VecIter::next` clones each item out
-                // on read (`hew_vec_get_clone`).
-                //
-                // Pre-record the clone projection at the call's start offset so
-                // the synthesised `recv.clone()` the rewrite emits resolves
-                // through the normal element-aware vec-clone authority (the same
-                // `record_resolved_vec_call("clone", …)` an explicit `v.clone()`
-                // uses, including per-monomorphisation re-resolution for an
-                // abstract element). Mirrors how `HashMap::into_iter` pre-records
-                // its `keys()`/`values()` projections.
+                // An ordinary value transfer creates the independent snapshot.
+                // Record the operation now and consume the finalized receiver
+                // type at the HIR boundary, after inference has completed.
                 self.check_arity(args, 0, "`Vec.iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 if matches!(resolved_elem, Ty::TraitObject { .. }) {
@@ -7173,18 +7144,7 @@ impl Checker {
                 if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
                     return Ty::Error;
                 }
-                if let Ok(elem_resolved) = ResolvedTy::from_ty(&resolved_elem) {
-                    let clone_span = span.start..span.start;
-                    let vec_ty = self.make_vec_type(resolved_elem.clone(), &clone_span);
-                    self.record_type(&clone_span, &vec_ty);
-                    self.record_resolved_vec_call("clone", &resolved_elem, &clone_span);
-                    self.record_method_call_rewrite(
-                        span,
-                        MethodCallRewrite::BuiltinVecIter {
-                            elem_ty: elem_resolved,
-                        },
-                    );
-                }
+                self.record_method_call_rewrite(span, MethodCallRewrite::BuiltinVecIter);
                 Ty::builtin_named(BuiltinType::VecIter, vec![resolved_elem])
             }
             "get" if runtime_method_declared => {
@@ -10382,16 +10342,10 @@ impl Checker {
                                 if !self.validate_vec_iter_element_clone_type(elem_ty, span) {
                                     return Ty::Error;
                                 }
-                                if let Ok(elem_resolved) =
-                                    ResolvedTy::from_ty(&self.subst.resolve(elem_ty))
-                                {
-                                    self.record_method_call_rewrite(
-                                        span,
-                                        MethodCallRewrite::BuiltinVecIterNext {
-                                            elem_ty: elem_resolved,
-                                        },
-                                    );
-                                }
+                                self.record_method_call_rewrite(
+                                    span,
+                                    MethodCallRewrite::BuiltinVecIterNext,
+                                );
                             }
                         } else if self.fn_sigs.contains_key(&method_key)
                             || self.impl_method_declaration_ids.contains_key(&method_key)

@@ -383,7 +383,6 @@ impl<'a> CallableTable<'a> {
             let prior_shape_count = aggregate_shapes.len();
             let prior_variant_shape_count = variant_shapes.len();
             if let Err(reason) = require_signature_aggregate_shapes(
-                module,
                 facts,
                 &mut aggregate_shapes,
                 &mut aggregate_shapes_by_type,
@@ -537,61 +536,19 @@ struct InstanceService<'a> {
     bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
 }
 
-/// Resolve one concrete record shape through the checker-minted declaration
-/// identity carried by its type. This is shared by callable admission and
-/// descriptor publication so a header cannot admit a nominal aggregate that
-/// body lowering would resolve by a different rule.
+/// Resolve one concrete record through the canonical checker type service.
 fn concrete_record_fields(
-    module: &HirModule,
+    facts: &TypeFactService,
     aggregate_ty: &ResolvedTy,
 ) -> Result<(hew_types::NominalInstance, Vec<SemAggregateField>), String> {
-    let instance = aggregate_ty.nominal_instance().ok_or_else(|| {
-        format!(
-            "`{}` is not a checker-resolved named record",
-            aggregate_ty.user_facing()
-        )
-    })?;
-    let declaration = instance.nominal.declaration();
-    let (type_params, fields) = module
-        .items
-        .iter()
-        .find_map(|item| match item {
-            HirItem::TypeDecl(decl)
-                if decl.declaration == *declaration
-                    && !decl.is_opaque
-                    && decl.variants.is_empty() =>
-            {
-                Some((&decl.type_params, &decl.fields))
-            }
-            HirItem::Record(decl)
-                if decl.declaration == *declaration && !decl.fields.is_empty() =>
-            {
-                Some((&decl.type_params, &decl.fields))
-            }
-            _ => None,
-        })
-        .ok_or_else(|| {
-            format!(
-                "aggregate `{}` has no exact struct-form HIR declaration",
-                aggregate_ty.user_facing()
-            )
-        })?;
-    if type_params.len() != instance.args.len() {
-        return Err(format!(
-            "aggregate `{}` supplies {} type argument(s), declaration expects {}",
-            aggregate_ty.user_facing(),
-            instance.args.len(),
-            type_params.len()
-        ));
-    }
-    let fields = fields
-        .iter()
-        .map(|field| SemAggregateField {
-            name: field.name.clone(),
-            ty: hew_hir::substitute_type_params(&field.ty, type_params, &instance.args),
-        })
-        .collect();
-    Ok((instance, fields))
+    let (instance, fields) = facts.record_fields(aggregate_ty)?;
+    Ok((
+        instance,
+        fields
+            .into_iter()
+            .map(|(name, ty)| SemAggregateField { name, ty })
+            .collect(),
+    ))
 }
 
 fn require_type_facts(facts: &mut TypeFactService, ty: &ResolvedTy) -> Result<(), String> {
@@ -602,7 +559,6 @@ fn require_type_facts(facts: &mut TypeFactService, ty: &ResolvedTy) -> Result<()
 }
 
 fn require_aggregate_shape(
-    module: &HirModule,
     facts: &mut TypeFactService,
     shapes: &mut Vec<SemAggregateShape>,
     shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
@@ -621,7 +577,7 @@ fn require_aggregate_shape(
     if let Some(id) = shapes_by_type.get(aggregate_ty).copied() {
         return Ok(AggregateShapeRef::Record(id));
     }
-    let (instance, fields) = concrete_record_fields(module, aggregate_ty)?;
+    let (instance, fields) = concrete_record_fields(facts, aggregate_ty)?;
     for field in &fields {
         require_type_facts(facts, &field.ty)?;
     }
@@ -640,7 +596,6 @@ fn require_aggregate_shape(
 }
 
 fn require_signature_aggregate_shapes(
-    module: &HirModule,
     facts: &mut TypeFactService,
     shapes: &mut Vec<SemAggregateShape>,
     shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
@@ -652,8 +607,8 @@ fn require_signature_aggregate_shapes(
         .map(|parameter| &parameter.ty)
         .chain(std::iter::once(&signature.return_ty))
     {
-        if is_concrete_aggregate_type(module, ty) {
-            require_aggregate_shape(module, facts, shapes, shapes_by_type, ty)?;
+        if is_concrete_aggregate_type(facts, ty) {
+            require_aggregate_shape(facts, shapes, shapes_by_type, ty)?;
         }
     }
     Ok(())
@@ -955,7 +910,7 @@ impl<'a> InstanceService<'a> {
             }
             require_type_facts(&mut self.checked_facts, &ty)?;
             if let Some(element) = hew_types::vector_element_type(&ty) {
-                if !is_supported_call_value(self.module, element) {
+                if !is_supported_call_value(self.module, &self.checked_facts, element) {
                     return Err(format!(
                         "vector element `{}` has no semantic value contract",
                         element.user_facing()
@@ -980,7 +935,7 @@ impl<'a> InstanceService<'a> {
                         .flat_map(|variant| &variant.fields)
                         .map(|field| field.ty.clone()),
                 );
-            } else if is_concrete_aggregate_type(self.module, &ty) {
+            } else if is_concrete_aggregate_type(&self.checked_facts, &ty) {
                 if let AggregateShapeRef::Record(id) = self.require_aggregate_shape(&ty)? {
                     pending.extend(
                         self.aggregate_shapes[id.0 as usize]
@@ -997,14 +952,13 @@ impl<'a> InstanceService<'a> {
 
     /// Intern the exact checker-resolved shape of one concrete aggregate.
     ///
-    /// Tuples are structural. Named records join to HIR only by the
-    /// checker-minted declaration identity carried by `NominalInstance`.
+    /// Tuples are structural. Named records resolve through the checker type
+    /// service and the declaration identity carried by `NominalInstance`.
     fn require_aggregate_shape(
         &mut self,
         aggregate_ty: &ResolvedTy,
     ) -> Result<AggregateShapeRef, String> {
         require_aggregate_shape(
-            self.module,
             &mut self.checked_facts,
             &mut self.aggregate_shapes,
             &mut self.aggregate_shapes_by_type,
@@ -1062,7 +1016,6 @@ impl<'a> InstanceService<'a> {
         let prior_aggregate_count = self.aggregate_shapes.len();
         let prior_variant_count = self.variant_shapes.len();
         let result = require_signature_aggregate_shapes(
-            self.module,
             &mut self.checked_facts,
             &mut self.aggregate_shapes,
             &mut self.aggregate_shapes_by_type,
@@ -1368,7 +1321,7 @@ impl<'a> InstanceService<'a> {
             ));
         }
         for (index, argument) in type_args.iter().enumerate() {
-            if !is_supported_call_value(self.module, argument) {
+            if !is_supported_call_value(self.module, &self.checked_facts, argument) {
                 return Err(format!(
                     "generic direct callee `{}` type argument {index} is `{}`; SIR generic instances require a concrete semantic value contract",
                     declaration.full_path(),
@@ -1710,7 +1663,7 @@ fn callable_signature_with_substitution(
     let mut params = Vec::with_capacity(function.params.len());
     for (index, parameter) in function.params.iter().enumerate() {
         let ty = substitution.apply(&parameter.ty);
-        if !is_supported_call_value(module, &ty) {
+        if !is_supported_call_value(module, facts, &ty) {
             return Err(format!(
                 "parameter {index} has unsupported type `{}` after semantic substitution; SIR calls require an exact scalar, string, bytes, aggregate, or variant contract",
                 ty.user_facing()
@@ -1730,7 +1683,7 @@ fn callable_signature_with_substitution(
         });
     }
     let return_ty = substitution.apply(&function.return_ty);
-    if !is_supported_call_return(module, &return_ty) {
+    if !is_supported_call_return(module, facts, &return_ty) {
         return Err(format!(
             "return type `{}` is outside SIR's exact call-result domain after semantic substitution",
             return_ty.user_facing()
@@ -1753,23 +1706,23 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || hew_types::vector_element_type(ty).is_some()
 }
 
-fn is_concrete_aggregate_type(module: &HirModule, ty: &ResolvedTy) -> bool {
+fn is_concrete_aggregate_type(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Tuple(fields) if !fields.is_empty())
-        || concrete_record_fields(module, ty).is_ok()
+        || concrete_record_fields(facts, ty).is_ok()
 }
 
 fn is_concrete_variant_type(module: &HirModule, ty: &ResolvedTy) -> bool {
     concrete_variant_shape(module, ty).is_ok()
 }
 
-fn is_supported_call_value(module: &HirModule, ty: &ResolvedTy) -> bool {
+fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
-        || is_concrete_aggregate_type(module, ty)
+        || is_concrete_aggregate_type(facts, ty)
         || is_concrete_variant_type(module, ty)
 }
 
-fn is_supported_call_return(module: &HirModule, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Unit) || is_supported_call_value(module, ty)
+fn is_supported_call_return(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Unit) || is_supported_call_value(module, facts, ty)
 }
 
 /// The first aggregate value family admitted into SIR.
@@ -1987,6 +1940,14 @@ impl PendingBlock {
     }
 }
 
+#[derive(Clone)]
+struct LoopScope {
+    header: BlockId,
+    exit: BlockId,
+    carried: Vec<BindingId>,
+    preserved: BTreeSet<ValueId>,
+}
+
 struct Builder<'hir, 'service> {
     function: &'hir HirFn,
     service: &'service mut InstanceService<'hir>,
@@ -2006,6 +1967,7 @@ struct Builder<'hir, 'service> {
     /// statement bindings in source order (§1.6).
     source_bindings: Vec<Binding>,
     params: Vec<BlockArg>,
+    loops: Vec<Option<LoopScope>>,
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
@@ -2088,6 +2050,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             move_protected_bindings: std::collections::HashSet::new(),
             source_bindings,
             params,
+            loops: Vec::new(),
         })
     }
 
@@ -2651,6 +2614,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn lower_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
+        if matches!(target.kind, HirExprKind::FieldAccess { .. }) {
+            return self.lower_field_assignment(target, value);
+        }
         let HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(binding),
             ..
@@ -2692,6 +2658,123 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.record_binding_version(binding, new)
     }
 
+    /// A field update transfers the old aggregate into its fields, replaces
+    /// one leaf and reconstructs the parents. Siblings retain their owners;
+    /// the usual assignment and call cleanup paths cover RHS failure.
+    fn lower_field_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
+        let mut root = target;
+        let mut path = Vec::new();
+        while let HirExprKind::FieldAccess { object, field } = &root.kind {
+            path.push(field.as_str());
+            root = object;
+        }
+        path.reverse();
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = root.kind
+        else {
+            return Err("record field assignment requires a local binding root".into());
+        };
+        let declaration = *self.binding_declarations.get(&binding).ok_or_else(|| {
+            format!("field assignment root `{binding}` has no source declaration")
+        })?;
+        if !self.source_bindings[declaration].mutable {
+            return Err(format!("field assignment root `{binding}` is not mutable"));
+        }
+        let root_ty = self.ty(&root.ty);
+        let mut leaf_ty = root_ty.clone();
+        let mut projections = Vec::new();
+        for name in path {
+            let shape = self.service.require_aggregate_shape(&leaf_ty)?;
+            let AggregateShapeRef::Record(id) = shape else {
+                return Err("named field assignment requires a record contract".into());
+            };
+            let fields = &self.service.aggregate_shapes[id.0 as usize].fields;
+            let index = fields
+                .iter()
+                .position(|field| field.name == name)
+                .ok_or_else(|| {
+                    format!("record `{}` has no field `{name}`", leaf_ty.user_facing())
+                })?;
+            let field_ty = fields[index].ty.clone();
+            projections.push((leaf_ty, shape, index));
+            leaf_ty = field_ty;
+        }
+        if leaf_ty != self.ty(&value.ty) || leaf_ty != self.ty(&target.ty) {
+            return Err("record field assignment has an incorrect replacement type".into());
+        }
+        // Evaluate before taking apart the receiver: the expression can read
+        // or mutate that same source and can leave through a cleanup edge.
+        let replacement = lower_initial_value_transfer(
+            self,
+            value,
+            "record field assignment",
+            OwnedBindingUse::Copy,
+        )?;
+        let mut current = *self
+            .bindings
+            .get(&binding)
+            .ok_or_else(|| format!("field assignment root `{binding}` is unavailable"))?;
+        if self.value_own_kind(current) == Some(OwnKind::Guaranteed) {
+            current = self.emit_typed(
+                Provenance::Site(target.site),
+                &root_ty,
+                SemOpKind::CopyValue {
+                    source: Operand { value: current },
+                },
+            )?;
+        }
+        let updated = self.replace_aggregate_leaf(
+            current,
+            replacement,
+            projections,
+            &Provenance::Site(target.site),
+        )?;
+        self.bindings.insert(binding, updated);
+        self.record_binding_version(binding, updated)
+    }
+
+    fn replace_aggregate_leaf(
+        &mut self,
+        mut current: ValueId,
+        replacement: ValueId,
+        projections: Vec<(ResolvedTy, AggregateShapeRef, usize)>,
+        provenance: &Provenance,
+    ) -> Result<ValueId, String> {
+        let mut parents = Vec::new();
+        for (ty, shape, index) in projections {
+            let fields = self.emit_destructure_value(current, &ty, shape, provenance.clone())?;
+            current = fields[index].id;
+            parents.push((ty, shape, index, fields));
+        }
+        if self.owned_live.contains_key(&current) {
+            self.emit_destroy(current)?;
+        }
+        let mut updated = replacement;
+        for (ty, shape, index, fields) in parents.into_iter().rev() {
+            let operands: Vec<_> = fields
+                .into_iter()
+                .enumerate()
+                .map(|(position, field)| Operand {
+                    value: if position == index { updated } else { field.id },
+                })
+                .collect();
+            updated = self.emit_typed(
+                provenance.clone(),
+                &ty,
+                SemOpKind::AggregateMake {
+                    shape,
+                    fields: operands.clone(),
+                },
+            )?;
+            for field in operands {
+                self.owned_live.remove(&field.value);
+            }
+        }
+        Ok(updated)
+    }
+
     /// Lower an expression whose value is intentionally discarded.
     ///
     /// Scalar expressions keep their ordinary one-result SSA operation even
@@ -2727,6 +2810,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::Match { scrutinee, arms } if self.ty(&expr.ty) == ResolvedTy::Unit => {
                 self.lower_match_control(expr, scrutinee, arms)?;
                 return Ok(());
+            }
+            HirExprKind::Break { label, value } => {
+                if label.is_some() || value.is_some() {
+                    return Err(
+                        "loop exits with labels or values are not in the owned SIR slice".into(),
+                    );
+                }
+                return self.lower_loop_exit(false);
+            }
+            HirExprKind::Continue { label } => {
+                if label.is_some() {
+                    return Err("labelled loop exits are not in the owned SIR slice".into());
+                }
+                return self.lower_loop_exit(true);
             }
             HirExprKind::While {
                 label,
@@ -4989,71 +5086,107 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
-    fn lower_while(&mut self, condition: &HirExpr, body: &HirBlock) -> Result<(), String> {
-        let preheader = self.current;
-        let before_bindings = self.bindings.clone();
-        let mut header_bindings = before_bindings.clone();
-        let mut header_live = self.owned_live.clone();
-        let mut header_args = Vec::new();
-        let mut entry_args = Vec::new();
-        let mut carried = Vec::new();
-        for binding in self.mutable_bindings() {
-            let Some(&source) = before_bindings.get(&binding) else {
-                continue;
-            };
-            let ty = self.value_ty(source).ok_or_else(|| {
-                format!("mutable binding `{binding}` has no concrete type at its loop header")
-            })?;
+    fn loop_edge(&mut self, scope: &LoopScope, target: BlockId) -> Result<Edge, String> {
+        let args = scope
+            .carried
+            .iter()
+            .map(|binding| {
+                self.bindings
+                    .get(binding)
+                    .copied()
+                    .map(|value| Operand { value })
+                    .ok_or_else(|| {
+                        format!("loop-carried binding `{binding}` is unavailable at its exit")
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut keep = scope.preserved.clone();
+        keep.extend(args.iter().map(|arg| arg.value));
+        let dead: Vec<_> = self
+            .owned_live
+            .keys()
+            .filter(|value| !keep.contains(value))
+            .copied()
+            .collect();
+        for value in dead.into_iter().rev() {
+            self.emit_destroy(value)?;
+        }
+        Ok(Edge { target, args })
+    }
+
+    fn lower_loop_exit(&mut self, continuing: bool) -> Result<(), String> {
+        let scope = self
+            .loops
+            .last()
+            .and_then(Clone::clone)
+            .ok_or_else(|| "break/continue requires a supported enclosing loop".to_string())?;
+        let target = if continuing { scope.header } else { scope.exit };
+        let edge = self.loop_edge(&scope, target)?;
+        self.set_terminator(SemTerminator::Goto(edge))
+    }
+
+    /// Give each loop-carried binding a fresh SSA argument at a CFG join.
+    fn loop_join(&mut self, carried: &[BindingId]) -> Result<ControlState, String> {
+        let mut state = self.control_state();
+        let mut args = Vec::new();
+        for binding in carried {
+            let source = self.bindings[binding];
+            let ty = self
+                .value_ty(source)
+                .ok_or_else(|| format!("loop binding `{binding}` has no type"))?;
             self.service.require_type_facts(&ty)?;
             let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
-            if own == OwnKind::Guaranteed {
-                return Err(format!(
-                    "borrowed parameter `{binding}` cannot be a loop-carried mutable owner"
-                ));
-            }
-            let header_value = self.fresh_value();
-            header_args.push(BlockArg {
-                value: header_value,
+            let value = self.fresh_value();
+            args.push(BlockArg {
+                value,
                 own,
                 ty: ty.clone(),
             });
-            entry_args.push(Operand { value: source });
-            header_bindings.insert(binding, header_value);
-            header_live.remove(&source);
+            state.bindings.insert(*binding, value);
+            state.owned_live.remove(&source);
             if own == OwnKind::Owned {
-                header_live.insert(header_value, ty);
+                state.owned_live.insert(value, ty);
             }
-            carried.push(binding);
-            self.record_binding_version(binding, header_value)?;
+            self.record_binding_version(*binding, value)?;
         }
+        state.block = self.new_block(args);
+        Ok(state)
+    }
 
-        let header = self.new_block(header_args);
-        self.current = preheader;
-        self.set_terminator(SemTerminator::Goto(Edge {
-            target: header,
-            args: entry_args,
-        }))?;
-        self.current = header;
-        self.bindings = header_bindings.clone();
-        self.owned_live = header_live.clone();
+    fn lower_while(&mut self, condition: &HirExpr, body: &HirBlock) -> Result<(), String> {
+        let carried: Vec<_> = self
+            .mutable_bindings()
+            .into_iter()
+            .filter(|binding| self.bindings.contains_key(binding))
+            .collect();
+        let mut preserved: BTreeSet<_> = self.owned_live.keys().copied().collect();
+        for binding in &carried {
+            preserved.remove(&self.bindings[binding]);
+        }
+        let header = self.loop_join(&carried)?;
+        let exit = self.loop_join(&carried)?;
+        let scope = LoopScope {
+            header: header.block,
+            exit: exit.block,
+            carried,
+            preserved,
+        };
+        let entry = self.loop_edge(&scope, header.block)?;
+        self.set_terminator(SemTerminator::Goto(entry))?;
+        self.restore_control_state(&header);
         let condition = self.lower_read_operand(condition, "while condition")?;
+        let exit_edge = self.loop_edge(&scope, exit.block)?;
         let body_block = self.new_block(Vec::new());
-        let exit = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Branch {
             condition,
             then_target: Edge {
                 target: body_block,
                 args: Vec::new(),
             },
-            else_target: Edge {
-                target: exit,
-                args: Vec::new(),
-            },
+            else_target: exit_edge,
         })?;
-
         self.current = body_block;
-        self.bindings = header_bindings.clone();
-        self.owned_live = header_live.clone();
+        self.loops.push(Some(scope.clone()));
         let tail = self.lower_scoped_block(body, OwnedBindingUse::Copy)?;
         if let Some(tail) = tail {
             if self.owned_live.contains_key(&tail.value) {
@@ -5061,27 +5194,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
         if self.is_open() {
-            let back_args = carried
-                .iter()
-                .map(|binding| {
-                    self.bindings
-                        .get(binding)
-                        .copied()
-                        .map(|value| Operand { value })
-                        .ok_or_else(|| {
-                            format!("loop-carried binding `{binding}` is missing on its back edge")
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            self.set_terminator(SemTerminator::Goto(Edge {
-                target: header,
-                args: back_args,
-            }))?;
+            let edge = self.loop_edge(&scope, header.block)?;
+            self.set_terminator(SemTerminator::Goto(edge))?;
         }
-
-        self.current = exit;
-        self.bindings = header_bindings;
-        self.owned_live = header_live;
+        self.loops.pop();
+        self.restore_control_state(&exit);
         Ok(())
     }
 
@@ -5197,7 +5314,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.current = body_block;
         self.bindings = header_bindings.clone();
         self.owned_live = header_live.clone();
+        self.loops.push(None);
         let tail = self.lower_scoped_block(body, OwnedBindingUse::Copy)?;
+        self.loops.pop();
         if let Some(tail) = tail {
             if self.owned_live.contains_key(&tail.value) {
                 self.emit_destroy(tail.value)?;

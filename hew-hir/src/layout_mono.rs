@@ -883,7 +883,6 @@ impl Discovery<'_> {
                 continue;
             };
             let decl_key = match builtin {
-                Some(hew_types::BuiltinType::VecIter) => "@synthetic.VecIter",
                 Some(hew_types::BuiltinType::HashMapIter) => "@synthetic.HashMapIter",
                 _ => name,
             };

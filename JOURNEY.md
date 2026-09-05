@@ -598,3 +598,25 @@ release, and DNS results after the input and runtime are dropped. Focused
 address/leak sanitizers pass without suppressions; scoped CABI/stdlib JSON
 Clippy passes. Combined census and platform/native acceptance remain with
 the integration owner.
+
+## Vector iteration semantic checkpoint
+
+Confirmed the isolated iteration branch starts at d3cb33855. A scalar for-in
+reproduced the missing VecIter aggregate contract. The checker type service now
+supplies exact source record fields, including the canonical VecIter declaration,
+and cursor copies use the shared recursive aggregate recipe. Removed the separate
+synthetic vector cursor layout and iterator-only element read.
+
+Cursor constructor/next rewrites retain operation identity while HIR consumes the
+final checked receiver type; early inference had silently omitted iter rewrites.
+For-in composes a while loop with the same next expansion as explicit next calls.
+SIR field replacement uses destructure/reconstruction, and while-loop exits carry
+current mutable values and destroy iteration-local owners on break/continue.
+Nested range break/continue remains explicitly unsupported rather than selecting
+an enclosing while's exit.
+
+Make built the compiler after the record/field changes. Focused checker record
+contracts and semantic cursor/for-in/cleanup/nested-field cases pass. Native O0/O2,
+paired sanitizer acceptance and the broader semantic suite remain outstanding at
+this checkpoint. The compiler cache client reported a server protocol error;
+subsequent Make commands use an empty RUSTC_WRAPPER and the dedicated lane target.

@@ -2084,11 +2084,10 @@ fn vec_into_iter_publishes_its_builtin_lowering_rewrite() {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            MethodCallRewrite::BuiltinVecIntoIter { elem_ty }
-                if *elem_ty == ResolvedTy::I64
-        )),
+        output
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(rewrite, MethodCallRewrite::BuiltinVecIntoIter)),
         "Vec::into_iter must publish its builtin lowering rewrite: {:#?}",
         output.method_call_rewrites
     );

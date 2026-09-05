@@ -54,7 +54,7 @@ pub enum SendFact {
 ///
 /// **Structural, not nominal** (§6.2). The nominal spelling
 /// `{ template: NominalId, type_args }` is withdrawn: `nominal_instance()`
-/// returns `Some` only for `Named { builtin: None }`, so `Tuple`, `Array`,
+/// represents source record instances, so `Tuple`, `Array`,
 /// `Slice`, `Function`, `Closure`, `Pointer`, `Borrow`, `TraitObject` and
 /// `Task` would have no key at all while §1.1 classes every one of them.
 ///
@@ -145,6 +145,67 @@ impl TypeFactService {
     #[must_use]
     pub fn into_rows(self) -> BTreeMap<TypeInstanceKey, TypeFacts> {
         self.rows
+    }
+
+    /// Resolve an exact source record through the checker's declaration table.
+    /// Field order, parameter substitution and opacity come from that same
+    /// declaration for user records and source-defined builtin records.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-record types, absent declarations, opaque carriers and
+    /// incomplete or incorrectly instantiated field definitions.
+    pub fn record_fields(
+        &self,
+        ty: &ResolvedTy,
+    ) -> Result<(crate::NominalInstance, Vec<(String, ResolvedTy)>), String> {
+        let instance = ty.nominal_instance().ok_or_else(|| {
+            format!(
+                "`{}` is not a checker-resolved named record",
+                ty.user_facing()
+            )
+        })?;
+        let name = instance.nominal.full_path();
+        let definition = self.context.type_defs.get(name).ok_or_else(|| {
+            format!(
+                "aggregate `{}` has no exact checker declaration",
+                ty.user_facing()
+            )
+        })?;
+        let declaration =
+            self.context.declarations.get(name).ok_or_else(|| {
+                format!("aggregate `{}` has no declaration facts", ty.user_facing())
+            })?;
+        if !matches!(
+            definition.kind,
+            crate::check::TypeDefKind::Struct | crate::check::TypeDefKind::Record
+        ) || declaration.is_opaque
+            || definition.field_order.len() != definition.fields.len()
+            || definition.field_order.len() != declaration.members.len()
+        {
+            return Err(format!(
+                "`{}` has no transparent named-field record contract",
+                ty.user_facing()
+            ));
+        }
+        if definition.type_params.len() != instance.args.len() {
+            return Err(format!(
+                "aggregate `{}` has incorrect type argument arity",
+                ty.user_facing()
+            ));
+        }
+        let fields = definition
+            .field_order
+            .iter()
+            .zip(&declaration.members)
+            .map(|(name, field)| {
+                (
+                    name.clone(),
+                    crate::value_class::substitute(field, &definition.type_params, &instance.args),
+                )
+            })
+            .collect();
+        Ok((instance, fields))
     }
 
     /// Ensure one concrete type and its components have rows.
@@ -387,6 +448,23 @@ mod tests {
                 ],
             },
         );
+        decls.insert(
+            "std.builtins.VecIter".to_string(),
+            DeclaredType {
+                type_params: vec!["T".to_string()],
+                members: vec![
+                    ResolvedTy::named_builtin(
+                        "Vec",
+                        BuiltinType::Vec,
+                        vec![ResolvedTy::TypeParam {
+                            name: "T".to_string(),
+                        }],
+                    ),
+                    ResolvedTy::I64,
+                ],
+                ..DeclaredType::default()
+            },
+        );
         decls
     }
 
@@ -612,10 +690,10 @@ mod tests {
                 BuiltinType::Option => Some((ValueClass::BitCopy, CloneKind::Bits)),
                 BuiltinType::Result => Some((ValueClass::CowValue, CloneKind::FieldWise)),
                 // A collection's buffer is heap, so it is never `BitCopy`.
-                BuiltinType::Vec | BuiltinType::VecIter | BuiltinType::HashSet => {
+                BuiltinType::Vec | BuiltinType::HashSet => {
                     Some((ValueClass::CowValue, CloneKind::DeepCopy))
                 }
-                BuiltinType::HashMap | BuiltinType::HashMapIter => {
+                BuiltinType::HashMap | BuiltinType::HashMapIter | BuiltinType::VecIter => {
                     Some((ValueClass::CowValue, CloneKind::FieldWise))
                 }
                 BuiltinType::CrashInfo => Some((ValueClass::CowValue, CloneKind::FieldWise)),

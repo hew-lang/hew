@@ -533,7 +533,7 @@ fn classify_all(
 }
 
 /// Substitute a declaration's own type parameters out of a member type.
-fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]) -> ResolvedTy {
+pub(crate) fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]) -> ResolvedTy {
     // A declaration's own parameter reaches here spelled either as an abstract
     // `TypeParam` or, when the declaration was resolved without a type-parameter
     // scope, as a zero-argument user `Named`. Both are the same parameter.
@@ -696,11 +696,13 @@ fn classify(
             BuiltinType::Vec
             | BuiltinType::HashMap
             | BuiltinType::HashSet
-            // A `VecIter`/`HashMapIter` is a collection field plus BitCopy
+            // A `HashMapIter` is a collection field plus BitCopy
             // cursor fields, so it takes the collection's own facts.
-            | BuiltinType::VecIter
             | BuiltinType::HashMapIter => {
                 collection_facts(&classify_all(args, decls, walk)?)
+            }
+            BuiltinType::VecIter => {
+                classify_declaration("std.builtins.VecIter", args, decls, walk)?
             }
             // Aggregate rule over the std declaration's fields.
             BuiltinType::CrashInfo | BuiltinType::CrashNotification => {

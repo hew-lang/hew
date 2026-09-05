@@ -306,15 +306,23 @@ impl fmt::Display for BoundaryError {
 impl std::error::Error for BoundaryError {}
 
 impl ResolvedTy {
-    /// Return the canonical nominal instance carried by a user named type.
+    /// Return the canonical nominal instance carried by a source record type.
     ///
     /// The checker canonicalises imported names before its output boundary, so
     /// this method is the only Stage-1 conversion from `ResolvedTy::Named` to
-    /// semantic nominal identity. Builtins and abstract parameters have their
-    /// own closed discriminators and therefore do not produce a user nominal.
+    /// semantic nominal identity. Source-defined builtin records retain their
+    /// closed discriminator while selecting their canonical declaration.
     #[must_use]
     pub fn nominal_instance(&self) -> Option<NominalInstance> {
         match self {
+            Self::Named {
+                args,
+                builtin: Some(crate::BuiltinType::VecIter),
+                ..
+            } => Some(NominalInstance {
+                nominal: crate::identity::mint_nominal_id("std.builtins.VecIter"),
+                args: args.clone(),
+            }),
             Self::Named {
                 name,
                 args,

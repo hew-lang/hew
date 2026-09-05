@@ -535,7 +535,6 @@ const SYNTHETIC_TIMEOUT_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1005);
 /// resolve via `machine_ctor_registry`.
 const SYNTHETIC_LINK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1004);
 const SYNTHETIC_ASK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1003);
-pub(crate) const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
 /// Sentinel `ItemId` for the synthetic `HashMapIter<K, V>` record — the
 /// `for (k, v) in m` desugar target. Like `VecIter`, it is declared in
 /// `std/builtins.hew` but never emitted as a HIR `Record`/`TypeDecl` item, so
@@ -557,18 +556,12 @@ pub(crate) struct SyntheticCursorLayoutSpec {
     pub(crate) type_params: &'static [&'static str],
 }
 
-pub(crate) const SYNTHETIC_CURSOR_LAYOUT_SPECS: &[SyntheticCursorLayoutSpec] = &[
-    SyntheticCursorLayoutSpec {
-        builtin: BuiltinType::VecIter,
-        origin: SYNTHETIC_VEC_ITER_ITEM,
-        type_params: &["T"],
-    },
-    SyntheticCursorLayoutSpec {
+pub(crate) const SYNTHETIC_CURSOR_LAYOUT_SPECS: &[SyntheticCursorLayoutSpec] =
+    &[SyntheticCursorLayoutSpec {
         builtin: BuiltinType::HashMapIter,
         origin: SYNTHETIC_HASHMAP_ITER_ITEM,
         type_params: &["K", "V"],
-    },
-];
+    }];
 
 /// Resolve the declaration and substituted field shape for one synthetic
 /// cursor instantiation. Every origin-site and post-monomorphisation layout
@@ -584,28 +577,10 @@ pub(crate) fn synthetic_cursor_layout(
         .iter()
         .find(|spec| spec.builtin == builtin)?;
     let fields = match (builtin, type_args) {
-        (BuiltinType::VecIter, [elem]) => vec_iter_field_shape(elem),
         (BuiltinType::HashMapIter, [key, value]) => hashmap_iter_field_shape(key, value),
         _ => return None,
     };
     Some((spec, fields))
-}
-
-/// Field shape of the synthetic `VecIter<elem>` record — `{ vec: Vec<elem>,
-/// idx: i64 }` in declaration order.
-///
-/// This shape is selected by [`synthetic_cursor_layout`], the shared catalog
-/// path used by origin-site registration and per-monomorphisation discovery.
-/// The for-in / into-iter desugar constructs the `VecIter` literal with exactly
-/// these fields in this order.
-pub(crate) fn vec_iter_field_shape(elem_ty: &ResolvedTy) -> Vec<(String, ResolvedTy)> {
-    vec![
-        (
-            "vec".to_string(),
-            LowerCtx::resolved_vec_ty(elem_ty.clone()),
-        ),
-        ("idx".to_string(), ResolvedTy::I64),
-    ]
 }
 
 /// The single field-order/type authority for `HashMapIter<K, V>`, shared by the
@@ -2142,14 +2117,11 @@ fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
 /// comes only from the parsed `BUILTINS_HEW_SOURCE` program; ordinary source
 /// declarations never call this projection.
 fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
-    SYNTHETIC_CURSOR_LAYOUT_SPECS
-        .iter()
-        .find(|spec| spec.builtin.canonical_name() == source_name)
-        .map_or(source_name, |spec| match spec.builtin {
-            BuiltinType::VecIter => "std.builtins.VecIter",
-            BuiltinType::HashMapIter => "std.builtins.HashMapIter",
-            _ => unreachable!("synthetic cursor catalog contains only cursor builtins"),
-        })
+    match source_name {
+        "VecIter" => "std.builtins.VecIter",
+        "HashMapIter" => "std.builtins.HashMapIter",
+        _ => source_name,
+    }
 }
 
 /// The pure-Hew `duration` constructor block in `std/builtins.hew`
@@ -25063,70 +25035,16 @@ impl LowerCtx {
     fn make_vec_len_call(
         &mut self,
         vec_expr: HirExpr,
-        elem_ty: &ResolvedTy,
+        _elem_ty: &ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        self.make_expr(
-            HirExprKind::ResolvedImplCall {
-                receiver: Box::new(vec_expr),
-                target: hew_types::CallTarget::RuntimeCollection(
-                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Len),
-                ),
-                impl_id: ImplId(u32::MAX),
-                method_name: "len".to_string(),
-                target_symbol: "hew_vec_len".to_string(),
-                // Synthesised Vec::len call (HIR-internal helper); the
-                // family is unambiguously a Vec len dispatch.
-                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Len),
-                type_args: vec![Self::resolved_ty_pattern(elem_ty)],
-                args: Vec::new(),
-                ret_ty: ResolvedTy::I64,
-            },
-            ResolvedTy::I64,
-            IntentKind::Read,
-            span,
-        )
-    }
-
-    /// Build the iterator-only owned-output read used by `VecIter::next`.
-    ///
-    /// This deliberately does not use [`HirExprKind::Index`]: ordinary
-    /// `xs[i]` preserves its established element-class semantics, including
-    /// borrowed nested-collection handles. An iterator yield must instead be
-    /// an independent owner because the cursor keeps and later releases its
-    /// snapshot. Cloneable elements use the descriptor clone choke. Drop-only
-    /// trait objects instead move the fat pointer and null its source slot.
-    fn make_vec_iter_get_call(
-        &mut self,
-        vec_expr: HirExpr,
-        index: HirExpr,
-        elem_ty: &ResolvedTy,
-        span: Span,
-    ) -> HirExpr {
-        let option_ty = Self::resolved_option_ty(elem_ty.clone());
-        let target_symbol = if matches!(elem_ty, ResolvedTy::TraitObject { .. }) {
-            "hew_vec_take_owned"
-        } else {
-            "hew_vec_get_clone"
-        };
-        self.make_expr(
-            HirExprKind::ResolvedImplCall {
-                receiver: Box::new(vec_expr),
-                target: hew_types::CallTarget::RuntimeCollection(
-                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
-                ),
-                impl_id: ImplId(u32::MAX),
-                method_name: "get".to_string(),
-                target_symbol: target_symbol.to_string(),
-                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
-                type_args: vec![Self::resolved_ty_pattern(elem_ty)],
-                args: vec![index],
-                ret_ty: option_ty.clone(),
-            },
-            option_ty,
-            IntentKind::Read,
-            span,
-        )
+        let kind = self.vector_call_kind(
+            hew_types::VecValueOp::Len,
+            vec![vec_expr],
+            &ResolvedTy::I64,
+            &span,
+        );
+        self.make_expr(kind, ResolvedTy::I64, IntentKind::Read, span)
     }
 
     fn resolved_option_elem_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
@@ -25413,62 +25331,16 @@ impl LowerCtx {
         self.lower_expr(receiver, intent)
     }
 
-    /// Expand `v.iter()` over a `Vec<T>` into the SAME `VecIter<T>` cursor
-    /// `into_iter` builds, but giving the cursor an INDEPENDENT CLONE of the
-    /// receiver instead of moving it — the by-value-snapshot twin of
-    /// [`Self::lower_builtin_vec_into_iter`]'s Consume.
-    ///
-    /// A `VecIter<T>` is a first-class value with no lifetime: it can coexist
-    /// with the source, be bound to an outer scope, returned, or held across a
-    /// suspension while the source vec's scope exits. Hew's `Vec` is a
-    /// single-owner heap handle with
-    /// no buffer refcount, so the cursor cannot borrow the source's handle —
-    /// sharing it would double-free when source and cursor both drop, or dangle
-    /// if the cursor outlives the source. For a place receiver we therefore
-    /// clone the source into a fresh owned `Vec` (`recv.clone()`, a
-    /// deep/retaining `hew_vec_clone` snapshot spanned at the call's start
-    /// offset to match the checker's `BuiltinVecIter` clone recording). The
-    /// cursor solely owns that clone and frees it exactly once on its own drop;
-    /// the source binding stays a live, independent owner (the clone only reads
-    /// it). This reuses the SAME owned-cursor drop registration `into_iter`
-    /// relies on — see `vec_iter_let_cursor_owns_handle` — so the buffer is
-    /// freed correctly at sync scope-exit, async cancellation, and actor
-    /// shutdown alike. `VecIter::next` clones each element out on read
-    /// (`hew_vec_get_clone`), so every yielded item is an independent owner,
-    /// identical to `into_iter`.
-    ///
-    /// A non-place rvalue receiver (`make_vec().iter()`) has no surviving source
-    /// binding, so it is consumed directly — identical to `into_iter` and
-    /// evaluated exactly once by `lower_expr`. Cloning it would leak the
-    /// original temporary, which nothing else frees.
+    /// Construct an ordinary cursor value. SIR copies a surviving source
+    /// binding into the cursor and transfers a temporary, preserving one
+    /// evaluation and an independent snapshot through the common value rules.
     fn lower_builtin_vec_iter(
         &mut self,
         receiver: &Spanned<Expr>,
         elem_ty: ResolvedTy,
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
-        if Self::for_in_iterable_is_place(&receiver.0) {
-            // Place source: re-read it through `clone()` so the cursor owns an
-            // independent snapshot and the source binding stays a live owner.
-            // The clone is spanned at the call's start offset, matching the
-            // checker's `BuiltinVecIter` clone recording so the span-keyed
-            // resolved-call fact resolves.
-            let clone_span = span.start..span.start;
-            let clone_call = (
-                Expr::MethodCall {
-                    receiver: Box::new((receiver.0.clone(), clone_span.clone())),
-                    method: "clone".to_string(),
-                    args: Vec::new(),
-                },
-                clone_span,
-            );
-            let clone_hir = self.lower_expr(&clone_call, IntentKind::Consume);
-            let iter_expr = self.make_vec_iter_init(clone_hir, elem_ty, span);
-            return (iter_expr.kind, iter_expr.ty);
-        }
-        // Non-place rvalue: consume the temporary directly (no surviving source
-        // binding to keep alive), exactly as `into_iter` does.
-        let receiver_hir = self.lower_expr(receiver, IntentKind::Consume);
+        let receiver_hir = self.lower_expr(receiver, IntentKind::Read);
         let iter_expr = self.make_vec_iter_init(receiver_hir, elem_ty, span);
         (iter_expr.kind, iter_expr.ty)
     }
@@ -25613,11 +25485,6 @@ impl LowerCtx {
         elem_ty: ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        self.register_synthetic_cursor_layout(
-            BuiltinType::VecIter,
-            std::slice::from_ref(&elem_ty),
-            &span,
-        );
         let idx = self.make_i64_literal(0, span.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
         self.make_expr(
@@ -25801,11 +25668,6 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         self.register_option_layout(elem_ty, &span, "VecIter::next");
-        self.register_synthetic_cursor_layout(
-            BuiltinType::VecIter,
-            std::slice::from_ref(elem_ty),
-            &span,
-        );
         let option_ty = Self::resolved_option_ty(elem_ty.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
         let lowered_receiver = self.lower_expr(receiver, IntentKind::Modify);
@@ -25914,8 +25776,18 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let value_expr =
-            self.make_vec_iter_get_call(vec_read_for_get, idx_read_for_get, elem_ty, span.clone());
+        let value_kind = self.vector_call_kind(
+            hew_types::VecValueOp::Get,
+            vec![vec_read_for_get, idx_read_for_get],
+            &option_ty,
+            &span,
+        );
+        let value_expr = self.make_expr(
+            value_kind,
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
         let value_binding_name = format!("__hew_iter_value_{}", self.ids.binding().0);
         let value_binding = self.bind(
             value_binding_name.clone(),
@@ -25985,10 +25857,7 @@ impl LowerCtx {
             value_binding_name,
             value_binding_id,
             option_ty.clone(),
-            // Transfer the freshly materialised Option<T> into the synthetic
-            // `else` result. A Read would leave the intermediate binding live
-            // in MIR's drop ledger after its bits move to the match scrutinee,
-            // releasing the Some payload before the loop body can own it.
+            // The ordinary block-result transfer owns the extracted item.
             IntentKind::Consume,
             span.clone(),
         );
@@ -26298,7 +26167,7 @@ impl LowerCtx {
                     ));
                     lowered_iterable = *tail;
                 }
-                lowered_iterable.intent = IntentKind::Capture;
+                lowered_iterable.intent = IntentKind::Read;
                 for (site, block_span, block_intent) in consumed_blocks.into_iter().rev() {
                     lowered_iterable =
                         self.subsumed_value(site, &block_span, block_intent, lowered_iterable);
@@ -26814,9 +26683,16 @@ impl LowerCtx {
             ResolvedTy::Unit,
             span.clone(),
         );
+        let condition = self.make_expr(
+            HirExprKind::Literal(HirLiteral::Bool(true)),
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
         let loop_expr = self.make_expr(
-            HirExprKind::Loop {
+            HirExprKind::While {
                 label: label.cloned(),
+                condition: Box::new(condition),
                 body: loop_body,
             },
             ResolvedTy::Unit,
@@ -27714,11 +27590,52 @@ impl LowerCtx {
                     result_ty,
                 )
             }
-            Some(MethodCallRewrite::BuiltinVecIntoIter { elem_ty }) => {
-                self.lower_builtin_vec_into_iter(receiver, elem_ty, span)
-            }
-            Some(MethodCallRewrite::BuiltinVecIter { elem_ty }) => {
-                self.lower_builtin_vec_iter(receiver, elem_ty, span)
+            Some(
+                rewrite @ (MethodCallRewrite::BuiltinVecIntoIter
+                | MethodCallRewrite::BuiltinVecIter
+                | MethodCallRewrite::BuiltinVecIterNext),
+            ) => {
+                let expected = if matches!(rewrite, MethodCallRewrite::BuiltinVecIterNext) {
+                    BuiltinType::VecIter
+                } else {
+                    BuiltinType::Vec
+                };
+                let element = match self.checked_ty(&receiver.1) {
+                    Some(ResolvedTy::Named {
+                        builtin: Some(actual),
+                        args,
+                        ..
+                    }) if *actual == expected && args.len() == 1 => args[0].clone(),
+                    _ => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "vector iteration".into(),
+                                reason: "cursor operation lacks its exact checked receiver type"
+                                    .into(),
+                            },
+                            span.clone(),
+                            "vector iteration requires a resolved receiver",
+                        ));
+                        return (
+                            HirExprKind::Unsupported(
+                                "vector iteration receiver is unresolved".into(),
+                            ),
+                            ResolvedTy::Unit,
+                        );
+                    }
+                };
+                match rewrite {
+                    MethodCallRewrite::BuiltinVecIntoIter => {
+                        self.lower_builtin_vec_into_iter(receiver, element, span)
+                    }
+                    MethodCallRewrite::BuiltinVecIter => {
+                        self.lower_builtin_vec_iter(receiver, element, span)
+                    }
+                    MethodCallRewrite::BuiltinVecIterNext => {
+                        self.lower_builtin_vec_iter_next(receiver, &element, span)
+                    }
+                    _ => unreachable!("matched cursor operation"),
+                }
             }
             Some(MethodCallRewrite::BuiltinHashMapIntoIter { key_ty, val_ty }) => {
                 self.lower_builtin_hashmap_into_iter(receiver, &key_ty, &val_ty, span)
@@ -27734,9 +27651,6 @@ impl LowerCtx {
             ),
             Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => {
                 self.lower_record_fn_field_call(receiver, method, args, &field_ty, span)
-            }
-            Some(MethodCallRewrite::BuiltinVecIterNext { elem_ty }) => {
-                self.lower_builtin_vec_iter_next(receiver, &elem_ty, span)
             }
             Some(MethodCallRewrite::WireCodec {
                 direction,
@@ -28354,36 +28268,6 @@ impl LowerCtx {
                 )
             }
             None => {
-                // The stdlib impl resolver can consume the dedicated
-                // `BuiltinVecIntoIter` marker while retaining the checker-owned
-                // input/output types. Preserve the builtin expansion when that
-                // happens rather than falling through to a generic no-rewrite
-                // failure for an otherwise admitted `Vec::into_iter()` call.
-                if method == "into_iter"
-                    && args.is_empty()
-                    && matches!(
-                        self.checked_ty(&receiver.1),
-                        Some(ResolvedTy::Named {
-                            builtin: Some(BuiltinType::Vec),
-                            ..
-                        })
-                    )
-                {
-                    if let Some(ResolvedTy::Named {
-                        builtin: Some(BuiltinType::VecIter),
-                        args: result_args,
-                        ..
-                    }) = self.checked_ty(&span)
-                    {
-                        if let Some(elem_ty) = result_args.first() {
-                            return self.lower_builtin_vec_into_iter(
-                                receiver,
-                                elem_ty.clone(),
-                                span,
-                            );
-                        }
-                    }
-                }
                 if let Expr::Identifier(module_name) = &receiver.0 {
                     if let Some(module) = self.missing_stdlib_module_import(module_name) {
                         let name = format!("{module_name}.{method}");

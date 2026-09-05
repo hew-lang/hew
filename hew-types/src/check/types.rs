@@ -1787,29 +1787,11 @@ pub enum MethodCallRewrite {
     /// receiver type; codegen lowers it to the borrowing
     /// `hew_cancel_token_is_requested` runtime call.
     CancellationTokenIsCancelled,
-    /// Builtin `Vec<T>::into_iter()` iterator constructor. HIR expands this
-    /// directly to a `VecIter<T>` record so the Rust MIR pipeline does not need
-    /// to lower the generic stdlib impl body.
-    BuiltinVecIntoIter {
-        elem_ty: crate::resolved_ty::ResolvedTy,
-    },
-    /// Builtin `Vec<T>::iter()` non-consuming iterator constructor. HIR expands
-    /// this to the SAME `VecIter<T>` cursor `into_iter` uses, but for a place
-    /// receiver it snapshots the receiver via an independent `hew_vec_clone`
-    /// instead of moving it — the cursor owns its own copy of the buffer and the
-    /// source binding stays a live, independent owner. Because the snapshot is
-    /// taken at the call, later mutations to the source are NOT observed by the
-    /// cursor (a by-value snapshot, not a live view), and the source's buffer and
-    /// the cursor's clone are each freed exactly once on their own drops (no
-    /// double-free, no dangling — `Vec` is a single-owner heap handle with no
-    /// buffer refcount). The place-receiver clone is an O(n) deep copy until
-    /// shared/refcounted buffers land. A non-place rvalue receiver
-    /// (`make_vec().iter()`) has no surviving source binding and is consumed
-    /// directly, exactly like `BuiltinVecIntoIter`. `VecIter::next` clones each
-    /// element out on read, so every yielded item is an independent owner.
-    BuiltinVecIter {
-        elem_ty: crate::resolved_ty::ResolvedTy,
-    },
+    /// Checked cursor constructor identity. The element comes from the
+    /// finalized receiver type; it must not be frozen before inference ends.
+    BuiltinVecIntoIter,
+    /// Snapshot cursor constructor, with the same ordinary value semantics.
+    BuiltinVecIter,
     /// Builtin `HashMap<K, V>::into_iter()` iterator constructor. HIR expands
     /// this directly to a `HashMapIter<K, V>` record built from `keys()` /
     /// `values()` snapshots — the same cursor the `for (k, v) in m` desugar
@@ -1823,9 +1805,7 @@ pub enum MethodCallRewrite {
     /// Builtin `VecIter<T>::next(var self)` state advance. HIR expands this at
     /// the call site so the caller's mutable iterator binding observes the
     /// cursor update.
-    BuiltinVecIterNext {
-        elem_ty: crate::resolved_ty::ResolvedTy,
-    },
+    BuiltinVecIterNext,
     /// Builtin `Generator<Y, R>::next()` consumption. HIR emits a dedicated
     /// `HirExprKind::GeneratorNext`; MIR lowers it to `Instr::GeneratorNext`,
     /// which codegen turns into a `hew_gen_next(ctx, &out_size)` runtime call

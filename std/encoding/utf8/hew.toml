@@ -1,0 +1,7 @@
+[package]
+name = "std::encoding::utf8"
+edition = "2026"
+version = "0.1.0"
+description = "UTF-8 validation and decoding"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

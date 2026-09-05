@@ -42,7 +42,7 @@ impl Checker {
         self.recheck_materialized_defers(self.env.current_scope_defers());
     }
 
-    fn recheck_return_edge_defers(&mut self) {
+    pub(super) fn recheck_return_edge_defers(&mut self) {
         self.recheck_materialized_defers(self.env.return_edge_defers());
     }
 
@@ -608,7 +608,16 @@ impl Checker {
             // `Generator<Y, R>`. A `return <expr>` targets the Return component R,
             // not the full Generator type, so `return 1` inside gen{} unifies
             // against i64 rather than Generator<Y, i64>.
-            let effective_expected = if self.in_generator {
+            let effective_expected = if self.current_fails {
+                self.result_return_coercions.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    super::ResultReturnKind::Success,
+                );
+                self.subst
+                    .resolve(&expected)
+                    .as_result()
+                    .map_or(Ty::Error, |(success, _)| success.clone())
+            } else if self.in_generator {
                 let resolved = self.subst.resolve(&expected);
                 match resolved.as_generator() {
                     Some((_, ret)) => ret.clone(),

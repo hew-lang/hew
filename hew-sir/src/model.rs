@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use hew_hir::{ItemId, SiteId};
 use hew_parser::ast::Span;
-use hew_types::{DefId, NominalInstance, ResolvedTy, TypeFacts, TypeInstanceKey};
+use hew_types::{
+    BuiltinType, DefId, NominalInstance, ResolvedTy, RuntimeVariantResultKind, TypeFacts,
+    TypeInstanceKey,
+};
 
 use crate::ownership::{
     Binding, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl, PlaceId,
@@ -432,6 +435,137 @@ pub struct SemVariantShape {
     pub enum_ty: ResolvedTy,
     pub is_indirect: bool,
     pub variants: Vec<SemVariant>,
+}
+
+/// Module-local descriptor references proven to implement one closed runtime
+/// variant-result contract. These are references into the existing aggregate
+/// and variant tables, not a second layout or tag description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeVariantShapeRefs {
+    pub result: VariantShapeId,
+    pub error: AggregateShapeId,
+    pub error_len: VariantShapeId,
+}
+
+/// Validate the demanded descriptors used by a runtime-produced enum value.
+///
+/// The runtime family constrains the exact language types. Descriptor tables
+/// remain authoritative for declaration-order tags and ordered record fields.
+/// This join prevents a hand-written SIR module from pairing a valid runtime
+/// family with a same-named or malformed payload shape.
+///
+/// # Errors
+///
+/// Refuses a result type outside the closed runtime contract, a missing exact
+/// descriptor, or any disagreement in canonical variant, field, or payload
+/// shape.
+pub fn runtime_variant_shape_refs(
+    kind: RuntimeVariantResultKind,
+    result_ty: &ResolvedTy,
+    aggregate_shapes: &[SemAggregateShape],
+    variant_shapes: &[SemVariantShape],
+) -> Result<RuntimeVariantShapeRefs, String> {
+    let (ok_ty, error_ty) = kind.payload_types(result_ty).ok_or_else(|| {
+        format!(
+            "runtime variant result contract does not admit `{}`",
+            result_ty.user_facing()
+        )
+    })?;
+    let result = variant_shapes
+        .iter()
+        .find(|shape| &shape.enum_ty == result_ty)
+        .ok_or_else(|| {
+            format!(
+                "runtime variant result `{}` has no demanded variant descriptor",
+                result_ty.user_facing()
+            )
+        })?;
+    let [ok, err] = result.variants.as_slice() else {
+        return Err(format!(
+            "runtime variant result `{}` must have exactly Ok and Err variants",
+            result_ty.user_facing()
+        ));
+    };
+    if ok.name != "Ok" || ok.fields.len() != 1 || ok.fields[0].ty != *ok_ty {
+        return Err(format!(
+            "runtime variant result `{}` has a malformed Ok payload descriptor",
+            result_ty.user_facing()
+        ));
+    }
+    if err.name != "Err" || err.fields.len() != 1 || err.fields[0].ty != *error_ty {
+        return Err(format!(
+            "runtime variant result `{}` has a malformed Err payload descriptor",
+            result_ty.user_facing()
+        ));
+    }
+
+    let error = aggregate_shapes
+        .iter()
+        .find(|shape| &shape.aggregate_ty == error_ty)
+        .ok_or_else(|| {
+            format!(
+                "runtime variant error `{}` has no demanded aggregate descriptor",
+                error_ty.user_facing()
+            )
+        })?;
+    if error_ty.nominal_instance().as_ref() != Some(&error.instance) {
+        return Err(format!(
+            "runtime variant error `{}` descriptor has the wrong nominal identity",
+            error_ty.user_facing()
+        ));
+    }
+    let [valid_up_to, error_len] = error.fields.as_slice() else {
+        return Err(format!(
+            "runtime variant error `{}` must have valid_up_to and error_len fields",
+            error_ty.user_facing()
+        ));
+    };
+    if valid_up_to.name != "valid_up_to" || valid_up_to.ty != ResolvedTy::I64 {
+        return Err(format!(
+            "runtime variant error `{}` has a malformed valid_up_to field",
+            error_ty.user_facing()
+        ));
+    }
+    let ResolvedTy::Named {
+        args,
+        builtin: Some(BuiltinType::Option),
+        ..
+    } = &error_len.ty
+    else {
+        return Err(format!(
+            "runtime variant error `{}` error_len field must be Option<i64>",
+            error_ty.user_facing()
+        ));
+    };
+    if error_len.name != "error_len" || args.as_slice() != [ResolvedTy::I64] {
+        return Err(format!(
+            "runtime variant error `{}` error_len field must be Option<i64>",
+            error_ty.user_facing()
+        ));
+    }
+    let error_len_shape = variant_shapes
+        .iter()
+        .find(|shape| shape.enum_ty == error_len.ty)
+        .ok_or_else(|| "runtime variant error_len has no demanded Option descriptor".to_string())?;
+    let [some, none] = error_len_shape.variants.as_slice() else {
+        return Err(
+            "runtime variant error_len Option must have Some and None variants".to_string(),
+        );
+    };
+    if some.name != "Some"
+        || some.fields.len() != 1
+        || some.fields[0].ty != ResolvedTy::I64
+        || none.name != "None"
+        || !none.fields.is_empty()
+    {
+        return Err("runtime variant error_len has a malformed Option descriptor".to_string());
+    }
+
+    Ok(RuntimeVariantShapeRefs {
+        result: result.id,
+        error: error.id,
+        error_len: error_len_shape.id,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

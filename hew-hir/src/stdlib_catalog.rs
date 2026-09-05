@@ -789,6 +789,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_length",
         },
     ),
+    direct(
+        "hew_string_byte_length",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_byte_length",
+        },
+    ),
     overload(
         "len_vec",
         "len",

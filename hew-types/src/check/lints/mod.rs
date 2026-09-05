@@ -793,7 +793,8 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
             walk_expr(&right.0, &right.1, visitor);
         }
         Expr::Unary { operand, .. } => walk_expr(&operand.0, &operand.1, visitor),
-        Expr::Clone(inner)
+        Expr::ReturnError(inner)
+        | Expr::Clone(inner)
         | Expr::Await(inner)
         | Expr::AwaitRestart(inner)
         | Expr::PostfixTry(inner)

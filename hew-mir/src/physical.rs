@@ -399,6 +399,7 @@ pub enum PhysicalRuntimeAction {
     StringToBytesOwned,
     StringToUppercase,
     StringLen,
+    StringByteLen,
     U8ToString,
     I64ToString,
     PrintlnI64,
@@ -416,6 +417,7 @@ impl PhysicalRuntimeAction {
             Self::StringToBytesOwned => RuntimeCallFamily::StringToBytes,
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
             Self::StringLen => RuntimeCallFamily::StringLen,
+            Self::StringByteLen => RuntimeCallFamily::StringByteLen,
             Self::U8ToString => RuntimeCallFamily::U8ToString,
             Self::I64ToString => RuntimeCallFamily::I64ToString,
             Self::PrintlnI64 => RuntimeCallFamily::PrintlnI64,
@@ -1122,6 +1124,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::StringToBytes => PhysicalRuntimeAction::StringToBytesOwned,
         RuntimeCallFamily::StringToUppercase => PhysicalRuntimeAction::StringToUppercase,
         RuntimeCallFamily::StringLen => PhysicalRuntimeAction::StringLen,
+        RuntimeCallFamily::StringByteLen => PhysicalRuntimeAction::StringByteLen,
         RuntimeCallFamily::U8ToString => PhysicalRuntimeAction::U8ToString,
         RuntimeCallFamily::I64ToString => PhysicalRuntimeAction::I64ToString,
         RuntimeCallFamily::PrintlnI64 => PhysicalRuntimeAction::PrintlnI64,
@@ -3256,7 +3259,9 @@ fn verify_terminator(
                         RuntimeResultEffect::BitCopy(_) => OwnKind::None,
                         RuntimeResultEffect::FreshOwned(_)
                         | RuntimeResultEffect::UpdatedReceiver(_) => OwnKind::Owned,
-                        RuntimeResultEffect::Unit => unreachable!(),
+                        RuntimeResultEffect::Unit | RuntimeResultEffect::FreshOwnedVariant(_) => {
+                            unreachable!()
+                        }
                     };
                     if slot(*id)?.own != expected_own {
                         return Err(PhysicalError::new(format!(

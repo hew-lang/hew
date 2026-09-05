@@ -138,6 +138,16 @@ impl Checker {
         declared_return: Ty,
         span: Option<&Span>,
     ) -> Ty {
+        if fd.is_generator
+            && matches!(
+                fd.return_type.as_ref().map(|ty| &ty.0),
+                Some(hew_parser::ast::TypeExpr::Fallible { .. })
+            )
+        {
+            self.report_error(TypeErrorKind::InvalidOperation, &fd.fn_span,
+                "`fails` on a generator requires fallible-iteration lowering, which is not yet admitted".to_string());
+            return Ty::Error;
+        }
         let declared_return =
             self.recover_gen_return_spelling(fd.is_generator, declared_return, span);
         if fd.is_generator && fd.is_async {

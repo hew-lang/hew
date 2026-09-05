@@ -3,6 +3,42 @@
 # failures are failures, not a differential pass.
 
 [[case]]
+id = "utf8-error-value"
+intent = "The canonical UTF-8 error is an ordinary reusable record whose Display distinguishes invalid from incomplete byte sequences."
+source = "cases/utf8-error-value.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "invalid UTF-8 at byte 2 (1-byte sequence)\nincomplete UTF-8 sequence at byte 4\ninvalid UTF-8 at byte 2 (1-byte sequence)\n"
+exit = 0
+
+[[case]]
+id = "fallible-tuple-return"
+intent = "Fallible declarations return ordinary tuples on success and typed owning errors through local recovery."
+source = "cases/fallible-tuple-return.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "10:HELLO\nMISSING\n"
+exit = 0
+
+[[case]]
+id = "fallible-result-success"
+intent = "A Result declared as the success type remains an inner value, including Err, and is never implicitly forwarded as the outer failure."
+source = "cases/fallible-result-success.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "success:INNER\nfailure:OUTER\n"
+exit = 0
+
+[[case]]
 id = "propagation-handler-boundary"
 intent = "Propagation while evaluating a handler operand bypasses that handler; only the resulting inner error is recovered locally."
 source = "cases/propagation-handler-boundary.hew"

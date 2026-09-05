@@ -977,6 +977,42 @@ impl<'a> InstanceService<'a> {
         )
     }
 
+    fn require_runtime_variant_result_shapes(
+        &mut self,
+        kind: hew_types::RuntimeVariantResultKind,
+        result_ty: &ResolvedTy,
+    ) -> Result<(), String> {
+        let (_, error_ty) = kind.payload_types(result_ty).ok_or_else(|| {
+            format!(
+                "runtime variant result contract does not admit `{}`",
+                result_ty.user_facing()
+            )
+        })?;
+        self.require_variant_shape(result_ty)?;
+        let AggregateShapeRef::Record(error_shape) = self.require_aggregate_shape(error_ty)? else {
+            return Err("runtime variant error must be an exact named record".to_string());
+        };
+        let error_len_ty = self
+            .aggregate_shapes
+            .get(usize::try_from(error_shape.0).map_err(|_| {
+                format!(
+                    "runtime variant error shape {} is out of range",
+                    error_shape.0
+                )
+            })?)
+            .and_then(|shape| shape.fields.iter().find(|field| field.name == "error_len"))
+            .map(|field| field.ty.clone())
+            .ok_or_else(|| "runtime variant error has no error_len field".to_string())?;
+        self.require_variant_shape(&error_len_ty)?;
+        crate::runtime_variant_shape_refs(
+            kind,
+            result_ty,
+            &self.aggregate_shapes,
+            &self.variant_shapes,
+        )?;
+        Ok(())
+    }
+
     fn require_signature_shapes(&mut self, signature: &SemSignature) -> Result<(), String> {
         let prior_aggregate_count = self.aggregate_shapes.len();
         let prior_variant_count = self.variant_shapes.len();
@@ -2421,6 +2457,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             match &statement.kind {
                 HirStmtKind::Let(binding, value) => {
+                    if let Some(expr) = value
+                        .as_ref()
+                        .filter(|expr| self.ty(&expr.ty) == ResolvedTy::Never)
+                    {
+                        self.lower_discarded_expr(expr)?;
+                        if self.is_open() {
+                            return Err(
+                                "Never-typed binding initializer did not terminate its SIR block"
+                                    .to_string(),
+                            );
+                        }
+                        continue;
+                    }
                     let value = value
                         .as_ref()
                         .map(|expr| {
@@ -2450,29 +2499,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     self.lower_discarded_expr(expr)?;
                 }
                 HirStmtKind::Return(value) => {
-                    let value = match value {
-                        Some(expr) if self.ty(&expr.ty) == ResolvedTy::Unit => {
-                            lower_initial_unit_return(self, expr)?;
-                            None
-                        }
-                        Some(expr) => Some(crate::BoundaryOperand {
-                            operand: Operand {
-                                value: lower_initial_value_transfer(
-                                    self,
-                                    expr,
-                                    "return value",
-                                    OwnedBindingUse::Move,
-                                )?,
-                            },
-                            decision: crate::BoundaryDecision::Move,
-                        }),
-                        None => None,
-                    };
-                    if let Some(value) = &value {
-                        self.owned_live.remove(&value.operand.value);
-                    }
-                    self.destroy_all_live()?;
-                    self.set_terminator(SemTerminator::Return { value })?;
+                    self.lower_function_return(value.as_ref())?;
                 }
                 HirStmtKind::Assign { target, value } => {
                     self.lower_assignment(target, value)?;
@@ -2507,8 +2534,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         if self.is_open() {
             match block.tail.as_deref() {
-                Some(expr) if self.ty(&expr.ty) == ResolvedTy::Unit => {
+                Some(expr) if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) => {
+                    let divergent = self.ty(&expr.ty) == ResolvedTy::Never;
                     self.lower_discarded_expr(expr)?;
+                    if divergent && self.is_open() {
+                        return Err(
+                            "Never-typed block tail did not terminate its SIR block".to_string()
+                        );
+                    }
                     Ok(None)
                 }
                 Some(expr) => Ok(Some(Operand {
@@ -2601,6 +2634,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// no semantic value to define, but the call itself must remain in SIR so
     /// later lowering can realize its call/continuation CFG edge.
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
+        if let HirExprKind::Return { value } = &expr.kind {
+            return self.lower_function_return(value.as_deref());
+        }
         require_initial_scalar_read(expr.intent)
             .map_err(|reason| format!("discarded expression: {reason}"))?;
         let live_before_expression: std::collections::HashSet<_> =
@@ -2673,6 +2709,36 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.emit_destroy(value)?;
         }
         Ok(())
+    }
+
+    /// Seal the current block with the one function-return cleanup contract.
+    /// Both statement returns and Never-typed HIR return expressions use this
+    /// path, so a divergent expression cannot manufacture a placeholder SSA
+    /// value or continue evaluating sibling operands.
+    fn lower_function_return(&mut self, value: Option<&HirExpr>) -> Result<(), String> {
+        let value = match value {
+            Some(expr) if self.ty(&expr.ty) == ResolvedTy::Unit => {
+                lower_initial_unit_return(self, expr)?;
+                None
+            }
+            Some(expr) => Some(crate::BoundaryOperand {
+                operand: Operand {
+                    value: lower_initial_value_transfer(
+                        self,
+                        expr,
+                        "return value",
+                        OwnedBindingUse::Move,
+                    )?,
+                },
+                decision: crate::BoundaryDecision::Move,
+            }),
+            None => None,
+        };
+        if let Some(value) = &value {
+            self.owned_live.remove(&value.operand.value);
+        }
+        self.destroy_all_live()?;
+        self.set_terminator(SemTerminator::Return { value })
     }
 
     #[allow(
@@ -4543,6 +4609,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             RuntimeResultEffect::BitCopy(kind)
             | RuntimeResultEffect::FreshOwned(kind)
             | RuntimeResultEffect::UpdatedReceiver(kind) => Some(kind.resolved_ty()),
+            RuntimeResultEffect::FreshOwnedVariant(kind) => {
+                let result_ty = self.ty(&expr.ty);
+                self.service
+                    .require_runtime_variant_result_shapes(kind, &result_ty)?;
+                Some(result_ty)
+            }
         };
         match (contract.result, &semantic_result_ty) {
             (RuntimeResultEffect::Unit, None) if self.ty(&expr.ty) == ResolvedTy::Unit => {}
@@ -4560,6 +4632,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let (result, normal, continuation) = if let Some(result_ty) = semantic_result_ty {
             self.service.require_type_facts(&result_ty)?;
             let own = OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?;
+            if matches!(contract.result, RuntimeResultEffect::FreshOwnedVariant(_))
+                && own != OwnKind::Owned
+            {
+                return Err(format!(
+                    "runtime family `{family:?}` variant result `{}` is not owned",
+                    result_ty.user_facing()
+                ));
+            }
             let raw = self.fresh_value();
             let continuation = self.fresh_value();
             let normal = self.new_block(vec![BlockArg {

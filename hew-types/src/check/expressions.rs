@@ -736,6 +736,31 @@ impl Checker {
                 self.check_return_operand(value.as_deref(), span);
                 Ty::Never
             }
+            Expr::ReturnError(value) => {
+                let error = self.current_return_type.as_ref().and_then(|ty| {
+                    self.subst
+                        .resolve(ty)
+                        .as_result()
+                        .map(|(_, error)| error.clone())
+                });
+                if let Some(error) = error.filter(|_| self.current_fails) {
+                    self.check_against(&value.0, &value.1, &error);
+                    self.result_return_coercions.insert(
+                        SpanKey::in_module(span, self.current_module_idx),
+                        super::ResultReturnKind::Error,
+                    );
+                } else {
+                    self.synthesize(&value.0, &value.1);
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "`return error` requires an enclosing function declared with `fails`"
+                            .to_string(),
+                    );
+                }
+                self.recheck_return_edge_defers();
+                Ty::Never
+            }
 
             // Actor self-reference handle — returns LocalPid<Self>, not the actor type itself
             Expr::This => {
@@ -3124,6 +3149,7 @@ impl Checker {
 
                 let prev_in_generator = self.in_generator;
                 let prev_return_type = self.current_return_type.take();
+                let prev_fails = std::mem::replace(&mut self.current_fails, false);
                 self.in_generator = true;
                 self.current_return_type = Some(gen_ty.clone());
 
@@ -3131,6 +3157,7 @@ impl Checker {
 
                 self.in_generator = prev_in_generator;
                 self.current_return_type = prev_return_type;
+                self.current_fails = prev_fails;
 
                 // Unify the tail-expression type with the Return type-variable.
                 // Never / Error propagate vacuously (unify is a no-op for Error).
@@ -6924,6 +6951,7 @@ impl Checker {
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Return(_)
+            | Expr::ReturnError(_)
             | Expr::This
             | Expr::FieldAccess { .. }
             | Expr::Index { .. }
@@ -7818,6 +7846,7 @@ impl Checker {
         // that PostfixTry (`?`) context checks see the lambda's return type,
         // not the outer function's.
         let prev_return_type = self.current_return_type.take();
+        let prev_fails = std::mem::replace(&mut self.current_fails, false);
 
         let ret_ty = if let Some(annotation) = return_type {
             let (expected_ret, hole_vars) = self.resolve_annotation_holes(annotation);
@@ -7851,6 +7880,7 @@ impl Checker {
         };
 
         self.current_return_type = prev_return_type;
+        self.current_fails = prev_fails;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.task_scope_depth = prev_task_scope_depth;
         self.in_lambda_actor_body = prev_in_lambda_actor_body;

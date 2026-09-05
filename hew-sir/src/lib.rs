@@ -25,13 +25,14 @@ pub use lower::{
     SirLoweringDemand, SirLoweringStatus, SirRootSelectionError, SirSourceStatus,
 };
 pub use model::{
-    AggregateShapeId, AggregateShapeRef, BlockArg, BlockId, BoundaryOperand, CallResult,
-    CallUnwind, CallableId, CallableInstance, CheckedFailure, Edge, EffectSet,
-    FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, SemAbiParam,
-    SemAggregateField, SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind,
-    SemFunction, SemFunctionIndex, SemGenericTemplate, SemModule, SemOp, SemOpKind,
-    SemParamPassing, SemSignature, SemTerminator, SemVariant, SemVariantArm, SemVariantField,
-    SemVariantShape, SirInstanceKey, SuccessorSlot, UseSite, ValueDef, ValueId, VariantShapeId,
+    runtime_variant_shape_refs, AggregateShapeId, AggregateShapeRef, BlockArg, BlockId,
+    BoundaryOperand, CallResult, CallUnwind, CallableId, CallableInstance, CheckedFailure, Edge,
+    EffectSet, FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance,
+    RuntimeVariantShapeRefs, SemAbiParam, SemAggregateField, SemAggregateShape, SemBlock,
+    SemCallConv, SemCallable, SemCallableKind, SemFunction, SemFunctionIndex, SemGenericTemplate,
+    SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SemVariant,
+    SemVariantArm, SemVariantField, SemVariantShape, SirInstanceKey, SuccessorSlot, UseSite,
+    ValueDef, ValueId, VariantShapeId,
 };
 pub use optimize::{
     canonicalize_module_constant_cfg, CfgCanonicalizationReport, SirOptimizationError,

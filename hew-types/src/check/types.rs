@@ -270,6 +270,13 @@ pub struct EntryExitPlan {
     pub action: EntryExitAction,
 }
 
+/// Source-selected constructor for the shared Result return representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultReturnKind {
+    Success,
+    Error,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
@@ -449,6 +456,8 @@ pub struct TypeCheckOutput {
     /// directly — no double-wrap). HIR lowering consumes this set to wrap the
     /// lowered tail in a synthetic `Ok(..)` variant constructor.
     pub tail_ok_coercions: HashSet<SpanKey>,
+    /// Explicit Result constructor selected at a `fails` return boundary.
+    pub result_return_coercions: HashMap<SpanKey, ResultReturnKind>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
@@ -1417,6 +1426,7 @@ impl Default for TypeCheckOutput {
             conn_await_reads: HashMap::new(),
             listener_await_accepts: HashSet::new(),
             tail_ok_coercions: HashSet::new(),
+            result_return_coercions: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
@@ -2846,6 +2856,7 @@ pub struct Checker {
     /// Function-tail Ok-coercion sites. Mirrors
     /// [`TypeCheckOutput::tail_ok_coercions`].
     pub(super) tail_ok_coercions: HashSet<SpanKey>,
+    pub(super) result_return_coercions: HashMap<SpanKey, ResultReturnKind>,
     /// `true` while checking an expression that is the tail of a
     /// `Result`-returning function (and the if/match arm tails that flow to
     /// the function return). Armed in `check_fn_decl` only when the declared
@@ -3057,6 +3068,7 @@ pub struct Checker {
     /// child specs whose runtime spawn path cannot arm periodic timers.
     pub(super) actors_with_periodic_handlers: HashMap<String, String>,
     pub(super) current_return_type: Option<Ty>,
+    pub(super) current_fails: bool,
     pub(super) in_generator: bool,
     /// Set to `true` for the duration of synthesizing the inner expression of
     /// `Expr::Await(inner)`.  Enables `check_named_method_fallback` to
@@ -3875,6 +3887,7 @@ impl Checker {
             listener_await_accepts: HashSet::new(),
             suspending_io_receiver_nominals: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
+            result_return_coercions: HashMap::new(),
             tail_ok_armed: false,
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -3923,6 +3936,7 @@ impl Checker {
             reported_actor_bound_violations: HashSet::new(),
             actors_with_periodic_handlers: HashMap::new(),
             current_return_type: None,
+            current_fails: false,
             in_generator: false,
             inside_await_expr: false,
             loop_depth: 0,

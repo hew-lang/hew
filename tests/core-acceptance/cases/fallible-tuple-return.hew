@@ -1,0 +1,15 @@
+fn pair(success: bool) -> (i64, string) fails string {
+    if success { return (10, "hello".to_upper()); }
+    return error "missing".to_upper();
+}
+
+fn describe(success: bool) -> string {
+    let value = pair(success) handle error { return error; };
+    f"{value.0}:{value.1}"
+}
+
+fn main() -> i64 {
+    println(describe(true));
+    println(describe(false));
+    0
+}

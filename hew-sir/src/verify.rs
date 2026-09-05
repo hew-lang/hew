@@ -732,6 +732,7 @@ pub(crate) fn verify_function_with_context(
     // defined in a later block rather than silently skipping its type check.
     let variants = VariantVerifyContext {
         facts,
+        aggregate_shapes,
         shapes: variant_shapes,
     };
     for block in &function.blocks {
@@ -2069,6 +2070,7 @@ fn verify_runtime_call_terminator(
     unwind: &crate::CallUnwind,
     types: &HashMap<ValueId, ResolvedTy>,
     blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    shapes: &VariantVerifyContext<'_>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
     use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
@@ -2129,10 +2131,11 @@ fn verify_runtime_call_terminator(
 
     let expected_result = match contract.result {
         RuntimeResultEffect::Unit => None,
-        RuntimeResultEffect::BitCopy(kind) => Some((kind, crate::OwnKind::None)),
+        RuntimeResultEffect::BitCopy(kind) => Some((Some(kind), crate::OwnKind::None)),
         RuntimeResultEffect::FreshOwned(kind) | RuntimeResultEffect::UpdatedReceiver(kind) => {
-            Some((kind, crate::OwnKind::Owned))
+            Some((Some(kind), crate::OwnKind::Owned))
         }
+        RuntimeResultEffect::FreshOwnedVariant(_) => Some((None, crate::OwnKind::Owned)),
     };
     match (expected_result, result) {
         (None, crate::CallResult::Unit) => {
@@ -2145,20 +2148,37 @@ fn verify_runtime_call_terminator(
                 );
             }
         }
-        (Some((kind, own)), crate::CallResult::Value(value)) => {
-            let expected_ty = kind.resolved_ty();
-            if value.ty != expected_ty || value.own != own {
+        (Some((expected_kind, own)), crate::CallResult::Value(value)) => {
+            let type_matches = expected_kind.is_some_and(|kind| kind.matches(&value.ty))
+                || matches!(
+                    contract.result,
+                    RuntimeResultEffect::FreshOwnedVariant(kind) if kind.matches(&value.ty)
+                );
+            if !type_matches || value.own != own {
+                let expected = expected_kind.map_or_else(
+                    || "the exact runtime variant result".to_string(),
+                    |kind| kind.resolved_ty().user_facing().to_string(),
+                );
                 invalid_operation(
                     function,
                     id,
                     format!(
-                        "runtime family `{family:?}` result is `{}`/{:?}, expected `{}`/{own:?}",
+                        "runtime family `{family:?}` result is `{}`/{:?}, expected `{expected}`/{own:?}",
                         value.ty.user_facing(),
                         value.own,
-                        expected_ty.user_facing()
                     ),
                     diagnostics,
                 );
+            }
+            if let RuntimeResultEffect::FreshOwnedVariant(kind) = contract.result {
+                if let Err(reason) = crate::runtime_variant_shape_refs(
+                    kind,
+                    &value.ty,
+                    shapes.aggregate_shapes,
+                    shapes.shapes,
+                ) {
+                    invalid_operation(function, id, reason, diagnostics);
+                }
             }
             let forwarded = normal
                 .args
@@ -2381,6 +2401,7 @@ fn failure_cfg_matches_trap(
 
 struct VariantVerifyContext<'a> {
     facts: &'a TypeFactTable,
+    aggregate_shapes: &'a [SemAggregateShape],
     shapes: &'a [SemVariantShape],
 }
 
@@ -2664,6 +2685,7 @@ fn verify_terminator_shape(
             unwind,
             types,
             blocks,
+            variants,
             diagnostics,
         ),
         SemTerminator::Return { .. }

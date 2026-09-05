@@ -336,3 +336,11 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   binding lookup now uses live lexical scopes, including handler-local errors.
 - Frontend and native compiler builds validate the surface; source execution
   awaits composition with the semantic match continuation implementation.
+
+- Fallible function clauses preserve the exact success and error types while
+  reusing Result callable signatures. Ordinary returns, including tuple and
+  Result-valued successes, select Ok; explicit error returns select Err.
+  Checked return-site selections guide HIR construction without ownership facts.
+- Nested closure and generator bodies retain their own return contexts.
+  Generator `fails` composition and sandbox execution remain explicitly
+  unadmitted pending their respective semantic consumers.

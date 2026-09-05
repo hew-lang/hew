@@ -1,0 +1,18 @@
+//! UTF-8 decoding errors with explicit byte positions.
+
+/// Details of invalid UTF-8 in an encoded byte sequence.
+pub type Utf8Error {
+    /// Number of valid bytes before the invalid or incomplete sequence.
+    valid_up_to: i64;
+    /// Invalid sequence length in bytes, or None for incomplete trailing input.
+    error_len: Option<i64>;
+}
+
+impl Display for Utf8Error {
+    fn fmt(error: Utf8Error) -> string {
+        match error.error_len {
+            .Some(length) => f"invalid UTF-8 at byte {error.valid_up_to} ({length}-byte sequence)",
+            .None => f"incomplete UTF-8 sequence at byte {error.valid_up_to}",
+        }
+    }
+}

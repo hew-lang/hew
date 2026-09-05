@@ -302,6 +302,7 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             find_in_expr(ctx, levels, &right.0, out);
         }
         Expr::Unary { operand, .. }
+        | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)
@@ -405,6 +406,7 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Return(_)
+            | Expr::ReturnError(_)
             | Expr::This
             | Expr::FieldAccess { .. }
             | Expr::Index { .. }
@@ -455,6 +457,7 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         | Expr::UnsafeBlock(_)
         | Expr::Yield(_)
         | Expr::Return(_)
+        | Expr::ReturnError(_)
         | Expr::This
         | Expr::FieldAccess { .. }
         | Expr::Index { .. }
@@ -711,6 +714,7 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
             ..
         } => bounded_expr_has_sleep(&left.0) || bounded_expr_has_sleep(&right.0),
         Expr::Unary { operand, .. }
+        | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)
@@ -968,6 +972,7 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
             ..
         } => expr_assigns_identifier(&left.0, name) || expr_assigns_identifier(&right.0, name),
         Expr::Unary { operand, .. }
+        | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)

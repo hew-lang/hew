@@ -765,6 +765,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.pop_scope();
             }
             Expr::Unary { operand, .. }
+            | Expr::ReturnError(operand)
             | Expr::Clone(operand)
             | Expr::Await(operand)
             | Expr::AwaitRestart(operand)

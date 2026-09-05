@@ -216,7 +216,9 @@ fn body_visit_expr(expr: &Expr, out: &mut LambdaBodyFacts) {
             body_visit_expr(&left.0, out);
             body_visit_expr(&right.0, out);
         }
-        Expr::Unary { operand, .. } | Expr::Clone(operand) => body_visit_expr(&operand.0, out),
+        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
+            body_visit_expr(&operand.0, out);
+        }
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
@@ -680,6 +682,7 @@ fn esc_visit_expr(
         Expr::Unary { operand, .. } | Expr::Clone(operand) => {
             esc_visit_expr(&operand.0, name, in_fork, acc, false);
         }
+        Expr::ReturnError(value) => esc_visit_arg(&value.0, name, in_fork, acc),
         Expr::Literal(_)
         | Expr::QualifiedAssoc(_)
         | Expr::This

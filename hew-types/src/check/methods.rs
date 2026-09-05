@@ -11538,6 +11538,27 @@ mod tests {
             "string::len".to_string(),
             (Some("std.string".to_string()), true),
         );
+        canonical.extern_method_origins.insert(
+            "string::byte_len".to_string(),
+            (Some("std.string".to_string()), true),
+        );
+        assert_eq!(
+            canonical.canonical_std_io_runtime_method_family(
+                "string::byte_len",
+                "hew_string_byte_length",
+                &len_signature,
+            ),
+            Some(crate::runtime_call::RuntimeCallFamily::StringByteLen),
+        );
+        assert_eq!(
+            lookalike.canonical_std_io_runtime_method_family(
+                "string::byte_len",
+                "hew_string_byte_length",
+                &len_signature,
+            ),
+            None,
+            "a user extern cannot select the byte-length runtime operation",
+        );
         assert_eq!(
             canonical.canonical_std_io_runtime_method_family(
                 "string::len",

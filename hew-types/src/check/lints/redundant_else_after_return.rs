@@ -182,7 +182,7 @@ fn stmt_always_diverges(ctx: &LintCtx, stmt: &Stmt, _span: &Span) -> bool {
 /// recognised.
 fn expr_always_diverges(ctx: &LintCtx, expr: &Expr, span: &Span) -> bool {
     match expr {
-        Expr::Return(_) => true,
+        Expr::Return(_) | Expr::ReturnError(_) => true,
         Expr::Block(block) => block_always_diverges(ctx, block),
         _ => ctx
             .resolved_type_at(span)

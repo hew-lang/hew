@@ -170,12 +170,61 @@ pub struct RuntimeArgumentContract {
     pub effect: RuntimeArgumentEffect,
 }
 
+/// Closed semantic identities for runtime results whose value is a concrete
+/// builtin enum instance. The corresponding [`hew_sir::SemVariantShape`]
+/// remains the authority for tag order and payload layout; this discriminator
+/// only constrains the exact language type produced by the runtime operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeVariantResultKind {
+    /// A validating byte decode returns ordinary data:
+    /// `Result<string, std.encoding.utf8.Utf8Error>`.
+    Utf8Decode,
+}
+
+impl RuntimeVariantResultKind {
+    /// Return the exact Ok/Err payload types when `ty` is this contract's
+    /// canonical result. Same-leaf user errors and user-defined `Result`
+    /// records are rejected.
+    #[must_use]
+    pub fn payload_types(self, ty: &ResolvedTy) -> Option<(&ResolvedTy, &ResolvedTy)> {
+        match (self, ty) {
+            (
+                Self::Utf8Decode,
+                ResolvedTy::Named {
+                    args,
+                    builtin: Some(crate::BuiltinType::Result),
+                    ..
+                },
+            ) if args.len() == 2
+                && args[0] == ResolvedTy::String
+                && args[1].nominal_instance().is_some_and(|instance| {
+                    instance.args.is_empty()
+                        && instance.nominal.declaration().full_path()
+                            == "std.encoding.utf8.Utf8Error"
+                }) =>
+            {
+                Some((&args[0], &args[1]))
+            }
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn matches(self, ty: &ResolvedTy) -> bool {
+        self.payload_types(ty).is_some()
+    }
+}
+
 /// Semantic result relation of one runtime operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeResultEffect {
     Unit,
     BitCopy(RuntimeValueKind),
     FreshOwned(RuntimeValueKind),
+    /// A runtime operation constructs one exact owned enum value on its normal
+    /// edge. Logical alternatives such as `Ok`/`Err` are payload data, not SIR
+    /// fault edges.
+    FreshOwnedVariant(RuntimeVariantResultKind),
     /// A successful transform consumes argument zero and yields its sole
     /// updated owner as a new SSA value. The physical ABI may use an out
     /// pointer, but may not hide an in-place owner mutation from SIR.
@@ -424,6 +473,7 @@ pub enum RuntimeCallFamily {
     BytesAppend,
     BytesClear,
     BytesContains,
+    BytesDecodeUtf8,
     BytesGet,
     BytesIndex,
     BytesIsEmpty,
@@ -715,6 +765,7 @@ pub enum RuntimeCallFamily {
     StringCharAt,
     StringCharAtUtf8,
     StringCharCount,
+    StringByteLen,
     StringConcat,
     StringEquals,
     StructuralFormat,
@@ -1002,6 +1053,14 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
     },
     CanonicalStdlibExternSignature {
         module: "std.string",
+        signature_key: "string::byte_len",
+        symbol: "hew_string_byte_length",
+        family: Some(RuntimeCallFamily::StringByteLen),
+        params: EMPTY,
+        result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
         signature_key: "string::find",
         symbol: "hew_string_find",
         family: Some(RuntimeCallFamily::StringFind),
@@ -1108,6 +1167,46 @@ pub const fn canonical_std_io_extern_signatures() -> &'static [CanonicalStdlibEx
 }
 
 impl RuntimeCallFamily {
+    const fn text_variant_semantic_contract(self) -> Option<RuntimeSemanticContract> {
+        use RuntimeArgumentEffect::Borrow;
+        use RuntimeResultEffect::{BitCopy, FreshOwned, FreshOwnedVariant};
+        use RuntimeValueKind::{Bytes, String, I64};
+
+        const STRING_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+            ty: String,
+            effect: Borrow,
+        }];
+        const BYTES_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+            ty: Bytes,
+            effect: Borrow,
+        }];
+        const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
+
+        Some(match self {
+            Self::StringToUppercase => RuntimeSemanticContract {
+                arguments: STRING_BORROW,
+                result: FreshOwned(String),
+                failures: NO_FAILURES,
+            },
+            Self::StringToBytes => RuntimeSemanticContract {
+                arguments: STRING_BORROW,
+                result: FreshOwned(Bytes),
+                failures: NO_FAILURES,
+            },
+            Self::StringByteLen => RuntimeSemanticContract {
+                arguments: STRING_BORROW,
+                result: BitCopy(I64),
+                failures: NO_FAILURES,
+            },
+            Self::BytesDecodeUtf8 => RuntimeSemanticContract {
+                arguments: BYTES_BORROW,
+                result: FreshOwnedVariant(RuntimeVariantResultKind::Utf8Decode),
+                failures: NO_FAILURES,
+            },
+            _ => return None,
+        })
+    }
+
     /// Canonical checker signature for compiler-registered builtins whose
     /// source identity differs from their runtime ABI symbol.
     #[must_use]
@@ -1182,6 +1281,7 @@ impl RuntimeCallFamily {
             Self::BytesAppend => "hew_bytes_append",
             Self::BytesClear => "hew_bytes_clear",
             Self::BytesContains => "hew_bytes_contains",
+            Self::BytesDecodeUtf8 => "hew_bytes_decode_utf8",
             Self::BytesGet => "hew_bytes_get",
             Self::BytesIndex => "hew_bytes_index",
             Self::BytesIsEmpty => "hew_bytes_is_empty",
@@ -1363,6 +1463,7 @@ impl RuntimeCallFamily {
             Self::StreamSendLayout => "hew_stream_send_layout",
             Self::StreamTryNextLayout => "hew_stream_try_next_layout",
             // String
+            Self::StringByteLen => "hew_string_byte_length",
             Self::StringCharAt => "hew_string_char_at",
             Self::StringCharAtUtf8 => "hew_string_char_at_utf8",
             Self::StringCharCount => "hew_string_char_count",
@@ -1518,6 +1619,7 @@ impl RuntimeCallFamily {
             "hew_bytes_append" => Self::BytesAppend,
             "hew_bytes_clear" => Self::BytesClear,
             "hew_bytes_contains" => Self::BytesContains,
+            "hew_bytes_decode_utf8" => Self::BytesDecodeUtf8,
             "hew_bytes_get" => Self::BytesGet,
             "hew_bytes_index" => Self::BytesIndex,
             "hew_bytes_is_empty" => Self::BytesIsEmpty,
@@ -1698,6 +1800,7 @@ impl RuntimeCallFamily {
             "hew_stream_send_layout" => Self::StreamSendLayout,
             "hew_stream_try_next_layout" => Self::StreamTryNextLayout,
             // String
+            "hew_string_byte_length" => Self::StringByteLen,
             "hew_string_char_at" => Self::StringCharAt,
             "hew_string_char_at_utf8" => Self::StringCharAtUtf8,
             "hew_string_char_count" => Self::StringCharCount,
@@ -1947,6 +2050,7 @@ impl RuntimeCallFamily {
             Self::BytesAppend
                 | Self::BytesClear
                 | Self::BytesContains
+                | Self::BytesDecodeUtf8
                 | Self::BytesGet
                 | Self::BytesIndex
                 | Self::BytesIsEmpty
@@ -2271,13 +2375,11 @@ impl RuntimeCallFamily {
         const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
         const INDEX_FAILURES: &[RuntimeLogicalFailure] = &[RuntimeLogicalFailure::IndexOutOfBounds];
 
+        if let Some(contract) = self.text_variant_semantic_contract() {
+            return Some(contract);
+        }
+
         Some(match self {
-            Self::StringToUppercase => {
-                runtime_semantic_contract(STRING_BORROW, FreshOwned(String), NO_FAILURES)
-            }
-            Self::StringToBytes => {
-                runtime_semantic_contract(STRING_BORROW, FreshOwned(Bytes), NO_FAILURES)
-            }
             Self::StringEquals => {
                 runtime_semantic_contract(STRING_PAIR_BORROW, BitCopy(Bool), NO_FAILURES)
             }
@@ -2314,6 +2416,7 @@ impl RuntimeCallFamily {
                 RuntimeResultEffect::Unit
                 | RuntimeResultEffect::BitCopy(_)
                 | RuntimeResultEffect::UpdatedReceiver(_)
+                | RuntimeResultEffect::FreshOwnedVariant(_)
                 | RuntimeResultEffect::FreshOwned(
                     RuntimeValueKind::Bool | RuntimeValueKind::U8 | RuntimeValueKind::I64,
                 ) => RuntimeResultOwnership::Untracked,
@@ -2338,7 +2441,9 @@ impl RuntimeCallFamily {
     pub const fn result_authority(self) -> RuntimeResultAuthority {
         if let Some(contract) = self.semantic_contract() {
             return match contract.result {
-                RuntimeResultEffect::FreshOwned(_) | RuntimeResultEffect::UpdatedReceiver(_) => {
+                RuntimeResultEffect::FreshOwned(_)
+                | RuntimeResultEffect::FreshOwnedVariant(_)
+                | RuntimeResultEffect::UpdatedReceiver(_) => {
                     RuntimeResultAuthority::IndependentOwned
                 }
                 RuntimeResultEffect::BitCopy(_) => RuntimeResultAuthority::IndependentBitCopy,
@@ -2494,6 +2599,7 @@ impl RuntimeCallFamily {
             | F::BytesAppend
             | F::BytesClear
             | F::BytesContains
+            | F::BytesDecodeUtf8
             | F::BytesGet
             | F::BytesIndex
             | F::BytesIsEmpty
@@ -2614,6 +2720,7 @@ impl RuntimeCallFamily {
             | F::StringCharAt
             | F::StringCharAtUtf8
             | F::StringCharCount
+            | F::StringByteLen
             | F::StringConcat
             | F::StringEquals
             | F::StructuralFormat
@@ -3370,6 +3477,80 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn named_type(name: &str, builtin: Option<crate::BuiltinType>) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: name.to_string(),
+            args: Vec::new(),
+            builtin,
+            is_opaque: false,
+        }
+    }
+
+    #[test]
+    fn utf8_decode_result_contract_requires_exact_nominal_error_identity() {
+        let exact_error = named_type("std.encoding.utf8.Utf8Error", None);
+        let exact_result = ResolvedTy::Named {
+            name: "Result".to_string(),
+            args: vec![ResolvedTy::String, exact_error.clone()],
+            builtin: Some(crate::BuiltinType::Result),
+            is_opaque: false,
+        };
+        assert!(RuntimeVariantResultKind::Utf8Decode.matches(&exact_result));
+
+        let lookalike_error = named_type("application.Utf8Error", None);
+        let lookalike_result = ResolvedTy::Named {
+            name: "Result".to_string(),
+            args: vec![ResolvedTy::String, lookalike_error],
+            builtin: Some(crate::BuiltinType::Result),
+            is_opaque: false,
+        };
+        assert!(!RuntimeVariantResultKind::Utf8Decode.matches(&lookalike_result));
+
+        let user_result = ResolvedTy::Named {
+            name: "application.Result".to_string(),
+            args: vec![ResolvedTy::String, exact_error],
+            builtin: None,
+            is_opaque: false,
+        };
+        assert!(!RuntimeVariantResultKind::Utf8Decode.matches(&user_result));
+    }
+
+    #[test]
+    fn new_text_runtime_families_publish_closed_semantic_effects() {
+        let decode = RuntimeCallFamily::BytesDecodeUtf8
+            .semantic_contract()
+            .expect("validating decode must have an ownership-SIR contract");
+        assert_eq!(
+            decode.arguments,
+            &[RuntimeArgumentContract {
+                ty: RuntimeValueKind::Bytes,
+                effect: RuntimeArgumentEffect::Borrow,
+            }]
+        );
+        assert_eq!(
+            decode.result,
+            RuntimeResultEffect::FreshOwnedVariant(RuntimeVariantResultKind::Utf8Decode)
+        );
+        assert!(decode.failures.is_empty());
+
+        let byte_len = RuntimeCallFamily::StringByteLen
+            .semantic_contract()
+            .expect("string byte length must have an ownership-SIR contract");
+        assert_eq!(
+            byte_len.arguments,
+            &[RuntimeArgumentContract {
+                ty: RuntimeValueKind::String,
+                effect: RuntimeArgumentEffect::Borrow,
+            }]
+        );
+        assert_eq!(
+            byte_len.result,
+            RuntimeResultEffect::BitCopy(RuntimeValueKind::I64)
+        );
+        assert!(byte_len.failures.is_empty());
+    }
+
     use std::collections::{HashMap, HashSet};
 
     /// Bijection (forward): every family variant produces a unique
@@ -3512,6 +3693,7 @@ mod tests {
                 "bytes::push",
                 "bytes::set",
                 "bytes::to_string",
+                "string::byte_len",
                 "string::find",
                 "string::char_at",
                 "string::get",

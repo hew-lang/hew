@@ -522,6 +522,13 @@ const CONSTRUCTS: &[Construct] = &[
         },
     },
     Construct {
+        id: "fallible function success return",
+        probe: "fn value() -> i64 fails string { 7 } fn main() -> i64 { match value() { .Ok(n) => n, .Err(_) => 0 } }",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "reserved_runtime_feature",
+        },
+    },
+    Construct {
         id: "struct pattern in statement if-let",
         probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let point = Point { x: 5, y: 8 };\n    if let Point { x: a, y: b } = point {\n        println(a + b);\n    }\n}\n",
         coverage: Coverage::RejectedByProfile {
@@ -980,6 +987,30 @@ fn live_gate_matches_declared_coverage() {
     }
 }
 
+#[test]
+fn fallible_functions_require_the_shared_result_lowering() {
+    for source in [
+        "fn value() -> i64 fails string { 7 } fn main() -> i64 { match value() { .Ok(n) => n, .Err(_) => 0 } }",
+        "fn value() -> i64 fails string { return error \"missing\"; } fn main() -> i64 { match value() { .Ok(n) => n, .Err(_) => 0 } }",
+    ] {
+        let compiled =
+            compile_to_sandbox_bytecode(source, Some(SANDBOX_PROFILE)).expect("sandbox compile");
+        assert!(
+            compiled.bytecode.is_none(),
+            "AST-only emission must not omit Result construction"
+        );
+        assert!(
+            compiled
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == "error"
+                    && diagnostic.kind == "reserved_runtime_feature"),
+            "{}",
+            diagnostics_dump(&compiled)
+        );
+    }
+}
+
 fn assert_admitted_runs_clean(construct: &Construct, compiled: &CompileOutput) {
     let bytecode = bytecode_or_panic(construct, compiled);
     let sandbox = run_sandbox_inline(&serde_json::to_string(bytecode).expect("serialize"));
@@ -1165,7 +1196,10 @@ mod ast_surface {
             Expr::Yield(_) => Some("scope / structured-concurrency block"),
             // `return` in expression position is reserved_runtime_feature in
             // the sandbox VM (see profile.rs); no parity corpus entry yet.
-            Expr::Return(_) | Expr::Coalesce { .. } | Expr::Handle { .. } => None,
+            Expr::Return(_)
+            | Expr::ReturnError(_)
+            | Expr::Coalesce { .. }
+            | Expr::Handle { .. } => None,
             Expr::This => None, // `self` — only meaningful inside actor/impl context.
             Expr::FieldAccess { .. } => Some("record StructInit + field access"),
             Expr::Index { .. } => Some("array literal + index + len"),
@@ -1245,7 +1279,7 @@ mod ast_surface {
         match ty {
             TypeExpr::Named { .. } => None,
             TypeExpr::QualifiedAssocPath(_) => None,
-            TypeExpr::Result { .. } => None,
+            TypeExpr::Result { .. } | TypeExpr::Fallible { .. } => None,
             TypeExpr::Option(_) => None,
             TypeExpr::Tuple(_) => Some("tuple value + tuple-let destructure"),
             TypeExpr::Array { .. } => Some("array literal + index + len"),
@@ -1713,7 +1747,11 @@ fn walk_type_expr(ty: &hew_parser::ast::TypeExpr, owners: &mut Vec<Option<&'stat
                 }
             }
         }
-        TypeExpr::Result { ok, err } => {
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => {
             walk_type_expr(&ok.0, owners);
             walk_type_expr(&err.0, owners);
         }
@@ -1770,6 +1808,7 @@ fn walk_expr(
             walk_expr(operand, owners);
         }
         Expr::Clone(operand)
+        | Expr::ReturnError(operand)
         | Expr::PostfixTry(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand) => walk_expr(operand, owners),

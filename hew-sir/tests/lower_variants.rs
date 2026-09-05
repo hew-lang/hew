@@ -591,6 +591,79 @@ fn unit_match_allows_a_selected_divergent_handler() {
 }
 
 #[test]
+fn result_propagation_lowers_expression_return_without_a_fake_value() {
+    let lowered = lower_source(
+        r#"
+        fn pair(value: Result<string, string>) -> Result<(string, string), string> {
+            let first = value?;
+            Ok((first, "second"))
+        }
+
+        fn main() {
+            pair(Ok("first"));
+            pair(Err("failure"));
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let pair = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "pair")
+        .unwrap_or_else(|| panic!("pair must have a body: {:#?}", lowered.statuses));
+    assert_eq!(
+        pair.blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, SemTerminator::Return { value: Some(_) }))
+            .count(),
+        2,
+        "the propagated Err and ordinary Ok each terminate with their real Result value"
+    );
+}
+
+#[test]
+fn never_typed_return_initializer_stops_before_binding_or_sibling_work() {
+    let lowered = lower_source(
+        r#"
+        fn stop() -> Result<string, string> {
+            let unreachable = return Err("stopped");
+            Ok(unreachable)
+        }
+
+        fn main() {
+            stop();
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let stop = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "stop")
+        .unwrap_or_else(|| panic!("stop must have a body: {:#?}", lowered.statuses));
+    assert_eq!(
+        stop.blocks.len(),
+        1,
+        "return must not create a dead cursor block"
+    );
+    assert!(matches!(
+        stop.blocks[0].terminator,
+        SemTerminator::Return { value: Some(_) }
+    ));
+    assert!(
+        stop.blocks[0]
+            .ops
+            .iter()
+            .all(|op| !matches!(op.kind, SemOpKind::CopyValue { .. })),
+        "unreachable binding work must not be emitted after the return"
+    );
+}
+
+#[test]
 fn let_else_binds_the_success_payload_into_the_enclosing_scope() {
     let lowered = lower_source(
         r#"

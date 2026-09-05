@@ -2375,10 +2375,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(result()?, value)?;
             }
-            PhysicalRuntimeAction::StringLen => {
+            PhysicalRuntimeAction::StringLen | PhysicalRuntimeAction::StringByteLen => {
+                let symbol = if action == PhysicalRuntimeAction::StringLen {
+                    "hew_string_length"
+                } else {
+                    "hew_string_byte_length"
+                };
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_string_length",
+                    symbol,
                     self.ctx.i64_type().fn_type(&[ptr.into()], false),
                 )?;
                 let value = self.runtime_call_value(
@@ -3481,7 +3486,7 @@ mod tests {
         let semantic = lower_source_with_registry(
             r#"
             import std.string;
-            fn main() -> i64 { "length".len() }
+            fn main() -> i64 { "length".len() + "Aé中🙂".byte_len() }
             "#,
             ModuleRegistry::new(vec![repo_root]),
         );
@@ -3505,6 +3510,14 @@ mod tests {
             Some(ctx.i64_type().into())
         );
         assert_eq!(length.get_type().count_param_types(), 1);
+        let byte_length = module
+            .get_function("hew_string_byte_length")
+            .expect("explicit byte length must call its distinct runtime operation");
+        assert_eq!(
+            byte_length.get_type().get_return_type(),
+            Some(ctx.i64_type().into())
+        );
+        assert_eq!(byte_length.get_type().count_param_types(), 1);
     }
 
     #[test]

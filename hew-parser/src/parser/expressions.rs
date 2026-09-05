@@ -1344,6 +1344,24 @@ impl Parser<'_> {
             }
             Token::Return => {
                 self.advance();
+                if matches!(self.peek(), Some(Token::Identifier("error")))
+                    && !matches!(
+                        self.peek_at(self.pos + 1),
+                        None | Some(
+                            Token::Semicolon
+                                | Token::RightBrace
+                                | Token::RightParen
+                                | Token::RightBracket
+                                | Token::Comma
+                                | Token::Else
+                        )
+                    )
+                {
+                    self.advance();
+                    let value = self.parse_expr()?;
+                    let end = value.1.end;
+                    return Some((Expr::ReturnError(Box::new(value)), start..end));
+                }
                 // `return [expr]` in expression position. Unlike `Stmt::Return`
                 // there is NO trailing `;` here; the operand ends where the
                 // surrounding expression ends. Stop on any token that cannot

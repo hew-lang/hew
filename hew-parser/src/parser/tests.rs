@@ -5585,3 +5585,40 @@ fn wire_attribute_legal_on_type_decl_and_field_only() {
         illegal.errors
     );
 }
+#[test]
+fn fallible_function_surface_preserves_success_and_error_types() {
+    let source = "fn read() -> (i64, string) fails string { return (10, \"hello\"); }";
+    let parsed = crate::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Function(function) = &parsed.program.items[0].0 else {
+        panic!("function");
+    };
+    assert!(
+        matches!(&function.return_type.as_ref().expect("return type").0,
+        TypeExpr::Fallible { success, error }
+        if matches!(&success.0, TypeExpr::Tuple(fields) if fields.len() == 2)
+            && matches!(&error.0, TypeExpr::Named { name, .. } if name == "string"))
+    );
+}
+
+#[test]
+fn fallible_function_and_error_return_roundtrip() {
+    for source in [
+        "fn f() -> (i64, string) fails string { return (10, \"hello\"); }",
+        "fn f() -> i64 fails string { return error \"missing\"; }",
+        "fn f() -> i64 fails string { 1 + (return error \"missing\") }",
+        "fn f() -> i64 fails string { (return error \"missing\") + 1 }",
+        "fn f() -> i64 fails string { -(return error \"missing\") }",
+        "fn f(error: i64) -> i64 fails string { return error; }",
+    ] {
+        let before = crate::parse(source);
+        assert!(before.errors.is_empty(), "{source}: {:?}", before.errors);
+        let formatted = crate::fmt::format_program(&before.program);
+        let after = crate::parse(&formatted);
+        assert!(after.errors.is_empty(), "{formatted}: {:?}", after.errors);
+        assert!(
+            crate::ast_eq::program_eq_ignoring_spans(&before.program, &after.program),
+            "{source} became {formatted}"
+        );
+    }
+}

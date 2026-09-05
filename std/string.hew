@@ -714,6 +714,11 @@ pub fn join(parts: Vec<string>, sep: string) -> string {
 
 // ── Declarative receiver FFI ─────────────────────────────────────────
 impl string {
+    /// Number of encoded UTF-8 bytes, distinct from the codepoint length.
+    #[extern_symbol(hew_string_byte_length)]
+    fn byte_len(s: string) -> i64 {
+        0
+    }
     #[extern_symbol(hew_string_length)]
     fn len(s: string) -> i64 {
         0

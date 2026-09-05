@@ -164,6 +164,7 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::UnsafeBlock(_) => {}
         Expr::Yield(_) => {}
         Expr::Return(_) => {}
+        Expr::ReturnError(_) => {}
         Expr::This => {}
         Expr::FieldAccess { .. } => {}
         Expr::Index { .. } => {}
@@ -250,7 +251,7 @@ fn _variant_coverage_guard_type_expr(ty: &TypeExpr) {
     match ty {
         TypeExpr::Named { .. } => {}
         TypeExpr::QualifiedAssocPath(_) => {}
-        TypeExpr::Result { .. } => {}
+        TypeExpr::Result { .. } | TypeExpr::Fallible { .. } => {}
         TypeExpr::Option(_) => {}
         TypeExpr::Tuple(_) => {}
         TypeExpr::Array { .. } => {}

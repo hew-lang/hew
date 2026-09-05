@@ -868,7 +868,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
             collect_locals_from_spanned_expr(object, offset, locals);
             collect_locals_from_spanned_expr(index, offset, locals);
         }
-        Expr::Await(inner) | Expr::Yield(Some(inner)) => {
+        Expr::Await(inner) | Expr::ReturnError(inner) | Expr::Yield(Some(inner)) => {
             collect_locals_from_spanned_expr(inner, offset, locals);
         }
         Expr::Range { start, end, .. } => {

@@ -1950,6 +1950,11 @@ impl<'a> Formatter<'a> {
                 self.format_type_expr(&err.0);
                 self.write(">");
             }
+            TypeExpr::Fallible { success, error } => {
+                self.format_type_expr(&success.0);
+                self.write(" fails ");
+                self.format_type_expr(&error.0);
+            }
             TypeExpr::Option(inner) => {
                 self.write("Option<");
                 self.format_type_expr(&inner.0);
@@ -2314,6 +2319,7 @@ impl<'a> Formatter<'a> {
                 Self::can_format_expr_inline(&value.0) && Self::can_format_expr_inline(&count.0)
             }
             Expr::Unary { operand, .. }
+            | Expr::ReturnError(operand)
             | Expr::Clone(operand)
             | Expr::PostfixTry(operand)
             | Expr::Await(operand)
@@ -2874,6 +2880,7 @@ impl<'a> Formatter<'a> {
             Expr::Binary { .. }
                 | Expr::Coalesce { .. }
                 | Expr::Handle { .. }
+                | Expr::ReturnError(_)
                 | Expr::Unary { .. }
                 | Expr::Clone(_)
                 | Expr::Range { .. }
@@ -2941,8 +2948,10 @@ impl<'a> Formatter<'a> {
                 self.write(")");
             }
         } else {
-            let needs_parens =
-                matches!(expr, Expr::Coalesce { .. } | Expr::Handle { .. }) && parent_prec > 0;
+            let needs_parens = matches!(
+                expr,
+                Expr::Coalesce { .. } | Expr::Handle { .. } | Expr::ReturnError(_)
+            ) && parent_prec > 0;
             if needs_parens {
                 self.write("(");
             }
@@ -2973,7 +2982,10 @@ impl<'a> Formatter<'a> {
                 }
                 let needs_parens = matches!(
                     operand.0,
-                    Expr::Binary { .. } | Expr::Coalesce { .. } | Expr::Handle { .. }
+                    Expr::Binary { .. }
+                        | Expr::Coalesce { .. }
+                        | Expr::Handle { .. }
+                        | Expr::ReturnError(_)
                 );
                 if needs_parens {
                     self.write("(");
@@ -3387,6 +3399,10 @@ impl<'a> Formatter<'a> {
                     self.format_expr(&val.0);
                 }
             }
+            Expr::ReturnError(value) => {
+                self.write("return error ");
+                self.format_expr(&value.0);
+            }
             Expr::This => self.write("this"),
             Expr::FieldAccess { object, field } => {
                 self.format_receiver(&object.0);
@@ -3424,7 +3440,7 @@ impl<'a> Formatter<'a> {
                 error,
                 body,
             } => {
-                self.format_expr(&operand.0);
+                self.format_expr_prec(&operand.0, 1, false);
                 self.write(" handle ");
                 self.write(&error.0);
                 self.write(" ");

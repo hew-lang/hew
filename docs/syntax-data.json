@@ -190,6 +190,8 @@
     "self": "Selects the imported module itself inside a dotted import selection (import path.{self as alias}).",
     "clone": "Prefix clone operator (clone <operand>) when immediately followed by an operand; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
     "handle": "Expression-local Result recovery: operand handle error { block }; an ordinary identifier elsewhere.",
+    "fails": "Function return clause: -> Success fails Error; the call returns Result<Success, Error>.",
+    "error": "Explicit error return: return error expression; an ordinary identifier elsewhere.",
     "consume": "By-move parameter modifier (fn f(consume x: T)) when leading a parameter declaration; an ordinary identifier otherwise (fn f(consume: T), x.consume()).",
     "events": "Machine input-event vocabulary block header (contextual inside machine body)",
     "emits": "Machine Mealy-output manifest block header (contextual inside machine body)",

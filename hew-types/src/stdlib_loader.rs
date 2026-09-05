@@ -571,9 +571,11 @@ fn type_expr_contains_borrow(type_expr: &TypeExpr) -> bool {
             .as_deref()
             .is_some_and(|args| args.iter().any(|arg| type_expr_contains_borrow(&arg.0))),
         TypeExpr::QualifiedAssocPath(path) => type_expr_contains_borrow(&path.base.0),
-        TypeExpr::Result { ok, err } => {
-            type_expr_contains_borrow(&ok.0) || type_expr_contains_borrow(&err.0)
-        }
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => type_expr_contains_borrow(&ok.0) || type_expr_contains_borrow(&err.0),
         TypeExpr::Option(inner) | TypeExpr::Slice(inner) => type_expr_contains_borrow(&inner.0),
         TypeExpr::Tuple(elements) => elements
             .iter()
@@ -828,7 +830,11 @@ fn type_expr_to_ty_with_params_and_context(
             type_params,
             context,
         )),
-        TypeExpr::Result { ok, err } => Ty::result(
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => Ty::result(
             type_expr_to_ty_with_params_and_context(&ok.0, module_short, type_params, context),
             type_expr_to_ty_with_params_and_context(&err.0, module_short, type_params, context),
         ),

@@ -162,6 +162,11 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
             format!("{prefix}{}", format_type(&pointee.0))
         }
         TypeExpr::Option(inner) => format!("{}?", format_type(&inner.0)),
+        TypeExpr::Fallible { success, error } => format!(
+            "{} fails {}",
+            format_type(&success.0),
+            format_type(&error.0)
+        ),
         TypeExpr::Result { ok, err } => {
             format!("Result<{}, {}>", format_type(&ok.0), format_type(&err.0))
         }

@@ -7,6 +7,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "physical_capability.rs"]
+mod capability;
+pub use capability::{PhysicalValueCapability, PhysicalValueMethod};
+
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_sir::{
     AggregateShapeRef, BoundaryDecision, CallResult, CallUnwind, Edge, SemFunction, SemModule,
@@ -706,6 +710,8 @@ pub struct PhysicalFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalModule {
+    pub value_capabilities:
+        BTreeMap<(ResolvedTy, hew_types::ValueCapability), PhysicalValueCapability>,
     pub target: PhysicalTarget,
     pub aggregate_glue: Vec<PhysicalAggregateGlue>,
     pub variant_glue: Vec<PhysicalVariantGlue>,
@@ -837,6 +843,7 @@ pub fn lower_physical_module(
         .collect::<Result<Vec<_>, _>>()?;
 
     let physical = PhysicalModule {
+        value_capabilities: capability::build(module, &ids)?,
         target,
         aggregate_glue,
         variant_glue,
@@ -2244,6 +2251,7 @@ impl FunctionLowerer<'_> {
 }
 
 fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> {
+    capability::verify(module)?;
     if module.target.triple.is_empty() || module.target.data_layout.is_empty() {
         return Err(PhysicalError::new(
             "physical module requires a target triple and data layout",
@@ -4423,6 +4431,7 @@ fn verify_map_call(
 ) -> Result<(), PhysicalError> {
     let glue = map_glue(module, id)?;
     let receiver = if operation == PhysicalMapOp::New {
+        capability::require_key(module, &glue.key.ty)?;
         result
     } else {
         arguments
@@ -4482,6 +4491,7 @@ fn verify_set_call(
 ) -> Result<(), PhysicalError> {
     let glue = set_glue(module, id)?;
     let receiver = if operation == PhysicalSetOp::New {
+        capability::require_key(module, &glue.element.ty)?;
         result
     } else {
         arguments
@@ -6050,6 +6060,7 @@ mod tests {
             ],
         };
         let physical = PhysicalModule {
+            value_capabilities: BTreeMap::new(),
             target: physical_target,
             aggregate_glue: vec![],
             variant_glue: vec![],
@@ -6107,6 +6118,67 @@ mod tests {
         lower_physical_module(&module, target_for_inventory(&module))
             .expect("collection parameters have complete physical value recipes")
             .into_unverified()
+    }
+
+    #[test]
+    fn selected_key_methods_keep_checked_physical_recipes_and_callable_bodies() {
+        let semantic = lower_source(
+            r#"
+            type Key { id: i64 }
+            impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
+            type Outer { key: Key }
+            fn main() -> i64 {
+                var values: HashMap<Outer, string> = HashMap.new();
+                values.insert(Outer { key: Key { id: 7 } }, "kept");
+                values.len()
+            }
+        "#,
+        );
+        let target = target_for_inventory(&semantic);
+        let physical = lower_physical_module(&semantic, target)
+            .unwrap()
+            .into_unverified();
+        let (user_key, user) = physical
+            .value_capabilities
+            .iter()
+            .find(|(_, plan)| matches!(plan.method, PhysicalValueMethod::User(_)))
+            .expect("selected user hash");
+        let PhysicalValueMethod::User(callable) = user.method else {
+            unreachable!()
+        };
+        let mut missing_body = physical.clone();
+        missing_body
+            .functions
+            .retain(|function| function.callable != callable);
+        assert!(verify_physical_module(&missing_body)
+            .unwrap_err()
+            .message
+            .contains("signature or body"));
+
+        let mut substituted = physical.clone();
+        substituted
+            .value_capabilities
+            .get_mut(user_key)
+            .unwrap()
+            .method = PhysicalValueMethod::Scalar;
+        assert!(verify_physical_module(&substituted)
+            .unwrap_err()
+            .message
+            .contains("changed its selected callable"));
+
+        let mut missing_component = physical.clone();
+        missing_component.value_capabilities.remove(user_key);
+        assert!(verify_physical_module(&missing_component)
+            .unwrap_err()
+            .message
+            .contains("selected component"));
+
+        let mut absent_keys = physical;
+        absent_keys.value_capabilities.clear();
+        assert!(verify_physical_module(&absent_keys)
+            .unwrap_err()
+            .message
+            .contains("selected key capability"));
     }
 
     #[test]

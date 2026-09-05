@@ -965,3 +965,10 @@ SIR/session testing also retains Map projection/emptiness/Set projection failure
 and two stale mutable-collection source fixtures; their repairs are in progress.
 This semantic checkpoint does not yet emit native key callbacks or change the
 runtime fault ABI, so it is not native Map/Set acceptance.
+
+Physical MIR now resolves selected value operations to exact scalar, sequence,
+aggregate, variant or collection recipes, or to the selected private-ABI
+callable. Its verifier checks component selections, method signature and body
+presence, and refuses collection construction without both key capabilities.
+The physical suite passes, including deliberate recipe/body/selection corruption.
+Native callback emission and dynamic runtime fault propagation remain pending.

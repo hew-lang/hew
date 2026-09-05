@@ -56,9 +56,6 @@ pub(crate) use attributes::AttrPosition;
 #[cfg(test)]
 mod tests;
 
-const EMBEDDED_NUL_STRING_MESSAGE: &str =
-    "embedded NUL (\\0) in string literal is not supported by the null-terminated string ABI";
-
 pub(crate) type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
 pub(crate) type StructInitFields = (Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
 
@@ -393,16 +390,6 @@ pub(crate) fn unescape_string(s: &str) -> (String, Vec<(usize, &'static str)>) {
     (out, errors)
 }
 
-pub(crate) fn embedded_nul_string_error(span: Span) -> ParseError {
-    ParseError {
-        message: EMBEDDED_NUL_STRING_MESSAGE.to_string(),
-        span,
-        hint: None,
-        severity: Severity::Error,
-        kind: ParseDiagnosticKind::InvalidLiteral,
-    }
-}
-
 /// Split an interpolated string (f-string or template literal) into literal
 /// segments and parsed expression segments.
 ///
@@ -599,15 +586,6 @@ pub(crate) fn parse_string_parts(
 
     if !literal_buf.is_empty() {
         parts.push(StringPart::Literal(literal_buf));
-    }
-
-    if parts
-        .iter()
-        .any(|part| matches!(part, StringPart::Literal(text) if text.contains('\0')))
-    {
-        errors.push(embedded_nul_string_error(
-            span_start..span_start + raw.len(),
-        ));
     }
 
     parts

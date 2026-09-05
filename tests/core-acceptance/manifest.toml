@@ -305,13 +305,24 @@ exit = 0
 
 [[case]]
 id = "string-byte-length"
-intent = "The imported string length operation borrows its value, reports UTF-8 byte length as i64 and handles an empty string."
+intent = "Borrowed string length counts Unicode scalars; explicitly named byte length counts the UTF-8 encoding, including empty strings."
 source = "cases/string-byte-length.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "hé:3:0\n"
+stdout = "Aé中🙂:4:10:0:0\n"
+exit = 0
+
+[[case]]
+id = "managed-string-nul"
+intent = "An escaped string owner survives its source scope, retains embedded NUL through copy, transformation and output, and remains independent of mutated derived bytes."
+source = "cases/managed-string-nul.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "a\u0000b\nA\u0000B\n3:4:3\n"
 exit = 0
 
 [[case]]

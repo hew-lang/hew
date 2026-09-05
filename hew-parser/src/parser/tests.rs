@@ -1360,68 +1360,54 @@ fn parse_string_escape_sequences() {
 }
 
 #[test]
-fn parse_string_literal_rejects_embedded_nul_escape() {
-    let source = r#"fn main() { let s = "a\0b"; }"#;
-    let result = parse(source);
-    assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
-    let diag = &result.errors[0];
-    assert_eq!(diag.message, EMBEDDED_NUL_STRING_MESSAGE);
-    assert_eq!(
-        diag.span,
-        source.find('"').unwrap()..source.rfind('"').unwrap() + 1
-    );
-    assert!(matches!(diag.kind, ParseDiagnosticKind::InvalidLiteral));
+fn parse_string_literals_preserve_embedded_nul() {
+    for source in [
+        r#"fn main() { let s = "a\0b"; }"#.to_string(),
+        r#"fn main() { let s = "a\x00b"; }"#.to_string(),
+        r#"fn main() { let s = "a\u{0}b"; }"#.to_string(),
+        "fn main() { let s = \"a\0b\"; }".to_string(),
+        "fn main() { let s = r\"a\0b\"; }".to_string(),
+    ] {
+        let result = parse(&source);
+        assert!(result.errors.is_empty(), "{source:?}: {:?}", result.errors);
+        let Item::Function(function) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            value: Some((Expr::Literal(Literal::String(value)), _)),
+            ..
+        } = &function.body.stmts[0].0
+        else {
+            panic!("expected string binding");
+        };
+        assert_eq!(value.as_bytes(), b"a\0b");
+    }
 }
 
 #[test]
-fn parse_string_literal_rejects_raw_embedded_nul() {
-    let source = format!("fn main() {{ let s = \"a{}b\"; }}", '\0');
-    let result = parse(&source);
-    assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
-    let diag = &result.errors[0];
-    assert_eq!(diag.message, EMBEDDED_NUL_STRING_MESSAGE);
-    let start = source.find('"').unwrap();
-    assert_eq!(diag.span, start..start + 5);
-    assert!(matches!(diag.kind, ParseDiagnosticKind::InvalidLiteral));
-}
-
-#[test]
-fn parse_raw_string_literal_rejects_raw_embedded_nul() {
-    let source = format!("fn main() {{ let s = r\"a{}b\"; }}", '\0');
-    let result = parse(&source);
-    assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
-    let diag = &result.errors[0];
-    assert_eq!(diag.message, EMBEDDED_NUL_STRING_MESSAGE);
-    let start = source.find("r\"").unwrap();
-    assert_eq!(diag.span, start..start + 6);
-    assert!(matches!(diag.kind, ParseDiagnosticKind::InvalidLiteral));
-}
-
-#[test]
-fn parse_interpolated_string_literal_rejects_raw_embedded_nul() {
-    let source = format!("fn main() {{ let s = f\"a{}b\"; }}", '\0');
-    let result = parse(&source);
-    assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
-    let diag = &result.errors[0];
-    assert_eq!(diag.message, EMBEDDED_NUL_STRING_MESSAGE);
-    let start = source.find("f\"").unwrap();
-    assert_eq!(diag.span, start..start + 6);
-    assert!(matches!(diag.kind, ParseDiagnosticKind::InvalidLiteral));
-}
-
-#[test]
-fn parse_interpolated_string_literal_rejects_embedded_nul_escape() {
-    let source = r#"fn main() { let s = f"a\0{name}"; }"#;
-    let result = parse(source);
-    assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
-    let diag = &result.errors[0];
-    assert_eq!(diag.message, EMBEDDED_NUL_STRING_MESSAGE);
-    let start = source.find("f\"").unwrap();
-    assert_eq!(
-        diag.span,
-        start..source[start..].find("\";").unwrap() + start + 1
-    );
-    assert!(matches!(diag.kind, ParseDiagnosticKind::InvalidLiteral));
+fn parse_interpolated_strings_preserve_nul_and_expression_parts() {
+    for source in [
+        r#"fn main() { let s = f"a\0{name}"; }"#.to_string(),
+        "fn main() { let s = f\"a\0{name}\"; }".to_string(),
+        r#"fn main() { let s = f"a\x00{name}"; }"#.to_string(),
+    ] {
+        let result = parse(&source);
+        assert!(result.errors.is_empty(), "{source:?}: {:?}", result.errors);
+        let Item::Function(function) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            value: Some((Expr::InterpolatedString(parts), _)),
+            ..
+        } = &function.body.stmts[0].0
+        else {
+            panic!("expected interpolated string binding");
+        };
+        assert!(
+            matches!(&parts[..], [StringPart::Literal(text), StringPart::Expr((Expr::Identifier(name), _))]
+            if text.as_bytes() == b"a\0" && name == "name")
+        );
+    }
 }
 
 #[test]

@@ -719,6 +719,7 @@ impl string {
     fn byte_len(s: string) -> i64 {
         0
     }
+    /// Number of Unicode scalars. Use `byte_len()` for the encoded byte length.
     #[extern_symbol(hew_string_length)]
     fn len(s: string) -> i64 {
         0
@@ -779,12 +780,13 @@ impl string {
     fn lines(s: string) -> Vec<string> {
         Vec.new()
     }
-    /// Return `Some` of the byte index of the first occurrence of `needle`,
+    /// Return `Some` of the Unicode scalar index of the first occurrence of `needle`,
     /// or `None` when `needle` does not occur.
     #[extern_symbol(hew_string_find)]
     fn find(s: string, needle: string) -> Option<i64> {
         None
     }
+    /// Copy the range from `start` inclusive to `end` exclusive, in Unicode scalars.
     #[extern_symbol(hew_string_slice)]
     fn slice(s: string, start: i64, end: i64) -> string {
         ""
@@ -793,9 +795,8 @@ impl string {
     fn repeat(s: string, n: i64) -> string {
         ""
     }
-    /// Return `Some` of the byte at byte-offset `idx` (as a `char`), or
-    /// `None` when the offset is out of bounds. This is the byte-indexed
-    /// sibling of the codepoint-indexed `get` accessor.
+    /// Return `Some` of the Unicode scalar at `idx`, or `None` when the
+    /// scalar index is out of bounds, like `get`.
     #[extern_symbol(hew_string_char_at)]
     fn char_at(s: string, idx: i64) -> Option<char> {
         None
@@ -813,8 +814,7 @@ impl string {
     }
     /// Return the number of Unicode codepoints (runes) in this string.
     ///
-    /// For ASCII strings this equals `len()`. For strings with multi-byte
-    /// UTF-8 sequences the rune count is strictly less than the byte length.
+    /// This equals `len()`. Use `byte_len()` for the UTF-8 byte length.
     #[extern_symbol(hew_string_char_count)]
     fn char_count_utf8(s: string) -> i64 {
         0
@@ -830,7 +830,8 @@ impl string {
     ///
     /// This is the canonical string-to-`bytes` conversion: use it to build a
     /// `bytes` payload (network writes, byte streams, hashing) from text without
-    /// reaching for raw FFI. The inverse is `bytes.to_string()`.
+    /// reaching for raw FFI. Decode with `std.encoding.utf8.decode` to validate
+    /// arbitrary bytes, or use its explicitly named `decode_lossy` operation.
     #[extern_symbol(hew_string_to_bytes)]
     fn to_bytes(s: string) -> bytes {
         bytes.new()

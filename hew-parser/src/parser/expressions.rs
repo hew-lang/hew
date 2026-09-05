@@ -722,10 +722,6 @@ impl Parser<'_> {
                 let inner = unquote_str(s);
                 let tok_start = start;
                 let (unescaped, unescape_errs) = unescape_string(inner);
-                if unescaped.contains('\0') {
-                    self.errors
-                        .push(embedded_nul_string_error(start..self.peek_span().end));
-                }
                 for (off, msg) in unescape_errs {
                     let err_start = tok_start + 1 + off;
                     self.errors.push(ParseError {
@@ -753,10 +749,6 @@ impl Parser<'_> {
             }
             Token::RawString(s) => {
                 let s = unquote_str(s).to_string();
-                if s.contains('\0') {
-                    self.errors
-                        .push(embedded_nul_string_error(start..self.peek_span().end));
-                }
                 self.advance();
                 Expr::Literal(Literal::String(s))
             }

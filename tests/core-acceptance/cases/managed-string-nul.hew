@@ -1,0 +1,30 @@
+fn preserve(value: string) -> string { value }
+
+fn main() -> i64 {
+    let retained = {
+        let original = "a\0b";
+        preserve(original)
+    };
+    let copied = retained;
+    let upper = copied.to_upper();
+    let encoded = retained.to_bytes();
+    var changed = encoded;
+    changed.push(33);
+    let upper_bytes = upper.to_bytes();
+    if retained.len() != 3 || encoded.len() != 3 || changed.len() != 4 {
+        return 1;
+    }
+    if encoded[0] != 97 || encoded[1] != 0 || encoded[2] != 98 {
+        return 2;
+    }
+    if upper_bytes[0] != 65 || upper_bytes[1] != 0 || upper_bytes[2] != 66 {
+        return 3;
+    }
+    if copied != retained || retained == upper {
+        return 4;
+    }
+    println(retained);
+    println(upper);
+    println(f"{encoded.len()}:{changed.len()}:{retained.len()}");
+    0
+}

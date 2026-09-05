@@ -2499,8 +2499,7 @@ fn fmt_unicode_brace_escape_roundtrip() {
 
 /// Plain string literals: every escape sequence survives round-trip.
 ///
-/// The parser rejects `\0` in string literals (null-terminated ABI conflict),
-/// so the covered set is `\n \t \\ \" \r`.
+/// Control characters are preserved through the managed string carrier.
 #[test]
 fn fmt_string_literal_escapes_preserved() {
     // The raw-string source contains the two-char sequences \n \t \\ \" \r
@@ -2528,8 +2527,7 @@ fn fmt_string_literal_escapes_idempotent() {
 
 /// f-string literal parts: control-character escapes must be re-emitted.
 ///
-/// The parser rejects `\0` in string literals (null-terminated ABI conflict),
-/// so the covered set is `\n \t \\ \" \r`.
+/// Control characters are preserved through the managed string carrier.
 #[test]
 fn fmt_fstring_literal_escapes_preserved() {
     // f-string with escape sequences in the literal part, not the interpolation.
@@ -2698,7 +2696,7 @@ fn fmt_fstring_unicode_invisible_escape_preserved_exact() {
 /// parser accepts must survive format → re-parse with identical AST value.
 ///
 /// Covers: `\n \t \r \\ \" \x07 \u{200B}`.
-/// (`\0` resolves to NUL which the validator rejects in string literals.)
+/// Embedded NUL is retained by the managed string carrier.
 #[test]
 fn fmt_string_full_escape_set_roundtrip() {
     use hew_parser::ast_eq::program_eq_ignoring_spans;
@@ -2712,6 +2710,8 @@ fn fmt_string_full_escape_set_roundtrip() {
         r#"fn f() { let s = "a\"b"; }"#,
         r#"fn f() { let s = "a\x07b"; }"#,
         r#"fn f() { let s = "a\u{200B}b"; }"#,
+        r#"fn f() { let s = "a\0b"; }"#,
+        r#"fn f() { let s = f"a\0{1}"; }"#,
     ];
 
     for src in &cases {

@@ -1,14 +1,16 @@
 import std.string;
 
-fn byte_count(value: string) -> i64 { value.len() }
+fn byte_count(value: string) -> i64 { value.byte_len() }
 
 fn main() -> i64 {
-    let value = "hé";
-    let length = byte_count(value);
-    let empty = byte_count("");
-    if length != 3 || empty != 0 {
+    let value = "Aé中🙂";
+    let scalars = value.len();
+    let bytes = byte_count(value);
+    let empty_scalars = "".len();
+    let empty_bytes = byte_count("");
+    if scalars != 4 || bytes != 10 || empty_scalars != 0 || empty_bytes != 0 {
         return 1;
     }
-    println(f"{value}:{length}:{empty}");
+    println(f"{value}:{scalars}:{bytes}:{empty_scalars}:{empty_bytes}");
     0
 }

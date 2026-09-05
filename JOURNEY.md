@@ -361,3 +361,16 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   semicolons in constructed sources. Migrated those declarations while retaining
   the original identity, visibility, payload and cleanup assertions. The affected
   checker and HIR suites now exercise their intended semantics again.
+
+### Length-aware string execution
+
+- Managed immutable strings preserve all valid UTF-8, including embedded NUL.
+  Removed the parser's obsolete C-string restriction and replaced its rejection
+  cases with parsed-value and formatter round-trip assertions.
+- Native programs distinguish Unicode scalar length from encoded byte length.
+  A string returned beyond its source scope retains its complete contents through
+  copies, uppercase conversion and output; mutating derived bytes leaves the
+  original string and byte value unchanged.
+- The retained native suite and paired generated/runtime address-sanitizer suite
+  exercise these behaviours at O0 and O2. Broader foreign API conversion and the
+  source decoding functions remain separate unfinished work.

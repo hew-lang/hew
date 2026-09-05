@@ -1479,6 +1479,10 @@ fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
             result: CallResult::Value(result),
             ..
         }
+        | SemTerminator::ValueCall {
+            result: CallResult::Value(result),
+            ..
+        }
         | SemTerminator::CheckedBinary { result, .. } => Some(result),
         _ => None,
     }
@@ -1911,6 +1915,9 @@ impl FunctionLowerer<'_> {
                     CallUnwind::Cleanup(edge) => Some(self.lower_edge(edge)?),
                 },
             }),
+            SemTerminator::ValueCall { .. } => Err(PhysicalError::new(
+                "selected value calls require physical callback lowering",
+            )),
             SemTerminator::Trap { kind } => Ok(PhysicalTerminator::Trap(*kind)),
             SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),

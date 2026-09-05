@@ -417,7 +417,7 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     let mut names = HashSet::new();
     let mut declarations = HashSet::new();
     for function in &module.functions {
-        verify_constructed_key_capabilities(module, function, &mut diagnostics);
+        verify_required_value_capabilities(module, function, &mut diagnostics);
         if !names.insert(function.name.clone()) {
             diagnostics.push(diag(
                 function,
@@ -464,7 +464,7 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     diagnostics
 }
 
-fn verify_constructed_key_capabilities(
+fn verify_required_value_capabilities(
     module: &SemModule,
     function: &SemFunction,
     diagnostics: &mut Vec<SirDiagnostic>,
@@ -473,6 +473,25 @@ fn verify_constructed_key_capabilities(
     use hew_types::{RuntimeCallFamily, ValueCapability};
 
     for block in &function.blocks {
+        if let SemTerminator::ValueCall { ty, capability, .. } = &block.terminator {
+            let checked = module
+                .value_capabilities
+                .get(&(ty.clone(), *capability))
+                .ok_or_else(|| "value call requires its exact selected method".to_string())
+                .and_then(|plan| {
+                    crate::capability::verify_value_capability(module, ty, *capability, plan)
+                });
+            if let Err(reason) = checked {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidValueCapability {
+                        ty: ty.clone(),
+                        capability: *capability,
+                        reason,
+                    },
+                ));
+            }
+        }
         let SemTerminator::RtCall {
             family:
                 RuntimeCallFamily::Map(MapValueOp::New) | RuntimeCallFamily::Set(SetValueOp::New),
@@ -516,6 +535,7 @@ fn verify_constructed_key_capabilities(
 pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
     let callables = verify_callable_table(module, &mut diagnostics);
+    verify_required_value_capabilities(module, function, &mut diagnostics);
     diagnostics.extend(verify_function_with_context(
         function,
         Some(&callables),
@@ -778,6 +798,7 @@ pub(crate) fn verify_function_with_context(
         }
         if let SemTerminator::Call { id, .. }
         | SemTerminator::RtCall { id, .. }
+        | SemTerminator::ValueCall { id, .. }
         | SemTerminator::CheckedBinary { id, .. }
         | SemTerminator::SwitchVariant { id, .. } = &block.terminator
         {
@@ -2381,6 +2402,62 @@ fn verify_runtime_call_terminator(
     }
 }
 
+fn verify_value_call_terminator(
+    function: &SemFunction,
+    terminator: &SemTerminator,
+    types: &HashMap<ValueId, ResolvedTy>,
+    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    let SemTerminator::ValueCall {
+        id,
+        ty,
+        capability,
+        args,
+        result,
+        unwind,
+        ..
+    } = terminator
+    else {
+        unreachable!("selected value call verifier requires a value call");
+    };
+    let (arity, result_ty) = match capability {
+        hew_types::ValueCapability::Hash => (1, ResolvedTy::I64),
+        hew_types::ValueCapability::Eq => (2, ResolvedTy::Bool),
+    };
+    if args.len() != arity
+        || args.iter().any(|arg| {
+            arg.decision != crate::BoundaryDecision::Borrow
+                || types.get(&arg.operand.value) != Some(ty)
+        })
+    {
+        invalid_operation(
+            function,
+            *id,
+            format!("selected {capability:?} requires {arity} borrowed operands of its exact type"),
+            diagnostics,
+        );
+    }
+    if !matches!(result, crate::CallResult::Value(value) if value.ty == result_ty && value.own == crate::OwnKind::None)
+    {
+        invalid_operation(
+            function,
+            *id,
+            format!("selected {capability:?} requires its scalar {result_ty:?} result"),
+            diagnostics,
+        );
+    }
+    if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
+    {
+        invalid_operation(
+            function,
+            *id,
+            "selected value call requires cleanup that propagates the original fault".into(),
+            diagnostics,
+        );
+    }
+}
+
 fn invalid_operation(
     function: &SemFunction,
     op: OpId,
@@ -2531,6 +2608,7 @@ fn failure_cfg_matches_exit(
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
+            | SemTerminator::ValueCall { .. }
             | SemTerminator::Suspend { .. }
             | SemTerminator::Unreachable => false,
         };
@@ -2819,6 +2897,9 @@ fn verify_terminator_shape(
             blocks,
             diagnostics,
         ),
+        call @ SemTerminator::ValueCall { .. } => {
+            verify_value_call_terminator(function, call, types, blocks, diagnostics);
+        }
         SemTerminator::RtCall {
             id,
             family,
@@ -3011,7 +3092,9 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
     // The canonical visitor orders control inputs before normal-edge
     // arguments. Only that interval can see the terminator result.
     let normal_slots = match term {
-        SemTerminator::Call { args, normal, .. } | SemTerminator::RtCall { args, normal, .. } => {
+        SemTerminator::Call { args, normal, .. }
+        | SemTerminator::RtCall { args, normal, .. }
+        | SemTerminator::ValueCall { args, normal, .. } => {
             args.len()..args.len() + normal.args.len()
         }
         SemTerminator::CheckedBinary { normal, .. } => 2..2 + normal.args.len(),

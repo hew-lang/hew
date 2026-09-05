@@ -1338,3 +1338,21 @@ retains the known source-lowering gaps in JobState and starts_with plus the
 pinned grammar mismatch; Rust lint is clean. This is a native collection
 milestone, not completion of the remaining callable, resource, actor or sandbox
 work. Ordinary selected equality is isolated in its own implementation branch.
+
+## Selected value-call semantic contract
+
+Added an explicit SIR ValueCall that executes the exact selected Hash or Eq
+method from the existing module capability table. Both methods borrow their
+inputs, define a scalar result only on the normal edge and require cleanup
+that propagates the original fault. Standard call visitors, result dominance,
+boundary ownership, CFG rewrites and fault lifetime checks cover the operation.
+The module and function-in-module boundaries require and validate its selected
+capability evidence. No second plan registry or C runtime endpoint is added.
+
+Focused contract tests cover both methods, missing selections, operand arity,
+exact types, forbidden ownership transfers, result typing and discarded faults.
+The SIR library and contract tests pass; scoped SIR/MIR/codegen Rust lint passes.
+Physical lowering currently refuses ValueCall explicitly, and there is no source
+producer yet. Native selected equality remains pending those two layers. Scalar
+float operators retain IEEE comparison; structural selected Eq retains the
+existing documented bit-pattern rule for float members.

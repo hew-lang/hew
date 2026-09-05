@@ -1342,6 +1342,18 @@ pub enum SemTerminator {
         normal: Edge,
         unwind: CallUnwind,
     },
+    /// Execute the exact checker-selected value method from the module's
+    /// capability table. Arguments borrow values; the scalar result exists
+    /// only on the normal edge. The cleanup edge owns a propagated fault.
+    ValueCall {
+        id: OpId,
+        ty: ResolvedTy,
+        capability: hew_types::ValueCapability,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
+    },
     /// A call to a runtime symbol family. Per-operand ownership comes from the
     /// family's FFI ownership row, never from the symbol spelling.
     RtCall {
@@ -1402,7 +1414,7 @@ impl SemTerminator {
     pub fn visit_boundary_operands(&self, mut visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
         match self {
             Self::Return { value: Some(value) } => visit(OperandSlot(0), value),
-            Self::Call { args, .. } | Self::RtCall { args, .. } => {
+            Self::Call { args, .. } | Self::RtCall { args, .. } | Self::ValueCall { args, .. } => {
                 for (index, argument) in args.iter().enumerate() {
                     visit(
                         OperandSlot(
@@ -1444,6 +1456,10 @@ impl SemTerminator {
                 result: CallResult::Value(result),
                 ..
             }
+            | Self::ValueCall {
+                result: CallResult::Value(result),
+                ..
+            }
             | Self::CheckedBinary { result, .. } => visit(result),
             Self::SwitchVariant { arms, .. } => {
                 for arm in arms {
@@ -1460,6 +1476,10 @@ impl SemTerminator {
                 ..
             }
             | Self::RtCall {
+                result: CallResult::Unit,
+                ..
+            }
+            | Self::ValueCall {
                 result: CallResult::Unit,
                 ..
             }
@@ -1521,6 +1541,12 @@ impl SemTerminator {
                 ..
             }
             | Self::RtCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::ValueCall {
                 args,
                 normal,
                 unwind,
@@ -1628,6 +1654,12 @@ impl SemTerminator {
                 normal,
                 unwind,
                 ..
+            }
+            | Self::ValueCall {
+                args,
+                normal,
+                unwind,
+                ..
             } => {
                 let mut next = 0_u32;
                 for argument in args {
@@ -1728,7 +1760,9 @@ impl SemTerminator {
                     );
                 }
             }
-            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
+            Self::Call { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
+            | Self::ValueCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
                 if let CallUnwind::Cleanup(edge) = unwind {
                     visit(SuccessorSlot(1), edge);
@@ -1795,7 +1829,9 @@ impl SemTerminator {
                     );
                 }
             }
-            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
+            Self::Call { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
+            | Self::ValueCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
                 if let CallUnwind::Cleanup(edge) = unwind {
                     visit(SuccessorSlot(1), edge);
@@ -1841,16 +1877,16 @@ impl SemTerminator {
             Self::SwitchVariant { arms, .. } => arms
                 .get(usize::try_from(slot.0).ok()?)
                 .map(|arm| &arm.target),
-            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
-                match slot.0 {
-                    0 => Some(normal),
-                    1 => match unwind {
-                        CallUnwind::NotApplicable => None,
-                        CallUnwind::Cleanup(edge) => Some(edge),
-                    },
-                    _ => None,
-                }
-            }
+            Self::Call { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
+            | Self::ValueCall { normal, unwind, .. } => match slot.0 {
+                0 => Some(normal),
+                1 => match unwind {
+                    CallUnwind::NotApplicable => None,
+                    CallUnwind::Cleanup(edge) => Some(edge),
+                },
+                _ => None,
+            },
             Self::CheckedBinary {
                 normal, failures, ..
             } => match slot.0 {
@@ -1890,16 +1926,16 @@ impl SemTerminator {
             Self::SwitchVariant { arms, .. } => arms
                 .get_mut(usize::try_from(slot.0).ok()?)
                 .map(|arm| &mut arm.target),
-            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
-                match slot.0 {
-                    0 => Some(normal),
-                    1 => match unwind {
-                        CallUnwind::NotApplicable => None,
-                        CallUnwind::Cleanup(edge) => Some(edge),
-                    },
-                    _ => None,
-                }
-            }
+            Self::Call { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
+            | Self::ValueCall { normal, unwind, .. } => match slot.0 {
+                0 => Some(normal),
+                1 => match unwind {
+                    CallUnwind::NotApplicable => None,
+                    CallUnwind::Cleanup(edge) => Some(edge),
+                },
+                _ => None,
+            },
             Self::CheckedBinary {
                 normal, failures, ..
             } => match slot.0 {
@@ -1968,18 +2004,24 @@ impl SemTerminator {
                 }
             }
             Self::CheckedBinary { .. } => "checked-binary failure-edge argument",
-            Self::Call { args, normal, .. } | Self::RtCall { args, normal, .. }
+            Self::Call { args, normal, .. }
+            | Self::RtCall { args, normal, .. }
+            | Self::ValueCall { args, normal, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < args.len()) =>
             {
                 "call argument"
             }
-            Self::Call { args, normal, .. } | Self::RtCall { args, normal, .. }
+            Self::Call { args, normal, .. }
+            | Self::RtCall { args, normal, .. }
+            | Self::ValueCall { args, normal, .. }
                 if usize::try_from(slot.0)
                     .is_ok_and(|slot| slot < args.len() + normal.args.len()) =>
             {
                 "call normal-edge argument"
             }
-            Self::Call { .. } | Self::RtCall { .. } => "call unwind-edge argument",
+            Self::Call { .. } | Self::RtCall { .. } | Self::ValueCall { .. } => {
+                "call unwind-edge argument"
+            }
             Self::Suspend { inputs, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < inputs.len()) =>
             {

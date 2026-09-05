@@ -120,6 +120,7 @@ fn canonicalize_verified_function(
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
+            | SemTerminator::ValueCall { .. }
             | SemTerminator::Goto(_)
             | SemTerminator::Trap { .. }
             | SemTerminator::Suspend { .. }

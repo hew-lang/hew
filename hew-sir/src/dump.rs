@@ -322,42 +322,11 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
             failures,
             ..
         } => dump_checked_binary(out, *op, lhs, rhs, result, normal, failures),
-        SemTerminator::Call {
-            callee,
-            args,
-            result,
-            normal,
-            unwind,
-            ..
-        } => {
-            let target = module.callable(*callee).map_or_else(
-                || format!("<invalid-callable:{}>", callee.0),
-                |callable| callable.symbol.clone(),
-            );
-            dump_call(
-                out,
-                &format!("call @{target}"),
-                args,
-                result,
-                normal,
-                unwind,
-            );
+        SemTerminator::Call { .. }
+        | SemTerminator::ValueCall { .. }
+        | SemTerminator::RtCall { .. } => {
+            dump_call_terminator(out, module, term);
         }
-        SemTerminator::RtCall {
-            family,
-            args,
-            result,
-            normal,
-            unwind,
-            ..
-        } => dump_call(
-            out,
-            &format!("rt.call{{{family:?}}}"),
-            args,
-            result,
-            normal,
-            unwind,
-        ),
         SemTerminator::Trap { kind } => {
             writeln!(out, "    trap{{{kind:?}}}").expect("write to String");
         }
@@ -370,6 +339,56 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
         SemTerminator::ResumeUnwind => writeln!(out, "    resume_unwind").expect("write to String"),
         SemTerminator::Unreachable => writeln!(out, "    unreachable").expect("write to String"),
     }
+}
+
+fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminator) {
+    let (target, args, result, normal, unwind) = match term {
+        SemTerminator::Call {
+            callee,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => {
+            let target = module.callable(*callee).map_or_else(
+                || format!("<invalid-callable:{}>", callee.0),
+                |callable| callable.symbol.clone(),
+            );
+            (format!("call @{target}"), args, result, normal, unwind)
+        }
+        SemTerminator::ValueCall {
+            ty,
+            capability,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("value.call{{{capability:?} {}}}", ty.user_facing()),
+            args,
+            result,
+            normal,
+            unwind,
+        ),
+        SemTerminator::RtCall {
+            family,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("rt.call{{{family:?}}}"),
+            args,
+            result,
+            normal,
+            unwind,
+        ),
+        _ => unreachable!("call formatter requires a call terminator"),
+    };
+    dump_call(out, &target, args, result, normal, unwind);
 }
 
 fn dump_suspend(

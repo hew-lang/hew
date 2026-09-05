@@ -16,8 +16,8 @@
 //   hew machine diagram examples/machine/tcp_handshake.hew --machine TcpHandshake
 machine TcpHandshake {
     events {
-        SynReceive { remote_port: u16, }
-        ,AckReceive,
+        SynReceive { remote_port: u16, },
+        AckReceive,
         FinReceive,
         Reset,
     }

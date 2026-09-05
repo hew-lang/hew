@@ -16,9 +16,9 @@ impl Display for Error {
 pub machine Lifecycle<T> {
     events {
         Initialise,
-        Started { handle: T, }
-        ,Stop,
-        Crashed { error: Error, }
+        Started { handle: T, },
+        Stop,
+        Crashed { error: Error, },
     }
 
     state Created,

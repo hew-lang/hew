@@ -32,8 +32,8 @@ impl Resource for File {
 
 machine Bounded<T: Resource> {
     events {
-        Start { handle: T, }
-        ,Finish,
+        Start { handle: T, },
+        Finish,
     }
 
     state Idle,

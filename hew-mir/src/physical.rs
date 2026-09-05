@@ -246,9 +246,9 @@ pub enum DestroyAction {
     Vector(PhysicalVectorId),
 }
 
-/// One field in an aggregate's physical copy/drop recipe.
+/// Shared physical copy/drop recipe for one concrete value type.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PhysicalAggregateField {
+pub struct PhysicalValueRecipe {
     pub ty: ResolvedTy,
     pub own: OwnKind,
     pub clone: Option<CloneAction>,
@@ -261,13 +261,13 @@ pub struct PhysicalAggregateGlue {
     pub id: PhysicalAggregateId,
     pub ty: ResolvedTy,
     pub own: OwnKind,
-    pub fields: Vec<PhysicalAggregateField>,
+    pub fields: Vec<PhysicalValueRecipe>,
 }
 
 /// One declaration-order case in a tagged-variant copy/drop recipe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalVariantCase {
-    pub fields: Vec<PhysicalAggregateField>,
+    pub fields: Vec<PhysicalValueRecipe>,
 }
 
 /// Shared physical glue for one exact concrete tagged-variant type.
@@ -285,7 +285,7 @@ pub struct PhysicalVariantGlue {
 pub struct PhysicalVectorGlue {
     pub id: PhysicalVectorId,
     pub ty: ResolvedTy,
-    pub element: PhysicalAggregateField,
+    pub element: PhysicalValueRecipe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -647,8 +647,12 @@ pub fn lower_physical_module(
         )));
     }
 
-    let (aggregate_glue, aggregate_ids, variant_glue, variant_ids, vector_glue, vector_ids) =
-        build_glue(module)?;
+    let PhysicalGlue {
+        aggregate_glue,
+        variant_glue,
+        vector_glue,
+        ids,
+    } = build_glue(module)?;
 
     let callables = module
         .callables
@@ -692,16 +696,7 @@ pub fn lower_physical_module(
     let functions = module
         .functions
         .iter()
-        .map(|function| {
-            lower_function(
-                module,
-                &target,
-                function,
-                &aggregate_ids,
-                &variant_ids,
-                &vector_ids,
-            )
-        })
+        .map(|function| lower_function(module, &target, function, &ids))
         .collect::<Result<Vec<_>, _>>()?;
 
     let physical = PhysicalModule {
@@ -721,24 +716,25 @@ pub fn lower_physical_module(
     Ok(VerifiedPhysicalModule(physical))
 }
 
+/// One index for resolving type-directed actions to their concrete recipes.
+struct PhysicalGlueIds {
+    aggregates: BTreeMap<ResolvedTy, PhysicalAggregateId>,
+    variants: BTreeMap<ResolvedTy, PhysicalVariantId>,
+    vectors: BTreeMap<ResolvedTy, PhysicalVectorId>,
+}
+
+struct PhysicalGlue {
+    aggregate_glue: Vec<PhysicalAggregateGlue>,
+    variant_glue: Vec<PhysicalVariantGlue>,
+    vector_glue: Vec<PhysicalVectorGlue>,
+    ids: PhysicalGlueIds,
+}
+
 #[allow(
-    clippy::type_complexity,
     clippy::too_many_lines,
-    reason = "aggregate and variant glue are resolved together so recursive ownership actions share one identity table"
+    reason = "value recipes are resolved together so recursive actions share one identity index"
 )]
-fn build_glue(
-    module: &SemModule,
-) -> Result<
-    (
-        Vec<PhysicalAggregateGlue>,
-        BTreeMap<ResolvedTy, PhysicalAggregateId>,
-        Vec<PhysicalVariantGlue>,
-        BTreeMap<ResolvedTy, PhysicalVariantId>,
-        Vec<PhysicalVectorGlue>,
-        BTreeMap<ResolvedTy, PhysicalVectorId>,
-    ),
-    PhysicalError,
-> {
+fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
     let inventory = physical_type_inventory(module);
     let aggregates = inventory
         .aggregates()
@@ -783,7 +779,12 @@ fn build_glue(
             Ok((vector.ty.clone(), PhysicalVectorId(index)))
         })
         .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
-    let field_recipe = |ty: &ResolvedTy| -> Result<PhysicalAggregateField, PhysicalError> {
+    let ids = PhysicalGlueIds {
+        aggregates: aggregate_ids,
+        variants: variant_ids,
+        vectors: vector_ids,
+    };
+    let value_recipe = |ty: &ResolvedTy| -> Result<PhysicalValueRecipe, PhysicalError> {
         let facts = module
             .type_facts
             .get(&TypeInstanceKey(ty.clone()))
@@ -794,18 +795,12 @@ fn build_glue(
                 ))
             })?;
         let own = OwnKind::of_class(facts.class);
-        Ok(PhysicalAggregateField {
+        Ok(PhysicalValueRecipe {
             ty: ty.clone(),
             own,
-            clone: clone_action_for_type(
-                ty,
-                facts.clone,
-                &aggregate_ids,
-                &variant_ids,
-                &vector_ids,
-            )?,
+            clone: clone_action_for_type(ty, facts.clone, &ids)?,
             destroy: if own == OwnKind::Owned {
-                destroy_action_for_type(ty, &aggregate_ids, &variant_ids, &vector_ids)
+                destroy_action_for_type(ty, &ids)
             } else {
                 None
             },
@@ -814,7 +809,7 @@ fn build_glue(
     let aggregate_glue = aggregates
         .into_iter()
         .map(|(aggregate, own)| {
-            let id = aggregate_ids[&aggregate.ty];
+            let id = ids.aggregates[&aggregate.ty];
             let shape = aggregate_shape_ref(module, &aggregate.ty)?;
             let recipes = hew_sir::aggregate_field_recipes(
                 shape,
@@ -825,7 +820,7 @@ fn build_glue(
             .map_err(PhysicalError::new)?;
             let fields = recipes
                 .iter()
-                .map(|recipe| field_recipe(&recipe.ty))
+                .map(|recipe| value_recipe(&recipe.ty))
                 .collect::<Result<Vec<_>, PhysicalError>>()?;
             Ok(PhysicalAggregateGlue {
                 id,
@@ -863,13 +858,13 @@ fn build_glue(
                     .map_err(PhysicalError::new)?;
                     let fields = recipes
                         .iter()
-                        .map(|recipe| field_recipe(&recipe.ty))
+                        .map(|recipe| value_recipe(&recipe.ty))
                         .collect::<Result<Vec<_>, PhysicalError>>()?;
                     Ok(PhysicalVariantCase { fields })
                 })
                 .collect::<Result<Vec<_>, PhysicalError>>()?;
             Ok(PhysicalVariantGlue {
-                id: variant_ids[&descriptor.ty],
+                id: ids.variants[&descriptor.ty],
                 ty: descriptor.ty.clone(),
                 own,
                 is_indirect: descriptor.is_indirect,
@@ -880,7 +875,7 @@ fn build_glue(
     let vector_glue = inventory
         .vectors()
         .map(|descriptor| {
-            let element = field_recipe(&descriptor.element)?;
+            let element = value_recipe(&descriptor.element)?;
             if element.clone.is_none()
                 || (element.own == OwnKind::Owned && element.destroy.is_none())
             {
@@ -890,20 +885,18 @@ fn build_glue(
                 )));
             }
             Ok(PhysicalVectorGlue {
-                id: vector_ids[&descriptor.ty],
+                id: ids.vectors[&descriptor.ty],
                 ty: descriptor.ty.clone(),
                 element,
             })
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
-    Ok((
+    Ok(PhysicalGlue {
         aggregate_glue,
-        aggregate_ids,
         variant_glue,
-        variant_ids,
         vector_glue,
-        vector_ids,
-    ))
+        ids,
+    })
 }
 
 fn aggregate_shape_ref(
@@ -927,23 +920,21 @@ fn aggregate_shape_ref(
 fn clone_action_for_type(
     ty: &ResolvedTy,
     clone: CloneKind,
-    aggregate_ids: &BTreeMap<ResolvedTy, PhysicalAggregateId>,
-    variant_ids: &BTreeMap<ResolvedTy, PhysicalVariantId>,
-    vector_ids: &BTreeMap<ResolvedTy, PhysicalVectorId>,
+    ids: &PhysicalGlueIds,
 ) -> Result<Option<CloneAction>, PhysicalError> {
     let action = match clone {
         CloneKind::None => return Ok(None),
         CloneKind::Bits => CloneAction::Bitwise,
         CloneKind::Retain if ty == &ResolvedTy::String => CloneAction::StringRetain,
         CloneKind::Retain if ty == &ResolvedTy::Bytes => CloneAction::BytesRetain,
-        CloneKind::DeepCopy | CloneKind::FieldWise if vector_ids.contains_key(ty) => {
-            CloneAction::Vector(vector_ids[ty])
+        CloneKind::DeepCopy | CloneKind::FieldWise if ids.vectors.contains_key(ty) => {
+            CloneAction::Vector(ids.vectors[ty])
         }
-        CloneKind::FieldWise if aggregate_ids.contains_key(ty) => {
-            CloneAction::Aggregate(aggregate_ids[ty])
+        CloneKind::FieldWise if ids.aggregates.contains_key(ty) => {
+            CloneAction::Aggregate(ids.aggregates[ty])
         }
-        CloneKind::FieldWise if variant_ids.contains_key(ty) => {
-            CloneAction::Variant(variant_ids[ty])
+        CloneKind::FieldWise if ids.variants.contains_key(ty) => {
+            CloneAction::Variant(ids.variants[ty])
         }
         CloneKind::FieldWise => {
             return Err(PhysicalError::new(format!(
@@ -961,18 +952,13 @@ fn clone_action_for_type(
     Ok(Some(action))
 }
 
-fn destroy_action_for_type(
-    ty: &ResolvedTy,
-    aggregate_ids: &BTreeMap<ResolvedTy, PhysicalAggregateId>,
-    variant_ids: &BTreeMap<ResolvedTy, PhysicalVariantId>,
-    vector_ids: &BTreeMap<ResolvedTy, PhysicalVectorId>,
-) -> Option<DestroyAction> {
+fn destroy_action_for_type(ty: &ResolvedTy, ids: &PhysicalGlueIds) -> Option<DestroyAction> {
     match ty {
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
-        _ if vector_ids.contains_key(ty) => Some(DestroyAction::Vector(vector_ids[ty])),
-        _ if aggregate_ids.contains_key(ty) => Some(DestroyAction::Aggregate(aggregate_ids[ty])),
-        _ => variant_ids.get(ty).copied().map(DestroyAction::Variant),
+        _ if ids.vectors.contains_key(ty) => Some(DestroyAction::Vector(ids.vectors[ty])),
+        _ if ids.aggregates.contains_key(ty) => Some(DestroyAction::Aggregate(ids.aggregates[ty])),
+        _ => ids.variants.get(ty).copied().map(DestroyAction::Variant),
     }
 }
 
@@ -1109,9 +1095,7 @@ struct FunctionLowerer<'a> {
     module: &'a SemModule,
     target: &'a PhysicalTarget,
     function: &'a SemFunction,
-    aggregate_ids: &'a BTreeMap<ResolvedTy, PhysicalAggregateId>,
-    variant_ids: &'a BTreeMap<ResolvedTy, PhysicalVariantId>,
-    vector_ids: &'a BTreeMap<ResolvedTy, PhysicalVectorId>,
+    glue_ids: &'a PhysicalGlueIds,
     values: BTreeMap<ValueId, StorageId>,
     places: BTreeMap<hew_sir::PlaceId, StorageId>,
     storage: Vec<PhysicalStorage>,
@@ -1125,17 +1109,13 @@ fn lower_function(
     module: &SemModule,
     target: &PhysicalTarget,
     function: &SemFunction,
-    aggregate_ids: &BTreeMap<ResolvedTy, PhysicalAggregateId>,
-    variant_ids: &BTreeMap<ResolvedTy, PhysicalVariantId>,
-    vector_ids: &BTreeMap<ResolvedTy, PhysicalVectorId>,
+    glue_ids: &PhysicalGlueIds,
 ) -> Result<PhysicalFunction, PhysicalError> {
     let mut lowerer = FunctionLowerer {
         module,
         target,
         function,
-        aggregate_ids,
-        variant_ids,
-        vector_ids,
+        glue_ids,
         values: BTreeMap::new(),
         places: BTreeMap::new(),
         storage: Vec::new(),
@@ -1832,14 +1812,7 @@ impl FunctionLowerer<'_> {
                     ty.user_facing()
                 ))
             })?;
-        clone_action_for_type(
-            ty,
-            facts.clone,
-            self.aggregate_ids,
-            self.variant_ids,
-            self.vector_ids,
-        )?
-        .ok_or_else(|| {
+        clone_action_for_type(ty, facts.clone, self.glue_ids)?.ok_or_else(|| {
             PhysicalError::new(format!(
                 "physical copy of `{}` has no admitted clone action",
                 ty.user_facing()
@@ -1848,13 +1821,12 @@ impl FunctionLowerer<'_> {
     }
 
     fn destroy_action(&self, ty: &ResolvedTy) -> Result<DestroyAction, PhysicalError> {
-        destroy_action_for_type(ty, self.aggregate_ids, self.variant_ids, self.vector_ids)
-            .ok_or_else(|| {
-                PhysicalError::new(format!(
-                    "physical destroy action for `{}` is not implemented",
-                    ty.user_facing()
-                ))
-            })
+        destroy_action_for_type(ty, self.glue_ids).ok_or_else(|| {
+            PhysicalError::new(format!(
+                "physical destroy action for `{}` is not implemented",
+                ty.user_facing()
+            ))
+        })
     }
 
     fn runtime_action(
@@ -1875,7 +1847,7 @@ impl FunctionLowerer<'_> {
                     .ok_or_else(|| PhysicalError::new("vector operation has no receiver"))?;
                 &self.storage[self.value(receiver.operand.value)?.0 as usize].ty
             };
-            let glue = self.vector_ids.get(vector).copied().ok_or_else(|| {
+            let glue = self.glue_ids.vectors.get(vector).copied().ok_or_else(|| {
                 PhysicalError::new(format!(
                     "vector `{}` has no physical glue identity",
                     vector.user_facing()
@@ -1920,7 +1892,7 @@ impl FunctionLowerer<'_> {
     }
 
     fn aggregate_id(&self, ty: &ResolvedTy) -> Result<PhysicalAggregateId, PhysicalError> {
-        self.aggregate_ids.get(ty).copied().ok_or_else(|| {
+        self.glue_ids.aggregates.get(ty).copied().ok_or_else(|| {
             PhysicalError::new(format!(
                 "aggregate `{}` has no physical glue identity",
                 ty.user_facing()
@@ -1929,7 +1901,7 @@ impl FunctionLowerer<'_> {
     }
 
     fn variant_id(&self, ty: &ResolvedTy) -> Result<PhysicalVariantId, PhysicalError> {
-        self.variant_ids.get(ty).copied().ok_or_else(|| {
+        self.glue_ids.variants.get(ty).copied().ok_or_else(|| {
             PhysicalError::new(format!(
                 "variant `{}` has no physical glue identity",
                 ty.user_facing()
@@ -1987,7 +1959,7 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
                     glue.id.0
                 )));
             }
-            verify_field_recipe(module, field)?;
+            verify_value_recipe(module, field)?;
         }
     }
     for (index, glue) in module.variant_glue.iter().enumerate() {
@@ -2050,9 +2022,9 @@ fn semantic_type_facts<'a>(
         })
 }
 
-fn verify_field_recipe(
+fn verify_value_recipe(
     module: &PhysicalModule,
-    field: &PhysicalAggregateField,
+    field: &PhysicalValueRecipe,
 ) -> Result<(), PhysicalError> {
     let facts = semantic_type_facts(module, &field.ty)?;
     if field.own != OwnKind::of_class(facts.class)
@@ -2113,7 +2085,7 @@ fn verify_vector_glue(
     }
     // Zero-sized elements retain their exact target size. The runtime owns
     // allocation bookkeeping; no payload byte is invented here.
-    verify_field_recipe(module, &glue.element)?;
+    verify_value_recipe(module, &glue.element)?;
     if glue.element.clone.is_none() {
         return Err(PhysicalError::new(
             "physical vector element has no clone action",
@@ -2217,7 +2189,7 @@ fn verify_variant_glue(
                         glue.id.0
                     )));
             }
-            verify_field_recipe(module, field)?;
+            verify_value_recipe(module, field)?;
         }
     }
     Ok(())
@@ -2525,7 +2497,7 @@ fn aggregate_projection_field<'a>(
     aggregate: StorageId,
     field: u32,
     glue: PhysicalAggregateId,
-) -> Result<&'a PhysicalAggregateField, PhysicalError> {
+) -> Result<&'a PhysicalValueRecipe, PhysicalError> {
     let aggregate = storage(function, aggregate)?;
     let recipe = aggregate_glue(module, glue)?;
     let source_own_matches = aggregate.own == recipe.own
@@ -3826,7 +3798,7 @@ fn verify_terminator(
                         ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Option), args, .. }
                             if args.as_slice() == [ResolvedTy::I64]
                     );
-                    let field_is = |fields: &[PhysicalAggregateField], ty: &ResolvedTy| {
+                    let field_is = |fields: &[PhysicalValueRecipe], ty: &ResolvedTy| {
                         fields.len() == 1 && &fields[0].ty == ty
                     };
                     if result_slot.own != OwnKind::Owned

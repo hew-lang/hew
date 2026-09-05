@@ -707,6 +707,11 @@ CABI/runtime check also passes, exercising the retained 32-bit layout
 assertions. Census regeneration, freshness and verifier self-tests pass.
 Native platform execution and acceptance intake remain with integration.
 
+Physical aggregate fields and vector elements now share the explicitly named
+value recipe. Type-directed clone/drop selection uses one concrete identity
+index, and the glue builder returns named tables rather than an expanding tuple.
+Existing physical ownership, loan and native codegen checks pass unchanged.
+
 ## Common borrowed aggregate reads
 
 Continued from the clean signed iteration checkpoint. Vec.is_empty now composes

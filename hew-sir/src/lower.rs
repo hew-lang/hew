@@ -1114,6 +1114,7 @@ fn lower_initial_value_transfer(
     builder: &mut Builder<'_, '_>,
     expr: &HirExpr,
     context: &str,
+    binding_use: OwnedBindingUse,
 ) -> Result<ValueId, String> {
     let ty = builder.ty(&expr.ty);
     if is_initial_value_type(&ty) {
@@ -1129,7 +1130,13 @@ fn lower_initial_value_transfer(
             ty.user_facing()
         ));
     }
-    builder.lower_owned_transfer(expr)
+    builder.lower_owned_transfer(expr, binding_use)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnedBindingUse {
+    Copy,
+    Move,
 }
 
 /// Lower a unit expression transferred by an explicit `return`.
@@ -1394,7 +1401,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })
     }
 
-    fn lower_owned_transfer(&mut self, expr: &HirExpr) -> Result<ValueId, String> {
+    fn lower_owned_transfer(
+        &mut self,
+        expr: &HirExpr,
+        binding_use: OwnedBindingUse,
+    ) -> Result<ValueId, String> {
         let source = self.lower_expr(expr)?;
         let ty = self.ty(&expr.ty);
         let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
@@ -1410,13 +1421,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 },
             ),
             Some(OwnKind::Owned) if matches!(expr.kind, HirExprKind::BindingRef { .. }) => {
-                self.owned_live.remove(&source);
-                self.emit(
-                    expr,
-                    SemOpKind::Move {
-                        source: Operand { value: source },
-                    },
-                )
+                match binding_use {
+                    OwnedBindingUse::Copy => self.emit(
+                        expr,
+                        SemOpKind::CopyValue {
+                            source: Operand { value: source },
+                        },
+                    ),
+                    OwnedBindingUse::Move => {
+                        self.owned_live.remove(&source);
+                        self.emit(
+                            expr,
+                            SemOpKind::Move {
+                                source: Operand { value: source },
+                            },
+                        )
+                    }
+                }
             }
             Some(OwnKind::Owned) => Ok(source),
             _ => Err(format!(
@@ -1541,7 +1562,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 HirStmtKind::Let(binding, value) => {
                     let value = value
                         .as_ref()
-                        .map(|expr| lower_initial_value_transfer(self, expr, "binding initializer"))
+                        .map(|expr| {
+                            lower_initial_value_transfer(
+                                self,
+                                expr,
+                                "binding initializer",
+                                OwnedBindingUse::Copy,
+                            )
+                        })
                         .transpose()?
                         .ok_or_else(|| {
                             "uninitialised bindings are not in the initial SIR subset".to_string()
@@ -1580,7 +1608,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         }
                         Some(expr) => Some(crate::BoundaryOperand {
                             operand: Operand {
-                                value: lower_initial_value_transfer(self, expr, "return value")?,
+                                value: lower_initial_value_transfer(
+                                    self,
+                                    expr,
+                                    "return value",
+                                    OwnedBindingUse::Move,
+                                )?,
                             },
                             decision: crate::BoundaryDecision::Move,
                         }),
@@ -1610,7 +1643,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     Ok(None)
                 }
                 Some(expr) => Ok(Some(Operand {
-                    value: lower_initial_value_transfer(self, expr, "block tail value")?,
+                    value: lower_initial_value_transfer(
+                        self,
+                        expr,
+                        "block tail value",
+                        OwnedBindingUse::Move,
+                    )?,
                 })),
                 None => Ok(None),
             }
@@ -1674,7 +1712,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 new_ty.user_facing()
             ));
         }
-        let new = lower_initial_value_transfer(self, value, "assignment value")?;
+        let new =
+            lower_initial_value_transfer(self, value, "assignment value", OwnedBindingUse::Copy)?;
         if self.owned_live.contains_key(&old) {
             self.emit_destroy(old)?;
         }
@@ -2011,6 +2050,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 expression_ty.user_facing()
             ));
         }
+        let live_before_arguments: std::collections::HashSet<_> =
+            self.owned_live.keys().copied().collect();
         let mut lowered_args = Vec::with_capacity(args.len());
         for (index, (arg, expected)) in args.iter().zip(&params).enumerate() {
             let argument_ty = self.ty(&arg.ty);
@@ -2037,10 +2078,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             });
         }
         let live_at_call = self.owned_live.clone();
-        let bound_values: std::collections::HashSet<_> = self.bindings.values().copied().collect();
         let argument_temporaries: Vec<_> = live_at_call
             .keys()
-            .filter(|value| !bound_values.contains(value))
+            .filter(|value| !live_before_arguments.contains(value))
             .copied()
             .collect();
         if return_ty == ResolvedTy::Unit {

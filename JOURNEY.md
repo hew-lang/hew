@@ -188,3 +188,8 @@
 - The old SIR-to-MIR bridges fail closed on this new terminator. Physical MIR
   realization remains the next layer and must preserve the explicit edges and
   ownership operations rather than inferring copies or cleanup.
+- Ordinary `let` and `var` aliases now copy owned string and bytes bindings,
+  preserving the source for later uses; explicit return and block-tail exits
+  remain ownership transfers. Direct-call cleanup records only owners created
+  while evaluating that call's arguments, so a nested later argument cannot
+  destroy an earlier argument belonging to its enclosing call.

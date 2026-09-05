@@ -129,6 +129,118 @@ fn owned_string_and_bytes_calls_copy_borrows_and_clean_both_exits() {
 }
 
 #[test]
+fn owned_binding_aliases_copy_and_preserve_source() {
+    let lowered = lower_source(
+        r#"
+        fn keep_text(value: string) {}
+        fn keep_bytes(value: bytes) {}
+
+        fn main() {
+            let original_text = "original";
+            let copied_text = original_text;
+            keep_text(original_text);
+            keep_text(copied_text);
+
+            let original_bytes = b"original";
+            var copied_bytes = original_bytes;
+            keep_bytes(original_bytes);
+            keep_bytes(copied_bytes);
+        }
+        "#,
+    );
+    assert!(
+        ["keep_text", "keep_bytes", "main"]
+            .into_iter()
+            .all(|name| matches!(
+                lowered
+                    .statuses
+                    .iter()
+                    .find(|status| status.name == name)
+                    .map(|status| &status.status),
+                Some(SirLoweringStatus::Lowered)
+            )),
+        "owned aliases must leave both source and copy usable: {:#?}",
+        lowered.statuses
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "owned aliases must produce verified SIR: {:#?}",
+        verify_module(&lowered.module)
+    );
+
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main must lower");
+    assert_eq!(
+        main.blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .filter(|op| matches!(op.kind, SemOpKind::CopyValue { .. }))
+            .count(),
+        2,
+        "each ordinary owned alias must be an independent copy"
+    );
+    assert_eq!(
+        main.blocks
+            .iter()
+            .filter_map(|block| match &block.terminator {
+                SemTerminator::Call { args, .. } => Some(args),
+                _ => None,
+            })
+            .filter(|args| { args.len() == 1 && args[0].decision == BoundaryDecision::Borrow })
+            .count(),
+        4,
+        "both originals and both aliases must remain available to borrowed calls"
+    );
+}
+
+#[test]
+fn nested_owned_call_arguments_live_until_outer_call() {
+    for main_body in ["pair(make(), make());", "pair(\"literal\", make());"] {
+        let lowered = lower_source(&format!(
+            r#"
+            fn make() -> string {{ "made" }}
+            fn pair(first: string, second: string) {{}}
+            fn main() {{ {main_body} }}
+            "#,
+        ));
+        assert!(
+            ["make", "pair", "main"].into_iter().all(|name| matches!(
+                lowered
+                    .statuses
+                    .iter()
+                    .find(|status| status.name == name)
+                    .map(|status| &status.status),
+                Some(SirLoweringStatus::Lowered)
+            )),
+            "a later argument must not consume an earlier outer-call argument ({main_body}): {:#?}",
+            lowered.statuses
+        );
+        assert!(
+            verify_module(&lowered.module).is_empty(),
+            "nested argument evaluation must produce verified SIR ({main_body}): {:#?}",
+            verify_module(&lowered.module)
+        );
+
+        let main = lowered
+            .module
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main must lower");
+        assert!(main.blocks.iter().any(|block| matches!(
+            &block.terminator,
+            SemTerminator::Call { args, .. }
+                if args.len() == 2
+                    && args.iter().all(|argument| argument.decision == BoundaryDecision::Borrow)
+        )));
+    }
+}
+
+#[test]
 fn owned_string_reassignment_loop_and_early_return_verify() {
     let lowered = lower_source(
         r#"

@@ -706,3 +706,34 @@ CABI cross-checks pass for Windows MSVC and macOS ARM64; the wasm32-wasip1
 CABI/runtime check also passes, exercising the retained 32-bit layout
 assertions. Census regeneration, freshness and verifier self-tests pass.
 Native platform execution and acceptance intake remain with integration.
+
+## Common borrowed aggregate reads
+
+Continued from the clean signed iteration checkpoint. Vec.is_empty now composes
+Vector(Len) and scalar equality in HIR. The focused semantic suite and a native
+nested record/vector case at O0/O2 pass without a new runtime primitive.
+
+Inspection found BeginBorrow/EndBorrow and physical borrow operations dormant:
+the semantic verifier still rejects local loans. The next bounded change will
+activate local loan validation and shape-checked aggregate borrowing, keeping
+ordinary escaping reads as independent copies. Argument evaluation order must
+remain observable: a value needed across a later mutation still needs a snapshot.
+The prior quadratic cursor read remains until this borrowing contract is complete.
+
+The semantic contract now admits local whole-value loans and borrowed aggregate
+fields with exact shape/type checks. The existing lifetime flow tracks local
+loan availability and immediate parent dependencies: owners cannot be consumed
+until children end, and normal, unwind, trap and loop edges must close loans.
+Physical storage carries those SIR dependencies; LLVM extracts borrowed field
+bits without a clone. Ordinary AggregateProjectCopy remains the owned extraction.
+
+Contract checkpoint validation: `make test-strict -o test-artifacts` with
+`NEXTEST_WORKSPACE_ARGS='-p hew-sir -p hew-mir -p hew-codegen-rs --lib --tests --no-fail-fast'`
+passed, including malformed parent/field/ownership/cleanup negatives and LLVM
+comparison against independent nested copies. Scoped `make lint-rust` passed.
+An initial invocation used the wrong selection variable and launched the broader
+workspace suite; it is not acceptance evidence and reports unrelated unsupported
+language surfaces, including LocalPid aggregate transfer. No checks were weakened.
+This checkpoint establishes the contract only: HIR-to-SIR call operands still
+produce owned field copies, so cursor complexity and native safety acceptance
+remain pending the scoped producer change.

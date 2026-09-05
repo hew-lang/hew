@@ -1644,6 +1644,21 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(*dest, value)
             }
+            PhysicalOp::AggregateProjectBorrow {
+                dest,
+                aggregate,
+                field,
+                ..
+            } => {
+                let aggregate = self
+                    .load(*aggregate, "aggregate.borrow.source")?
+                    .into_struct_value();
+                let value = self
+                    .builder
+                    .build_extract_value(aggregate, *field, "aggregate.borrow.field")
+                    .llvm_ctx("extract verified borrowed aggregate field")?;
+                self.store(*dest, value)
+            }
             PhysicalOp::AggregateDestructure {
                 aggregate, fields, ..
             } => {
@@ -3641,6 +3656,13 @@ fn get_or_declare_external<'ctx>(
 
 #[cfg(test)]
 mod tests {
+    mod borrow_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../hew-sir/tests/support/borrowed_aggregate.rs"
+        ));
+    }
+
     mod utf8_fixture {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3663,6 +3685,66 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn borrowed_field_chain_emits_no_vector_clone_for_its_reads() {
+        use inkwell::values::AnyValue;
+
+        fn vector_clone_calls(semantic: &SemModule) -> usize {
+            let triple = native_emission_triple();
+            let inventory = hew_mir::physical::physical_type_inventory(semantic);
+            let target = physical_target_for_inventory(&triple, &inventory).unwrap();
+            let physical = hew_mir::lower_physical_module(semantic, target).unwrap();
+            let ctx = Context::create();
+            let machine =
+                crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0)
+                    .unwrap();
+            let llvm = build_module(&ctx, physical.module(), "field_loans", &machine).unwrap();
+            llvm.verify().unwrap();
+            let symbol = emitted_symbol(physical.module(), &physical.module().callables[0]);
+            llvm.get_function(&symbol)
+                .unwrap()
+                .print_to_string()
+                .to_string()
+                .matches("call ptr @hew_vec_clone_owned(")
+                .count()
+        }
+
+        let borrowed = borrow_fixture::nested_borrow_module();
+        let mut copied = borrowed.clone();
+        for operation in copied
+            .functions
+            .iter_mut()
+            .flat_map(|f| &mut f.blocks)
+            .flat_map(|b| &mut b.ops)
+        {
+            match &operation.kind {
+                SemOpKind::AggregateProjectBorrow {
+                    shape,
+                    aggregate,
+                    field,
+                } => {
+                    operation.kind = SemOpKind::AggregateProjectCopy {
+                        shape: *shape,
+                        aggregate: aggregate.clone(),
+                        field: *field,
+                    };
+                    operation.results[0].own = OwnKind::Owned;
+                }
+                SemOpKind::EndBorrow { borrow } => {
+                    operation.kind = SemOpKind::DestroyValue {
+                        value: borrow.clone(),
+                    };
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            vector_clone_calls(&copied) - vector_clone_calls(&borrowed),
+            2,
+            "both the nested record and vector projection must avoid cloning their vector"
+        );
+    }
 
     #[test]
     fn vector_descriptor_matches_the_runtime_c_abi() {

@@ -698,7 +698,13 @@ pub(crate) fn verify_function_with_context(
                     result.id,
                     &result.ty,
                     result.own,
-                    crate::OwnKind::of_ty(&result.ty, facts),
+                    crate::OwnKind::of_ty(&result.ty, facts).map(|own| {
+                        if op.kind.borrow_parent().is_some() {
+                            crate::OwnKind::Guaranteed
+                        } else {
+                            own
+                        }
+                    }),
                     &mut diagnostics,
                 );
                 types.insert(result.id, result.ty.clone());
@@ -1444,6 +1450,11 @@ fn verify_operation_shape(
         }
         return;
     }
+    if matches!(operation.kind, SemOpKind::EndBorrow { .. }) {
+        // The lifetime relation requires an active local loan and proves
+        // that every projection depending on it has already ended.
+        return;
+    }
     if expected_results == 0 {
         invalid_operation(
             function,
@@ -1711,7 +1722,18 @@ fn verify_operation_shape(
             shape,
             aggregate,
             field,
+        }
+        | SemOpKind::AggregateProjectBorrow {
+            shape,
+            aggregate,
+            field,
         } => {
+            let borrowing = operation.kind.borrow_parent().is_some();
+            let operation_name = if borrowing {
+                "aggregate.project_borrow"
+            } else {
+                "aggregate.project_copy"
+            };
             let Some(aggregate_ty) = types.get(&aggregate.value) else {
                 return;
             };
@@ -1729,7 +1751,7 @@ fn verify_operation_shape(
                     function,
                     operation.id,
                     format!(
-                        "aggregate.project_copy operand `{}` has no exact ownership facts",
+                        "{operation_name} operand `{}` has no exact ownership facts",
                         aggregate_ty.user_facing()
                     ),
                     diagnostics,
@@ -1743,7 +1765,7 @@ fn verify_operation_shape(
                     function,
                     operation.id,
                     format!(
-                        "aggregate.project_copy field {field} is out of bounds for `{}` with {} field(s)",
+                        "{operation_name} field {field} is out of bounds for `{}` with {} field(s)",
                         aggregate_ty.user_facing(),
                         recipes.len()
                     ),
@@ -1756,14 +1778,23 @@ fn verify_operation_shape(
                     function,
                     operation.id,
                     format!(
-                        "aggregate.project_copy field {field} produces `{}`, expected `{}`",
+                        "{operation_name} field {field} produces `{}`, expected `{}`",
                         result.ty.user_facing(),
                         recipe.ty.user_facing()
                     ),
                     diagnostics,
                 );
             }
-            if recipe.clone == hew_types::CloneKind::None {
+            if borrowing && recipe.own != crate::OwnKind::Owned {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    "aggregate.project_borrow requires an owning field; no-drop fields use an ordinary copy"
+                        .to_string(),
+                    diagnostics,
+                );
+            }
+            if !borrowing && recipe.clone == hew_types::CloneKind::None {
                 invalid_operation(
                     function,
                     operation.id,
@@ -1950,6 +1981,18 @@ fn verify_operation_shape(
                 );
             }
         }
+        SemOpKind::BeginBorrow { owner } => {
+            if types.get(&owner.value) != Some(&result.ty)
+                || crate::OwnKind::of_ty(&result.ty, facts) != Ok(crate::OwnKind::Owned)
+            {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    "begin_borrow must preserve the exact type of an owning value".to_string(),
+                    diagnostics,
+                );
+            }
+        }
         SemOpKind::ConstI64(_)
         | SemOpKind::ConstBool(_)
         | SemOpKind::ConstF64(_)
@@ -1962,7 +2005,6 @@ fn verify_operation_shape(
         | SemOpKind::ConstDuration(_)
         | SemOpKind::StrEq { .. }
         | SemOpKind::BytesEq { .. }
-        | SemOpKind::BeginBorrow { .. }
         | SemOpKind::EndBorrow { .. }
         | SemOpKind::DestroyValue { .. }
         | SemOpKind::Fork { .. }
@@ -2827,21 +2869,14 @@ fn record_value(
 ///
 /// `expected` comes from the same derivation the lowering used —
 /// [`OwnKind::of_param`] for a parameter, whose header slot decides before its
-/// type's class does, and [`OwnKind::of_ty`] for every other definition.
+/// type's class does, `Guaranteed` for a local borrow producer, and
+/// [`OwnKind::of_ty`] for every other definition.
 /// Without the audit `own` is a free field the lowering writes and nothing
 /// reads, so an `i64` could present as `Owned`, and a `Guaranteed` could ride
 /// on a value no borrow produced. A type neither the fact table nor §1.1 can
 /// decide is refused for the same reason the lowering refuses it: there is no
 /// default kind.
 ///
-/// MARKED SHORTCUT - a `begin_borrow` result is not yet a case here.
-/// WHY: `Guaranteed` has two producers under §1.2 - a borrow-slot parameter,
-/// which this reads, and a `begin_borrow` result, which no phase emits on this
-/// route.
-/// WHEN: `begin_borrow` lands (L2).
-/// WHAT: a `begin_borrow` result is `Guaranteed` whatever its type's class
-/// says, so the derivation branches on the defining operation as well as on
-/// the header slot.
 fn verify_own_kind(
     function: &SemFunction,
     value: ValueId,

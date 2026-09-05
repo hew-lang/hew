@@ -93,7 +93,7 @@ pub enum ValueCapability {
     Eq,
 }
 
-/// The checker's authorization for one concrete value operation.
+/// The implementation chosen for one concrete value operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueMethodPlan {
     /// The checker permits its structural implementation.
@@ -103,6 +103,37 @@ pub enum ValueMethodPlan {
         method: crate::DefId,
         type_args: Vec<ResolvedTy>,
     },
+}
+
+/// A checker-selected implementation bound to its concrete type and capability.
+///
+/// Only [`TypeFactService::capability_plan`] creates selections. Consumers can
+/// retain and inspect a selection but cannot replace its binding or plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueMethodSelection {
+    ty: ResolvedTy,
+    capability: ValueCapability,
+    plan: ValueMethodPlan,
+}
+
+impl ValueMethodSelection {
+    /// The concrete type for which the checker selected this implementation.
+    #[must_use]
+    pub fn ty(&self) -> &ResolvedTy {
+        &self.ty
+    }
+
+    /// The operation authorized by this selection.
+    #[must_use]
+    pub fn capability(&self) -> ValueCapability {
+        self.capability
+    }
+
+    /// The implementation selected by the checker.
+    #[must_use]
+    pub fn plan(&self) -> &ValueMethodPlan {
+        &self.plan
+    }
 }
 
 /// Registration-time receiver and binder order, keyed by the selected `DefId`.
@@ -385,8 +416,14 @@ impl TypeFactService {
         &mut self,
         ty: &ResolvedTy,
         capability: ValueCapability,
-    ) -> Result<Option<ValueMethodPlan>, ClassError> {
-        self.select_capability(ty, capability)
+    ) -> Result<Option<ValueMethodSelection>, ClassError> {
+        Ok(self
+            .select_capability(ty, capability)?
+            .map(|plan| ValueMethodSelection {
+                ty: ty.clone(),
+                capability,
+                plan,
+            }))
     }
 
     fn select_capability(
@@ -1894,7 +1931,8 @@ mod tests {
         assert!(matches!(
             service
                 .capability_plan(&key, super::ValueCapability::Hash)
-                .unwrap(),
+                .unwrap()
+                .map(|selection| selection.plan().clone()),
             Some(super::ValueMethodPlan::User { .. })
         ));
         service.context.method_binders.clear();
@@ -1904,7 +1942,8 @@ mod tests {
         assert_eq!(
             service
                 .capability_plan(&key, super::ValueCapability::Eq)
-                .unwrap(),
+                .unwrap()
+                .map(|selection| selection.plan().clone()),
             Some(super::ValueMethodPlan::Derived)
         );
     }

@@ -112,7 +112,7 @@ pub use type_descriptor::TypeDescriptor;
 pub use type_facts::push_type_components;
 pub use type_facts::{
     CloneKind, SendFact, TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey,
-    ValueCapability, ValueMethodPlan,
+    ValueCapability, ValueMethodPlan, ValueMethodSelection,
 };
 pub use value_class::{ClassContext, ClassError, DeclarationMarker, DeclaredType, ValueClass};
 pub use vec_authority::VecElementToken;

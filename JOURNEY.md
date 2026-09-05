@@ -991,3 +991,20 @@ callee is not an ordinary user-function call in the current SIR domain. The
 private generic impl identity is preserved and both focused compiler tests
 pass; generation output is not claimed as natively verified at this checkpoint.
 The compiler limitation is outside this source-fixture-only change.
+
+### Opaque value method selections
+
+The public capability query now returns a ValueMethodSelection whose concrete
+receiver, capability and selected plan are private. Read-only getters expose the
+binding and plan; only TypeFactService mints the handle after successful selection.
+The recursive selector continues to return ValueMethodPlan internally, preserving
+the existing selection authority without a second table or public constructor.
+
+The Types API tests retain the method identity, generic binder, specialization,
+derived composition and refusal oracles. They additionally check the exact receiver
+and capability retained by user and derived selections. The complete hew-types
+suite passes through Make. This checkpoint is based on the checker-only precursor;
+semantic and collection-method consumers require coordinated API migration.
+
+Rust formatting and scoped make lint-rust pass. Validation is Linux Types-only;
+full-workspace and native/platform execution checks were not run for this API slice.

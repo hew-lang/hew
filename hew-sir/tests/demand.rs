@@ -316,7 +316,7 @@ fn explicit_root_refusals_name_each_requested_declaration() {
             value
         }
 
-        fn refused(value: Option<i64>) -> i64 {
+        fn refused(value: Vec<i64>) -> i64 {
             0
         }
 
@@ -353,7 +353,7 @@ fn explicit_root_refusals_name_each_requested_declaration() {
         .iter()
         .find(|error| error.declaration == refused)
         .expect("ineligible root refusal must retain its declaration");
-    assert!(refused_error.to_string().contains("Option<i64>"));
+    assert!(refused_error.to_string().contains("Vec<i64>"));
     let missing_error = errors
         .iter()
         .find(|error| error.declaration == vanished)
@@ -378,7 +378,7 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
             {UNSUPPORTED_BODY}
         }}
 
-        fn refused_header(value: Option<i64>) -> i64 {{
+        fn refused_header(value: Vec<i64>) -> i64 {{
             0
         }}
 
@@ -424,7 +424,7 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
         );
     };
     assert!(
-        reason.contains("Option<i64>"),
+        reason.contains("Vec<i64>"),
         "the refusal must name the offending parameter type: {reason}"
     );
     let stranded = &every

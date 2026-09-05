@@ -180,6 +180,20 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
             )
             .expect("write to String");
         }
+        SemOpKind::VariantMake {
+            shape,
+            variant,
+            fields,
+        } => {
+            write!(out, "variant.make #{}:{variant}(", shape.0).expect("write to String");
+            for (index, field) in fields.iter().enumerate() {
+                if index != 0 {
+                    write!(out, ", ").expect("write to String");
+                }
+                write!(out, "{}", operand(field)).expect("write to String");
+            }
+            writeln!(out, ")").expect("write to String");
+        }
         SemOpKind::Unary { op, value } => {
             writeln!(out, "{op:?} {}", operand(value)).expect("write to String");
         }
@@ -283,6 +297,12 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
             edge_args(else_target)
         )
         .expect("write to String"),
+        SemTerminator::SwitchVariant {
+            shape,
+            scrutinee,
+            arms,
+            ..
+        } => dump_variant_switch(out, *shape, scrutinee, arms),
         SemTerminator::CheckedBinary {
             op,
             lhs,
@@ -336,27 +356,63 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
             inputs,
             resumes,
             cancel,
-        } => {
-            write!(out, "    suspend{{{kind:?}}}(").expect("write to String");
-            for (index, input) in inputs.iter().enumerate() {
-                if index != 0 {
-                    write!(out, ", ").expect("write to String");
-                }
-                write!(out, "{}", boundary_operand(input)).expect("write to String");
-            }
-            write!(out, ") resumes [").expect("write to String");
-            for (index, edge) in resumes.iter().enumerate() {
-                if index != 0 {
-                    write!(out, ", ").expect("write to String");
-                }
-                write!(out, "bb{}{}", edge.target.0, edge_args(edge)).expect("write to String");
-            }
-            writeln!(out, "] cancel bb{}{}", cancel.target.0, edge_args(cancel))
-                .expect("write to String");
-        }
+        } => dump_suspend(out, *kind, inputs, resumes, cancel),
         SemTerminator::ResumeUnwind => writeln!(out, "    resume_unwind").expect("write to String"),
         SemTerminator::Unreachable => writeln!(out, "    unreachable").expect("write to String"),
     }
+}
+
+fn dump_suspend(
+    out: &mut String,
+    kind: crate::SuspendKind,
+    inputs: &[crate::BoundaryOperand],
+    resumes: &[crate::Edge],
+    cancel: &crate::Edge,
+) {
+    write!(out, "    suspend{{{kind:?}}}(").expect("write to String");
+    for (index, input) in inputs.iter().enumerate() {
+        if index != 0 {
+            write!(out, ", ").expect("write to String");
+        }
+        write!(out, "{}", boundary_operand(input)).expect("write to String");
+    }
+    write!(out, ") resumes [").expect("write to String");
+    for (index, edge) in resumes.iter().enumerate() {
+        if index != 0 {
+            write!(out, ", ").expect("write to String");
+        }
+        write!(out, "bb{}{}", edge.target.0, edge_args(edge)).expect("write to String");
+    }
+    writeln!(out, "] cancel bb{}{}", cancel.target.0, edge_args(cancel)).expect("write to String");
+}
+
+fn dump_variant_switch(
+    out: &mut String,
+    shape: crate::VariantShapeId,
+    scrutinee: &crate::Operand,
+    arms: &[crate::SemVariantArm],
+) {
+    write!(
+        out,
+        "    switch.variant #{} {} [",
+        shape.0,
+        operand(scrutinee)
+    )
+    .expect("write to String");
+    for (index, arm) in arms.iter().enumerate() {
+        if index != 0 {
+            write!(out, ", ").expect("write to String");
+        }
+        write!(
+            out,
+            "{} => bb{}{}",
+            arm.variant,
+            arm.target.target.0,
+            edge_args(&arm.target)
+        )
+        .expect("write to String");
+    }
+    writeln!(out, "]").expect("write to String");
 }
 
 fn dump_checked_binary(

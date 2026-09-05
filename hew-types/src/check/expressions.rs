@@ -622,6 +622,7 @@ impl Checker {
             // PostfixTry: expr? → unwrap Result/Option
             Expr::PostfixTry(inner) => {
                 let ty = self.synthesize(&inner.0, &inner.1);
+                let ty = self.subst.resolve(&ty);
                 // Build an error message if the enclosing function's return type
                 // cannot propagate via `?`.  Computed before any mutable borrow.
                 //
@@ -645,8 +646,8 @@ impl Checker {
                 let current_return_type = self.current_return_type.clone();
                 let bad_ctx_msg: Option<String> = current_return_type.as_ref().and_then(|ret| {
                     let r = self.subst.resolve(ret);
-                    if r.as_option().is_some()
-                        || r.as_result().is_some()
+                    if (r.as_option().is_some() && ty.as_option().is_some())
+                        || (r.as_result().is_some() && ty.as_result().is_some())
                         || matches!(r, Ty::Var(_) | Ty::Error)
                         || matches!(&r, Ty::Named { name, .. }
                                 if !Ty::is_named_builtin(name)
@@ -656,8 +657,8 @@ impl Checker {
                         None
                     } else {
                         Some(format!(
-                            "`?` cannot be used in a function returning `{r}`; \
-                                 the enclosing function must return `Option` or `Result`"
+                            "`?` cannot be used in a function returning `{r}` to propagate `{ty}`; \
+                             absence requires an Option return and errors require a Result return"
                         ))
                     }
                 });

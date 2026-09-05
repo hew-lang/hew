@@ -2,8 +2,8 @@ use hew_hir::ItemId;
 use hew_sir::{
     Binding, BindingId, BindingTarget, BlockArg, BlockId, BoundaryDecision, BoundaryOperand,
     CallResult, CallUnwind, CallableId, Edge, FunctionSourceOrigin, Operand, OperandSlot, OwnKind,
-    PlaceDecl, PlaceId, SemBlock, SemFunction, SemTerminator, SnapshotDecision, SuccessorSlot,
-    SuspendKind, ValueDef, ValueId,
+    PlaceDecl, PlaceId, SemBlock, SemFunction, SemTerminator, SemVariantArm, SnapshotDecision,
+    SuccessorSlot, SuspendKind, ValueDef, ValueId, VariantShapeId,
 };
 use hew_types::{DefId, ResolvedTy};
 
@@ -196,6 +196,64 @@ fn invoke_value_result_flows_to_the_normal_block_and_visits_both_cfg_edges() {
         ]
     );
     assert_eq!(function.blocks[1].args[0].value, ValueId(9));
+}
+
+#[test]
+fn consuming_variant_switch_exposes_each_arms_fields_and_edge() {
+    let switch = SemTerminator::SwitchVariant {
+        id: hew_sir::OpId(4),
+        shape: VariantShapeId(2),
+        scrutinee: Operand { value: ValueId(7) },
+        arms: vec![
+            SemVariantArm {
+                variant: 0,
+                fields: vec![ValueDef {
+                    id: ValueId(8),
+                    ty: ResolvedTy::String,
+                    own: OwnKind::Owned,
+                }],
+                target: Edge {
+                    target: BlockId(1),
+                    args: vec![Operand { value: ValueId(8) }],
+                },
+            },
+            SemVariantArm {
+                variant: 1,
+                fields: Vec::new(),
+                target: Edge {
+                    target: BlockId(2),
+                    args: Vec::new(),
+                },
+            },
+        ],
+    };
+
+    let mut results = Vec::new();
+    switch.visit_results(|result| results.push(result.id));
+    assert_eq!(results, [ValueId(8)]);
+
+    let mut operands = Vec::new();
+    switch.visit_operands(|slot, operand| operands.push((slot, operand.value)));
+    assert_eq!(
+        operands,
+        [(OperandSlot(0), ValueId(7)), (OperandSlot(1), ValueId(8)),]
+    );
+
+    let mut successors = Vec::new();
+    switch.visit_successors_with_slots(|slot, edge| {
+        successors.push((slot, edge.target, edge.args.clone()));
+    });
+    assert_eq!(
+        successors,
+        [
+            (
+                SuccessorSlot(0),
+                BlockId(1),
+                vec![Operand { value: ValueId(8) }],
+            ),
+            (SuccessorSlot(1), BlockId(2), Vec::new()),
+        ]
+    );
 }
 
 #[test]

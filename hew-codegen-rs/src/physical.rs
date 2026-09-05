@@ -2540,6 +2540,7 @@ mod tests {
             entry_callable: Some(CallableId(0)),
             functions: vec![function],
             aggregate_shapes: vec![],
+            variant_shapes: vec![],
             type_facts: BTreeMap::from([(
                 TypeInstanceKey(ResolvedTy::I64),
                 TypeFacts {
@@ -2717,6 +2718,7 @@ mod tests {
             entry_callable: None,
             functions: vec![function],
             aggregate_shapes: vec![],
+            variant_shapes: vec![],
             type_facts: BTreeMap::from([(
                 TypeInstanceKey(ResolvedTy::Bytes),
                 TypeFacts {

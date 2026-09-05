@@ -407,6 +407,33 @@ pub struct SemAggregateShape {
     pub fields: Vec<SemAggregateField>,
 }
 
+/// Module-local identity of one demanded concrete enum shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VariantShapeId(pub u32);
+
+/// One ordered, fully substituted enum-variant payload field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemVariantField {
+    pub name: String,
+    pub ty: ResolvedTy,
+}
+
+/// One enum variant in declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemVariant {
+    pub name: String,
+    pub fields: Vec<SemVariantField>,
+}
+
+/// Exact semantic shape of one concrete enum used by demanded bodies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemVariantShape {
+    pub id: VariantShapeId,
+    pub enum_ty: ResolvedTy,
+    pub is_indirect: bool,
+    pub variants: Vec<SemVariant>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
     /// Deterministic resolved direct-call authority.  IDs must equal their
@@ -431,6 +458,9 @@ pub struct SemModule {
     /// Concrete named aggregate shapes mentioned by demanded SIR bodies, in
     /// module-local ID order. Tuple shapes remain structural in `ResolvedTy`.
     pub aggregate_shapes: Vec<SemAggregateShape>,
+    /// Concrete enum shapes mentioned by demanded SIR bodies, in module-local
+    /// ID order. Variant order is the declaration-order tag contract.
+    pub variant_shapes: Vec<SemVariantShape>,
     /// The §6.3 fact table for every type this module's bodies mention,
     /// projected from `TypeCheckOutput::type_facts`.
     ///
@@ -469,6 +499,23 @@ impl SemModule {
         self.aggregate_shapes
             .iter()
             .find(|shape| &shape.aggregate_ty == ty)
+    }
+
+    /// Resolve an enum shape only when its ID agrees with the canonical table
+    /// position.
+    #[must_use]
+    pub fn variant_shape(&self, id: VariantShapeId) -> Option<&SemVariantShape> {
+        self.variant_shapes
+            .get(usize::try_from(id.0).ok()?)
+            .filter(|shape| shape.id == id)
+    }
+
+    /// Resolve the one exact concrete enum descriptor for a semantic type.
+    #[must_use]
+    pub fn variant_shape_for_type(&self, ty: &ResolvedTy) -> Option<&SemVariantShape> {
+        self.variant_shapes
+            .iter()
+            .find(|shape| &shape.enum_ty == ty)
     }
 
     /// Find a monomorphic resolved callable from checker-owned declaration
@@ -710,6 +757,14 @@ pub enum SemOpKind {
         aggregate: Operand,
         field: u32,
     },
+    /// Construct one enum value by consuming every ordered field of the exact
+    /// declaration-order variant. The descriptor carries no physical tag or
+    /// payload layout.
+    VariantMake {
+        shape: VariantShapeId,
+        variant: u32,
+        fields: Vec<Operand>,
+    },
     Unary {
         op: hew_parser::ast::UnaryOp,
         value: Operand,
@@ -849,7 +904,7 @@ impl SemOpKind {
                 }
             }
             Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
-            Self::AggregateMake { fields, .. } => {
+            Self::AggregateMake { fields, .. } | Self::VariantMake { fields, .. } => {
                 for (index, field) in fields.iter().enumerate() {
                     visit(
                         OperandSlot(
@@ -914,7 +969,7 @@ impl SemOpKind {
                 }
             }
             Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
-            Self::AggregateMake { fields, .. } => {
+            Self::AggregateMake { fields, .. } | Self::VariantMake { fields, .. } => {
                 for (index, field) in fields.iter_mut().enumerate() {
                     visit(
                         OperandSlot(
@@ -967,6 +1022,7 @@ impl SemOpKind {
             | Self::Move { .. }
             | Self::Fork { .. }
             | Self::AggregateMake { .. }
+            | Self::VariantMake { .. }
             | Self::AggregateProjectCopy { .. }
             | Self::Destructure { .. }
             | Self::AllocPlace { .. }
@@ -1005,6 +1061,7 @@ impl SemOpKind {
                 | Self::Move { .. }
                 | Self::Fork { .. }
                 | Self::AggregateMake { .. }
+                | Self::VariantMake { .. }
                 | Self::Destructure { .. }
                 | Self::LoadTake { .. }
                 | Self::StoreInit { .. }
@@ -1032,6 +1089,18 @@ pub enum SemTerminator {
         condition: Operand,
         then_target: Edge,
         else_target: Edge,
+    },
+    /// Consume one enum and transfer all active payload fields through the
+    /// edge for its exact declaration-order variant.
+    ///
+    /// The arms must cover the descriptor exactly once. A runtime tag outside
+    /// that closed set is corrupt representation and terminates the process;
+    /// it is not a language-visible trap or unwind edge.
+    SwitchVariant {
+        id: OpId,
+        shape: VariantShapeId,
+        scrutinee: Operand,
+        arms: Vec<SemVariantArm>,
     },
     /// Checked integer arithmetic with explicit normal and failure control.
     ///
@@ -1097,6 +1166,14 @@ pub enum SemTerminator {
     Unreachable,
 }
 
+/// One exact successor of a consuming [`SemTerminator::SwitchVariant`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemVariantArm {
+    pub variant: u32,
+    pub fields: Vec<ValueDef>,
+    pub target: Edge,
+}
+
 impl SemTerminator {
     /// Visit call, return and suspension values together with their total
     /// boundary decisions.
@@ -1131,6 +1208,7 @@ impl SemTerminator {
             Self::Return { value: None }
             | Self::Goto(_)
             | Self::Branch { .. }
+            | Self::SwitchVariant { .. }
             | Self::CheckedBinary { .. }
             | Self::Trap { .. }
             | Self::ResumeUnwind
@@ -1150,6 +1228,13 @@ impl SemTerminator {
                 ..
             }
             | Self::CheckedBinary { result, .. } => visit(result),
+            Self::SwitchVariant { arms, .. } => {
+                for arm in arms {
+                    for field in &arm.fields {
+                        visit(field);
+                    }
+                }
+            }
             Self::Return { .. }
             | Self::Goto(_)
             | Self::Branch { .. }
@@ -1202,6 +1287,9 @@ impl SemTerminator {
                         .expect("SIR branch operand count exceeds u32");
                 }
             }
+            Self::SwitchVariant {
+                scrutinee, arms, ..
+            } => visit_variant_switch_operands(scrutinee, arms, visit),
             Self::CheckedBinary {
                 lhs,
                 rhs,
@@ -1302,6 +1390,9 @@ impl SemTerminator {
                         .expect("SIR branch operand count exceeds u32");
                 }
             }
+            Self::SwitchVariant {
+                scrutinee, arms, ..
+            } => visit_variant_switch_operands_mut(scrutinee, arms, visit),
             Self::CheckedBinary {
                 lhs,
                 rhs,
@@ -1395,6 +1486,17 @@ impl SemTerminator {
                 visit(SuccessorSlot(0), then_target);
                 visit(SuccessorSlot(1), else_target);
             }
+            Self::SwitchVariant { arms, .. } => {
+                for (index, arm) in arms.iter().enumerate() {
+                    visit(
+                        SuccessorSlot(
+                            u32::try_from(index)
+                                .expect("SIR variant-switch edge count exceeds u32"),
+                        ),
+                        &arm.target,
+                    );
+                }
+            }
             Self::CheckedBinary {
                 normal, failures, ..
             } => {
@@ -1450,6 +1552,17 @@ impl SemTerminator {
             } => {
                 visit(SuccessorSlot(0), then_target);
                 visit(SuccessorSlot(1), else_target);
+            }
+            Self::SwitchVariant { arms, .. } => {
+                for (index, arm) in arms.iter_mut().enumerate() {
+                    visit(
+                        SuccessorSlot(
+                            u32::try_from(index)
+                                .expect("SIR variant-switch edge count exceeds u32"),
+                        ),
+                        &mut arm.target,
+                    );
+                }
             }
             Self::CheckedBinary {
                 normal, failures, ..
@@ -1508,6 +1621,9 @@ impl SemTerminator {
                 1 => Some(else_target),
                 _ => None,
             },
+            Self::SwitchVariant { arms, .. } => arms
+                .get(usize::try_from(slot.0).ok()?)
+                .map(|arm| &arm.target),
             Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
                 match slot.0 {
                     0 => Some(normal),
@@ -1554,6 +1670,9 @@ impl SemTerminator {
                 1 => Some(else_target),
                 _ => None,
             },
+            Self::SwitchVariant { arms, .. } => arms
+                .get_mut(usize::try_from(slot.0).ok()?)
+                .map(|arm| &mut arm.target),
             Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
                 match slot.0 {
                     0 => Some(normal),
@@ -1618,6 +1737,8 @@ impl SemTerminator {
                 "branch then-edge argument"
             }
             Self::Branch { .. } => "branch else-edge argument",
+            Self::SwitchVariant { .. } if slot.0 == 0 => "variant-switch scrutinee",
+            Self::SwitchVariant { .. } => "variant-switch arm argument",
             Self::CheckedBinary { normal, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < 2 + normal.args.len()) =>
             {
@@ -1711,6 +1832,40 @@ fn visit_checked_binary_operands_mut(
             next = next
                 .checked_add(1)
                 .expect("SIR checked-binary operand count exceeds u32");
+        }
+    }
+}
+
+fn visit_variant_switch_operands(
+    scrutinee: &Operand,
+    arms: &[SemVariantArm],
+    mut visit: impl FnMut(OperandSlot, &Operand),
+) {
+    visit(OperandSlot(0), scrutinee);
+    let mut next = 1_u32;
+    for arm in arms {
+        for operand in &arm.target.args {
+            visit(OperandSlot(next), operand);
+            next = next
+                .checked_add(1)
+                .expect("SIR variant-switch operand count exceeds u32");
+        }
+    }
+}
+
+fn visit_variant_switch_operands_mut(
+    scrutinee: &mut Operand,
+    arms: &mut [SemVariantArm],
+    mut visit: impl FnMut(OperandSlot, &mut Operand),
+) {
+    visit(OperandSlot(0), scrutinee);
+    let mut next = 1_u32;
+    for arm in arms {
+        for operand in &mut arm.target.args {
+            visit(OperandSlot(next), operand);
+            next = next
+                .checked_add(1)
+                .expect("SIR variant-switch operand count exceeds u32");
         }
     }
 }

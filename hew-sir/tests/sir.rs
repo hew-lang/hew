@@ -6,10 +6,14 @@ use hew_sir::{
     CallableId, CallableInstance, Edge, EffectSet, FunctionSourceOrigin, GenericTemplateId, OpId,
     Operand, OperandSlot, OwnKind, Provenance, RewriteError, SemAbiParam, SemBlock, SemCallConv,
     SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemTerminator, SirDiagnosticKind, SirInstanceKey, SuspendKind, TrapKind, UseSite,
-    ValueDef, ValueId,
+    SemSignature, SemTerminator, SemVariant, SemVariantArm, SemVariantField, SemVariantShape,
+    SirDiagnosticKind, SirInstanceKey, SuspendKind, TrapKind, UseSite, ValueDef, ValueId,
+    VariantShapeId,
 };
-use hew_types::{DefId, ResolvedTy, TypeFactContext, TypeFactService};
+use hew_types::{
+    CloneKind, DefId, ResolvedTy, SendFact, TypeFactContext, TypeFactService, TypeFacts,
+    TypeInstanceKey, ValueClass,
+};
 use std::collections::BTreeMap;
 
 fn definition(id: u32) -> ValueDef {
@@ -120,6 +124,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         entry_callable: None,
         functions,
         aggregate_shapes: Vec::new(),
+        variant_shapes: Vec::new(),
         type_facts: fact_service.into_rows(),
         string_literals: BTreeMap::new(),
         bytes_literals: BTreeMap::new(),
@@ -159,6 +164,226 @@ fn unit_function(
         places: Vec::new(),
         bindings: Vec::new(),
     }
+}
+
+fn choice_ty() -> ResolvedTy {
+    ResolvedTy::Named {
+        name: "Choice".to_string(),
+        args: Vec::new(),
+        builtin: None,
+        is_opaque: false,
+    }
+}
+
+fn empty_choice_block(choice: &ResolvedTy) -> SemBlock {
+    SemBlock {
+        id: BlockId(2),
+        args: Vec::new(),
+        ops: vec![
+            SemOp {
+                id: OpId(3),
+                results: vec![ValueDef {
+                    id: ValueId(4),
+                    ty: choice.clone(),
+                    own: OwnKind::Owned,
+                }],
+                kind: SemOpKind::VariantMake {
+                    shape: VariantShapeId(0),
+                    variant: 1,
+                    fields: Vec::new(),
+                },
+                provenance: Provenance::Synthesized,
+            },
+            SemOp {
+                id: OpId(4),
+                results: Vec::new(),
+                kind: SemOpKind::DestroyValue {
+                    value: read(ValueId(4)),
+                },
+                provenance: Provenance::Synthesized,
+            },
+        ],
+        terminator: SemTerminator::Return { value: None },
+    }
+}
+
+fn choice_variant_shape(choice: &ResolvedTy) -> SemVariantShape {
+    SemVariantShape {
+        id: VariantShapeId(0),
+        enum_ty: choice.clone(),
+        is_indirect: false,
+        variants: vec![
+            SemVariant {
+                name: "Payload".to_string(),
+                fields: vec![SemVariantField {
+                    name: "0".to_string(),
+                    ty: ResolvedTy::String,
+                }],
+            },
+            SemVariant {
+                name: "Empty".to_string(),
+                fields: Vec::new(),
+            },
+        ],
+    }
+}
+
+fn exhaustive_choice_switch() -> SemModule {
+    let choice = choice_ty();
+    let mut module = module(vec![SemFunction {
+        id: ItemId(0),
+        callable: CallableId(0),
+        declaration: DefId::for_test("choose"),
+        name: "choose".to_string(),
+        span: 0..0,
+        source_origin: FunctionSourceOrigin::RootUnit,
+        params: vec![BlockArg {
+            value: ValueId(0),
+            ty: choice.clone(),
+            own: OwnKind::Guaranteed,
+        }],
+        return_ty: ResolvedTy::Unit,
+        entry: BlockId(0),
+        blocks: vec![
+            SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![SemOp {
+                    id: OpId(0),
+                    results: vec![ValueDef {
+                        id: ValueId(1),
+                        ty: choice.clone(),
+                        own: OwnKind::Owned,
+                    }],
+                    kind: SemOpKind::CopyValue {
+                        source: read(ValueId(0)),
+                    },
+                    provenance: Provenance::Synthesized,
+                }],
+                terminator: SemTerminator::SwitchVariant {
+                    id: OpId(1),
+                    shape: VariantShapeId(0),
+                    scrutinee: read(ValueId(1)),
+                    arms: vec![
+                        SemVariantArm {
+                            variant: 0,
+                            fields: vec![ValueDef {
+                                id: ValueId(2),
+                                ty: ResolvedTy::String,
+                                own: OwnKind::Owned,
+                            }],
+                            target: Edge {
+                                target: BlockId(1),
+                                args: vec![read(ValueId(2))],
+                            },
+                        },
+                        SemVariantArm {
+                            variant: 1,
+                            fields: Vec::new(),
+                            target: Edge {
+                                target: BlockId(2),
+                                args: Vec::new(),
+                            },
+                        },
+                    ],
+                },
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: vec![BlockArg {
+                    value: ValueId(3),
+                    ty: ResolvedTy::String,
+                    own: OwnKind::Owned,
+                }],
+                ops: vec![SemOp {
+                    id: OpId(2),
+                    results: Vec::new(),
+                    kind: SemOpKind::DestroyValue {
+                        value: read(ValueId(3)),
+                    },
+                    provenance: Provenance::Synthesized,
+                }],
+                terminator: SemTerminator::Return { value: None },
+            },
+            empty_choice_block(&choice),
+        ],
+        places: Vec::new(),
+        bindings: Vec::new(),
+    }]);
+    module.variant_shapes = vec![choice_variant_shape(&choice)];
+    module.callables[0].signature.params[0].passing = SemParamPassing::Borrow;
+    module.type_facts.insert(
+        TypeInstanceKey(choice),
+        TypeFacts {
+            class: ValueClass::CowValue,
+            clone: CloneKind::FieldWise,
+            send: SendFact::Known(true),
+            hash: false,
+            eq: false,
+        },
+    );
+    module
+}
+
+#[test]
+fn verifier_admits_a_consuming_exhaustive_variant_switch() {
+    let module = exhaustive_choice_switch();
+    assert!(
+        verify_module(&module).is_empty(),
+        "an exact exhaustive variant switch must verify: {:#?}",
+        verify_module(&module)
+    );
+}
+
+#[test]
+fn verifier_refuses_a_variant_switch_with_incomplete_coverage() {
+    let mut module = exhaustive_choice_switch();
+    let SemTerminator::SwitchVariant { arms, .. } = &mut module.functions[0].blocks[0].terminator
+    else {
+        panic!("fixture must contain a variant switch");
+    };
+    arms.pop();
+
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidTerminator { reason }
+            if reason.contains("descriptor requires 2") || reason.contains("missing arm 1")
+    )));
+}
+
+#[test]
+fn verifier_refuses_a_variant_arm_that_does_not_forward_its_payload() {
+    let mut module = exhaustive_choice_switch();
+    let SemTerminator::SwitchVariant { arms, .. } = &mut module.functions[0].blocks[0].terminator
+    else {
+        panic!("fixture must contain a variant switch");
+    };
+    arms[0].target.args.clear();
+
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason.contains("forward every defined field exactly once")
+    )));
+}
+
+#[test]
+fn verifier_refuses_variant_construction_with_the_wrong_payload_shape() {
+    let mut module = exhaustive_choice_switch();
+    let SemOpKind::VariantMake { variant, .. } = &mut module.functions[0].blocks[2].ops[0].kind
+    else {
+        panic!("fixture must contain a variant construction");
+    };
+    *variant = 0;
+
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason.contains("has 0 field(s), expected 1")
+    )));
 }
 
 #[test]

@@ -844,6 +844,9 @@ impl Checker {
                 value,
                 else_block,
             } => {
+                let required_optional = else_block.is_some()
+                    && matches!(&pattern.0, Pattern::Identifier(name)
+                        if !self.let_identifier_is_unit_variant(name));
                 let binding_context = match &pattern.0 {
                     Pattern::Identifier(name) => format!("local binding `{name}`"),
                     _ => "local binding".to_string(),
@@ -911,6 +914,11 @@ impl Checker {
                     if let Some(annotation) = ty {
                         let expected =
                             self.resolve_annotation_with_holes(annotation, binding_context.clone());
+                        let expected = if required_optional {
+                            Ty::option(expected)
+                        } else {
+                            expected
+                        };
                         let actual = self.check_against(val, vs, &expected);
                         self.annotated_binding_ty(&expected, actual)
                     } else {
@@ -927,6 +935,33 @@ impl Checker {
                     self.infer_integer_literal_binding_type(value.as_ref(), val_ty)
                 } else {
                     val_ty
+                };
+                // A required optional binding is the existing Some-pattern
+                // bind-or-diverge operation. Preserve the user's binder span
+                // so resolution and HIR use its ordinary binding identity.
+                let required_pattern;
+                let pattern = if required_optional {
+                    let resolved = self.subst.resolve(&val_ty);
+                    if resolved.as_option().is_none() && !matches!(resolved, Ty::Var(_) | Ty::Error)
+                    {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &pattern.1,
+                            "a required binding with `else` requires Option; handle Result errors explicitly".to_string(),
+                        );
+                    }
+                    required_pattern = (
+                        Pattern::ContextVariant(hew_parser::ast::ContextVariantPattern {
+                            name: "Some".to_string(),
+                            payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(vec![
+                                pattern.clone(),
+                            ])),
+                        }),
+                        pattern.1.clone(),
+                    );
+                    &required_pattern
+                } else {
+                    pattern
                 };
                 // Consume the scratch field unconditionally so stale state
                 // never accumulates across statements.  Only register the

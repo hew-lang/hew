@@ -1164,6 +1164,10 @@ impl FunctionLowerer<'_> {
                     glue: self.aggregate_id(&self.storage[aggregate.0 as usize].ty)?,
                 })
             }
+            SemOpKind::VariantMake { .. } => Err(PhysicalError::new(format!(
+                "SIR variant construction op {} is not yet admitted by physical MIR",
+                operation.id.0
+            ))),
             SemOpKind::StrEq { .. } | SemOpKind::BytesEq { .. } => {
                 Err(PhysicalError::new(format!(
                     "SIR op {} is not yet admitted by physical MIR",
@@ -1298,6 +1302,7 @@ impl FunctionLowerer<'_> {
             SemTerminator::Trap { kind } => Ok(PhysicalTerminator::Trap(*kind)),
             SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),
+            SemTerminator::SwitchVariant { .. } => Err(PhysicalError::new("variant switch")),
             SemTerminator::Suspend { .. } => Err(PhysicalError::new(
                 "runtime and suspending calls need explicit status ABI wrappers",
             )),
@@ -2781,6 +2786,7 @@ mod tests {
             entry_callable: Some(CallableId(0)),
             functions: vec![function],
             aggregate_shapes: vec![],
+            variant_shapes: vec![],
             type_facts,
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),

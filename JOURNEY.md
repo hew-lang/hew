@@ -290,3 +290,26 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   every field result as a separately tracked SSA value. Wildcard and nested
   fields therefore remain explicit cleanup obligations; a malformed result
   type is rejected by the verifier rather than reclassified downstream.
+
+## Owned variant semantics
+
+- SIR variant descriptors retain an exact concrete enum type, indirectness,
+  and declaration-ordered payload fields without choosing tag width, payload
+  layout or allocation. Payload ownership recipes come only from the module's
+  checker-published type facts.
+- Variant construction consumes every payload field. An exhaustive variant
+  switch consumes the enum and defines the active payload fields only on that
+  arm's edge; missing arms, repeated tags and cross-arm payload forwarding are
+  verifier errors.
+- A runtime tag outside the verified descriptor is corrupt representation.
+  It has no language-visible trap or unwind edge and must become a process-fatal
+  backend trap without reading or dropping the unknown payload.
+- HIR constructors and unguarded exhaustive matches now produce those semantic
+  operations for exact user enums and concrete Option/Result instances. An
+  ordinary enum argument remains with the caller, while the callee switches a
+  copy; selected payload fields move into their arm and unbound fields are
+  destroyed explicitly before the join.
+- The same descriptors also carry checker-classified bit-copy records and
+  enums such as `Point` and `Option<i64>`. Their operations have no owner glue,
+  but retain exact shapes and field recipes instead of bypassing the semantic
+  contract based on a scalar-only representation.

@@ -4,7 +4,9 @@
 //! All ownership is explicit in the op stream. An operand's mode **is the op it
 //! feeds**; there is no side tag on a read.
 
-use crate::model::{AggregateShapeRef, SemAggregateShape, SemParamPassing, ValueId};
+use crate::model::{
+    AggregateShapeRef, SemAggregateShape, SemParamPassing, SemVariantShape, ValueId, VariantShapeId,
+};
 use hew_parser::ast::Span;
 use hew_types::{CloneKind, ResolvedTy, TypeInstanceKey, ValueClass};
 
@@ -92,6 +94,85 @@ pub fn aggregate_field_recipes(
             let row = facts.get(&TypeInstanceKey(ty.clone())).ok_or_else(|| {
                 format!(
                     "aggregate field `{}` has no concrete type-fact row",
+                    ty.user_facing()
+                )
+            })?;
+            Ok(AggregateFieldRecipe {
+                ty,
+                own: OwnKind::of_class(row.class),
+                clone: row.clone,
+            })
+        })
+        .collect()
+}
+
+/// Resolve one exact variant's ordered payload types.
+///
+/// # Errors
+///
+/// Refuses a missing/non-canonical shape, a descriptor for a different enum
+/// type, or an out-of-range declaration-order variant.
+pub fn variant_field_types(
+    shape: VariantShapeId,
+    variant: u32,
+    enum_ty: &ResolvedTy,
+    shapes: &[SemVariantShape],
+) -> Result<Vec<ResolvedTy>, String> {
+    let descriptor = shapes
+        .get(
+            usize::try_from(shape.0)
+                .map_err(|_| format!("variant shape {} exceeds the host index range", shape.0))?,
+        )
+        .filter(|descriptor| descriptor.id == shape)
+        .ok_or_else(|| format!("variant shape {} is missing or non-canonical", shape.0))?;
+    if &descriptor.enum_ty != enum_ty {
+        return Err(format!(
+            "variant shape {} describes `{}`, not `{}`",
+            shape.0,
+            descriptor.enum_ty.user_facing(),
+            enum_ty.user_facing()
+        ));
+    }
+    let variant = descriptor
+        .variants
+        .get(
+            usize::try_from(variant)
+                .map_err(|_| "variant index exceeds the host index range".to_string())?,
+        )
+        .ok_or_else(|| {
+            format!(
+                "variant {variant} is out of bounds for `{}` with {} variant(s)",
+                enum_ty.user_facing(),
+                descriptor.variants.len()
+            )
+        })?;
+    Ok(variant
+        .fields
+        .iter()
+        .map(|field| field.ty.clone())
+        .collect())
+}
+
+/// Derive one exact variant's ordered ownership/copy recipes from the
+/// checker-published type-fact rows.
+///
+/// # Errors
+///
+/// Returns [`variant_field_types`]'s descriptor refusal or identifies the
+/// concrete payload type whose checker-published fact row is absent.
+pub fn variant_field_recipes(
+    shape: VariantShapeId,
+    variant: u32,
+    enum_ty: &ResolvedTy,
+    shapes: &[SemVariantShape],
+    facts: &TypeFactTable,
+) -> Result<Vec<AggregateFieldRecipe>, String> {
+    variant_field_types(shape, variant, enum_ty, shapes)?
+        .into_iter()
+        .map(|ty| {
+            let row = facts.get(&TypeInstanceKey(ty.clone())).ok_or_else(|| {
+                format!(
+                    "variant field `{}` has no concrete type-fact row",
                     ty.user_facing()
                 )
             })?;

@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use hew_hir::{lower_program_host_target, verify_hir, ResolutionCtx};
 use hew_parser::Severity;
 use hew_types::module_registry::{build_module_search_paths, ModuleRegistry};
 use hew_types::Checker;
@@ -39,17 +38,12 @@ pub fn parse_check_lower(source: &str) -> Option<hew_compile::SessionOutput> {
         return None;
     }
 
-    let hir = lower_program_host_target(&parsed.program, &type_check, &ResolutionCtx);
-    if !hir.diagnostics.is_empty() || !verify_hir(&hir.module).is_empty() {
-        return None;
-    }
-
     hew_compile::Session::new(
-            hew_compile::SessionTarget::native(),
-            hew_compile::DiagnosticPolicy::default(),
-        )
-        .lower_hir_module(&hir.module, &type_check)
-        .ok()
+        hew_compile::SessionTarget::native(),
+        hew_compile::DiagnosticPolicy::default(),
+    )
+    .lower_program(&parsed.program, &type_check)
+    .ok()
 }
 
 #[allow(dead_code)]

@@ -6,7 +6,7 @@ use crate::{
     AggregateShapeId, AggregateShapeRef, BindingTarget, BlockId, CallableId, CallableInstance,
     GenericTemplateId, SemAggregateShape, SemCallConv, SemCallable, SemCallableKind, SemFunction,
     SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
-    SirInstanceKey, UseSite, ValueId,
+    SemVariantShape, SirInstanceKey, UseSite, ValueId, VariantShapeId,
 };
 use hew_hir::{monomorph::function_monomorph_symbol, substitute_type_params};
 use hew_types::ResolvedTy;
@@ -30,6 +30,10 @@ pub enum SirDiagnosticKind {
     },
     InvalidAggregateShape {
         shape: AggregateShapeId,
+        reason: String,
+    },
+    InvalidVariantShape {
+        shape: VariantShapeId,
         reason: String,
     },
     InvalidRootCallable {
@@ -277,11 +281,9 @@ fn verify_aggregate_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnost
         if shape.fields.iter().any(|field| !names.insert(&field.name)) {
             refuse("descriptor repeats a field name".to_string());
         }
-        if crate::OwnKind::of_ty(&shape.aggregate_ty, &module.type_facts)
-            != Ok(crate::OwnKind::Owned)
-        {
+        if crate::OwnKind::of_ty(&shape.aggregate_ty, &module.type_facts).is_err() {
             refuse(format!(
-                "concrete type `{}` is not an owned aggregate",
+                "concrete type `{}` has no exact ownership facts",
                 shape.aggregate_ty.user_facing()
             ));
         }
@@ -296,11 +298,82 @@ fn verify_aggregate_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnost
     }
 }
 
+fn verify_variant_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
+    let mut types = HashSet::new();
+    for (index, shape) in module.variant_shapes.iter().enumerate() {
+        let expected =
+            VariantShapeId(u32::try_from(index).expect("SIR variant shape count exceeds u32"));
+        let mut refuse = |reason| {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidVariantShape {
+                shape: shape.id,
+                reason,
+            }));
+        };
+        if shape.id != expected {
+            refuse(format!(
+                "non-canonical table position: expected {}, found {}",
+                expected.0, shape.id.0
+            ));
+        }
+        if !matches!(shape.enum_ty, ResolvedTy::Named { .. }) {
+            refuse(format!(
+                "variant descriptor type `{}` is not an exact enum instance",
+                shape.enum_ty.user_facing()
+            ));
+        }
+        if !types.insert(shape.enum_ty.clone()) {
+            refuse(format!(
+                "concrete type `{}` has more than one variant descriptor",
+                shape.enum_ty.user_facing()
+            ));
+        }
+        if shape.variants.is_empty() {
+            refuse("variant descriptor has no variants".to_string());
+        }
+        let mut variant_names = HashSet::new();
+        for variant in &shape.variants {
+            if !variant_names.insert(&variant.name) {
+                refuse("descriptor repeats a variant name".to_string());
+            }
+            let mut field_names = HashSet::new();
+            if variant
+                .fields
+                .iter()
+                .any(|field| !field_names.insert(&field.name))
+            {
+                refuse(format!("variant `{}` repeats a field name", variant.name));
+            }
+        }
+        if crate::OwnKind::of_ty(&shape.enum_ty, &module.type_facts).is_err() {
+            refuse(format!(
+                "concrete type `{}` has no exact ownership facts",
+                shape.enum_ty.user_facing()
+            ));
+        }
+        for variant in 0..shape.variants.len() {
+            let Ok(variant) = u32::try_from(variant) else {
+                refuse("variant count exceeds the module-local ID range".to_string());
+                break;
+            };
+            if let Err(reason) = crate::variant_field_recipes(
+                shape.id,
+                variant,
+                &shape.enum_ty,
+                &module.variant_shapes,
+                &module.type_facts,
+            ) {
+                refuse(reason);
+            }
+        }
+    }
+}
+
 #[must_use]
 pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
     let callables = verify_callable_table(module, &mut diagnostics);
     verify_aggregate_shapes(module, &mut diagnostics);
+    verify_variant_shapes(module, &mut diagnostics);
     let mut names = HashSet::new();
     let mut declarations = HashSet::new();
     for function in &module.functions {
@@ -344,6 +417,7 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
             Some(&callables),
             &module.type_facts,
             &module.aggregate_shapes,
+            &module.variant_shapes,
         ));
     }
     diagnostics
@@ -363,6 +437,7 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
         Some(&callables),
         &module.type_facts,
         &module.aggregate_shapes,
+        &module.variant_shapes,
     ));
     diagnostics
 }
@@ -396,7 +471,7 @@ pub(crate) fn verify_function_with_facts(
     function: &SemFunction,
     facts: &TypeFactTable,
 ) -> Vec<SirDiagnostic> {
-    verify_function_with_context(function, None, facts, &[])
+    verify_function_with_context(function, None, facts, &[], &[])
 }
 
 /// Verify the semantic precondition for discarding blocks during a CFG rewrite.
@@ -475,7 +550,9 @@ pub(crate) fn verify_cfg_discard_safety(
         }
         if matches!(
             block.terminator,
-            SemTerminator::CheckedBinary { .. } | SemTerminator::Trap { .. }
+            SemTerminator::CheckedBinary { .. }
+                | SemTerminator::SwitchVariant { .. }
+                | SemTerminator::Trap { .. }
         ) {
             diagnostics.push(cfg_discard_diag(
                 original,
@@ -508,6 +585,7 @@ pub(crate) fn verify_function_with_context(
     callable_context: Option<&CallableContext<'_>>,
     facts: &TypeFactTable,
     aggregate_shapes: &[SemAggregateShape],
+    variant_shapes: &[SemVariantShape],
 ) -> Vec<SirDiagnostic> {
     let mut diagnostics = Vec::new();
     verify_function_callable_identity(function, callable_context, &mut diagnostics);
@@ -610,7 +688,8 @@ pub(crate) fn verify_function_with_context(
         }
         if let SemTerminator::Call { id, .. }
         | SemTerminator::RtCall { id, .. }
-        | SemTerminator::CheckedBinary { id, .. } = &block.terminator
+        | SemTerminator::CheckedBinary { id, .. }
+        | SemTerminator::SwitchVariant { id, .. } = &block.terminator
         {
             if !operations.insert(*id) {
                 diagnostics.push(diag(function, SirDiagnosticKind::DuplicateOp(*id)));
@@ -651,6 +730,10 @@ pub(crate) fn verify_function_with_context(
     // Every value type is known before checking operations, edges, and
     // terminators. In particular this catches a malformed use whose value is
     // defined in a later block rather than silently skipping its type check.
+    let variants = VariantVerifyContext {
+        facts,
+        shapes: variant_shapes,
+    };
     for block in &function.blocks {
         for op in &block.ops {
             verify_operation_shape(
@@ -659,6 +742,7 @@ pub(crate) fn verify_function_with_context(
                 &types,
                 facts,
                 aggregate_shapes,
+                variant_shapes,
                 &mut diagnostics,
             );
         }
@@ -702,6 +786,7 @@ pub(crate) fn verify_function_with_context(
             &types,
             &blocks,
             callable_context,
+            &variants,
             &mut diagnostics,
         );
     }
@@ -1219,6 +1304,7 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
         || matches!(ty, ResolvedTy::Tuple(fields) if !fields.is_empty())
         || module.aggregate_shape_for_type(ty).is_some()
+        || module.variant_shape_for_type(ty).is_some()
 }
 
 fn is_supported_call_return(module: &SemModule, ty: &ResolvedTy) -> bool {
@@ -1235,6 +1321,7 @@ fn verify_operation_shape(
     types: &HashMap<ValueId, ResolvedTy>,
     facts: &TypeFactTable,
     aggregate_shapes: &[SemAggregateShape],
+    variant_shapes: &[SemVariantShape],
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
     if let SemOpKind::Destructure { shape, aggregate } = &operation.kind {
@@ -1249,12 +1336,12 @@ fn verify_operation_shape(
                     return;
                 }
             };
-        if crate::OwnKind::of_ty(aggregate_ty, facts) != Ok(crate::OwnKind::Owned) {
+        if crate::OwnKind::of_ty(aggregate_ty, facts).is_err() {
             invalid_operation(
                 function,
                 operation.id,
                 format!(
-                    "aggregate.destructure operand `{}` is not owned",
+                    "aggregate.destructure operand `{}` has no exact ownership facts",
                     aggregate_ty.user_facing()
                 ),
                 diagnostics,
@@ -1464,12 +1551,12 @@ fn verify_operation_shape(
                         return;
                     }
                 };
-            if crate::OwnKind::of_ty(&result.ty, facts) != Ok(crate::OwnKind::Owned) {
+            if crate::OwnKind::of_ty(&result.ty, facts).is_err() {
                 invalid_operation(
                     function,
                     operation.id,
                     format!(
-                        "aggregate.make result `{}` is not an owned aggregate",
+                        "aggregate.make result `{}` has no exact ownership facts",
                         result.ty.user_facing()
                     ),
                     diagnostics,
@@ -1505,6 +1592,65 @@ fn verify_operation_shape(
                 }
             }
         }
+        SemOpKind::VariantMake {
+            shape,
+            variant,
+            fields,
+        } => {
+            let recipes = match crate::variant_field_recipes(
+                *shape,
+                *variant,
+                &result.ty,
+                variant_shapes,
+                facts,
+            ) {
+                Ok(recipes) => recipes,
+                Err(reason) => {
+                    invalid_operation(function, operation.id, reason, diagnostics);
+                    return;
+                }
+            };
+            if crate::OwnKind::of_ty(&result.ty, facts).is_err() {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "variant.make result `{}` has no exact ownership facts",
+                        result.ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+            if fields.len() != recipes.len() {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "variant.make for `{}` variant {variant} has {} field(s), expected {}",
+                        result.ty.user_facing(),
+                        fields.len(),
+                        recipes.len()
+                    ),
+                    diagnostics,
+                );
+            }
+            for (index, (field, recipe)) in fields.iter().zip(recipes).enumerate() {
+                if types.get(&field.value) != Some(&recipe.ty) {
+                    let actual = types
+                        .get(&field.value)
+                        .map_or("<undefined>".to_string(), |ty| ty.user_facing().to_string());
+                    invalid_operation(
+                        function,
+                        operation.id,
+                        format!(
+                            "variant.make field {index} has `{actual}`, expected `{}`",
+                            recipe.ty.user_facing()
+                        ),
+                        diagnostics,
+                    );
+                }
+            }
+        }
         SemOpKind::AggregateProjectCopy {
             shape,
             aggregate,
@@ -1522,12 +1668,12 @@ fn verify_operation_shape(
                         return;
                     }
                 };
-            if crate::OwnKind::of_ty(aggregate_ty, facts) != Ok(crate::OwnKind::Owned) {
+            if crate::OwnKind::of_ty(aggregate_ty, facts).is_err() {
                 invalid_operation(
                     function,
                     operation.id,
                     format!(
-                        "aggregate.project_copy operand `{}` is not an owned aggregate",
+                        "aggregate.project_copy operand `{}` has no exact ownership facts",
                         aggregate_ty.user_facing()
                     ),
                     diagnostics,
@@ -2197,6 +2343,7 @@ fn failure_cfg_matches_trap(
             }
             SemTerminator::Return { .. }
             | SemTerminator::CheckedBinary { .. }
+            | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
             | SemTerminator::Suspend { .. }
@@ -2219,6 +2366,177 @@ fn failure_cfg_matches_trap(
     )
 }
 
+struct VariantVerifyContext<'a> {
+    facts: &'a TypeFactTable,
+    shapes: &'a [SemVariantShape],
+}
+
+fn verify_variant_switch_terminator(
+    function: &SemFunction,
+    terminator: &SemTerminator,
+    types: &HashMap<ValueId, ResolvedTy>,
+    context: &VariantVerifyContext<'_>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    let SemTerminator::SwitchVariant {
+        id,
+        shape,
+        scrutinee,
+        arms,
+    } = terminator
+    else {
+        unreachable!("variant-switch verifier requires a variant-switch terminator");
+    };
+    let Some(enum_ty) = types.get(&scrutinee.value) else {
+        return;
+    };
+    let Some(descriptor) = usize::try_from(shape.0)
+        .ok()
+        .and_then(|index| context.shapes.get(index))
+        .filter(|descriptor| descriptor.id == *shape)
+    else {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: format!("variant shape {} is missing or non-canonical", shape.0),
+            },
+        ));
+        return;
+    };
+    if &descriptor.enum_ty != enum_ty {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: format!(
+                    "variant shape {} describes `{}`, not scrutinee `{}`",
+                    shape.0,
+                    descriptor.enum_ty.user_facing(),
+                    enum_ty.user_facing()
+                ),
+            },
+        ));
+    }
+    if crate::OwnKind::of_ty(enum_ty, context.facts).is_err() {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: format!(
+                    "variant switch scrutinee `{}` has no exact ownership facts",
+                    enum_ty.user_facing()
+                ),
+            },
+        ));
+    }
+    if arms.len() != descriptor.variants.len() {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: format!(
+                    "variant switch has {} arm(s), descriptor requires {}",
+                    arms.len(),
+                    descriptor.variants.len()
+                ),
+            },
+        ));
+    }
+    let mut seen = HashSet::new();
+    for arm in arms {
+        if !seen.insert(arm.variant) {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidTerminator {
+                    reason: format!("variant switch repeats arm {}", arm.variant),
+                },
+            ));
+        }
+        verify_variant_switch_arm(function, *id, *shape, enum_ty, arm, context, diagnostics);
+    }
+    for variant in 0..descriptor.variants.len() {
+        let variant = u32::try_from(variant).expect("verified variant count exceeds u32");
+        if !seen.contains(&variant) {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidTerminator {
+                    reason: format!("variant switch is missing arm {variant}"),
+                },
+            ));
+        }
+    }
+}
+
+fn verify_variant_switch_arm(
+    function: &SemFunction,
+    id: OpId,
+    shape: VariantShapeId,
+    enum_ty: &ResolvedTy,
+    arm: &crate::SemVariantArm,
+    context: &VariantVerifyContext<'_>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    let recipes = match crate::variant_field_recipes(
+        shape,
+        arm.variant,
+        enum_ty,
+        context.shapes,
+        context.facts,
+    ) {
+        Ok(recipes) => recipes,
+        Err(reason) => {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidTerminator { reason },
+            ));
+            return;
+        }
+    };
+    if arm.fields.len() != recipes.len() {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: format!(
+                    "variant arm {} defines {} field(s), descriptor requires {}",
+                    arm.variant,
+                    arm.fields.len(),
+                    recipes.len()
+                ),
+            },
+        ));
+    }
+    for (index, (field, recipe)) in arm.fields.iter().zip(&recipes).enumerate() {
+        if field.ty != recipe.ty {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidTerminator {
+                    reason: format!(
+                        "variant arm {} field {index} has `{}`, expected `{}`",
+                        arm.variant,
+                        field.ty.user_facing(),
+                        recipe.ty.user_facing()
+                    ),
+                },
+            ));
+        }
+    }
+    if arm.target.args.len() != arm.fields.len()
+        || arm
+            .target
+            .args
+            .iter()
+            .zip(&arm.fields)
+            .any(|(argument, field)| argument.value != field.id)
+    {
+        invalid_operation(
+            function,
+            id,
+            format!(
+                "variant arm {} must forward every defined field exactly once and in declaration order",
+                arm.variant
+            ),
+            diagnostics,
+        );
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the verifier keeps the closed terminator dispatch visibly exhaustive"
@@ -2229,6 +2547,7 @@ fn verify_terminator_shape(
     types: &HashMap<ValueId, ResolvedTy>,
     blocks: &BTreeMap<BlockId, &crate::SemBlock>,
     callable_context: Option<&CallableContext<'_>>,
+    variants: &VariantVerifyContext<'_>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
     match terminator {
@@ -2274,6 +2593,9 @@ fn verify_terminator_shape(
                     ));
                 }
             }
+        }
+        switch @ SemTerminator::SwitchVariant { .. } => {
+            verify_variant_switch_terminator(function, switch, types, variants, diagnostics);
         }
         SemTerminator::Call {
             id,
@@ -2514,6 +2836,10 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
             args.len()..args.len() + normal.args.len()
         }
         SemTerminator::CheckedBinary { normal, .. } => 2..2 + normal.args.len(),
+        SemTerminator::SwitchVariant { arms, .. } => {
+            let end = 1 + arms.iter().map(|arm| arm.target.args.len()).sum::<usize>();
+            1..end
+        }
         _ => 0..0,
     };
     term.visit_operands(|slot, operand| {
@@ -2790,8 +3116,13 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Owned);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
         let context = callable_context(&callables);
-        let diagnostics =
-            verify_function_with_context(&function, Some(&context), &TypeFactTable::new(), &[]);
+        let diagnostics = verify_function_with_context(
+            &function,
+            Some(&context),
+            &TypeFactTable::new(),
+            &[],
+            &[],
+        );
         let reason = kind_finding(&diagnostics).expect("a Borrow slot refuses an Owned parameter");
         assert!(reason.contains("Guaranteed"), "{reason}");
     }
@@ -2804,8 +3135,13 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
         let context = callable_context(&callables);
-        let diagnostics =
-            verify_function_with_context(&function, Some(&context), &TypeFactTable::new(), &[]);
+        let diagnostics = verify_function_with_context(
+            &function,
+            Some(&context),
+            &TypeFactTable::new(),
+            &[],
+            &[],
+        );
         assert_eq!(None, kind_finding(&diagnostics));
     }
 
@@ -2820,7 +3156,7 @@ mod parameter_own_kind_tests {
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
         let diagnostics =
-            verify_function_with_context(&function, Some(&context), facts.rows(), &[]);
+            verify_function_with_context(&function, Some(&context), facts.rows(), &[], &[]);
         let reason =
             kind_finding(&diagnostics).expect("a ReadOnly slot refuses a Guaranteed parameter");
         assert!(reason.contains("Owned"), "{reason}");
@@ -2834,7 +3170,8 @@ mod parameter_own_kind_tests {
     #[test]
     fn verifier_refuses_a_parameter_whose_header_slot_it_cannot_read() {
         let function = function(ResolvedTy::I64, OwnKind::None);
-        let diagnostics = verify_function_with_context(&function, None, &TypeFactTable::new(), &[]);
+        let diagnostics =
+            verify_function_with_context(&function, None, &TypeFactTable::new(), &[], &[]);
         let reason =
             kind_finding(&diagnostics).expect("no callable table means no slot to audit against");
         assert!(reason.contains("no header slot"), "{reason}");

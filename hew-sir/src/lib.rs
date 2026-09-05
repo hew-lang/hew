@@ -30,17 +30,17 @@ pub use model::{
     FunctionSourceOrigin, GenericTemplateId, OpId, Operand, OperandSlot, Provenance, SemAbiParam,
     SemAggregateField, SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind,
     SemFunction, SemFunctionIndex, SemGenericTemplate, SemModule, SemOp, SemOpKind,
-    SemParamPassing, SemSignature, SemTerminator, SirInstanceKey, SuccessorSlot, UseSite, ValueDef,
-    ValueId,
+    SemParamPassing, SemSignature, SemTerminator, SemVariant, SemVariantArm, SemVariantField,
+    SemVariantShape, SirInstanceKey, SuccessorSlot, UseSite, ValueDef, ValueId, VariantShapeId,
 };
 pub use optimize::{
     canonicalize_module_constant_cfg, CfgCanonicalizationReport, SirOptimizationError,
 };
 pub use ownership::{
     aggregate_field_recipes, aggregate_field_types, checked_binary_failure_kinds,
-    runtime_failure_trap_kind, AggregateFieldRecipe, Binding, BindingId, BindingTarget,
-    BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, SnapshotDecision,
-    StringLiteralId, SuspendKind, TrapKind,
+    runtime_failure_trap_kind, variant_field_recipes, variant_field_types, AggregateFieldRecipe,
+    Binding, BindingId, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl,
+    PlaceId, SnapshotDecision, StringLiteralId, SuspendKind, TrapKind,
 };
 pub use verify::{
     verify_function, verify_function_in_module, verify_module, CfgDiscardSafetyReason,

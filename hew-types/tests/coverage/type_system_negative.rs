@@ -1908,8 +1908,7 @@ fn machine_exhaustiveness_duplicate_explicit() {
 fn postfix_try_in_non_option_result_function() {
     // Regression: `?` on an Option inside a function that returns a plain
     // type must be rejected at typecheck time, not silently emitted as bad IR.
-    let output = typecheck(
-        r"
+    let source = r"
         fn maybe(x: i32) -> Option<i32> {
             if x > 0 { Some(x) } else { None }
         }
@@ -1918,14 +1917,14 @@ fn postfix_try_in_non_option_result_function() {
             v * 2
         }
         fn main() { plain(5); }
-    ",
-    );
+    ";
+    let output = typecheck(source);
     assert!(
         output
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("enclosing function must return")),
+                && source.get(e.span.clone()) == Some("maybe(x)?")),
         "Expected InvalidOperation for `?` in non-Option/Result function, got errors: {:?}",
         output.errors
     );
@@ -1983,8 +1982,7 @@ fn postfix_try_in_option_lambda_inside_plain_fn_is_valid() {
 fn postfix_try_in_plain_lambda_inside_option_fn_is_invalid() {
     // False-acceptance regression: `?` inside a lambda annotated `-> i32`
     // must still be rejected even though the *outer* function returns Option.
-    let output = typecheck(
-        r"
+    let source = r"
         fn maybe(x: i32) -> Option<i32> {
             if x > 0 { Some(x) } else { None }
         }
@@ -1996,14 +1994,14 @@ fn postfix_try_in_plain_lambda_inside_option_fn_is_invalid() {
             None
         }
         fn main() { outer(3); }
-    ",
-    );
+    ";
+    let output = typecheck(source);
     assert!(
         output
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("enclosing function must return")),
+                && source.get(e.span.clone()) == Some("maybe(v)?")),
         "Expected InvalidOperation for `?` in i32-returning lambda, got: {:?}",
         output.errors
     );
@@ -2158,8 +2156,7 @@ fn let_propagate_sugar_on_non_result_rejected() {
 fn let_propagate_sugar_in_non_result_fn_rejected() {
     // `let r? = result_expr;` inside a function that does not return
     // Result or Option must be rejected — same rule as bare `?`.
-    let output = typecheck(
-        r"
+    let source = r"
         fn make_result(x: i64) -> Result<i64, string> {
             Ok(x)
         }
@@ -2168,14 +2165,16 @@ fn let_propagate_sugar_in_non_result_fn_rejected() {
             r
         }
         fn main() { plain(5); }
-        ",
-    );
+        ";
+    let output = typecheck(source);
     assert!(
         output
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("enclosing function must return")),
+                && source
+                    .get(e.span.clone())
+                    .is_some_and(|span| span.contains("make_result(x)"))),
         "Expected InvalidOperation for `let r?` in non-Result fn, got errors: {:?}",
         output.errors
     );

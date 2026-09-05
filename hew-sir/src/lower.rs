@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
+use std::ops::Range;
 
 use hew_hir::{
     BindingId, HirBinding, HirBlock, HirDestructureField, HirDestructureSelector, HirExpr,
-    HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmtKind, IntentKind, ResolvedRef,
+    HirExprKind, HirFn, HirItem, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
+    HirModule, HirStmtKind, IntentKind, ResolvedRef,
 };
 use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeFactService, TypeInstanceKey};
 
@@ -13,7 +15,8 @@ use crate::{
     CallableInstance, CheckedFailure, Edge, FunctionSourceOrigin, GenericTemplateId, OpId, Operand,
     Provenance, SemAbiParam, SemAggregateField, SemAggregateShape, SemBlock, SemCallConv,
     SemCallable, SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp, SemOpKind,
-    SemParamPassing, SemSignature, SemTerminator, SirInstanceKey, ValueDef, ValueId,
+    SemParamPassing, SemSignature, SemTerminator, SemVariant, SemVariantArm, SemVariantField,
+    SemVariantShape, SirInstanceKey, ValueDef, ValueId, VariantShapeId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,19 +292,20 @@ struct CallableTable<'a> {
     ineligible: HashMap<DefId, String>,
 }
 
+type CallableProjection<'a> = (
+    CallableTable<'a>,
+    Vec<SemAggregateShape>,
+    HashMap<ResolvedTy, AggregateShapeId>,
+    Vec<SemVariantShape>,
+    HashMap<ResolvedTy, VariantShapeId>,
+);
+
 impl<'a> CallableTable<'a> {
     #[allow(
         clippy::too_many_lines,
         reason = "one deterministic HIR collection pass keeps monomorphic and generic callable admission auditable together"
     )]
-    fn from_hir(
-        module: &'a HirModule,
-        facts: &mut TypeFactService,
-    ) -> (
-        Self,
-        Vec<SemAggregateShape>,
-        HashMap<ResolvedTy, AggregateShapeId>,
-    ) {
+    fn from_hir(module: &'a HirModule, facts: &mut TypeFactService) -> CallableProjection<'a> {
         let direct_symbols = hew_hir::dispatch::build_direct_call_symbol_index(&module.items);
         let mut pending = Vec::new();
         let mut ineligible = HashMap::new();
@@ -310,6 +314,8 @@ impl<'a> CallableTable<'a> {
         let mut functions_by_item = HashMap::new();
         let mut aggregate_shapes = Vec::new();
         let mut aggregate_shapes_by_type = HashMap::new();
+        let mut variant_shapes = Vec::new();
+        let mut variant_shapes_by_type = HashMap::new();
         for item in &module.items {
             let HirItem::Function(function) = item else {
                 continue;
@@ -374,6 +380,7 @@ impl<'a> CallableTable<'a> {
                 }
             };
             let prior_shape_count = aggregate_shapes.len();
+            let prior_variant_shape_count = variant_shapes.len();
             if let Err(reason) = require_signature_aggregate_shapes(
                 module,
                 facts,
@@ -384,6 +391,23 @@ impl<'a> CallableTable<'a> {
                 aggregate_shapes.truncate(prior_shape_count);
                 aggregate_shapes_by_type
                     .retain(|_, id| usize::try_from(id.0).is_ok_and(|id| id < prior_shape_count));
+                ineligible.insert(function.declaration.clone(), reason);
+                continue;
+            }
+            if let Err(reason) = require_signature_variant_shapes(
+                module,
+                facts,
+                &mut variant_shapes,
+                &mut variant_shapes_by_type,
+                &signature,
+            ) {
+                aggregate_shapes.truncate(prior_shape_count);
+                aggregate_shapes_by_type
+                    .retain(|_, id| usize::try_from(id.0).is_ok_and(|id| id < prior_shape_count));
+                variant_shapes.truncate(prior_variant_shape_count);
+                variant_shapes_by_type.retain(|_, id| {
+                    usize::try_from(id.0).is_ok_and(|id| id < prior_variant_shape_count)
+                });
                 ineligible.insert(function.declaration.clone(), reason);
                 continue;
             }
@@ -451,6 +475,8 @@ impl<'a> CallableTable<'a> {
             },
             aggregate_shapes,
             aggregate_shapes_by_type,
+            variant_shapes,
+            variant_shapes_by_type,
         )
     }
 
@@ -504,6 +530,8 @@ struct InstanceService<'a> {
     functions: Vec<SemFunction>,
     aggregate_shapes: Vec<SemAggregateShape>,
     aggregate_shapes_by_type: HashMap<ResolvedTy, AggregateShapeId>,
+    variant_shapes: Vec<SemVariantShape>,
+    variant_shapes_by_type: HashMap<ResolvedTy, VariantShapeId>,
     string_literals: BTreeMap<StringLiteralId, String>,
     bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
 }
@@ -630,12 +658,268 @@ fn require_signature_aggregate_shapes(
     Ok(())
 }
 
+fn concrete_variant_shape(
+    module: &HirModule,
+    enum_ty: &ResolvedTy,
+) -> Result<(bool, Vec<SemVariant>), String> {
+    let ResolvedTy::Named { args, builtin, .. } = enum_ty else {
+        return Err(format!(
+            "`{}` is not a checker-resolved named enum",
+            enum_ty.user_facing()
+        ));
+    };
+    builtin.map_or_else(
+        || concrete_user_variant_shape(module, enum_ty),
+        |builtin| concrete_builtin_variant_shape(module, enum_ty, args, builtin),
+    )
+}
+
+fn concrete_builtin_variant_shape(
+    module: &HirModule,
+    enum_ty: &ResolvedTy,
+    args: &[ResolvedTy],
+    builtin: hew_types::BuiltinType,
+) -> Result<(bool, Vec<SemVariant>), String> {
+    let expected_origin = match builtin {
+        hew_types::BuiltinType::Option => "Option",
+        hew_types::BuiltinType::Result => "Result",
+        _ => {
+            return Err(format!(
+                "builtin `{}` has no payload-variant SIR descriptor",
+                enum_ty.user_facing()
+            ));
+        }
+    };
+    let mut matches = module
+        .enum_layouts
+        .iter()
+        .filter(|layout| layout.key.origin_name == expected_origin && layout.key.type_args == args);
+    let layout = matches.next().ok_or_else(|| {
+        format!(
+            "builtin enum `{}` has no exact HIR specialization layout",
+            enum_ty.user_facing()
+        )
+    })?;
+    if matches.next().is_some() {
+        return Err(format!(
+            "builtin enum `{}` has more than one exact HIR specialization layout",
+            enum_ty.user_facing()
+        ));
+    }
+    let variants = layout
+        .variants
+        .iter()
+        .map(|variant| SemVariant {
+            name: variant.name.clone(),
+            fields: variant
+                .field_tys
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| SemVariantField {
+                    name: index.to_string(),
+                    ty: ty.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    Ok((layout.is_indirect, variants))
+}
+
+fn concrete_user_variant_shape(
+    module: &HirModule,
+    enum_ty: &ResolvedTy,
+) -> Result<(bool, Vec<SemVariant>), String> {
+    let instance = enum_ty.nominal_instance().ok_or_else(|| {
+        format!(
+            "`{}` has no checker-minted nominal enum identity",
+            enum_ty.user_facing()
+        )
+    })?;
+    let declaration = instance.nominal.declaration();
+    let decl = module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::TypeDecl(decl)
+                if decl.declaration == *declaration && !decl.variants.is_empty() =>
+            {
+                Some(decl)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            format!(
+                "enum `{}` has no exact HIR declaration",
+                enum_ty.user_facing()
+            )
+        })?;
+    if decl.type_params.len() != instance.args.len() {
+        return Err(format!(
+            "enum `{}` supplies {} type argument(s), declaration expects {}",
+            enum_ty.user_facing(),
+            instance.args.len(),
+            decl.type_params.len()
+        ));
+    }
+
+    let layout = exact_user_variant_layout(module, decl, &instance.args, enum_ty)?;
+    let variants = sem_variants_from_decl(decl, &instance.args, layout, enum_ty)?;
+    Ok((decl.is_indirect, variants))
+}
+
+fn exact_user_variant_layout<'a>(
+    module: &'a HirModule,
+    decl: &hew_hir::HirTypeDecl,
+    args: &[ResolvedTy],
+    enum_ty: &ResolvedTy,
+) -> Result<Option<&'a hew_hir::EnumLayout>, String> {
+    let layout = if decl.type_params.is_empty() {
+        None
+    } else {
+        let mut matches = module
+            .enum_layouts
+            .iter()
+            .filter(|layout| layout.key.origin == decl.id && layout.key.type_args == args);
+        let layout = matches.next().ok_or_else(|| {
+            format!(
+                "generic enum `{}` has no exact HIR specialization layout",
+                enum_ty.user_facing()
+            )
+        })?;
+        if matches.next().is_some() {
+            return Err(format!(
+                "generic enum `{}` has more than one exact HIR specialization layout",
+                enum_ty.user_facing()
+            ));
+        }
+        Some(layout)
+    };
+    Ok(layout)
+}
+
+fn sem_variants_from_decl(
+    decl: &hew_hir::HirTypeDecl,
+    args: &[ResolvedTy],
+    layout: Option<&hew_hir::EnumLayout>,
+    enum_ty: &ResolvedTy,
+) -> Result<Vec<SemVariant>, String> {
+    decl.variants
+        .iter()
+        .enumerate()
+        .map(|(variant_index, variant)| {
+            let names = variant.field_names();
+            let tys = layout.map_or_else(
+                || {
+                    variant
+                        .field_tys()
+                        .iter()
+                        .map(|ty| hew_hir::substitute_type_params(ty, &decl.type_params, args))
+                        .collect::<Vec<_>>()
+                },
+                |layout| {
+                    layout
+                        .variants
+                        .get(variant_index)
+                        .map(|variant| variant.field_tys.clone())
+                        .unwrap_or_default()
+                },
+            );
+            if names.len() != tys.len() {
+                return Err(format!(
+                    "enum `{}` variant `{}` has inconsistent HIR field names and types",
+                    enum_ty.user_facing(),
+                    variant.name
+                ));
+            }
+            if layout.is_some_and(|layout| {
+                layout
+                    .variants
+                    .get(variant_index)
+                    .is_none_or(|candidate| candidate.name != variant.name)
+            }) {
+                return Err(format!(
+                    "enum `{}` specialization layout disagrees with variant {} identity",
+                    enum_ty.user_facing(),
+                    variant_index
+                ));
+            }
+            Ok(SemVariant {
+                name: variant.name.clone(),
+                fields: names
+                    .into_iter()
+                    .zip(tys)
+                    .map(|(name, ty)| SemVariantField { name, ty })
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+fn require_variant_shape(
+    module: &HirModule,
+    facts: &mut TypeFactService,
+    shapes: &mut Vec<SemVariantShape>,
+    shapes_by_type: &mut HashMap<ResolvedTy, VariantShapeId>,
+    enum_ty: &ResolvedTy,
+) -> Result<VariantShapeId, String> {
+    if let Some(id) = shapes_by_type.get(enum_ty).copied() {
+        return Ok(id);
+    }
+    require_type_facts(facts, enum_ty)?;
+    let (is_indirect, variants) = concrete_variant_shape(module, enum_ty)?;
+    if variants.is_empty() {
+        return Err(format!("enum `{}` has no variants", enum_ty.user_facing()));
+    }
+    for variant in &variants {
+        for field in &variant.fields {
+            require_type_facts(facts, &field.ty)?;
+        }
+    }
+    let id = VariantShapeId(
+        u32::try_from(shapes.len())
+            .map_err(|_| "SIR variant shape count exceeds u32".to_string())?,
+    );
+    shapes.push(SemVariantShape {
+        id,
+        enum_ty: enum_ty.clone(),
+        is_indirect,
+        variants,
+    });
+    shapes_by_type.insert(enum_ty.clone(), id);
+    Ok(id)
+}
+
+fn require_signature_variant_shapes(
+    module: &HirModule,
+    facts: &mut TypeFactService,
+    shapes: &mut Vec<SemVariantShape>,
+    shapes_by_type: &mut HashMap<ResolvedTy, VariantShapeId>,
+    signature: &SemSignature,
+) -> Result<(), String> {
+    for ty in signature
+        .params
+        .iter()
+        .map(|parameter| &parameter.ty)
+        .chain(std::iter::once(&signature.return_ty))
+    {
+        if is_concrete_variant_type(module, ty) {
+            require_variant_shape(module, facts, shapes, shapes_by_type, ty)?;
+        }
+    }
+    Ok(())
+}
+
 impl<'a> InstanceService<'a> {
     fn new(module: &'a HirModule, facts: &TypeCheckOutput, demand: SirLoweringDemand) -> Self {
         let mut checked_facts =
             TypeFactService::new(facts.type_fact_context.clone(), facts.type_facts.clone());
-        let (table, aggregate_shapes, aggregate_shapes_by_type) =
-            CallableTable::from_hir(module, &mut checked_facts);
+        let (
+            table,
+            aggregate_shapes,
+            aggregate_shapes_by_type,
+            variant_shapes,
+            variant_shapes_by_type,
+        ) = CallableTable::from_hir(module, &mut checked_facts);
         let count = table.callables.len();
         Self {
             module,
@@ -650,6 +934,8 @@ impl<'a> InstanceService<'a> {
             functions: Vec::new(),
             aggregate_shapes,
             aggregate_shapes_by_type,
+            variant_shapes,
+            variant_shapes_by_type,
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),
         }
@@ -678,6 +964,46 @@ impl<'a> InstanceService<'a> {
             &mut self.aggregate_shapes_by_type,
             aggregate_ty,
         )
+    }
+
+    fn require_variant_shape(&mut self, enum_ty: &ResolvedTy) -> Result<VariantShapeId, String> {
+        require_variant_shape(
+            self.module,
+            &mut self.checked_facts,
+            &mut self.variant_shapes,
+            &mut self.variant_shapes_by_type,
+            enum_ty,
+        )
+    }
+
+    fn require_signature_shapes(&mut self, signature: &SemSignature) -> Result<(), String> {
+        let prior_aggregate_count = self.aggregate_shapes.len();
+        let prior_variant_count = self.variant_shapes.len();
+        let result = require_signature_aggregate_shapes(
+            self.module,
+            &mut self.checked_facts,
+            &mut self.aggregate_shapes,
+            &mut self.aggregate_shapes_by_type,
+            signature,
+        )
+        .and_then(|()| {
+            require_signature_variant_shapes(
+                self.module,
+                &mut self.checked_facts,
+                &mut self.variant_shapes,
+                &mut self.variant_shapes_by_type,
+                signature,
+            )
+        });
+        if result.is_err() {
+            self.aggregate_shapes.truncate(prior_aggregate_count);
+            self.aggregate_shapes_by_type
+                .retain(|_, id| usize::try_from(id.0).is_ok_and(|id| id < prior_aggregate_count));
+            self.variant_shapes.truncate(prior_variant_count);
+            self.variant_shapes_by_type
+                .retain(|_, id| usize::try_from(id.0).is_ok_and(|id| id < prior_variant_count));
+        }
+        result
     }
 
     fn intern_string(&mut self, value: &str) -> StringLiteralId {
@@ -978,19 +1304,7 @@ impl<'a> InstanceService<'a> {
             &substitution,
             &mut self.checked_facts,
         )?;
-        let prior_shape_count = self.aggregate_shapes.len();
-        if let Err(reason) = require_signature_aggregate_shapes(
-            self.module,
-            &mut self.checked_facts,
-            &mut self.aggregate_shapes,
-            &mut self.aggregate_shapes_by_type,
-            &signature,
-        ) {
-            self.aggregate_shapes.truncate(prior_shape_count);
-            self.aggregate_shapes_by_type
-                .retain(|_, id| usize::try_from(id.0).is_ok_and(|id| id < prior_shape_count));
-            return Err(reason);
-        }
+        self.require_signature_shapes(&signature)?;
         let symbol =
             hew_hir::monomorph::function_monomorph_symbol(&template.symbol, &key.type_args);
         if let Some(existing) = self
@@ -1103,6 +1417,7 @@ impl<'a> InstanceService<'a> {
             used_templates,
             mut functions,
             aggregate_shapes,
+            variant_shapes,
             string_literals,
             bytes_literals,
             ..
@@ -1122,6 +1437,8 @@ impl<'a> InstanceService<'a> {
             &table.callables,
             &generic_templates,
             &functions,
+            &aggregate_shapes,
+            &variant_shapes,
         );
         SemModule {
             callables: table.callables,
@@ -1131,6 +1448,7 @@ impl<'a> InstanceService<'a> {
             entry_callable: table.entry_callable,
             functions,
             aggregate_shapes,
+            variant_shapes,
             type_facts,
             string_literals,
             bytes_literals,
@@ -1158,6 +1476,8 @@ fn project_type_facts(
     callables: &[SemCallable],
     templates: &[SemGenericTemplate],
     functions: &[SemFunction],
+    aggregate_shapes: &[SemAggregateShape],
+    variant_shapes: &[SemVariantShape],
 ) -> TypeFactTable {
     let mut mentioned: Vec<ResolvedTy> = Vec::new();
     let push_signature = |signature: &SemSignature, out: &mut Vec<ResolvedTy>| {
@@ -1190,6 +1510,20 @@ fn project_type_facts(
                 }
             }
         }
+    }
+    for shape in aggregate_shapes {
+        mentioned.push(shape.aggregate_ty.clone());
+        mentioned.extend(shape.fields.iter().map(|field| field.ty.clone()));
+    }
+    for shape in variant_shapes {
+        mentioned.push(shape.enum_ty.clone());
+        mentioned.extend(
+            shape
+                .variants
+                .iter()
+                .flat_map(|variant| variant.fields.iter())
+                .map(|field| field.ty.clone()),
+        );
     }
 
     let mut projected = TypeFactTable::new();
@@ -1282,7 +1616,7 @@ fn callable_signature_with_substitution(
         let ty = substitution.apply(&parameter.ty);
         if !is_supported_call_value(module, &ty) {
             return Err(format!(
-                "parameter {index} has unsupported type `{}` after semantic substitution; SIR calls require an exact scalar, string, bytes, tuple, or record contract",
+                "parameter {index} has unsupported type `{}` after semantic substitution; SIR calls require an exact scalar, string, bytes, aggregate, or variant contract",
                 ty.user_facing()
             ));
         }
@@ -1322,8 +1656,14 @@ fn is_concrete_aggregate_type(module: &HirModule, ty: &ResolvedTy) -> bool {
         || concrete_record_fields(module, ty).is_ok()
 }
 
+fn is_concrete_variant_type(module: &HirModule, ty: &ResolvedTy) -> bool {
+    concrete_variant_shape(module, ty).is_ok()
+}
+
 fn is_supported_call_value(module: &HirModule, ty: &ResolvedTy) -> bool {
-    is_initial_call_value(ty) || is_concrete_aggregate_type(module, ty)
+    is_initial_call_value(ty)
+        || is_concrete_aggregate_type(module, ty)
+        || is_concrete_variant_type(module, ty)
 }
 
 fn is_supported_call_return(module: &HirModule, ty: &ResolvedTy) -> bool {
@@ -1413,15 +1753,27 @@ fn lower_initial_value_transfer(
         ));
     }
     if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
-        builder
-            .service
-            .require_aggregate_shape(&ty)
-            .map_err(|reason| {
-                format!(
-                    "{context}: `{}` has no owned aggregate transfer contract: {reason}",
-                    ty.user_facing()
-                )
-            })?;
+        if is_concrete_variant_type(builder.service.module, &ty) {
+            builder
+                .service
+                .require_variant_shape(&ty)
+                .map_err(|reason| {
+                    format!(
+                        "{context}: `{}` has no exact variant transfer contract: {reason}",
+                        ty.user_facing()
+                    )
+                })?;
+        } else {
+            builder
+                .service
+                .require_aggregate_shape(&ty)
+                .map_err(|reason| {
+                    format!(
+                        "{context}: `{}` has no aggregate transfer contract: {reason}",
+                        ty.user_facing()
+                    )
+                })?;
+        }
     }
     builder.lower_owned_transfer(expr, binding_use)
 }
@@ -1522,6 +1874,9 @@ struct Builder<'hir, 'service> {
     bindings: HashMap<BindingId, ValueId>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
+    /// Binding owners that a nested value-producing branch must preserve even
+    /// when its result position otherwise permits moving a fresh local.
+    move_protected_bindings: std::collections::HashSet<BindingId>,
     /// Every source binding this body declares, parameters first and then
     /// statement bindings in source order (§1.6).
     source_bindings: Vec<Binding>,
@@ -1604,6 +1959,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings,
             binding_declarations,
             owned_live: BTreeMap::new(),
+            move_protected_bindings: std::collections::HashSet::new(),
             source_bindings,
             params,
         })
@@ -1714,14 +2070,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 },
             ),
             Some(OwnKind::Owned) if matches!(expr.kind, HirExprKind::BindingRef { .. }) => {
-                match binding_use {
-                    OwnedBindingUse::Copy => self.emit(
+                let protected = match &expr.kind {
+                    HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(binding),
+                        ..
+                    } => self.move_protected_bindings.contains(binding),
+                    _ => false,
+                };
+                match (binding_use, protected) {
+                    (OwnedBindingUse::Copy, _) | (OwnedBindingUse::Move, true) => self.emit(
                         expr,
                         SemOpKind::CopyValue {
                             source: Operand { value: source },
                         },
                     ),
-                    OwnedBindingUse::Move => {
+                    (OwnedBindingUse::Move, false) => {
                         self.owned_live.remove(&source);
                         self.emit(
                             expr,
@@ -1937,7 +2300,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     return Err(
                         "control-flow ownership forms are deferred to a later SIR slice"
                             .to_string(),
-                    )
+                    );
                 }
             }
         }
@@ -2131,6 +2494,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::StructInit { fields, base, .. } => {
                 self.lower_aggregate_make(expr, fields, base.as_deref())
             }
+            HirExprKind::MachineVariantCtor {
+                state_idx, payload, ..
+            } => self.lower_variant_make(expr, *state_idx, payload.as_deref()),
             HirExprKind::FieldAccess { object, field } => {
                 self.lower_aggregate_project(expr, object, field)
             }
@@ -2259,6 +2625,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 then_expr,
                 else_expr: Some(else_expr),
             } => self.lower_if(expr, condition, then_expr, else_expr),
+            HirExprKind::Match { scrutinee, arms } => self.lower_match(expr, scrutinee, arms),
             HirExprKind::If {
                 else_expr: None, ..
             } => Err(
@@ -2298,6 +2665,391 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             _ => Err("unsupported HIR literal kind in the initial SIR subset".to_string()),
         }
+    }
+
+    fn lower_variant_make(
+        &mut self,
+        expr: &HirExpr,
+        variant: usize,
+        payload: Option<&[(String, HirExpr)]>,
+    ) -> Result<ValueId, String> {
+        let enum_ty = self.ty(&expr.ty);
+        let shape = self.service.require_variant_shape(&enum_ty)?;
+        let descriptor = self
+            .service
+            .variant_shapes
+            .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
+            .filter(|descriptor| descriptor.id == shape)
+            .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
+        let declared = descriptor.variants.get(variant).cloned().ok_or_else(|| {
+            format!(
+                "variant constructor tag {variant} is absent from exact shape `{}`",
+                enum_ty.user_facing()
+            )
+        })?;
+        let supplied = payload.unwrap_or_default();
+        if supplied.len() != declared.fields.len() {
+            return Err(format!(
+                "variant constructor {} for `{}` has {} field(s), expected {}",
+                variant,
+                enum_ty.user_facing(),
+                supplied.len(),
+                declared.fields.len()
+            ));
+        }
+        let mut ordered = vec![None; declared.fields.len()];
+        for (name, field) in supplied {
+            let index = declared
+                .fields
+                .iter()
+                .position(|candidate| candidate.name == *name)
+                .ok_or_else(|| {
+                    format!(
+                        "variant constructor field `{name}` is absent from exact shape `{}` tag {variant}",
+                        enum_ty.user_facing()
+                    )
+                })?;
+            if ordered[index].is_some() {
+                return Err(format!(
+                    "variant constructor repeats field `{name}` for `{}` tag {variant}",
+                    enum_ty.user_facing()
+                ));
+            }
+            let actual_ty = self.ty(&field.ty);
+            if actual_ty != declared.fields[index].ty {
+                return Err(format!(
+                    "variant constructor field `{name}` has `{}`, expected `{}`",
+                    actual_ty.user_facing(),
+                    declared.fields[index].ty.user_facing()
+                ));
+            }
+            ordered[index] = Some(Operand {
+                value: lower_initial_value_transfer(
+                    self,
+                    field,
+                    &format!("variant field `{name}`"),
+                    OwnedBindingUse::Copy,
+                )?,
+            });
+        }
+        let fields = ordered
+            .into_iter()
+            .zip(&declared.fields)
+            .map(|(operand, field)| {
+                operand.ok_or_else(|| {
+                    format!(
+                        "variant constructor omits field `{}` from exact shape `{}` tag {variant}",
+                        field.name,
+                        enum_ty.user_facing()
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let consumed = fields.iter().map(|field| field.value).collect::<Vec<_>>();
+        let value = self.emit(
+            expr,
+            SemOpKind::VariantMake {
+                shape,
+                variant: u32::try_from(variant)
+                    .map_err(|_| "variant constructor tag exceeds u32".to_string())?,
+                fields,
+            },
+        )?;
+        for field in consumed {
+            self.owned_live.remove(&field);
+        }
+        Ok(value)
+    }
+
+    fn bind_match_arm_value(
+        &mut self,
+        binding: &HirMatchArmBinding,
+        value: ValueId,
+        span: Range<usize>,
+    ) -> Result<(), String> {
+        let declaration = self.source_bindings.len();
+        self.source_bindings.push(Binding {
+            id: crate::BindingId(
+                u32::try_from(declaration)
+                    .map_err(|_| "SIR source binding count exceeds u32".to_string())?,
+            ),
+            name: binding.name.clone(),
+            span,
+            mutable: false,
+            target: crate::BindingTarget::Value(value),
+        });
+        self.binding_declarations
+            .insert(binding.binding, declaration);
+        self.bindings.insert(binding.binding, value);
+        Ok(())
+    }
+
+    fn destroy_live_since(
+        &mut self,
+        baseline: &BTreeMap<ValueId, ResolvedTy>,
+    ) -> Result<(), String> {
+        let values = self
+            .owned_live
+            .keys()
+            .filter(|value| !baseline.contains_key(value))
+            .copied()
+            .collect::<Vec<_>>();
+        for value in values.into_iter().rev() {
+            self.emit_destroy(value)?;
+        }
+        Ok(())
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "variant selection, payload definition and arm cleanup form one ownership boundary"
+    )]
+    fn lower_match(
+        &mut self,
+        whole: &HirExpr,
+        scrutinee_expr: &HirExpr,
+        source_arms: &[HirMatchArm],
+    ) -> Result<ValueId, String> {
+        if source_arms.is_empty() {
+            return Err("variant match has no source arms".to_string());
+        }
+        for arm in source_arms {
+            if arm.guard.is_some()
+                || !arm.payload_predicates.is_empty()
+                || !arm.payload_variant_predicates.is_empty()
+            {
+                return Err(
+                    "guarded, literal-payload and nested variant patterns require explicit SIR predicate CFG"
+                        .to_string(),
+                );
+            }
+        }
+
+        let enum_ty = self.ty(&scrutinee_expr.ty);
+        let shape = self.service.require_variant_shape(&enum_ty)?;
+        let descriptor = self
+            .service
+            .variant_shapes
+            .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
+            .filter(|descriptor| descriptor.id == shape)
+            .cloned()
+            .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
+        let mut arm_for_variant = vec![None; descriptor.variants.len()];
+        let mut wildcard = None;
+        for (arm_index, arm) in source_arms.iter().enumerate() {
+            match &arm.predicate {
+                HirMatchArmPredicate::EnumVariant { variant_idx, .. } => {
+                    let index = usize::try_from(*variant_idx)
+                        .map_err(|_| "match variant index exceeds usize".to_string())?;
+                    let slot = arm_for_variant.get_mut(index).ok_or_else(|| {
+                        format!(
+                            "match arm tag {variant_idx} is absent from exact shape `{}`",
+                            enum_ty.user_facing()
+                        )
+                    })?;
+                    if slot.replace(arm_index).is_some() {
+                        return Err(format!("match repeats variant tag {variant_idx}"));
+                    }
+                    let HirMatchArmPredicate::EnumVariant { variant_match, .. } = &arm.predicate
+                    else {
+                        unreachable!()
+                    };
+                    if descriptor.variants[index].name != variant_match.variant_name {
+                        return Err(format!(
+                            "match tag {variant_idx} names `{}`, exact descriptor names `{}`",
+                            variant_match.variant_name, descriptor.variants[index].name
+                        ));
+                    }
+                }
+                HirMatchArmPredicate::Wildcard => {
+                    if wildcard.replace(arm_index).is_some() {
+                        return Err("match contains more than one wildcard arm".to_string());
+                    }
+                    if arm_index + 1 != source_arms.len() {
+                        return Err(
+                            "variant-switch wildcard must be the final source arm".to_string()
+                        );
+                    }
+                }
+                HirMatchArmPredicate::Binding { .. } => {
+                    return Err(
+                        "whole-scrutinee binding matches need an explicit SIR binding transfer"
+                            .to_string(),
+                    );
+                }
+                HirMatchArmPredicate::Literal { .. }
+                | HirMatchArmPredicate::RecordProject { .. }
+                | HirMatchArmPredicate::TupleProject { .. }
+                | HirMatchArmPredicate::Regex { .. } => {
+                    return Err(
+                        "non-variant match predicates are outside the variant-switch SIR contract"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        for (variant, slot) in arm_for_variant.iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = wildcard;
+            }
+            if slot.is_none() {
+                return Err(format!("match is missing exhaustive variant tag {variant}"));
+            }
+        }
+
+        let result_ty = self.ty(&whole.ty);
+        if result_ty == ResolvedTy::Unit {
+            return Err("unit-valued variant matches need a zero-result join contract".to_string());
+        }
+        self.service.require_type_facts(&result_ty)?;
+        let result_own = OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?;
+        let joined_result = self.fresh_value();
+        let join = self.new_block(vec![BlockArg {
+            value: joined_result,
+            ty: result_ty.clone(),
+            own: result_own,
+        }]);
+
+        let scrutinee = lower_initial_value_transfer(
+            self,
+            scrutinee_expr,
+            "variant match scrutinee",
+            OwnedBindingUse::Copy,
+        )?;
+        let switch_block = self.current;
+        let baseline_bindings = self.bindings.clone();
+        let baseline_declarations = self.binding_declarations.clone();
+        let prior_move_protected = self.move_protected_bindings.clone();
+        let mut baseline_live = self.owned_live.clone();
+        baseline_live.remove(&scrutinee);
+
+        let mut semantic_arms = Vec::with_capacity(descriptor.variants.len());
+        let mut arm_blocks = Vec::with_capacity(descriptor.variants.len());
+        for (variant_index, variant) in descriptor.variants.iter().enumerate() {
+            let mut fields = Vec::with_capacity(variant.fields.len());
+            let mut block_args = Vec::with_capacity(variant.fields.len());
+            let mut edge_args = Vec::with_capacity(variant.fields.len());
+            for field in &variant.fields {
+                self.service.require_type_facts(&field.ty)?;
+                let own = OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?;
+                let field_value = self.fresh_value();
+                fields.push(ValueDef {
+                    id: field_value,
+                    ty: field.ty.clone(),
+                    own,
+                });
+                edge_args.push(Operand { value: field_value });
+                block_args.push(BlockArg {
+                    value: self.fresh_value(),
+                    ty: field.ty.clone(),
+                    own,
+                });
+            }
+            let block = self.new_block(block_args);
+            arm_blocks.push(block);
+            semantic_arms.push(SemVariantArm {
+                variant: u32::try_from(variant_index)
+                    .map_err(|_| "variant arm index exceeds u32".to_string())?,
+                fields,
+                target: Edge {
+                    target: block,
+                    args: edge_args,
+                },
+            });
+        }
+        self.current = switch_block;
+        self.owned_live.remove(&scrutinee);
+        let id = OpId(self.ops);
+        self.ops += 1;
+        self.set_terminator(SemTerminator::SwitchVariant {
+            id,
+            shape,
+            scrutinee: Operand { value: scrutinee },
+            arms: semantic_arms,
+        })?;
+
+        for (variant_index, block) in arm_blocks.into_iter().enumerate() {
+            let source_arm = &source_arms
+                [arm_for_variant[variant_index].expect("exhaustive arm mapping checked above")];
+            self.current = block;
+            self.bindings = baseline_bindings.clone();
+            self.binding_declarations = baseline_declarations.clone();
+            self.move_protected_bindings = prior_move_protected.clone();
+            self.move_protected_bindings
+                .extend(baseline_bindings.keys().copied());
+            self.owned_live = baseline_live.clone();
+            let block_args = self.current_block().args.clone();
+            for arg in &block_args {
+                if arg.own == OwnKind::Owned {
+                    self.owned_live.insert(arg.value, arg.ty.clone());
+                }
+            }
+            for binding in &source_arm.bindings {
+                let field = usize::try_from(binding.field_idx)
+                    .ok()
+                    .and_then(|index| block_args.get(index))
+                    .ok_or_else(|| {
+                        format!(
+                            "match binding `{}` selects missing field {} of variant {}",
+                            binding.name, binding.field_idx, variant_index
+                        )
+                    })?;
+                let binding_ty = self.ty(&binding.ty);
+                if binding_ty != field.ty {
+                    return Err(format!(
+                        "match binding `{}` has `{}`, expected `{}`",
+                        binding.name,
+                        binding_ty.user_facing(),
+                        field.ty.user_facing()
+                    ));
+                }
+                self.bind_match_arm_value(binding, field.value, source_arm.span.clone())?;
+            }
+
+            let result = lower_initial_value_transfer(
+                self,
+                &source_arm.body,
+                "variant match arm result",
+                OwnedBindingUse::Move,
+            )?;
+            if self.value_ty(result).as_ref() != Some(&result_ty) {
+                return Err(format!(
+                    "variant match arm {variant_index} yields the wrong SIR type"
+                ));
+            }
+            self.owned_live.remove(&result);
+            for value in baseline_live.keys() {
+                if !self.owned_live.contains_key(value) {
+                    return Err(format!(
+                        "variant match arm {variant_index} consumes an outer owner"
+                    ));
+                }
+            }
+            self.destroy_live_since(&baseline_live)?;
+            for (binding, value) in &baseline_bindings {
+                if self.bindings.get(binding) != Some(value) {
+                    return Err(format!(
+                        "variant match arm {variant_index} mutates an outer binding before the match join"
+                    ));
+                }
+            }
+            if self.is_open() {
+                self.set_terminator(SemTerminator::Goto(Edge {
+                    target: join,
+                    args: vec![Operand { value: result }],
+                }))?;
+            }
+        }
+
+        self.current = join;
+        self.bindings = baseline_bindings;
+        self.binding_declarations = baseline_declarations;
+        self.move_protected_bindings = prior_move_protected;
+        self.owned_live = baseline_live;
+        if result_own == OwnKind::Owned {
+            self.owned_live.insert(joined_result, result_ty);
+        }
+        Ok(joined_result)
     }
 
     /// Lower an immutable, no-drop tuple as one semantic aggregate value.
@@ -2546,9 +3298,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             "aggregate destructure source",
             OwnedBindingUse::Copy,
         )?;
-        if self.value_own_kind(aggregate) != Some(OwnKind::Owned) {
+        if self.value_own_kind(aggregate).is_none() {
             return Err(format!(
-                "aggregate destructure source `{}` is not an owned value",
+                "aggregate destructure source `{}` has no exact ownership facts",
                 aggregate_ty.user_facing()
             ));
         }
@@ -2741,7 +3493,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     return Err(
                         "indirect calls are deferred until SIR models the callee value explicitly"
                             .to_string(),
-                    )
+                    );
                 }
                 _ => return Err(
                     "only ordinary user/impl direct calls are in SIR's initial scalar call domain"
@@ -3035,9 +3787,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             (_, Some(result_ty)) if self.ty(&expr.ty) == *result_ty => {}
             _ => {
                 return Err(format!(
-                "runtime family `{family:?}` result contract disagrees with expression type `{}`",
-                self.ty(&expr.ty).user_facing()
-            ))
+                    "runtime family `{family:?}` result contract disagrees with expression type `{}`",
+                    self.ty(&expr.ty).user_facing()
+                ));
             }
         }
 

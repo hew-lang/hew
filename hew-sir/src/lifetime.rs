@@ -199,38 +199,7 @@ impl<'a> Flow<'a> {
     ) -> Vec<(BlockId, State)> {
         let block = self.blocks[&id];
         for op in &block.ops {
-            let consumes = match &op.kind {
-                SemOpKind::TupleMake { .. }
-                | SemOpKind::AggregateMake { .. }
-                | SemOpKind::DestroyValue { .. }
-                | SemOpKind::Move { .. }
-                | SemOpKind::Fork { .. }
-                | SemOpKind::Destructure { .. }
-                | SemOpKind::StoreInit { .. }
-                | SemOpKind::StoreAssign { .. } => true,
-                SemOpKind::ConstI64(_)
-                | SemOpKind::ConstBool(_)
-                | SemOpKind::ConstF64(_)
-                | SemOpKind::ConstChar(_)
-                | SemOpKind::ConstUnit
-                | SemOpKind::ConstDuration(_)
-                | SemOpKind::ConstStr(_)
-                | SemOpKind::ConstBytes(_)
-                | SemOpKind::TupleGet { .. }
-                | SemOpKind::AggregateProjectCopy { .. }
-                | SemOpKind::Unary { .. }
-                | SemOpKind::Binary { .. }
-                | SemOpKind::Cast { .. }
-                | SemOpKind::StrEq { .. }
-                | SemOpKind::BytesEq { .. }
-                | SemOpKind::CopyValue { .. }
-                | SemOpKind::BeginBorrow { .. }
-                | SemOpKind::EndBorrow { .. }
-                | SemOpKind::AllocPlace { .. }
-                | SemOpKind::LoadCopy { .. }
-                | SemOpKind::LoadTake { .. }
-                | SemOpKind::EndLifetime { .. } => false,
-            };
+            let consumes = operation_consumes_operands(&op.kind);
             op.visit_operands(|_, operand| {
                 self.access(id, operand.value, consumes, &mut state, emit);
             });
@@ -271,6 +240,9 @@ impl<'a> Flow<'a> {
                 successors.extend(self.edge(id, then_target, state.clone(), emit));
                 successors.extend(self.edge(id, else_target, state, emit));
             }
+            SemTerminator::SwitchVariant {
+                scrutinee, arms, ..
+            } => successors.extend(self.variant_switch(id, scrutinee, arms, &state, emit)),
             SemTerminator::Suspend {
                 resumes, cancel, ..
             } => {
@@ -292,6 +264,26 @@ impl<'a> Flow<'a> {
                     }
                 }
             }
+        }
+        successors
+    }
+
+    fn variant_switch(
+        &self,
+        id: BlockId,
+        scrutinee: &crate::Operand,
+        arms: &[crate::SemVariantArm],
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) -> Vec<(BlockId, State)> {
+        let mut successors = Vec::with_capacity(arms.len());
+        for arm in arms {
+            let mut arm_state = state.clone();
+            self.access(id, scrutinee.value, true, &mut arm_state, emit);
+            for field in &arm.fields {
+                self.define(id, field.id, &mut arm_state, emit);
+            }
+            successors.extend(self.edge(id, &arm.target, arm_state, emit));
         }
         successors
     }
@@ -356,6 +348,21 @@ impl<'a> Flow<'a> {
             self.access(id, value, consumes, state, emit);
         });
     }
+}
+
+fn operation_consumes_operands(kind: &SemOpKind) -> bool {
+    matches!(
+        kind,
+        SemOpKind::TupleMake { .. }
+            | SemOpKind::AggregateMake { .. }
+            | SemOpKind::VariantMake { .. }
+            | SemOpKind::DestroyValue { .. }
+            | SemOpKind::Move { .. }
+            | SemOpKind::Fork { .. }
+            | SemOpKind::Destructure { .. }
+            | SemOpKind::StoreInit { .. }
+            | SemOpKind::StoreAssign { .. }
+    )
 }
 
 #[cfg(test)]

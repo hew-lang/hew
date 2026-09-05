@@ -49,6 +49,8 @@ Actor and message identifiers are allocated deterministically by the sandbox run
 
 Sandbox standard input, output, and error are page-owned streams. They are provided by the embedding page or test harness, not by operating-system file descriptors. Output ordering is defined by VM execution order.
 
+Standard input arrives as a `stdin` replay input and is consumed one line per `read_line` call while the program runs, so a loop reads successive lines and sees `""` at end of input. It is not baked into the bytecode ahead of execution.
+
 ## In-memory streams only (no file/network backing)
 
 Sandbox streams are in-memory values. They do not open host files, sockets, pipes, terminals, or device handles. Programs that require file-backed or network-backed streams must run on a native target.

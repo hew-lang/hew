@@ -1197,6 +1197,7 @@ pub enum RuntimeCallFamily {
     /// Compiler catalogue `println_i64` intercept. Physical lowering expands
     /// this semantic unary operation to the audited `hew_print_value` ABI.
     PrintlnI64,
+    PrintlnBool,
     PrintlnString,
 
     // --- Supervisor --------------------------------------------------------
@@ -1662,6 +1663,7 @@ impl RuntimeCallFamily {
     pub fn from_catalog_endpoint(endpoint: &str) -> Option<Self> {
         match endpoint {
             "println_i64" => Some(Self::PrintlnI64),
+            "println_bool" => Some(Self::PrintlnBool),
             "println_str" => Some(Self::PrintlnString),
             "to_string_u8" => Some(Self::U8ToString),
             "to_string_i64" => Some(Self::I64ToString),
@@ -1911,6 +1913,7 @@ impl RuntimeCallFamily {
             Self::U8ToString => "hew_u8_to_string",
             Self::I64ToString => "hew_i64_to_string",
             Self::PrintlnI64 => "hew_print_value",
+            Self::PrintlnBool => "hew_println_bool",
             Self::PrintlnString => "hew_println_str",
             // Supervisor
             Self::SupervisorDirectId => "hew_supervisor_direct_id",
@@ -2282,6 +2285,7 @@ impl RuntimeCallFamily {
             "hew_u8_to_string" => Self::U8ToString,
             "hew_i64_to_string" => Self::I64ToString,
             "hew_print_value" => Self::PrintlnI64,
+            "hew_println_bool" => Self::PrintlnBool,
             "hew_println_str" => Self::PrintlnString,
             // Supervisor
             "hew_supervisor_direct_id" => Self::SupervisorDirectId,
@@ -2919,6 +2923,14 @@ impl RuntimeCallFamily {
                 runtime_semantic_contract(SIR_I64_COPY, FreshOwned(String), NO_FAILURES)
             }
             Self::PrintlnI64 => runtime_semantic_contract(SIR_I64_COPY, Unit, NO_FAILURES),
+            Self::PrintlnBool => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: Bool,
+                    effect: RuntimeArgumentEffect::Copy,
+                }],
+                Unit,
+                NO_FAILURES,
+            ),
             Self::PrintlnString => runtime_semantic_contract(STRING_BORROW, Unit, NO_FAILURES),
             Self::BytesLen => runtime_semantic_contract(BYTES_BORROW, BitCopy(I64), NO_FAILURES),
             Self::BytesIndex => runtime_semantic_contract(BYTES_INDEX, BitCopy(U8), INDEX_FAILURES),
@@ -3289,6 +3301,7 @@ impl RuntimeCallFamily {
             | F::U8ToString
             | F::I64ToString
             | F::PrintlnI64
+            | F::PrintlnBool
             | F::PrintlnString
             | F::SupervisorDirectId
             | F::SupervisorChildGet

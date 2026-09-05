@@ -2828,6 +2828,28 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "println.i64",
                 )?;
             }
+            PhysicalRuntimeAction::PrintlnBool => {
+                let value = self
+                    .load(source(0)?, "println.bool.value")?
+                    .into_int_value();
+                let truth = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        value,
+                        value.get_type().const_zero(),
+                        "println.bool.truth",
+                    )
+                    .llvm_ctx("normalize Boolean print argument")?;
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_println_bool",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[self.ctx.bool_type().into()], false),
+                )?;
+                self.runtime_call_void(function, &[truth.into()], "println.bool")?;
+            }
             PhysicalRuntimeAction::PrintlnString => {
                 let function = get_or_declare_external(
                     self.llvm,

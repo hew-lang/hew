@@ -3,6 +3,17 @@
 # failures are failures, not a differential pass.
 
 [[case]]
+id = "boolean-print"
+intent = "Boolean values returned through the common callable ABI print their exact true and false forms."
+source = "cases/boolean-print.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\nfalse\n"
+exit = 0
+
+[[case]]
 id = "recursive-carrier"
 intent = "Finite recursive enum, record and vector values preserve independent copies and extracted Unicode/NUL text across replacement and parent destruction."
 source = "cases/recursive-carrier.hew"

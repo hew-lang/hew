@@ -907,3 +907,15 @@ The focused record-contract suite compiles and passes, including user overrides,
 derived defaults, reordered generic binders, concrete specialization and builtin
 lookalikes. This is an incremental checker checkpoint; broader checker validation
 and refusal controls remain in progress. It does not establish native execution.
+
+## Boolean print calls
+
+Boolean println endpoints now have a typed semantic contract and an exact
+physical call to the existing Boolean runtime entry. Normalize the internal
+Boolean carrier before crossing the C ABI. A permanent native case returns true
+and false through an ordinary function and prints both at O0/O2.
+
+The native print case passes. Combined semantic testing still reports the
+known Map projection/emptiness/Set projection frontiers and newly exposed opaque
+class-totality regressions in the selected-capability checkpoint; those remain
+visible with their owners and are not print acceptance claims.

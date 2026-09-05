@@ -1,0 +1,8 @@
+fn identity(value: bool) -> bool {
+    value
+}
+
+fn main() {
+    println(identity(true));
+    println(identity(false));
+}

@@ -1,4 +1,4 @@
-use hew_cabi::string::{
+use super::{
     cstring_copy_release, cstring_from_string_copy, string_as_bytes, string_as_str,
     string_from_cstr_copy, string_from_str, string_from_utf8, string_release, string_retain,
     string_to_cstring, StringFromCStrError,
@@ -116,7 +116,7 @@ fn rust_cstring_copy_has_independent_lifetime_and_rejects_nul() {
         let nul = string_from_str("a\0b");
         assert_eq!(
             string_to_cstring(nul),
-            Err(hew_cabi::string::StringToCStrError::InteriorNul)
+            Err(super::StringToCStrError::InteriorNul)
         );
         assert_eq!(string_as_str(nul), "a\0b");
         string_release(nul);

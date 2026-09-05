@@ -294,3 +294,6 @@ pub unsafe fn string_release(value: *mut HewString) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests;

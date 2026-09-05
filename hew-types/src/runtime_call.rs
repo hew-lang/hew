@@ -379,7 +379,8 @@ pub struct RuntimeInstantiatedContract {
 }
 
 /// Recognize supported canonical collection instances and their exact arity.
-fn collection_type_arguments(ty: &ResolvedTy) -> Option<(BuiltinType, &[ResolvedTy])> {
+#[must_use]
+pub fn collection_type_arguments(ty: &ResolvedTy) -> Option<(BuiltinType, &[ResolvedTy])> {
     match ty {
         ResolvedTy::Named {
             builtin: Some(builtin),

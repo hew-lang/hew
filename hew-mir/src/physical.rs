@@ -13,8 +13,9 @@ use hew_sir::{
     SemOp, SemOpKind, SemTerminator, SnapshotDecision, ValueId,
 };
 pub use hew_sir::{BlockId, CallableId, OwnKind, TrapKind};
+use hew_types::runtime_call::collection_type_arguments;
 use hew_types::{
-    vector_element_type, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect,
+    vector_element_type, BuiltinType, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect,
     RuntimeCallFamily, RuntimeResultEffect, TypeInstanceKey, VecValueOp,
 };
 
@@ -33,6 +34,29 @@ pub struct PhysicalVariantId(pub u32);
 /// Module-local identity of one exact vector element copy/drop recipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalVectorId(pub u32);
+
+/// Module-local identity of a map key/value copy/drop recipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalMapId(pub u32);
+
+/// Module-local identity of a set element copy/drop recipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalSetId(pub u32);
+
+/// A canonical map and its exact key and value types, before target layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalMapDescriptor {
+    pub ty: ResolvedTy,
+    pub key: ResolvedTy,
+    pub value: ResolvedTy,
+}
+
+/// A canonical set and its exact element type, before target layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalSetDescriptor {
+    pub ty: ResolvedTy,
+    pub element: ResolvedTy,
+}
 
 /// A vector value and its exact semantic element, before target layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +87,8 @@ pub struct PhysicalTypeInventory {
     aggregates: BTreeMap<ResolvedTy, PhysicalAggregateDescriptor>,
     variants: BTreeMap<ResolvedTy, PhysicalVariantDescriptor>,
     vectors: BTreeMap<ResolvedTy, PhysicalVectorDescriptor>,
+    maps: BTreeMap<ResolvedTy, PhysicalMapDescriptor>,
+    sets: BTreeMap<ResolvedTy, PhysicalSetDescriptor>,
 }
 
 impl PhysicalTypeInventory {
@@ -81,6 +107,14 @@ impl PhysicalTypeInventory {
 
     pub fn variants(&self) -> impl Iterator<Item = &PhysicalVariantDescriptor> {
         self.variants.values()
+    }
+
+    pub fn maps(&self) -> impl Iterator<Item = &PhysicalMapDescriptor> {
+        self.maps.values()
+    }
+
+    pub fn sets(&self) -> impl Iterator<Item = &PhysicalSetDescriptor> {
+        self.sets.values()
     }
 
     pub fn vectors(&self) -> impl Iterator<Item = &PhysicalVectorDescriptor> {
@@ -234,6 +268,8 @@ pub enum CloneAction {
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
     Vector(PhysicalVectorId),
+    Map(PhysicalMapId),
+    Set(PhysicalSetId),
 }
 
 /// A release selected once from an explicit SIR destroy plus concrete type.
@@ -244,6 +280,8 @@ pub enum DestroyAction {
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
     Vector(PhysicalVectorId),
+    Map(PhysicalMapId),
+    Set(PhysicalSetId),
 }
 
 /// Shared physical copy/drop recipe for one concrete value type.
@@ -284,6 +322,23 @@ pub struct PhysicalVariantGlue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalVectorGlue {
     pub id: PhysicalVectorId,
+    pub ty: ResolvedTy,
+    pub element: PhysicalValueRecipe,
+}
+
+/// Key and value recipes shared by map operations and ordinary copy/drop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalMapGlue {
+    pub id: PhysicalMapId,
+    pub ty: ResolvedTy,
+    pub key: PhysicalValueRecipe,
+    pub value: PhysicalValueRecipe,
+}
+
+/// Element recipe shared by set operations and ordinary copy/drop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalSetGlue {
+    pub id: PhysicalSetId,
     pub ty: ResolvedTy,
     pub element: PhysicalValueRecipe,
 }
@@ -577,6 +632,8 @@ pub struct PhysicalModule {
     pub aggregate_glue: Vec<PhysicalAggregateGlue>,
     pub variant_glue: Vec<PhysicalVariantGlue>,
     pub vector_glue: Vec<PhysicalVectorGlue>,
+    pub map_glue: Vec<PhysicalMapGlue>,
+    pub set_glue: Vec<PhysicalSetGlue>,
     /// Retained semantic authority for verification, never a physical classifier.
     type_facts: BTreeMap<TypeInstanceKey, hew_types::TypeFacts>,
     pub callables: Vec<PhysicalCallable>,
@@ -651,6 +708,8 @@ pub fn lower_physical_module(
         aggregate_glue,
         variant_glue,
         vector_glue,
+        map_glue,
+        set_glue,
         ids,
     } = build_glue(module)?;
 
@@ -704,6 +763,8 @@ pub fn lower_physical_module(
         aggregate_glue,
         variant_glue,
         vector_glue,
+        map_glue,
+        set_glue,
         type_facts: module.type_facts.clone(),
         callables,
         functions,
@@ -721,12 +782,16 @@ struct PhysicalGlueIds {
     aggregates: BTreeMap<ResolvedTy, PhysicalAggregateId>,
     variants: BTreeMap<ResolvedTy, PhysicalVariantId>,
     vectors: BTreeMap<ResolvedTy, PhysicalVectorId>,
+    maps: BTreeMap<ResolvedTy, PhysicalMapId>,
+    sets: BTreeMap<ResolvedTy, PhysicalSetId>,
 }
 
 struct PhysicalGlue {
     aggregate_glue: Vec<PhysicalAggregateGlue>,
     variant_glue: Vec<PhysicalVariantGlue>,
     vector_glue: Vec<PhysicalVectorGlue>,
+    map_glue: Vec<PhysicalMapGlue>,
+    set_glue: Vec<PhysicalSetGlue>,
     ids: PhysicalGlueIds,
 }
 
@@ -779,10 +844,30 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
             Ok((vector.ty.clone(), PhysicalVectorId(index)))
         })
         .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
+    let map_ids = inventory
+        .maps()
+        .enumerate()
+        .map(|(index, map)| {
+            let index = u32::try_from(index)
+                .map_err(|_| PhysicalError::new("physical map count exceeds u32"))?;
+            Ok((map.ty.clone(), PhysicalMapId(index)))
+        })
+        .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
+    let set_ids = inventory
+        .sets()
+        .enumerate()
+        .map(|(index, set)| {
+            let index = u32::try_from(index)
+                .map_err(|_| PhysicalError::new("physical set count exceeds u32"))?;
+            Ok((set.ty.clone(), PhysicalSetId(index)))
+        })
+        .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
     let ids = PhysicalGlueIds {
         aggregates: aggregate_ids,
         variants: variant_ids,
         vectors: vector_ids,
+        maps: map_ids,
+        sets: set_ids,
     };
     let value_recipe = |ty: &ResolvedTy| -> Result<PhysicalValueRecipe, PhysicalError> {
         let facts = module
@@ -891,10 +976,33 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
             })
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
+    let map_glue = inventory
+        .maps()
+        .map(|descriptor| {
+            Ok(PhysicalMapGlue {
+                id: ids.maps[&descriptor.ty],
+                ty: descriptor.ty.clone(),
+                key: value_recipe(&descriptor.key)?,
+                value: value_recipe(&descriptor.value)?,
+            })
+        })
+        .collect::<Result<Vec<_>, PhysicalError>>()?;
+    let set_glue = inventory
+        .sets()
+        .map(|descriptor| {
+            Ok(PhysicalSetGlue {
+                id: ids.sets[&descriptor.ty],
+                ty: descriptor.ty.clone(),
+                element: value_recipe(&descriptor.element)?,
+            })
+        })
+        .collect::<Result<Vec<_>, PhysicalError>>()?;
     Ok(PhysicalGlue {
         aggregate_glue,
         variant_glue,
         vector_glue,
+        map_glue,
+        set_glue,
         ids,
     })
 }
@@ -930,6 +1038,12 @@ fn clone_action_for_type(
         CloneKind::DeepCopy | CloneKind::FieldWise if ids.vectors.contains_key(ty) => {
             CloneAction::Vector(ids.vectors[ty])
         }
+        CloneKind::DeepCopy | CloneKind::FieldWise if ids.maps.contains_key(ty) => {
+            CloneAction::Map(ids.maps[ty])
+        }
+        CloneKind::DeepCopy | CloneKind::FieldWise if ids.sets.contains_key(ty) => {
+            CloneAction::Set(ids.sets[ty])
+        }
         CloneKind::FieldWise if ids.aggregates.contains_key(ty) => {
             CloneAction::Aggregate(ids.aggregates[ty])
         }
@@ -957,6 +1071,8 @@ fn destroy_action_for_type(ty: &ResolvedTy, ids: &PhysicalGlueIds) -> Option<Des
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
         _ if ids.vectors.contains_key(ty) => Some(DestroyAction::Vector(ids.vectors[ty])),
+        _ if ids.maps.contains_key(ty) => Some(DestroyAction::Map(ids.maps[ty])),
+        _ if ids.sets.contains_key(ty) => Some(DestroyAction::Set(ids.sets[ty])),
         _ if ids.aggregates.contains_key(ty) => Some(DestroyAction::Aggregate(ids.aggregates[ty])),
         _ => ids.variants.get(ty).copied().map(DestroyAction::Variant),
     }
@@ -999,6 +1115,8 @@ pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
         aggregates: BTreeMap::new(),
         variants: BTreeMap::new(),
         vectors: BTreeMap::new(),
+        maps: BTreeMap::new(),
+        sets: BTreeMap::new(),
     };
     let demanded = inventory.types.iter().cloned().collect::<Vec<_>>();
     for ty in demanded {
@@ -1015,6 +1133,8 @@ fn collect_inventory_type(
     if inventory.aggregates.contains_key(ty)
         || inventory.variants.contains_key(ty)
         || inventory.vectors.contains_key(ty)
+        || inventory.maps.contains_key(ty)
+        || inventory.sets.contains_key(ty)
     {
         return;
     }
@@ -1029,6 +1149,34 @@ fn collect_inventory_type(
         );
         collect_inventory_type(module, inventory, element);
         return;
+    }
+    match collection_type_arguments(ty) {
+        Some((BuiltinType::HashMap, args)) => {
+            inventory.maps.insert(
+                ty.clone(),
+                PhysicalMapDescriptor {
+                    ty: ty.clone(),
+                    key: args[0].clone(),
+                    value: args[1].clone(),
+                },
+            );
+            for argument in args {
+                collect_inventory_type(module, inventory, argument);
+            }
+            return;
+        }
+        Some((BuiltinType::HashSet, args)) => {
+            inventory.sets.insert(
+                ty.clone(),
+                PhysicalSetDescriptor {
+                    ty: ty.clone(),
+                    element: args[0].clone(),
+                },
+            );
+            collect_inventory_type(module, inventory, &args[0]);
+            return;
+        }
+        _ => {}
     }
     if let Some(shape) = module.variant_shape_for_type(ty) {
         let variants = shape
@@ -1965,15 +2113,7 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
     for (index, glue) in module.variant_glue.iter().enumerate() {
         verify_variant_glue(module, index, glue)?;
     }
-    let mut vector_types = BTreeSet::new();
-    for (index, glue) in module.vector_glue.iter().enumerate() {
-        if !vector_types.insert(&glue.ty) {
-            return Err(PhysicalError::new(
-                "physical vector type has more than one glue identity",
-            ));
-        }
-        verify_vector_glue(module, index, glue)?;
-    }
+    verify_collection_glue_tables(module)?;
     for (index, callable) in module.callables.iter().enumerate() {
         if usize::try_from(callable.id.0).ok() != Some(index) {
             return Err(PhysicalError::new(format!(
@@ -2003,6 +2143,42 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
             )));
         }
         verify_physical_function(module, function)?;
+    }
+    Ok(())
+}
+
+fn verify_collection_glue_tables(module: &PhysicalModule) -> Result<(), PhysicalError> {
+    let mut vector_types = BTreeSet::new();
+    for (index, glue) in module.vector_glue.iter().enumerate() {
+        if !vector_types.insert(&glue.ty) {
+            return Err(PhysicalError::new(
+                "physical vector type has more than one glue identity",
+            ));
+        }
+        verify_vector_glue(module, index, glue)?;
+    }
+    let mut map_types = BTreeSet::new();
+    for (index, glue) in module.map_glue.iter().enumerate() {
+        if usize::try_from(glue.id.0).ok() != Some(index) || !map_types.insert(&glue.ty) {
+            return Err(PhysicalError::new(
+                "physical map glue has a noncanonical identity",
+            ));
+        }
+        verify_collection_value_glue(
+            module,
+            &glue.ty,
+            BuiltinType::HashMap,
+            &[&glue.key, &glue.value],
+        )?;
+    }
+    let mut set_types = BTreeSet::new();
+    for (index, glue) in module.set_glue.iter().enumerate() {
+        if usize::try_from(glue.id.0).ok() != Some(index) || !set_types.insert(&glue.ty) {
+            return Err(PhysicalError::new(
+                "physical set glue has a noncanonical identity",
+            ));
+        }
+        verify_collection_value_glue(module, &glue.ty, BuiltinType::HashSet, &[&glue.element])?;
     }
     Ok(())
 }
@@ -2090,6 +2266,54 @@ fn verify_vector_glue(
         return Err(PhysicalError::new(
             "physical vector element has no clone action",
         ));
+    }
+    Ok(())
+}
+
+fn verify_collection_value_glue(
+    module: &PhysicalModule,
+    ty: &ResolvedTy,
+    kind: BuiltinType,
+    recipes: &[&PhysicalValueRecipe],
+) -> Result<(), PhysicalError> {
+    let Some((actual, arguments)) = collection_type_arguments(ty) else {
+        return Err(PhysicalError::new(
+            "physical collection lacks a canonical type identity",
+        ));
+    };
+    if actual != kind
+        || arguments.len() != recipes.len()
+        || !arguments
+            .iter()
+            .zip(recipes)
+            .all(|(argument, recipe)| argument == &recipe.ty)
+    {
+        return Err(PhysicalError::new(
+            "physical collection recipes disagree with type arguments",
+        ));
+    }
+    let facts = semantic_type_facts(module, ty)?;
+    if OwnKind::of_class(facts.class) != OwnKind::Owned
+        || !matches!(facts.clone, CloneKind::DeepCopy | CloneKind::FieldWise)
+        || required_layout(&module.target, ty)?.repr != PhysicalRepr::Pointer
+    {
+        return Err(PhysicalError::new(
+            "physical collection lacks an owning pointer copy contract",
+        ));
+    }
+    for recipe in recipes {
+        let layout = required_layout(&module.target, &recipe.ty)?;
+        if !layout.align.is_power_of_two() || layout.size % u64::from(layout.align) != 0 {
+            return Err(PhysicalError::new(
+                "physical collection element has an invalid target layout",
+            ));
+        }
+        verify_value_recipe(module, recipe)?;
+        if recipe.clone.is_none() {
+            return Err(PhysicalError::new(
+                "physical collection element has no clone action",
+            ));
+        }
     }
     Ok(())
 }
@@ -2337,6 +2561,22 @@ fn vector_glue(
         .ok_or_else(|| PhysicalError::new(format!("unknown physical vector glue {}", id.0)))
 }
 
+fn map_glue(module: &PhysicalModule, id: PhysicalMapId) -> Result<&PhysicalMapGlue, PhysicalError> {
+    module
+        .map_glue
+        .get(id.0 as usize)
+        .filter(|glue| glue.id == id)
+        .ok_or_else(|| PhysicalError::new(format!("unknown physical map glue {}", id.0)))
+}
+
+fn set_glue(module: &PhysicalModule, id: PhysicalSetId) -> Result<&PhysicalSetGlue, PhysicalError> {
+    module
+        .set_glue
+        .get(id.0 as usize)
+        .filter(|glue| glue.id == id)
+        .ok_or_else(|| PhysicalError::new(format!("unknown physical set glue {}", id.0)))
+}
+
 fn verify_clone_action(
     module: &PhysicalModule,
     ty: &ResolvedTy,
@@ -2357,7 +2597,7 @@ fn verify_clone_action(
             )
             | (
                 CloneKind::DeepCopy | CloneKind::FieldWise,
-                CloneAction::Vector(_)
+                CloneAction::Vector(_) | CloneAction::Map(_) | CloneAction::Set(_)
             )
     );
     let valid = clone_kind_matches
@@ -2375,6 +2615,17 @@ fn verify_clone_action(
             }
             CloneAction::Vector(id) => {
                 let glue = vector_glue(module, id)?;
+                glue.ty == *ty && own == OwnKind::Owned && glue.element.clone.is_some()
+            }
+            CloneAction::Map(id) => {
+                let glue = map_glue(module, id)?;
+                glue.ty == *ty
+                    && own == OwnKind::Owned
+                    && glue.key.clone.is_some()
+                    && glue.value.clone.is_some()
+            }
+            CloneAction::Set(id) => {
+                let glue = set_glue(module, id)?;
                 glue.ty == *ty && own == OwnKind::Owned && glue.element.clone.is_some()
             }
             CloneAction::Variant(id) => {
@@ -2422,6 +2673,20 @@ fn verify_destroy_action(
             }
             DestroyAction::Vector(id) => {
                 let glue = vector_glue(module, id)?;
+                glue.ty == *ty
+                    && own == OwnKind::Owned
+                    && (glue.element.own != OwnKind::Owned || glue.element.destroy.is_some())
+            }
+            DestroyAction::Map(id) => {
+                let glue = map_glue(module, id)?;
+                glue.ty == *ty
+                    && own == OwnKind::Owned
+                    && [&glue.key, &glue.value]
+                        .iter()
+                        .all(|recipe| recipe.own != OwnKind::Owned || recipe.destroy.is_some())
+            }
+            DestroyAction::Set(id) => {
+                let glue = set_glue(module, id)?;
                 glue.ty == *ty
                     && own == OwnKind::Owned
                     && (glue.element.own != OwnKind::Owned || glue.element.destroy.is_some())
@@ -4183,9 +4448,12 @@ mod tests {
     fn target_for_inventory(module: &SemModule) -> PhysicalTarget {
         let inventory = physical_type_inventory(module);
         let mut target = target();
-        for vector in inventory.vectors() {
+        for ty in inventory
+            .types()
+            .filter(|ty| collection_type_arguments(ty).is_some())
+        {
             target.insert_layout(
-                vector.ty.clone(),
+                ty.clone(),
                 PhysicalLayout {
                     size: 8,
                     align: 8,
@@ -5475,6 +5743,8 @@ mod tests {
             aggregate_glue: vec![],
             variant_glue: vec![],
             vector_glue: vec![],
+            map_glue: vec![],
+            set_glue: vec![],
             type_facts: BTreeMap::new(),
             callables: vec![callable],
             functions: vec![function],
@@ -5489,6 +5759,101 @@ mod tests {
         let error = verify_physical_module(&physical)
             .expect_err("a path-dependent live owner cannot be overwritten");
         assert!(error.message.contains("may overwrite a live obligation"));
+    }
+
+    fn collection_parameter_fixture() -> PhysicalModule {
+        let collection = |kind: BuiltinType, args| ResolvedTy::Named {
+            name: kind.canonical_name().to_string(),
+            builtin: Some(kind),
+            args,
+            is_opaque: false,
+        };
+        let vector = collection(BuiltinType::Vec, vec![ResolvedTy::String]);
+        let set = collection(BuiltinType::HashSet, vec![ResolvedTy::String]);
+        let map = collection(BuiltinType::HashMap, vec![ResolvedTy::String, vector]);
+        let nested = collection(BuiltinType::HashMap, vec![ResolvedTy::I64, set]);
+        let mut module = module_with_return();
+        module.functions.clear();
+        module.entry_callable = None;
+        let mut facts = hew_types::TypeFactService::new(
+            hew_types::TypeFactContext::default(),
+            module.type_facts,
+        );
+        module.callables[0].signature.params = [map, nested]
+            .into_iter()
+            .map(|ty| {
+                facts
+                    .require(&ty)
+                    .expect("canonical collection value facts");
+                hew_sir::SemAbiParam {
+                    ty,
+                    passing: hew_sir::SemParamPassing::Borrow,
+                    caller_visible_projection: false,
+                }
+            })
+            .collect();
+        module.type_facts = facts.into_rows();
+        lower_physical_module(&module, target_for_inventory(&module))
+            .expect("collection parameters have complete physical value recipes")
+            .into_unverified()
+    }
+
+    #[test]
+    fn map_and_set_owners_compose_the_shared_value_recipes() {
+        let module = collection_parameter_fixture();
+        for map in &module.map_glue {
+            verify_clone_action(&module, &map.ty, OwnKind::Owned, CloneAction::Map(map.id))
+                .unwrap();
+            verify_destroy_action(&module, &map.ty, OwnKind::Owned, DestroyAction::Map(map.id))
+                .unwrap();
+            match collection_type_arguments(&map.value.ty).unwrap().0 {
+                BuiltinType::Vec => {
+                    assert!(matches!(map.value.clone, Some(CloneAction::Vector(_))));
+                }
+                BuiltinType::HashSet => {
+                    assert!(matches!(map.value.clone, Some(CloneAction::Set(_))));
+                }
+                other => panic!("unexpected nested collection {other:?}"),
+            }
+        }
+        let set = &module.set_glue[0];
+        assert_eq!(set.element.clone, Some(CloneAction::StringRetain));
+        assert_eq!(set.element.destroy, Some(DestroyAction::StringRelease));
+    }
+
+    #[test]
+    fn collection_glue_rejects_wrong_identity_layout_and_lifetime_recipes() {
+        let original = collection_parameter_fixture();
+        for mutation in 0..5 {
+            let mut module = original.clone();
+            match mutation {
+                0 => module.map_glue[0].key.ty = ResolvedTy::Bool,
+                1 => module.set_glue[0].element.destroy = None,
+                2 => module.map_glue[0].id = PhysicalMapId(99),
+                3 => module.map_glue.push(module.map_glue[0].clone()),
+                4 => {
+                    let ty = module.map_glue[0].ty.clone();
+                    module.target.insert_layout(ty, i64_layout());
+                }
+                _ => unreachable!(),
+            }
+            verify_physical_module(&module).expect_err("forged collection glue must be refused");
+        }
+        let map = &original.map_glue[0];
+        verify_clone_action(
+            &original,
+            &map.ty,
+            OwnKind::Owned,
+            CloneAction::Map(original.map_glue[1].id),
+        )
+        .expect_err("foreign map key/value recipe");
+        verify_destroy_action(
+            &original,
+            &map.ty,
+            OwnKind::Owned,
+            DestroyAction::Set(original.set_glue[0].id),
+        )
+        .expect_err("set drop cannot consume a map");
     }
 
     fn vector_fixture() -> PhysicalModule {

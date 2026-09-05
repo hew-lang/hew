@@ -32,7 +32,7 @@ pub enum SirDiagnosticKind {
         shape: AggregateShapeId,
         reason: String,
     },
-    InvalidVectorType {
+    InvalidCollectionType {
         ty: ResolvedTy,
         reason: String,
     },
@@ -379,14 +379,14 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     verify_aggregate_shapes(module, &mut diagnostics);
     verify_variant_shapes(module, &mut diagnostics);
     for key in module.type_facts.keys() {
-        if hew_types::vector_element_type(&key.0).is_some() {
-            if let Err(reason) = crate::model::vector_value_dependencies(
+        if hew_types::runtime_call::collection_type_arguments(&key.0).is_some() {
+            if let Err(reason) = crate::model::collection_value_dependencies(
                 &key.0,
                 &module.type_facts,
                 &module.aggregate_shapes,
                 &module.variant_shapes,
             ) {
-                diagnostics.push(module_diag(SirDiagnosticKind::InvalidVectorType {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidCollectionType {
                     ty: key.0.clone(),
                     reason,
                 }));
@@ -1347,7 +1347,7 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
 
 fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
-        || hew_types::vector_element_type(ty).is_some()
+        || hew_types::runtime_call::collection_type_arguments(ty).is_some()
         || matches!(ty, ResolvedTy::Tuple(fields) if !fields.is_empty())
         || module.aggregate_shape_for_type(ty).is_some()
         || module.variant_shape_for_type(ty).is_some()

@@ -742,3 +742,21 @@ language surfaces, including LocalPid aggregate transfer. No checks were weakene
 This checkpoint establishes the contract only: HIR-to-SIR call operands still
 produce owned field copies, so cursor complexity and native safety acceptance
 remain pending the scoped producer change.
+
+## Map and Set value recipes
+
+Map keys and values, Set elements, vectors and aggregate fields now share the
+physical value recipe used for explicit copy and destruction. The type inventory
+follows nested collections and the verifier checks exact collection identity,
+component ownership, callback availability and target layout. Map and Set handles
+use the target pointer carrier; their existing descriptor-backed runtime kernels
+perform independent cloning and recursive destruction.
+
+SIR's recursive collection-dependency check now covers all canonical collection
+kinds, including collections nested inside one another, without adding a second
+copyability classifier. Physical verifier controls reject mismatched key/value
+recipes, missing destruction, foreign identities and forged carriers. Target
+layout controls cover Linux, Windows and macOS; these are LLVM layout checks,
+not native execution on those hosts. The affected SIR/MIR/codegen Make selection
+passes. Source construction and Map/Set runtime-call emission remain the next
+compiler boundary; this checkpoint does not yet execute the native map examples.

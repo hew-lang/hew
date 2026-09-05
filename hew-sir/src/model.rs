@@ -825,22 +825,20 @@ impl EffectSet {
     }
 }
 
-/// The value, if any, produced by an invoke-style call terminator.
-///
-/// Check the recursive semantic dependencies used by a vector's element glue.
-/// This carries no target layout and adds no parallel element descriptor table.
+/// Check the recursive semantic dependencies used by a collection's value recipes.
+/// This carries no target layout and adds no parallel value descriptor table.
 ///
 /// # Errors
 /// Refuses missing facts, missing nominal shapes and noncopyable elements.
-pub fn vector_value_dependencies(
-    vector: &ResolvedTy,
+pub fn collection_value_dependencies(
+    collection: &ResolvedTy,
     facts: &crate::ownership::TypeFactTable,
     aggregates: &[SemAggregateShape],
     variants: &[SemVariantShape],
 ) -> Result<(), String> {
-    let element = hew_types::vector_element_type(vector)
-        .ok_or_else(|| "vector value requires canonical Vec<T> identity".to_string())?;
-    let mut pending = vec![element.clone()];
+    let (_, arguments) = hew_types::runtime_call::collection_type_arguments(collection)
+        .ok_or_else(|| "collection value requires a canonical collection identity".to_string())?;
+    let mut pending = arguments.to_vec();
     let mut seen = std::collections::BTreeSet::new();
     while let Some(ty) = pending.pop() {
         if !seen.insert(ty.clone()) {
@@ -850,18 +848,18 @@ pub fn vector_value_dependencies(
             .get(&hew_types::TypeInstanceKey(ty.clone()))
             .ok_or_else(|| {
                 format!(
-                    "vector component `{}` has no concrete type facts",
+                    "collection component `{}` has no concrete type facts",
                     ty.user_facing()
                 )
             })?;
         if row.clone == hew_types::CloneKind::None {
             return Err(format!(
-                "vector component `{}` has no semantic copy",
+                "collection component `{}` has no semantic copy",
                 ty.user_facing()
             ));
         }
-        if let Some(element) = hew_types::vector_element_type(&ty) {
-            pending.push(element.clone());
+        if let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(&ty) {
+            pending.extend_from_slice(arguments);
         } else if let ResolvedTy::Named { .. } = &ty {
             if let Some(shape) = aggregates.iter().find(|shape| shape.aggregate_ty == ty) {
                 pending.extend(shape.fields.iter().map(|field| field.ty.clone()));
@@ -875,7 +873,7 @@ pub fn vector_value_dependencies(
                 );
             } else {
                 return Err(format!(
-                    "vector component `{}` has no exact semantic shape",
+                    "collection component `{}` has no exact semantic shape",
                     ty.user_facing()
                 ));
             }

@@ -357,7 +357,7 @@ fn verifier_requires_recursive_vector_shape_and_type_facts() {
         .iter()
         .any(|diagnostic| matches!(
             diagnostic.kind,
-            hew_sir::SirDiagnosticKind::InvalidVectorType { .. }
+            hew_sir::SirDiagnosticKind::InvalidCollectionType { .. }
         )));
     let mut missing_fact = valid;
     missing_fact
@@ -367,7 +367,7 @@ fn verifier_requires_recursive_vector_shape_and_type_facts() {
         .iter()
         .any(|diagnostic| matches!(
             diagnostic.kind,
-            hew_sir::SirDiagnosticKind::InvalidVectorType { .. }
+            hew_sir::SirDiagnosticKind::InvalidCollectionType { .. }
         )));
 }
 

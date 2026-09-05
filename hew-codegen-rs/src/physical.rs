@@ -26,7 +26,8 @@ use hew_runtime::internal::types::{
     HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
-use hew_types::{vector_element_type, EntryExitAction, EntryIntegerType, ResolvedTy};
+use hew_types::runtime_call::collection_type_arguments;
+use hew_types::{EntryExitAction, EntryIntegerType, ResolvedTy};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -446,7 +447,7 @@ fn primitive_repr(
         ResolvedTy::F32 => PhysicalRepr::Float { bits: 32 },
         ResolvedTy::F64 => PhysicalRepr::Float { bits: 64 },
         ResolvedTy::String | ResolvedTy::CancellationToken => PhysicalRepr::Pointer,
-        vector if vector_element_type(vector).is_some() => PhysicalRepr::Pointer,
+        collection if collection_type_arguments(collection).is_some() => PhysicalRepr::Pointer,
         ResolvedTy::Bytes => PhysicalRepr::Struct(vec![
             pointer_layout(ctx, target)?,
             integer_layout(ctx, target, 32)?,
@@ -692,15 +693,43 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 Ok(clone.into())
             }
             CloneAction::Variant(id) => self.clone_variant_value(value, layout, id),
-            CloneAction::Vector(id) => {
-                self.vector_glue(id)?;
-                let function = external_unary_ptr(self.ctx, self.llvm, "hew_vec_clone_owned")?;
+            CloneAction::Vector(_) | CloneAction::Map(_) | CloneAction::Set(_) => {
+                let symbol = match action {
+                    CloneAction::Vector(id) => {
+                        self.vector_glue(id)?;
+                        "hew_vec_clone_owned"
+                    }
+                    CloneAction::Map(id) => {
+                        self.module
+                            .map_glue
+                            .get(id.0 as usize)
+                            .filter(|glue| glue.id == id)
+                            .ok_or_else(|| {
+                                CodegenError::FailClosed("unknown physical map glue".into())
+                            })?;
+                        "hew_hashmap_clone_layout"
+                    }
+                    CloneAction::Set(id) => {
+                        self.module
+                            .set_glue
+                            .get(id.0 as usize)
+                            .filter(|glue| glue.id == id)
+                            .ok_or_else(|| {
+                                CodegenError::FailClosed("unknown physical set glue".into())
+                            })?;
+                        "hew_hashset_clone_layout"
+                    }
+                    _ => unreachable!("matched collection clone"),
+                };
+                let function = external_unary_ptr(self.ctx, self.llvm, symbol)?;
                 self.builder
-                    .build_call(function, &[value.into()], "vector.clone")
-                    .llvm_ctx("clone descriptor-backed vector")?
+                    .build_call(function, &[value.into()], "collection.clone")
+                    .llvm_ctx("clone descriptor-backed collection")?
                     .try_as_basic_value()
                     .basic()
-                    .ok_or_else(|| CodegenError::FailClosed("vector clone returned void".into()))
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("collection clone returned void".into())
+                    })
             }
         }
     }
@@ -722,14 +751,18 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                         .into_pointer_value(),
                     DestroyAction::Aggregate(_) => unreachable!("matched primitive release"),
                     DestroyAction::Variant(_) => unreachable!("matched primitive release"),
-                    DestroyAction::Vector(_) => unreachable!("matched primitive release"),
+                    DestroyAction::Vector(_) | DestroyAction::Map(_) | DestroyAction::Set(_) => {
+                        unreachable!("matched primitive release")
+                    }
                 };
                 let symbol = match action {
                     DestroyAction::StringRelease => "hew_string_drop",
                     DestroyAction::BytesRelease => "hew_bytes_drop",
                     DestroyAction::Aggregate(_) => unreachable!("matched primitive release"),
                     DestroyAction::Variant(_) => unreachable!("matched primitive release"),
-                    DestroyAction::Vector(_) => unreachable!("matched primitive release"),
+                    DestroyAction::Vector(_) | DestroyAction::Map(_) | DestroyAction::Set(_) => {
+                        unreachable!("matched primitive release")
+                    }
                 };
                 let function = external_drop(self.ctx, self.llvm, symbol)?;
                 self.builder
@@ -764,12 +797,38 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 Ok(())
             }
             DestroyAction::Variant(id) => self.destroy_variant_value(value, layout, id),
-            DestroyAction::Vector(id) => {
-                self.vector_glue(id)?;
-                let function = external_drop(self.ctx, self.llvm, "hew_vec_free_owned")?;
+            DestroyAction::Vector(_) | DestroyAction::Map(_) | DestroyAction::Set(_) => {
+                let symbol = match action {
+                    DestroyAction::Vector(id) => {
+                        self.vector_glue(id)?;
+                        "hew_vec_free_owned"
+                    }
+                    DestroyAction::Map(id) => {
+                        self.module
+                            .map_glue
+                            .get(id.0 as usize)
+                            .filter(|glue| glue.id == id)
+                            .ok_or_else(|| {
+                                CodegenError::FailClosed("unknown physical map glue".into())
+                            })?;
+                        "hew_hashmap_free_layout"
+                    }
+                    DestroyAction::Set(id) => {
+                        self.module
+                            .set_glue
+                            .get(id.0 as usize)
+                            .filter(|glue| glue.id == id)
+                            .ok_or_else(|| {
+                                CodegenError::FailClosed("unknown physical set glue".into())
+                            })?;
+                        "hew_hashset_free_layout"
+                    }
+                    _ => unreachable!("matched collection destroy"),
+                };
+                let function = external_drop(self.ctx, self.llvm, symbol)?;
                 self.builder
-                    .build_call(function, &[value.into()], "vector.drop")
-                    .llvm_ctx("destroy descriptor-backed vector")?;
+                    .build_call(function, &[value.into()], "collection.drop")
+                    .llvm_ctx("destroy descriptor-backed collection")?;
                 Ok(())
             }
         }
@@ -3819,6 +3878,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn canonical_maps_and_sets_use_the_target_pointer_carrier() {
+        let map = ResolvedTy::named_builtin(
+            "HashMap",
+            hew_types::BuiltinType::HashMap,
+            vec![ResolvedTy::String, ResolvedTy::I64],
+        );
+        let set = ResolvedTy::named_builtin(
+            "HashSet",
+            hew_types::BuiltinType::HashSet,
+            vec![ResolvedTy::String],
+        );
+        for triple in [
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin",
+        ] {
+            let target = physical_target_for_types(triple, [&map, &set]).unwrap();
+            let pointer = target.layout(&ResolvedTy::String).unwrap();
+            assert_eq!(target.layout(&map), Some(pointer), "{triple}");
+            assert_eq!(target.layout(&set), Some(pointer), "{triple}");
+        }
+        let lookalike = ResolvedTy::Named {
+            name: "HashMap".into(),
+            args: vec![ResolvedTy::String, ResolvedTy::I64],
+            builtin: None,
+            is_opaque: false,
+        };
+        assert!(physical_target_for_types("x86_64-unknown-linux-gnu", [&lookalike]).is_err());
+        let wrong_arity =
+            ResolvedTy::named_builtin("HashSet", hew_types::BuiltinType::HashSet, vec![]);
+        assert!(physical_target_for_types("x86_64-unknown-linux-gnu", [&wrong_arity]).is_err());
     }
 
     fn lower_source(source: &str) -> SemModule {

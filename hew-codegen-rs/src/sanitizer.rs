@@ -335,16 +335,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn llvm_clang() -> PathBuf {
-        let prefix = std::env::var_os("LLVM_SYS_221_PREFIX").unwrap_or_else(|| {
-            panic!(
-                "LLVM_SYS_221_PREFIX is required to locate the clang paired with the LLVM 22 \\
-                 codegen library; set it to the LLVM 22 installation prefix"
-            )
-        });
-        let path = PathBuf::from(prefix).join("bin").join("clang");
+        let path = PathBuf::from(env!("HEW_LLVM_BINDIR")).join("clang");
         assert!(
             path.is_file(),
-            "configured LLVM 22 clang is required for the ASan execution proof: {}",
+            "LLVM 22 clang resolved by the build's llvm-config is required for the ASan execution proof: {}",
             path.display()
         );
         path

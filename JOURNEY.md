@@ -222,3 +222,6 @@
 size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   Removing the `asan` pass makes the invalid O0 probe exit successfully, so
   linking the ASan runtime alone cannot satisfy the test.
+- The ASan execution test resolves clang from `llvm-config --bindir` exported
+  by the crate build script, the same LLVM authority selected by `llvm-sys`.
+  It therefore needs no ambient `LLVM_SYS_221_PREFIX` at test runtime.

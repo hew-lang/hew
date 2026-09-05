@@ -13,6 +13,13 @@ fn main() {
 
     let llvm_config = llvm_config_path();
     assert_llvm_22(&llvm_config);
+    // The ASan execution test must link with the same LLVM toolchain that
+    // llvm-sys selected. Export its bindir at compile time so the test does
+    // not depend on an optional runtime environment variable or host PATH.
+    println!(
+        "cargo:rustc-env=HEW_LLVM_BINDIR={}",
+        llvm_config_output(&llvm_config, "--bindir")
+    );
     let include_dir = llvm_config_arg(&llvm_config, "--includedir");
     let cxxflags = llvm_config_output(&llvm_config, "--cxxflags");
 

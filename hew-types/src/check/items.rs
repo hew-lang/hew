@@ -957,6 +957,23 @@ impl Checker {
         block_expected: Option<&Ty>,
     ) -> Ty {
         let prev_tail_ok_armed = self.tail_ok_armed;
+        if self.current_fails {
+            self.tail_ok_armed = false;
+            let actual = self.check_block(&fd.body, block_expected);
+            if !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
+                if let Some(tail) = &fd.body.trailing_expr {
+                    self.tail_ok_coercions
+                        .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
+                } else if actual == Ty::Unit {
+                    self.result_return_coercions.insert(
+                        SpanKey::in_module(&fd.fn_span, self.current_module_idx),
+                        super::ResultReturnKind::Success,
+                    );
+                }
+            }
+            self.tail_ok_armed = prev_tail_ok_armed;
+            return actual;
+        }
         self.tail_ok_armed = !fd.is_generator && resolved_expected_ret.as_result().is_some();
         let actual = self.check_block(&fd.body, block_expected);
         self.tail_ok_armed = prev_tail_ok_armed;
@@ -1048,11 +1065,12 @@ impl Checker {
         };
         // Generator bodies don't return the declared type — they yield it.
         // The body itself should return Unit (falls off the end).
-        let expected_ret = if fd.is_generator {
-            Ty::Unit
-        } else {
-            declared_ret.clone()
-        };
+        let prev_fails = self.current_fails;
+        self.current_fails = matches!(
+            fd.return_type.as_ref().map(|ty| &ty.0),
+            Some(TypeExpr::Fallible { .. })
+        );
+        let expected_ret = self.function_body_return_type(fd, &declared_ret);
         // Store the declared yields type so Expr::Yield can check against it.
         self.current_return_type = Some(declared_ret);
         let prev_in_generator = self.in_generator;
@@ -1126,6 +1144,7 @@ impl Checker {
         self.classify_stack_hints(fd);
 
         self.in_generator = prev_in_generator;
+        self.current_fails = prev_fails;
         self.current_return_type = None;
         self.current_function = prev_function;
         if pushed_body_bounds {
@@ -1135,6 +1154,18 @@ impl Checker {
             self.env.pop_scope();
         }
         self.emit_scope_warnings();
+    }
+
+    fn function_body_return_type(&self, fd: &FnDecl, declared: &Ty) -> Ty {
+        if self.current_fails {
+            declared
+                .as_result()
+                .map_or(Ty::Error, |(success, _)| success.clone())
+        } else if fd.is_generator {
+            Ty::Unit
+        } else {
+            declared.clone()
+        }
     }
 
     /// Check trait default method bodies to populate authority side-tables

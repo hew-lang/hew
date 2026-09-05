@@ -2293,6 +2293,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Return(_)
+            | Expr::ReturnError(_)
             | Expr::Coalesce { .. }
             | Expr::Handle { .. }
             | Expr::This
@@ -5211,9 +5212,11 @@ fn ty_from_type_expr(ty: &hew_parser::ast::TypeExpr) -> Ty {
             Ty::normalize_named(name.clone(), args)
         }
         hew_parser::ast::TypeExpr::Option(inner) => Ty::option(ty_from_type_expr(&inner.0)),
-        hew_parser::ast::TypeExpr::Result { ok, err } => {
-            Ty::result(ty_from_type_expr(&ok.0), ty_from_type_expr(&err.0))
-        }
+        hew_parser::ast::TypeExpr::Result { ok, err }
+        | hew_parser::ast::TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => Ty::result(ty_from_type_expr(&ok.0), ty_from_type_expr(&err.0)),
         hew_parser::ast::TypeExpr::Tuple(items) => {
             Ty::Tuple(items.iter().map(|(ty, _)| ty_from_type_expr(ty)).collect())
         }

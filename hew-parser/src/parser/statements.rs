@@ -680,6 +680,23 @@ impl Parser<'_> {
             }
             Some(Token::Return) => {
                 self.advance();
+                if matches!(self.peek(), Some(Token::Identifier("error")))
+                    && !matches!(
+                        self.peek_at(self.pos + 1),
+                        None | Some(Token::Semicolon | Token::RightBrace)
+                    )
+                {
+                    self.advance();
+                    let value = self.parse_expr()?;
+                    let end = value.1.end;
+                    if self.peek() != Some(&Token::RightBrace) {
+                        self.expect(&Token::Semicolon)?;
+                    }
+                    return Some((
+                        Stmt::Expression((Expr::ReturnError(Box::new(value)), start..end)),
+                        start..end,
+                    ));
+                }
                 let value = if matches!(self.peek(), Some(Token::Semicolon | Token::RightBrace)) {
                     None
                 } else {

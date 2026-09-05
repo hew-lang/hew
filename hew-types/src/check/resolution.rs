@@ -3590,6 +3590,13 @@ impl Checker {
                 self.source_builtin_shorthand_nominal("Result", &args)
                     .unwrap_or_else(|| Ty::result(args[0].clone(), args[1].clone()))
             }
+            TypeExpr::Fallible { success, error } => {
+                let success =
+                    self.resolve_type_expr_tracking_holes_with_context(success, hole_vars, context);
+                let error =
+                    self.resolve_type_expr_tracking_holes_with_context(error, hole_vars, context);
+                Ty::result(success, error)
+            }
             TypeExpr::Option(inner) => {
                 let args =
                     vec![self

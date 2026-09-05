@@ -73,10 +73,10 @@ pub use self::types::{
     OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
     OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
     PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
-    RcIntrinsicOp, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeCheckOutput,
-    TypeDef, TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp,
-    WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence,
-    WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    RcIntrinsicOp, ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering,
+    TypeCheckOutput, TypeDef, TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch,
+    VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
+    WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -2310,6 +2310,7 @@ impl Checker {
             conn_await_reads: std::mem::take(&mut self.conn_await_reads),
             listener_await_accepts: std::mem::take(&mut self.listener_await_accepts),
             tail_ok_coercions: std::mem::take(&mut self.tail_ok_coercions),
+            result_return_coercions: std::mem::take(&mut self.result_return_coercions),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
             errors: std::mem::take(&mut self.errors),
@@ -3144,7 +3145,7 @@ impl Checker {
                 self.classify_escapes_in_expr(&left.0, &left.1, in_fork, AnonContext::Other);
                 self.classify_escapes_in_expr(&right.0, &right.1, in_fork, AnonContext::Other);
             }
-            Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+            Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
                 self.classify_escapes_in_expr(&operand.0, &operand.1, in_fork, AnonContext::Other);
             }
             Expr::FieldAccess { object, .. } => {
@@ -3627,7 +3628,7 @@ fn collect_lambda_spans_in_expr(
             collect_lambda_spans_in_expr(&left.0, &left.1, out);
             collect_lambda_spans_in_expr(&right.0, &right.1, out);
         }
-        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
             collect_lambda_spans_in_expr(&operand.0, &operand.1, out);
         }
         Expr::FieldAccess { object, .. } => {

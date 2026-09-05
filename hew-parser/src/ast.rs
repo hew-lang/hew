@@ -338,6 +338,8 @@ pub enum Expr {
     /// expression). The checker synthesizes `Ty::Never`; HIR lowers it to
     /// `HirExprKind::Return` (sibling of `HirExprKind::Break`).
     Return(Option<Box<Spanned<Expr>>>),
+    /// Explicit failure return from the current `fails` function.
+    ReturnError(Box<Spanned<Expr>>),
     This,
     FieldAccess {
         object: Box<Spanned<Expr>>,
@@ -505,6 +507,11 @@ pub enum Stmt {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeExpr {
+    /// A function return clause `T fails E`, represented semantically by Result.
+    Fallible {
+        success: Box<Spanned<TypeExpr>>,
+        error: Box<Spanned<TypeExpr>>,
+    },
     Named {
         name: String,
         type_args: Option<Vec<Spanned<TypeExpr>>>,

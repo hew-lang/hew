@@ -2040,7 +2040,11 @@ fn render_type_expr(ty: &TypeExpr) -> String {
             }
             _ => name.clone(),
         },
-        TypeExpr::Result { ok, err } => {
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => {
             format!(
                 "Result<{}, {}>",
                 render_type_expr(&ok.0),
@@ -2271,7 +2275,11 @@ fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
                 }
             }
         }
-        TypeExpr::Result { ok, err } => {
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => {
             canonicalize_injected_cursor_type_expr(&mut ok.0);
             canonicalize_injected_cursor_type_expr(&mut err.0);
         }
@@ -7622,6 +7630,7 @@ struct LowerCtx {
     /// constructor so it returns the declared `Result`. See
     /// `TypeCheckOutput::tail_ok_coercions`.
     tail_ok_coercions: std::collections::HashSet<SpanKey>,
+    result_return_coercions: HashMap<SpanKey, hew_types::ResultReturnKind>,
     /// Checker-owned method-call receiver classifications. These facts prevent
     /// HIR from reclassifying a lexical spelling as a module and fail closed
     /// when a classified module or actor call lacks its dispatch fact.
@@ -8423,6 +8432,7 @@ impl LowerCtx {
             conn_await_reads: tc_output.conn_await_reads.clone(),
             listener_await_accepts: tc_output.listener_await_accepts.clone(),
             tail_ok_coercions: tc_output.tail_ok_coercions.clone(),
+            result_return_coercions: tc_output.result_return_coercions.clone(),
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -9681,7 +9691,11 @@ fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String>) {
                 collect_type_expr_named_leaves(&arg.0, out);
             }
         }
-        TypeExpr::Result { ok, err } => {
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => {
             collect_type_expr_named_leaves(&ok.0, out);
             collect_type_expr_named_leaves(&err.0, out);
         }
@@ -9829,7 +9843,11 @@ fn imported_impl_signature_type_is_safe(
             generic_params,
             is_known_registered_type,
         ),
-        TypeExpr::Result { ok, err } => {
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => {
             imported_impl_signature_type_is_safe(
                 &ok.0,
                 self_type_name,
@@ -10065,7 +10083,7 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
             scan_expr_for_private_refs(&left.0, pf, out);
             scan_expr_for_private_refs(&right.0, pf, out);
         }
-        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
             scan_expr_for_private_refs(&operand.0, pf, out);
         }
         Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
@@ -13658,7 +13676,15 @@ impl LowerCtx {
             None
         };
         let mut body = self.with_current_return_type(source_return_ty.clone(), |ctx| {
-            ctx.lower_block(&func.body, &source_return_ty)
+            let mut body = ctx.lower_block(&func.body, &source_return_ty);
+            if ctx
+                .result_return_coercions
+                .contains_key(&ctx.mk_key(&func.fn_span))
+            {
+                let value = ctx.make_unit_expr(func.fn_span.clone());
+                body.tail = Some(Box::new(ctx.wrap_tail_ok(value, &func.fn_span)));
+            }
+            body
         });
         let return_ty = if let Some(receiver) = &var_self_receiver {
             let abi_return_ty =
@@ -16441,6 +16467,7 @@ impl LowerCtx {
             Stmt::Return(value) => {
                 if let Some(value) = value {
                     let expr = self.lower_expr(value, IntentKind::Consume);
+                    let expr = self.apply_result_return_coercion(expr, &span);
                     // TI-5 escape check: a `Task<T>` value must not escape via
                     // return, whether the type was user-written or inferred. The
                     // `lower_type` wall blocks user-written `Task<T>` annotations;
@@ -16464,7 +16491,14 @@ impl LowerCtx {
                     }
                     HirStmtKind::Return(Some(expr))
                 } else {
-                    HirStmtKind::Return(None)
+                    let value = self
+                        .result_return_coercions
+                        .contains_key(&self.mk_key(&span))
+                        .then(|| {
+                            let value = self.make_unit_expr(span.clone());
+                            self.apply_result_return_coercion(value, &span)
+                        });
+                    HirStmtKind::Return(value)
                 }
             }
             Stmt::If {
@@ -19375,6 +19409,16 @@ impl LowerCtx {
                 let value = value
                     .as_deref()
                     .map(|value| Box::new(self.lower_expr(value, IntentKind::Consume)));
+                let value = if self
+                    .result_return_coercions
+                    .contains_key(&self.mk_key(&span))
+                {
+                    let value =
+                        value.map_or_else(|| self.make_unit_expr(span.clone()), |value| *value);
+                    Some(Box::new(self.apply_result_return_coercion(value, &span)))
+                } else {
+                    value
+                };
                 // TI-5 escape check (defense-in-depth, mirrors the statement
                 // form): a `Task<T>` handle must not escape via `return`.
                 if let Some(expr) = &value {
@@ -19388,6 +19432,25 @@ impl LowerCtx {
                     }
                 }
                 (HirExprKind::Return { value }, ResolvedTy::Never)
+            }
+            Expr::ReturnError(value) => {
+                if self.result_return_coercions.get(&self.mk_key(&span))
+                    == Some(&hew_types::ResultReturnKind::Error)
+                {
+                    let value = self.lower_expr(value, IntentKind::Consume);
+                    let value = self.apply_result_return_coercion(value, &span);
+                    (
+                        HirExprKind::Return {
+                            value: Some(Box::new(value)),
+                        },
+                        ResolvedTy::Never,
+                    )
+                } else {
+                    self.unsupported_postfix_try(
+                        &span,
+                        "error return without checked failure selection",
+                    )
+                }
             }
             Expr::MethodCall {
                 receiver,
@@ -24673,6 +24736,11 @@ impl LowerCtx {
                 ));
                 ResolvedTy::Unit
             }
+            TypeExpr::Fallible { success, error } => {
+                let success = self.lower_type(success);
+                let error = self.lower_type(error);
+                ResolvedTy::named_builtin("Result", BuiltinType::Result, vec![success, error])
+            }
             TypeExpr::Tuple(elems) if elems.is_empty() => ResolvedTy::Unit,
             TypeExpr::Tuple(elems) => {
                 ResolvedTy::Tuple(elems.iter().map(|elem| self.lower_type(elem)).collect())
@@ -29182,6 +29250,48 @@ impl LowerCtx {
             return_ty,
             span,
         )
+    }
+
+    fn apply_result_return_coercion(&mut self, value: HirExpr, span: &Span) -> HirExpr {
+        if matches!(value.ty, ResolvedTy::Task(_))
+            && self
+                .result_return_coercions
+                .contains_key(&self.mk_key(span))
+        {
+            self.diagnostics.push(HirDiagnostic::new(HirDiagnosticKind::TaskCannotEscape, span.clone(),
+                "a `Task<T>` handle cannot escape inside a Result return; await it inside its scope"));
+        }
+        match self.result_return_coercions.get(&self.mk_key(span)) {
+            Some(hew_types::ResultReturnKind::Success) => self.wrap_tail_ok(value, span),
+            Some(hew_types::ResultReturnKind::Error) => {
+                let Some(return_ty) = self
+                    .current_return_type
+                    .clone()
+                    .filter(|ty| Self::resolved_result_parts(ty).is_some())
+                else {
+                    self.unsupported(
+                        span.clone(),
+                        "error return without an enclosing Result type",
+                        "result-return",
+                    );
+                    return value;
+                };
+                let Some((_, index)) =
+                    self.builtin_variant_predicate(BuiltinType::Result, "Err", span)
+                else {
+                    return value;
+                };
+                self.try_register_enum_instantiation_ty(&return_ty, span);
+                self.synthetic_variant_ctor(
+                    "Result",
+                    index,
+                    Some(vec![("0".to_string(), value)]),
+                    return_ty,
+                    span,
+                )
+            }
+            None => value,
+        }
     }
 
     /// Normalize source-local recovery into the same typed variant branch as

@@ -126,7 +126,7 @@ impl super::lints::NodeVisitor for ExplicitReturnFinder {
     }
 
     fn visit_expr(&mut self, expr: &Expr, _span: &Span) {
-        self.saw_return |= matches!(expr, Expr::Return(_));
+        self.saw_return |= matches!(expr, Expr::Return(_) | Expr::ReturnError(_));
     }
 }
 
@@ -4794,6 +4794,7 @@ impl Checker {
                 Self::collect_machine_transition_forbidden_exprs(&right.0, &right.1, hits);
             }
             Expr::Unary { operand, .. }
+            | Expr::ReturnError(operand)
             | Expr::Clone(operand)
             | Expr::ForkChild { expr: operand, .. }
             | Expr::PostfixTry(operand)

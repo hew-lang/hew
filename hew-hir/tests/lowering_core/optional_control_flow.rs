@@ -29,6 +29,66 @@ fn function<'a>(lowered: &'a hew_hir::LowerOutput, name: &str) -> &'a hew_hir::H
 }
 
 #[test]
+fn fallible_returns_use_one_result_representation_with_exact_payloads() {
+    for (source, expected_variant, payload_ty) in [
+        (
+            "fn f() -> (i64, string) fails string { return (10, \"hello\"); }",
+            0,
+            ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::String]),
+        ),
+        (
+            "fn f() -> i64 fails string { return error \"missing\"; }",
+            1,
+            ResolvedTy::String,
+        ),
+        ("fn f() -> () fails string { return; }", 0, ResolvedTy::Unit),
+    ] {
+        let lowered = lower(source);
+        let function = function(&lowered, "f");
+        let value = match &function.body.statements[0].kind {
+            HirStmtKind::Return(Some(value)) => value,
+            HirStmtKind::Expr(value) => {
+                let HirExprKind::Return { value: Some(value) } = &value.kind else {
+                    panic!("typed error return");
+                };
+                value
+            }
+            other => panic!("return statement: {other:?}"),
+        };
+        assert_eq!(value.ty, function.return_ty);
+        let HirExprKind::MachineVariantCtor {
+            machine_name,
+            state_idx,
+            payload: Some(payload),
+        } = &value.kind
+        else {
+            panic!("Result constructor");
+        };
+        assert_eq!(machine_name, "Result");
+        assert_eq!(*state_idx, expected_variant);
+        assert_eq!(payload.len(), 1);
+        assert_eq!(payload[0].1.ty, payload_ty);
+    }
+}
+
+#[test]
+fn fallible_tails_wrap_success_including_result_valued_success() {
+    for source in [
+        "fn f() -> i64 fails string { 7 }",
+        "fn f() -> () fails string {}",
+        "fn f(value: Result<i64, string>) -> Result<i64, string> fails bool { value }",
+    ] {
+        let lowered = lower(source);
+        let function = function(&lowered, "f");
+        let tail = function.body.tail.as_ref().expect("success return");
+        assert_eq!(tail.ty, function.return_ty);
+        assert!(
+            matches!(&tail.kind, HirExprKind::MachineVariantCtor { machine_name, state_idx: 0, payload: Some(payload) } if machine_name == "Result" && payload.len() == 1)
+        );
+    }
+}
+
+#[test]
 fn lazy_default_places_the_fallback_call_only_in_the_absence_arm() {
     let lowered = lower("fn source(value: Option<i64>) -> Option<i64> { value } fn fallback() -> i64 { 7 } fn f(value: Option<i64>) -> i64 { source(value) ?? fallback() }");
     let tail = function(&lowered, "f")

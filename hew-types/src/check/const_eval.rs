@@ -275,6 +275,7 @@ fn eval_inner(
         | Expr::UnsafeBlock(_)
         | Expr::Yield(_)
         | Expr::Return(_)
+        | Expr::ReturnError(_)
         | Expr::This
         | Expr::FieldAccess { .. }
         | Expr::Index { .. }

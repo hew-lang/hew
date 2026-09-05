@@ -440,7 +440,30 @@ impl Parser<'_> {
         context: TypeParseContext,
     ) -> Option<Option<Spanned<TypeExpr>>> {
         if self.eat(&Token::Arrow) {
-            Some(Some(self.parse_type_with_context(context)?))
+            let success = self.parse_type_with_context(context)?;
+            if matches!(self.peek(), Some(Token::Identifier("fails"))) {
+                if matches!(context, TypeParseContext::ExternSignature) {
+                    self.error_at(
+                        "`fails` is a Hew callable return clause, not a foreign ABI declaration"
+                            .to_string(),
+                        self.peek_span(),
+                    );
+                    return None;
+                }
+                let start = success.1.start;
+                self.advance();
+                let error = self.parse_type_with_context(context)?;
+                let end = error.1.end;
+                Some(Some((
+                    TypeExpr::Fallible {
+                        success: Box::new(success),
+                        error: Box::new(error),
+                    },
+                    start..end,
+                )))
+            } else {
+                Some(Some(success))
+            }
         } else {
             Some(None)
         }

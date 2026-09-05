@@ -932,7 +932,10 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
             }
         }
         Expr::Timeout { expr: e, .. } => count_idents_in_expr(&e.0, counts),
-        Expr::Await(inner) | Expr::PostfixTry(inner) | Expr::Yield(Some(inner)) => {
+        Expr::Await(inner)
+        | Expr::ReturnError(inner)
+        | Expr::PostfixTry(inner)
+        | Expr::Yield(Some(inner)) => {
             count_idents_in_expr(&inner.0, counts);
         }
         Expr::Cast { expr: inner, .. } => count_idents_in_expr(&inner.0, counts),

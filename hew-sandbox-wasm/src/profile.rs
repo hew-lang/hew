@@ -659,6 +659,10 @@ impl<'a> ProfileChecker<'a> {
                     self.check_expr(operand);
                 }
             }
+            Expr::ReturnError(value) => {
+                self.reject(span.clone(), "reserved_runtime_feature", "typed error returns require the shared semantic backend");
+                self.check_expr(value);
+            }
             Expr::Clone(operand) => {
                 // `clone expr` produces an independent deep copy. The emitter
                 // lowers this by evaluating the operand then forcing a deep clone
@@ -1255,6 +1259,15 @@ impl<'a> ProfileChecker<'a> {
             TypeExpr::Result { ok, err } => {
                 self.check_type_expr(&ok.0, &ok.1);
                 self.check_type_expr(&err.0, &err.1);
+            }
+            TypeExpr::Fallible { success, error } => {
+                self.reject(
+                    span.clone(),
+                    "reserved_runtime_feature",
+                    "fallible function returns require the shared semantic backend",
+                );
+                self.check_type_expr(&success.0, &success.1);
+                self.check_type_expr(&error.0, &error.1);
             }
             TypeExpr::Option(inner)
             | TypeExpr::Array { element: inner, .. }

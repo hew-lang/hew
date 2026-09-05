@@ -1057,6 +1057,11 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             format_type_expr_hover(&err.0)
         ),
         TypeExpr::Option(inner) => format!("Option<{}>", format_type_expr_hover(&inner.0)),
+        TypeExpr::Fallible { success, error } => format!(
+            "{} fails {}",
+            format_type_expr_hover(&success.0),
+            format_type_expr_hover(&error.0)
+        ),
         TypeExpr::Tuple(elements) => format!(
             "({})",
             elements

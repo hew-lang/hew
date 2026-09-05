@@ -1,6 +1,41 @@
 use super::{check_source, TypeErrorKind};
 
 #[test]
+fn fallible_returns_accept_exact_success_and_explicit_error() {
+    for source in [
+        "fn f() -> (i64, string) fails string { return (10, \"hello\"); }",
+        "fn f() -> i64 fails string { return error \"missing\"; }",
+        "fn f() -> i64 fails string { 7 }",
+        "fn f() -> () fails string { return; }",
+        "fn f() -> () fails string { }",
+        "fn f(value: Result<i64, string>) -> Result<i64, string> fails bool { return value; }",
+        "fn f(value: Result<i64, string>) -> Result<i64, string> fails bool { value }",
+        "fn f(value: Result<i64, string>) -> i64 fails string { value? }",
+    ] {
+        let checked = check_source(source);
+        assert!(checked.errors.is_empty(), "{source}: {:?}", checked.errors);
+    }
+}
+
+#[test]
+fn fallible_returns_reject_wrong_boundary_and_nested_context() {
+    for source in [
+        "fn f() -> i64 fails string { return error 7; }",
+        "fn f() -> i64 fails string { return \"wrong\"; }",
+        "fn f(value: Result<i64, string>) -> i64 fails string { return value; }",
+        "fn f(value: Result<i64, string>) -> i64 fails string { value }",
+        "fn f() -> Result<i64, string> { return error \"wrong\"; }",
+        "fn f() -> i64 fails string { let inner = || -> i64 { return error \"wrong\"; }; 7 }",
+    ] {
+        let checked = check_source(source);
+        assert!(
+            !checked.errors.is_empty(),
+            "{source}: invalid error boundary accepted"
+        );
+    }
+}
+
+#[test]
 fn lazy_default_accepts_payload_and_rejects_error_swallowing() {
     let checked = check_source("fn f(value: Option<i64>) -> i64 { value ?? 7 }");
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);

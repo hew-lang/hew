@@ -414,6 +414,27 @@ Actors may declare `#[max_heap(N)]` to cap their per-actor arena. If an arena al
 
 ### 2.2.1 Error Propagation
 
+**Fallible functions.** `fn read() -> T fails E` declares success type `T` and
+one error type `E`; its call produces the same `Result<T, E>` value representation
+used elsewhere. Ordinary returns and the function tail produce exactly `T`.
+`return error problem;` returns an `E` failure. There is no implicit forwarding
+of a complete Result at a success boundary: use `?` or `handle` explicitly.
+This distinction also holds when `T` is itself a Result, tuple or record.
+
+```hew
+fn pair() -> (i64, string) fails string {
+    return (10, "hello");
+}
+
+fn unavailable() -> i64 fails string {
+    return error "not available";
+}
+```
+
+An error return targets its enclosing fallible function, not an enclosing
+handler. A nested closure has its own return context. Error returns do not
+trigger supervision or convert runtime faults and cancellation into Results.
+
 **Local recovery.** `optional_value ?? fallback` evaluates its left operand
 once. A present value supplies its payload; only absence evaluates `fallback`.
 The fallback must have the payload type (or diverge). `??` accepts only

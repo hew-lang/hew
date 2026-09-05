@@ -14,13 +14,13 @@ use std::ffi::{c_char, CStr, CString};
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
-use hew_cabi::cabi::{cstring_ensure_unique, free_cstring, str_to_malloc};
-use hew_cabi::string::{string_as_bytes, string_release, HewString};
+use hew_cabi::cabi::{cstring_ensure_unique, free_cstring};
+use hew_cabi::string::{string_as_bytes, string_from_str, string_release, HewString};
 use hew_runtime::env::{
     hew_args_get, hew_cwd, hew_env_get, hew_env_remove, hew_env_set, hew_home_dir, hew_hostname,
     hew_temp_dir,
 };
-use hew_runtime::file_io::hew_file_read;
+use hew_runtime::file_io::{hew_file_read, hew_stdin_read_line};
 use hew_runtime::path::{
     hew_glob, hew_glob_count, hew_glob_error, hew_glob_free, hew_glob_get, hew_glob_is_valid,
     hew_path_absolute,
@@ -183,12 +183,14 @@ fn temp_dir_result_is_transferred() {
 fn file_read_result_is_transferred() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let path = dir.path().join("retention.txt");
-    std::fs::write(&path, "file retention witness").expect("write fixture");
-    let path = CString::new(path.to_string_lossy().as_bytes()).expect("temporary path has no NUL");
-    assert_result_is_transferred("hew_file_read", || {
-        // SAFETY: the temporary path CString remains valid for every call.
-        unsafe { hew_file_read(path.as_ptr()) }
+    std::fs::write(&path, "file\0retention é中🙂").expect("write fixture");
+    let path = string_from_str(path.to_str().unwrap());
+    assert_managed_result_is_transferred("hew_file_read", || {
+        // SAFETY: the managed path remains live throughout these reads.
+        unsafe { hew_file_read(path) }
     });
+    // SAFETY: the fixture owns this path reference.
+    unsafe { string_release(path) };
 }
 
 #[test]
@@ -243,27 +245,38 @@ fn glob_get_result_is_transferred() {
 }
 
 #[test]
-fn process_result_stdout_and_stderr_are_transferred() {
-    // Build the same retained source state `hew_process_run*` creates, without
-    // shelling out: the getters' contract is cloning these two result fields.
-    let stdout = str_to_malloc("stdout retention witness");
-    let stderr = str_to_malloc("stderr retention witness");
-    assert!(!stdout.is_null() && !stderr.is_null());
-    let result = Box::into_raw(Box::new(HewProcessResult {
-        exit_code: 0,
-        stdout,
-        stderr,
-    }));
-    assert_result_is_transferred("hew_process_result_stdout", || {
-        // SAFETY: `result` remains live until the explicit final free below.
-        unsafe { hew_process_result_stdout(result) }
-    });
-    assert_result_is_transferred("hew_process_result_stderr", || {
-        // SAFETY: `result` remains live until the explicit final free below.
-        unsafe { hew_process_result_stderr(result) }
-    });
-    // SAFETY: `result` owns the source fields and has not been released.
-    unsafe { hew_process_result_free(result) };
+fn process_result_stdout_and_stderr_are_retained() {
+    for release_result_first in [false, true] {
+        let result = Box::into_raw(Box::new(HewProcessResult {
+            exit_code: 0,
+            stdout: string_from_str("stdout\0é中🙂"),
+            stderr: string_from_str("stderr\0é中🙂"),
+        }));
+        // SAFETY: result is live, and every accessor transfers a retained owner.
+        unsafe {
+            let out1 = hew_process_result_stdout(result);
+            let out2 = hew_process_result_stdout(result);
+            let err = hew_process_result_stderr(result);
+            assert_eq!(out1, (*result).stdout);
+            assert_eq!(out2, out1);
+            assert_eq!(err, (*result).stderr);
+            if release_result_first {
+                hew_process_result_free(result);
+            }
+            assert_eq!(string_as_bytes(out1), "stdout\0é中🙂".as_bytes());
+            string_release(out1);
+            assert_eq!(string_as_bytes(out2), "stdout\0é中🙂".as_bytes());
+            assert_eq!(string_as_bytes(err), "stderr\0é中🙂".as_bytes());
+            string_release(out2);
+            string_release(err);
+            if !release_result_first {
+                let again = hew_process_result_stdout(result);
+                assert_eq!(string_as_bytes(again), "stdout\0é中🙂".as_bytes());
+                string_release(again);
+                hew_process_result_free(result);
+            }
+        }
+    }
 }
 
 #[test]
@@ -323,6 +336,23 @@ fn io_read_line_result_is_transferred() {
         assert_managed_result_is_transferred("hew_io_read_line", || hew_io_read_line());
     } else {
         run_stdin_child("io_read_line_result_is_transferred", b"line\nline\nline\n");
+    }
+}
+
+#[test]
+fn stdin_read_line_preserves_embedded_nul_and_unicode() {
+    if std::env::var_os(STDIN_CHILD).is_some() {
+        let result = hew_stdin_read_line();
+        // SAFETY: the read transfers one managed owner, released below.
+        unsafe {
+            assert_eq!(string_as_bytes(result), "line\0é中🙂".as_bytes());
+            string_release(result);
+        }
+    } else {
+        run_stdin_child(
+            "stdin_read_line_preserves_embedded_nul_and_unicode",
+            "line\0é中🙂\n".as_bytes(),
+        );
     }
 }
 

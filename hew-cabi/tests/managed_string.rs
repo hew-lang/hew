@@ -1,7 +1,7 @@
 use hew_cabi::string::{
     cstring_copy_release, cstring_from_string_copy, string_as_bytes, string_as_str,
     string_from_cstr_copy, string_from_str, string_from_utf8, string_release, string_retain,
-    StringFromCStrError,
+    string_to_cstring, StringFromCStrError,
 };
 use std::ffi::CString;
 
@@ -99,5 +99,26 @@ fn explicit_cstr_copy_uses_its_own_allocator_pair() {
         assert_eq!(std::ffi::CStr::from_ptr(cstr).to_bytes(), "café".as_bytes());
         cstring_copy_release(cstr);
         string_release(value);
+    }
+}
+
+#[test]
+fn rust_cstring_copy_has_independent_lifetime_and_rejects_nul() {
+    let value = string_from_str("é中🙂");
+    // SAFETY: the managed source remains live until copying finishes.
+    unsafe {
+        let foreign = string_to_cstring(value).unwrap();
+        string_release(value);
+        assert_eq!(foreign.to_str().unwrap(), "é中🙂");
+        drop(foreign);
+        let empty = string_to_cstring(core::ptr::null()).unwrap();
+        assert_eq!(empty.as_bytes_with_nul(), &[0]);
+        let nul = string_from_str("a\0b");
+        assert_eq!(
+            string_to_cstring(nul),
+            Err(hew_cabi::string::StringToCStrError::InteriorNul)
+        );
+        assert_eq!(string_as_str(nul), "a\0b");
+        string_release(nul);
     }
 }

@@ -150,6 +150,26 @@ pub unsafe fn string_from_cstr_copy(
     Ok(string_from_str(value))
 }
 
+/// Copy a managed value into an owned foreign `CString`.
+///
+/// Rust owns this adapter's allocation; drop the `CString` normally. Use
+/// [`cstring_from_string_copy`] and [`cstring_copy_release`] for raw C ownership.
+///
+/// # Errors
+///
+/// Returns [`StringToCStrError::InteriorNul`] instead of truncating input.
+///
+/// # Safety
+///
+/// `value` must be null (empty) or a live managed string handle.
+pub unsafe fn string_to_cstring(
+    value: *const HewString,
+) -> Result<std::ffi::CString, StringToCStrError> {
+    // SAFETY: the caller holds a live managed owner during the copy.
+    std::ffi::CString::new(unsafe { string_as_bytes(value) })
+        .map_err(|_| StringToCStrError::InteriorNul)
+}
+
 /// Copy a managed string into a freshly allocated NUL-terminated C string.
 ///
 /// The allocation belongs exclusively to [`cstring_copy_release`]. It is not

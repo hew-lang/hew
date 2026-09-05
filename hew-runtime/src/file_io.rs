@@ -2,21 +2,20 @@
 //!
 //! Synchronous file I/O operations with C ABI.
 //!
-//! All functions that return `*mut c_char` allocate via `libc::malloc`. The
-//! caller owns the returned pointer and must free it with `hew_string_drop`.
+//! String inputs borrow managed UTF-8 handles. String results transfer one
+//! owner, released with `hew_string_drop`; null is the canonical empty value.
+//! File contents retain embedded NUL. OS paths reject NUL before any I/O.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::cabi::str_to_malloc;
 use crate::stream_error::{
     io_error_kind_tag, set_last_error_with_errno, set_last_error_with_errno_and_kind,
     take_last_error,
 };
-#[cfg(test)]
-use std::ffi::CString;
-use std::ffi::{c_char, CStr};
+use hew_cabi::string::{string_as_str, string_from_str, string_to_cstring, HewString};
+use std::io::Write;
 
 fn clear_file_io_error() {
     crate::hew_clear_error();
@@ -43,32 +42,42 @@ fn set_file_io_errno(operation: &str, message: impl std::fmt::Display, errno: i3
     set_last_error_with_errno(message, errno);
 }
 
-/// Read an entire file and return a `malloc`-allocated, NUL-terminated C string.
+// Convert explicitly at the OS boundary. CString rejects interior NUL; its
+// Rust allocation becomes the owned String used by std::fs and is dropped
+// normally, never through a managed-string or libc release function.
+unsafe fn file_path(path: *const HewString, operation: &str) -> Option<String> {
+    // SAFETY: the caller supplies a borrowed managed handle.
+    let foreign = match unsafe { string_to_cstring(path) } {
+        Ok(path) if !path.as_bytes().is_empty() => path,
+        Ok(_) => {
+            set_file_io_errno(operation, "empty path", libc::EINVAL);
+            return None;
+        }
+        Err(_) => {
+            set_file_io_errno(operation, "path contains interior NUL", libc::EINVAL);
+            return None;
+        }
+    };
+    // Managed strings are valid UTF-8, preserved by the copying adapter.
+    Some(foreign.into_string().expect("managed path is UTF-8"))
+}
+
+/// Read an entire file and return an owned managed UTF-8 string.
 ///
-/// Returns a null pointer on error (invalid path, I/O failure, interior NUL
-/// byte, etc.).
+/// Returns null on error or empty success; inspect the last error to distinguish
+/// them. Invalid UTF-8 file contents are an error.
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 ///
 /// # Ownership
 ///
 /// The caller owns the returned pointer and must free it with `hew_string_drop`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_file_read(path: *const c_char) -> *mut c_char {
-    if path.is_null() {
-        let msg = "hew_file_read: invalid path string";
-        crate::set_last_error(msg);
-        set_last_error_with_errno(msg.into(), 22);
-        return std::ptr::null_mut();
-    }
-    // SAFETY: caller guarantees `path` is a valid, NUL-terminated C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
-        let msg = "hew_file_read: invalid path string";
-        crate::set_last_error(msg);
-        set_last_error_with_errno(msg.into(), 22);
+pub unsafe extern "C" fn hew_file_read(path: *const HewString) -> *mut HewString {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_read") }) else {
         return std::ptr::null_mut();
     };
     let contents = match std::fs::read_to_string(rust_path) {
@@ -78,15 +87,8 @@ pub unsafe extern "C" fn hew_file_read(path: *const c_char) -> *mut c_char {
             return std::ptr::null_mut();
         }
     };
-    // Reject files with interior NUL bytes (can't represent as C string).
-    if contents.contains('\0') {
-        let msg = "hew_file_read: contents contain interior NUL byte";
-        crate::set_last_error(msg);
-        set_last_error_with_errno(msg.into(), 22);
-        return std::ptr::null_mut();
-    }
     clear_file_io_error();
-    str_to_malloc(&contents)
+    string_from_str(&contents)
 }
 
 /// Write a string to a file, overwriting any existing content.
@@ -95,17 +97,15 @@ pub unsafe extern "C" fn hew_file_read(path: *const c_char) -> *mut c_char {
 ///
 /// # Safety
 ///
-/// Both `path` and `content` must be valid, NUL-terminated C strings.
+/// Both `path` and `content` must be live managed string handles (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_file_write(path: *const c_char, content: *const c_char) -> i32 {
-    if path.is_null() || content.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees both pointers are valid C strings.
-    let (c_path, c_content) = unsafe { (CStr::from_ptr(path), CStr::from_ptr(content)) };
-    let (Ok(rust_path), Ok(rust_content)) = (c_path.to_str(), c_content.to_str()) else {
+pub unsafe extern "C" fn hew_file_write(path: *const HewString, content: *const HewString) -> i32 {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_write") }) else {
         return -1;
     };
+    // SAFETY: content is a borrowed managed handle; null spells empty.
+    let rust_content = unsafe { string_as_str(content) };
     match std::fs::write(rust_path, rust_content) {
         Ok(()) => {
             clear_file_io_error();
@@ -124,19 +124,15 @@ pub unsafe extern "C" fn hew_file_write(path: *const c_char, content: *const c_c
 ///
 /// # Safety
 ///
-/// Both `path` and `content` must be valid, NUL-terminated C strings.
+/// Both `path` and `content` must be live managed string handles (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_file_append(path: *const c_char, content: *const c_char) -> i32 {
-    use std::io::Write;
-
-    if path.is_null() || content.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees both pointers are valid C strings.
-    let (c_path, c_content) = unsafe { (CStr::from_ptr(path), CStr::from_ptr(content)) };
-    let (Ok(rust_path), Ok(rust_content)) = (c_path.to_str(), c_content.to_str()) else {
+pub unsafe extern "C" fn hew_file_append(path: *const HewString, content: *const HewString) -> i32 {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_append") }) else {
         return -1;
     };
+    // SAFETY: content is a borrowed managed handle; null spells empty.
+    let rust_content = unsafe { string_as_str(content) };
     let mut file = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -166,18 +162,14 @@ pub unsafe extern "C" fn hew_file_append(path: *const c_char, content: *const c_
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_file_exists(path: *const c_char) -> i32 {
-    if path.is_null() {
-        return 0;
-    }
-    // SAFETY: caller guarantees `path` is a valid C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+pub unsafe extern "C" fn hew_file_exists(path: *const HewString) -> i32 {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_exists") }) else {
         return 0;
     };
-    i32::from(std::path::Path::new(rust_path).exists())
+    i32::from(std::path::Path::new(&rust_path).exists())
 }
 
 /// Check whether any filesystem path exists.
@@ -186,9 +178,9 @@ pub unsafe extern "C" fn hew_file_exists(path: *const c_char) -> i32 {
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_path_exists(path: *const c_char) -> i32 {
+pub unsafe extern "C" fn hew_path_exists(path: *const HewString) -> i32 {
     // SAFETY: forwarded unchanged to the existing existence probe.
     unsafe { hew_file_exists(path) }
 }
@@ -199,15 +191,11 @@ pub unsafe extern "C" fn hew_path_exists(path: *const c_char) -> i32 {
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_file_delete(path: *const c_char) -> i32 {
-    if path.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees `path` is a valid C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+pub unsafe extern "C" fn hew_file_delete(path: *const HewString) -> i32 {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_delete") }) else {
         return -1;
     };
     match std::fs::remove_file(rust_path) {
@@ -228,15 +216,11 @@ pub unsafe extern "C" fn hew_file_delete(path: *const c_char) -> i32 {
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_file_size(path: *const c_char) -> i64 {
-    if path.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees `path` is a valid C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+pub unsafe extern "C" fn hew_file_size(path: *const HewString) -> i64 {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_size") }) else {
         return -1;
     };
     match std::fs::metadata(rust_path) {
@@ -249,10 +233,11 @@ pub unsafe extern "C" fn hew_file_size(path: *const c_char) -> i64 {
     }
 }
 
-/// Read one line from stdin and return a `malloc`-allocated, NUL-terminated
-/// C string with the trailing newline stripped.
+/// Read one line from stdin and return an owned managed UTF-8
+/// string with the trailing newline stripped.
 ///
-/// Returns a null pointer on EOF or error.
+/// Returns null on an empty line, EOF, or error. The last error distinguishes
+/// failure; this legacy entry point does not distinguish an empty line from EOF.
 ///
 /// # Safety
 ///
@@ -262,15 +247,15 @@ pub unsafe extern "C" fn hew_file_size(path: *const c_char) -> i64 {
 ///
 /// The caller owns the returned pointer and must free it with `hew_string_drop`.
 #[no_mangle]
-pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
+pub extern "C" fn hew_stdin_read_line() -> *mut HewString {
     let mut buf = String::new();
     match std::io::stdin().read_line(&mut buf) {
         Ok(0) => {
-            crate::hew_clear_error();
+            clear_file_io_error();
             std::ptr::null_mut()
         }
         Err(e) => {
-            crate::set_last_error(format!("hew_stdin_read_line: {e}"));
+            set_file_io_error("hew_stdin_read_line", &e);
             std::ptr::null_mut()
         }
         Ok(_) => {
@@ -281,11 +266,8 @@ pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
                     buf.pop();
                 }
             }
-            if buf.contains('\0') {
-                crate::set_last_error("hew_stdin_read_line: input contains interior NUL byte");
-                return std::ptr::null_mut();
-            }
-            str_to_malloc(&buf)
+            clear_file_io_error();
+            string_from_str(&buf)
         }
     }
 }
@@ -298,18 +280,11 @@ pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> crate::bytes::BytesTriple {
-    // SAFETY: `path` is the caller-provided C string pointer for this ABI entrypoint.
-    let Some(rust_path) = (unsafe { crate::util::cstr_to_str(&path, "hew_file_read_bytes") })
-    else {
-        let msg = "hew_file_read_bytes: invalid path string";
-        crate::set_last_error(msg);
-        set_last_error_with_errno(
-            msg.into(),
-            22, // EINVAL: Invalid argument
-        );
+pub unsafe extern "C" fn hew_file_read_bytes(path: *const HewString) -> crate::bytes::BytesTriple {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_read_bytes") }) else {
         return crate::bytes::BytesTriple {
             ptr: std::ptr::null_mut(),
             offset: 0,
@@ -323,7 +298,18 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> crate::byte
             // visible to callers that inspect hew_last_error() or
             // hew_stream_last_error() after a successful read.
             clear_file_io_error();
-            let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+            let Ok(len) = u32::try_from(data.len()) else {
+                set_file_io_errno(
+                    "hew_file_read_bytes",
+                    "file exceeds Bytes capacity",
+                    libc::EFBIG,
+                );
+                return crate::bytes::BytesTriple {
+                    ptr: std::ptr::null_mut(),
+                    offset: 0,
+                    len: 0,
+                };
+            };
             // SAFETY: data is a valid Vec<u8>; len <= data.len().
             unsafe { crate::bytes::hew_bytes_from_static(data.as_ptr(), len) }
         }
@@ -347,21 +333,21 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> crate::byte
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 /// `data` must be a valid, non-null pointer to a `BytesTriple`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_write_bytes(
-    path: *const c_char,
+    path: *const HewString,
     data: *const crate::bytes::BytesTriple,
 ) -> i32 {
-    if path.is_null() || data.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_file_write_bytes") }) else {
         return -1;
     };
+    if data.is_null() {
+        set_file_io_errno("hew_file_write_bytes", "null bytes pointer", libc::EINVAL);
+        return -1;
+    }
     // SAFETY: caller guarantees `data` is a valid BytesTriple pointer.
     let triple = unsafe { &*data };
     let slice = if triple.len == 0 || triple.ptr.is_null() {
@@ -394,15 +380,11 @@ pub unsafe extern "C" fn hew_file_write_bytes(
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_fs_mkdir(path: *const c_char) -> i32 {
-    if path.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+pub unsafe extern "C" fn hew_fs_mkdir(path: *const HewString) -> i32 {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_mkdir") }) else {
         return -1;
     };
     match std::fs::create_dir(rust_path) {
@@ -423,15 +405,11 @@ pub unsafe extern "C" fn hew_fs_mkdir(path: *const c_char) -> i32 {
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_fs_mkdir_all(path: *const c_char) -> i32 {
-    if path.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+pub unsafe extern "C" fn hew_fs_mkdir_all(path: *const HewString) -> i32 {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_mkdir_all") }) else {
         return -1;
     };
     match std::fs::create_dir_all(rust_path) {
@@ -453,24 +431,14 @@ pub unsafe extern "C" fn hew_fs_mkdir_all(path: *const c_char) -> i32 {
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 ///
-/// # Panics
-///
-/// Panics if an entry name contains a NUL byte, which cannot occur for
-/// real filesystem entry names on supported platforms.
 #[no_mangle]
-pub unsafe extern "C" fn hew_fs_list_dir(path: *const c_char) -> *mut crate::vec::HewVec {
-    // SAFETY: hew_vec_new_str allocates a valid empty HewVec<String>.
+pub unsafe extern "C" fn hew_fs_list_dir(path: *const HewString) -> *mut crate::vec::HewVec {
+    // SAFETY: allocate an empty string vector for the result.
     let v = unsafe { crate::vec::hew_vec_new_str() };
-    if path.is_null() {
-        set_file_io_errno("hew_fs_list_dir", "invalid path string", libc::EINVAL);
-        return v;
-    }
-    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
-        set_file_io_errno("hew_fs_list_dir", "invalid path string", libc::EINVAL);
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_list_dir") }) else {
         return v;
     };
     let entries = match std::fs::read_dir(rust_path) {
@@ -518,18 +486,15 @@ pub unsafe extern "C" fn hew_fs_list_dir(path: *const c_char) -> *mut crate::vec
 ///
 /// # Safety
 ///
-/// Both `from` and `to` must be valid, NUL-terminated C strings.
+/// Both `from` and `to` must be live managed string handles (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_fs_rename(from: *const c_char, to: *const c_char) -> i32 {
-    if from.is_null() || to.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees `from` is a valid NUL-terminated C string.
-    let Ok(from_str) = (unsafe { CStr::from_ptr(from) }).to_str() else {
+pub unsafe extern "C" fn hew_fs_rename(from: *const HewString, to: *const HewString) -> i32 {
+    // SAFETY: from is a borrowed managed handle.
+    let Some(from_str) = (unsafe { file_path(from, "hew_fs_rename") }) else {
         return -1;
     };
-    // SAFETY: caller guarantees `to` is a valid NUL-terminated C string.
-    let Ok(to_str) = (unsafe { CStr::from_ptr(to) }).to_str() else {
+    // SAFETY: to is a borrowed managed handle.
+    let Some(to_str) = (unsafe { file_path(to, "hew_fs_rename") }) else {
         return -1;
     };
     match std::fs::rename(from_str, to_str) {
@@ -550,18 +515,15 @@ pub unsafe extern "C" fn hew_fs_rename(from: *const c_char, to: *const c_char) -
 ///
 /// # Safety
 ///
-/// Both `from` and `to` must be valid, NUL-terminated C strings.
+/// Both `from` and `to` must be live managed string handles (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_fs_copy(from: *const c_char, to: *const c_char) -> i32 {
-    if from.is_null() || to.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees `from` is a valid NUL-terminated C string.
-    let Ok(from_str) = (unsafe { CStr::from_ptr(from) }).to_str() else {
+pub unsafe extern "C" fn hew_fs_copy(from: *const HewString, to: *const HewString) -> i32 {
+    // SAFETY: from is a borrowed managed handle.
+    let Some(from_str) = (unsafe { file_path(from, "hew_fs_copy") }) else {
         return -1;
     };
-    // SAFETY: caller guarantees `to` is a valid NUL-terminated C string.
-    let Ok(to_str) = (unsafe { CStr::from_ptr(to) }).to_str() else {
+    // SAFETY: to is a borrowed managed handle.
+    let Some(to_str) = (unsafe { file_path(to, "hew_fs_copy") }) else {
         return -1;
     };
     match std::fs::copy(from_str, to_str) {
@@ -582,23 +544,21 @@ pub unsafe extern "C" fn hew_fs_copy(from: *const c_char, to: *const c_char) -> 
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a live managed string handle (null spells empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_fs_is_dir(path: *const c_char) -> i32 {
-    if path.is_null() {
-        return 0;
-    }
-    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+pub unsafe extern "C" fn hew_fs_is_dir(path: *const HewString) -> i32 {
+    // SAFETY: path is a borrowed managed handle.
+    let Some(rust_path) = (unsafe { file_path(path, "hew_fs_is_dir") }) else {
         return 0;
     };
-    i32::from(std::path::Path::new(rust_path).is_dir())
+    i32::from(std::path::Path::new(&rust_path).is_dir())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_string::ManagedString;
+    use std::ffi::CStr;
     use std::path::PathBuf;
 
     /// Create a unique temp directory for a single test, cleaning up any prior run.
@@ -609,33 +569,23 @@ mod tests {
         dir
     }
 
-    /// Build a `CString` from a path.
-    fn cpath(p: &std::path::Path) -> CString {
-        CString::new(p.to_str().unwrap()).unwrap()
+    /// Build a managed string from a path.
+    fn cpath(p: &std::path::Path) -> ManagedString {
+        ManagedString::new(p.to_str().unwrap())
     }
 
-    /// Build a `CString` with invalid-UTF-8 bytes (0xFF 0xFE) — valid C string,
-    /// but `CStr::to_str()` will fail.
-    fn invalid_utf8_cstring() -> CString {
-        CString::new(vec![0xFF, 0xFE]).unwrap()
+    /// Managed values are valid UTF-8; exercise the OS-only NUL restriction.
+    fn interior_nul_path() -> ManagedString {
+        ManagedString::new("invalid\0path")
     }
 
-    /// Recover the Rust string that `hew_file_read` returned via `libc::strdup`,
-    /// then free the C allocation.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must be a non-null pointer returned by `libc::strdup`.
-    unsafe fn read_and_free(ptr: *mut c_char) -> String {
-        assert!(
-            !ptr.is_null(),
-            "expected non-null pointer from hew_file_read"
-        );
-        // SAFETY: ptr was returned by libc::strdup → valid, NUL-terminated C string.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated header-aware by str_to_malloc (hew_file_read).
-        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test consumer of str_to_malloc output; header-aware in S1)
-        s
+    /// Read and release one managed result, including the canonical empty value.
+    unsafe fn read_and_free(ptr: *mut HewString) -> String {
+        // SAFETY: the test owns the result until its balancing release.
+        let text = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: the result transfers one owner to the test.
+        unsafe { hew_cabi::string::string_release(ptr) };
+        text
     }
 
     // -----------------------------------------------------------------------
@@ -643,12 +593,54 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    fn managed_contents_preserve_nul_and_unicode_through_write_append_read() {
+        let dir = test_dir("managed_contents");
+        let path = cpath(&dir.join("é中🙂.txt"));
+        let first = ManagedString::new("A\0é中🙂");
+        let tail = ManagedString::new("\0tail");
+        // SAFETY: all inputs have live managed owners through each borrowed call.
+        unsafe {
+            assert_eq!(hew_file_write(path.as_ptr(), first.as_ptr()), 0);
+            drop(first);
+            assert_eq!(hew_file_append(path.as_ptr(), tail.as_ptr()), 0);
+            drop(tail);
+            let result = hew_file_read(path.as_ptr());
+            drop(path);
+            assert_eq!(read_and_free(result), "A\0é中🙂\0tail");
+            assert_eq!(crate::stream_error::take_last_errno(), 0);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn nul_paths_never_truncate_to_an_existing_file() {
+        let dir = test_dir("nul_no_truncation");
+        let target = dir.join("retained.txt");
+        std::fs::write(&target, "retained").unwrap();
+        let path = ManagedString::new(format!("{}\0ignored", target.display()));
+        let content = ManagedString::new("replacement");
+        let destination = cpath(&dir.join("destination.txt"));
+        // SAFETY: each input is a live managed value; the NUL must be rejected.
+        unsafe {
+            assert_eq!(hew_file_write(path.as_ptr(), content.as_ptr()), -1);
+            assert_eq!(crate::stream_error::take_last_errno(), libc::EINVAL);
+            assert_eq!(hew_file_append(path.as_ptr(), content.as_ptr()), -1);
+            assert_eq!(hew_file_delete(path.as_ptr()), -1);
+            assert_eq!(hew_fs_rename(path.as_ptr(), destination.as_ptr()), -1);
+            assert_eq!(hew_fs_copy(path.as_ptr(), destination.as_ptr()), -1);
+        }
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "retained");
+        assert!(!dir.join("destination.txt").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn read_existing_file_returns_contents() {
         let dir = test_dir("read_ok");
         let file = dir.join("hello.txt");
         std::fs::write(&file, "hello world").unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string pointing to an existing file.
+        // SAFETY: p is a live managed string pointing to an existing file.
         let ptr = unsafe { hew_file_read(p.as_ptr()) };
         // SAFETY: ptr was returned by hew_file_read (libc::strdup allocation).
         let contents = unsafe { read_and_free(ptr) };
@@ -662,8 +654,11 @@ mod tests {
         let file = dir.join("empty.txt");
         std::fs::write(&file, "").unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         let ptr = unsafe { hew_file_read(p.as_ptr()) };
+        assert!(ptr.is_null(), "empty is the canonical null managed handle");
+        assert_eq!(crate::stream_error::take_last_errno(), 0);
+        assert!(crate::hew_last_error().is_null());
         // SAFETY: ptr was returned by hew_file_read.
         let contents = unsafe { read_and_free(ptr) };
         assert_eq!(contents, "");
@@ -677,7 +672,7 @@ mod tests {
         let text = "café ☕ naïve 日本語";
         std::fs::write(&file, text).unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         let ptr = unsafe { hew_file_read(p.as_ptr()) };
         // SAFETY: ptr was returned by hew_file_read.
         let contents = unsafe { read_and_free(ptr) };
@@ -696,8 +691,8 @@ mod tests {
 
     #[test]
     fn read_nonexistent_file_returns_null() {
-        let p = CString::new("/tmp/hew_fio_surely_does_not_exist.txt").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp/hew_fio_surely_does_not_exist.txt");
+        // SAFETY: p is a live managed string.
         let ptr = unsafe { hew_file_read(p.as_ptr()) };
         assert!(ptr.is_null());
         assert_ne!(crate::stream_error::take_last_errno(), 0);
@@ -708,9 +703,9 @@ mod tests {
     }
 
     #[test]
-    fn read_invalid_utf8_path_returns_null() {
-        let bad = invalid_utf8_cstring();
-        // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
+    fn read_interior_nul_path_returns_null() {
+        let bad = interior_nul_path();
+        // SAFETY: bad is a live managed string with embedded NUL.
         let ptr = unsafe { hew_file_read(bad.as_ptr()) };
         assert!(ptr.is_null());
     }
@@ -722,7 +717,7 @@ mod tests {
         std::fs::write(&file, [0xFF, 0xFE, b'a', b'\n']).unwrap();
         let p = cpath(&file);
 
-        // SAFETY: p is a valid NUL-terminated C string pointing to a file whose
+        // SAFETY: p is a live managed string pointing to a file whose
         // contents are intentionally invalid UTF-8.
         let ptr = unsafe { hew_file_read(p.as_ptr()) };
 
@@ -741,8 +736,8 @@ mod tests {
         let dir = test_dir("write_new");
         let file = dir.join("new.txt");
         let p = cpath(&file);
-        let c = CString::new("content").unwrap();
-        // SAFETY: both p and c are valid NUL-terminated C strings.
+        let c = ManagedString::new("content");
+        // SAFETY: both p and c are live managed strings.
         let rc = unsafe { hew_file_write(p.as_ptr(), c.as_ptr()) };
         assert_eq!(rc, 0);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "content");
@@ -755,8 +750,8 @@ mod tests {
         let file = dir.join("over.txt");
         std::fs::write(&file, "old").unwrap();
         let p = cpath(&file);
-        let c = CString::new("new").unwrap();
-        // SAFETY: both p and c are valid NUL-terminated C strings.
+        let c = ManagedString::new("new");
+        // SAFETY: both p and c are live managed strings.
         let rc = unsafe { hew_file_write(p.as_ptr(), c.as_ptr()) };
         assert_eq!(rc, 0);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
@@ -768,8 +763,8 @@ mod tests {
         let dir = test_dir("write_empty");
         let file = dir.join("empty.txt");
         let p = cpath(&file);
-        let c = CString::new("").unwrap();
-        // SAFETY: both p and c are valid NUL-terminated C strings.
+        let c = ManagedString::new("");
+        // SAFETY: both p and c are live managed strings.
         let rc = unsafe { hew_file_write(p.as_ptr(), c.as_ptr()) };
         assert_eq!(rc, 0);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "");
@@ -778,34 +773,37 @@ mod tests {
 
     #[test]
     fn write_null_path_returns_error() {
-        let c = CString::new("data").unwrap();
+        let c = ManagedString::new("data");
         // SAFETY: null path is the value under test; the function handles it.
         let rc = unsafe { hew_file_write(std::ptr::null(), c.as_ptr()) };
         assert_eq!(rc, -1);
     }
 
     #[test]
-    fn write_null_content_returns_error() {
-        let p = CString::new("/tmp/hew_fio_write_null_content.txt").unwrap();
-        // SAFETY: null content is the value under test; the function handles it.
-        let rc = unsafe { hew_file_write(p.as_ptr(), std::ptr::null()) };
-        assert_eq!(rc, -1);
+    fn write_null_content_is_empty() {
+        let dir = test_dir("write_empty_handle");
+        let path = dir.join("file.txt");
+        let p = cpath(&path);
+        // SAFETY: p is live and null is the canonical empty string.
+        assert_eq!(unsafe { hew_file_write(p.as_ptr(), std::ptr::null()) }, 0);
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn write_to_nonexistent_directory_returns_error() {
-        let p = CString::new("/tmp/hew_fio_no_such_dir/sub/file.txt").unwrap();
-        let c = CString::new("data").unwrap();
-        // SAFETY: both p and c are valid NUL-terminated C strings.
+        let p = ManagedString::new("/tmp/hew_fio_no_such_dir/sub/file.txt");
+        let c = ManagedString::new("data");
+        // SAFETY: both p and c are live managed strings.
         let rc = unsafe { hew_file_write(p.as_ptr(), c.as_ptr()) };
         assert_eq!(rc, -1);
     }
 
     #[test]
-    fn write_invalid_utf8_path_returns_error() {
-        let bad = invalid_utf8_cstring();
-        let c = CString::new("data").unwrap();
-        // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
+    fn write_interior_nul_path_returns_error() {
+        let bad = interior_nul_path();
+        let c = ManagedString::new("data");
+        // SAFETY: bad is a live managed string with embedded NUL.
         let rc = unsafe { hew_file_write(bad.as_ptr(), c.as_ptr()) };
         assert_eq!(rc, -1);
     }
@@ -820,8 +818,8 @@ mod tests {
         let file = dir.join("log.txt");
         std::fs::write(&file, "line1\n").unwrap();
         let p = cpath(&file);
-        let c = CString::new("line2\n").unwrap();
-        // SAFETY: both p and c are valid NUL-terminated C strings.
+        let c = ManagedString::new("line2\n");
+        // SAFETY: both p and c are live managed strings.
         let rc = unsafe { hew_file_append(p.as_ptr(), c.as_ptr()) };
         assert_eq!(rc, 0);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "line1\nline2\n");
@@ -833,8 +831,8 @@ mod tests {
         let dir = test_dir("append_create");
         let file = dir.join("new.txt");
         let p = cpath(&file);
-        let c = CString::new("first").unwrap();
-        // SAFETY: both p and c are valid NUL-terminated C strings.
+        let c = ManagedString::new("first");
+        // SAFETY: both p and c are live managed strings.
         let rc = unsafe { hew_file_append(p.as_ptr(), c.as_ptr()) };
         assert_eq!(rc, 0);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "first");
@@ -843,25 +841,28 @@ mod tests {
 
     #[test]
     fn append_null_path_returns_error() {
-        let c = CString::new("data").unwrap();
+        let c = ManagedString::new("data");
         // SAFETY: null path is the value under test; the function handles it.
         let rc = unsafe { hew_file_append(std::ptr::null(), c.as_ptr()) };
         assert_eq!(rc, -1);
     }
 
     #[test]
-    fn append_null_content_returns_error() {
-        let p = CString::new("/tmp/hew_fio_append_null.txt").unwrap();
-        // SAFETY: null content is the value under test; the function handles it.
-        let rc = unsafe { hew_file_append(p.as_ptr(), std::ptr::null()) };
-        assert_eq!(rc, -1);
+    fn append_null_content_is_empty() {
+        let dir = test_dir("append_empty_handle");
+        let path = dir.join("file.txt");
+        let p = cpath(&path);
+        // SAFETY: p is live and null is the canonical empty string.
+        assert_eq!(unsafe { hew_file_append(p.as_ptr(), std::ptr::null()) }, 0);
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn append_invalid_utf8_path_returns_error() {
-        let bad = invalid_utf8_cstring();
-        let c = CString::new("data").unwrap();
-        // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
+    fn append_interior_nul_path_returns_error() {
+        let bad = interior_nul_path();
+        let c = ManagedString::new("data");
+        // SAFETY: bad is a live managed string with embedded NUL.
         let rc = unsafe { hew_file_append(bad.as_ptr(), c.as_ptr()) };
         assert_eq!(rc, -1);
     }
@@ -876,15 +877,15 @@ mod tests {
         let file = dir.join("present.txt");
         std::fs::write(&file, "x").unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_file_exists(p.as_ptr()) }, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn exists_returns_zero_for_missing_file() {
-        let p = CString::new("/tmp/hew_fio_no_such_file_exists.txt").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp/hew_fio_no_such_file_exists.txt");
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_file_exists(p.as_ptr()) }, 0);
     }
 
@@ -895,9 +896,9 @@ mod tests {
     }
 
     #[test]
-    fn exists_invalid_utf8_path_returns_zero() {
-        let bad = invalid_utf8_cstring();
-        // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
+    fn exists_interior_nul_path_returns_zero() {
+        let bad = interior_nul_path();
+        // SAFETY: bad is a live managed string with embedded NUL.
         assert_eq!(unsafe { hew_file_exists(bad.as_ptr()) }, 0);
     }
 
@@ -909,15 +910,15 @@ mod tests {
     fn path_exists_returns_one_for_existing_directory() {
         let dir = test_dir("path_exists_dir_yes");
         let p = cpath(&dir);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_path_exists(p.as_ptr()) }, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn path_exists_returns_zero_for_missing_path() {
-        let p = CString::new("/tmp/hew_path_exists_ghost").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp/hew_path_exists_ghost");
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_path_exists(p.as_ptr()) }, 0);
     }
 
@@ -931,7 +932,7 @@ mod tests {
         let file = dir.join("doomed.txt");
         std::fs::write(&file, "bye").unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         let rc = unsafe { hew_file_delete(p.as_ptr()) };
         assert_eq!(rc, 0);
         assert!(!file.exists());
@@ -940,8 +941,8 @@ mod tests {
 
     #[test]
     fn delete_nonexistent_file_returns_error() {
-        let p = CString::new("/tmp/hew_fio_delete_ghost.txt").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp/hew_fio_delete_ghost.txt");
+        // SAFETY: p is a live managed string.
         let rc = unsafe { hew_file_delete(p.as_ptr()) };
         assert_eq!(rc, -1);
     }
@@ -954,9 +955,9 @@ mod tests {
     }
 
     #[test]
-    fn delete_invalid_utf8_path_returns_error() {
-        let bad = invalid_utf8_cstring();
-        // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
+    fn delete_interior_nul_path_returns_error() {
+        let bad = interior_nul_path();
+        // SAFETY: bad is a live managed string with embedded NUL.
         let rc = unsafe { hew_file_delete(bad.as_ptr()) };
         assert_eq!(rc, -1);
     }
@@ -971,7 +972,7 @@ mod tests {
         let file = dir.join("sized.txt");
         std::fs::write(&file, "12345").unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_file_size(p.as_ptr()) }, 5);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -982,7 +983,7 @@ mod tests {
         let file = dir.join("empty.txt");
         std::fs::write(&file, "").unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_file_size(p.as_ptr()) }, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -995,15 +996,15 @@ mod tests {
 
     #[test]
     fn size_nonexistent_file_returns_error() {
-        let p = CString::new("/tmp/hew_fio_size_ghost.txt").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp/hew_fio_size_ghost.txt");
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_file_size(p.as_ptr()) }, -1);
     }
 
     #[test]
-    fn size_invalid_utf8_path_returns_error() {
-        let bad = invalid_utf8_cstring();
-        // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
+    fn size_interior_nul_path_returns_error() {
+        let bad = interior_nul_path();
+        // SAFETY: bad is a live managed string with embedded NUL.
         assert_eq!(unsafe { hew_file_size(bad.as_ptr()) }, -1);
     }
 
@@ -1014,7 +1015,7 @@ mod tests {
         // "é" is 2 bytes in UTF-8; "☕" is 3 bytes → 5 bytes total
         std::fs::write(&file, "é☕").unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_file_size(p.as_ptr()) }, 5);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1043,7 +1044,7 @@ mod tests {
         let data: Vec<u8> = vec![0, 1, 127, 128, 255];
         std::fs::write(&file, &data).unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string; triple is returned by hew_file_read_bytes.
+        // SAFETY: p is a live managed string; triple is returned by hew_file_read_bytes.
         unsafe {
             let triple = hew_file_read_bytes(p.as_ptr());
             assert_eq!(triple.len as usize, data.len());
@@ -1070,7 +1071,7 @@ mod tests {
         let dir = test_dir("bytes_missing");
         let file = dir.join("ghost.bin");
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string; triple is returned by hew_file_read_bytes.
+        // SAFETY: p is a live managed string; triple is returned by hew_file_read_bytes.
         unsafe {
             let triple = hew_file_read_bytes(p.as_ptr());
             assert_eq!(triple.len, 0);
@@ -1100,7 +1101,7 @@ mod tests {
         // Step 1: trigger a failure so LAST_ERRNO is set to a non-zero value.
         let ghost_path = dir.join("does_not_exist.bin");
         let ghost = cpath(&ghost_path);
-        // SAFETY: ghost is a valid NUL-terminated C string.
+        // SAFETY: ghost is a live managed string.
         let _ = unsafe { hew_file_read_bytes(ghost.as_ptr()) };
         // LAST_ERRNO should now be non-zero (ENOENT / 2 on POSIX systems).
         // We deliberately do NOT read it here — reading would clear it via
@@ -1112,7 +1113,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create test dir");
         std::fs::write(&real_path, content).expect("write test file");
         let real = cpath(&real_path);
-        // SAFETY: real is a valid NUL-terminated C string.
+        // SAFETY: real is a live managed string.
         unsafe {
             let triple = hew_file_read_bytes(real.as_ptr());
             assert_eq!(triple.len, 3);
@@ -1147,7 +1148,7 @@ mod tests {
         // Step 1: trigger a failure so both LAST_ERROR stores are populated.
         let ghost_path = dir.join("does_not_exist.bin");
         let ghost = cpath(&ghost_path);
-        // SAFETY: ghost is a valid NUL-terminated C string.
+        // SAFETY: ghost is a live managed string.
         let _ = unsafe { hew_file_read_bytes(ghost.as_ptr()) };
 
         // Step 2: write a real file and read it successfully.
@@ -1156,7 +1157,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create test dir");
         std::fs::write(&real_path, content).expect("write test file");
         let real = cpath(&real_path);
-        // SAFETY: real is a valid NUL-terminated C string.
+        // SAFETY: real is a live managed string.
         unsafe {
             let triple = hew_file_read_bytes(real.as_ptr());
             assert_eq!(triple.len, 3);
@@ -1205,7 +1206,7 @@ mod tests {
         let ghost_path = dir.join("does_not_exist.bin");
         let ghost = cpath(&ghost_path);
 
-        // SAFETY: ghost is a valid NUL-terminated C string.
+        // SAFETY: ghost is a live managed string.
         let triple = unsafe { hew_file_read_bytes(ghost.as_ptr()) };
         assert_eq!(triple.len, 0);
         assert!(triple.ptr.is_null());
@@ -1240,9 +1241,9 @@ mod tests {
     }
 
     #[test]
-    fn read_bytes_invalid_utf8_path_returns_empty_triple() {
-        let bad = invalid_utf8_cstring();
-        // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
+    fn read_bytes_interior_nul_path_returns_empty_triple() {
+        let bad = interior_nul_path();
+        // SAFETY: bad is a live managed string with embedded NUL.
         let triple = unsafe { hew_file_read_bytes(bad.as_ptr()) };
         assert_eq!(triple.len, 0);
         assert!(triple.ptr.is_null());
@@ -1260,7 +1261,7 @@ mod tests {
             offset: 0,
             len: u32::try_from(data.len()).unwrap_or(u32::MAX),
         };
-        // SAFETY: p is a valid NUL-terminated C string; triple points to valid data.
+        // SAFETY: p is a live managed string; triple points to valid data.
         let rc = unsafe { hew_file_write_bytes(p.as_ptr(), &raw const triple) };
         assert_eq!(rc, 0);
         assert_eq!(std::fs::read(&file).unwrap(), data);
@@ -1281,7 +1282,7 @@ mod tests {
 
     #[test]
     fn write_bytes_null_data_returns_error() {
-        let p = CString::new("/tmp/hew_fio_wbytes_null.bin").unwrap();
+        let p = ManagedString::new("/tmp/hew_fio_wbytes_null.bin");
         // SAFETY: null data is the value under test; the function handles it.
         let rc = unsafe { hew_file_write_bytes(p.as_ptr(), std::ptr::null()) };
         assert_eq!(rc, -1);
@@ -1296,7 +1297,7 @@ mod tests {
         let base = test_dir("mkdir_ok");
         let dir = base.join("child");
         let p = cpath(&dir);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         let rc = unsafe { hew_fs_mkdir(p.as_ptr()) };
         assert_eq!(rc, 0);
         assert!(dir.is_dir());
@@ -1307,7 +1308,7 @@ mod tests {
     fn mkdir_already_exists_returns_error() {
         let dir = test_dir("mkdir_dup");
         let p = cpath(&dir);
-        // SAFETY: p is a valid NUL-terminated C string (dir already exists via test_dir).
+        // SAFETY: p is a live managed string (dir already exists via test_dir).
         let rc = unsafe { hew_fs_mkdir(p.as_ptr()) };
         assert_eq!(rc, -1);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1327,7 +1328,7 @@ mod tests {
         };
         let dir = test_dir("mkdir_kind_dup");
         let p = cpath(&dir);
-        // SAFETY: p is a valid NUL-terminated C string (dir already exists via test_dir).
+        // SAFETY: p is a live managed string (dir already exists via test_dir).
         let rc = unsafe { hew_fs_mkdir(p.as_ptr()) };
         assert_eq!(rc, -1, "mkdir on an existing directory must fail");
         // Read the kind BEFORE the errno (take_last_errno clears the tag).
@@ -1354,9 +1355,9 @@ mod tests {
     }
 
     #[test]
-    fn mkdir_invalid_utf8_path_returns_error() {
-        let bad = invalid_utf8_cstring();
-        // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
+    fn mkdir_interior_nul_path_returns_error() {
+        let bad = interior_nul_path();
+        // SAFETY: bad is a live managed string with embedded NUL.
         assert_eq!(unsafe { hew_fs_mkdir(bad.as_ptr()) }, -1);
     }
 
@@ -1370,7 +1371,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let nested = base.join("a/b/c");
         let p = cpath(&nested);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         let rc = unsafe { hew_fs_mkdir_all(p.as_ptr()) };
         assert_eq!(rc, 0);
         assert!(nested.is_dir());
@@ -1381,7 +1382,7 @@ mod tests {
     fn mkdir_all_idempotent_on_existing() {
         let dir = test_dir("mkdirall_idem");
         let p = cpath(&dir);
-        // SAFETY: p is a valid NUL-terminated C string (dir already exists).
+        // SAFETY: p is a live managed string (dir already exists).
         let rc = unsafe { hew_fs_mkdir_all(p.as_ptr()) };
         assert_eq!(rc, 0);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1403,7 +1404,7 @@ mod tests {
         std::fs::write(dir.join("alpha.txt"), "a").unwrap();
         std::fs::write(dir.join("beta.txt"), "b").unwrap();
         let p = cpath(&dir);
-        // SAFETY: p is a valid NUL-terminated C string; v is returned by hew_fs_list_dir.
+        // SAFETY: p is a live managed string; v is returned by hew_fs_list_dir.
         unsafe {
             let v = hew_fs_list_dir(p.as_ptr());
             assert!(!v.is_null());
@@ -1417,7 +1418,7 @@ mod tests {
     fn list_dir_empty_directory_returns_empty_vec() {
         let dir = test_dir("listdir_empty");
         let p = cpath(&dir);
-        // SAFETY: p is a valid NUL-terminated C string; v is returned by hew_fs_list_dir.
+        // SAFETY: p is a live managed string; v is returned by hew_fs_list_dir.
         unsafe {
             let v = hew_fs_list_dir(p.as_ptr());
             assert!(!v.is_null());
@@ -1440,8 +1441,8 @@ mod tests {
 
     #[test]
     fn list_dir_nonexistent_returns_empty_vec() {
-        let p = CString::new("/tmp/hew_fio_listdir_ghost").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string; v is returned by hew_fs_list_dir.
+        let p = ManagedString::new("/tmp/hew_fio_listdir_ghost");
+        // SAFETY: p is a live managed string; v is returned by hew_fs_list_dir.
         unsafe {
             let v = hew_fs_list_dir(p.as_ptr());
             assert!(!v.is_null());
@@ -1462,7 +1463,7 @@ mod tests {
         std::fs::write(&src, "hello").unwrap();
         let f = cpath(&src);
         let t = cpath(&dst);
-        // SAFETY: both f and t are valid NUL-terminated C strings.
+        // SAFETY: both f and t are live managed strings.
         let rc = unsafe { hew_fs_rename(f.as_ptr(), t.as_ptr()) };
         assert_eq!(rc, 0);
         assert!(!src.exists());
@@ -1472,23 +1473,23 @@ mod tests {
 
     #[test]
     fn rename_null_from_returns_error() {
-        let t = CString::new("/tmp/hew_fio_rename_dst.txt").unwrap();
+        let t = ManagedString::new("/tmp/hew_fio_rename_dst.txt");
         // SAFETY: null from is the value under test; the function handles it.
         assert_eq!(unsafe { hew_fs_rename(std::ptr::null(), t.as_ptr()) }, -1);
     }
 
     #[test]
     fn rename_null_to_returns_error() {
-        let f = CString::new("/tmp/hew_fio_rename_src.txt").unwrap();
+        let f = ManagedString::new("/tmp/hew_fio_rename_src.txt");
         // SAFETY: null to is the value under test; the function handles it.
         assert_eq!(unsafe { hew_fs_rename(f.as_ptr(), std::ptr::null()) }, -1);
     }
 
     #[test]
     fn rename_nonexistent_source_returns_error() {
-        let f = CString::new("/tmp/hew_fio_rename_ghost.txt").unwrap();
-        let t = CString::new("/tmp/hew_fio_rename_dst2.txt").unwrap();
-        // SAFETY: both f and t are valid NUL-terminated C strings.
+        let f = ManagedString::new("/tmp/hew_fio_rename_ghost.txt");
+        let t = ManagedString::new("/tmp/hew_fio_rename_dst2.txt");
+        // SAFETY: both f and t are live managed strings.
         assert_eq!(unsafe { hew_fs_rename(f.as_ptr(), t.as_ptr()) }, -1);
     }
 
@@ -1504,7 +1505,7 @@ mod tests {
         std::fs::write(&src, "payload").unwrap();
         let f = cpath(&src);
         let t = cpath(&dst);
-        // SAFETY: both f and t are valid NUL-terminated C strings.
+        // SAFETY: both f and t are live managed strings.
         let rc = unsafe { hew_fs_copy(f.as_ptr(), t.as_ptr()) };
         assert_eq!(rc, 0);
         assert!(src.exists());
@@ -1514,23 +1515,23 @@ mod tests {
 
     #[test]
     fn copy_null_from_returns_error() {
-        let t = CString::new("/tmp/hew_fio_copy_dst.txt").unwrap();
+        let t = ManagedString::new("/tmp/hew_fio_copy_dst.txt");
         // SAFETY: null from is the value under test; the function handles it.
         assert_eq!(unsafe { hew_fs_copy(std::ptr::null(), t.as_ptr()) }, -1);
     }
 
     #[test]
     fn copy_null_to_returns_error() {
-        let f = CString::new("/tmp/hew_fio_copy_src.txt").unwrap();
+        let f = ManagedString::new("/tmp/hew_fio_copy_src.txt");
         // SAFETY: null to is the value under test; the function handles it.
         assert_eq!(unsafe { hew_fs_copy(f.as_ptr(), std::ptr::null()) }, -1);
     }
 
     #[test]
     fn copy_nonexistent_source_returns_error() {
-        let f = CString::new("/tmp/hew_fio_copy_ghost.txt").unwrap();
-        let t = CString::new("/tmp/hew_fio_copy_dst2.txt").unwrap();
-        // SAFETY: both f and t are valid NUL-terminated C strings.
+        let f = ManagedString::new("/tmp/hew_fio_copy_ghost.txt");
+        let t = ManagedString::new("/tmp/hew_fio_copy_dst2.txt");
+        // SAFETY: both f and t are live managed strings.
         assert_eq!(unsafe { hew_fs_copy(f.as_ptr(), t.as_ptr()) }, -1);
     }
 
@@ -1542,7 +1543,7 @@ mod tests {
     fn is_dir_returns_one_for_directory() {
         let dir = test_dir("isdir_yes");
         let p = cpath(&dir);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_fs_is_dir(p.as_ptr()) }, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1553,15 +1554,15 @@ mod tests {
         let file = dir.join("not_a_dir.txt");
         std::fs::write(&file, "x").unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_fs_is_dir(p.as_ptr()) }, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn is_dir_returns_zero_for_nonexistent() {
-        let p = CString::new("/tmp/hew_fio_isdir_ghost").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp/hew_fio_isdir_ghost");
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_fs_is_dir(p.as_ptr()) }, 0);
     }
 
@@ -1580,8 +1581,8 @@ mod tests {
         let dir = test_dir("lifecycle");
         let file = dir.join("lifecycle.txt");
         let p = cpath(&file);
-        let content = CString::new("lifecycle test").unwrap();
-        // SAFETY: all pointers are valid NUL-terminated C strings throughout this block.
+        let content = ManagedString::new("lifecycle test");
+        // SAFETY: all pointers are live managed strings throughout this block.
         unsafe {
             assert_eq!(hew_file_write(p.as_ptr(), content.as_ptr()), 0);
             assert_eq!(hew_file_exists(p.as_ptr()), 1);

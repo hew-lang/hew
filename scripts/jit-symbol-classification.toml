@@ -3446,21 +3446,21 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_process_result_stderr"
-result = "fresh"
+result = "retained"
 params = ["borrow"]
 resource-param-types = ["std.process.ProcessResultHandle"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "shared-refcount"
 
 [[ownership.contracts]]
 symbol = "hew_process_result_stdout"
-result = "fresh"
+result = "retained"
 params = ["borrow"]
 resource-param-types = ["std.process.ProcessResultHandle"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "shared-refcount"
 
 [[ownership.contracts]]
 symbol = "hew_process_run"

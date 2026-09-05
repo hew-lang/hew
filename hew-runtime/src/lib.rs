@@ -1169,3 +1169,6 @@ mod exit_code_resolution_tests {
         crate::exit_status::reset_process_exit_status();
     }
 }
+
+#[cfg(test)]
+mod test_string;

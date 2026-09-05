@@ -2,19 +2,19 @@
 //!
 //! Provides process execution (with shell or explicit arguments), spawning,
 //! waiting, and killing for compiled Hew programs. Stdout/stderr strings in
-//! [`HewProcessResult`] are allocated with `libc::malloc` and NUL-terminated.
+//! [`HewProcessResult`] are owned managed UTF-8 handles, preserving embedded NUL.
+//! Command and argument inputs borrow managed handles and reject interior NUL
+//! before crossing the OS boundary. Captured non-UTF-8 output is decoded lossily.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use crate::util::cstr_to_str;
 use crate::vec::{ElemKind, HewVec};
-use crate::{
-    cabi::{free_cstring, str_to_malloc},
-    util::cstr_to_str,
+use hew_cabi::string::{
+    string_from_str, string_release, string_retain, string_to_cstring, HewString,
 };
-use hew_cabi::string::{string_as_str, HewString};
-use std::os::raw::c_char;
 use std::process::Command;
 
 /// Result of a completed process.
@@ -22,10 +22,10 @@ use std::process::Command;
 pub struct HewProcessResult {
     /// Exit code of the process (or -1 if the process was killed by a signal).
     pub exit_code: i32,
-    /// Captured stdout, malloc-allocated and NUL-terminated.
-    pub stdout: *mut c_char,
-    /// Captured stderr, malloc-allocated and NUL-terminated.
-    pub stderr: *mut c_char,
+    /// Captured stdout, an owned managed UTF-8 string.
+    pub stdout: *mut HewString,
+    /// Captured stderr, an owned managed UTF-8 string.
+    pub stderr: *mut HewString,
 }
 
 /// Handle to a running child process.
@@ -40,23 +40,22 @@ impl std::fmt::Debug for HewProcess {
     }
 }
 
-/// Convert a byte slice to a malloc-allocated C string, replacing invalid UTF-8
+/// Convert a byte slice to an owned managed UTF-8 string, replacing invalid UTF-8
 /// with the replacement character.
-fn bytes_to_malloc(bytes: &[u8]) -> *mut c_char {
+fn bytes_to_string(bytes: &[u8]) -> *mut HewString {
     let s = String::from_utf8_lossy(bytes);
-    str_to_malloc(&s)
+    string_from_str(&s)
 }
 
-/// Release a retained `String` owner returned by [`crate::vec::hew_vec_get_str`].
-///
-/// As of W5.011 P2b-vec, `hew_vec_get_str` returns a header-aware **retained**
-/// owner (refcount share / static passthrough), not a headerless `strdup`, so it
-/// must be released through the universal `String` consumer — never bare
-/// `libc::free`, which would free `data` instead of the allocation base.
-unsafe fn free_managed_string(ptr: *const HewString) {
-    // SAFETY: ptr is null or a retained String owner from hew_vec_get_str;
-    // hew_string_drop releases that managed allocation share.
-    unsafe { crate::string::hew_string_drop(ptr.cast_mut()) };
+/// Copy and validate a managed command or argument at the OS boundary.
+unsafe fn process_input(value: *const HewString, context: &str) -> Option<String> {
+    // SAFETY: the caller holds a live managed owner for this copy.
+    let Ok(foreign) = (unsafe { string_to_cstring(value) }) else {
+        crate::set_last_error(format!("{context}: input contains interior NUL"));
+        return None;
+    };
+    // CString and String use Rust ownership; no raw allocation escapes.
+    Some(foreign.into_string().expect("managed input is UTF-8"))
 }
 
 /// Build a [`HewProcessResult`] from an [`std::process::Output`].
@@ -66,8 +65,8 @@ unsafe fn free_managed_string(ptr: *const HewString) {
 )]
 fn output_to_result(output: std::process::Output) -> *mut HewProcessResult {
     let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = bytes_to_malloc(&output.stdout);
-    let stderr = bytes_to_malloc(&output.stderr);
+    let stdout = bytes_to_string(&output.stdout);
+    let stderr = bytes_to_string(&output.stderr);
     Box::into_raw(Box::new(HewProcessResult {
         exit_code,
         stdout,
@@ -163,22 +162,13 @@ unsafe fn hewvec_string_args(arg_vec: *mut HewVec, context: &str) -> Option<Vec<
         // returns a retained header-aware String owner for this slot.
         let raw_arg = unsafe { crate::vec::hew_vec_get_str(arg_vec, index_i64) };
         // SAFETY: raw_arg is the retained managed owner returned by get_str.
-        owned_args.push(unsafe { string_as_str(raw_arg) }.to_owned());
+        let arg = unsafe { process_input(raw_arg, context) };
         // SAFETY: raw_arg is a retained owner and must be released here.
-        unsafe { free_managed_string(raw_arg) };
+        unsafe { string_release(raw_arg.cast_mut()) };
+        owned_args.push(arg?);
     }
 
     Some(owned_args)
-}
-
-/// Clone a result string field into a new malloc-owned C string.
-unsafe fn clone_result_string(ptr: *const c_char, context: &str) -> *mut c_char {
-    // SAFETY: ptr is expected to reference a valid NUL-terminated result field.
-    let Some(text) = (unsafe { cstr_to_str(&ptr, context) }) else {
-        return std::ptr::null_mut();
-    };
-    crate::hew_clear_error();
-    str_to_malloc(text)
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +176,7 @@ unsafe fn clone_result_string(ptr: *const c_char, context: &str) -> *mut c_char 
 // ---------------------------------------------------------------------------
 
 /// Build a [`Command`] that runs `cmd_str` through the platform's system shell:
-/// `sh -c "cmd"` on Unix, `cmd /C "cmd"` on Windows. Centralised so the
+/// `sh -c "cmd"` on Unix, `cmd /C "cmd"` on Windows. Centralized so the
 /// shell-based run/spawn entry points stay portable.
 fn shell_command(cmd_str: &str) -> Command {
     #[cfg(windows)]
@@ -211,15 +201,15 @@ fn shell_command(cmd_str: &str) -> Command {
 ///
 /// # Safety
 ///
-/// `cmd` must be a valid NUL-terminated C string, or null.
+/// `cmd` must be a live managed handle, or null (empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_process_run(cmd: *const c_char) -> *mut HewProcessResult {
-    // SAFETY: cmd is a caller-provided C string at this ABI boundary.
-    let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_run") }) else {
+pub unsafe extern "C" fn hew_process_run(cmd: *const HewString) -> *mut HewProcessResult {
+    // SAFETY: cmd is a borrowed managed handle at this ABI boundary.
+    let Some(cmd_str) = (unsafe { process_input(cmd, "hew_process_run") }) else {
         return std::ptr::null_mut();
     };
-    let mut command = shell_command(cmd_str);
-    command_output_to_result(&mut command, "hew_process_run", cmd_str)
+    let mut command = shell_command(&cmd_str);
+    command_output_to_result(&mut command, "hew_process_run", &cmd_str)
 }
 
 /// Run a command with an explicit argument array (no shell).
@@ -229,8 +219,8 @@ pub unsafe extern "C" fn hew_process_run(cmd: *const c_char) -> *mut HewProcessR
 ///
 /// # Safety
 ///
-/// `cmd` must be a valid NUL-terminated C string, or null.
-/// `args` must point to an array of `argc` valid NUL-terminated C string
+/// `cmd` must be a live managed handle, or null (empty).
+/// `args` must point to an array of `argc` managed string handle
 /// pointers. `argc` must be >= 0.
 #[expect(
     clippy::similar_names,
@@ -238,20 +228,20 @@ pub unsafe extern "C" fn hew_process_run(cmd: *const c_char) -> *mut HewProcessR
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_run_args(
-    cmd: *const c_char,
-    args: *const *const c_char,
+    cmd: *const HewString,
+    args: *const *const HewString,
     argc: i32,
 ) -> *mut HewProcessResult {
     if argc < 0 {
         crate::set_last_error("hew_process_run_args: argc must be non-negative");
         return std::ptr::null_mut();
     }
-    // SAFETY: cmd is a caller-provided C string at this ABI boundary.
-    let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_run_args") }) else {
+    // SAFETY: cmd is a borrowed managed handle at this ABI boundary.
+    let Some(cmd_str) = (unsafe { process_input(cmd, "hew_process_run_args") }) else {
         return std::ptr::null_mut();
     };
 
-    let mut command = Command::new(cmd_str);
+    let mut command = Command::new(&cmd_str);
 
     if argc > 0 {
         if args.is_null() {
@@ -266,14 +256,14 @@ pub unsafe extern "C" fn hew_process_run_args(
             let arg_ptr = unsafe { *args.add(index) };
             let arg_context = format!("hew_process_run_args: args[{index}]");
             // SAFETY: arg_ptr comes from the caller-provided args array.
-            let Some(arg_str) = (unsafe { cstr_to_str(&arg_ptr, &arg_context) }) else {
+            let Some(arg_str) = (unsafe { process_input(arg_ptr, &arg_context) }) else {
                 return std::ptr::null_mut();
             };
             command.arg(arg_str);
         }
     }
 
-    command_output_to_result(&mut command, "hew_process_run_args", cmd_str)
+    command_output_to_result(&mut command, "hew_process_run_args", &cmd_str)
 }
 
 /// Run a command with an explicit `Vec<String>` argv surface (no shell).
@@ -283,15 +273,15 @@ pub unsafe extern "C" fn hew_process_run_args(
 ///
 /// # Safety
 ///
-/// `cmd` must be a valid NUL-terminated C string, or null. `args` must be a
+/// `cmd` must be a live managed handle, or null (empty). `args` must be a
 /// valid `Vec<String>` handle or null (treated as an empty argv).
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_run_argv(
-    cmd: *const c_char,
+    cmd: *const HewString,
     argv_vec: *mut HewVec,
 ) -> *mut HewProcessResult {
-    // SAFETY: cmd is a caller-provided C string at this ABI boundary.
-    let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_run_argv") }) else {
+    // SAFETY: cmd is a borrowed managed handle at this ABI boundary.
+    let Some(cmd_str) = (unsafe { process_input(cmd, "hew_process_run_argv") }) else {
         return std::ptr::null_mut();
     };
     // SAFETY: argv_vec is either null or a valid Vec<String>-backed HewVec.
@@ -299,9 +289,9 @@ pub unsafe extern "C" fn hew_process_run_argv(
         return std::ptr::null_mut();
     };
 
-    let mut command = Command::new(cmd_str);
+    let mut command = Command::new(&cmd_str);
     command.args(owned_args);
-    command_output_to_result(&mut command, "hew_process_run_argv", cmd_str)
+    command_output_to_result(&mut command, "hew_process_run_argv", &cmd_str)
 }
 
 /// Spawn a command via the system shell (`sh -c "cmd"` on Unix, `cmd /C "cmd"`
@@ -312,14 +302,14 @@ pub unsafe extern "C" fn hew_process_run_argv(
 ///
 /// # Safety
 ///
-/// `cmd` must be a valid NUL-terminated C string, or null.
+/// `cmd` must be a live managed handle, or null (empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_process_spawn(cmd: *const c_char) -> *mut HewProcess {
-    // SAFETY: cmd is a caller-provided C string at this ABI boundary.
-    let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_spawn") }) else {
+pub unsafe extern "C" fn hew_process_spawn(cmd: *const HewString) -> *mut HewProcess {
+    // SAFETY: cmd is a borrowed managed handle at this ABI boundary.
+    let Some(cmd_str) = (unsafe { process_input(cmd, "hew_process_spawn") }) else {
         return std::ptr::null_mut();
     };
-    match shell_command(cmd_str).spawn() {
+    match shell_command(&cmd_str).spawn() {
         Ok(child) => {
             crate::hew_clear_error();
             Box::into_raw(Box::new(HewProcess {
@@ -359,15 +349,15 @@ pub unsafe extern "C" fn hew_process_is_valid(proc: *mut HewProcess) -> bool {
 ///
 /// # Safety
 ///
-/// `cmd` must be a valid NUL-terminated C string, or null.  `argv_vec` must be
+/// `cmd` must be a live managed handle, or null (empty).  `argv_vec` must be
 /// null or a valid `Vec<String>`-backed [`HewVec`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_spawn_argv(
-    cmd: *const c_char,
+    cmd: *const HewString,
     argv_vec: *mut HewVec,
 ) -> *mut HewProcess {
-    // SAFETY: cmd is a caller-provided C string at this ABI boundary.
-    let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_spawn_argv") }) else {
+    // SAFETY: cmd is a borrowed managed handle at this ABI boundary.
+    let Some(cmd_str) = (unsafe { process_input(cmd, "hew_process_spawn_argv") }) else {
         return std::ptr::null_mut();
     };
     // SAFETY: argv_vec is either null or a valid Vec<String>-backed HewVec.
@@ -376,7 +366,7 @@ pub unsafe extern "C" fn hew_process_spawn_argv(
         return std::ptr::null_mut();
     };
 
-    let mut command = Command::new(cmd_str);
+    let mut command = Command::new(&cmd_str);
     command.args(owned_args);
     match command.spawn() {
         Ok(child) => {
@@ -464,19 +454,19 @@ pub unsafe extern "C" fn hew_process_kill(proc: *mut HewProcess) -> i32 {
     }
 }
 
-/// Return a malloc-owned copy of the current thread's last process error.
+/// Return an owned managed copy of the current thread's last process error.
 #[no_mangle]
-pub extern "C" fn hew_process_last_error() -> *mut c_char {
+pub extern "C" fn hew_process_last_error() -> *mut HewString {
     let ptr = crate::hew_last_error();
     if ptr.is_null() {
-        return str_to_malloc("");
+        return string_from_str("");
     }
     // SAFETY: ptr comes from thread-local storage and remains valid until the
     // next error mutation; we duplicate it immediately.
     let Some(text) = (unsafe { cstr_to_str(&ptr, "hew_process_last_error") }) else {
         return std::ptr::null_mut();
     };
-    str_to_malloc(text)
+    string_from_str(text)
 }
 
 /// Return whether a process result pointer is non-null.
@@ -498,32 +488,34 @@ pub unsafe extern "C" fn hew_process_result_exit_code(r: *const HewProcessResult
     unsafe { (*r).exit_code }
 }
 
-/// Clone the stdout field from a completed process result.
+/// Retain an owned stdout handle that survives freeing the process result.
 ///
 /// # Safety
 ///
 /// `r` must be a valid pointer returned by a `hew_process_run*` function.
 #[no_mangle]
-pub unsafe extern "C" fn hew_process_result_stdout(r: *const HewProcessResult) -> *mut c_char {
+pub unsafe extern "C" fn hew_process_result_stdout(r: *const HewProcessResult) -> *mut HewString {
     cabi_guard!(r.is_null(), std::ptr::null_mut());
+    crate::hew_clear_error();
     // SAFETY: r is valid per caller contract.
-    unsafe { clone_result_string((*r).stdout.cast_const(), "hew_process_result_stdout") }
+    unsafe { string_retain((*r).stdout) }
 }
 
-/// Clone the stderr field from a completed process result.
+/// Retain an owned stderr handle that survives freeing the process result.
 ///
 /// # Safety
 ///
 /// `r` must be a valid pointer returned by a `hew_process_run*` function.
 #[no_mangle]
-pub unsafe extern "C" fn hew_process_result_stderr(r: *const HewProcessResult) -> *mut c_char {
+pub unsafe extern "C" fn hew_process_result_stderr(r: *const HewProcessResult) -> *mut HewString {
     cabi_guard!(r.is_null(), std::ptr::null_mut());
+    crate::hew_clear_error();
     // SAFETY: r is valid per caller contract.
-    unsafe { clone_result_string((*r).stderr.cast_const(), "hew_process_result_stderr") }
+    unsafe { string_retain((*r).stderr) }
 }
 
 /// Free a [`HewProcessResult`] previously returned by [`hew_process_run`]
-/// or [`hew_process_run_args`], including the malloc-allocated stdout and
+/// or [`hew_process_run_args`], including its owned managed stdout and
 /// stderr strings.
 ///
 /// # Safety
@@ -537,13 +529,11 @@ pub unsafe extern "C" fn hew_process_result_free(r: *mut HewProcessResult) {
     }
     // SAFETY: r was allocated with Box::into_raw and has not been freed.
     let result = unsafe { Box::from_raw(r) };
-    if !result.stdout.is_null() {
-        // SAFETY: stdout was allocated header-aware by str_to_malloc.
-        unsafe { free_cstring(result.stdout) }; // CSTRING-FREE: str-open (HewProcessResult.stdout = str_to_malloc; header-aware in S1)
-    }
-    if !result.stderr.is_null() {
-        // SAFETY: stderr was allocated header-aware by str_to_malloc.
-        unsafe { free_cstring(result.stderr) }; // CSTRING-FREE: str-open (HewProcessResult.stderr = str_to_malloc; header-aware in S1)
+    // SAFETY: the result owns one reference to each managed field. Accessors
+    // retain independent owners, which remain valid after this result is freed.
+    unsafe {
+        string_release(result.stdout);
+        string_release(result.stderr);
     }
 }
 
@@ -567,17 +557,14 @@ pub unsafe extern "C" fn hew_process_free(p: *mut HewProcess) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{CStr, CString};
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_as_str;
+    use std::ffi::CStr;
 
-    /// Helper: read a C string pointer without freeing it.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must be a non-null, NUL-terminated C string.
-    unsafe fn read_cstr(ptr: *mut c_char) -> String {
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string.
-        unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned()
+    /// Read a borrowed managed result, including the canonical empty value.
+    unsafe fn read_string(ptr: *mut HewString) -> String {
+        // SAFETY: the test keeps the result owner live for this read.
+        unsafe { string_as_str(ptr) }.to_owned()
     }
 
     /// Helper: read the thread-local last error string.
@@ -588,14 +575,60 @@ mod tests {
     unsafe fn read_last_error() -> String {
         let ptr = crate::hew_last_error();
         assert!(!ptr.is_null(), "expected hew_last_error to be populated");
-        // SAFETY: ptr is a valid NUL-terminated C string owned by the runtime.
+        // SAFETY: ptr is a live managed string owned by the runtime.
         unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned()
     }
 
     #[test]
+    fn managed_command_and_both_argv_forms_reject_interior_nul() {
+        let cmd = ManagedString::new("unused");
+        let nul = ManagedString::new("prefix\0suffix");
+        // SAFETY: managed values and the array remain live; no OS call may run.
+        unsafe {
+            assert!(hew_process_run(nul.as_ptr()).is_null());
+            assert!(read_last_error().contains("interior NUL"));
+            assert!(hew_process_spawn(nul.as_ptr()).is_null());
+            assert!(read_last_error().contains("interior NUL"));
+            let raw_array = [nul.as_ptr()];
+            assert!(hew_process_run_args(cmd.as_ptr(), raw_array.as_ptr(), 1).is_null());
+            assert!(read_last_error().contains("args[0]: input contains interior NUL"));
+            let argv = crate::vec::hew_vec_new_str();
+            crate::vec::hew_vec_push_str(argv, nul.as_ptr());
+            assert!(hew_process_run_argv(cmd.as_ptr(), argv).is_null());
+            assert!(read_last_error().contains("interior NUL"));
+            assert!(hew_process_spawn_argv(cmd.as_ptr(), argv).is_null());
+            assert!(read_last_error().contains("interior NUL"));
+            crate::vec::hew_vec_free(argv);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn captured_output_retains_nul_and_decodes_invalid_utf8_lossily() {
+        let cmd = ManagedString::new("printf 'A\\000é中🙂\\377'; printf 'err\\000or' >&2");
+        // SAFETY: the command is live; result and accessor owners are released once.
+        unsafe {
+            let result = hew_process_run(cmd.as_ptr());
+            assert!(!result.is_null());
+            drop(cmd);
+            assert_eq!(hew_process_result_exit_code(result), 0);
+            let first = hew_process_result_stdout(result);
+            let second = hew_process_result_stdout(result);
+            let err = hew_process_result_stderr(result);
+            hew_process_result_free(result);
+            assert_eq!(read_string(first), "A\0é中🙂�");
+            string_release(first);
+            assert_eq!(read_string(second), "A\0é中🙂�");
+            assert_eq!(read_string(err), "err\0or");
+            string_release(second);
+            string_release(err);
+        }
+    }
+
+    #[test]
     fn run_echo_command() {
-        let cmd = CString::new("echo hello").unwrap();
-        // SAFETY: cmd is a valid NUL-terminated C string.
+        let cmd = ManagedString::new("echo hello");
+        // SAFETY: cmd is a live managed string.
         let result = unsafe { hew_process_run(cmd.as_ptr()) };
         assert!(!result.is_null());
 
@@ -603,7 +636,7 @@ mod tests {
         unsafe {
             let r = &*result;
             assert_eq!(r.exit_code, 0);
-            let stdout = read_cstr(r.stdout);
+            let stdout = read_string(r.stdout);
             assert_eq!(stdout.trim(), "hello");
             hew_process_result_free(result);
         }
@@ -611,8 +644,8 @@ mod tests {
 
     #[test]
     fn run_exit_code() {
-        let cmd = CString::new("exit 42").unwrap();
-        // SAFETY: cmd is a valid NUL-terminated C string.
+        let cmd = ManagedString::new("exit 42");
+        // SAFETY: cmd is a live managed string.
         let result = unsafe { hew_process_run(cmd.as_ptr()) };
         assert!(!result.is_null());
 
@@ -627,12 +660,12 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn run_args_echo() {
-        let cmd = CString::new("echo").unwrap();
-        let first_arg = CString::new("hello").unwrap();
-        let second_arg = CString::new("world").unwrap();
+        let cmd = ManagedString::new("echo");
+        let first_arg = ManagedString::new("hello");
+        let second_arg = ManagedString::new("world");
         let args = [first_arg.as_ptr(), second_arg.as_ptr()];
 
-        // SAFETY: cmd and args are valid NUL-terminated C strings.
+        // SAFETY: cmd and args are live managed strings.
         let result = unsafe { hew_process_run_args(cmd.as_ptr(), args.as_ptr(), 2) };
         assert!(!result.is_null());
 
@@ -640,7 +673,7 @@ mod tests {
         unsafe {
             let r = &*result;
             assert_eq!(r.exit_code, 0);
-            let stdout = read_cstr(r.stdout);
+            let stdout = read_string(r.stdout);
             assert_eq!(stdout.trim(), "hello world");
             hew_process_result_free(result);
         }
@@ -649,7 +682,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn run_argv_preserves_spaced_and_empty_arguments() {
-        let cmd = CString::new("printf").unwrap();
+        let cmd = ManagedString::new("printf");
         let fmt = hew_cabi::string::string_from_str("<%s>|<%s>|<%s>");
         let spaced = hew_cabi::string::string_from_str("hello world");
         let empty = hew_cabi::string::string_from_str("");
@@ -657,7 +690,7 @@ mod tests {
         // SAFETY: hew_vec_new_str allocates a valid Vec<String> handle.
         let argv = unsafe { crate::vec::hew_vec_new_str() };
 
-        // SAFETY: argv is a valid string vec and all CString pointers are valid.
+        // SAFETY: argv is a valid string vec and all managed handles are live.
         unsafe {
             crate::vec::hew_vec_push_str(argv, fmt);
             crate::vec::hew_vec_push_str(argv, spaced);
@@ -677,7 +710,7 @@ mod tests {
         unsafe {
             let r = &*result;
             assert_eq!(r.exit_code, 0);
-            let stdout = read_cstr(r.stdout);
+            let stdout = read_string(r.stdout);
             assert_eq!(stdout, "<hello world>|<>|<tail>");
             hew_process_result_free(result);
             crate::vec::hew_vec_free(argv);
@@ -686,7 +719,7 @@ mod tests {
 
     #[test]
     fn run_argv_rejects_non_string_vec() {
-        let cmd = CString::new("printf").unwrap();
+        let cmd = ManagedString::new("printf");
         // SAFETY: hew_vec_new allocates a valid i32 vec.
         let argv = unsafe { crate::vec::hew_vec_new() };
 
@@ -711,7 +744,7 @@ mod tests {
 
     #[test]
     fn run_argv_missing_command_surfaces_error() {
-        let cmd = CString::new("hew-process-command-that-does-not-exist").unwrap();
+        let cmd = ManagedString::new("hew-process-command-that-does-not-exist");
         // SAFETY: hew_vec_new_str allocates a valid empty Vec<String>.
         let argv = unsafe { crate::vec::hew_vec_new_str() };
 
@@ -735,8 +768,8 @@ mod tests {
 
     #[test]
     fn spawn_and_wait() {
-        let cmd = CString::new("echo spawned").unwrap();
-        // SAFETY: cmd is a valid NUL-terminated C string.
+        let cmd = ManagedString::new("echo spawned");
+        // SAFETY: cmd is a live managed string.
         let proc = unsafe { hew_process_spawn(cmd.as_ptr()) };
         assert!(!proc.is_null());
 
@@ -750,14 +783,24 @@ mod tests {
 
     #[test]
     fn spawn_and_kill() {
-        // A long-running command via the system shell: `sleep` on Unix has no
-        // Windows builtin, so use `ping` as a portable ~minute-long sleep there.
+        // Target the long-lived child directly so killing it also closes the
+        // inherited test output pipes; killing a shell can orphan its child.
         #[cfg(windows)]
-        let cmd = CString::new("ping -n 61 127.0.0.1 >NUL").unwrap();
+        let (command, arguments) = ("ping", vec!["-n", "61", "127.0.0.1"]);
         #[cfg(not(windows))]
-        let cmd = CString::new("sleep 60").unwrap();
-        // SAFETY: cmd is a valid NUL-terminated C string.
-        let proc = unsafe { hew_process_spawn(cmd.as_ptr()) };
+        let (command, arguments) = ("sleep", vec!["60"]);
+        let cmd = ManagedString::new(command);
+        // SAFETY: argv retains each live managed input until it is released.
+        let proc = unsafe {
+            let argv = crate::vec::hew_vec_new_str();
+            for argument in arguments {
+                let value = ManagedString::new(argument);
+                crate::vec::hew_vec_push_str(argv, value.as_ptr());
+            }
+            let proc = hew_process_spawn_argv(cmd.as_ptr(), argv);
+            crate::vec::hew_vec_free(argv);
+            proc
+        };
         assert!(!proc.is_null());
 
         // SAFETY: proc is a valid HewProcess.
@@ -776,7 +819,7 @@ mod tests {
     // is the authority that keeps a failed launch out of the Ok path.
     #[test]
     fn spawn_argv_missing_executable_is_invalid_with_detail() {
-        let cmd = CString::new("hew-process-executable-that-does-not-exist").unwrap();
+        let cmd = ManagedString::new("hew-process-executable-that-does-not-exist");
         // SAFETY: hew_vec_new_str allocates a valid empty Vec<String>.
         let argv = unsafe { crate::vec::hew_vec_new_str() };
         // SAFETY: cmd and argv are valid handles for the C ABI.
@@ -800,7 +843,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn spawn_argv_launches_and_waits() {
-        let cmd = CString::new("echo").unwrap();
+        let cmd = ManagedString::new("echo");
         let arg = hew_cabi::string::string_from_str("spawned-argv");
         // SAFETY: hew_vec_new_str allocates a valid Vec<String> handle.
         let argv = unsafe { crate::vec::hew_vec_new_str() };
@@ -825,10 +868,16 @@ mod tests {
     fn null_handling() {
         // SAFETY: null pointers are explicitly handled by all functions.
         unsafe {
-            assert!(hew_process_run(std::ptr::null()).is_null());
+            let result = hew_process_run(std::ptr::null());
+            assert!(!result.is_null());
+            assert_eq!(hew_process_result_exit_code(result), 0);
+            hew_process_result_free(result);
             assert!(hew_process_run_args(std::ptr::null(), std::ptr::null(), 0).is_null());
             assert!(hew_process_run_argv(std::ptr::null(), std::ptr::null_mut()).is_null());
-            assert!(hew_process_spawn(std::ptr::null()).is_null());
+            let child = hew_process_spawn(std::ptr::null());
+            assert!(!child.is_null());
+            assert_eq!(hew_process_wait(child), 0);
+            hew_process_free(child);
             assert!(hew_process_spawn_argv(std::ptr::null(), std::ptr::null_mut()).is_null());
             assert!(!hew_process_is_valid(std::ptr::null_mut()));
             assert!(!hew_process_result_is_valid(std::ptr::null()));

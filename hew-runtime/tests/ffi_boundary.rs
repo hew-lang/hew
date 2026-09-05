@@ -2852,7 +2852,7 @@ mod supervisor_nesting_tests {
 // ═══════════════════════════════════════════════════════════════════════
 
 mod file_io_tests {
-    use std::ffi::{c_char, CStr, CString};
+    use super::{cstr, string_as_str, string_release, HewString};
 
     use hew_runtime::file_io::{
         hew_file_append, hew_file_delete, hew_file_exists, hew_file_read, hew_file_size,
@@ -2865,23 +2865,10 @@ mod file_io_tests {
         std::env::temp_dir().join(format!("{name}_{pid}_{tid}"))
     }
 
-    fn cstr(s: &str) -> CString {
-        CString::new(s).unwrap()
-    }
-
-    unsafe fn read_cstr_and_free(p: *mut c_char) -> String {
-        assert!(!p.is_null(), "unexpected null from file_read");
-        // SAFETY: `p` is a valid, NUL-terminated, heap-allocated C string.
-        let s = unsafe { CStr::from_ptr(p) }
-            .to_str()
-            .expect("invalid UTF-8")
-            .to_owned();
-        // SAFETY: `hew_file_read` produces a header-aware allocation via
-        // `str_to_malloc`; release it through the public `hew_string_drop`
-        // consumer (recovers the base, validates the header), never bare
-        // `libc::free` which would interior-free `base+16`.
-        unsafe { hew_cabi::cabi::free_cstring(p) };
-        s
+    unsafe fn read_cstr_and_free(p: *mut HewString) -> String {
+        let text = unsafe { string_as_str(p) }.to_owned();
+        unsafe { string_release(p) };
+        text
     }
 
     #[test]

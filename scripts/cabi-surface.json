@@ -5582,10 +5582,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_append( *const c_char, *const c_char) -> i32"
+        "native": "fn hew_file_append( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_file_append"
     },
@@ -5595,10 +5595,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_delete( *const c_char) -> i32"
+        "native": "fn hew_file_delete( *const HewString) -> i32"
       },
       "symbol": "hew_file_delete"
     },
@@ -5608,10 +5608,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_exists( *const c_char) -> i32"
+        "native": "fn hew_file_exists( *const HewString) -> i32"
       },
       "symbol": "hew_file_exists"
     },
@@ -5621,10 +5621,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_read( *const c_char) -> *mut c_char"
+        "native": "fn hew_file_read( *const HewString) -> *mut HewString"
       },
       "symbol": "hew_file_read"
     },
@@ -5634,10 +5634,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_read_bytes( *const c_char) -> BytesTriple"
+        "native": "fn hew_file_read_bytes( *const HewString) -> BytesTriple"
       },
       "symbol": "hew_file_read_bytes"
     },
@@ -5699,10 +5699,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_size( *const c_char) -> i64"
+        "native": "fn hew_file_size( *const HewString) -> i64"
       },
       "symbol": "hew_file_size"
     },
@@ -5712,10 +5712,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_write( *const c_char, *const c_char) -> i32"
+        "native": "fn hew_file_write( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_file_write"
     },
@@ -5725,10 +5725,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_write_bytes( *const c_char, *const BytesTriple, ) -> i32"
+        "native": "fn hew_file_write_bytes( *const HewString, *const BytesTriple, ) -> i32"
       },
       "symbol": "hew_file_write_bytes"
     },
@@ -5753,10 +5753,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_copy( *const c_char, *const c_char) -> i32"
+        "native": "fn hew_fs_copy( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_fs_copy"
     },
@@ -5766,10 +5766,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_is_dir( *const c_char) -> i32"
+        "native": "fn hew_fs_is_dir( *const HewString) -> i32"
       },
       "symbol": "hew_fs_is_dir"
     },
@@ -5779,10 +5779,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_list_dir( *const c_char) -> *mut HewVec"
+        "native": "fn hew_fs_list_dir( *const HewString) -> *mut HewVec"
       },
       "symbol": "hew_fs_list_dir"
     },
@@ -5792,10 +5792,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_mkdir( *const c_char) -> i32"
+        "native": "fn hew_fs_mkdir( *const HewString) -> i32"
       },
       "symbol": "hew_fs_mkdir"
     },
@@ -5805,10 +5805,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_mkdir_all( *const c_char) -> i32"
+        "native": "fn hew_fs_mkdir_all( *const HewString) -> i32"
       },
       "symbol": "hew_fs_mkdir_all"
     },
@@ -5818,10 +5818,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_rename( *const c_char, *const c_char) -> i32"
+        "native": "fn hew_fs_rename( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_fs_rename"
     },
@@ -10197,10 +10197,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_path_exists( *const c_char) -> i32"
+        "native": "fn hew_path_exists( *const HewString) -> i32"
       },
       "symbol": "hew_path_exists"
     },
@@ -10560,10 +10560,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_process_last_error() -> *mut c_char"
+        "native": "fn hew_process_last_error() -> *mut HewString"
       },
       "symbol": "hew_process_last_error"
     },
@@ -10612,10 +10612,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_process_result_stderr( *const HewProcessResult) -> *mut c_char"
+        "native": "fn hew_process_result_stderr( *const HewProcessResult) -> *mut HewString"
       },
       "symbol": "hew_process_result_stderr"
     },
@@ -10625,10 +10625,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_process_result_stdout( *const HewProcessResult) -> *mut c_char"
+        "native": "fn hew_process_result_stdout( *const HewProcessResult) -> *mut HewString"
       },
       "symbol": "hew_process_result_stdout"
     },
@@ -10638,10 +10638,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_process_run( *const c_char) -> *mut HewProcessResult"
+        "native": "fn hew_process_run( *const HewString) -> *mut HewProcessResult"
       },
       "symbol": "hew_process_run"
     },
@@ -10651,10 +10651,10 @@
       ],
       "classification": "stable",
       "extent": "length-or-count",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_process_run_args( *const c_char, *const *const c_char, i32, ) -> *mut HewProcessResult"
+        "native": "fn hew_process_run_args( *const HewString, *const *const HewString, i32, ) -> *mut HewProcessResult"
       },
       "symbol": "hew_process_run_args"
     },
@@ -10664,10 +10664,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_process_run_argv( *const c_char, *mut HewVec, ) -> *mut HewProcessResult"
+        "native": "fn hew_process_run_argv( *const HewString, *mut HewVec, ) -> *mut HewProcessResult"
       },
       "symbol": "hew_process_run_argv"
     },
@@ -10677,10 +10677,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_process_spawn( *const c_char) -> *mut HewProcess"
+        "native": "fn hew_process_spawn( *const HewString) -> *mut HewProcess"
       },
       "symbol": "hew_process_spawn"
     },
@@ -10690,10 +10690,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_process_spawn_argv( *const c_char, *mut HewVec, ) -> *mut HewProcess"
+        "native": "fn hew_process_spawn_argv( *const HewString, *mut HewVec, ) -> *mut HewProcess"
       },
       "symbol": "hew_process_spawn_argv"
     },
@@ -13606,10 +13606,10 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_stdin_read_line() -> *mut c_char"
+        "native": "fn hew_stdin_read_line() -> *mut HewString"
       },
       "symbol": "hew_stdin_read_line"
     },

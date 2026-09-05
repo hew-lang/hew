@@ -51,7 +51,8 @@
 //! harness in `hew-std/src/last_error_retention.rs`; it lives there because
 //! those exports are that crate's.
 
-use std::ffi::{c_char, CStr, CString};
+use hew_cabi::string::{string_as_str, string_release};
+use std::ffi::{c_char, CStr};
 
 use hew_cabi::cabi::cstring_ensure_unique;
 use hew_runtime::process::hew_process_last_error;
@@ -61,11 +62,10 @@ use hew_runtime::stream_error::hew_stream_last_error;
 /// touching the filesystem or spawning anything: a negative `argc` is rejected
 /// before any argument is read.
 fn induce_process_error() {
-    let cmd = CString::new("hew-2828-oracle").expect("literal has no NUL");
     // SAFETY: `argc` is negative, so the export returns before dereferencing
     // `cmd` or `args`; the pointers are valid regardless.
     unsafe {
-        hew_runtime::process::hew_process_run_args(cmd.as_ptr(), std::ptr::null(), -1);
+        hew_runtime::process::hew_process_run_args(std::ptr::null(), std::ptr::null(), -1);
     }
 }
 
@@ -153,11 +153,18 @@ fn assert_result_is_transferred(
 /// a fresh header-aware allocation and keeps nothing.
 #[test]
 fn process_last_error_result_is_transferred() {
-    assert_result_is_transferred(
-        "hew_process_last_error",
-        induce_process_error,
-        hew_process_last_error,
-    );
+    induce_process_error();
+    let first = hew_process_last_error();
+    let second = hew_process_last_error();
+    // SAFETY: each error read transfers a managed owner independent of TLS.
+    unsafe {
+        let expected = string_as_str(first).to_owned();
+        hew_runtime::hew_clear_error();
+        assert_eq!(string_as_str(second), expected);
+        string_release(first);
+        assert_eq!(string_as_str(second), expected);
+        string_release(second);
+    }
 }
 
 /// `hew_stream_last_error` transfers: it TAKES the stored message and allocates

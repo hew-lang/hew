@@ -93,3 +93,7 @@ tests/hew/hew_test_emit_*/
 # compiler substrate is `hew-codegen-rs`; keep any machine-local `hew-codegen/`
 # directory untracked without deleting it.
 /hew-codegen/
+.[Cc]odex/
+.env
+.env.*
+/AGENTS.md

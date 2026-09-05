@@ -144,3 +144,14 @@
   not executed as the process root. Directory-module entry insertion preserves
   the selection because real source occurrences are keyed by span, not item
   position.
+
+## Explicit logical-failure transport
+
+- Add a uniquely owned opaque fault for the private native status ABI, with
+  paired allocation/release and borrowed reporting. Reporting preserves the
+  canonical logical reason and returns I/O failure without unwinding across C.
+- Unknown codes do not masquerade as recoverable hardware signals. Native-only
+  exports carry explicit ownership contracts and are classified as internal.
+- Reporting regressions fail against an empty implementation; a false success
+  for an absent fault is also detected. Generated-call propagation and cleanup
+  still require the physical backend's executable acceptance.

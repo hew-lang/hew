@@ -1587,9 +1587,12 @@ internal = [
   "hew_fault_clear",
   "hew_fault_clear_all",
   "hew_fault_count",
+  "hew_fault_drop",
   "hew_fault_inject_crash",
   "hew_fault_inject_delay",
   "hew_fault_inject_drop",
+  "hew_fault_new",
+  "hew_fault_report",
   "hew_is_shutting_down",
   # SYSTEM-LANE PROVENANCE BOUNDARY (both entries). These are the stable-pid
   # forwarders to `hew_actor_link` / `hew_actor_monitor`: they resolve two
@@ -6743,5 +6746,28 @@ symbol = "hew_metric_histogram_record"
 result = "none"
 params = ["borrow", "borrow"]
 resource-param-types = ["", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+# Private native status-ABI fault owners, not public embedding handles.
+[[ownership.contracts]]
+symbol = "hew_fault_new"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_fault_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_fault_drop"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fault_report"
+result = "none"
+params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"

@@ -5458,6 +5458,19 @@
         "native"
       ],
       "classification": "internal",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fault_drop( *mut HewFault)"
+      },
+      "symbol": "hew_fault_drop"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "internal",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -5491,6 +5504,32 @@
         "native": "fn hew_fault_inject_drop( u64, u32)"
       },
       "symbol": "hew_fault_inject_drop"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "internal",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fault_new( i32) -> *mut HewFault"
+      },
+      "symbol": "hew_fault_new"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "internal",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fault_report( *const HewFault) -> i32"
+      },
+      "symbol": "hew_fault_report"
     },
     {
       "availability": [

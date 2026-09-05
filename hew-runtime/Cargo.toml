@@ -107,7 +107,6 @@ crossbeam-deque = "0.8"
 crossbeam-utils = "0.8"
 rand = "0.10.1"
 socket2 = "0.6.4"
-fd-lock.workspace = true
 
 # Optional ecosystem dependencies
 snow = { version = "0.10", optional = true }

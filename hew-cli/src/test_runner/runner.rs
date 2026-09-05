@@ -616,7 +616,7 @@ mod tests {
     /// inside another participant's uplift window, and the link then fails with
     /// the `libhew.a`-absence signature -- which this module reports as a
     /// `compile error` and a 0-passed summary, i.e. a spurious failure of an
-    /// `assert(true)` test. The shared `fd_lock` + `NEXTEST_RUN_ID` stamp is
+    /// `assert(true)` test. The shared file lock + `NEXTEST_RUN_ID` stamp is
     /// the project-wide authority for that window; see
     /// `hew-testutil/tests/libhew_link_race.rs` for the multi-process proof.
     ///

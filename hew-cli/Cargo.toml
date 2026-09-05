@@ -53,7 +53,6 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
-fd-lock.workspace = true
 filetime = "0.2"
 hew-testutil = { path = "../hew-testutil" }
 object = "0.39"

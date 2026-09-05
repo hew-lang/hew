@@ -7,9 +7,6 @@ authors.workspace = true
 description = "Shared integration-test utilities for Hew"
 publish = false
 
-[dependencies]
-fd-lock.workspace = true
-
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 

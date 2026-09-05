@@ -1404,13 +1404,18 @@ fn fetch_missing_packages(
                     lock_path.display()
                 )
             })?;
-        let mut package_lock = fd_lock::RwLock::new(lock_file);
-        let _package_guard = package_lock.write().map_err(|error| {
-            format!(
-                "could not acquire package cache lock {}: {error}",
-                lock_path.display()
-            )
-        })?;
+        loop {
+            match lock_file.lock() {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    return Err(format!(
+                        "could not acquire package cache lock {}: {error}",
+                        lock_path.display()
+                    ));
+                }
+            }
+        }
         if let Some(verified) =
             registry.verified_online_cache_entry(registry_id, name, version, &resolved.checksum)?
         {

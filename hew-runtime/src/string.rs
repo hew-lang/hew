@@ -29,6 +29,26 @@ pub struct HewStringBuilder {
     bytes: Vec<u8>,
 }
 
+/// Initialize a compiler literal's output with one managed string owner.
+/// Allocation failure aborts; this private entry point does not unwind.
+///
+/// # Safety
+///
+/// `data` must contain `len` readable, NUL-free UTF-8 bytes, or be null when
+/// `len` is zero. `out` must be aligned, uniquely writable storage for an
+/// uninitialized string pointer. Release the resulting owner with
+/// [`hew_string_drop`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_literal_new(data: *const u8, len: u32, out: *mut *mut c_char) {
+    // SAFETY: the compiler supplies a valid byte range, including empty input.
+    let value = unsafe { malloc_cstring(data, len as usize) };
+    if value.is_null() {
+        std::process::abort();
+    }
+    // SAFETY: the caller supplies unique output storage, not an existing owner.
+    unsafe { out.write(value) };
+}
+
 /// Compiler-intercept sentinel. Generated code lowers this symbol to typed
 /// formatter thunks before link time; a direct call is always a compiler bug.
 ///
@@ -1831,6 +1851,39 @@ mod tests {
     #[cfg(target_os = "macos")]
     use crate::cabi::alloc_cstring_from_str;
     use std::ffi::CString;
+
+    #[test]
+    fn literal_new_copies_exact_bytes_into_managed_owner() {
+        let mut source = *b"hello!";
+        let mut output = std::ptr::null_mut();
+        // SAFETY: source has five readable bytes and output is writable.
+        unsafe { hew_string_literal_new(source.as_ptr(), 5, &raw mut output) };
+        assert!(!output.is_null());
+        assert!(is_managed_cstring(output));
+        source[0] = b'j';
+        // SAFETY: output is a live managed string; cloning retains an owner.
+        unsafe {
+            let copy = hew_string_clone(output);
+            hew_string_drop(output);
+            assert_eq!(CStr::from_ptr(copy).to_bytes(), b"hello");
+            hew_string_drop(copy);
+        }
+        assert_eq!(source, *b"jello!");
+    }
+
+    #[test]
+    fn literal_new_empty_input_initializes_managed_empty_string() {
+        let mut output = std::ptr::null_mut();
+        // SAFETY: zero length permits null input; output is writable.
+        unsafe { hew_string_literal_new(std::ptr::null(), 0, &raw mut output) };
+        assert!(!output.is_null());
+        assert!(is_managed_cstring(output));
+        // SAFETY: output is a live NUL-terminated managed allocation.
+        unsafe {
+            assert_eq!(CStr::from_ptr(output).to_bytes(), b"");
+            hew_string_drop(output);
+        }
+    }
 
     // ── managed-string provenance ─────────────────────────────────────────
 

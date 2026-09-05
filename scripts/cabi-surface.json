@@ -2159,6 +2159,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "internal",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_bytes_literal_new( *const u8, u32, *mut BytesTriple)",
+        "wasm32-wasip1": "fn hew_bytes_literal_new( *const u8, u32, *mut BytesTriple)"
+      },
+      "symbol": "hew_bytes_literal_new"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
@@ -14635,6 +14650,21 @@
         "wasm32-wasip1": "fn hew_string_lines( *const c_char) -> *mut HewVec"
       },
       "symbol": "hew_string_lines"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "internal",
+      "extent": "length-or-count",
+      "nul": "nul-terminated",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_literal_new( *const u8, u32, *mut *mut c_char)",
+        "wasm32-wasip1": "fn hew_string_literal_new( *const u8, u32, *mut *mut c_char)"
+      },
+      "symbol": "hew_string_literal_new"
     },
     {
       "availability": [

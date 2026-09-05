@@ -135,6 +135,12 @@ unsafe fn set_capacity(data_ptr: *mut u8, cap: u32) {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+fn buffer_allocation_size(capacity: usize) -> Option<usize> {
+    HEADER_SIZE
+        .checked_add(capacity)
+        .filter(|size| isize::try_from(*size).is_ok())
+}
+
 /// Allocate a new buffer with the given capacity. Returns a pointer to `data[0]`.
 /// The refcount is initialised to 1.
 ///
@@ -146,7 +152,7 @@ unsafe fn set_capacity(data_ptr: *mut u8, cap: u32) {
     reason = "header is 8-byte aligned from malloc, u32 needs 4"
 )]
 unsafe fn alloc_buf(cap: u32) -> *mut u8 {
-    let alloc_size = HEADER_SIZE + cap as usize;
+    let alloc_size = buffer_allocation_size(cap as usize).unwrap_or_else(|| std::process::abort());
     // SAFETY: alloc_size > 0 (cap > 0 plus header).
     let base = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
     if base.is_null() {
@@ -227,7 +233,8 @@ fn grow_capacity(current_cap: u32, min_needed: u32) -> u32 {
 unsafe fn realloc_buf(ptr: *mut u8, _used: u32, new_cap: u32) -> *mut u8 {
     // SAFETY: ptr - HEADER_SIZE is the base of the allocation.
     let base = unsafe { ptr.sub(HEADER_SIZE) };
-    let alloc_size = HEADER_SIZE + new_cap as usize;
+    let alloc_size =
+        buffer_allocation_size(new_cap as usize).unwrap_or_else(|| std::process::abort());
     // SAFETY: base was allocated by alloc_buf (via libc::malloc). alloc_size > 0.
     let new_base = unsafe { libc::realloc(base.cast(), alloc_size) }.cast::<u8>();
     if new_base.is_null() {
@@ -740,6 +747,20 @@ pub unsafe extern "C" fn hew_bytes_from_static(data: *const u8, len: u32) -> Byt
     }
 }
 
+/// Initialize a compiler literal's output with one owned byte value.
+/// Allocation failure aborts; this private entry point does not unwind.
+///
+/// # Safety
+///
+/// `data` must contain `len` readable bytes, or be null when `len` is zero.
+/// `out` must be aligned, uniquely writable storage for an uninitialized
+/// `BytesTriple`. Release the resulting owner's pointer with [`hew_bytes_drop`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_literal_new(data: *const u8, len: u32, out: *mut BytesTriple) {
+    // SAFETY: the compiler supplies a valid input range and unique output storage.
+    unsafe { out.write(hew_bytes_from_static(data, len)) };
+}
+
 /// Compare two byte regions for equality.
 ///
 /// # Safety
@@ -1203,6 +1224,51 @@ mod tests {
 
         // SAFETY: triple.ptr is valid.
         unsafe { hew_bytes_drop(triple.ptr) };
+    }
+
+    #[test]
+    fn literal_new_copies_exact_bytes_into_independent_owner() {
+        let mut source = *b"a\0bc";
+        let mut output = std::mem::MaybeUninit::<BytesTriple>::uninit();
+        // SAFETY: source has three readable bytes; output is aligned writable storage.
+        unsafe { hew_bytes_literal_new(source.as_ptr(), 3, output.as_mut_ptr()) };
+        // SAFETY: literal_new initialized output.
+        let value = unsafe { output.assume_init() };
+        source[0] = b'z';
+        assert_eq!(value.len, 3);
+        assert_eq!(value.offset, 0);
+        assert!(!value.ptr.is_null());
+        // SAFETY: value owns three initialized bytes.
+        unsafe {
+            assert_eq!(std::slice::from_raw_parts(value.ptr, 3), b"a\0b");
+            hew_bytes_drop(value.ptr);
+        }
+        assert_eq!(source, *b"z\0bc");
+    }
+
+    #[test]
+    fn literal_new_empty_input_initializes_empty_bytes() {
+        let mut output = std::mem::MaybeUninit::<BytesTriple>::uninit();
+        // SAFETY: zero length permits null input; output is aligned writable storage.
+        unsafe { hew_bytes_literal_new(std::ptr::null(), 0, output.as_mut_ptr()) };
+        // SAFETY: literal_new initialized output.
+        let value = unsafe { output.assume_init() };
+        assert!(value.ptr.is_null());
+        assert_eq!(value.offset, 0);
+        assert_eq!(value.len, 0);
+        // SAFETY: dropping empty bytes is permitted.
+        unsafe { hew_bytes_drop(value.ptr) };
+    }
+
+    #[test]
+    fn byte_allocation_size_refuses_header_and_pointer_range_overflow() {
+        let largest_capacity = isize::MAX as usize - HEADER_SIZE;
+        assert_eq!(
+            buffer_allocation_size(largest_capacity),
+            Some(isize::MAX as usize)
+        );
+        assert_eq!(buffer_allocation_size(largest_capacity + 1), None);
+        assert_eq!(buffer_allocation_size(usize::MAX), None);
     }
 
     #[test]

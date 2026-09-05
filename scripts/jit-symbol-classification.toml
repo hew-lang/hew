@@ -1593,6 +1593,9 @@ internal = [
   "hew_fault_inject_drop",
   "hew_fault_new",
   "hew_fault_report",
+  # Private physical literal operations initialize owned output storage.
+  "hew_bytes_literal_new",
+  "hew_string_literal_new",
   "hew_is_shutting_down",
   # SYSTEM-LANE PROVENANCE BOUNDARY (both entries). These are the stable-pid
   # forwarders to `hew_actor_link` / `hew_actor_monitor`: they resolve two
@@ -6769,5 +6772,22 @@ discharge-depth = "none"
 symbol = "hew_fault_report"
 result = "none"
 params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# These return void: the final physical literal operation owns output
+# initialization. The legacy return-provenance table cannot describe owners
+# written through an output pointer; all three ABI arguments are borrowed.
+[[ownership.contracts]]
+symbol = "hew_bytes_literal_new"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_literal_new"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"

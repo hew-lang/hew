@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1492u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1494u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1492] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1494] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -765,6 +765,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1492] = {
      "\"wasm32-wasip1\": \"fn hew_bytes_len( *const BytesTriple) -> i64\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_bytes_literal_new",
+     "{\"native\": \"fn hew_bytes_literal_new( *const u8, u32, *mut "
+     "BytesTriple)\", \"wasm32-wasip1\": \"fn hew_bytes_literal_new( *const "
+     "u8, u32, *mut BytesTriple)\"}",
+     "native,wasm32-wasip1", "internal", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_bytes_new",
      "{\"native\": \"fn hew_bytes_new( u32) -> *mut u8\", \"wasm32-wasip1\": "
      "\"fn hew_bytes_new( u32) -> *mut u8\"}",
@@ -5191,6 +5197,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1492] = {
      "HewVec\"}",
      "native,wasm32-wasip1", "stable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_string_literal_new",
+     "{\"native\": \"fn hew_string_literal_new( *const u8, u32, *mut *mut "
+     "c_char)\", \"wasm32-wasip1\": \"fn hew_string_literal_new( *const u8, "
+     "u32, *mut *mut c_char)\"}",
+     "native,wasm32-wasip1", "internal", "nul-terminated", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_repeat",
      "{\"native\": \"fn hew_string_repeat( *const c_char, i32) -> *mut "
      "c_char\", \"wasm32-wasip1\": \"fn hew_string_repeat( *const c_char, i32) "

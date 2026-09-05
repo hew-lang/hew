@@ -1449,13 +1449,17 @@ ASAN_SYMBOLIZER ?= $(shell ls /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | 
 # this lane intentionally measures Hew's runtime rather than rebuilding std.
 # Hew installs its own per-worker alternate signal stack. Asking compiler-rt to
 # manage a competing stack makes it unmap Hew's heap-backed stack at thread exit.
+# Select a focused libtest name without rebuilding the sanitizer configuration.
+# Empty ASAN_LSAN_OPTIONS disables suppressions for isolated ownership tests.
+ASAN_TEST_FILTER ?=
+ASAN_LSAN_OPTIONS ?= suppressions=lsan.supp
 asan:
 	CARGO_TARGET_DIR=$(RUNTIME_ASAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
 	ASAN_OPTIONS="detect_leaks=1:use_sigaltstack=0" \
 	ASAN_SYMBOLIZER_PATH=$(ASAN_SYMBOLIZER) \
-	LSAN_OPTIONS="suppressions=lsan.supp" \
-	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib -- --test-threads=1
+	LSAN_OPTIONS="$(ASAN_LSAN_OPTIONS)" \
+	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib -- $(ASAN_TEST_FILTER) --test-threads=1
 
 # ASan gate for compiled .hew fixture binaries (Linux/nightly toolchain required).
 #

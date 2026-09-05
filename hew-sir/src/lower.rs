@@ -1345,17 +1345,10 @@ impl<'a> InstanceService<'a> {
     fn resolve_direct_call(
         &mut self,
         declaration: &DefId,
-        call_target: &CallTarget,
         site: hew_hir::SiteId,
         substitution: &TypeSubstitution,
     ) -> Result<SemCallable, String> {
         if self.table.templates.contains_key(declaration) {
-            if !matches!(call_target, CallTarget::User(_)) {
-                return Err(format!(
-                    "generic direct callee `{}` is not an ordinary user-function call",
-                    declaration.full_path()
-                ));
-            }
             let raw_args = self.module.call_site_type_args.get(&site).ok_or_else(|| {
                 format!(
                     "generic direct call to `{}` is missing checker-resolved type arguments at SIR site {}",
@@ -4781,7 +4774,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         let callee =
             self.service
-                .resolve_direct_call(declaration, target, expr.site, &self.substitution)?;
+                .resolve_direct_call(declaration, expr.site, &self.substitution)?;
         let callee_id = callee.id;
         let callee_declaration = callee.declaration.clone();
         let params = callee.signature.params.clone();

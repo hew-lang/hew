@@ -15389,6 +15389,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_supervisor_set_child_state_borrowed( *mut HewSupervisor, c_int, ) -> c_int"
+      },
+      "symbol": "hew_supervisor_set_child_state_borrowed"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_supervisor_set_child_state_clone( *mut HewSupervisor, c_int, actor::HewStateCloneFn, )"
       },
       "symbol": "hew_supervisor_set_child_state_clone"

@@ -1553,12 +1553,13 @@ pub struct HewActor {
     /// that actually consumes a state snapshot sets this bit.
     pub state_drop_consumed: AtomicBool,
 
-    /// Provenance bit for a state wrapper whose owned fields are borrowed from
-    /// a persistent supervisor byte-copy template. Such an incarnation never
-    /// owns typed-drop authority; fresh init-thunk and state-clone incarnations
-    /// leave this false. Kept separate from `state_drop_consumed` so a later
-    /// successful clone registration can transfer a borrowed initial actor to
-    /// owned without resurrecting authority already consumed by crash escrow.
+    /// Provenance bit for a shallow state wrapper without typed-field ownership.
+    /// The persistent template pins copied wrapper bytes, not external pointees.
+    /// Explicitly borrowed fields remain externally owned through reclamation;
+    /// fresh init-thunk and state-clone incarnations leave this false. Separate
+    /// from `state_drop_consumed` so a successful clone registration can transfer
+    /// an implicit initial alias to owned without reviving consumed crash escrow.
+    /// Explicit external borrows cannot take that ownership-transfer path.
     pub state_drop_borrowed: AtomicBool,
 
     /// The reply channel of the `ask` this actor's PARKED activation still
@@ -1629,7 +1630,9 @@ pub(crate) unsafe fn record_dispatch_state_drop_consumed(actor: *mut HewActor) {
 ///
 /// # Safety
 ///
-/// `actor` must be a live, newly spawned actor not yet visible to dispatch.
+/// `actor` must remain live for the write and either be unpublished or already
+/// lack typed-drop authority. This must never revoke an owning incarnation's
+/// cleanup obligation. A published shallow child is protected by its roster.
 // KEEP(wasm32): production caller in supervisor.rs marks a shallow-template
 // restart incarnation as borrowing state from the persistent child spec.
 // lib.rs gates `pub mod supervisor` behind
@@ -1643,7 +1646,7 @@ pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
         eprintln!("fatal: null actor while recording borrowed state provenance");
         std::process::abort();
     }
-    // SAFETY: caller owns the unpublished actor incarnation.
+    // SAFETY: caller keeps the non-owning actor incarnation live.
     unsafe { &*actor }
         .state_drop_borrowed
         .store(true, Ordering::Release);
@@ -1657,6 +1660,8 @@ pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` must be the live child whose former template alias was just broken.
+/// Its fields must be eligible for ownership transfer, never explicitly borrowed
+/// from an external owner under the supervisor's borrowed-state contract.
 // KEEP(wasm32): production caller is `hew_supervisor_set_child_state_clone` in
 // the native-only supervisor module; it flips provenance to owned once the
 // template deep-clone breaks the alias. Same cfg asymmetry as

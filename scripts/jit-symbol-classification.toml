@@ -710,6 +710,7 @@ stable = [
   "hew_supervisor_role_send",
   "hew_supervisor_set_child_init_fn",
   "hew_supervisor_set_child_lifecycle",
+  "hew_supervisor_set_child_state_borrowed",
   "hew_supervisor_set_child_state_clone",
   "hew_supervisor_set_child_state_drop",
   "hew_supervisor_set_config_drop_fn",
@@ -6813,6 +6814,13 @@ discharge-depth = "none"
 # records the fresh owner initialized through the output pointer.
 [[ownership.contracts]]
 symbol = "hew_string_to_bytes_owned"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_supervisor_set_child_state_borrowed"
 result = "none"
 params = ["borrow", "borrow"]
 release-symbol = ""

@@ -573,6 +573,10 @@ const INITIAL_RESTART_DELAY_MS: u64 = 100;
 #[derive(Debug)]
 pub struct HewChildSpec {
     pub name: *const c_char,
+    /// Without `init_fn`, registration copies only these wrapper bytes. Heap
+    /// fields require clone registration or an explicit external-borrow contract
+    /// through [`hew_supervisor_set_child_state_borrowed`]; copying the wrapper
+    /// alone never transfers field ownership to the persistent template.
     pub init_state: *mut c_void,
     pub init_state_size: usize,
     pub dispatch: Option<HewDispatchFn>,
@@ -1450,6 +1454,10 @@ impl Drop for ChildStateTemplateAllocation {
 /// Immutable template metadata published atomically under `roster`.
 #[derive(Debug)]
 struct ChildStateTemplate {
+    /// Explicit unsafe caller contract: typed fields are externally owned and
+    /// remain live for every alias, including deferred actor reclamation.
+    /// Without this contract, a drop callback still requires clone/init.
+    borrows_typed_fields: bool,
     allocation: Arc<ChildStateTemplateAllocation>,
     clone_fn: Option<actor::HewStateCloneFn>,
 }
@@ -1472,6 +1480,7 @@ impl Default for InternalChildSpec {
             revision: 1,
             name: ptr::null_mut(),
             state_template: Arc::new(ChildStateTemplate {
+                borrows_typed_fields: false,
                 allocation: Arc::new(ChildStateTemplateAllocation {
                     state: ptr::null_mut(),
                     size: 0,
@@ -2781,8 +2790,7 @@ unsafe fn restart_child_from_spec_expected(
     let state_clone_fn = template.clone_fn;
     let borrows_shallow_template = init_fn.is_none()
         && state_clone_fn.is_none()
-        && opts.state_size != 0
-        && !opts.init_state.is_null();
+        && (template.borrows_typed_fields || (opts.state_size != 0 && !opts.init_state.is_null()));
 
     // ── v0.6 init-closure restart model — the leading branch ────────────
     //
@@ -2895,7 +2903,7 @@ unsafe fn restart_child_from_spec_expected(
                 // SAFETY: opts is valid; ownership of `cloned` is transferred.
                 unsafe { actor::hew_actor_spawn_opts_adopt(&raw const opts, cloned) }
             }
-        } else if state_drop_fn.is_some() {
+        } else if state_drop_fn.is_some() && !template.borrows_typed_fields {
             // No `state_clone_fn` registered, but `state_drop_fn` IS: the
             // legacy byte-copy path below is only sound for BitCopy actor
             // state (plain-old-data fields with no owned heap pointers). A
@@ -2916,12 +2924,14 @@ unsafe fn restart_child_from_spec_expected(
             fail_restart_snapshot(sup, index, spec_identity, spec_revision, &template);
             return ptr::null_mut();
         } else {
-            // Legacy byte-copy path: neither `state_clone_fn` nor
-            // `state_drop_fn` is registered, so the actor's state is BitCopy
-            // (plain-old-data fields with no owned heap pointers) and a flat
-            // byte-copy of the template is sound.
+            // Either no typed drop exists (BitCopy), or the caller explicitly
+            // keeps all pointees alive under the borrowed-state contract.
+            // The lease pins wrapper bytes through spawn; external ownership
+            // pins pointees through every incarnation's deferred reclamation.
+            // Borrowed actors are marked before callbacks or publication below.
             //
-            // SAFETY: opts is valid.
+            // SAFETY: opts is valid and the selected state contract admits a
+            // wrapper byte copy without transferring typed-field ownership.
             unsafe { actor::hew_actor_spawn_opts(&raw const opts) }
         }
     };
@@ -2941,8 +2951,8 @@ unsafe fn restart_child_from_spec_expected(
             }
             if borrows_shallow_template {
                 // The legacy spawn copied only wrapper bytes from the
-                // persistent spec. Its embedded owned fields remain spec
-                // aliases, so this incarnation starts without typed-drop
+                // persistent spec. Its embedded fields alias the original
+                // external owner, so this incarnation starts without typed-drop
                 // authority. Fresh init/clone branches deliberately retain
                 // the actor allocator's default owned provenance.
                 actor::mark_state_drop_borrowed(new_child);
@@ -3990,7 +4000,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
     // would re-introduce the owned-field aliasing hazard the thunk model fixes.
     let has_init_fn = sp.init_fn.is_some();
 
-    // Deep-copy init state — only when there is no init_fn (the thunk path
+    // Copy init wrapper bytes — only when there is no init_fn (the thunk path
     // produces state directly, leaving init_state null).
     let state_copy = if !has_init_fn && sp.init_state_size > 0 && !sp.init_state.is_null() {
         // SAFETY: init_state is valid for init_state_size bytes.
@@ -4025,6 +4035,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         revision: 1,
         name: name_copy,
         state_template: Arc::new(ChildStateTemplate {
+            borrows_typed_fields: false,
             allocation: Arc::new(ChildStateTemplateAllocation {
                 state: state_copy,
                 // On the thunk path the state size is produced by the thunk
@@ -8033,6 +8044,196 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_template_restart_keeps_external_payload_alive() {
+        let runtime = crate::runtime_test_guard();
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+        // SAFETY: source retains its payload through stop AND runtime cleanup;
+        // no dispatch mutates or consumes the borrowed fields.
+        let source = unsafe {
+            let (sup, source) = make_supervisor_with_heap_child(false);
+            assert_eq!(hew_supervisor_set_child_state_borrowed(sup, 0), 0);
+            let initial = locked_roster!(sup).children[0];
+            let initial_id = (*initial).id;
+            (*(*initial).state.cast::<HeapState>()).sentinel = 0;
+
+            // Registration must not turn the external owner into an actor owner.
+            hew_supervisor_set_child_state_clone(sup, 0, heap_state_clone);
+            assert_eq!(CLONE_CALL_COUNT.load(Ordering::SeqCst), 0);
+            assert!((*initial).state_drop_borrowed.load(Ordering::Acquire));
+            assert!(locked_roster!(sup).child_specs[0]
+                .state_template
+                .clone_fn
+                .is_none());
+
+            let replacement = restart_child_from_spec(sup, 0);
+            assert!(!replacement.is_null());
+            assert_ne!((*replacement).id, initial_id);
+            assert!((*replacement).state_drop_borrowed.load(Ordering::Acquire));
+            assert!((*replacement).state_drop_fn.is_some());
+            let state = &*(*replacement).state.cast::<HeapState>();
+            assert_eq!(
+                state.sentinel, 0xDEAD_BEEF,
+                "restart restores template scalar state"
+            );
+            assert_eq!(
+                state.payload, source.payload,
+                "payload remains an external borrow"
+            );
+            assert_eq!(
+                std::slice::from_raw_parts(state.payload, state.payload_len),
+                b"original"
+            );
+
+            // Direct restart replaced the slot; this test must retire its old
+            // incarnation explicitly before stopping the current child/spec.
+            actor::hew_actor_stop(initial);
+            assert_eq!(actor::hew_actor_free(initial), 0);
+            hew_supervisor_stop(sup);
+            source
+        };
+        drop(runtime);
+        assert_eq!(DROP_CALL_COUNT.load(Ordering::SeqCst), 0);
+        // SAFETY: external ownership lasted through all alias reclamation.
+        unsafe {
+            assert_eq!(
+                std::slice::from_raw_parts(source.payload, source.payload_len),
+                b"original"
+            );
+            libc::free(source.payload.cast());
+        }
+    }
+
+    #[test]
+    fn owned_clone_template_cannot_be_reclassified_as_borrowed() {
+        let runtime = crate::runtime_test_guard();
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+        // SAFETY: this test owns the clone-backed supervisor until stop.
+        unsafe {
+            let (sup, _source_wrapper) = make_supervisor_with_heap_child(true);
+            assert_eq!(hew_supervisor_set_child_state_borrowed(sup, 0), -1);
+            let child = locked_roster!(sup).children[0];
+            assert!(!(*child).state_drop_borrowed.load(Ordering::Acquire));
+            assert!(
+                !locked_roster!(sup).child_specs[0]
+                    .state_template
+                    .borrows_typed_fields
+            );
+            hew_supervisor_stop(sup);
+        }
+        drop(runtime);
+        assert_eq!(
+            DROP_CALL_COUNT.load(Ordering::SeqCst),
+            2,
+            "initial actor and owned template each release their payload"
+        );
+    }
+
+    #[test]
+    fn borrowed_contract_wins_over_reentrant_clone_registration() {
+        thread_local! {
+            static TARGET: std::cell::Cell<*mut HewSupervisor> = const { std::cell::Cell::new(ptr::null_mut()) };
+        }
+        unsafe extern "C-unwind" fn clone_then_borrow(state: *const c_void) -> *mut c_void {
+            // SAFETY: the caller leases a live HeapState template for this callback.
+            let clone = unsafe { heap_state_clone(state) };
+            TARGET.with(|target| {
+                // SAFETY: the test keeps the target supervisor alive for the callback.
+                let status = unsafe { hew_supervisor_set_child_state_borrowed(target.get(), 0) };
+                assert_eq!(status, 0);
+            });
+            clone
+        }
+        let runtime = crate::runtime_test_guard();
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+        // SAFETY: this thread owns the supervisor and keeps the external
+        // payload alive through re-entry, stop, and complete reclamation.
+        let source = unsafe {
+            let (sup, source) = make_supervisor_with_heap_child(false);
+            TARGET.with(|target| target.set(sup));
+            hew_supervisor_set_child_state_clone(sup, 0, clone_then_borrow);
+            TARGET.with(|target| target.set(ptr::null_mut()));
+            assert_eq!(CLONE_CALL_COUNT.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                DROP_CALL_COUNT.load(Ordering::SeqCst),
+                1,
+                "only the unpublished clone is dropped"
+            );
+            let roster = locked_roster!(sup);
+            assert!(roster.child_specs[0].state_template.borrows_typed_fields);
+            assert!(roster.child_specs[0].state_template.clone_fn.is_none());
+            assert!((*roster.children[0])
+                .state_drop_borrowed
+                .load(Ordering::Acquire));
+            drop(roster);
+            hew_supervisor_stop(sup);
+            source
+        };
+        drop(runtime);
+        assert_eq!(DROP_CALL_COUNT.load(Ordering::SeqCst), 1);
+        // SAFETY: the source is the sole remaining owner after all aliases retire.
+        unsafe {
+            assert_eq!(
+                std::slice::from_raw_parts(source.payload, source.payload_len),
+                b"original"
+            );
+            libc::free(source.payload.cast());
+        }
+    }
+
+    #[test]
+    fn borrowed_contract_invalidates_an_inflight_restart_snapshot() {
+        let runtime = crate::runtime_test_guard();
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+        // SAFETY: source outlives every incarnation; the only racing restart
+        // is joined before any actor, spec, or external payload is reclaimed.
+        let source = unsafe {
+            let (sup, source) = make_supervisor_with_heap_child(false);
+            let initial = locked_roster!(sup).children[0];
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
+            let entered_hook = Arc::clone(&entered);
+            let release_hook = Arc::clone(&release);
+            let hook = install_restart_spec_snapshot_hook_for_test(Arc::new(move || {
+                entered_hook.wait();
+                release_hook.wait();
+            }));
+            let address = sup as usize;
+            let pending = std::thread::spawn(move || {
+                restart_child_from_spec(address as *mut HewSupervisor, 0) as usize
+            });
+            entered.wait();
+            assert_eq!(hew_supervisor_set_child_state_borrowed(sup, 0), 0);
+            release.wait();
+            assert_eq!(pending.join().unwrap(), 0);
+            drop(hook);
+            assert_eq!(locked_roster!(sup).children[0], initial);
+            let replacement = restart_child_from_spec(sup, 0);
+            assert!(!replacement.is_null());
+            assert!((*replacement).state_drop_borrowed.load(Ordering::Acquire));
+            actor::hew_actor_stop(initial);
+            assert_eq!(actor::hew_actor_free(initial), 0);
+            hew_supervisor_stop(sup);
+            source
+        };
+        drop(runtime);
+        assert_eq!(DROP_CALL_COUNT.load(Ordering::SeqCst), 0);
+        // SAFETY: all aliases are reclaimed and the source still owns its payload.
+        unsafe { libc::free(source.payload.cast()) };
+    }
+
+    #[test]
     fn state_drop_fn_without_state_clone_fn_refuses_restart() {
         let _rt = crate::runtime_test_guard();
         // A `state_drop_fn` registered without a `state_clone_fn` means the
@@ -9634,6 +9835,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         revision: 1,
         name: name_copy,
         state_template: Arc::new(ChildStateTemplate {
+            borrows_typed_fields: false,
             allocation: Arc::new(ChildStateTemplateAllocation {
                 state: state_copy,
                 size: if has_init_fn { 0 } else { sp.init_state_size },
@@ -9818,6 +10020,73 @@ pub unsafe extern "C" fn hew_supervisor_remove_child(
     0
 }
 
+/// Declare that a shallow child's typed fields are externally borrowed.
+///
+/// Returns 0 on success or -1 for an invalid slot or an owning clone/init
+/// source. This does not transfer ownership of any field. It permits replaying
+/// the shallow template even when a type-level drop callback is registered;
+/// neither the template nor its child incarnations may call that callback.
+/// Ordinary owning state must use an init thunk or matching clone/drop pair.
+///
+/// The immutable template generation records this contract under the roster
+/// lock. An in-flight restart using the previous generation cannot publish
+/// across this change. A later clone registration cannot acquire the external
+/// owner's fields by clearing borrowed provenance.
+///
+/// # Safety
+///
+/// `sup` must remain live for the call. Every pointer embedded in the initial
+/// state must refer to storage that its external owner keeps alive until the
+/// spec and ALL child incarnations have finished reclamation, including any
+/// deferred teardown. Dispatch, lifecycle and crash callbacks must not release,
+/// consume, or replace these borrowed fields with owning values. Shared data
+/// may only be mutated through synchronization appropriate for every alias.
+/// The initial wrapper itself is copied at registration and need not survive.
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_set_child_state_borrowed(
+    sup: *mut HewSupervisor,
+    child_index: c_int,
+) -> c_int {
+    if sup.is_null() {
+        return -1;
+    }
+    let Ok(index) = usize::try_from(child_index) else {
+        return -1;
+    };
+    // SAFETY: the caller keeps sup live; the roster lock serializes generations.
+    let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    let Some(spec) = roster.child_specs.get_mut(index) else {
+        return -1;
+    };
+    if spec.init_fn.is_some()
+        || spec.state_template.clone_fn.is_some()
+        || spec.state_template.allocation.owns_typed_fields
+    {
+        set_last_error(
+            "hew_supervisor_set_child_state_borrowed: owning state source cannot become borrowed",
+        );
+        return -1;
+    }
+    let Some(revision) = spec.revision.checked_add(1) else {
+        set_last_error("hew_supervisor_set_child_state_borrowed: child-spec revision exhausted");
+        return -1;
+    };
+    spec.state_template = Arc::new(ChildStateTemplate {
+        allocation: Arc::clone(&spec.state_template.allocation),
+        clone_fn: None,
+        borrows_typed_fields: true,
+    });
+    spec.revision = revision;
+    if let Some(&child) = roster.children.get(index) {
+        if !child.is_null() {
+            // SAFETY: the slot belongs to this shallow spec and the caller
+            // explicitly preserves external field ownership on this incarnation.
+            unsafe { actor::mark_state_drop_borrowed(child) };
+        }
+    }
+    0
+}
+
 /// Register a state-drop callback for a child actor spec.
 ///
 /// Called by codegen immediately after [`hew_supervisor_add_child_spec`] to
@@ -9828,6 +10097,9 @@ pub unsafe extern "C" fn hew_supervisor_remove_child(
 ///
 /// `child_index` is the zero-based index of the child whose spec should be
 /// updated. Indices are stable until [`hew_supervisor_remove_child`] is called.
+/// A shallow spec must separately establish the explicit contract through
+/// [`hew_supervisor_set_child_state_borrowed`] to restart with a drop callback
+/// and no clone/init source. A drop descriptor alone is not borrow authority.
 ///
 /// # Safety
 ///
@@ -9969,10 +10241,9 @@ pub unsafe extern "C" fn hew_supervisor_set_child_lifecycle(
 /// [`actor::hew_actor_set_state_drop`].
 ///
 /// **OOM on re-clone**: if the in-place clone fails (`clone_fn` returns null),
-/// the spec retains its byte-copy template — restart can still fall back to
-/// the legacy byte-copy path on a future crash (with the same C1 hazard, but
-/// no worse than today). The `state_clone_fn` pointer is still stored so
-/// future restarts retry the clone-aware path.
+/// the spec retains its byte-copy template and borrowed initial incarnation.
+/// The registered clone callback is retried on each restart; failure refuses
+/// that restart rather than falling back to an owning byte copy.
 ///
 /// `child_index` is the zero-based index of the child whose spec should be
 /// updated. Indices are stable until [`hew_supervisor_remove_child`] is called.
@@ -10010,6 +10281,10 @@ pub unsafe extern "C" fn hew_supervisor_set_child_state_clone(
         if idx >= s.child_count {
             return;
         }
+        if s.child_specs[idx].state_template.borrows_typed_fields {
+            set_last_error("hew_supervisor_set_child_state_clone: externally borrowed state cannot transfer ownership");
+            return;
+        }
         (
             s.child_specs[idx].identity,
             Arc::clone(&s.child_specs[idx].state_template),
@@ -10042,6 +10317,7 @@ pub unsafe extern "C" fn hew_supervisor_set_child_state_clone(
     };
 
     let new_template = Arc::new(ChildStateTemplate {
+        borrows_typed_fields: false,
         allocation: new_allocation,
         clone_fn: Some(state_clone_fn),
     });
@@ -10053,10 +10329,9 @@ pub unsafe extern "C" fn hew_supervisor_set_child_state_clone(
     let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
     // SAFETY: the guard serializes this scoped mutable roster access.
     let s = &mut *guard;
-    if s.child_specs
-        .get(idx)
-        .is_none_or(|spec| spec.identity != spec_identity)
-    {
+    if s.child_specs.get(idx).is_none_or(|spec| {
+        spec.identity != spec_identity || !Arc::ptr_eq(&spec.state_template, &old_template)
+    }) {
         return;
     }
     let Some(next_revision) = s.child_specs[idx].revision.checked_add(1) else {

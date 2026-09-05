@@ -1173,6 +1173,10 @@ fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
             0,
             "add_child_spec must succeed"
         );
+        assert_eq!(
+            hew_runtime::supervisor::hew_supervisor_set_child_state_borrowed(sup.as_ptr(), 0),
+            0
+        );
         hew_supervisor_set_child_state_drop(sup.as_ptr(), 0, supervisor_child_state_drop);
 
         assert_eq!(sup.start(), 0, "supervisor must start");
@@ -1180,6 +1184,7 @@ fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
         let child = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
         assert!(!child.is_null(), "child must be spawned");
         let original_id = (*child).id;
+        *(*child).state.cast::<u64>() = 0;
 
         assert!(
             (*child).state_drop_fn.is_some(),
@@ -1208,6 +1213,7 @@ fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
             "restarted actor must have state_drop_fn registered"
         );
         assert!((*restarted).state_drop_borrowed.load(Ordering::Acquire));
+        assert_eq!(*(*restarted).state.cast::<u64>(), 0xDEAD_BEEF);
 
         hew_deterministic_reset();
     }
@@ -1267,11 +1273,16 @@ fn dynamic_shallow_child_restart_keeps_borrowed_state_non_owning() {
 
         let idx = hew_supervisor_add_child_dynamic(sup.as_ptr(), &raw const spec);
         assert!(idx >= 0, "add_child_dynamic must succeed");
+        assert_eq!(
+            hew_runtime::supervisor::hew_supervisor_set_child_state_borrowed(sup.as_ptr(), idx),
+            0
+        );
         hew_supervisor_set_child_state_drop(sup.as_ptr(), idx, supervisor_child_state_drop);
 
         let child = hew_supervisor_get_child_wait(sup.as_ptr(), idx, 5_000);
         assert!(!child.is_null(), "dynamically added child must be spawned");
         let original_id = (*child).id;
+        *(*child).state.cast::<u64>() = 0;
 
         assert!(
             (*child).state_drop_fn.is_some(),
@@ -1299,6 +1310,7 @@ fn dynamic_shallow_child_restart_keeps_borrowed_state_non_owning() {
             "restarted dynamic child must have state_drop_fn registered"
         );
         assert!((*restarted).state_drop_borrowed.load(Ordering::Acquire));
+        assert_eq!(*(*restarted).state.cast::<u64>(), 0xCAFE_BABE);
 
         hew_deterministic_reset();
     }
@@ -1393,7 +1405,15 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
 
         assert_eq!(sup.start(), 0, "supervisor must start");
 
+        assert_eq!(
+            hew_runtime::supervisor::hew_supervisor_set_child_state_borrowed(sup.as_ptr(), 0),
+            0
+        );
         hew_supervisor_set_child_state_drop(sup.as_ptr(), 0, supervisor_child_state_drop);
+        assert_eq!(
+            hew_runtime::supervisor::hew_supervisor_set_child_state_borrowed(sup.as_ptr(), 1),
+            0
+        );
         hew_supervisor_set_child_state_drop(sup.as_ptr(), 1, supervisor_child_state_drop);
 
         let child0 = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
@@ -1419,6 +1439,9 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
         );
 
         let id0 = (*child0).id;
+        let id1 = (*child1).id;
+        *(*child0).state.cast::<u64>() = 0;
+        *(*child1).state.cast::<u64>() = 0;
         hew_fault_inject_crash(id0, 1);
         hew_actor_send(child0, 1, std::ptr::null_mut(), 0);
         let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 10_000);
@@ -1440,6 +1463,8 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
             "restarted child 0 must have state_drop_fn registered"
         );
         assert!((*restarted0).state_drop_borrowed.load(Ordering::Acquire));
+        assert_ne!((*restarted0).id, id0);
+        assert_eq!(*(*restarted0).state.cast::<u64>(), 0xAAAA_0000);
 
         let restarted1 = hew_supervisor_get_child_wait(sup.as_ptr(), 1, 5_000);
         assert!(!restarted1.is_null(), "restarted child 1 must appear");
@@ -1448,6 +1473,8 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
             "restarted child 1 must have state_drop_fn registered"
         );
         assert!((*restarted1).state_drop_borrowed.load(Ordering::Acquire));
+        assert_ne!((*restarted1).id, id1);
+        assert_eq!(*(*restarted1).state.cast::<u64>(), 0xBBBB_0000);
 
         hew_deterministic_reset();
     }

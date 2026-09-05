@@ -3,6 +3,17 @@
 # failures are failures, not a differential pass.
 
 [[case]]
+id = "recursive-carrier"
+intent = "Finite recursive enum, record and vector values preserve independent copies and extracted Unicode/NUL text across replacement and parent destruction."
+source = "cases/recursive-carrier.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "original:2:7\nreplacement:3\nretained:7\nkey:branch\n"
+exit = 0
+
+[[case]]
 id = "vector-zero-sized"
 intent = "Empty record vector elements preserve logical length through copying, extraction and mutation without reading payload bytes."
 source = "cases/vector-zero-sized.hew"

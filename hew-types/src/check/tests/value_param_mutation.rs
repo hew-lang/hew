@@ -230,30 +230,6 @@ fn vec_param_is_not_flagged() {
 }
 
 #[test]
-fn checker_carries_positive_caller_visible_parameter_projection_facts() {
-    let output =
-        check_source("fn inspect(data: bytes, text: string, values: Vec<i64>, count: i64) {}\n");
-    assert!(
-        output.errors.is_empty(),
-        "declaration should type-check: {:?}",
-        output.errors
-    );
-    assert_eq!(
-        output.caller_visible_param_projections.len(),
-        3,
-        "bytes, string, and Vec parameters carry positive storage authority; \
-         the scalar parameter must not"
-    );
-    assert!(
-        output
-            .caller_visible_param_projections
-            .iter()
-            .all(|key| key.module_idx == 0),
-        "root declarations retain root module attribution"
-    );
-}
-
-#[test]
 fn hashmap_param_is_not_flagged() {
     assert_no_ineffective_diagnostic(
         "fn put(var m: HashMap<string, i64>) { m.insert(\"k\", 9); }\n",

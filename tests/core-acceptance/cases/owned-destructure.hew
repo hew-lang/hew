@@ -1,0 +1,16 @@
+type Packet { label: string, payload: bytes }
+
+fn main() -> i64 {
+    let original = Packet { label: "packet", payload: b"A" };
+    let { label, payload } = original;
+    var edited = payload;
+    edited.push(66);
+
+    let nested = (("inner", b"B"), "discarded");
+    let ((text, data), _) = nested;
+    let retained = nested.0;
+    let original_payload = original.payload;
+    println(f"{original.label}:{label}:{original_payload.len()}:{edited.len()}");
+    println(f"{retained.0}:{text}:{data[0]}");
+    0
+}

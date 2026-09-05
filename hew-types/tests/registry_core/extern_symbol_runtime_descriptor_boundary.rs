@@ -23,7 +23,7 @@ use crate::common;
 
 use hew_types::check::{MethodCallRewrite, SpanKey};
 use hew_types::error::TypeErrorKind;
-use hew_types::runtime_call::{ProducedArgumentBoundary, RuntimeCallFamily};
+use hew_types::runtime_call::RuntimeCallFamily;
 use hew_types::TypeCheckOutput;
 
 use common::{parse_and_typecheck_inline, typecheck};
@@ -114,14 +114,6 @@ fn stdlib_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
     assert!(
         !output.method_call_consumes_receiver.contains(&site),
         "non-consuming extern method must not enter the consume side table",
-    );
-    assert_eq!(
-        output
-            .produced_value_ownership
-            .get(&site)
-            .and_then(|fact| fact.receiver_boundary),
-        Some(ProducedArgumentBoundary::Borrow),
-        "non-consuming extern method must publish an exact borrow boundary",
     );
 }
 
@@ -218,14 +210,6 @@ fn extern_symbol_consuming_release_keeps_consume_mark_without_descriptor() {
             assert!(
                 output.method_call_consumes_receiver.contains(&site),
                 "extern-symbol release must survive in the checker consume side table",
-            );
-            assert_eq!(
-                output
-                    .produced_value_ownership
-                    .get(&site)
-                    .and_then(|fact| fact.receiver_boundary),
-                Some(ProducedArgumentBoundary::Transfer),
-                "extern-symbol release must publish the exact transfer boundary",
             );
         }
         None => panic!(

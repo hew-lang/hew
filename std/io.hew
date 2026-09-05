@@ -51,8 +51,7 @@ pub fn read_all() -> string {
 // ── Declarative bytes receiver FFI ───────────────────────────────────
 //
 // Every method routes to a dedicated hew_bytes_* runtime entry operating on
-// the BytesTriple ABI directly. `len` names hew_vec_len: codegen routes a
-// bytes receiver to the canonical hew_bytes_len entry.
+// the bytes ABI directly.
 impl bytes {
     #[extern_symbol(hew_bytes_push)]
     fn push(buf: bytes, byte: u8) {}
@@ -60,7 +59,7 @@ impl bytes {
     fn pop(buf: bytes) -> u8 {
         0
     }
-    #[extern_symbol(hew_vec_len)]
+    #[extern_symbol(hew_bytes_len)]
     fn len(buf: bytes) -> i64 {
         0
     }

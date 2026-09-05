@@ -251,24 +251,52 @@ fn sum(t: (i64, i64, i64)) -> i64 {
 
 // ── Struct-variant field aggregate destructure (issue #2354) ──────────────────
 
-// Collect every `let`-binding name introduced in an arm body's prelude block.
-// Aggregate field destructures (`Variant { field: (a, b) }`) lower the inner
-// binders as prelude `let` statements off a synthetic per-field temp — the same
-// shape the tuple-variant path uses — so the arm's own `bindings` list carries
-// only that synthetic `__payload_*` temp, and the user-visible binders live in
-// the body block's statements.
-fn arm_body_prelude_binding_names(arm: &hew_hir::HirMatchArm) -> Vec<String> {
-    let HirExprKind::Block(block) = &arm.body.kind else {
-        return Vec::new();
-    };
-    block
-        .statements
+// Follow the resolved payload binding into its typed destructure group.
+// Swapping two payload sources or tuple selectors must fail even when all
+// expected user-visible names are still present.
+fn assert_tuple_payload_destructure(
+    statements: &[hew_hir::HirStmt],
+    payload: &hew_hir::HirMatchArmBinding,
+    names: &[&str],
+) {
+    let fields = statements
         .iter()
-        .filter_map(|stmt| match &stmt.kind {
-            hew_hir::HirStmtKind::Let(binding, _) => Some(binding.name.clone()),
+        .find_map(|statement| match &statement.kind {
+            hew_hir::HirStmtKind::Destructure { value, fields }
+                if matches!(&value.kind, HirExprKind::BindingRef {
+                resolved: hew_hir::ResolvedRef::Binding(id), ..
+            } if *id == payload.binding) =>
+            {
+                Some(fields)
+            }
             _ => None,
         })
-        .collect()
+        .expect("payload binding must feed a typed destructure group");
+    assert_eq!(
+        payload.ty,
+        ResolvedTy::Tuple(vec![ResolvedTy::I64; names.len()])
+    );
+    assert_eq!(fields.len(), names.len());
+    for (index, (field, name)) in fields.iter().zip(names).enumerate() {
+        assert_eq!(
+            field.selector,
+            hew_hir::HirDestructureSelector::Tuple(u32::try_from(index).unwrap())
+        );
+        assert_eq!(field.binding.name, *name);
+        assert_eq!(field.binding.ty, ResolvedTy::I64);
+    }
+}
+
+fn assert_arm_tuple_payload(arm: &hew_hir::HirMatchArm, field_idx: u32, names: &[&str]) {
+    let HirExprKind::Block(block) = &arm.body.kind else {
+        panic!("aggregate payload must have a destructure prelude");
+    };
+    let payload = arm
+        .bindings
+        .iter()
+        .find(|binding| binding.field_idx == field_idx)
+        .expect("declared payload field must be bound");
+    assert_tuple_payload_destructure(&block.statements, payload, names);
 }
 
 #[test]
@@ -293,24 +321,7 @@ fn sum(pair: Pair) -> i64 {
     let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
         panic!("expected match expression")
     };
-    let both_arm = &arms[0];
-    assert!(
-        both_arm
-            .bindings
-            .iter()
-            .any(|binding| binding.name.starts_with("__payload_")),
-        "qualified aggregate arm must retain its payload projection: {:?}",
-        both_arm.bindings
-    );
-    let nested = arm_body_prelude_binding_names(both_arm);
-    assert!(
-        nested.iter().any(|name| name == "a"),
-        "missing `a`: {nested:?}"
-    );
-    assert!(
-        nested.iter().any(|name| name == "b"),
-        "missing `b`: {nested:?}"
-    );
+    assert_arm_tuple_payload(&arms[0], 0, &["a", "b"]);
 }
 
 // Regression for hew-lang/hew#2354: a tuple sub-pattern in enum struct-variant
@@ -318,8 +329,7 @@ fn sum(pair: Pair) -> i64 {
 // lowering with `E_HIR: identifier has no binding` because the aggregate
 // destructure lowering ran only for tuple-variant (`Pattern::Constructor`)
 // arms, never for struct-variant (`Pattern::Struct`) arms. The inner binders
-// must now materialise: a synthetic per-field temp in the arm bindings plus the
-// user-visible binders as prelude lets in the arm body.
+// must materialise in a typed destructure of the resolved payload binding.
 #[test]
 fn struct_variant_tuple_field_destructure_binds_inner_names() {
     let output = lower_checked(
@@ -345,25 +355,7 @@ fn sum(p: Packet) -> i64 {
     let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
         panic!("expected match expression")
     };
-    let data_arm = &arms[0];
-    // The synthetic per-field temp is the only arm binding; it drives the
-    // field projection MIR consumes.
-    let temp_names: Vec<&str> = data_arm.bindings.iter().map(|b| b.name.as_str()).collect();
-    assert!(
-        temp_names.iter().any(|n| n.starts_with("__payload_")),
-        "expected a synthetic payload temp in arm bindings: {temp_names:?}"
-    );
-    // The user-visible inner binders `a`/`b` must appear as prelude lets; before
-    // the fix they were never materialised and the body references dangled.
-    let inner = arm_body_prelude_binding_names(data_arm);
-    assert!(
-        inner.iter().any(|n| n == "a"),
-        "inner binder `a` missing from arm body prelude: {inner:?}"
-    );
-    assert!(
-        inner.iter().any(|n| n == "b"),
-        "inner binder `b` missing from arm body prelude: {inner:?}"
-    );
+    assert_arm_tuple_payload(&arms[0], 0, &["a", "b"]);
 }
 
 // A plain field binder alongside an aggregate field must both resolve, and the
@@ -394,13 +386,8 @@ fn sum(v: P) -> i64 {
     let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
         panic!("expected match expression")
     };
-    let inner = arm_body_prelude_binding_names(&arms[0]);
-    for name in ["a", "b", "c", "d"] {
-        assert!(
-            inner.iter().any(|n| n == name),
-            "inner binder `{name}` missing from arm body prelude: {inner:?}"
-        );
-    }
+    assert_arm_tuple_payload(&arms[0], 0, &["a", "b"]);
+    assert_arm_tuple_payload(&arms[0], 1, &["c", "d"]);
 }
 
 // Generic enum struct-variant: the field's declared type mentions a type param
@@ -432,22 +419,7 @@ fn sum(b: Box<i64>) -> i64 {
     let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
         panic!("expected match expression")
     };
-    let inner = arm_body_prelude_binding_names(&arms[0]);
-    assert!(
-        inner.iter().any(|n| n == "a") && inner.iter().any(|n| n == "c"),
-        "inner binders `a`/`c` missing from arm body prelude: {inner:?}"
-    );
-    // The synthetic field temp carries the substituted concrete field type,
-    // not `(T, T)`.
-    let temp = arms[0]
-        .bindings
-        .iter()
-        .find(|b| b.name.starts_with("__payload_"))
-        .expect("synthetic payload temp present");
-    assert_eq!(
-        temp.ty,
-        ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64])
-    );
+    assert_arm_tuple_payload(&arms[0], 0, &["a", "c"]);
 }
 
 #[test]
@@ -485,20 +457,17 @@ fn sum(value: Packet) -> i64 {
         .iter()
         .find_map(|statement| match &statement.kind {
             hew_hir::HirStmtKind::LetElse {
-                success_prelude, ..
-            } => Some(success_prelude),
+                success_prelude,
+                bindings,
+                ..
+            } => Some((success_prelude, bindings)),
             _ => None,
         })
         .expect("struct-variant let-else present");
-    let nested: Vec<&str> = let_else
+    let payload = let_else
+        .1
         .iter()
-        .filter_map(|statement| match &statement.kind {
-            hew_hir::HirStmtKind::Let(binding, _) => Some(binding.name.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert!(
-        nested.contains(&"a") && nested.contains(&"b"),
-        "inner binders `a`/`b` missing from let-else success prelude: {nested:?}"
-    );
+        .find(|binding| binding.field_idx == 0)
+        .expect("let-else payload field must be bound");
+    assert_tuple_payload_destructure(let_else.0, payload, &["a", "b"]);
 }

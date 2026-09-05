@@ -1,19 +1,11 @@
-//! Tuple-let lowering: `let (a, b) = expr;` produces per-element Let stmts.
-//!
-//! Verifies:
-//!   1. A two-element tuple-let produces one synthetic temp binding + two
-//!      per-element `HirStmtKind::Let` bindings whose init exprs are
-//!      `HirExprKind::TupleIndex` projections.
-//!   2. A wildcard element in the tuple pattern is bound as `_<idx>`.
-//!
-//! Uses `duplex_pair<i64, i64>(16)` as the tuple-producing expression because
-//! `duplex_pair` is a checker-registered builtin that returns a genuine
-//! `ResolvedTy::Tuple` — the most realistic producer for the exemplar vertebra.
-//! Both tests run the full typecheck pipeline so the rewrite table is populated.
+//! Tuple patterns preserve the resolved producer and every typed field,
+//! including omitted owned values, without relying on synthetic names.
 
-use hew_hir::{lower_program, HirExprKind, HirStmtKind, ResolutionCtx};
-use hew_types::module_registry::ModuleRegistry;
-use hew_types::Checker;
+use hew_hir::{
+    lower_program_host_target, HirDestructureSelector, HirExprKind, HirItem, HirStmtKind,
+    ResolutionCtx, ResolvedRef,
+};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
 fn lower_with_typecheck(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -23,162 +15,104 @@ fn lower_with_typecheck(source: &str) -> hew_hir::LowerOutput {
         parsed.errors
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let tc_output = checker.check_program(&parsed.program);
-    lower_program(
-        &parsed.program,
-        &tc_output,
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    )
+    let facts = checker.check_program(&parsed.program);
+    assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);
+    let output = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
+    assert!(
+        output.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        output.diagnostics
+    );
+    output
 }
 
-fn main_fn(output: &hew_hir::LowerOutput) -> &hew_hir::HirFn {
+fn function<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a hew_hir::HirFn {
     output
         .module
         .items
         .iter()
-        .find_map(|item| {
-            if let hew_hir::HirItem::Function(f) = item {
-                if f.name == "main" {
-                    return Some(f);
-                }
-            }
-            None
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == name => Some(function),
+            _ => None,
         })
-        .expect("main function must be present")
+        .expect("source function must be present")
 }
 
-/// `let (a, b) = duplex_pair<i64, i64>(16);` produces:
-///   - `let __tuple_N = duplex_pair<i64, i64>(16);`  (synthetic temp)
-///   - `let a = __tuple_N.0;`                         (`TupleIndex` 0)
-///   - `let b = __tuple_N.1;`                         (`TupleIndex` 1)
 #[test]
-fn two_element_tuple_let_produces_three_stmts() {
-    let source = r"
+fn tuple_let_preserves_the_resolved_call_and_field_types() {
+    let output = lower_with_typecheck(
+        r#"
+        fn pair() -> (i64, string) { (7, "payload") }
         fn main() -> i64 {
-            let (a, b) = duplex_pair<i64, i64>(16);
-            return 0;
+            let (number, text) = pair();
+            number
         }
-    ";
-    let output = lower_with_typecheck(source);
-
-    // Filter to only the MethodCallNoRewrite / structural errors — the
-    // UnresolvedSymbol for `duplex_pair` callee and UnresolvedInferenceVar are
-    // expected at the HIR level (duplex_pair is a builtin, not an AST fn item).
-    // The critical assertion is that NO tuple-pattern errors fired.
-    let tuple_errors: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            matches!(d.kind, hew_hir::HirDiagnosticKind::NotYetImplemented { .. }) && {
-                if let hew_hir::HirDiagnosticKind::NotYetImplemented { ref construct, .. } = d.kind
-                {
-                    construct.contains("tuple")
-                } else {
-                    false
-                }
-            }
-        })
-        .collect();
-    assert!(
-        tuple_errors.is_empty(),
-        "no tuple-pattern NotYetImplemented errors must fire for a well-formed two-element let; \
-         got: {tuple_errors:#?}"
+    "#,
     );
-
-    let fn_item = main_fn(&output);
-
-    // Expect at least 3 Let stmts from the tuple-let expansion.
-    let let_stmts: Vec<_> = fn_item
+    let main = function(&output, "main");
+    let (source, fields) = main
         .body
         .statements
         .iter()
-        .filter(|s| matches!(s.kind, HirStmtKind::Let(_, _)))
-        .collect();
-    assert!(
-        let_stmts.len() >= 3,
-        "tuple-let (a, b) = ... must produce ≥3 Let stmts (temp + a + b); got {} stmts: {:#?}",
-        let_stmts.len(),
-        let_stmts
-    );
-
-    // First Let binds the synthetic temp (name starts with `__tuple_`).
-    if let HirStmtKind::Let(binding, _) = &let_stmts[0].kind {
-        assert!(
-            binding.name.starts_with("__tuple_"),
-            "first Let must bind the synthetic temp; got name `{}`",
-            binding.name
-        );
-    }
-
-    // Second Let must bind `a` with TupleIndex(0) init.
-    if let HirStmtKind::Let(binding, Some(init)) = &let_stmts[1].kind {
-        assert_eq!(binding.name, "a", "second Let must bind `a`");
-        assert!(
-            matches!(&init.kind, HirExprKind::TupleIndex { index: 0, .. }),
-            "a's init must be TupleIndex(0); got: {:#?}",
-            init.kind
-        );
-    } else {
-        panic!(
-            "second Let must have an initialiser; got: {:#?}",
-            let_stmts[1].kind
-        );
-    }
-
-    // Third Let must bind `b` with TupleIndex(1) init.
-    if let HirStmtKind::Let(binding, Some(init)) = &let_stmts[2].kind {
-        assert_eq!(binding.name, "b", "third Let must bind `b`");
-        assert!(
-            matches!(&init.kind, HirExprKind::TupleIndex { index: 1, .. }),
-            "b's init must be TupleIndex(1); got: {:#?}",
-            init.kind
-        );
-    } else {
-        panic!(
-            "third Let must have an initialiser; got: {:#?}",
-            let_stmts[2].kind
-        );
-    }
+        .find_map(|statement| match &statement.kind {
+            HirStmtKind::Destructure { value, fields } => Some((value, fields)),
+            _ => None,
+        })
+        .expect("tuple call must feed a typed destructure");
+    assert!(matches!(&source.kind, HirExprKind::Call {
+        target: hew_types::CallTarget::User(declaration), args, ..
+    } if declaration == &function(&output, "pair").declaration && args.is_empty()));
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].selector, HirDestructureSelector::Tuple(0));
+    assert_eq!(fields[0].binding.name, "number");
+    assert_eq!(fields[0].binding.ty, ResolvedTy::I64);
+    assert_eq!(fields[1].selector, HirDestructureSelector::Tuple(1));
+    assert_eq!(fields[1].binding.name, "text");
+    assert_eq!(fields[1].binding.ty, ResolvedTy::String);
+    let tail = main.body.tail.as_ref().expect("number tail");
+    assert!(matches!(&tail.kind, HirExprKind::BindingRef {
+        resolved: ResolvedRef::Binding(id), ..
+    } if *id == fields[0].binding.id));
 }
 
-/// Wildcard element `let (a, _) = expr;` lowers without errors — the wildcard
-/// gets a synthetic name `_<idx>` so the tuple expansion proceeds normally.
-/// Regression guard: this case was broken when the `Pattern::Wildcard` branch
-/// in the tuple-let element loop was made to emit `NotYetImplemented`.
 #[test]
-fn tuple_let_wildcard_element_binds_synthetic_name() {
-    let source = r"
+fn tuple_let_wildcard_preserves_an_independent_owned_field_binding() {
+    let output = lower_with_typecheck(
+        r#"
         fn main() -> i64 {
-            let (a, _) = duplex_pair<i64, i64>(16);
-            return 0;
+            let pair = (7, "omitted");
+            let (number, _) = pair;
+            number
         }
-    ";
-    let output = lower_with_typecheck(source);
-
-    let fn_item = main_fn(&output);
-
-    let let_stmts: Vec<_> = fn_item
+    "#,
+    );
+    let main = function(&output, "main");
+    let original = main
         .body
         .statements
         .iter()
-        .filter(|s| matches!(s.kind, HirStmtKind::Let(_, _)))
-        .collect();
-
-    // temp + a + _1 = 3 Let stmts minimum.
-    assert!(
-        let_stmts.len() >= 3,
-        "wildcard tuple-let must produce ≥3 Let stmts; got {}: {:#?}",
-        let_stmts.len(),
-        let_stmts
-    );
-
-    // Third stmt should bind `_1` (wildcard element 1 → `_<idx>`).
-    if let HirStmtKind::Let(binding, _) = &let_stmts[2].kind {
-        assert_eq!(
-            binding.name, "_1",
-            "wildcard element 1 must bind as `_1`; got `{}`",
-            binding.name
-        );
-    }
+        .find_map(|statement| match &statement.kind {
+            HirStmtKind::Let(binding, _) if binding.name == "pair" => Some(binding.id),
+            _ => None,
+        })
+        .expect("original tuple binding");
+    let (source, fields) = main
+        .body
+        .statements
+        .iter()
+        .find_map(|statement| match &statement.kind {
+            HirStmtKind::Destructure { value, fields } => Some((value, fields)),
+            _ => None,
+        })
+        .expect("wildcard tuple must retain a typed destructure");
+    assert!(matches!(&source.kind, HirExprKind::BindingRef {
+        resolved: ResolvedRef::Binding(id), ..
+    } if *id == original));
+    assert_eq!(fields.len(), 2, "the wildcard must not erase its field");
+    assert_eq!(fields[0].selector, HirDestructureSelector::Tuple(0));
+    assert_eq!(fields[0].binding.name, "number");
+    assert_eq!(fields[0].binding.ty, ResolvedTy::I64);
+    assert_eq!(fields[1].selector, HirDestructureSelector::Tuple(1));
+    assert_eq!(fields[1].binding.ty, ResolvedTy::String);
+    assert_ne!(fields[0].binding.id, fields[1].binding.id);
 }

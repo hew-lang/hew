@@ -1,9 +1,8 @@
 //! HIR is the first IR layer after parsing. It gives every binding and
-//! value-bearing expression a stable identity before later MIR ownership
-//! analysis attaches value-model decisions.
+//! value-bearing expression a stable identity before ownership SIR makes
+//! value-model decisions.
 
 pub mod builtin_type_classes;
-pub mod declared_release;
 pub mod diagnostic;
 pub mod dispatch;
 pub mod dump;
@@ -47,16 +46,15 @@ pub use monomorph::{
 pub use node::{
     ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,
     HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture, HirConst,
-    HirConstValue, HirExpr, HirExprKind, HirExternFn, HirField, HirFn, HirGenCapture,
-    HirGenCaptureSource, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook,
-    HirLifecycleHookKind, HirLiteral, HirMachineBound, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirProducedValueFact,
-    HirProducedValueProducer, HirProducedValueRelation, HirProducedValueSourceAnchor,
-    HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
-    HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
-    WhereOrigin,
+    HirConstValue, HirDestructureField, HirDestructureSelector, HirExpr, HirExprKind, HirExternFn,
+    HirField, HirFn, HirGenCapture, HirGenCaptureSource, HirItem, HirJoin, HirJoinBranch,
+    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineBound,
+    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
+    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
+    HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant,
+    HirVariantKind, WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,

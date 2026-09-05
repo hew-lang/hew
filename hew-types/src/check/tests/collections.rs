@@ -2824,12 +2824,7 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
 }
 
 #[test]
-fn builtin_option_extractors_publish_transfer_ownership() {
-    use crate::runtime_call::{
-        ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
-        ProducedValueOwnership as Ownership,
-    };
-
+fn builtin_option_extractors_consume_the_receiver() {
     let output = check_source(
         r"
         fn take(value: Option<string>) -> string {
@@ -2847,9 +2842,9 @@ fn builtin_option_extractors_publish_transfer_ownership() {
         output.errors
     );
 
-    for (method, expected_arguments) in [
-        (OptionResultMethod::OptionUnwrap, Vec::new()),
-        (OptionResultMethod::OptionUnwrapOr, vec![Boundary::Transfer]),
+    for method in [
+        OptionResultMethod::OptionUnwrap,
+        OptionResultMethod::OptionUnwrapOr,
     ] {
         let key = output
             .method_call_rewrites
@@ -2863,13 +2858,6 @@ fn builtin_option_extractors_publish_transfer_ownership() {
                 .then(|| key.clone())
             })
             .unwrap_or_else(|| panic!("missing builtin Option rewrite for {method:?}"));
-        let fact = output
-            .produced_value_ownership
-            .get(&key)
-            .unwrap_or_else(|| panic!("missing produced-value fact for {method:?}"));
-        assert_eq!(fact.ownership, Ownership::owned(Acquisition::MoveOut));
-        assert_eq!(fact.receiver_boundary, Some(Boundary::Transfer));
-        assert_eq!(fact.arguments, expected_arguments);
         assert!(output.method_call_consumes_receiver.contains(&key));
     }
 }

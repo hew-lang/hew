@@ -2649,10 +2649,7 @@ impl Checker {
         is_receiver: bool,
     ) {
         let resolved_param_ty = self.subst.resolve(ty);
-        if !is_receiver && self.param_ty_has_caller_visible_projection(&resolved_param_ty) {
-            self.caller_visible_param_projections
-                .insert(SpanKey::in_module(&param.ty.1, self.current_module_idx));
-        }
+
         if !param.is_mutable
             || is_receiver
             || !self.param_var_has_no_caller_visible_effect(&resolved_param_ty)

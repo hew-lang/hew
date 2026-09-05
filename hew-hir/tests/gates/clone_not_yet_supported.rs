@@ -37,20 +37,6 @@ fn run_pipeline(source: &str) -> (hew_types::TypeCheckOutput, hew_hir::LowerOutp
     (tc_output, lower_output)
 }
 
-fn assert_copy_clone_subsumes_direct_source(lower: &hew_hir::LowerOutput) {
-    let (&site, fact) = lower
-        .module
-        .produced_value_facts
-        .iter()
-        .find(|(_, fact)| fact.producer == hew_hir::HirProducedValueProducer::CopyCloneNoop)
-        .expect("copy clone produced-value fact");
-    let hew_hir::HirProducedValueRelation::Subsumes(source) = fact.relation else {
-        panic!("copy clone must subsume its receiver occurrence: {fact:?}");
-    };
-    let parents = hew_hir::verify::collect_site_parents(&lower.module);
-    assert_eq!(parents.get(&source), Some(&Some(site)));
-}
-
 /// `.clone()` on a Copy scalar (`i32`) now lowers as a plain read via
 /// `CopyCloneNoop`: the checker emits a redundancy warning, HIR produces NO
 /// `CloneNotYetSupported` diagnostic, and the build succeeds.  This pins the
@@ -77,7 +63,6 @@ fn clone_call_on_copy_type_lowers_without_error() {
          got diagnostics: {:#?}",
         lower.diagnostics
     );
-    assert_copy_clone_subsumes_direct_source(&lower);
 
     // The build must succeed: a redundant Copy clone is a warning, not an error.
     assert!(
@@ -112,7 +97,6 @@ fn clone_prefix_on_copy_type_lowers_without_error() {
          got diagnostics: {:#?}",
         lower.diagnostics
     );
-    assert_copy_clone_subsumes_direct_source(&lower);
 
     assert!(
         lower.into_result().is_ok(),

@@ -1081,28 +1081,14 @@ impl Checker {
             true,
             Some(GenericCallee::Function { key: &key }),
         );
-        let is_generic_wire_codec = self.record_generic_wire_codec_rewrite(
+        self.record_generic_wire_codec_rewrite(
             &canonical_owner,
             method,
             &applied_sig.params,
             &applied_sig.return_type,
             span,
         );
-        self.record_resolved_direct_call_ownership(
-            &key,
-            &sig,
-            args,
-            &applied_sig.return_type,
-            span,
-        );
-        if is_generic_wire_codec {
-            let call_key = SpanKey::in_module(span, self.current_module_idx);
-            if let Some(pending) = self.resolved_direct_call_ownership.get_mut(&call_key) {
-                pending.fact.ownership = crate::runtime_call::ProducedValueOwnership::owned(
-                    crate::runtime_call::ProducedValueAcquisition::Fresh,
-                );
-            }
-        }
+
         // A module-qualified call has one canonical target shared by its
         // rewrite and its ordinary-call fact.  The signature key above may be
         // a lexical compatibility alias, so never mint a second identity from
@@ -1460,105 +1446,6 @@ impl Checker {
         }
     }
 
-    pub(super) fn record_resolved_direct_call_ownership(
-        &mut self,
-        signature_key: &str,
-        sig: &FnSig,
-        args: &[CallArg],
-        result_ty: &Ty,
-        span: &Span,
-    ) {
-        use crate::runtime_call::{
-            ProducedArgumentBoundary as Boundary, ProducedValueOwnership as Ownership,
-        };
-
-        let formal_modes = self
-            .fn_param_ownership
-            .get(signature_key)
-            .cloned()
-            .unwrap_or_else(|| vec![Boundary::Unknown; sig.params.len()]);
-        let arguments = args
-            .iter()
-            .enumerate()
-            .map(|(source_index, arg)| {
-                let formal_index = arg
-                    .name()
-                    .and_then(|name| sig.param_names.iter().position(|formal| formal == name))
-                    .unwrap_or(source_index);
-                formal_modes
-                    .get(formal_index)
-                    .copied()
-                    .unwrap_or(Boundary::Unknown)
-            })
-            .collect();
-        let resolved_result_ty = self.subst.resolve(result_ty).materialize_literal_defaults();
-        let non_owning = self.ty_is_non_owning(&resolved_result_ty);
-        let builtin_result_ownership =
-            crate::stdlib_catalog_identity::monomorphic_callable_identity(signature_key)
-                .and_then(crate::runtime_call::RuntimeCallFamily::from_c_symbol)
-                .map(crate::runtime_call::RuntimeCallFamily::result_ownership)
-                .filter(|ownership| {
-                    !matches!(
-                        ownership,
-                        crate::runtime_call::RuntimeResultOwnership::Untracked
-                    )
-                });
-        // Per-declaration record: ownership provenance attributes to the
-        // declaration used at this call site, not the symbol's contract
-        // minter.
-        let source_extern = self
-            .extern_table
-            .declaration(signature_key)
-            .map(|extern_decl| {
-                (
-                    extern_decl.symbol.clone(),
-                    extern_decl.declaring_module.clone(),
-                )
-            });
-        let call_key = SpanKey::in_module(span, self.current_module_idx);
-        let exact_extern_symbol = source_extern.as_ref().and_then(|(symbol, _)| {
-            sig.extern_symbol.as_ref().map_or_else(
-                || (!symbol.is_empty()).then(|| symbol.clone()),
-                |spec| {
-                    if spec.template.is_monomorphic() {
-                        Some(spec.template.raw.clone())
-                    } else {
-                        self.call_type_args
-                            .get(&call_key)
-                            .and_then(|type_args| type_args.first())
-                            .map(|ty| self.subst.resolve(ty).materialize_literal_defaults())
-                            .and_then(|type_arg| {
-                                spec.template.expand(&type_arg, &self.type_defs).ok()
-                            })
-                    }
-                },
-            )
-        });
-        self.produced_call_arities
-            .insert(call_key.clone(), (false, args.len()));
-        self.resolved_direct_call_ownership.insert(
-            call_key,
-            PendingDirectCallOwnership {
-                fact: ProducedValueFact {
-                    ownership: if non_owning {
-                        Ownership::NoOwner
-                    } else if builtin_result_ownership.is_some() {
-                        Ownership::owned(crate::runtime_call::ProducedValueAcquisition::Fresh)
-                    } else {
-                        Ownership::Unknown
-                    },
-                    receiver_span: None,
-                    receiver_boundary: None,
-                    arguments,
-                },
-                extern_symbol: exact_extern_symbol,
-                extern_declaring_module: source_extern.and_then(|(_, module)| module),
-                extern_param_count: sig.params.len(),
-                resolved_result_ty,
-            },
-        );
-    }
-
     #[expect(
         clippy::too_many_lines,
         reason = "call checking covers many builtin and method signatures"
@@ -1729,45 +1616,6 @@ impl Checker {
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
             let result_ty = self.variant_nominal_ty(type_name, resolved_args);
-            let non_owning = self.ty_is_non_owning(&result_ty);
-            let arguments = args
-                .iter()
-                .map(|arg| {
-                    let ty = self
-                        .expr_types
-                        .get(&SpanKey::in_module(&arg.expr().1, self.current_module_idx))
-                        .map(|ty| self.subst.resolve(ty));
-                    if ty.as_ref().is_some_and(|ty| self.ty_is_non_owning(ty)) {
-                        crate::runtime_call::ProducedArgumentBoundary::Borrow
-                    } else {
-                        crate::runtime_call::ProducedArgumentBoundary::Transfer
-                    }
-                })
-                .collect();
-            let call_key = SpanKey::in_module(span, self.current_module_idx);
-            self.produced_call_arities
-                .insert(call_key.clone(), (false, args.len()));
-            self.resolved_direct_call_ownership.insert(
-                call_key,
-                PendingDirectCallOwnership {
-                    fact: ProducedValueFact {
-                        ownership: if non_owning {
-                            crate::runtime_call::ProducedValueOwnership::NoOwner
-                        } else {
-                            crate::runtime_call::ProducedValueOwnership::owned(
-                                crate::runtime_call::ProducedValueAcquisition::Fresh,
-                            )
-                        },
-                        receiver_span: None,
-                        receiver_boundary: None,
-                        arguments,
-                    },
-                    extern_symbol: None,
-                    extern_declaring_module: None,
-                    extern_param_count: 0,
-                    resolved_result_ty: result_ty.clone(),
-                },
-            );
             return result_ty;
         }
 
@@ -2263,13 +2111,6 @@ impl Checker {
                 }
             }
 
-            self.record_resolved_direct_call_ownership(
-                &resolved_fn_name,
-                &sig,
-                args,
-                &applied_sig.return_type,
-                span,
-            );
             // A dotted static call with method-level type arguments (for
             // example `Node.lookup<Worker>(name)`) parses as an ordinary call
             // whose callee is a `FieldAccess`, rather than as `MethodCall`.
@@ -2551,10 +2392,6 @@ impl Checker {
         true
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "typed calls publish both ordinary call results and ownership boundaries"
-    )]
     pub(super) fn check_call_with_type(
         &mut self,
         func_ty: &Ty,
@@ -2572,44 +2409,7 @@ impl Checker {
                         self.check_against(expr, sp, param);
                     }
                 }
-                let result_ty = *ret;
-                let resolved_result_ty = self
-                    .subst
-                    .resolve(&result_ty)
-                    .materialize_literal_defaults();
-                let non_owning = self.ty_is_non_owning(&resolved_result_ty);
-                let call_key = SpanKey::in_module(span, self.current_module_idx);
-                self.produced_call_arities
-                    .insert(call_key.clone(), (false, args.len()));
-                self.resolved_direct_call_ownership.insert(
-                    call_key,
-                    PendingDirectCallOwnership {
-                        fact: ProducedValueFact {
-                            ownership: if non_owning {
-                                crate::runtime_call::ProducedValueOwnership::NoOwner
-                            } else {
-                                crate::runtime_call::ProducedValueOwnership::owned(
-                                    crate::runtime_call::ProducedValueAcquisition::Delivery,
-                                )
-                            },
-                            receiver_span: None,
-                            receiver_boundary: None,
-                            // Closure/function-value parameters borrow by
-                            // default. A future typed consuming-callable
-                            // signature extends this vector; expression intent
-                            // is not consulted here.
-                            arguments: vec![
-                                crate::runtime_call::ProducedArgumentBoundary::Borrow;
-                                args.len()
-                            ],
-                        },
-                        extern_symbol: None,
-                        extern_declaring_module: None,
-                        extern_param_count: 0,
-                        resolved_result_ty,
-                    },
-                );
-                result_ty
+                *ret
             }
             Ty::Unit => {
                 self.check_arity(args, 0, "this function", span);
@@ -2685,39 +2485,11 @@ impl Checker {
                 // Return type depends on reply direction:
                 //   tell-shaped (Reply = ()) → Result<(), SendError>
                 //   ask-shaped  (Reply = R)  → Result<R, AskError>
-                let result_ty = if matches!(reply_ty, Ty::Unit) {
+                if matches!(reply_ty, Ty::Unit) {
                     Ty::result(Ty::Unit, Ty::send_error())
                 } else {
                     Ty::result(reply_ty, Ty::ask_error())
-                };
-                let resolved_result_ty = self
-                    .subst
-                    .resolve(&result_ty)
-                    .materialize_literal_defaults();
-                let call_key = SpanKey::in_module(span, self.current_module_idx);
-                self.produced_call_arities
-                    .insert(call_key.clone(), (false, args.len()));
-                self.resolved_direct_call_ownership.insert(
-                    call_key,
-                    PendingDirectCallOwnership {
-                        fact: ProducedValueFact {
-                            ownership: crate::runtime_call::ProducedValueOwnership::owned(
-                                crate::runtime_call::ProducedValueAcquisition::Delivery,
-                            ),
-                            receiver_span: None,
-                            receiver_boundary: None,
-                            arguments: vec![
-                                crate::runtime_call::ProducedArgumentBoundary::Transfer;
-                                args.len()
-                            ],
-                        },
-                        extern_symbol: None,
-                        extern_declaring_module: None,
-                        extern_param_count: 0,
-                        resolved_result_ty,
-                    },
-                );
-                result_ty
+                }
             }
             _ => {
                 // Synthesize args even when the callee type is already an error/var so that

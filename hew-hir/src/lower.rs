@@ -30,9 +30,9 @@ use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, CallTarget, ChildSlot,
     ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, ImplId,
     LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
-    NumericMethodLowering, OptionResultMethod, PatternKind, ProducedValueDependency,
-    ProducedValueFact, RcIntrinsicOp, ResolvedTraitBound, ResolvedTy, SpanKey, Ty, TyPattern,
-    TypeCheckOutput, UserComparisonDispatch, WireCodecDirection,
+    NumericMethodLowering, OptionResultMethod, PatternKind, RcIntrinsicOp, ResolvedTraitBound,
+    ResolvedTy, SpanKey, Ty, TyPattern, TypeCheckOutput, UserComparisonDispatch,
+    WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -45,35 +45,18 @@ use crate::monomorph::{
 };
 use crate::node::{
     ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,
-    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture, HirExpr,
-    HirExprKind, HirField, HirFn, HirGenCapture, HirGenCaptureSource, HirItem, HirJoin,
-    HirJoinBranch, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
-    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
-    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
-    HirPayloadVariantPredicate, HirProducedValueFact, HirProducedValueProducer,
-    HirProducedValueRelation, HirProducedValueSourceAnchor, HirRecordDecl, HirRegexLiteral,
+    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture,
+    HirDestructureField, HirDestructureSelector, HirExpr, HirExprKind, HirField, HirFn,
+    HirGenCapture, HirGenCaptureSource, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture,
+    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
+    HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
+    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
     HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
     HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
     HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
-
-/// A compiler-generated value wrapper may reuse an existing owner only when
-/// the checker proves that the wrapper owns the value and its generated CFG
-/// has one exact value-producing source. Zero sources have no owner to carry;
-/// multiple sources require a real join owner rather than an arbitrary
-/// identity choice.
-fn generated_single_source_identity_relation(
-    ownership: hew_types::ProducedValueOwnership,
-    sources: &[SiteId],
-) -> Option<HirProducedValueRelation> {
-    let [source] = sources else {
-        return None;
-    };
-    matches!(ownership, hew_types::ProducedValueOwnership::Owned { .. })
-        .then_some(HirProducedValueRelation::Identity(*source))
-}
 
 /// Target architecture for compilation. Subset of the full `TargetSpec`
 /// from `hew-cli/src/target.rs`, exposed at the HIR boundary so target gates
@@ -5868,7 +5851,6 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
-    let pending_produced_value_carrier = ctx.take_pending_produced_value_carrier();
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
     let mut record_layouts = ctx.record_layout_registry.into_vec();
@@ -5991,13 +5973,11 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.diagnostics,
     );
 
-    let mut module = HirModule {
+    let module = HirModule {
         items,
-        produced_value_facts: HashMap::new(),
         diagnostic_source_modules,
         root_item_ids: ctx.root_item_ids,
         entry_exit_plan,
-        caller_visible_param_projections: ctx.caller_visible_param_projections,
         wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
         type_classes: ctx.type_classes,
         monomorphisations,
@@ -6010,10 +5990,6 @@ pub fn lower_program_with_mono_cap(
         pool_accessor_sites,
         regex_literals: ctx.regex_literals,
     };
-    let occurrence_parents = crate::verify::collect_site_parents(&module);
-    module.produced_value_facts =
-        pending_produced_value_carrier.resolve(&occurrence_parents, &mut ctx.diagnostics);
-    module.produced_value_facts = crate::verify::complete_produced_value_facts(&module);
 
     LowerOutput {
         module,
@@ -6992,6 +6968,9 @@ fn collect_call_sites_in_stmt(
         HirStmtKind::Let(_, Some(e)) | HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
             collect_call_sites_in_expr(e, out, trait_out);
         }
+        HirStmtKind::Destructure { value, .. } => {
+            collect_call_sites_in_expr(value, out, trait_out);
+        }
         HirStmtKind::Assign { target, value } => {
             collect_call_sites_in_expr(target, out, trait_out);
             collect_call_sites_in_expr(value, out, trait_out);
@@ -7692,29 +7671,6 @@ struct LowerCtx {
     /// trait impl instead of the structural default (D340). Consulted at
     /// `Expr::Binary` lowering; see [`UserComparisonDispatch`].
     user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
-    /// Checker result-ownership rows waiting to be projected from their
-    /// source spans onto stable HIR expression sites.
-    produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
-    produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
-    /// Every source expression lowered through `lower_expr`, keyed exactly as
-    /// the checker keyed its result row.  Kept even where no row exists so a
-    /// receiver-identity row can resolve its receiver structurally.
-    produced_value_source_sites: HashMap<SpanKey, Vec<SiteId>>,
-    /// Site-keyed rows awaiting receiver-span resolution at module finish.
-    produced_value_fact_sites: HashMap<SiteId, HirProducedValueFact>,
-    /// Facts for compiler-generated expression roots that have no checker span
-    /// identity of their own. Kept disjoint from source-keyed facts until the
-    /// occurrence graph has resolved so a wrapper can never consume its
-    /// authored child's row merely because both share a source span.
-    generated_produced_value_facts: HashMap<SiteId, HirProducedValueFact>,
-    /// The checker key for each pending site fact.  This is retained until all
-    /// expressions have lowered, at which point every dependency edge can be
-    /// translated to its exact `SiteId` without relying on traversal order.
-    produced_value_fact_keys: HashMap<SiteId, (SpanKey, Option<ProducedValueDependency>)>,
-    /// Depth while lowering compiler-synthesised AST whose root has a real
-    /// checker side-table row but whose cloned operands are not new checker
-    /// occurrences. The root is recorded explicitly after leaving this mode.
-    suppress_produced_value_recording_depth: usize,
     /// W4.047 P1.2 — the **typed** checker→HIR handoff map (the shadow of
     /// `expr_types`). Carries `ResolvedTy` (never `Ty::Var`/`Ty::Error`/literal)
     /// for every concrete accepted span; cloned verbatim from
@@ -8209,11 +8165,6 @@ struct LowerCtx {
     /// rendered against the root source ONLY for a proven-root function. A
     /// positive record — never inferred by absence-from-a-foreign-set.
     root_item_ids: HashSet<ItemId>,
-    /// Checker-proven caller-visible parameter projections translated from
-    /// declaration spans to stable `(ItemId, parameter index)` identities.
-    caller_visible_param_projections: HashSet<(ItemId, usize)>,
-    /// Declaration-span authority consumed while lowering each function.
-    caller_visible_param_spans: HashSet<SpanKey>,
     /// True while lowering items that are INJECTED at root `current_module_idx`
     /// but do NOT index the user's root source — currently the `std/builtins.hew`
     /// callable impls (and the Vec iterator harness), which are lowered
@@ -8313,258 +8264,6 @@ fn collect_type_aliases(program: &Program) -> HashMap<String, TypeAliasLowering>
         }
     }
     aliases
-}
-
-struct PendingProducedValueCarrier {
-    facts: HashMap<SiteId, HirProducedValueFact>,
-    generated_facts: HashMap<SiteId, HirProducedValueFact>,
-    fact_keys: HashMap<SiteId, (SpanKey, Option<ProducedValueDependency>)>,
-    source_sites: HashMap<SpanKey, Vec<SiteId>>,
-    ownership: HashMap<SpanKey, ProducedValueFact>,
-}
-
-impl PendingProducedValueCarrier {
-    fn join_source_sites(
-        &self,
-        key: &SpanKey,
-        result: SiteId,
-        parents: &HashMap<SiteId, Option<SiteId>>,
-    ) -> Result<Vec<SiteId>, String> {
-        let Some(candidates) = self.source_sites.get(key) else {
-            return Err(format!("source key {key:?} lowered to no HIR site"));
-        };
-        let descendants: Vec<SiteId> = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| *candidate != result)
-            .filter(|candidate| {
-                let mut cursor = parents.get(candidate).copied().flatten();
-                while let Some(parent) = cursor {
-                    if parent == result {
-                        return true;
-                    }
-                    cursor = parents.get(&parent).copied().flatten();
-                }
-                false
-            })
-            .collect();
-        if !descendants.is_empty() {
-            // An or-pattern expands one checker-authored arm body into several
-            // HIR branches. A Join must retain every structural producer;
-            // singular relations continue to reject this ambiguity.
-            return Ok(descendants);
-        }
-        let parent = parents.get(&result).copied().flatten();
-        let siblings: Vec<SiteId> = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| *candidate != result)
-            .filter(|candidate| parents.get(candidate).copied().flatten() == parent)
-            .collect();
-        if siblings.is_empty() {
-            Err(format!(
-                "source key {key:?} has no candidate in result occurrence subtree or branch {result}"
-            ))
-        } else {
-            Ok(siblings)
-        }
-    }
-
-    fn source_site(
-        &self,
-        key: &SpanKey,
-        result: SiteId,
-        parents: &HashMap<SiteId, Option<SiteId>>,
-    ) -> Result<SiteId, String> {
-        let Some(candidates) = self.source_sites.get(key) else {
-            return Err(format!("source key {key:?} lowered to no HIR site"));
-        };
-        let descendants: Vec<SiteId> = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| *candidate != result)
-            .filter(|candidate| {
-                let mut cursor = parents.get(candidate).copied().flatten();
-                while let Some(parent) = cursor {
-                    if parent == result {
-                        return true;
-                    }
-                    cursor = parents.get(&parent).copied().flatten();
-                }
-                false
-            })
-            .collect();
-        match descendants.as_slice() {
-            [site] => Ok(*site),
-            [] => {
-                // A few HIR desugarings (notably actor ask/await) consume the
-                // parsed child into a specialised node rather than retaining
-                // it as a HIR child.  The two occurrences remain siblings in
-                // the same cloned parent branch; admit only a unique sibling,
-                // never a global candidate or a self-edge.
-                let parent = parents.get(&result).copied().flatten();
-                let siblings: Vec<SiteId> = candidates
-                    .iter()
-                    .copied()
-                    .filter(|candidate| *candidate != result)
-                    .filter(|candidate| parents.get(candidate).copied().flatten() == parent)
-                    .collect();
-                match siblings.as_slice() {
-                    [site] => Ok(*site),
-                    [] => Err(format!(
-                        "source key {key:?} has no candidate in result occurrence subtree or branch {result}"
-                    )),
-                    sites => Err(format!(
-                        "source key {key:?} has ambiguous candidates in result occurrence branch {result}: {sites:?}"
-                    )),
-                }
-            }
-            sites => Err(format!(
-                "source key {key:?} has ambiguous candidates in result occurrence subtree {result}: {sites:?}"
-            )),
-        }
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one fail-closed pass resolves and diagnoses every carrier relation"
-    )]
-    fn resolve(
-        mut self,
-        parents: &HashMap<SiteId, Option<SiteId>>,
-        diagnostics: &mut Vec<HirDiagnostic>,
-    ) -> HashMap<SiteId, HirProducedValueFact> {
-        let sites: Vec<SiteId> = self.facts.keys().copied().collect();
-        for site in sites {
-            let Some((key, dependency)) = self.fact_keys.get(&site).cloned() else {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "produced value dependency".to_string(),
-                        reason: format!("HIR site {site} lost its checker source key"),
-                    },
-                    0..0,
-                    "produced-value fact must retain its checker source identity",
-                ));
-                if let Some(fact) = self.facts.get_mut(&site) {
-                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
-                }
-                continue;
-            };
-            if !parents.contains_key(&site) {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "produced value occurrence".to_string(),
-                        reason: format!(
-                            "checker key {key:?} projected to HIR site {site}, but a later rewrite removed that occurrence"
-                        ),
-                    },
-                    key.start..key.end,
-                    "specialised HIR rewrites must preserve consumed checker children as source anchors",
-                ));
-            }
-            let edge = |source: &SpanKey| self.source_site(source, site, parents);
-            let relation = match dependency.as_ref() {
-                Some(ProducedValueDependency::Leaf) => {
-                    Ok(crate::node::HirProducedValueRelation::Leaf)
-                }
-                Some(ProducedValueDependency::Identity(source)) => {
-                    edge(source).map(crate::node::HirProducedValueRelation::Identity)
-                }
-                Some(ProducedValueDependency::Subsumes(source)) => {
-                    edge(source).map(crate::node::HirProducedValueRelation::Subsumes)
-                }
-                Some(ProducedValueDependency::MoveOut(source)) => {
-                    edge(source).map(crate::node::HirProducedValueRelation::MoveOut)
-                }
-                Some(ProducedValueDependency::Projection(source)) => {
-                    edge(source).map(crate::node::HirProducedValueRelation::Projection)
-                }
-                Some(ProducedValueDependency::Join(sources)) => {
-                    let mut joined = Vec::new();
-                    let mut seen = HashSet::new();
-                    let mut error = None;
-                    for source in sources {
-                        match self.join_source_sites(source, site, parents) {
-                            Ok(source_sites) => {
-                                for source_site in source_sites {
-                                    if seen.insert(source_site) {
-                                        joined.push(source_site);
-                                    }
-                                }
-                            }
-                            Err(reason) => {
-                                error = Some(reason);
-                                break;
-                            }
-                        }
-                    }
-                    error.map_or_else(
-                        || Ok(crate::node::HirProducedValueRelation::Join(joined)),
-                        Err,
-                    )
-                }
-                None => {
-                    Err("checker output omitted this expression's closed relation row".to_string())
-                }
-            };
-            let receiver = self
-                .ownership
-                .get(&key)
-                .and_then(|source| source.receiver_span.as_ref())
-                .and_then(|source| edge(source).ok());
-            let fact = self
-                .facts
-                .get_mut(&site)
-                .expect("site collected from facts");
-            match relation {
-                Ok(relation) => fact.relation = relation,
-                Err(reason) => {
-                    diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "produced value dependency".to_string(),
-                            reason,
-                        },
-                        0..0,
-                        "produced-value dependency must resolve within its HIR occurrence subtree",
-                    ));
-                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
-                    fact.relation = crate::node::HirProducedValueRelation::Leaf;
-                }
-            }
-            fact.receiver = receiver;
-            if matches!(
-                fact.ownership,
-                hew_types::ProducedValueOwnership::ReceiverIdentity
-            ) && fact.receiver.is_none()
-            {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "produced value receiver identity".to_string(),
-                        reason: "receiver source did not resolve in result occurrence subtree"
-                            .to_string(),
-                    },
-                    0..0,
-                    "receiver identity must carry one structural receiver occurrence",
-                ));
-            }
-        }
-        for (site, fact) in self.generated_facts {
-            if self.facts.insert(site, fact).is_some() {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "generated produced value identity".to_string(),
-                        reason: format!("generated HIR site {site} collides with a source fact"),
-                    },
-                    0..0,
-                    "generated and authored produced-value facts must occupy disjoint sites",
-                ));
-                if let Some(fact) = self.facts.get_mut(&site) {
-                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
-                }
-            }
-        }
-        self.facts
-    }
 }
 
 /// Whether `ty` transitively carries a value whose SOLE ownership crosses an
@@ -8679,7 +8378,7 @@ fn transfers_ownership_to_mailbox_guarded(
 impl LowerCtx {
     #[allow(
         clippy::too_many_lines,
-        reason = "initializes the complete checker-to-HIR ownership fact carrier atomically"
+        reason = "initializes the complete checker-to-HIR typed context atomically"
     )]
     fn new(tc_output: &TypeCheckOutput, mono_cap: usize, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
@@ -8732,13 +8431,6 @@ impl LowerCtx {
             type_facts: tc_output.type_facts.clone(),
             interpolation_display_types: tc_output.interpolation_display_types.clone(),
             user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
-            produced_value_ownership: tc_output.produced_value_ownership.clone(),
-            produced_value_dependencies: tc_output.produced_value_dependencies.clone(),
-            produced_value_source_sites: HashMap::new(),
-            produced_value_fact_sites: HashMap::new(),
-            generated_produced_value_facts: HashMap::new(),
-            produced_value_fact_keys: HashMap::new(),
-            suppress_produced_value_recording_depth: 0,
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
@@ -8817,8 +8509,6 @@ impl LowerCtx {
             current_module_idx: 0,
             current_item_ordinal: 0,
             root_item_ids: HashSet::new(),
-            caller_visible_param_projections: HashSet::new(),
-            caller_visible_param_spans: tc_output.caller_visible_param_projections.clone(),
             lowering_injected_items: false,
             current_module_name: None,
             declaration_module_by_file_index: HashMap::new(),
@@ -8901,14 +8591,6 @@ impl LowerCtx {
             std::mem::replace(&mut self.resolved_calls, tc_output.resolved_calls.clone()),
             std::mem::replace(&mut self.expr_types, tc_output.expr_types.clone()),
             std::mem::replace(
-                &mut self.produced_value_ownership,
-                tc_output.produced_value_ownership.clone(),
-            ),
-            std::mem::replace(
-                &mut self.produced_value_dependencies,
-                tc_output.produced_value_dependencies.clone(),
-            ),
-            std::mem::replace(
                 &mut self.resolved_expr_types,
                 tc_output.resolved_expr_types.clone(),
             ),
@@ -8932,8 +8614,6 @@ impl LowerCtx {
             self.dyn_trait_method_calls,
             self.resolved_calls,
             self.expr_types,
-            self.produced_value_ownership,
-            self.produced_value_dependencies,
             self.resolved_expr_types,
             self.record_init_type_args,
         ) = saved;
@@ -11142,6 +10822,9 @@ impl LowerCtx {
             HirStmtKind::Let(_, Some(expr)) | HirStmtKind::Expr(expr) => {
                 self.wrap_var_self_explicit_expr_returns(expr, receiver, abi_return_ty);
             }
+            HirStmtKind::Destructure { value, .. } => {
+                self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
+            }
             HirStmtKind::Assign { target, value } => {
                 self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
@@ -12457,30 +12140,20 @@ impl LowerCtx {
                 StringPart::Expr((expr, expr_span)) => {
                     let authored =
                         self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
-                    let producer = HirProducedValueProducer::classify(&authored.kind);
+
                     let anchor_site = self.ids.site();
-                    let value = self.subsumed_value(
-                        anchor_site,
-                        expr_span,
-                        IntentKind::Read,
-                        authored,
-                        producer,
-                    );
+                    let value =
+                        self.subsumed_value(anchor_site, expr_span, IntentKind::Read, authored);
                     let rendered = self.lower_display_dispatch(value, expr_span.clone());
                     segments.push(rendered);
                 }
                 StringPart::StructuralExpr((expr, expr_span)) => {
                     let authored =
                         self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
-                    let producer = HirProducedValueProducer::classify(&authored.kind);
+
                     let anchor_site = self.ids.site();
-                    let value = self.subsumed_value(
-                        anchor_site,
-                        expr_span,
-                        IntentKind::Read,
-                        authored,
-                        producer,
-                    );
+                    let value =
+                        self.subsumed_value(anchor_site, expr_span, IntentKind::Read, authored);
                     let dispatch_ty = self
                         .interpolation_display_types
                         .get(&self.mk_key(expr_span))
@@ -12710,7 +12383,6 @@ impl LowerCtx {
             BuiltinType::LambdaActorHandle,
             "new",
         ) {
-            self.discard_rejected_call_child_facts(span);
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CallableUnsupportedInMir {
                     name: source_name.clone(),
@@ -13047,32 +12719,6 @@ impl LowerCtx {
             "checker admitted a call without an executable target",
         ));
         false
-    }
-
-    /// Remove checker-fact occurrences for children of a call rejected before
-    /// those children become HIR nodes. The call root itself remains live as an
-    /// `Unsupported` expression and retains its own fact for finalization.
-    fn discard_rejected_call_child_facts(&mut self, span: &Span) {
-        let call_key = self.mk_key(span);
-        let discarded: HashSet<SiteId> = self
-            .produced_value_fact_keys
-            .iter()
-            .filter_map(|(site, (key, _))| {
-                (key != &call_key && key.start >= call_key.start && key.end <= call_key.end)
-                    .then_some(*site)
-            })
-            .collect();
-        for sites in self.produced_value_source_sites.values_mut() {
-            sites.retain(|site| !discarded.contains(site));
-        }
-        self.produced_value_source_sites
-            .retain(|_, sites| !sites.is_empty());
-        self.produced_value_fact_sites
-            .retain(|site, _| !discarded.contains(site));
-        self.generated_produced_value_facts
-            .retain(|site, _| !discarded.contains(site));
-        self.produced_value_fact_keys
-            .retain(|site, _| !discarded.contains(site));
     }
 
     /// Return the checker-owned target for a compiler-synthesised call to an
@@ -13960,14 +13606,7 @@ impl LowerCtx {
                 .collect(),
         );
         let mut params = Vec::new();
-        for (param_index, param) in func.params.iter().enumerate() {
-            if self
-                .caller_visible_param_spans
-                .contains(&self.mk_key(&param.ty.1))
-            {
-                self.caller_visible_param_projections
-                    .insert((id, param_index));
-            }
+        for param in &func.params {
             let binding = self.bind_param(param);
             params.push(binding);
         }
@@ -15937,19 +15576,12 @@ impl LowerCtx {
     /// Lower a statement, returning zero or more `HirStmt`s.
     ///
     /// Most statements produce exactly one `HirStmt` (delegated to `lower_stmt`).
-    /// `let (a, b) = expr;` (Q33 tuple-let) produces:
-    ///   1. `let __tuple_N = expr;`    — binds the tuple value to a synthetic temp
-    ///   2. `let a = __tuple_N.0;`     — per-element projection (as many as elements)
-    ///   3. `let b = __tuple_N.1;`
-    ///
-    /// The element projections use a synthetic `HirExprKind::TupleIndex` node.
-    /// Downstream MIR lowering handles tuple projections in the `Expr::Call` return
-    /// path for `duplex_pair`.
+    /// An irrefutable tuple or record pattern produces one typed destructure
+    /// group, followed by another group for each nested aggregate field.
     #[expect(
         clippy::too_many_lines,
-        reason = "tuple-let expansion has three phases (validation, temp-bind, per-element loop) \
-                  that read more clearly as a single function; splitting would obscure the \
-                  invariant that temp-bind and per-element refs share the same temp_name"
+        reason = "aggregate let validation and checker-plan materialisation stay together so \
+                  every canonical field is represented in the ordered destructure group"
     )]
     fn lower_stmt_multi(
         &mut self,
@@ -15968,7 +15600,7 @@ impl LowerCtx {
         } = stmt
         {
             if let Pattern::Tuple(element_patterns) = &pattern.0 {
-                // Lower the tuple value once into a synthetic temp binding.
+                // Lower the tuple value once as the group's sole source.
                 let tuple_val = self.lower_expr(value_expr, IntentKind::Consume);
                 let tuple_ty = tuple_val.ty.clone();
 
@@ -16011,86 +15643,19 @@ impl LowerCtx {
                     }];
                 };
 
-                // Synthetic temp name — unlikely to collide with user identifiers.
-                let temp_name = format!("__tuple_{}", self.ids.binding().0);
-                let temp_binding =
-                    self.bind(temp_name.clone(), tuple_ty.clone(), false, span.clone());
-                // Capture the binding id before `temp_binding` is moved into
-                // the `HirStmt` below.  MIR lowering's `TupleIndex` arm needs
-                // `ResolvedRef::Binding(temp_id)` to look up the proxy Place in
-                // `binding_locals`; `Unresolved` would return `None` and break
-                // the `tuple_decomp` lookup for non-BitCopy element types.
-                let temp_id = temp_binding.id;
-                let temp_stmt = HirStmt {
-                    node: self.ids.node(),
-                    kind: HirStmtKind::Let(temp_binding, Some(tuple_val)),
-                    span: span.clone(),
-                };
-
-                let mut stmts = vec![temp_stmt];
-
-                // Per-element projection lets.
-                for (idx, (elem_pat, elem_ty)) in
-                    element_patterns.iter().zip(element_tys).enumerate()
-                {
-                    // Build a TupleIndex expression: `__tuple_N.<idx>`.
-                    // Use `ResolvedRef::Binding(temp_id)` so MIR can resolve
-                    // the proxy local from `binding_locals` and recover the
-                    // per-element `Place` via `tuple_decomp`.
-                    let temp_ref = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::of_ty(&tuple_ty, &self.type_classes),
-                        ty: tuple_ty.clone(),
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::BindingRef {
-                            name: temp_name.clone(),
-                            resolved: ResolvedRef::Binding(temp_id),
-                        },
-                        span: span.clone(),
-                    };
-                    let projection = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::of_ty(&elem_ty, &self.type_classes),
-                        ty: elem_ty.clone(),
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::TupleIndex {
-                            tuple: Box::new(temp_ref),
-                            index: idx,
-                        },
-                        span: elem_pat.1.clone(),
-                    };
-
-                    if matches!(elem_pat.0, Pattern::Wildcard) {
-                        self.push_pattern_binding_stmt(
-                            format!("_{idx}"),
-                            elem_ty,
-                            projection,
-                            &mut stmts,
-                            elem_pat.1.clone(),
-                        );
-                    } else {
-                        self.lower_pattern_value_into_stmts(
-                            elem_pat,
-                            projection,
-                            elem_ty,
-                            &mut stmts,
-                            elem_pat.1.clone(),
-                        );
-                    }
-                }
-
+                let mut stmts = Vec::new();
+                self.lower_tuple_pattern_value_into_stmts(
+                    element_patterns,
+                    tuple_val,
+                    &ResolvedTy::Tuple(element_tys),
+                    &mut stmts,
+                    span,
+                );
                 return stmts;
             }
 
             // Record-let: `let Point { x, y } = value_expr;`
             // and shorthand: `let { x, y } = value_expr;`
-            //
-            // Desugar into the same three-phase template as tuple-let:
-            //   1. `let __rec_N = expr;`         — synthetic temp binds the record
-            //   2. `let x = __rec_N.x;`          — per-field FieldAccess projection
-            //   3. `let y = __rec_N.y;`
             //
             // Checker authority: the refutability gate (Stage 1) has already
             // rejected non-product-type scrutinee patterns before HIR lowers.
@@ -16193,60 +15758,14 @@ impl LowerCtx {
 
                 let rec_val = self.lower_expr(value_expr, IntentKind::Consume);
                 let rec_ty = rec_val.ty.clone();
-
-                // Phase 1: bind the record value to a synthetic temp.
-                let temp_name = format!("__rec_{}", self.ids.binding().0);
-                let temp_binding =
-                    self.bind(temp_name.clone(), rec_ty.clone(), false, span.clone());
-                let temp_id = temp_binding.id;
-                let temp_stmt = HirStmt {
-                    node: self.ids.node(),
-                    kind: HirStmtKind::Let(temp_binding, Some(rec_val)),
-                    span: span.clone(),
-                };
-
-                let mut stmts = vec![temp_stmt];
-
-                // Phase 2: per-field projection lets.
-                for (field_name, field_ty, field_pattern) in planned_fields {
-                    // Build a FieldAccess expression: `__rec_N.<field_name>`.
-                    // `ResolvedRef::Binding(temp_id)` — same as the tuple-let path
-                    // (`:9579`) — so MIR resolves the proxy local from
-                    // `binding_locals` via its BindingId.
-                    let temp_ref = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::of_ty(&rec_ty, &self.type_classes),
-                        ty: rec_ty.clone(),
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::BindingRef {
-                            name: temp_name.clone(),
-                            resolved: ResolvedRef::Binding(temp_id),
-                        },
-                        span: span.clone(),
-                    };
-                    let projection = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::of_ty(&field_ty, &self.type_classes),
-                        ty: field_ty.clone(),
-                        intent: IntentKind::Consume,
-                        kind: HirExprKind::FieldAccess {
-                            object: Box::new(temp_ref),
-                            field: field_name.clone(),
-                        },
-                        span: field_pattern.1.clone(),
-                    };
-
-                    self.lower_pattern_value_into_stmts(
-                        &field_pattern,
-                        projection,
-                        field_ty,
-                        &mut stmts,
-                        field_pattern.1.clone(),
-                    );
-                }
-
+                let mut stmts = Vec::new();
+                self.lower_planned_record_pattern_value_into_stmts(
+                    planned_fields,
+                    rec_val,
+                    &rec_ty,
+                    &mut stmts,
+                    span,
+                );
                 return stmts;
             }
         }
@@ -16316,6 +15835,38 @@ impl LowerCtx {
         binding_id
     }
 
+    fn bind_destructure_field(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        ty: ResolvedTy,
+    ) -> (HirBinding, bool) {
+        let (name, nested) = match &pattern.0 {
+            Pattern::Identifier(name) => (name.clone(), false),
+            Pattern::Wildcard => (format!("_{}", self.ids.binding().0), false),
+            Pattern::Tuple(_) | Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => {
+                (format!("__destructure_{}", self.ids.binding().0), true)
+            }
+            Pattern::Constructor { .. }
+            | Pattern::Literal(_)
+            | Pattern::Or(_, _)
+            | Pattern::Regex { .. }
+            | Pattern::NominalPath { .. }
+            | Pattern::ContextVariant(_) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: "unsupported nested let pattern".into(),
+                        owning_pass: "pattern-matching".into(),
+                    },
+                    pattern.1.clone(),
+                    "let destructure supports nested tuple and record patterns here; \
+                     refutable patterns remain reserved for match/if-let",
+                ));
+                (format!("__unsupported_{}", self.ids.binding().0), false)
+            }
+        };
+        (self.bind(name, ty, false, pattern.1.clone()), nested)
+    }
+
     fn lower_tuple_pattern_value_into_stmts(
         &mut self,
         elements: &[Spanned<Pattern>],
@@ -16346,35 +15897,39 @@ impl LowerCtx {
                 vec![ResolvedTy::Unit; elements.len()]
             }
         };
-        let temp_name = format!("__tuple_nested_{}", self.ids.binding().0);
-        let temp_binding = self.bind(temp_name.clone(), value_ty.clone(), false, span.clone());
-        let temp_id = temp_binding.id;
+        let mut fields = Vec::with_capacity(elements.len());
+        let mut nested = Vec::new();
+        for (idx, (elem_pat, elem_ty)) in elements.iter().zip(element_tys).enumerate() {
+            let (binding, is_nested) = self.bind_destructure_field(elem_pat, elem_ty.clone());
+            if is_nested {
+                nested.push((elem_pat.clone(), binding.clone()));
+            }
+            fields.push(HirDestructureField {
+                selector: HirDestructureSelector::Tuple(
+                    u32::try_from(idx).expect("tuple pattern index must fit in u32"),
+                ),
+                binding,
+            });
+        }
         stmts.push(HirStmt {
             node: self.ids.node(),
-            kind: HirStmtKind::Let(temp_binding, Some(value)),
+            kind: HirStmtKind::Destructure { value, fields },
             span: span.clone(),
         });
-        for (idx, (elem_pat, elem_ty)) in elements.iter().zip(element_tys).enumerate() {
-            let temp_ref =
-                self.binding_ref_expr(temp_name.clone(), temp_id, value_ty.clone(), span.clone());
-            let projection = HirExpr {
-                node: self.ids.node(),
-                site: self.ids.site(),
-                value_class: ValueClass::of_ty(&elem_ty, &self.type_classes),
-                ty: elem_ty.clone(),
-                intent: IntentKind::Read,
-                kind: HirExprKind::TupleIndex {
-                    tuple: Box::new(temp_ref),
-                    index: idx,
-                },
-                span: elem_pat.1.clone(),
-            };
+        for (pattern, binding) in nested {
+            let binding_ty = binding.ty.clone();
+            let binding_ref = self.binding_ref_expr(
+                binding.name,
+                binding.id,
+                binding_ty.clone(),
+                pattern.1.clone(),
+            );
             self.lower_pattern_value_into_stmts(
-                elem_pat,
-                projection,
-                elem_ty,
+                &pattern,
+                binding_ref,
+                binding_ty,
                 stmts,
-                elem_pat.1.clone(),
+                pattern.1.clone(),
             );
         }
     }
@@ -16462,33 +16017,53 @@ impl LowerCtx {
             planned_fields.push((field.name, field_ty, field_pattern));
         }
 
-        let temp_name = format!("__rec_nested_{}", self.ids.binding().0);
-        let temp_binding = self.bind(temp_name.clone(), value_ty.clone(), false, span.clone());
-        let temp_id = temp_binding.id;
+        self.lower_planned_record_pattern_value_into_stmts(
+            planned_fields,
+            value,
+            value_ty,
+            stmts,
+            span,
+        );
+    }
+
+    fn lower_planned_record_pattern_value_into_stmts(
+        &mut self,
+        planned_fields: Vec<(String, ResolvedTy, Spanned<Pattern>)>,
+        value: HirExpr,
+        _value_ty: &ResolvedTy,
+        stmts: &mut Vec<HirStmt>,
+        span: Span,
+    ) {
+        let mut fields = Vec::with_capacity(planned_fields.len());
+        let mut nested = Vec::new();
+        for (field_name, field_ty, field_pattern) in planned_fields {
+            let (binding, is_nested) =
+                self.bind_destructure_field(&field_pattern, field_ty.clone());
+            if is_nested {
+                nested.push((field_pattern, binding.clone()));
+            }
+            fields.push(HirDestructureField {
+                selector: HirDestructureSelector::Record(field_name),
+                binding,
+            });
+        }
         stmts.push(HirStmt {
             node: self.ids.node(),
-            kind: HirStmtKind::Let(temp_binding, Some(value)),
+            kind: HirStmtKind::Destructure { value, fields },
             span: span.clone(),
         });
-        for (field_name, field_ty, field_pattern) in planned_fields {
-            let temp_ref =
-                self.binding_ref_expr(temp_name.clone(), temp_id, value_ty.clone(), span.clone());
-            let projection = HirExpr {
-                node: self.ids.node(),
-                site: self.ids.site(),
-                value_class: ValueClass::of_ty(&field_ty, &self.type_classes),
-                ty: field_ty.clone(),
-                intent: IntentKind::Consume,
-                kind: HirExprKind::FieldAccess {
-                    object: Box::new(temp_ref),
-                    field: field_name.clone(),
-                },
-                span: field_pattern.1.clone(),
-            };
+        for (field_pattern, binding) in nested {
+            let binding_ty = binding.ty.clone();
+            let binding_ref = self.binding_ref_expr(
+                binding.name,
+                binding.id,
+                binding_ty.clone(),
+                field_pattern.1.clone(),
+            );
             self.lower_pattern_value_into_stmts(
                 &field_pattern,
-                projection,
-                field_ty,
+                binding_ref,
+                binding_ty,
                 stmts,
                 field_pattern.1.clone(),
             );
@@ -18321,7 +17896,7 @@ impl LowerCtx {
     }
 
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        let mut lowered = self.lower_expr_without_root_fact(expr, intent);
+        let mut lowered = self.lower_expr_with_tail_coercion(expr, intent);
         let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
         lowered.value_class = self
             .checked_ty(&expr.1)
@@ -18335,19 +17910,12 @@ impl LowerCtx {
                 hew_types::ValueClass::Linear => ValueClass::Linear,
             });
         lowered.ty = normalized_ty;
-        if !self
-            .generated_produced_value_facts
-            .contains_key(&lowered.site)
-        {
-            self.record_produced_value_fact(&expr.1, &lowered);
-        }
+
         lowered
     }
 
-    /// Lower an authored expression while leaving its root occurrence for a
-    /// specialised caller to publish. Recursive child expressions still use
-    /// `lower_expr` and therefore retain their ordinary checker facts.
-    fn lower_expr_without_root_fact(
+    /// Apply the checker's explicit function-tail Result coercion.
+    fn lower_expr_with_tail_coercion(
         &mut self,
         expr: &Spanned<Expr>,
         intent: IntentKind,
@@ -18362,212 +17930,9 @@ impl LowerCtx {
         // tail span and is set only at genuine tail positions, so this fires
         // exactly once per coerced tail and never on a non-tail sub-expression.
         if self.tail_ok_coercions.contains(&self.mk_key(&expr.1)) {
-            self.record_produced_value_fact(&expr.1, &lowered);
-            let wrapped = self.wrap_tail_ok(lowered, &expr.1);
-            self.record_generated_produced_value_fact(
-                &wrapped,
-                hew_types::ProducedValueOwnership::Unknown,
-            );
-            wrapped
+            self.wrap_tail_ok(lowered, &expr.1)
         } else {
             lowered
-        }
-    }
-
-    fn record_generated_produced_value_fact(
-        &mut self,
-        lowered: &HirExpr,
-        ownership: hew_types::ProducedValueOwnership,
-    ) {
-        let previous = self.generated_produced_value_facts.insert(
-            lowered.site,
-            HirProducedValueFact {
-                producer: HirProducedValueProducer::classify(&lowered.kind),
-                ownership,
-                relation: HirProducedValueRelation::Leaf,
-                receiver: None,
-                receiver_boundary: None,
-                arguments: Vec::new(),
-            },
-        );
-        assert!(previous.is_none(), "generated HIR site published twice");
-    }
-
-    /// Replace an authored expression's pre-materialization source occurrence
-    /// with the generated value that crosses its type-directed boundary.
-    /// Both occurrences retain facts, but parent identity/join relations must
-    /// converge on the value after representation-changing materialization.
-    fn replace_produced_value_source_site(
-        &mut self,
-        span: &Span,
-        source: SiteId,
-        materialized: SiteId,
-    ) {
-        let key = self.mk_key(span);
-        let sites = self
-            .produced_value_source_sites
-            .get_mut(&key)
-            .expect("materialization source must already be registered");
-        let source_index = sites
-            .iter()
-            .rposition(|site| *site == source)
-            .expect("materialization source site must be registered");
-        sites[source_index] = materialized;
-    }
-
-    /// Publish a synthetic expression root that deliberately has no checker
-    /// span identity of its own. Actor-lambda bodies can share the enclosing
-    /// spawn span, so consuming the spawn's fresh-handle fact for the body
-    /// would mint an owner of the wrong type. Bit-copy bodies are exactly
-    /// `NoOwner`; all other body roots fail closed as `Unknown` while their
-    /// authored child facts remain intact.
-    fn record_synthetic_body_fact(&mut self, span: &Span, lowered: &HirExpr) {
-        let key = self.mk_key(span);
-        self.produced_value_source_sites
-            .entry(key.clone())
-            .or_default()
-            .push(lowered.site);
-        self.produced_value_fact_keys
-            .insert(lowered.site, (key, Some(ProducedValueDependency::Leaf)));
-        let ownership = if lowered.value_class == ValueClass::BitCopy {
-            hew_types::ProducedValueOwnership::NoOwner
-        } else {
-            hew_types::ProducedValueOwnership::Unknown
-        };
-        self.produced_value_fact_sites.insert(
-            lowered.site,
-            HirProducedValueFact {
-                producer: HirProducedValueProducer::classify(&lowered.kind),
-                ownership,
-                relation: HirProducedValueRelation::Leaf,
-                receiver: None,
-                receiver_boundary: None,
-                arguments: Vec::new(),
-            },
-        );
-    }
-
-    /// Project the checker fact for one parsed expression onto its stable HIR
-    /// site.  The receiver relation remains a span-key lookup until every
-    /// expression has lowered; this avoids using source/display names as an
-    /// identity fallback and also supports nested receivers naturally.
-    fn record_produced_value_fact(&mut self, span: &Span, lowered: &HirExpr) {
-        if self.suppress_produced_value_recording_depth != 0 {
-            return;
-        }
-        let key = self.mk_key(span);
-        self.produced_value_source_sites
-            .entry(key.clone())
-            .or_default()
-            .push(lowered.site);
-        if let Some(fact) = self.produced_value_ownership.get(&key).cloned() {
-            // Resolve dependency and receiver edges only after all HIR source
-            // expressions have registered their sites.  Branch joins and
-            // wrappers may lower their result before a sibling source, so
-            // eager resolution would make traversal order semantic.
-            self.produced_value_fact_keys.insert(
-                lowered.site,
-                (
-                    key.clone(),
-                    self.produced_value_dependencies.get(&key).cloned(),
-                ),
-            );
-            self.produced_value_fact_sites.insert(
-                lowered.site,
-                HirProducedValueFact {
-                    producer: crate::node::HirProducedValueProducer::classify(&lowered.kind),
-                    ownership: fact.ownership,
-                    relation: crate::node::HirProducedValueRelation::Leaf,
-                    receiver: None,
-                    receiver_boundary: fact.receiver_boundary,
-                    arguments: fact.arguments,
-                },
-            );
-        }
-    }
-
-    /// Lower a compiler-synthesised expression whose root corresponds to a
-    /// checker-authored synthetic side-table row, while keeping cloned operand
-    /// AST out of the occurrence map. This prevents one source receiver span
-    /// from acquiring facts for every generated `.keys()`/`.values()`/`to_vec()`
-    /// reread.
-    fn lower_synthetic_checker_root(
-        &mut self,
-        expr: &Spanned<Expr>,
-        intent: IntentKind,
-    ) -> HirExpr {
-        self.suppress_produced_value_recording_depth += 1;
-        let lowered = self.lower_expr(expr, intent);
-        self.suppress_produced_value_recording_depth -= 1;
-        self.record_produced_value_fact(&expr.1, &lowered);
-        lowered
-    }
-
-    fn lower_synthetic_operand(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        self.suppress_produced_value_recording_depth += 1;
-        let lowered = self.lower_expr(expr, intent);
-        self.suppress_produced_value_recording_depth -= 1;
-        lowered
-    }
-
-    /// Retain a checker child occurrence that a specialised HIR node consumes.
-    /// The returned anchor participates in HIR structure and ownership facts,
-    /// but is intentionally not executable MIR.
-    fn produced_value_source_anchor(
-        &mut self,
-        span: &Span,
-        ty: ResolvedTy,
-        intent: IntentKind,
-        producer: HirProducedValueProducer,
-    ) -> HirProducedValueSourceAnchor {
-        let site = self.ids.site();
-        let key = self.mk_key(span);
-        self.produced_value_source_sites
-            .entry(key.clone())
-            .or_default()
-            .push(site);
-        if let Some(fact) = self.produced_value_ownership.get(&key).cloned() {
-            self.produced_value_fact_keys.insert(
-                site,
-                (
-                    key.clone(),
-                    self.produced_value_dependencies.get(&key).cloned(),
-                ),
-            );
-            self.produced_value_fact_sites.insert(
-                site,
-                HirProducedValueFact {
-                    producer,
-                    ownership: fact.ownership,
-                    relation: crate::node::HirProducedValueRelation::Leaf,
-                    receiver: None,
-                    receiver_boundary: fact.receiver_boundary,
-                    arguments: fact.arguments,
-                },
-            );
-        }
-        HirProducedValueSourceAnchor {
-            node: self.ids.node(),
-            site,
-            value_class: ValueClass::of_ty(&ty, &self.type_classes),
-            ty,
-            intent,
-            producer,
-            span: span.clone(),
-            source: None,
-        }
-    }
-
-    fn source_anchor_from_lowered(lowered: &HirExpr) -> HirProducedValueSourceAnchor {
-        HirProducedValueSourceAnchor {
-            node: lowered.node,
-            site: lowered.site,
-            ty: lowered.ty.clone(),
-            value_class: lowered.value_class,
-            intent: lowered.intent,
-            producer: HirProducedValueProducer::classify(&lowered.kind),
-            span: lowered.span.clone(),
-            source: None,
         }
     }
 
@@ -18577,7 +17942,6 @@ impl LowerCtx {
         span: &Span,
         intent: IntentKind,
         source: HirExpr,
-        producer: HirProducedValueProducer,
     ) -> HirExpr {
         let ty = source.ty.clone();
         HirExpr {
@@ -18588,19 +17952,8 @@ impl LowerCtx {
             intent,
             kind: HirExprKind::SubsumedValue {
                 source: Box::new(source),
-                producer,
             },
             span: span.clone(),
-        }
-    }
-
-    fn take_pending_produced_value_carrier(&mut self) -> PendingProducedValueCarrier {
-        PendingProducedValueCarrier {
-            facts: std::mem::take(&mut self.produced_value_fact_sites),
-            generated_facts: std::mem::take(&mut self.generated_produced_value_facts),
-            fact_keys: std::mem::take(&mut self.produced_value_fact_keys),
-            source_sites: std::mem::take(&mut self.produced_value_source_sites),
-            ownership: std::mem::take(&mut self.produced_value_ownership),
         }
     }
 
@@ -18680,13 +18033,7 @@ impl LowerCtx {
                 if let [arg] = args.as_slice() {
                     let site = self.ids.site();
                     let lowered = self.lower_expr(arg.expr(), IntentKind::Consume);
-                    return self.subsumed_value(
-                        site,
-                        &span,
-                        intent,
-                        lowered,
-                        HirProducedValueProducer::Call,
-                    );
+                    return self.subsumed_value(site, &span, intent, lowered);
                 }
             }
             if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
@@ -19003,13 +18350,7 @@ impl LowerCtx {
                     Some(MethodCallRewrite::VecFrom)
                 ) {
                     if args.len() == 1 {
-                        return self.subsumed_value(
-                            site,
-                            &span,
-                            intent,
-                            args.remove(0),
-                            HirProducedValueProducer::Call,
-                        );
+                        return self.subsumed_value(site, &span, intent, args.remove(0));
                     }
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -19633,12 +18974,7 @@ impl LowerCtx {
                         } else {
                             ResolvedTy::Bytes
                         };
-                        let source_anchor = self.produced_value_source_anchor(
-                            &inner.1,
-                            result_ty.clone(),
-                            intent,
-                            HirProducedValueProducer::ConnAwaitRead,
-                        );
+
                         let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
                         return HirExpr {
                             node: self.ids.node(),
@@ -19650,7 +18986,6 @@ impl LowerCtx {
                                 conn: Box::new(conn),
                                 to_string,
                                 deadline_ns: None,
-                                source_anchor,
                             },
                             span: span.clone(),
                         };
@@ -19676,12 +19011,7 @@ impl LowerCtx {
                                 builtin: None,
                                 is_opaque: true,
                             });
-                        let source_anchor = self.produced_value_source_anchor(
-                            &inner.1,
-                            result_ty.clone(),
-                            intent,
-                            HirProducedValueProducer::ListenerAwaitAccept,
-                        );
+
                         let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
                         return HirExpr {
                             node: self.ids.node(),
@@ -19692,7 +19022,6 @@ impl LowerCtx {
                             kind: HirExprKind::ListenerAwaitAccept {
                                 listener: Box::new(listener),
                                 deadline_ns: None,
-                                source_anchor,
                             },
                             span: span.clone(),
                         };
@@ -19709,13 +19038,7 @@ impl LowerCtx {
                 // actor-ask / conn-read bindable-await paths.
                 if self.is_stream_recv_await(&self.mk_key(&inner.1)) {
                     let source = self.lower_expr(inner, intent);
-                    return self.subsumed_value(
-                        site,
-                        &span,
-                        intent,
-                        source,
-                        HirProducedValueProducer::Await,
-                    );
+                    return self.subsumed_value(site, &span, intent, source);
                 }
                 // NEW-4: `await rx.recv()` over a `std::channel` `Receiver<T>` —
                 // the checker wired the inner method call to the layout-witness
@@ -19727,13 +19050,7 @@ impl LowerCtx {
                 // conn-read bindable-await paths.
                 if self.is_channel_recv_await(&self.mk_key(&inner.1)) {
                     let source = self.lower_expr(inner, intent);
-                    return self.subsumed_value(
-                        site,
-                        &span,
-                        intent,
-                        source,
-                        HirProducedValueProducer::Await,
-                    );
+                    return self.subsumed_value(site, &span, intent, source);
                 }
                 // NEW-7: `await sink.send(x)` over a `Sink<bytes>` — the checker
                 // wired the inner method call to `hew_sink_write_bytes`. Strip the
@@ -19760,13 +19077,7 @@ impl LowerCtx {
                         };
                     }
                     let source = self.lower_expr(inner, intent);
-                    return self.subsumed_value(
-                        site,
-                        &span,
-                        intent,
-                        source,
-                        HirProducedValueProducer::Await,
-                    );
+                    return self.subsumed_value(site, &span, intent, source);
                 }
                 // Unwrap a bare block wrapping a single trailing method call
                 // (`await { method() }`) to recover the effective inner expression
@@ -19787,7 +19098,7 @@ impl LowerCtx {
                         }
                         _ => (inner, &inner.1),
                     };
-                let has_block_wrapper = !std::ptr::eq(effective_inner_expr, inner.as_ref());
+
                 if let Some(ActorMethodKind::Ask(method_id, reply_ty)) = self
                     .actor_method_dispatch
                     .get(&self.mk_key(effective_inner_span))
@@ -19825,13 +19136,7 @@ impl LowerCtx {
                             // Fallback: return raw expr if reply_ty doesn't resolve;
                             // the checker already emitted an error in this case.
                             let source = self.lower_expr(inner, intent);
-                            return self.subsumed_value(
-                                site,
-                                &span,
-                                intent,
-                                source,
-                                HirProducedValueProducer::Await,
-                            );
+                            return self.subsumed_value(site, &span, intent, source);
                         }
                     };
                     // Register the `Result<reply_ty, AskError>` instantiation at
@@ -19848,46 +19153,15 @@ impl LowerCtx {
                     // `RemoteActorAsk` sibling arms.
                     self.try_register_enum_instantiation_ty(&result_ty, &span);
                     let ask_expr = self.lower_expr(effective_inner_expr, intent);
-                    let HirExpr {
-                        node: anchor_node,
-                        site: anchor_site,
-                        ty: _,
-                        value_class: _,
-                        intent: anchor_intent,
-                        kind: ask_kind,
-                        span: anchor_span,
-                    } = ask_expr;
+                    let HirExpr { kind: ask_kind, .. } = ask_expr;
                     if let HirExprKind::ActorAsk {
                         receiver,
                         method_id,
                         args,
                         reply_ty,
                         deadline_ns,
-                        source_anchor: None,
                     } = ask_kind
                     {
-                        let method_anchor = HirProducedValueSourceAnchor {
-                            node: anchor_node,
-                            site: anchor_site,
-                            ty: result_ty.clone(),
-                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
-                            intent: anchor_intent,
-                            producer: HirProducedValueProducer::ActorAsk,
-                            span: anchor_span,
-                            source: None,
-                        };
-                        let source_anchor = if has_block_wrapper {
-                            let mut block_anchor = self.produced_value_source_anchor(
-                                &inner.1,
-                                result_ty.clone(),
-                                intent,
-                                HirProducedValueProducer::Block,
-                            );
-                            block_anchor.source = Some(Box::new(method_anchor));
-                            block_anchor
-                        } else {
-                            method_anchor
-                        };
                         return HirExpr {
                             node: self.ids.node(),
                             site,
@@ -19900,7 +19174,6 @@ impl LowerCtx {
                                 args,
                                 reply_ty,
                                 deadline_ns,
-                                source_anchor: Some(source_anchor),
                             },
                             span: span.clone(),
                         };
@@ -19947,13 +19220,7 @@ impl LowerCtx {
                         };
                     }
                     let source = self.lower_expr(inner, intent);
-                    return self.subsumed_value(
-                        site,
-                        &span,
-                        intent,
-                        source,
-                        HirProducedValueProducer::Await,
-                    );
+                    return self.subsumed_value(site, &span, intent, source);
                 }
                 // `await expr` — only legal as the direct statement-expression
                 // inside a `scope{}` body in v0.5 (TI-4). Sub-expression positions
@@ -19995,7 +19262,7 @@ impl LowerCtx {
                 // Resolve the inner expression. It must be a binding-ref with a
                 // `Task<T>` type to be awaitable.
                 let inner_hir = self.lower_expr(inner, IntentKind::Consume);
-                let source_anchor = Self::source_anchor_from_lowered(&inner_hir);
+
                 match &inner_hir.ty {
                     ResolvedTy::Task(output_ty) => {
                         let output_ty = *output_ty.clone();
@@ -20019,7 +19286,6 @@ impl LowerCtx {
                                     binding_name,
                                     binding_id,
                                     output_ty,
-                                    source_anchor,
                                 },
                                 span,
                             };
@@ -20383,8 +19649,8 @@ impl LowerCtx {
                     || matches!(&object.0, Expr::Identifier(name) if name == "self")
                         && self.current_machine_name.is_some();
                 if is_self_receiver {
-                    if let Some(hir_expr) = self
-                        .try_lower_machine_self_field_access(field, &object.1, &span, site, intent)
+                    if let Some(hir_expr) =
+                        self.try_lower_machine_self_field_access(field, &span, site, intent)
                     {
                         return hir_expr;
                     }
@@ -20395,8 +19661,8 @@ impl LowerCtx {
                 if matches!(&object.0, Expr::Identifier(name) if name == "event")
                     && self.current_machine_name.is_some()
                 {
-                    if let Some(hir_expr) = self
-                        .try_lower_machine_event_field_access(field, &object.1, &span, site, intent)
+                    if let Some(hir_expr) =
+                        self.try_lower_machine_event_field_access(field, &span, site, intent)
                     {
                         return hir_expr;
                     }
@@ -20875,7 +20141,6 @@ impl LowerCtx {
                     intent,
                     kind: HirExprKind::SubsumedValue {
                         source: Box::new(source),
-                        producer: HirProducedValueProducer::Timeout,
                     },
                     span: span.clone(),
                 };
@@ -21068,8 +20333,7 @@ impl LowerCtx {
                     return inner;
                 }
             };
-            let source_site = inner.site;
-            self.record_produced_value_fact(&span, &inner);
+
             let wrapped = HirExpr {
                 node: self.ids.node(),
                 site: self.ids.site(),
@@ -21085,13 +20349,7 @@ impl LowerCtx {
                 },
                 span,
             };
-            self.record_generated_produced_value_fact(
-                &wrapped,
-                hew_types::ProducedValueOwnership::owned(
-                    hew_types::ProducedValueAcquisition::Fresh,
-                ),
-            );
-            self.replace_produced_value_source_site(&wrapped.span, source_site, wrapped.site);
+
             return wrapped;
         }
         inner
@@ -22152,9 +21410,7 @@ impl LowerCtx {
         // prior value on exit.
         let my_self_id = self.current_actor_self.take();
         let lowered_body = self.with_current_return_type(reply_ty.clone(), |ctx| {
-            let body = ctx.lower_expr_without_root_fact(body, IntentKind::Read);
-            ctx.record_synthetic_body_fact(&body.span, &body);
-            body
+            ctx.lower_expr_with_tail_coercion(body, IntentKind::Read)
         });
         self.current_actor_self = my_self_id;
         self.pop_scope();
@@ -23420,7 +22676,7 @@ impl LowerCtx {
                 },
                 clone_span,
             );
-            self.lower_synthetic_checker_root(&clone_call, IntentKind::Consume)
+            self.lower_expr(&clone_call, IntentKind::Consume)
         } else {
             self.lower_expr(receiver, IntentKind::Consume)
         };
@@ -26174,7 +25430,7 @@ impl LowerCtx {
                 },
                 clone_span,
             );
-            let clone_hir = self.lower_synthetic_checker_root(&clone_call, IntentKind::Consume);
+            let clone_hir = self.lower_expr(&clone_call, IntentKind::Consume);
             let iter_expr = self.make_vec_iter_init(clone_hir, elem_ty, span);
             return (iter_expr.kind, iter_expr.ty);
         }
@@ -26281,7 +25537,6 @@ impl LowerCtx {
         iter_ty: ResolvedTy,
         span: &Span,
     ) -> HirExpr {
-        let receiver_is_place = Self::for_in_iterable_is_place(&receiver.0);
         let keys_span = span.start..span.start;
         let values_span = span.end..span.end;
         let keys_call = (
@@ -26300,12 +25555,8 @@ impl LowerCtx {
             },
             values_span,
         );
-        let keys_hir = if receiver_is_place {
-            self.lower_expr(&keys_call, IntentKind::Consume)
-        } else {
-            self.lower_synthetic_checker_root(&keys_call, IntentKind::Consume)
-        };
-        let values_hir = self.lower_synthetic_checker_root(&values_call, IntentKind::Consume);
+        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
+        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
         let idx = self.make_i64_literal(0, span.clone());
         self.make_expr(
             HirExprKind::StructInit {
@@ -26476,12 +25727,8 @@ impl LowerCtx {
         );
         // The projections produce fresh owned Vecs; the StructInit consumes
         // them into the cursor.
-        let keys_hir = if Self::for_in_iterable_is_place(&iterable.0) {
-            self.lower_expr(&keys_call, IntentKind::Consume)
-        } else {
-            self.lower_synthetic_checker_root(&keys_call, IntentKind::Consume)
-        };
-        let values_hir = self.lower_synthetic_checker_root(&values_call, IntentKind::Consume);
+        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
+        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
         let idx = self.make_i64_literal(0, iterable_span.clone());
         // Build the `HashMapIter<K, V>` StructInit HIR directly (carrying its
         // `type_args` so MIR mangles the concrete layout), mirroring
@@ -26529,7 +25776,7 @@ impl LowerCtx {
         );
         let option_ty = Self::resolved_option_ty(elem_ty.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
-        let lowered_receiver = self.lower_synthetic_operand(receiver, IntentKind::Modify);
+        let lowered_receiver = self.lower_expr(receiver, IntentKind::Modify);
         let HirExprKind::BindingRef {
             name: receiver_name,
             resolved: ResolvedRef::Binding(receiver_binding),
@@ -26989,60 +26236,9 @@ impl LowerCtx {
                 Some(pattern.clone()),
             )
         };
-        // Lower the iterable with Read intent for inspection; the intent on the
-        // BindingRef is patched per arm below:
-        //
-        //  - Vec (borrow arm): intent → Capture.  Vec is a refcounted heap handle;
-        //    CowShare increments the refcount so the source binding stays Live after
-        //    the loop.  IntentKind::Capture is the "share without consuming" signal:
-        //    MIR recognises Capture+CowValue as a CowShare and does NOT emit
-        //    AggregateAlias for the VecIter struct init, leaving the source Live.
-        //
-        //  - Draining iterables (Generator, Receiver, Stream, VecIter, generic
-        //    IntoIterator/Iterator): intent → Consume.  The source is fully drained
-        //    so the binding must be Consumed.
-        //
-        // The intent field of the BindingRef is what the MIR dataflow checker reads
-        // to decide Consumed vs Live for the source collection binding.
-        let prior_occurrence_sites: HashSet<SiteId> = self
-            .produced_value_source_sites
-            .values()
-            .flatten()
-            .copied()
-            .collect();
+        // Retain the checked iterable and source intent for iterator desugaring.
         let mut lowered_iterable = self.lower_expr(iterable, IntentKind::Read);
-        let place_projection_rewrite = Self::for_in_iterable_is_place(&iterable.0)
-            && matches!(
-                lowered_iterable.ty,
-                ResolvedTy::Named {
-                    builtin: Some(BuiltinType::HashMap | BuiltinType::HashSet),
-                    ..
-                }
-            );
-        if place_projection_rewrite {
-            // This first lowering exists only to inspect the checker-resolved
-            // collection type; the projection rewrite below performs the real
-            // reads. Remove exactly the newly allocated inspection occurrences,
-            // then retain one authored occurrence under the first projection.
-            let discarded: HashSet<SiteId> = self
-                .produced_value_source_sites
-                .values()
-                .flatten()
-                .copied()
-                .filter(|site| !prior_occurrence_sites.contains(site))
-                .collect();
-            for sites in self.produced_value_source_sites.values_mut() {
-                sites.retain(|site| !discarded.contains(site));
-            }
-            self.produced_value_source_sites
-                .retain(|_, sites| !sites.is_empty());
-            self.produced_value_fact_sites
-                .retain(|site, _| !discarded.contains(site));
-            self.generated_produced_value_facts
-                .retain(|site, _| !discarded.contains(site));
-            self.produced_value_fact_keys
-                .retain(|site, _| !discarded.contains(site));
-        }
+
         // Statements that must run before the iterator-cursor `Let` in the
         // for-in's outer block. The HashMap/HashSet arms push a single-eval
         // source temp here so a side-effectful iterable is evaluated once.
@@ -27053,40 +26249,8 @@ impl LowerCtx {
                 builtin: Some(BuiltinType::Vec),
                 ..
             } if args.len() == 1 => {
-                // Vec is a refcounted heap handle: sharing it (CowShare) leaves the
-                // source binding Live, so the collection is usable after the loop.
-                // Use Capture intent to signal "share, not move" to the MIR; the MIR
-                // alias_moved_owned_operand skips AggregateAlias for Capture+CowValue.
-                //
-                // A literal/repeat-desugared source (`for x in [1, 2, 3]`) lowers to
-                // a synthetic `Block` whose tail is a `BindingRef` to a named temp
-                // (`__hew_array_N` / `__hew_repeat_N`) that keeps its OWN scope-exit
-                // drop, exactly like a user `let` binding — but that `BindingRef`
-                // arrives wrapped inside the `Block` and hardcoded to `Read`. MIR's
-                // `vec_iter_let_cursor_owns_handle` only recognises the CowShare
-                // place-source shape when the `vec` field is a BARE `BindingRef`
-                // with `Capture` intent; the `Block` wrapper fails that match, so
-                // the cursor is wrongly treated as the sole owner and its
-                // scope-exit `RecordFieldDrop` double-frees the temp's buffer
-                // alongside the temp's own drop (#2356). Hoist the block's
-                // statements into the prelude and use its tail directly, so a
-                // literal source takes exactly the shape a named binding takes.
-                //
-                // A user-written block wrapped AROUND the literal (`for x in { [1,
-                // 2, 3] }`) nests one more `Block` layer: the outer block's own
-                // tail is the array-literal desugar `Block` above, not yet a bare
-                // `BindingRef`. Peeling only one layer left that inner `Block`
-                // intact as the `VecIter` source, so MIR's place-source match still
-                // failed and the double-free reproduced identically to #2356 for
-                // any block-wrapped literal/repeat source (#2394 follow-up). Peel
-                // every nested `Block` layer — hoisting each one's statements into
-                // the prelude in outer-to-inner (original execution) order — until
-                // the tail is no longer a `Block`, so an arbitrarily block-wrapped
-                // literal source bottoms out at the same bare-`BindingRef` shape a
-                // named binding takes. Keep each consumed Block site as a
-                // transparent `SubsumedValue` wrapper: checker facts and their
-                // nested identity edges remain attached to live HIR expressions,
-                // while MIR evaluates only the surviving tail.
+                // Hoist nested block statements in evaluation order while retaining
+                // each transparent source wrapper around the iterator input.
                 let elem_ty = args[0].clone();
                 let mut consumed_blocks = Vec::new();
                 while let HirExprKind::Block(block) = lowered_iterable.kind {
@@ -27103,30 +26267,9 @@ impl LowerCtx {
                     lowered_iterable = *tail;
                 }
                 lowered_iterable.intent = IntentKind::Capture;
-                let synthetic_array_tail = matches!(
-                    &lowered_iterable.kind,
-                    HirExprKind::BindingRef { name, .. }
-                        if name.starts_with("__hew_array_") || name.starts_with("__hew_repeat_")
-                ) && !self
-                    .produced_value_fact_sites
-                    .contains_key(&lowered_iterable.site);
-                if synthetic_array_tail {
-                    let (array_site, _, _) = consumed_blocks
-                        .pop()
-                        .expect("array desugar tail must retain its synthetic block site");
-                    lowered_iterable.site = array_site;
-                    if let Some(fact) = self.produced_value_fact_sites.get_mut(&array_site) {
-                        fact.producer = HirProducedValueProducer::BindingRef;
-                    }
-                }
                 for (site, block_span, block_intent) in consumed_blocks.into_iter().rev() {
-                    lowered_iterable = self.subsumed_value(
-                        site,
-                        &block_span,
-                        block_intent,
-                        lowered_iterable,
-                        HirProducedValueProducer::Block,
-                    );
+                    lowered_iterable =
+                        self.subsumed_value(site, &block_span, block_intent, lowered_iterable);
                 }
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
@@ -27214,11 +26357,7 @@ impl LowerCtx {
                     },
                     to_vec_span,
                 );
-                let vec_hir = if Self::for_in_iterable_is_place(&iterable.0) {
-                    self.lower_expr(&to_vec_call, IntentKind::Consume)
-                } else {
-                    self.lower_synthetic_checker_root(&to_vec_call, IntentKind::Consume)
-                };
+                let vec_hir = self.lower_expr(&to_vec_call, IntentKind::Consume);
                 let iter_init =
                     self.make_vec_iter_init(vec_hir, elem_ty.clone(), iterable.1.clone());
                 (
@@ -27435,8 +26574,7 @@ impl LowerCtx {
                     )
                 } else {
                     let next_receiver = (Expr::Identifier(iter_name), iterable.1.clone());
-                    let lowered_receiver =
-                        self.lower_synthetic_operand(&next_receiver, IntentKind::Consume);
+                    let lowered_receiver = self.lower_expr(&next_receiver, IntentKind::Consume);
                     if matches!(target, HirVarSelfMethodTarget::Direct) {
                         self.record_var_self_direct_monomorphisation(
                             &target_label,
@@ -27445,13 +26583,7 @@ impl LowerCtx {
                             lowered_receiver.site,
                         );
                     }
-                    let builtin_cursor = matches!(
-                        iter_ty,
-                        ResolvedTy::Named {
-                            builtin: Some(BuiltinType::VecIter | BuiltinType::HashMapIter),
-                            ..
-                        }
-                    );
+
                     let next = self.make_expr(
                         HirExprKind::VarSelfMethodCall {
                             receiver: Box::new(lowered_receiver),
@@ -27472,16 +26604,7 @@ impl LowerCtx {
                     // Option; user/static iterators remain provisional until
                     // the declaration-keyed verifier resolves their return
                     // summary.
-                    let ownership = if next.value_class == ValueClass::BitCopy {
-                        hew_types::ProducedValueOwnership::NoOwner
-                    } else if builtin_cursor {
-                        hew_types::ProducedValueOwnership::owned(
-                            hew_types::ProducedValueAcquisition::Fresh,
-                        )
-                    } else {
-                        hew_types::ProducedValueOwnership::Unknown
-                    };
-                    self.record_generated_produced_value_fact(&next, ownership);
+
                     next
                 }
             }
@@ -28165,7 +27288,6 @@ impl LowerCtx {
                                     method_id,
                                     args: lowered_args,
                                     reply_ty: reply_ty.clone(),
-                                    source_anchor: None,
                                     deadline_ns: None,
                                 },
                                 reply_ty,
@@ -28593,7 +27715,7 @@ impl LowerCtx {
                 value_ty,
             }) => self.lower_generic_wire_codec(args, direction, value_ty, span),
             Some(MethodCallRewrite::BuiltinOptionResult { method }) => {
-                self.lower_builtin_option_result_method(method, receiver, args, span, site)
+                self.lower_builtin_option_result_method(method, receiver, args, span)
             }
             Some(MethodCallRewrite::RemoteActorAsk) => {
                 self.try_register_enum_instantiation(&span);
@@ -29195,7 +28317,6 @@ impl LowerCtx {
                 (
                     HirExprKind::SubsumedValue {
                         source: Box::new(lowered_receiver),
-                        producer: HirProducedValueProducer::CopyCloneNoop,
                     },
                     ty,
                 )
@@ -29621,7 +28742,6 @@ impl LowerCtx {
         receiver: &Spanned<Expr>,
         args: &[hew_parser::ast::CallArg],
         span: Span,
-        result_site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         let expected_args = Self::option_result_method_arity(method);
         if args.len() != expected_args {
@@ -29681,7 +28801,6 @@ impl LowerCtx {
                 .map(|(predicate, _)| predicate)
         };
 
-        let mut identity_source = None;
         let arms = match method {
             OptionResultMethod::OptionIsSome => {
                 let Some(some) = variant(self, BuiltinType::Option, "Some") else {
@@ -29840,10 +28959,7 @@ impl LowerCtx {
                 // failure arm never produces a value of `ret_ty`.
                 let panic_msg_expr =
                     self.build_string_literal_expr(panic_msg.to_string(), span.clone());
-                self.record_generated_produced_value_fact(
-                    &panic_msg_expr,
-                    hew_types::ProducedValueOwnership::Borrowed,
-                );
+
                 let panic_call =
                     self.build_catalog_call("panic", vec![panic_msg_expr], span.clone());
                 let payload = self.synthetic_binding_ref(
@@ -29852,7 +28968,7 @@ impl LowerCtx {
                     ret_ty.clone(),
                     &span,
                 );
-                identity_source = Some(payload.site);
+
                 vec![
                     HirMatchArm {
                         scope: Some(self.ids.scope()),
@@ -29943,49 +29059,6 @@ impl LowerCtx {
                 ]
             }
         };
-
-        if let Some(source) = identity_source {
-            let key = self.mk_key(&span);
-            if let Some(authority) = self.produced_value_ownership.get(&key).cloned() {
-                if let Some(relation) =
-                    generated_single_source_identity_relation(authority.ownership, &[source])
-                {
-                    let source_previous = self.generated_produced_value_facts.insert(
-                        source,
-                        HirProducedValueFact {
-                            producer: HirProducedValueProducer::BindingRef,
-                            // The generated binding reference is only the
-                            // identity anchor. The enclosing owned Match row
-                            // performs the one physical owner handoff.
-                            ownership: hew_types::ProducedValueOwnership::Borrowed,
-                            relation: HirProducedValueRelation::Leaf,
-                            receiver: None,
-                            receiver_boundary: None,
-                            arguments: Vec::new(),
-                        },
-                    );
-                    assert!(
-                        source_previous.is_none(),
-                        "generated unwrap payload site published twice"
-                    );
-                    let result_previous = self.generated_produced_value_facts.insert(
-                        result_site,
-                        HirProducedValueFact {
-                            producer: HirProducedValueProducer::Match,
-                            ownership: authority.ownership,
-                            relation,
-                            receiver: None,
-                            receiver_boundary: authority.receiver_boundary,
-                            arguments: authority.arguments,
-                        },
-                    );
-                    assert!(
-                        result_previous.is_none(),
-                        "generated unwrap result site published twice"
-                    );
-                }
-            }
-        }
 
         (
             HirExprKind::Match {
@@ -30573,7 +29646,6 @@ impl LowerCtx {
     fn try_lower_machine_self_field_access(
         &mut self,
         field: &str,
-        receiver_span: &Span,
         span: &std::ops::Range<usize>,
         site: SiteId,
         intent: IntentKind,
@@ -30618,22 +29690,7 @@ impl LowerCtx {
         {
             let field_ty = hir_field.ty.clone();
             let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
-            let receiver_ty = self
-                .resolved_expr_types
-                .get(&self.mk_key(receiver_span))
-                .cloned()
-                .unwrap_or(ResolvedTy::Unit);
-            let source_anchor = self
-                .produced_value_ownership
-                .contains_key(&self.mk_key(receiver_span))
-                .then(|| {
-                    self.produced_value_source_anchor(
-                        receiver_span,
-                        receiver_ty,
-                        IntentKind::Read,
-                        HirProducedValueProducer::BindingRef,
-                    )
-                });
+
             Some(HirExpr {
                 node: self.ids.node(),
                 site,
@@ -30645,7 +29702,6 @@ impl LowerCtx {
                     state_idx: src_state_idx,
                     field_idx,
                     field_name: field.to_string(),
-                    source_anchor,
                 },
                 span: span.clone(),
             })
@@ -30683,7 +29739,6 @@ impl LowerCtx {
     fn try_lower_machine_event_field_access(
         &mut self,
         field: &str,
-        receiver_span: &Span,
         span: &std::ops::Range<usize>,
         site: SiteId,
         intent: IntentKind,
@@ -30697,22 +29752,7 @@ impl LowerCtx {
         {
             let field_ty = hir_field.ty.clone();
             let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
-            let receiver_ty = self
-                .resolved_expr_types
-                .get(&self.mk_key(receiver_span))
-                .cloned()
-                .unwrap_or(ResolvedTy::Unit);
-            let source_anchor = self
-                .produced_value_ownership
-                .contains_key(&self.mk_key(receiver_span))
-                .then(|| {
-                    self.produced_value_source_anchor(
-                        receiver_span,
-                        receiver_ty,
-                        IntentKind::Read,
-                        HirProducedValueProducer::BindingRef,
-                    )
-                });
+
             return Some(HirExpr {
                 node: self.ids.node(),
                 site,
@@ -30724,7 +29764,6 @@ impl LowerCtx {
                     event_idx,
                     field_idx,
                     field_name: field.to_string(),
-                    source_anchor,
                 },
                 span: span.clone(),
             });
@@ -30985,12 +30024,7 @@ impl LowerCtx {
                 // span in the checker's type map, which holds the pre-deadline
                 // plain type — so call _ty directly instead.
                 self.try_register_enum_instantiation_ty(&result_ty, span);
-                let source_anchor = self.produced_value_source_anchor(
-                    &await_inner.1,
-                    option_ty,
-                    intent,
-                    HirProducedValueProducer::ChannelRecvAwait,
-                );
+
                 let source = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -31000,11 +30034,10 @@ impl LowerCtx {
                     kind: HirExprKind::ChannelRecvAwait {
                         receiver: Box::new(recv_expr),
                         deadline_ns: Some(deadline_ns),
-                        source_anchor,
                     },
                     span: inner.1.clone(),
                 };
-                self.record_produced_value_fact(&inner.1, &source);
+
                 return source;
             }
             self.unsupported(
@@ -31037,12 +30070,7 @@ impl LowerCtx {
                 let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
                 // Same registration as ChannelRecvAwait above.
                 self.try_register_enum_instantiation_ty(&result_ty, span);
-                let source_anchor = self.produced_value_source_anchor(
-                    &await_inner.1,
-                    option_ty,
-                    intent,
-                    HirProducedValueProducer::StreamRecvAwait,
-                );
+
                 let source = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -31052,11 +30080,10 @@ impl LowerCtx {
                     kind: HirExprKind::StreamRecvAwait {
                         stream: Box::new(stream_expr),
                         deadline_ns: Some(deadline_ns),
-                        source_anchor,
                     },
                     span: inner.1.clone(),
                 };
-                self.record_produced_value_fact(&inner.1, &source);
+
                 return source;
             }
             self.unsupported(
@@ -31869,7 +30896,7 @@ impl LowerCtx {
                             // `T` via `hew_task_get_result`).
                             let call_hir = self.lower_expr(child_expr, IntentKind::Consume);
                             let call_site = call_hir.site;
-                            let source_anchor = Self::source_anchor_from_lowered(&call_hir);
+
                             let explicit_type_args = match &child_expr.0 {
                                 Expr::Call {
                                     type_args: Some(type_args),
@@ -31913,7 +30940,6 @@ impl LowerCtx {
                                             callee,
                                             args,
                                             task_ty: task_ty.clone(),
-                                            source_anchor,
                                             bound: true,
                                         },
                                         span: child_expr.1.clone(),
@@ -32031,7 +31057,7 @@ impl LowerCtx {
         // time would break the TI-1/TI-2/TI-4 canonical invariants.
         let call_hir = self.lower_expr(expr, IntentKind::Consume);
         let call_site = call_hir.site;
-        let source_anchor = Self::source_anchor_from_lowered(&call_hir);
+
         let explicit_type_args = match &expr.0 {
             Expr::Call {
                 type_args: Some(type_args),
@@ -32070,7 +31096,6 @@ impl LowerCtx {
                 callee,
                 args,
                 task_ty,
-                source_anchor,
                 bound: false,
             },
             span,
@@ -32902,7 +31927,7 @@ fn collect_general_closure_captures_walk_block(
 ) {
     for stmt in &block.statements {
         match &stmt.kind {
-            HirStmtKind::Let(_, Some(value)) => {
+            HirStmtKind::Let(_, Some(value)) | HirStmtKind::Destructure { value, .. } => {
                 collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
             }
             HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
@@ -32924,13 +31949,17 @@ fn collect_general_closure_captures_walk_block(
             } => {
                 collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
                 for prelude_stmt in success_prelude {
-                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
-                        collect_general_closure_captures_walk(
-                            value,
-                            outer_bindings,
-                            seen,
-                            captures,
-                        );
+                    match &prelude_stmt.kind {
+                        HirStmtKind::Let(_, Some(value))
+                        | HirStmtKind::Destructure { value, .. } => {
+                            collect_general_closure_captures_walk(
+                                value,
+                                outer_bindings,
+                                seen,
+                                captures,
+                            );
+                        }
+                        _ => {}
                     }
                 }
                 collect_general_closure_captures_walk_block(
@@ -32966,6 +31995,10 @@ fn collect_captures_walk_block(
                 collect_captures_walk(value, &locally_bound, seen, captures, self_id);
                 locally_bound.insert(binding.id);
             }
+            HirStmtKind::Destructure { value, fields } => {
+                collect_captures_walk(value, &locally_bound, seen, captures, self_id);
+                locally_bound.extend(fields.iter().map(|field| field.binding.id));
+            }
             HirStmtKind::Let(binding, None) => {
                 locally_bound.insert(binding.id);
             }
@@ -32988,9 +32021,16 @@ fn collect_captures_walk_block(
             } => {
                 collect_captures_walk(scrutinee, &locally_bound, seen, captures, self_id);
                 for prelude_stmt in success_prelude {
-                    if let HirStmtKind::Let(binding, Some(value)) = &prelude_stmt.kind {
-                        collect_captures_walk(value, &locally_bound, seen, captures, self_id);
-                        locally_bound.insert(binding.id);
+                    match &prelude_stmt.kind {
+                        HirStmtKind::Let(binding, Some(value)) => {
+                            collect_captures_walk(value, &locally_bound, seen, captures, self_id);
+                            locally_bound.insert(binding.id);
+                        }
+                        HirStmtKind::Destructure { value, fields } => {
+                            collect_captures_walk(value, &locally_bound, seen, captures, self_id);
+                            locally_bound.extend(fields.iter().map(|field| field.binding.id));
+                        }
+                        _ => {}
                     }
                 }
                 collect_captures_walk_block(else_body, &locally_bound, seen, captures, self_id);
@@ -33336,6 +32376,9 @@ fn collect_hir_emitted_events_in_stmt(
     match &stmt.kind {
         HirStmtKind::Expr(e) | HirStmtKind::Let(_, Some(e)) | HirStmtKind::Return(Some(e)) => {
             collect_hir_emitted_events_walk(e, event_names, out);
+        }
+        HirStmtKind::Destructure { value, .. } => {
+            collect_hir_emitted_events_walk(value, event_names, out);
         }
         HirStmtKind::Assign { value, .. } => {
             collect_hir_emitted_events_walk(value, event_names, out);
@@ -35579,6 +34622,9 @@ fn scan_block_for_call_shape(
             HirStmtKind::Let(_, Some(init)) => {
                 scan_expr_for_call_shape(init, callable, diagnostics);
             }
+            HirStmtKind::Destructure { value, .. } => {
+                scan_expr_for_call_shape(value, callable, diagnostics);
+            }
             HirStmtKind::Assign { target, value } => {
                 scan_expr_for_call_shape(target, callable, diagnostics);
                 scan_expr_for_call_shape(value, callable, diagnostics);
@@ -35598,8 +34644,12 @@ fn scan_block_for_call_shape(
             } => {
                 scan_expr_for_call_shape(scrutinee, callable, diagnostics);
                 for prelude_stmt in success_prelude {
-                    if let HirStmtKind::Let(_, Some(init)) = &prelude_stmt.kind {
-                        scan_expr_for_call_shape(init, callable, diagnostics);
+                    match &prelude_stmt.kind {
+                        HirStmtKind::Let(_, Some(init))
+                        | HirStmtKind::Destructure { value: init, .. } => {
+                            scan_expr_for_call_shape(init, callable, diagnostics);
+                        }
+                        _ => {}
                     }
                 }
                 scan_block_for_call_shape(else_body, callable, diagnostics);
@@ -37088,42 +36138,129 @@ mod tests {
     use hew_types::module_registry::ModuleRegistry;
     use hew_types::Checker;
 
-    #[test]
-    fn generated_owned_single_source_reuses_its_exact_identity() {
-        let source = SiteId(41);
-        assert_eq!(
-            generated_single_source_identity_relation(
-                hew_types::ProducedValueOwnership::owned(
-                    hew_types::ProducedValueAcquisition::MoveOut,
-                ),
-                &[source],
-            ),
-            Some(HirProducedValueRelation::Identity(source))
-        );
+    fn assert_ordered_aggregate_groups(main: &HirFn) {
+        let groups: Vec<_> = main
+            .body
+            .statements
+            .iter()
+            .filter_map(|stmt| match &stmt.kind {
+                HirStmtKind::Destructure { value, fields } => Some((value, fields)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(groups.len(), 4);
+        assert!(matches!(
+            groups[0].1.as_slice(),
+            [
+                HirDestructureField {
+                    selector: HirDestructureSelector::Tuple(0),
+                    binding: HirBinding { name: label, ty: ResolvedTy::String, .. },
+                },
+                HirDestructureField {
+                    selector: HirDestructureSelector::Tuple(1),
+                    binding: HirBinding { name: bytes, ty: ResolvedTy::Bytes, .. },
+                },
+            ] if label == "label" && bytes == "bytes"
+        ));
+        assert!(matches!(
+            groups[1].1.as_slice(),
+            [
+                HirDestructureField {
+                    selector: HirDestructureSelector::Record(x),
+                    binding: HirBinding { name: x_binding, ty: ResolvedTy::String, .. },
+                },
+                HirDestructureField {
+                    selector: HirDestructureSelector::Record(payload),
+                    binding: HirBinding { name: payload_binding, ty: ResolvedTy::Bytes, .. },
+                },
+            ] if x == "x" && x_binding == "x" && payload == "payload" && payload_binding == "payload"
+        ));
+        assert!(matches!(
+            groups[2].1.as_slice(),
+            [
+                HirDestructureField {
+                    selector: HirDestructureSelector::Tuple(0),
+                    binding: HirBinding {
+                        ty: ResolvedTy::Tuple(_),
+                        ..
+                    },
+                },
+                HirDestructureField {
+                    selector: HirDestructureSelector::Tuple(1),
+                    binding: HirBinding {
+                        ty: ResolvedTy::I64,
+                        ..
+                    },
+                },
+            ]
+        ));
+        assert!(matches!(
+            groups[3].1.as_slice(),
+            [
+                HirDestructureField {
+                    selector: HirDestructureSelector::Tuple(0),
+                    binding: HirBinding { name: label, ty: ResolvedTy::String, .. },
+                },
+                HirDestructureField {
+                    selector: HirDestructureSelector::Tuple(1),
+                    binding: HirBinding { name: payload, ty: ResolvedTy::Bytes, .. },
+                },
+            ] if label == "nested_label" && payload == "nested_payload"
+        ));
+        assert!(groups.iter().all(|(value, _)| matches!(
+            value.kind,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(_),
+                ..
+            }
+        )));
     }
 
     #[test]
-    fn generated_owned_ambiguous_sources_do_not_choose_an_identity() {
-        assert_eq!(
-            generated_single_source_identity_relation(
-                hew_types::ProducedValueOwnership::owned(
-                    hew_types::ProducedValueAcquisition::MoveOut,
-                ),
-                &[SiteId(41), SiteId(42)],
-            ),
-            None
-        );
-    }
+    fn irrefutable_aggregate_patterns_keep_one_ordered_typed_binding_group() {
+        let parsed = hew_parser::parse(
+            r#"
+type Point { x: string, payload: bytes }
 
-    #[test]
-    fn generated_unknown_source_does_not_fabricate_an_identity() {
-        assert_eq!(
-            generated_single_source_identity_relation(
-                hew_types::ProducedValueOwnership::Unknown,
-                &[SiteId(41)],
-            ),
-            None
+fn main() {
+    let pair = ("left", b"right");
+    let (label, bytes) = pair;
+    let point = Point { x: "x", payload: b"p" };
+    let { x, payload } = point;
+    let nested = (("nested", b"bytes"), 1);
+    let ((nested_label, nested_payload), _) = nested;
+}
+"#,
         );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let mut type_checker = Checker::new(ModuleRegistry::new(vec![]));
+        let type_output = type_checker.check_program(&parsed.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:#?}",
+            type_output.errors
+        );
+        let lowered = lower_program(
+            &parsed.program,
+            &type_output,
+            &ResolutionCtx,
+            TargetArch::host(),
+        )
+        .into_result()
+        .expect("typed aggregate patterns must lower to HIR");
+        let main = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function");
+        assert_ordered_aggregate_groups(main);
     }
 
     #[test]
@@ -37155,7 +36292,7 @@ impl Sample for Broken {
         );
         assert_eq!(
             diagnostic.note,
-            "compiler-injected receiver impls were not lowered"
+            "compiler-injected callable impls were not lowered"
         );
     }
 
@@ -38510,122 +37647,6 @@ impl Widget {
     }
 
     #[test]
-    fn checker_produced_value_facts_project_to_stable_hir_sites() {
-        let (_, checked, lowered) = parse_typecheck_and_lower(
-            r#"
-            fn make() -> string { "owned" }
-            fn main() { let value = make(); }
-            "#,
-        );
-        assert!(
-            lowered.module.produced_value_facts.len() >= checked.produced_value_ownership.len(),
-            "root checker rows plus checker-validated injected builtin rows must survive"
-        );
-        let main = lowered
-            .module
-            .items
-            .iter()
-            .find_map(|item| match item {
-                HirItem::Function(function) if function.name == "main" => Some(function),
-                _ => None,
-            })
-            .expect("main function");
-        let HirStmtKind::Let(_, Some(call)) = &main.body.statements[0].kind else {
-            panic!("expected make() binding, got {:#?}", main.body.statements);
-        };
-        let fact = lowered
-            .module
-            .produced_value_facts
-            .get(&call.site)
-            .expect("direct call must retain its checker result fact");
-        assert_eq!(fact.producer, crate::node::HirProducedValueProducer::Call);
-        assert!(crate::verify_hir(&lowered.module).is_empty());
-
-        let mut stale = lowered.module.clone();
-        stale
-            .produced_value_facts
-            .get_mut(&call.site)
-            .expect("call fact")
-            .producer = crate::node::HirProducedValueProducer::Literal;
-        assert!(
-            crate::verify_hir(&stale).iter().any(|diagnostic| matches!(
-                diagnostic.kind,
-                HirDiagnosticKind::CheckerBoundaryViolation { .. }
-            )),
-            "a fact that survives a transform with a stale producer class must fail verification"
-        );
-    }
-
-    #[test]
-    fn missing_checker_relation_row_fails_closed_instead_of_becoming_a_leaf() {
-        let parsed = hew_parser::parse(
-            r#"
-            fn make() -> string { "owned" }
-            fn main() { let value = make(); }
-            "#,
-        );
-        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let mut output = checker.check_program(&parsed.program);
-        assert!(output.errors.is_empty(), "{:#?}", output.errors);
-        let removed = output
-            .produced_value_dependencies
-            .keys()
-            .next()
-            .cloned()
-            .expect("checker output must contain explicit relation rows");
-        output.produced_value_dependencies.remove(&removed);
-
-        let lowered = lower_program(&parsed.program, &output, &ResolutionCtx, TargetArch::host());
-        assert!(
-            lowered.diagnostics.iter().any(|diagnostic| matches!(
-                &diagnostic.kind,
-                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
-                    if name == "produced value dependency"
-                        && reason.contains("omitted this expression's closed relation row")
-            )),
-            "missing checker dependency row must be a boundary violation: {:#?}",
-            lowered.diagnostics
-        );
-        assert!(
-            lowered
-                .module
-                .produced_value_facts
-                .values()
-                .any(|fact| matches!(fact.ownership, hew_types::ProducedValueOwnership::Unknown)),
-            "the malformed row must be carried as Unknown rather than inferred as a leaf"
-        );
-    }
-
-    #[test]
-    fn duplicated_checker_span_candidates_are_not_last_write_coalesced() {
-        let key = SpanKey {
-            start: 7,
-            end: 11,
-            module_idx: 0,
-        };
-        let carrier = PendingProducedValueCarrier {
-            facts: HashMap::new(),
-            generated_facts: HashMap::new(),
-            fact_keys: HashMap::new(),
-            source_sites: HashMap::from([(key.clone(), vec![SiteId(41), SiteId(42)])]),
-            ownership: HashMap::new(),
-        };
-        let parents = HashMap::from([
-            (SiteId(40), None),
-            (SiteId(41), Some(SiteId(40))),
-            (SiteId(42), Some(SiteId(40))),
-        ]);
-        let error = carrier
-            .source_site(&key, SiteId(40), &parents)
-            .expect_err("one checker span mapped to two occurrence roles must be rejected");
-        assert!(
-            error.contains("ambiguous candidates"),
-            "ambiguity must be reported rather than selecting the last site: {error}"
-        );
-    }
-
-    #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "the test keeps static-discard, static-capture, and dynamic dispatch evidence together"
@@ -39026,10 +38047,14 @@ impl Widget {
             panic!("expected first statement to bind worker");
         };
         assert_eq!(binding.name, "worker");
-        assert_eq!(
-            init.value_class,
-            ValueClass::AffineResource,
-            "LocalPid<Worker> must resolve through the builtin type marker registry"
+        assert!(
+            matches!(
+                &init.ty,
+                ResolvedTy::Named { builtin: Some(BuiltinType::LocalPid), args, .. }
+                    if args == &[ResolvedTy::named_user("Worker", Vec::new())]
+            ),
+            "spawn must retain the exact builtin PID and authored actor type: {:?}",
+            init.ty
         );
     }
 
@@ -41560,96 +40585,8 @@ impl Widget {
 }
 
 #[cfg(test)]
-mod caller_visible_param_projection_tests {
-    use super::{lower_program, HirItem, ResolutionCtx, TargetArch};
-    use hew_types::module_registry::ModuleRegistry;
-    use hew_types::Checker;
-
-    #[test]
-    fn checker_parameter_projection_facts_translate_to_stable_item_indices() {
-        let parsed = hew_parser::parse(
-            "fn inspect(data: bytes, text: string, values: Vec<i64>, count: i64) {}\n",
-        );
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parsed.program);
-        assert!(type_output.errors.is_empty(), "{:?}", type_output.errors);
-
-        let lowered = lower_program(
-            &parsed.program,
-            &type_output,
-            &ResolutionCtx,
-            TargetArch::host(),
-        );
-        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
-        let function = lowered
-            .module
-            .items
-            .iter()
-            .find_map(|item| match item {
-                HirItem::Function(function) if function.name == "inspect" => Some(function),
-                _ => None,
-            })
-            .expect("inspect function");
-
-        assert_eq!(
-            lowered.module.caller_visible_param_projections,
-            [(function.id, 0), (function.id, 1), (function.id, 2)]
-                .into_iter()
-                .collect(),
-            "bytes, string, and Vec facts survive; scalar index 3 must be absent"
-        );
-    }
-}
-
-#[cfg(test)]
-mod builtin_enum_catalog_fingerprint_tests {
+mod builtin_enum_catalog_identity_tests {
     use super::BUILTIN_ENUM_SPECS;
-
-    const TRANSITION_FINGERPRINT: u64 = 0xc1fc_b995_abfb_984c;
-    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0xe7c1_bed6_d523_d55c;
-
-    fn hash_byte(hash: &mut u64, byte: u8) {
-        *hash ^= u64::from(byte);
-        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-
-    fn hash_name(hash: &mut u64, name: &str, separator: u8) {
-        for byte in name.bytes() {
-            hash_byte(hash, byte);
-        }
-        hash_byte(hash, separator);
-    }
-
-    fn derived_monomorphic_specs() -> Vec<(&'static str, Vec<&'static str>)> {
-        BUILTIN_ENUM_SPECS
-            .iter()
-            .filter(|spec| spec.type_params.is_empty())
-            .map(|spec| (spec.canonical_type_name, spec.variant_names().collect()))
-            .collect()
-    }
-
-    fn catalog_fingerprint(specs: &[(&str, Vec<&str>)]) -> u64 {
-        let mut fingerprint = 0xcbf2_9ce4_8422_2325_u64;
-        for (type_name, variant_names) in specs {
-            hash_name(&mut fingerprint, type_name, 0xfe);
-            for variant_name in variant_names {
-                hash_name(&mut fingerprint, variant_name, 0xff);
-            }
-            hash_byte(&mut fingerprint, 0xfd);
-        }
-        fingerprint
-    }
-
-    #[test]
-    fn monomorphic_builtin_enum_catalog_matches_transition_fingerprint() {
-        let fingerprint = catalog_fingerprint(&derived_monomorphic_specs());
-        assert_eq!(
-            fingerprint, TRANSITION_FINGERPRINT,
-            "monomorphic builtin enum names or discriminant order changed; \
-             update this transition fingerprint only with an intentional ABI migration"
-        );
-    }
 
     #[test]
     fn monomorphic_builtin_specs_retain_exact_owner_identity() {
@@ -41671,21 +40608,5 @@ mod builtin_enum_catalog_fingerprint_tests {
             );
         }
         assert!(identities.iter().all(|identity| identity.contains('.')));
-    }
-
-    // Guards HIR derivation-order drift separately from the upstream build-time `.hew` ABI guard.
-    #[test]
-    fn transition_fingerprint_detects_derived_variant_order_drift() {
-        let mut specs = derived_monomorphic_specs();
-        let crash_action_variants = &mut specs
-            .iter_mut()
-            .find(|(type_name, _)| *type_name == "std.failure.CrashAction")
-            .expect("derived catalog must contain CrashAction")
-            .1;
-        crash_action_variants.swap(0, 1);
-
-        let fingerprint = catalog_fingerprint(&specs);
-        assert_eq!(fingerprint, SWAPPED_CRASH_ACTION_FINGERPRINT);
-        assert_ne!(fingerprint, TRANSITION_FINGERPRINT);
     }
 }

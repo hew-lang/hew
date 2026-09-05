@@ -274,7 +274,7 @@ fn root_local_free_function_shadows_import_with_mismatched_signature() {
         let program = build_program_with_imported_module(
             "pub fn foo() -> i64 { 99 }",
             &format!(
-                "{import}\nfn foo() -> string {{ \"local\" }}\nfn main() -> string {{ foo() }}"
+                "{import}\nfn foo() -> string {{ \"local\" }}\nfn sample() -> string {{ foo() }}"
             ),
         );
         let (output, tco) = lower_with_checker(&program);
@@ -286,7 +286,7 @@ fn root_local_free_function_shadows_import_with_mismatched_signature() {
             output.diagnostics
         );
         assert_eq!(
-            tail_call_callee_name(function_by_name(&output, "main")),
+            tail_call_callee_name(function_by_name(&output, "sample")),
             Some("foo")
         );
     }

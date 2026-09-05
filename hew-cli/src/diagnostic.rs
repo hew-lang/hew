@@ -110,7 +110,7 @@ pub(crate) fn hir_diagnostic_user_message(diagnostic: &hew_hir::HirDiagnostic) -
 /// `hew-cli`, beside [`codegen_diagnostic_prefix`], rather than as a method
 /// on `CodegenError` itself. `LlvmVerify`/`FailClosed`/`FailClosedAt` are the
 /// compiler disagreeing with the LLVM module it built (Internal).
-/// `Unsupported`/`UnsupportedAt`/`WasmUnsupportedSubstrate` are legal Hew
+/// `Unsupported`/`UnsupportedAt` are legal Hew
 /// this backend does not lower yet (Limitation). `Link`/`Io`/`TargetSetup`/
 /// `Llvm` are the build environment (a missing linker, a full disk, an
 /// unresolvable target triple) — nobody's channel but the user's, since

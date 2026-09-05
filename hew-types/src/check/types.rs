@@ -281,25 +281,6 @@ pub struct TypeCheckOutput {
     /// a user-provided `impl` overriding the derived comparison (D340). See
     /// [`UserComparisonDispatch`].
     pub user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
-    /// Total checker-authored ownership facts for accepted expression results.
-    ///
-    /// HIR projects this span-keyed table onto stable `SiteId`s. MIR consumes
-    /// that projection and may not reconstruct ownership from callee spellings,
-    /// result types, or expression intent.
-    pub produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
-    /// Closed structural dependency graph for result ownership.  This carries
-    /// the checker-proven source relation alongside the final ownership
-    /// verdict, so downstream lowering never has to reconstruct a transfer
-    /// from expression spelling or a local-number coincidence.
-    pub produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
-    /// Declaration spans of non-receiver parameters whose resolved type has
-    /// at least one checker-proven projection into storage shared with the
-    /// caller.
-    ///
-    /// This is a positive capability fact, not a method-name allowlist. MIR
-    /// combines it with an actual representation-replacing write before
-    /// granting a representation loan; absence always fails closed.
-    pub caller_visible_param_projections: HashSet<SpanKey>,
     /// Spans of `self.field` projections the checker resolved to the enclosing
     /// actor's own state field.
     ///
@@ -1388,9 +1369,6 @@ impl Default for TypeCheckOutput {
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
-            caller_visible_param_projections: HashSet::new(),
             actor_self_state_fields: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             type_facts: BTreeMap::new(),
@@ -1606,67 +1584,6 @@ impl From<&Span> for SpanKey {
             start: s.start,
             end: s.end,
             module_idx: 0,
-        }
-    }
-}
-
-/// Checker-authored ownership fact for one expression publication site.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProducedValueFact {
-    pub ownership: crate::runtime_call::ProducedValueOwnership,
-    /// Exact receiver expression span for `ReceiverIdentity`; absent for all
-    /// other result dispositions.
-    pub receiver_span: Option<SpanKey>,
-    /// Checker-resolved ownership mode for a method receiver.
-    pub receiver_boundary: Option<crate::runtime_call::ProducedArgumentBoundary>,
-    /// One checker-owned boundary mode per source argument, in source order.
-    /// Non-call expressions carry an empty vector.
-    pub arguments: Vec<crate::runtime_call::ProducedArgumentBoundary>,
-}
-
-/// Resolved direct-call identity retained until the checked-output boundary,
-/// where the validated opaque lifecycle graph is available.
-#[derive(Debug, Clone)]
-pub(super) struct PendingDirectCallOwnership {
-    pub(super) fact: ProducedValueFact,
-    pub(super) extern_symbol: Option<String>,
-    pub(super) extern_declaring_module: Option<String>,
-    pub(super) extern_param_count: usize,
-    pub(super) resolved_result_ty: Ty,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct PendingMethodCallOwnership {
-    pub(super) fact: ProducedValueFact,
-    pub(super) extern_identity: Option<ExternMethodCallIdentity>,
-    pub(super) resolved_result_ty: Ty,
-}
-
-#[derive(Debug, Clone)]
-pub enum ProducedValueDependency {
-    /// This expression itself is the authority boundary for its produced
-    /// value.  Keeping leaves explicit makes the checker output a total,
-    /// closed graph rather than asking downstream consumers to treat a
-    /// missing map entry as semantic information.
-    Leaf,
-    Identity(SpanKey),
-    /// A specialised parent preserves the child's ownership disposition and
-    /// provenance but is the sole materialized publication. Parent and child
-    /// types may differ; downstream lowering must mint only the parent slot.
-    Subsumes(SpanKey),
-    Join(Vec<SpanKey>),
-    MoveOut(SpanKey),
-    Projection(SpanKey),
-}
-
-impl ProducedValueFact {
-    #[must_use]
-    pub fn result(ownership: crate::runtime_call::ProducedValueOwnership) -> Self {
-        Self {
-            ownership,
-            receiver_span: None,
-            receiver_boundary: None,
-            arguments: Vec::new(),
         }
     }
 }
@@ -2752,29 +2669,6 @@ pub struct Checker {
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::user_comparison_dispatch`].
     pub(super) user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
-    /// Checker-side accumulator for
-    /// [`TypeCheckOutput::produced_value_ownership`].
-    pub(super) produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
-    /// Resolved direct/indirect call ownership facts produced by call
-    /// resolution and consumed by the expression-result publisher.
-    pub(super) resolved_direct_call_ownership: HashMap<SpanKey, PendingDirectCallOwnership>,
-    /// Resolved inherent/impl/static/dyn/var-self method-site facts.
-    pub(super) resolved_method_call_ownership: HashMap<SpanKey, PendingMethodCallOwnership>,
-    /// Parent expression edges recomputed after every call leaf and deferred
-    /// dispatch fact has reached its final form.
-    pub(super) produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
-    /// Source expression occurrences that have passed the central public
-    /// completion hook. `record_type` may seed a conservative raw fact for a
-    /// checker-synthetic span; this set lets the real expression publisher
-    /// replace that seed exactly once without double-running side effects when
-    /// `check_against` delegates through `synthesize`.
-    pub(super) published_value_occurrences: HashSet<SpanKey>,
-    /// Expected `(has_receiver, source_argument_count)` for every resolved
-    /// call publication site.
-    pub(super) produced_call_arities: HashMap<SpanKey, (bool, usize)>,
-    /// Per-formal ownership disposition keyed by canonical function identity.
-    pub(super) fn_param_ownership:
-        HashMap<String, Vec<crate::runtime_call::ProducedArgumentBoundary>>,
     /// Declaring provenance for attributed methods, keyed by canonical
     /// `Type::method` signature identity.
     pub(super) extern_method_origins: HashMap<String, (Option<String>, bool)>,
@@ -2840,9 +2734,6 @@ pub struct Checker {
     /// (#2208): a bare root reference to a leaf they declare resolves to their
     /// owner-qualified identity even when the leaf shadows a builtin name.
     pub(super) flat_file_import_module_names: HashSet<String>,
-    /// Checker-side accumulator for
-    /// [`TypeCheckOutput::caller_visible_param_projections`].
-    pub(super) caller_visible_param_projections: HashSet<SpanKey>,
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::actor_self_state_fields`].
     pub(super) actor_self_state_fields: HashSet<SpanKey>,
@@ -3933,13 +3824,6 @@ impl Checker {
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            resolved_direct_call_ownership: HashMap::new(),
-            resolved_method_call_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
-            published_value_occurrences: HashSet::new(),
-            produced_call_arities: HashMap::new(),
-            fn_param_ownership: HashMap::new(),
             extern_method_origins: HashMap::new(),
             registration_origin_module: None,
             canonical_std_module_sources: HashSet::new(),
@@ -3954,7 +3838,6 @@ impl Checker {
             protected_prelude_declaration_collisions: HashSet::new(),
             registration_is_flat_file_import: false,
             flat_file_import_module_names: HashSet::new(),
-            caller_visible_param_projections: HashSet::new(),
             actor_self_state_fields: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),

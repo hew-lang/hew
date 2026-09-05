@@ -94,6 +94,7 @@ fn walk_block(block: &hew_hir::HirBlock, f: &mut impl FnMut(&HirExpr)) {
             HirStmtKind::Let(_, Some(e)) | HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
                 walk_expr(e, f);
             }
+            HirStmtKind::Destructure { value, .. } => walk_expr(value, f),
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
             HirStmtKind::Assign { target, value } => {
                 walk_expr(target, f);
@@ -221,10 +222,6 @@ fn fstring_preserves_every_authored_interpolant_as_a_subsumed_source() {
         "both authored identifiers must remain structural HIR occurrences"
     );
     for (name, site) in authored {
-        assert!(
-            output.module.produced_value_facts.contains_key(&site),
-            "authored interpolant `{name}` lost its checker-produced ownership fact"
-        );
         let parent =
             parents.get(&site).copied().flatten().unwrap_or_else(|| {
                 panic!("authored interpolant `{name}` has no structural parent")

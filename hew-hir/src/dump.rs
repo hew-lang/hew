@@ -11,6 +11,21 @@ use std::fmt::Write as _;
 
 use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmt, HirStmtKind};
 
+fn dump_destructure(
+    out: &mut String,
+    value: &HirExpr,
+    fields: &[crate::node::HirDestructureField],
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    let names: Vec<&str> = fields
+        .iter()
+        .map(|field| field.binding.name.as_str())
+        .collect();
+    writeln!(out, "{pad}destructure bind=[{}]", names.join(", ")).expect("write to string");
+    dump_expr(out, value, indent + 2);
+}
+
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -54,6 +69,9 @@ pub fn dump_hir(module: &HirModule) -> String {
                             if let Some(value) = value {
                                 dump_expr(&mut out, value, 4);
                             }
+                        }
+                        HirStmtKind::Destructure { value, fields } => {
+                            dump_destructure(&mut out, value, fields, 2);
                         }
                         HirStmtKind::Assign { target, value } => {
                             writeln!(out, "  assign").expect("write to string");
@@ -332,6 +350,9 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
                 if let Some(value) = value {
                     dump_expr(out, value, indent + 2);
                 }
+            }
+            HirStmtKind::Destructure { value, fields } => {
+                dump_destructure(out, value, fields, indent);
             }
             HirStmtKind::Assign { target, value } => {
                 writeln!(out, "{pad}assign").expect("write to string");
@@ -644,6 +665,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                             dump_expr(out, value, indent + 6);
                         }
                     }
+                    HirStmtKind::Destructure { value, fields } => {
+                        dump_destructure(out, value, fields, indent + 4);
+                    }
                     HirStmtKind::Assign { target, value } => {
                         writeln!(out, "{pad}    assign").expect("write to string");
                         dump_expr(out, target, indent + 6);
@@ -708,6 +732,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                             dump_expr(out, value, indent + 6);
                         }
                     }
+                    HirStmtKind::Destructure { value, fields } => {
+                        dump_destructure(out, value, fields, indent + 4);
+                    }
                     HirStmtKind::Assign { target, value } => {
                         writeln!(out, "{pad}    assign").expect("write to string");
                         dump_expr(out, target, indent + 6);
@@ -758,6 +785,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         if let Some(value) = value {
                             dump_expr(out, value, indent + 6);
                         }
+                    }
+                    HirStmtKind::Destructure { value, fields } => {
+                        dump_destructure(out, value, fields, indent + 4);
                     }
                     HirStmtKind::Assign { target, value } => {
                         writeln!(out, "{pad}    assign").expect("write to string");
@@ -1175,8 +1205,8 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 .expect("write to string");
             dump_expr(out, src, indent + 4);
         }
-        HirExprKind::SubsumedValue { source, producer } => {
-            writeln!(out, "{pad}  subsumed-value {producer:?}").expect("write to string");
+        HirExprKind::SubsumedValue { source } => {
+            writeln!(out, "{pad}  subsumed-value").expect("write to string");
             dump_expr(out, source, indent + 4);
         }
         HirExprKind::MachineEmit { event_idx, fields } => {

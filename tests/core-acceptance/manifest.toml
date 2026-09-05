@@ -160,3 +160,15 @@ timeout_seconds = 15
 [case.expected]
 stdout = "-4294967297:4294967297\n"
 exit = 0
+
+[[case]]
+id = "owned-destructure"
+intent = "Record and nested tuple patterns preserve ordinary source values, clean wildcard fields and produce independently mutable bytes."
+source = "cases/owned-destructure.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "packet:packet:1:2\ninner:inner:66\n"
+exit = 0

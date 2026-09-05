@@ -148,7 +148,7 @@ fn dotted_tuple_variant_lowers_from_checker_selected_owner() {
     let (lower_output, tc_output) = typecheck_and_lower(
         r"
             enum Choice { Present(i64); Absent }
-            fn main() -> Choice { Choice.Present(42) }
+            fn sample() -> Choice { Choice.Present(42) }
         ",
     );
     assert!(
@@ -161,17 +161,17 @@ fn dotted_tuple_variant_lowers_from_checker_selected_owner() {
         "lowering diagnostics: {:#?}",
         lower_output.diagnostics
     );
-    let main = lower_output
+    let sample = lower_output
         .module
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            hew_hir::HirItem::Function(function) if function.name == "sample" => Some(function),
             _ => None,
         })
-        .expect("main function must lower");
+        .expect("sample function must lower");
     assert!(matches!(
-        main.body.tail.as_deref().map(|expr| &expr.kind),
+        sample.body.tail.as_deref().map(|expr| &expr.kind),
         Some(HirExprKind::MachineVariantCtor {
             machine_name,
             payload: Some(payload),
@@ -185,7 +185,7 @@ fn dotted_struct_variant_lowers_from_checker_selected_owner() {
     let (lower_output, tc_output) = typecheck_and_lower(
         r"
             enum Choice { Named { value: i64 } }
-            fn main() -> Choice { Choice.Named { value: 7 } }
+            fn sample() -> Choice { Choice.Named { value: 7 } }
         ",
     );
     assert!(
@@ -198,17 +198,17 @@ fn dotted_struct_variant_lowers_from_checker_selected_owner() {
         "lowering diagnostics: {:#?}",
         lower_output.diagnostics
     );
-    let main = lower_output
+    let sample = lower_output
         .module
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            hew_hir::HirItem::Function(function) if function.name == "sample" => Some(function),
             _ => None,
         })
-        .expect("main function must lower");
+        .expect("sample function must lower");
     assert!(matches!(
-        main.body.tail.as_deref().map(|expr| &expr.kind),
+        sample.body.tail.as_deref().map(|expr| &expr.kind),
         Some(HirExprKind::MachineVariantCtor {
             machine_name,
             payload: Some(payload),

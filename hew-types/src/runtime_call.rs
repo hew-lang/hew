@@ -55,85 +55,6 @@ use strum::{EnumIter, IntoEnumIterator};
 // Ownership verdict
 // =============================================================================
 
-/// Why a successfully-published expression result carries one caller-owned
-/// release obligation.
-///
-/// This is deliberately independent of the physical drop function.  The
-/// checker/HIR authority says whether one owner exists; MIR derives the
-/// concrete release ritual from the resolved result type and the ordinary
-/// resource/drop tables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ProducedValueAcquisition {
-    /// Newly allocated storage or a freshly-created affine handle.
-    Fresh,
-    /// An independently retained reference to existing storage.
-    Retained,
-    /// Ownership delivered by an actor/task/channel/stream suspension.
-    Delivery,
-    /// A deep/retaining clone operation.
-    Clone,
-    /// Ownership moved out of a container or aggregate slot.
-    MoveOut,
-}
-
-/// Typed ownership fact for one expression result.
-///
-/// The variants answer only whether the result denotes a release obligation.
-/// They never name a callee or release symbol: call identity remains a
-/// checker/HIR fact and the release remains type-directed.  `Unknown` is the
-/// fail-closed state; an ownership-demanding sink must diagnose rather than
-/// manufacture a drop from a display name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ProducedValueOwnership {
-    /// Scalar, unit, static literal, or another value with no caller-side
-    /// release obligation (including an opaque foreign result whose lifecycle
-    /// was not transferred to Hew).
-    NoOwner,
-    /// Alias of storage whose owner remains elsewhere.
-    Borrowed,
-    /// One independent caller owner was published.
-    Owned {
-        acquisition: ProducedValueAcquisition,
-    },
-    /// A consuming fluent call returned the receiver's existing owner.
-    ///
-    /// MIR must transfer the receiver owner to the result; it may not mint a
-    /// second owner.
-    ReceiverIdentity,
-    /// The typed producer contract is absent or incomplete.
-    Unknown,
-}
-
-/// Checker-authored ownership disposition for one call argument.
-///
-/// This is deliberately smaller than MIR's parameter-boundary model: it
-/// answers only whether the result owner's obligation crosses this call edge.
-/// Representation loans and crash-cleanup details remain MIR facts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ProducedArgumentBoundary {
-    /// The callee observes the value but the caller keeps its owner.
-    Borrow,
-    /// The callee receives the existing owner.
-    Transfer,
-    /// The checker could not prove either disposition.
-    Unknown,
-}
-
-impl ProducedValueOwnership {
-    #[must_use]
-    pub const fn owned(acquisition: ProducedValueAcquisition) -> Self {
-        Self::Owned { acquisition }
-    }
-
-    #[must_use]
-    pub const fn acquisition(self) -> Option<ProducedValueAcquisition> {
-        match self {
-            Self::Owned { acquisition } => Some(acquisition),
-            Self::NoOwner | Self::Borrowed | Self::ReceiverIdentity | Self::Unknown => None,
-        }
-    }
-}
-
 /// Three-valued consume/borrow verdict for one call argument.
 ///
 /// Refines the historical `bool` consume flag (`true` = consume, `false` =
@@ -1042,10 +963,7 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
     CanonicalStdlibExternSignature {
         module: "std.io",
         signature_key: "bytes::len",
-        symbol: "hew_vec_len",
-        // The source bridge historically reuses the Vec symbol, but the
-        // checked receiver is `bytes`; publish the semantic Bytes family so a
-        // downstream consumer can never apply the Vec header ABI by accident.
+        symbol: "hew_bytes_len",
         family: Some(RuntimeCallFamily::BytesLen),
         params: EMPTY,
         result: CanonicalExternTy::I64,
@@ -3606,12 +3524,7 @@ mod tests {
         );
         for entry in signatures {
             if let Some(family) = entry.family {
-                if entry.signature_key == "bytes::len" {
-                    assert_eq!(family, RuntimeCallFamily::BytesLen);
-                    assert_eq!(entry.symbol, "hew_vec_len");
-                } else {
-                    assert_eq!(family.c_symbol(), entry.symbol, "{entry:?}");
-                }
+                assert_eq!(family.c_symbol(), entry.symbol, "{entry:?}");
             }
         }
     }

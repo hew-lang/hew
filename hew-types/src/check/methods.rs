@@ -1197,16 +1197,7 @@ impl Checker {
     /// * Unsupported concrete type → emit [`TypeErrorKind::InvalidOperation`];
     ///   the inline validation pass may have already emitted a diagnostic, but
     ///   deferred entries bypass that guard, so we re-check here.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "deferred channel resolution validates type, ABI, and ownership together"
-    )]
     pub(super) fn finalize_channel_rewrites(&mut self) {
-        use crate::runtime_call::{
-            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
-            ProducedValueOwnership as Ownership,
-        };
-
         let deferred = std::mem::take(&mut self.deferred_channel_rewrites);
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
 
@@ -1300,38 +1291,6 @@ impl Checker {
                         elem_ty: None,
                         consumes_receiver,
                         returns_receiver_identity: false,
-                    },
-                );
-                let source_arg_count = self
-                    .produced_call_arities
-                    .get(&span_key)
-                    .map_or(0, |(_, count)| *count);
-                let ownership = match entry.method.as_str() {
-                    "recv" | "try_recv" => Ownership::owned(Acquisition::Delivery),
-                    "close" => Ownership::NoOwner,
-                    _ => Ownership::Unknown,
-                };
-                self.resolved_method_call_ownership.insert(
-                    span_key,
-                    PendingMethodCallOwnership {
-                        fact: ProducedValueFact {
-                            ownership,
-                            receiver_span: None,
-                            receiver_boundary: Some(if consumes_receiver {
-                                Boundary::Transfer
-                            } else {
-                                Boundary::Borrow
-                            }),
-                            arguments: match entry.method.as_str() {
-                                "send" => vec![Boundary::Transfer; source_arg_count],
-                                "recv" | "try_recv" | "close" => {
-                                    vec![Boundary::Borrow; source_arg_count]
-                                }
-                                _ => vec![Boundary::Unknown; source_arg_count],
-                            },
-                        },
-                        extern_identity: None,
-                        resolved_result_ty: resolved,
                     },
                 );
             } else {
@@ -1663,10 +1622,7 @@ impl Checker {
         if !canonical_stdlib {
             return None;
         }
-        // The exact declaration table is the normalization boundary. Most
-        // rows retain their source ABI endpoint, while `bytes::len` deliberately
-        // maps the legacy Vec-shaped source bridge to the semantic Bytes
-        // family so later phases cannot accidentally choose a Vec ABI.
+        // The exact trusted declaration selects the semantic operation.
         declaration.family
     }
 
@@ -7989,7 +7945,7 @@ impl Checker {
                 self.env.mark_moved(name, receiver.1.clone());
             }
         }
-        self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
+
         result
     }
 
@@ -8012,309 +7968,8 @@ impl Checker {
             },
         )?;
         self.mark_resolved_nominal_owner_used(&head.canonical_type);
-        self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
+
         Some(result)
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "method ownership joins every resolved dispatch family at one authority seam"
-    )]
-    fn record_resolved_method_call_ownership(
-        &mut self,
-        receiver: &Spanned<Expr>,
-        _method: &str,
-        args: &[CallArg],
-        span: &Span,
-        result_ty: &Ty,
-    ) {
-        use crate::runtime_call::{
-            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
-            ProducedValueOwnership as Ownership,
-        };
-
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        let resolved_result = self.subst.resolve(result_ty).materialize_literal_defaults();
-        let non_owning = self.ty_is_non_owning(&resolved_result);
-        let rewrite = self.method_call_rewrites.get(&key);
-        let dyn_call = self.dyn_trait_method_calls.get(&key);
-        let resolved_call = self.resolved_calls.get(&key);
-        let actor_call = self.actor_method_dispatch.get(&key);
-        let machine_call = self.machine_method_dispatch.get(&key);
-        let suspending_receiver = self
-            .suspending_io_receiver_nominals
-            .get(&key)
-            .map(String::as_str);
-        let is_suspending_io_delivery = (self.conn_await_reads.contains_key(&key)
-            && suspending_receiver == Some(STD_NET_CONNECTION))
-            || (self.listener_await_accepts.contains(&key)
-                && suspending_receiver == Some(STD_NET_LISTENER));
-        let runtime_family = match rewrite {
-            Some(MethodCallRewrite::RewriteToFunction {
-                descriptor: Some(descriptor),
-                ..
-            }) => Some(descriptor.family()),
-            _ => None,
-        };
-        let display_method = self.lang_items.display_method_identity();
-        let is_display_fmt = display_method.as_ref().is_some_and(|(_, display_method)| {
-            let target = dyn_call.map(|call| &call.target).or(match rewrite {
-                Some(MethodCallRewrite::StaticTraitDispatch { target, .. }) => Some(target),
-                _ => None,
-            });
-            target.is_some_and(|target| {
-                matches!(
-                    target,
-                    CallTarget::DynamicVtable { method, .. }
-                        | CallTarget::StaticTraitMethod { method, .. }
-                        if method == display_method
-                )
-            })
-        });
-
-        let result_ownership = if non_owning {
-            Ownership::NoOwner
-        } else if self.method_call_preserves_receiver_identity.contains(&key) {
-            Ownership::Borrowed
-        } else if matches!(
-            rewrite,
-            Some(
-                MethodCallRewrite::RewriteToFunction {
-                    returns_receiver_identity: true,
-                    ..
-                } | MethodCallRewrite::StaticTraitDispatch {
-                    returns_receiver_identity: true,
-                    ..
-                }
-            )
-        ) || dyn_call.is_some_and(|call| call.signature.returns_receiver_identity)
-        {
-            Ownership::ReceiverIdentity
-        } else if is_display_fmt && matches!(&resolved_result, Ty::String) {
-            Ownership::owned(Acquisition::Fresh)
-        } else if matches!(
-            rewrite,
-            Some(MethodCallRewrite::BuiltinOptionResult {
-                method: OptionResultMethod::OptionUnwrap
-                    | OptionResultMethod::OptionUnwrapOr
-                    | OptionResultMethod::ResultUnwrap
-                    | OptionResultMethod::ResultUnwrapOr,
-            })
-        ) {
-            Ownership::owned(Acquisition::MoveOut)
-        } else if matches!(
-            actor_call,
-            Some(ActorMethodKind::Ask(..) | ActorMethodKind::StreamProducer(..))
-        ) || matches!(
-            runtime_family,
-            Some(
-                crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout
-                    | crate::runtime_call::RuntimeCallFamily::ChannelTryRecvLayout
-                    | crate::runtime_call::RuntimeCallFamily::StreamNextLayout
-                    | crate::runtime_call::RuntimeCallFamily::StreamTryNextLayout
-                    | crate::runtime_call::RuntimeCallFamily::DuplexRecv
-                    | crate::runtime_call::RuntimeCallFamily::DuplexTryRecv
-            )
-        ) || is_suspending_io_delivery
-        {
-            Ownership::owned(Acquisition::Delivery)
-        } else if runtime_family.is_some_and(|family| {
-            !matches!(
-                family.result_ownership(),
-                crate::runtime_call::RuntimeResultOwnership::Untracked
-            )
-        }) {
-            Ownership::owned(Acquisition::Fresh)
-        } else if let Some(call) = resolved_call {
-            call.method_target.family.result_ownership()
-        } else {
-            match rewrite {
-                Some(
-                    MethodCallRewrite::BuiltinVecIntoIter { .. }
-                    | MethodCallRewrite::BuiltinVecIter { .. }
-                    | MethodCallRewrite::BuiltinHashMapIntoIter { .. }
-                    | MethodCallRewrite::WireCodec { .. }
-                    | MethodCallRewrite::GenericWireCodec { .. },
-                ) => Ownership::owned(Acquisition::Fresh),
-                Some(
-                    MethodCallRewrite::BuiltinVecIterNext { .. }
-                    | MethodCallRewrite::RecordCloneInplace { .. },
-                ) => Ownership::owned(Acquisition::Clone),
-                Some(
-                    MethodCallRewrite::GeneratorNext { .. } | MethodCallRewrite::RemoteActorAsk,
-                ) => Ownership::owned(Acquisition::Delivery),
-                Some(MethodCallRewrite::RcIntrinsic { .. }) => {
-                    Ownership::owned(Acquisition::Retained)
-                }
-                _ => match machine_call {
-                    Some(MachineMethodKind::StateName { .. }) => {
-                        Ownership::owned(Acquisition::Fresh)
-                    }
-                    Some(MachineMethodKind::Step { .. } | MachineMethodKind::TakeEmits { .. })
-                    | None => Ownership::Unknown,
-                },
-            }
-        };
-
-        let signature = if let Some(call) = dyn_call {
-            Some((
-                format!("{}::{}", call.trait_name, call.method_name),
-                call.signature.clone(),
-            ))
-        } else {
-            match rewrite {
-                Some(MethodCallRewrite::RewriteToFunction {
-                    extern_identity: Some(identity),
-                    ..
-                }) => self
-                    .fn_sigs
-                    .get(&identity.signature_key)
-                    .cloned()
-                    .map(|sig| (identity.signature_key.clone(), sig)),
-                Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => self
-                    .fn_sigs
-                    .get(c_symbol)
-                    .cloned()
-                    .map(|sig| (c_symbol.clone(), sig)),
-                Some(MethodCallRewrite::StaticTraitDispatch {
-                    declaring_trait,
-                    method_name,
-                    ..
-                }) => {
-                    let signature_key = format!("{declaring_trait}::{method_name}");
-                    self.fn_sigs
-                        .get(&signature_key)
-                        .cloned()
-                        .map(|sig| (signature_key, sig))
-                }
-                _ => None,
-            }
-        };
-        let arguments = if matches!(
-            rewrite,
-            Some(MethodCallRewrite::BuiltinOptionResult {
-                method: OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr,
-            })
-        ) {
-            vec![Boundary::Transfer; args.len()]
-        } else if let Some(family) = runtime_family {
-            args.iter()
-                .enumerate()
-                .map(|(source_index, _)| {
-                    match family.arg_consume_verdict(source_index.saturating_add(1)) {
-                        crate::runtime_call::ConsumeVerdict::ProvenBorrow => Boundary::Borrow,
-                        crate::runtime_call::ConsumeVerdict::ProvenConsume
-                        | crate::runtime_call::ConsumeVerdict::ConservativeConsume => {
-                            Boundary::Transfer
-                        }
-                    }
-                })
-                .collect()
-        } else if let Some((signature_key, signature)) = signature {
-            let modes = self
-                .fn_param_ownership
-                .get(&signature_key)
-                .cloned()
-                .unwrap_or_else(|| vec![Boundary::Unknown; signature.params.len()]);
-            args.iter()
-                .enumerate()
-                .map(|(source_index, arg)| {
-                    let formal_index = arg
-                        .name()
-                        .and_then(|name| {
-                            signature
-                                .param_names
-                                .iter()
-                                .position(|formal| formal == name)
-                        })
-                        .unwrap_or(source_index);
-                    modes
-                        .get(formal_index)
-                        .copied()
-                        .unwrap_or(Boundary::Unknown)
-                })
-                .collect()
-        } else if let Some(call) = resolved_call {
-            match call.method_target.family {
-                MethodTargetFamily::HashMap(HashMapMethod::Insert)
-                | MethodTargetFamily::HashSet(HashSetMethod::Insert)
-                | MethodTargetFamily::Vec(VecMethod::Push | VecMethod::Set | VecMethod::Append) => {
-                    vec![Boundary::Transfer; args.len()]
-                }
-                MethodTargetFamily::HashMap(_)
-                | MethodTargetFamily::HashSet(_)
-                | MethodTargetFamily::Vec(_) => vec![Boundary::Borrow; args.len()],
-            }
-        } else if actor_call.is_some() {
-            vec![Boundary::Transfer; args.len()]
-        } else {
-            args.iter()
-                .map(|arg| {
-                    let arg_ty = self
-                        .expr_types
-                        .get(&SpanKey::in_module(&arg.expr().1, self.current_module_idx))
-                        .map(|ty| self.subst.resolve(ty));
-                    if arg_ty.as_ref().is_some_and(|ty| self.ty_is_non_owning(ty)) {
-                        Boundary::Borrow
-                    } else {
-                        Boundary::Unknown
-                    }
-                })
-                .collect()
-        };
-
-        let recognized = rewrite.is_some()
-            || dyn_call.is_some()
-            || resolved_call.is_some()
-            || actor_call.is_some()
-            || machine_call.is_some()
-            || is_suspending_io_delivery;
-        let receiver_boundary = if matches!(result_ownership, Ownership::ReceiverIdentity) {
-            Some(Boundary::Transfer)
-        } else if !recognized {
-            Some(Boundary::Unknown)
-        } else if self.method_call_consumes_receiver.contains(&key)
-            || resolved_call.is_some_and(|call| call.method_target.consumes_receiver)
-            || dyn_call.is_some_and(|call| call.signature.consumes_receiver)
-            || matches!(
-                rewrite,
-                Some(
-                    MethodCallRewrite::RewriteToFunction {
-                        consumes_receiver: true,
-                        ..
-                    } | MethodCallRewrite::StaticTraitDispatch {
-                        consumes_receiver: true,
-                        ..
-                    }
-                )
-            )
-        {
-            Some(Boundary::Transfer)
-        } else {
-            Some(Boundary::Borrow)
-        };
-
-        self.produced_call_arities
-            .insert(key.clone(), (true, args.len()));
-        self.resolved_method_call_ownership.insert(
-            key,
-            PendingMethodCallOwnership {
-                fact: ProducedValueFact {
-                    ownership: result_ownership,
-                    receiver_span: matches!(result_ownership, Ownership::ReceiverIdentity)
-                        .then(|| SpanKey::in_module(&receiver.1, self.current_module_idx)),
-                    receiver_boundary,
-                    arguments,
-                },
-                extern_identity: rewrite.and_then(|rewrite| match rewrite {
-                    MethodCallRewrite::RewriteToFunction {
-                        extern_identity, ..
-                    } => extern_identity.clone(),
-                    _ => None,
-                }),
-                resolved_result_ty: resolved_result,
-            },
-        );
     }
 
     #[expect(
@@ -8634,13 +8289,6 @@ impl Checker {
                         },
                     );
                     self.record_direct_call_target(span, target);
-                    self.record_resolved_direct_call_ownership(
-                        &impl_key,
-                        &sig,
-                        args,
-                        &sig.return_type,
-                        span,
-                    );
                 }
                 // Wire codec static deserialize methods on a `#[wire]` struct or
                 // enum. `decode` is the binary CBOR path
@@ -11832,88 +11480,6 @@ mod tests {
             checker.trait_method_call_target_ids("Render", "render"),
             Some((canonical_trait, canonical_method)),
         );
-    }
-
-    #[test]
-    fn suspending_io_method_results_publish_delivery_ownership() {
-        use crate::runtime_call::{
-            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
-            ProducedValueOwnership as Ownership,
-        };
-
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let receiver = (Expr::Identifier("io".to_string()), 1..3);
-
-        let read_span = 10..20;
-        let read_key = SpanKey::in_module(&read_span, checker.current_module_idx);
-        checker.conn_await_reads.insert(read_key.clone(), true);
-        checker.suspending_io_receiver_nominals.insert(
-            read_key.clone(),
-            crate::stdlib::STD_NET_CONNECTION.to_string(),
-        );
-        checker.record_resolved_method_call_ownership(
-            &receiver,
-            "read_string",
-            &[],
-            &read_span,
-            &Ty::String,
-        );
-
-        let read = checker
-            .resolved_method_call_ownership
-            .get(&read_key)
-            .expect("suspending read ownership");
-        assert_eq!(read.fact.ownership, Ownership::owned(Acquisition::Delivery));
-        assert_eq!(read.fact.receiver_boundary, Some(Boundary::Borrow));
-
-        let accept_span = 30..40;
-        let accept_key = SpanKey::in_module(&accept_span, checker.current_module_idx);
-        checker.listener_await_accepts.insert(accept_key.clone());
-        checker.suspending_io_receiver_nominals.insert(
-            accept_key.clone(),
-            crate::stdlib::STD_NET_LISTENER.to_string(),
-        );
-        checker.record_resolved_method_call_ownership(
-            &receiver,
-            "accept",
-            &[],
-            &accept_span,
-            &Ty::Named {
-                name: crate::stdlib::STD_NET_CONNECTION.to_string(),
-                args: Vec::new(),
-                builtin: None,
-            },
-        );
-
-        let accept = checker
-            .resolved_method_call_ownership
-            .get(&accept_key)
-            .expect("suspending accept ownership");
-        assert_eq!(
-            accept.fact.ownership,
-            Ownership::owned(Acquisition::Delivery)
-        );
-        assert_eq!(accept.fact.receiver_boundary, Some(Boundary::Borrow));
-
-        let spoofed_span = 50..60;
-        let spoofed_key = SpanKey::in_module(&spoofed_span, checker.current_module_idx);
-        checker.conn_await_reads.insert(spoofed_key.clone(), true);
-        checker.suspending_io_receiver_nominals.insert(
-            spoofed_key.clone(),
-            crate::stdlib::STD_NET_LISTENER.to_string(),
-        );
-        checker.record_resolved_method_call_ownership(
-            &receiver,
-            "read_string",
-            &[],
-            &spoofed_span,
-            &Ty::String,
-        );
-        let spoofed = checker
-            .resolved_method_call_ownership
-            .get(&spoofed_key)
-            .expect("spoofed suspending read ownership");
-        assert_eq!(spoofed.fact.ownership, Ownership::Unknown);
     }
 
     #[test]

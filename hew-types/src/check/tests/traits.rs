@@ -105,15 +105,6 @@ fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
         output.method_call_preserves_receiver_identity.len() >= 3,
         "statement-position identity calls must carry an explicit preservation fact"
     );
-    assert!(
-        output.produced_value_ownership.values().any(|fact| {
-            fact.ownership == crate::runtime_call::ProducedValueOwnership::ReceiverIdentity
-                && fact.receiver_span.is_some()
-                && fact.receiver_boundary
-                    == Some(crate::runtime_call::ProducedArgumentBoundary::Transfer)
-        }),
-        "captured receiver-identity calls must publish their exact transferring receiver anchor"
-    );
 }
 
 #[test]

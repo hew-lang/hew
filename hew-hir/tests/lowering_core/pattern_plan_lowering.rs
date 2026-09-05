@@ -1,6 +1,7 @@
 use hew_hir::{
-    lower_program_host_target, HirDiagnosticKind, HirExprKind, HirItem, HirMatchArmPredicate,
-    HirStmtKind, ResolutionCtx,
+    lower_program_host_target, BindingId, HirDestructureField, HirDestructureSelector,
+    HirDiagnosticKind, HirExprKind, HirItem, HirMatchArmPredicate, HirStmtKind, ResolutionCtx,
+    ResolvedRef,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -31,6 +32,44 @@ fn function<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a hew_hir::Hi
             _ => None,
         })
         .unwrap_or_else(|| panic!("function `{name}` not found"))
+}
+
+fn destructure_fields(
+    statements: &[hew_hir::HirStmt],
+    source: BindingId,
+) -> &[HirDestructureField] {
+    statements
+        .iter()
+        .find_map(|statement| match &statement.kind {
+            HirStmtKind::Destructure { value, fields }
+                if matches!(&value.kind, HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id), ..
+            } if *id == source) =>
+            {
+                Some(fields.as_slice())
+            }
+            _ => None,
+        })
+        .expect("resolved source must feed a typed destructure")
+}
+
+fn assert_pair_rest_fields(fields: &[HirDestructureField]) {
+    assert_eq!(fields.len(), 2, "rest must preserve both declared fields");
+    assert_eq!(
+        fields[0].selector,
+        HirDestructureSelector::Record("a".into())
+    );
+    assert_eq!(fields[0].binding.name, "a");
+    assert_eq!(
+        fields[1].selector,
+        HirDestructureSelector::Record("b".into())
+    );
+    assert_eq!(fields[0].binding.ty, ResolvedTy::I64);
+    assert_eq!(fields[1].binding.ty, ResolvedTy::I64);
+    assert_ne!(
+        fields[0].binding.id, fields[1].binding.id,
+        "the omitted field must have its own binding"
+    );
 }
 
 #[test]
@@ -106,25 +145,23 @@ fn main() -> i64 {
         lowered.diagnostics
     );
     let statements = &function(&lowered, "main").body.statements;
-    let projected: Vec<_> = statements
+    let source = statements
         .iter()
-        .filter_map(|stmt| match &stmt.kind {
-            HirStmtKind::Let(binding, Some(init)) => {
-                let HirExprKind::FieldAccess { field, .. } = &init.kind else {
-                    return None;
-                };
-                Some((binding.name.as_str(), field.as_str()))
-            }
+        .find_map(|stmt| match &stmt.kind {
+            HirStmtKind::Let(binding, _) if binding.name == "p" => Some(binding.id),
             _ => None,
         })
-        .collect();
-    assert!(projected.contains(&("a", "a")));
-    assert!(
-        projected
-            .iter()
-            .any(|(binding, field)| binding.starts_with('_') && *field == "b"),
-        "rest-generated wildcard must project field b: {projected:?}"
-    );
+        .expect("source record binding");
+    let fields = destructure_fields(statements, source);
+    assert_pair_rest_fields(fields);
+    let tail = function(&lowered, "main")
+        .body
+        .tail
+        .as_ref()
+        .expect("retained field tail");
+    assert!(matches!(&tail.kind, HirExprKind::BindingRef {
+        resolved: ResolvedRef::Binding(id), ..
+    } if *id == fields[0].binding.id));
 }
 
 #[test]
@@ -237,7 +274,7 @@ fn classify(p: Point) -> i64 {
 fn nested_record_rest_projects_omitted_fields_as_wildcards() {
     // The nested record materializer reads the same PatternPlan as the
     // top-level record-let, so a nested rest (`Inner { a, .. }`) projects the
-    // omitted owned field as a wildcard rather than dropping it from the field
+    // omitted field as a wildcard rather than dropping it from the field
     // list — one field-list source, no erasure-ordering divergence.
     let source = r"
 type Inner {
@@ -262,24 +299,26 @@ fn main() -> i64 {
         "nested record rest must lower without diagnostics: {:#?}",
         lowered.diagnostics
     );
-    // The nested `b` field materializes as a `__2`-style wildcard projection
-    // (a FieldAccess `let`), proving the plan's full field list is projected.
-    let projected_fields: Vec<String> = function(&lowered, "main")
-        .body
-        .statements
+    let statements = &function(&lowered, "main").body.statements;
+    let source = statements
         .iter()
-        .filter_map(|stmt| match &stmt.kind {
-            HirStmtKind::Let(_, Some(init)) => match &init.kind {
-                HirExprKind::FieldAccess { field, .. } => Some(field.clone()),
-                _ => None,
-            },
+        .find_map(|stmt| match &stmt.kind {
+            HirStmtKind::Let(binding, _) if binding.name == "o" => Some(binding.id),
             _ => None,
         })
-        .collect();
-    assert!(
-        projected_fields.iter().any(|f| f == "b"),
-        "nested rest must project the omitted `b` field as a wildcard; projected: {projected_fields:?}"
+        .expect("outer record binding");
+    let outer = destructure_fields(statements, source);
+    assert_eq!(outer.len(), 2);
+    assert_eq!(
+        outer[0].selector,
+        HirDestructureSelector::Record("inner".into())
     );
+    assert_eq!(
+        outer[1].selector,
+        HirDestructureSelector::Record("tag".into())
+    );
+    assert_eq!(outer[1].binding.name, "tag");
+    assert_pair_rest_fields(destructure_fields(statements, outer[0].binding.id));
 }
 
 #[test]

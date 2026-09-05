@@ -27,162 +27,6 @@ fn simple_function_lowers_with_stable_sites() {
 }
 
 #[test]
-fn timeout_await_operation_preserves_ordered_subsumption_spine() {
-    let output = lower(
-        r#"
-        actor Echo {
-            receive fn get() -> string { "pong" }
-        }
-        fn main() {
-            let echo = spawn Echo;
-            let _reply = await echo.get() | after 1ms;
-        }
-        "#,
-    );
-    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let verify = verify_hir(&output.module);
-    assert!(verify.is_empty(), "{verify:?}");
-    let facts = &output.module.produced_value_facts;
-    let (&timeout_site, timeout_fact) = facts
-        .iter()
-        .find(|(_, fact)| fact.producer == hew_hir::HirProducedValueProducer::Timeout)
-        .expect("timeout boundary fact");
-    let hew_hir::HirProducedValueRelation::Subsumes(await_site) = timeout_fact.relation else {
-        panic!("timeout must subsume its await occurrence: {timeout_fact:?}");
-    };
-    let await_fact = &facts[&await_site];
-    let hew_hir::HirProducedValueRelation::Subsumes(operation_site) = await_fact.relation else {
-        panic!("await must subsume its operation occurrence: {await_fact:?}");
-    };
-    let parents = hew_hir::verify::collect_site_parents(&output.module);
-    assert_eq!(parents.get(&await_site), Some(&Some(timeout_site)));
-    assert_eq!(parents.get(&operation_site), Some(&Some(await_site)));
-
-    let mut flattened = output.module.clone();
-    flattened
-        .produced_value_facts
-        .get_mut(&timeout_site)
-        .expect("timeout fact")
-        .relation = hew_hir::HirProducedValueRelation::Subsumes(operation_site);
-    assert!(verify_hir(&flattened).iter().any(|diagnostic| {
-        matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
-                if name == "produced value subsumption" && reason.contains("not a direct structural child")
-        )
-    }));
-
-    let mut wrong_identity = output.module.clone();
-    wrong_identity
-        .produced_value_facts
-        .get_mut(&timeout_site)
-        .expect("timeout fact")
-        .relation = hew_hir::HirProducedValueRelation::Identity(operation_site);
-    assert!(verify_hir(&wrong_identity).iter().any(|diagnostic| {
-        matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
-                if name == "produced value identity"
-        )
-    }));
-
-    // Every occurrence on the subsumption spine carries the same result type,
-    // so a receiver tamper aimed at the spine is invisible to the type
-    // congruence guard. Aim it at the `echo` binding reference instead: it is
-    // inside the timeout occurrence's structural subtree but actor-handle
-    // typed, so the receiver-identity check must reject the storage mismatch.
-    let (&scrutinee_site, _) = facts
-        .iter()
-        .find(|(site, fact)| {
-            fact.producer == hew_hir::HirProducedValueProducer::BindingRef && {
-                let mut current = **site;
-                loop {
-                    match parents.get(&current).copied().flatten() {
-                        Some(parent) if parent == timeout_site => break true,
-                        Some(parent) => current = parent,
-                        None => break false,
-                    }
-                }
-            }
-        })
-        .expect("actor-handle binding reference inside the timeout subtree");
-    let mut wrong_receiver = output.module.clone();
-    let fact = wrong_receiver
-        .produced_value_facts
-        .get_mut(&timeout_site)
-        .expect("timeout fact");
-    fact.ownership = hew_types::ProducedValueOwnership::ReceiverIdentity;
-    fact.receiver = Some(scrutinee_site);
-    fact.receiver_boundary = Some(hew_types::ProducedArgumentBoundary::Transfer);
-    assert!(verify_hir(&wrong_receiver).iter().any(|diagnostic| {
-        matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
-                if name == "produced value receiver identity" && reason.contains("has type")
-        )
-    }));
-}
-
-#[test]
-fn channel_recv_deadline_preserves_await_and_method_occurrences() {
-    let output = support::checker_pipeline::lower_through_checker_with_modules(
-        r"
-        import std.channel.channel;
-
-        actor Worker {
-            receive fn run() {
-                let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
-                let _got: Result<Option<i64>, TimeoutError> =
-                    await rx.recv() | after 1ms;
-                let _ = tx;
-            }
-        }
-        ",
-    );
-    assert!(
-        !output.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { .. }
-        )),
-        "deadline lowering must preserve every checker occurrence: {:?}",
-        output.diagnostics
-    );
-    let verify = verify_hir(&output.module);
-    assert!(
-        !verify.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { .. }
-        )),
-        "{verify:?}"
-    );
-
-    let facts = &output.module.produced_value_facts;
-    let (&timeout_site, timeout_fact) = facts
-        .iter()
-        .find(|(_, fact)| fact.producer == hew_hir::HirProducedValueProducer::Timeout)
-        .expect("timeout boundary fact");
-    let hew_hir::HirProducedValueRelation::Subsumes(await_site) = timeout_fact.relation else {
-        panic!("timeout must subsume the channel await occurrence: {timeout_fact:?}");
-    };
-    let await_fact = &facts[&await_site];
-    assert_eq!(
-        await_fact.producer,
-        hew_hir::HirProducedValueProducer::ChannelRecvAwait
-    );
-    let hew_hir::HirProducedValueRelation::Subsumes(method_site) = await_fact.relation else {
-        panic!("channel await must subsume the recv method occurrence: {await_fact:?}");
-    };
-    assert_eq!(
-        facts[&method_site].producer,
-        hew_hir::HirProducedValueProducer::ChannelRecvAwait
-    );
-
-    let parents = hew_hir::verify::collect_site_parents(&output.module);
-    assert_eq!(parents.get(&await_site), Some(&Some(timeout_site)));
-    assert_eq!(parents.get(&method_site), Some(&Some(await_site)));
-}
-
-#[test]
 fn channel_result_sites_are_affine_in_hir() {
     let output = support::checker_pipeline::lower_through_checker_with_modules(
         r#"
@@ -1619,7 +1463,7 @@ fn make() {
 }
 
 #[test]
-fn actor_lambda_body_and_spawn_handle_have_distinct_ownership_facts() {
+fn actor_lambda_body_and_spawn_handle_have_distinct_typed_sites() {
     let output = lower(
         r"
         fn make() {
@@ -1637,18 +1481,11 @@ fn actor_lambda_body_and_spawn_handle_have_distinct_ownership_facts() {
     let HirExprKind::SpawnLambdaActor { body, .. } = &lambda.kind else {
         unreachable!();
     };
-    assert_eq!(
-        output.module.produced_value_facts[&lambda.site].ownership,
-        hew_types::ProducedValueOwnership::Owned {
-            acquisition: hew_types::ProducedValueAcquisition::Fresh,
-        },
-        "the enclosing expression creates the actor handle"
+    assert_ne!(
+        lambda.site, body.site,
+        "the actor handle and its body retain distinct source sites"
     );
-    assert_eq!(
-        output.module.produced_value_facts[&body.site].ownership,
-        hew_types::ProducedValueOwnership::NoOwner,
-        "the i64 body result must not inherit the handle's fresh owner"
-    );
+    assert_eq!(body.ty, hew_types::ResolvedTy::I64);
 }
 
 #[test]

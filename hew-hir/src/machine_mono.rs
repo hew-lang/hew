@@ -970,6 +970,33 @@ fn walk_stmt(
                 );
             }
         }
+        HirStmtKind::Destructure { value, fields } => {
+            walk_expr(
+                value,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            for field in fields {
+                visit_ty(
+                    &field.binding.ty,
+                    &field.binding.span,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+        }
         HirStmtKind::Assign { target, value } => {
             walk_expr(
                 target,

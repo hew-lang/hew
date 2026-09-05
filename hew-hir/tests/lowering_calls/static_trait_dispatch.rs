@@ -159,7 +159,7 @@ import right.paint.{Render as RightRender, Box as RightBox, identity as right_id
 
 fn use_left<T: LeftRender>(value: T) -> string { value.render() }
 fn use_right<T: RightRender>(value: T) -> string { value.render() }
-fn main() -> string {
+fn sample() -> string {
     let a = LeftBox<i64> { value: 1 };
     let b = RightBox<bool> { value: true };
     let left_direct = left_identity();
@@ -262,7 +262,7 @@ impl Render for Box<string> {
         let HirItem::Function(function) = item else {
             continue;
         };
-        if function.name == "main" {
+        if function.name == "sample" {
             walk_block_calls(&function.body, &mut main_targets);
         }
     }

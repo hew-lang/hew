@@ -500,6 +500,17 @@ fn walk_stmt(
                 walk_expr(e, subst, residual_domain, disc);
             }
         }
+        HirStmtKind::Destructure { value, fields } => {
+            walk_expr(value, subst, residual_domain, disc);
+            for field in fields {
+                disc.visit_ty(
+                    &field.binding.ty,
+                    &field.binding.span,
+                    subst,
+                    residual_domain,
+                );
+            }
+        }
         HirStmtKind::Assign { target, value } => {
             walk_expr(target, subst, residual_domain, disc);
             walk_expr(value, subst, residual_domain, disc);

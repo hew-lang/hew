@@ -4,6 +4,7 @@ use std::{
 };
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
+use hew_types::RcIntrinsicOp;
 use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
     Ty, TyPattern, VariantMatch, WireLayoutTable,
@@ -12,7 +13,6 @@ use hew_types::{NumericMethodFamily, VecElementToken};
 use hew_types::{
     NumericMethodOp, NumericSignedness, NumericWidth, TryConversionKind, WireCodecDirection,
 };
-use hew_types::{ProducedArgumentBoundary, ProducedValueOwnership, RcIntrinsicOp};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::mono::MachineMonoEntry;
@@ -23,11 +23,6 @@ use crate::{IntentKind, ValueClass};
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
     pub items: Vec<HirItem>,
-    /// Checker-authored result-ownership facts, projected from source spans to
-    /// stable HIR sites.  This is the sole HIR carrier for a successfully
-    /// published expression result: downstream phases must not reconstruct it
-    /// from a callee display name or linker symbol.
-    pub produced_value_facts: HashMap<SiteId, HirProducedValueFact>,
     /// Source-module attribution for non-root top-level HIR items, keyed by
     /// item id. Diagnostics emitted while verifying one of these items inherit
     /// the same dotted module key used by `HirDiagnostic::source_module`.
@@ -49,14 +44,6 @@ pub struct HirModule {
     /// Downstream layers join on the plan's declaration identity and execute
     /// its action without rediscovering either fact.
     pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
-    /// Parameters whose resolved type has a checker-proven projection into
-    /// caller-visible storage, keyed by stable function item id and parameter
-    /// index.
-    ///
-    /// Presence is positive authority. MIR may only classify a borrowed
-    /// representation-replacing parameter when both this fact and a concrete
-    /// representation write survive lowering.
-    pub caller_visible_param_projections: HashSet<(ItemId, usize)>,
     /// Checker-authored wire layout metadata keyed by canonical type name.
     pub wire_layouts: Arc<WireLayoutTable>,
     /// Per-named-type classification table populated during HIR lowering from
@@ -1280,21 +1267,40 @@ pub struct HirStmt {
     pub span: Span,
 }
 
+/// One ordered field bound by an irrefutable aggregate destructure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirDestructureField {
+    pub selector: HirDestructureSelector,
+    pub binding: HirBinding,
+}
+
+/// Typed aggregate field identity selected by an irrefutable pattern.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HirDestructureSelector {
+    Tuple(u32),
+    Record(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmtKind {
     Let(HirBinding, Option<HirExpr>),
+    /// Bind every ordered field of one tuple or record value as a single
+    /// typed operation. Ownership is deliberately absent here; SIR decides
+    /// whether the source must first be copied before consuming a destructure.
+    Destructure {
+        value: HirExpr,
+        fields: Vec<HirDestructureField>,
+    },
     /// `let Pat = scrutinee else { <divergent block> };` — the let-else
     /// bind-or-diverge primitive.
     ///
     /// Unlike `HirExprKind::IfLet` (whose payload bindings are scoped to the
     /// then-body), a let-else's `bindings` ESCAPE into the enclosing scope:
-    /// after the statement, the Ok-path binders are live for the rest of the
-    /// enclosing block. MIR lowers this as: evaluate the scrutinee, test the
-    /// variant tag, and branch — on a match, bind the payload fields into the
-    /// enclosing-scope `binding_locals` (and do NOT restore them, so they
-    /// persist); on a mismatch, run `else_body`, which is GUARANTEED divergent
-    /// (the type checker enforced `Ty::Never`), so control never falls through
-    /// to an unbound binder.
+    /// after the statement, the success-path binders are live for the rest of
+    /// the enclosing block. Semantic lowering evaluates the scrutinee and
+    /// branches on its variant: success binds the payload fields in the
+    /// enclosing scope; mismatch executes `else_body`. The checker requires
+    /// the latter to diverge, so continuation cannot observe unbound payloads.
     LetElse {
         /// The matched expression. Its resolved type is the enum being
         /// destructured.
@@ -1312,8 +1318,8 @@ pub enum HirStmtKind {
         /// (`Ok((n, s))`, `Ok(Point { x, y })`). They run on the SUCCESS path,
         /// after the top-level payload fields are bound and before the
         /// continuation, projecting the synthetic `__payload_*` temps into
-        /// their leaf binders. Each is a plain `HirStmtKind::Let`; the leaf
-        /// binders escape into the enclosing scope like the top-level
+        /// their leaf binders. Each is an explicit aggregate destructure; the
+        /// leaf binders escape into the enclosing scope like the top-level
         /// `bindings`. Empty when no payload field is an aggregate.
         success_prelude: Vec<HirStmt>,
         /// Nested constructor checks on payload fields, evaluated after the
@@ -1355,137 +1361,6 @@ pub struct HirExpr {
     pub intent: IntentKind,
     pub kind: HirExprKind,
     pub span: Span,
-}
-
-/// Non-evaluated HIR occurrence retained when a specialised lowering consumes
-/// a parsed child expression without retaining a [`HirExpr`] for that child.
-///
-/// Its stable site remains structurally parented by the specialised result and
-/// carries the checker's produced-value row. MIR ignores the anchor because the
-/// specialised parent performs the operation; evaluating it again would
-/// duplicate side effects.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirProducedValueSourceAnchor {
-    pub node: HirNodeId,
-    pub site: SiteId,
-    pub ty: ResolvedTy,
-    pub value_class: ValueClass,
-    pub intent: IntentKind,
-    pub producer: HirProducedValueProducer,
-    pub span: Span,
-    /// Ordered, recursively nested source occurrence consumed by this source
-    /// occurrence.  A chain preserves wrapper spines such as
-    /// Timeout -> Await -> `MethodCall` without flattening sites into siblings.
-    pub source: Option<Box<HirProducedValueSourceAnchor>>,
-}
-
-/// HIR's structural classification of a result-producing expression.
-///
-/// Kept deliberately closed and exhaustive over [`HirExprKind`].  Adding an
-/// executable HIR expression kind therefore requires a conscious ownership
-/// classification before it can carry a checker fact downstream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HirProducedValueProducer {
-    Literal,
-    RcIntrinsic,
-    RegexLiteralRef,
-    BindingRef,
-    ContextReader,
-    Binary,
-    Unary,
-    NumericCast,
-    SaturatingWidthCast,
-    TryWidthCast,
-    TupleLiteral,
-    Call,
-    Spawn,
-    ActorSend,
-    ActorAsk,
-    ActorGenStream,
-    RemoteActorAsk,
-    ActorSelf,
-    Block,
-    If,
-    StructInit,
-    FieldAccess,
-    Scope,
-    SpawnedCall,
-    ForkBlock,
-    ScopeDeadline,
-    AwaitTask,
-    AwaitRestart,
-    Await,
-    Timeout,
-    ConnAwaitRead,
-    ListenerAwaitAccept,
-    ChannelRecvAwait,
-    StreamRecvAwait,
-    Select,
-    Join,
-    SpawnLambdaActor,
-    Closure,
-    GenBlock,
-    Yield,
-    TupleIndex,
-    Index,
-    Slice,
-    IdentityCompare,
-    CoerceToDynTrait,
-    CallDynMethod,
-    CallTraitMethodStatic,
-    VarSelfMethodCall,
-    ResolvedImplCall,
-    NumericMethod,
-    CancellationTokenIsCancelled,
-    GeneratorNext,
-    WireCodec,
-    RecordCloneCall,
-    CopyCloneNoop,
-    MachineEmit,
-    MachineStep,
-    MachineStateName,
-    MachineTakeEmits,
-    MachineVariantCtor,
-    MachineFieldAccess,
-    MachineEventFieldAccess,
-    While,
-    ForRange,
-    Match,
-    WhileLet,
-    IfLet,
-    Break,
-    Return,
-    Continue,
-    Loop,
-    Unsupported,
-}
-
-/// Checker-proven source relation for one produced-value fact, projected from
-/// span keys onto stable HIR sites.  `Leaf` deliberately carries no source;
-/// every other variant is a closed structural edge MIR can follow directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HirProducedValueRelation {
-    Leaf,
-    Identity(SiteId),
-    /// Structural child consumed by a specialised parent. Unlike `Identity`,
-    /// only the parent materializes a value and its type may differ.
-    Subsumes(SiteId),
-    MoveOut(SiteId),
-    Projection(SiteId),
-    Join(Vec<SiteId>),
-}
-
-/// Typed ownership publication fact attached to one stable HIR expression
-/// site.  `receiver` is populated only for `ReceiverIdentity`; preserving the
-/// site, rather than a name, makes receiver-owner transfer structurally exact.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HirProducedValueFact {
-    pub producer: HirProducedValueProducer,
-    pub ownership: ProducedValueOwnership,
-    pub relation: HirProducedValueRelation,
-    pub receiver: Option<SiteId>,
-    pub receiver_boundary: Option<ProducedArgumentBoundary>,
-    pub arguments: Vec<ProducedArgumentBoundary>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1644,9 +1519,6 @@ pub enum HirExprKind {
         method_id: String,
         args: Vec<HirExpr>,
         reply_ty: ResolvedTy,
-        /// Parsed method-call occurrence consumed by the `await` rewrite.
-        /// Direct/unwrapped asks have no consumed child.
-        source_anchor: Option<HirProducedValueSourceAnchor>,
         /// NEW-6b `await <actor>.<method>(...) | after d` deadline, in nanoseconds.
         /// `Some(ns)` attaches a fail-closed timeout to the suspending ask: when the
         /// deadline elapses before the reply, the in-flight ask is cancelled and the
@@ -1742,9 +1614,6 @@ pub enum HirExprKind {
         callee: Box<HirExpr>,
         args: Vec<HirExpr>,
         task_ty: ResolvedTy,
-        /// Non-executed occurrence of the source call consumed by this task
-        /// spawn rewrite. The spawned node performs the call exactly once.
-        source_anchor: HirProducedValueSourceAnchor,
         /// `true` when this spawn was written as `fork t = callee()` (the task handle
         /// is bound to a name and can be awaited for its result). `false` for an
         /// implicit/unbound spawn (`callee()` as a bare statement inside a `scope{}`
@@ -1785,8 +1654,6 @@ pub enum HirExprKind {
         binding_id: BindingId,
         /// The `T` from `Task<T>` — the type produced by this await.
         output_ty: ResolvedTy,
-        /// Non-executed occurrence of the task binding consumed by this await.
-        source_anchor: HirProducedValueSourceAnchor,
     },
     /// `await_restart <supervised-child>` — suspend the current actor until the
     /// named static supervised child's slot is Live again (it restarted), then
@@ -1823,8 +1690,6 @@ pub enum HirExprKind {
         /// NEW-6c `await conn.read() | after d` deadline, in nanoseconds. `None`
         /// preserves the plain-read bytes result and unconditional read-slot wake.
         deadline_ns: Option<i64>,
-        /// Parsed `.read*()` occurrence consumed by await specialisation.
-        source_anchor: HirProducedValueSourceAnchor,
     },
     /// `await listener.accept()` — a non-blocking suspending listener accept
     /// (NEW-2). Produced by HIR lowering when an `await` wraps a
@@ -1841,8 +1706,6 @@ pub enum HirExprKind {
         /// wake. `Some(ns)` produces `Result<Connection, NetError>` with
         /// `NetError::TimedOut` on the deadline arm — parallel to `ConnAwaitRead`.
         deadline_ns: Option<i64>,
-        /// Parsed `.accept()` occurrence consumed by await specialisation.
-        source_anchor: HirProducedValueSourceAnchor,
     },
     /// `await rx.recv() | after d` — a suspending channel recv with a deadline
     /// (NEW-6b).  Produced by [`super::lower::lower_await_deadline`] when the
@@ -1859,10 +1722,6 @@ pub enum HirExprKind {
         /// present as `Option<i64>` to share the same lowering interface as the
         /// other deadline kinds).
         deadline_ns: Option<i64>,
-        /// Non-executed `.recv()` occurrence consumed by the specialised
-        /// deadline node. It preserves the checker relation
-        /// `timeout -> await -> recv` without executing the receive twice.
-        source_anchor: HirProducedValueSourceAnchor,
     },
     /// `await stream.recv() | after d` — a suspending stream recv with a
     /// deadline (NEW-6b).  Produced by [`super::lower::lower_await_deadline`]
@@ -1875,10 +1734,6 @@ pub enum HirExprKind {
         stream: Box<HirExpr>,
         /// Deadline in nanoseconds.
         deadline_ns: Option<i64>,
-        /// Non-executed `.recv()` occurrence consumed by the specialised
-        /// deadline node. It preserves the checker relation
-        /// `timeout -> await -> recv` without executing the receive twice.
-        source_anchor: HirProducedValueSourceAnchor,
     },
     /// Sealed `select{}` expression.
     ///
@@ -2296,11 +2151,9 @@ pub enum HirExprKind {
         clone_fn_sym: String,
         record_name: String,
     },
-    /// Copy/BitCopy `.clone()` wrapper. The source is evaluated, but only the
-    /// outer site publishes the bit-copied result.
+    /// Transparent source-expression wrapper retained by lowering rewrites.
     SubsumedValue {
         source: Box<HirExpr>,
-        producer: HirProducedValueProducer,
     },
     /// `emit EventName { field: value, ... }` inside a machine transition body,
     /// entry block, or exit block.
@@ -2420,7 +2273,6 @@ pub enum HirExprKind {
         state_idx: usize,
         field_idx: usize,
         field_name: String,
-        source_anchor: Option<HirProducedValueSourceAnchor>,
     },
     /// Read a payload field from the transition's matched `event` value.
     MachineEventFieldAccess {
@@ -2428,7 +2280,6 @@ pub enum HirExprKind {
         event_idx: usize,
         field_idx: usize,
         field_name: String,
-        source_anchor: Option<HirProducedValueSourceAnchor>,
     },
     /// `while cond { body }` / `@label: while cond { body }` — loops until
     /// `cond` evaluates to false.
@@ -2637,301 +2488,6 @@ pub enum HirExprKind {
         body: HirBlock,
     },
     Unsupported(String),
-}
-
-impl HirProducedValueProducer {
-    /// Total structural classifier for HIR expression result producers.
-    #[must_use]
-    #[allow(
-        deprecated,
-        reason = "legacy producer remains classified until its removal gate lands"
-    )]
-    pub const fn classify(kind: &HirExprKind) -> Self {
-        match kind {
-            HirExprKind::Literal(_) => Self::Literal,
-            HirExprKind::RcIntrinsic { .. } => Self::RcIntrinsic,
-            HirExprKind::RegexLiteralRef { .. } => Self::RegexLiteralRef,
-            HirExprKind::BindingRef { .. } => Self::BindingRef,
-            HirExprKind::ContextReader { .. } => Self::ContextReader,
-            HirExprKind::Binary { .. } => Self::Binary,
-            HirExprKind::Unary { .. } => Self::Unary,
-            HirExprKind::NumericCast { .. } => Self::NumericCast,
-            HirExprKind::SaturatingWidthCast { .. } => Self::SaturatingWidthCast,
-            HirExprKind::TryWidthCast { .. } => Self::TryWidthCast,
-            HirExprKind::TupleLiteral { .. } => Self::TupleLiteral,
-            HirExprKind::Call { .. } => Self::Call,
-            HirExprKind::Spawn { .. } => Self::Spawn,
-            HirExprKind::ActorSend { .. } => Self::ActorSend,
-            HirExprKind::ActorAsk { .. } => Self::ActorAsk,
-            HirExprKind::ActorGenStream { .. } => Self::ActorGenStream,
-            HirExprKind::RemoteActorAsk { .. } => Self::RemoteActorAsk,
-            HirExprKind::ActorSelf => Self::ActorSelf,
-            HirExprKind::Block(_) => Self::Block,
-            HirExprKind::If { .. } => Self::If,
-            HirExprKind::StructInit { .. } => Self::StructInit,
-            HirExprKind::FieldAccess { .. } => Self::FieldAccess,
-            HirExprKind::Scope { .. } => Self::Scope,
-            HirExprKind::SpawnedCall { .. } => Self::SpawnedCall,
-            HirExprKind::ForkBlock { .. } => Self::ForkBlock,
-            HirExprKind::ScopeDeadline { .. } => Self::ScopeDeadline,
-            HirExprKind::AwaitTask { .. } => Self::AwaitTask,
-            HirExprKind::AwaitRestart { .. } => Self::AwaitRestart,
-            HirExprKind::ConnAwaitRead { .. } => Self::ConnAwaitRead,
-            HirExprKind::ListenerAwaitAccept { .. } => Self::ListenerAwaitAccept,
-            HirExprKind::ChannelRecvAwait { .. } => Self::ChannelRecvAwait,
-            HirExprKind::StreamRecvAwait { .. } => Self::StreamRecvAwait,
-            HirExprKind::Select(_) => Self::Select,
-            HirExprKind::Join(_) => Self::Join,
-            HirExprKind::SpawnLambdaActor { .. } => Self::SpawnLambdaActor,
-            HirExprKind::Closure { .. } => Self::Closure,
-            HirExprKind::GenBlock { .. } => Self::GenBlock,
-            HirExprKind::Yield { .. } => Self::Yield,
-            HirExprKind::TupleIndex { .. } => Self::TupleIndex,
-            HirExprKind::Index { .. } => Self::Index,
-            HirExprKind::Slice { .. } => Self::Slice,
-            HirExprKind::IdentityCompare { .. } => Self::IdentityCompare,
-            HirExprKind::CoerceToDynTrait { .. } => Self::CoerceToDynTrait,
-            HirExprKind::CallDynMethod { .. } => Self::CallDynMethod,
-            HirExprKind::CallTraitMethodStatic { .. } => Self::CallTraitMethodStatic,
-            HirExprKind::VarSelfMethodCall { .. } => Self::VarSelfMethodCall,
-            HirExprKind::ResolvedImplCall { .. } => Self::ResolvedImplCall,
-            HirExprKind::NumericMethod { .. } => Self::NumericMethod,
-            HirExprKind::CancellationTokenIsCancelled { .. } => Self::CancellationTokenIsCancelled,
-            HirExprKind::GeneratorNext { .. } => Self::GeneratorNext,
-            HirExprKind::WireCodec { .. } => Self::WireCodec,
-            HirExprKind::RecordCloneCall { .. } => Self::RecordCloneCall,
-            HirExprKind::SubsumedValue { producer, .. } => *producer,
-            HirExprKind::MachineEmit { .. } => Self::MachineEmit,
-            HirExprKind::MachineStep { .. } => Self::MachineStep,
-            HirExprKind::MachineStateName { .. } => Self::MachineStateName,
-            HirExprKind::MachineTakeEmits { .. } => Self::MachineTakeEmits,
-            HirExprKind::MachineVariantCtor { .. } => Self::MachineVariantCtor,
-            HirExprKind::MachineFieldAccess { .. } => Self::MachineFieldAccess,
-            HirExprKind::MachineEventFieldAccess { .. } => Self::MachineEventFieldAccess,
-            HirExprKind::While { .. } => Self::While,
-            HirExprKind::ForRange { .. } => Self::ForRange,
-            HirExprKind::Match { .. } => Self::Match,
-            HirExprKind::WhileLet { .. } => Self::WhileLet,
-            HirExprKind::IfLet { .. } => Self::IfLet,
-            HirExprKind::Break { .. } => Self::Break,
-            HirExprKind::Return { .. } => Self::Return,
-            HirExprKind::Continue { .. } => Self::Continue,
-            HirExprKind::Loop { .. } => Self::Loop,
-            HirExprKind::Unsupported(_) => Self::Unsupported,
-        }
-    }
-}
-
-#[cfg(test)]
-mod produced_value_tests {
-    use super::*;
-    use hew_types::{CallTarget, FnSig, VecMethod};
-
-    fn value() -> HirExpr {
-        HirExpr {
-            node: HirNodeId(0),
-            site: SiteId(0),
-            ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
-            intent: IntentKind::Read,
-            kind: HirExprKind::Literal(HirLiteral::Unit),
-            span: 0..0,
-        }
-    }
-
-    fn receiver() -> Box<HirExpr> {
-        Box::new(value())
-    }
-
-    fn source_anchor(producer: HirProducedValueProducer) -> HirProducedValueSourceAnchor {
-        HirProducedValueSourceAnchor {
-            node: HirNodeId(1),
-            site: SiteId(1),
-            ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
-            intent: IntentKind::Read,
-            producer,
-            span: 0..0,
-            source: None,
-        }
-    }
-
-    fn closure_callee() -> Box<HirExpr> {
-        Box::new(HirExpr {
-            kind: HirExprKind::Closure {
-                params: vec![],
-                ret_ty: ResolvedTy::Unit,
-                body: receiver(),
-                captures: vec![],
-                escape_kind: hew_types::ClosureEscapeKind::Local,
-            },
-            ..value()
-        })
-    }
-
-    #[test]
-    #[allow(
-        deprecated,
-        reason = "test pins the closed classification of the legacy producer"
-    )]
-    fn call_producer_families_have_distinct_closed_classifications() {
-        let cases = [
-            (
-                HirExprKind::Call {
-                    target: CallTarget::Unsupported {
-                        reason: "classification-only fixture".to_string(),
-                    },
-                    callee: closure_callee(),
-                    args: vec![],
-                },
-                HirProducedValueProducer::Call,
-            ),
-            (
-                HirExprKind::ResolvedImplCall {
-                    receiver: receiver(),
-                    target: CallTarget::Unsupported {
-                        reason: "classification-only fixture".to_string(),
-                    },
-                    impl_id: ImplId(0),
-                    method_name: "len".to_string(),
-                    target_symbol: "linker_only".to_string(),
-                    target_family: MethodTargetFamily::Vec(VecMethod::Len),
-                    type_args: vec![],
-                    args: vec![],
-                    ret_ty: ResolvedTy::I64,
-                },
-                HirProducedValueProducer::ResolvedImplCall,
-            ),
-            (
-                HirExprKind::CallTraitMethodStatic {
-                    receiver: receiver(),
-                    target: CallTarget::Unsupported {
-                        reason: "classification-only fixture".to_string(),
-                    },
-                    receiver_type_param: "T".to_string(),
-                    bound_trait: "Display".to_string(),
-                    declaring_trait: "Display".to_string(),
-                    method_name: "show".to_string(),
-                    args: vec![],
-                    ret_ty: ResolvedTy::Unit,
-                },
-                HirProducedValueProducer::CallTraitMethodStatic,
-            ),
-            (
-                HirExprKind::CallDynMethod {
-                    receiver: receiver(),
-                    target: CallTarget::Unsupported {
-                        reason: "classification-only fixture".to_string(),
-                    },
-                    trait_name: "Display".to_string(),
-                    method_name: "show".to_string(),
-                    slot: 3,
-                    args: vec![],
-                    ret_ty: ResolvedTy::Unit,
-                    signature: Box::new(FnSig::default()),
-                },
-                HirProducedValueProducer::CallDynMethod,
-            ),
-            (
-                HirExprKind::VarSelfMethodCall {
-                    receiver: receiver(),
-                    call_target: CallTarget::Unsupported {
-                        reason: "classification-only fixture".to_string(),
-                    },
-                    target: HirVarSelfMethodTarget::Direct,
-                    args: vec![],
-                    ret_ty: ResolvedTy::Unit,
-                    receiver_ty: ResolvedTy::Unit,
-                },
-                HirProducedValueProducer::VarSelfMethodCall,
-            ),
-        ];
-        for (kind, expected) in cases {
-            assert_eq!(HirProducedValueProducer::classify(&kind), expected);
-        }
-    }
-
-    #[test]
-    fn suspended_delivery_and_unknown_fact_are_preserved_fail_closed() {
-        let cases = [
-            (
-                HirExprKind::AwaitTask {
-                    binding_name: "t".to_string(),
-                    binding_id: BindingId(0),
-                    output_ty: ResolvedTy::Unit,
-                    source_anchor: source_anchor(HirProducedValueProducer::BindingRef),
-                },
-                HirProducedValueProducer::AwaitTask,
-            ),
-            (
-                HirExprKind::ConnAwaitRead {
-                    conn: receiver(),
-                    to_string: false,
-                    deadline_ns: None,
-                    source_anchor: source_anchor(HirProducedValueProducer::ConnAwaitRead),
-                },
-                HirProducedValueProducer::ConnAwaitRead,
-            ),
-            (
-                HirExprKind::ListenerAwaitAccept {
-                    listener: receiver(),
-                    deadline_ns: None,
-                    source_anchor: source_anchor(HirProducedValueProducer::ListenerAwaitAccept),
-                },
-                HirProducedValueProducer::ListenerAwaitAccept,
-            ),
-            (
-                HirExprKind::ChannelRecvAwait {
-                    receiver: receiver(),
-                    deadline_ns: Some(1),
-                    source_anchor: source_anchor(HirProducedValueProducer::ChannelRecvAwait),
-                },
-                HirProducedValueProducer::ChannelRecvAwait,
-            ),
-            (
-                HirExprKind::StreamRecvAwait {
-                    stream: receiver(),
-                    deadline_ns: Some(1),
-                    source_anchor: source_anchor(HirProducedValueProducer::StreamRecvAwait),
-                },
-                HirProducedValueProducer::StreamRecvAwait,
-            ),
-            (
-                HirExprKind::GeneratorNext {
-                    receiver: receiver(),
-                    yield_ty: ResolvedTy::Unit,
-                },
-                HirProducedValueProducer::GeneratorNext,
-            ),
-        ];
-        for (kind, expected) in cases {
-            assert_eq!(HirProducedValueProducer::classify(&kind), expected);
-        }
-
-        let fact = HirProducedValueFact {
-            producer: HirProducedValueProducer::Call,
-            ownership: ProducedValueOwnership::Unknown,
-            relation: HirProducedValueRelation::Leaf,
-            receiver: None,
-            receiver_boundary: None,
-            arguments: vec![],
-        };
-        assert_eq!(fact.ownership, ProducedValueOwnership::Unknown);
-    }
-
-    #[test]
-    fn receiver_identity_uses_a_site_not_a_symbol() {
-        let fact = HirProducedValueFact {
-            producer: HirProducedValueProducer::VarSelfMethodCall,
-            ownership: ProducedValueOwnership::ReceiverIdentity,
-            relation: HirProducedValueRelation::Leaf,
-            receiver: Some(SiteId(7)),
-            receiver_boundary: Some(ProducedArgumentBoundary::Transfer),
-            arguments: vec![],
-        };
-        assert_eq!(fact.receiver, Some(SiteId(7)));
-        assert_ne!(fact.ownership, ProducedValueOwnership::Unknown);
-    }
 }
 
 /// A compiled regex literal observed in a match arm.

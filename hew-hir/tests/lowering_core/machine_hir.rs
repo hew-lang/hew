@@ -1,9 +1,6 @@
 //! Tests for HIR machine lowering and static checks.
 
-use hew_hir::{
-    HirDiagnosticKind, HirExpr, HirExprKind, HirItem, HirLiteral, HirProducedValueSourceAnchor,
-    HirStmtKind,
-};
+use hew_hir::{HirDiagnosticKind, HirExpr, HirExprKind, HirItem, HirLiteral, HirStmtKind};
 
 use crate::support;
 
@@ -1378,22 +1375,10 @@ fn machine_variant_ctor(expr: &HirExpr) -> Option<MachineCtor<'_>> {
     }
 }
 
-/// The source anchor a machine field or event-field read carries, if it is one.
-fn machine_read_anchor(expr: &HirExpr) -> Option<&Option<HirProducedValueSourceAnchor>> {
-    match &expr.kind {
-        HirExprKind::MachineFieldAccess { source_anchor, .. }
-        | HirExprKind::MachineEventFieldAccess { source_anchor, .. } => Some(source_anchor),
-        _ => None,
-    }
-}
-
 #[test]
-fn dotted_struct_variant_transition_body_keeps_its_checker_anchors() {
+fn dotted_struct_variant_transition_body_keeps_typed_field_reads() {
     let output = lower(DOTTED_STRUCT_VARIANT_BODY_SRC);
 
-    // The lowerer's produced-value carrier resolution reports a dropped
-    // occurrence as a `CheckerBoundaryViolation` in `LowerOutput::diagnostics`,
-    // not through the verifier, so both surfaces have to be clean.
     let boundary: Vec<_> = output
         .diagnostics
         .iter()
@@ -1425,9 +1410,7 @@ fn dotted_struct_variant_transition_body_keeps_its_checker_anchors() {
         machine.transitions
     );
 
-    // Positive control: the anchor is recorded, not merely un-diagnosed. Each
-    // body builds `StateB` with its payload, and the payload expression — the
-    // checker child a rewrite could drop — still names its source anchor.
+    // Each transition retains its exact state constructor and typed payload read.
     for transition in &machine.transitions {
         let (state_idx, payload) = machine_variant_ctor(&transition.body).unwrap_or_else(|| {
             panic!(
@@ -1452,17 +1435,16 @@ fn dotted_struct_variant_transition_body_keeps_its_checker_anchors() {
             "the state payload field survives lowering"
         );
         let (_, value) = &payload[0];
-        let anchor = machine_read_anchor(value).unwrap_or_else(|| {
-            panic!(
-                "transition {} => {} reads a machine field or event field for `field`; got: {:?}",
-                transition.source_state, transition.target_state, value.kind
-            )
-        });
         assert!(
-            anchor.is_some(),
-            "transition {} => {} must preserve the consumed checker child as a source anchor",
+            matches!(
+                value.kind,
+                HirExprKind::MachineFieldAccess { .. }
+                    | HirExprKind::MachineEventFieldAccess { .. }
+            ),
+            "transition {} => {} must retain the typed state or event field read: {:?}",
             transition.source_state,
-            transition.target_state
+            transition.target_state,
+            value.kind,
         );
     }
 }

@@ -48,7 +48,6 @@
 //! `resolved_call_registry_lookup` round-trip test demonstrates the
 //! shape is genuinely serialisable.
 
-use crate::runtime_call::{ProducedValueAcquisition, ProducedValueOwnership};
 use crate::traits::MarkerTrait;
 use crate::{DefId, RuntimeCallFamily};
 use serde::{Deserialize, Serialize};
@@ -310,33 +309,6 @@ pub enum MethodTargetFamily {
     HashSet(HashSetMethod),
     /// Vec method dispatch. Arity invariant: 1 type-arg (T).
     Vec(VecMethod),
-}
-
-impl MethodTargetFamily {
-    /// Return the checker-authoritative ownership contract for this collection
-    /// result. HIR closure consumes this same table after attaching the exact
-    /// typed family to a provisional call fact.
-    #[must_use]
-    pub const fn result_ownership(self) -> ProducedValueOwnership {
-        match self {
-            Self::HashMap(HashMapMethod::Remove)
-            | Self::Vec(VecMethod::Pop | VecMethod::Remove) => {
-                ProducedValueOwnership::owned(ProducedValueAcquisition::MoveOut)
-            }
-            Self::HashMap(
-                HashMapMethod::Clone
-                | HashMapMethod::Get
-                | HashMapMethod::Entries
-                | HashMapMethod::Keys
-                | HashMapMethod::Values,
-            )
-            | Self::HashSet(HashSetMethod::Clone | HashSetMethod::ToVec)
-            | Self::Vec(VecMethod::Clone | VecMethod::Get) => {
-                ProducedValueOwnership::owned(ProducedValueAcquisition::Clone)
-            }
-            Self::HashMap(_) | Self::HashSet(_) | Self::Vec(_) => ProducedValueOwnership::Unknown,
-        }
-    }
 }
 
 /// `HashMap` dispatch methods. Mirrors the methods registered for the
@@ -792,26 +764,6 @@ mod tests {
     }
 
     #[test]
-    fn collection_result_ownership_classifies_typed_families() {
-        assert_eq!(
-            MethodTargetFamily::HashMap(HashMapMethod::Remove).result_ownership(),
-            ProducedValueOwnership::owned(ProducedValueAcquisition::MoveOut)
-        );
-        assert_eq!(
-            MethodTargetFamily::HashSet(HashSetMethod::ToVec).result_ownership(),
-            ProducedValueOwnership::owned(ProducedValueAcquisition::Clone)
-        );
-        assert_eq!(
-            MethodTargetFamily::Vec(VecMethod::Get).result_ownership(),
-            ProducedValueOwnership::owned(ProducedValueAcquisition::Clone)
-        );
-        assert_eq!(
-            MethodTargetFamily::Vec(VecMethod::Push).result_ownership(),
-            ProducedValueOwnership::Unknown
-        );
-    }
-
-    #[test]
     fn register_allocates_distinct_ids() {
         let mut r = ImplRegistry::new();
         let a = r.register(ImplDef {
@@ -898,40 +850,5 @@ mod tests {
         )
         .expect_err("empty registry must not resolve");
         assert!(matches!(err, LookupError::NoImpl { .. }));
-    }
-
-    /// `entries()` allocates a fresh `Vec<(K, V)>` and clones each pair into
-    /// it, exactly as `keys()` and `values()` do for their halves. It must
-    /// therefore report the same clone-owned acquisition, or HIR gives the
-    /// result no typed owner and a discarded temporary leaks its allocation
-    /// and every cloned element.
-    ///
-    /// Discrimination, not presence: `entries` is asserted against the
-    /// siblings it must match AND against `remove`, which is genuinely
-    /// move-out rather than clone-owned.
-    #[test]
-    fn hashmap_entries_reports_clone_owned_like_its_snapshot_siblings() {
-        let entries = MethodTargetFamily::HashMap(HashMapMethod::Entries).result_ownership();
-
-        assert_eq!(
-            entries,
-            MethodTargetFamily::HashMap(HashMapMethod::Keys).result_ownership(),
-            "entries() must match keys() ownership: both clone into a fresh Vec"
-        );
-        assert_eq!(
-            entries,
-            MethodTargetFamily::HashMap(HashMapMethod::Values).result_ownership(),
-            "entries() must match values() ownership: both clone into a fresh Vec"
-        );
-        assert_eq!(
-            entries,
-            ProducedValueOwnership::owned(ProducedValueAcquisition::Clone),
-            "entries() must be clone-owned, not Unknown"
-        );
-        assert_ne!(
-            entries,
-            MethodTargetFamily::HashMap(HashMapMethod::Remove).result_ownership(),
-            "entries() clones; remove() moves out, these must not collapse"
-        );
     }
 }

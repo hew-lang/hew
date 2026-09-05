@@ -47,6 +47,11 @@ fn block_has_kind<F: Fn(&HirExprKind) -> bool + Copy>(block: &HirBlock, pred: F)
                     return true;
                 }
             }
+            HirStmtKind::Destructure { value, .. } => {
+                if expr_has_kind(value, pred) {
+                    return true;
+                }
+            }
             HirStmtKind::Assign { value, .. } => {
                 if expr_has_kind(value, pred) {
                     return true;

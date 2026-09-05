@@ -7474,35 +7474,10 @@ impl Checker {
         // rc1-F1 stage A: mint the fn-sig key from the CANONICAL owning
         // module — a root free function keys `{root_module}.{name}`,
         // identical to the key the same declaration mints when its module is
-        // imported. The side registries (`fn_param_ownership`,
-        // `fn_type_param_assoc_bindings`, `fn_sig_inference_holes`,
+        // imported. The side registries (`fn_type_param_assoc_bindings`, `fn_sig_inference_holes`,
         // `intrinsic_declarations`) are co-minted under this same key.
         let key = scoped_module_item_name(self.canonical_fn_owner(), name)
             .unwrap_or_else(|| name.to_string());
-        let param_ownership = fd
-            .params
-            .iter()
-            .skip(skip)
-            .zip(sig.params.iter())
-            .map(|(param, ty)| {
-                if param.is_consume {
-                    crate::runtime_call::ProducedArgumentBoundary::Transfer
-                } else {
-                    let resolved = self.subst.resolve(ty);
-                    let resource = matches!(
-                        &resolved,
-                        Ty::Named { name, .. }
-                            if self.registry.is_resource(name) || self.registry.is_linear(name)
-                    );
-                    if resource {
-                        crate::runtime_call::ProducedArgumentBoundary::Unknown
-                    } else {
-                        crate::runtime_call::ProducedArgumentBoundary::Borrow
-                    }
-                }
-            })
-            .collect();
-        self.fn_param_ownership.insert(key.clone(), param_ownership);
         self.fn_sigs.insert(key.clone(), sig);
         self.fn_type_param_assoc_bindings
             .insert(key.clone(), fn_assoc_bindings);
@@ -10475,19 +10450,7 @@ impl Checker {
                     direct_import_modules: self.current_module_direct_imports.clone(),
                     consuming_params,
                 });
-            self.fn_param_ownership.insert(
-                key.clone(),
-                f.params
-                    .iter()
-                    .map(|param| {
-                        if param.is_consume {
-                            crate::runtime_call::ProducedArgumentBoundary::Transfer
-                        } else {
-                            crate::runtime_call::ProducedArgumentBoundary::Borrow
-                        }
-                    })
-                    .collect(),
-            );
+
             self.record_root_value_binding(&f.name);
         }
 

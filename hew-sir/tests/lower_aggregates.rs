@@ -279,3 +279,112 @@ fn aggregate_call_borrows_caller_and_returns_an_independent_owner() {
         )
     }));
 }
+
+#[test]
+fn aggregate_patterns_consume_copies_and_bind_every_owned_field() {
+    let lowered = lower_source(
+        r#"
+        type Packet { label: string, payload: bytes }
+
+        fn make_packet() -> Packet {
+            Packet { label: "label", payload: b"payload" }
+        }
+        fn keep_text(value: string) {}
+        fn keep_bytes(value: bytes) {}
+
+        fn main() {
+            let original = make_packet();
+            let { label, payload } = original;
+            keep_text(original.label);
+            keep_text(label);
+            keep_bytes(payload);
+
+            let nested = (("nested", b"inner"), b"outer");
+            let ((nested_label, nested_payload), outer_payload) = nested;
+            let original_inner = nested.0;
+            keep_text(original_inner.0);
+            keep_text(nested_label);
+            keep_bytes(nested_payload);
+            keep_bytes(outer_payload);
+
+            let ignored = ("kept", b"discarded");
+            let (kept, _) = ignored;
+            keep_text(kept);
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main must have a body");
+    let destructures = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .filter(|operation| matches!(operation.kind, SemOpKind::Destructure { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        destructures.len(),
+        4,
+        "record, outer tuple, nested tuple and wildcard tuple must each remain one operation"
+    );
+    assert!(
+        destructures
+            .iter()
+            .all(|operation| operation.results.len() == 2),
+        "each destructure must account for every field, including wildcard fields"
+    );
+    assert!(
+        main.blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .any(|operation| {
+                matches!(operation.kind, SemOpKind::CopyValue { .. })
+                    && operation.results.first().is_some_and(|result| {
+                        lowered
+                            .module
+                            .aggregate_shapes
+                            .iter()
+                            .any(|shape| shape.aggregate_ty == result.ty)
+                    })
+            }),
+        "destructuring an ordinary record binding must first copy the whole owner"
+    );
+}
+
+#[test]
+fn aggregate_destructure_refuses_a_result_outside_the_exact_shape() {
+    let mut lowered = lower_source(
+        r#"
+        type Packet { label: string, payload: bytes }
+        fn main() {
+            let packet = Packet { label: "label", payload: b"payload" };
+            let { label, payload } = packet;
+        }
+        "#,
+    );
+    let destructure = lowered
+        .module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.ops)
+        .find(|operation| matches!(operation.kind, SemOpKind::Destructure { .. }))
+        .expect("source must produce an aggregate destructure");
+    let operation = destructure.id;
+    destructure.results[0].ty = hew_types::ResolvedTy::I64;
+
+    assert!(verify_module(&lowered.module).iter().any(|diagnostic| {
+        matches!(
+            &diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidOperation { op, reason }
+                if *op == operation
+                    && reason.contains("aggregate.destructure result 0")
+                    && reason.contains("expected `string`")
+        )
+    }));
+}

@@ -108,11 +108,7 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
     for symbol in [
         "hew_bytes_push",
         "hew_bytes_pop",
-        // `bytes.len()` keeps the `hew_vec_len` extern annotation: the symbol
-        // is shape-compatible (reads the length word of the BytesTriple) and
-        // codegen routes a bytes receiver to the canonical `hew_bytes_len`
-        // entry, so the checker-owned rewrite still records `hew_vec_len`.
-        "hew_vec_len",
+        "hew_bytes_len",
         // `bytes.get` routes to the dedicated `hew_bytes_get` getter, which
         // returns `Option<u8>` — de-aliased from the trapping index getter
         // `hew_bytes_index` that backs `buf[i]`.

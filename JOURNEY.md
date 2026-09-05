@@ -266,3 +266,27 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   the trusted `std.string` declaration into SIR. Its semantic contract borrows
   one string, returns a bit-copy `i64`, and has no logical failure edge; an
   identical user extern remains outside this family.
+
+## Legacy ownership pipeline retirement
+
+- Removed the compiled HIR-to-MIR body pipeline and its ownership-inferencing
+  LLVM consumer. Physical MIR retains only the shared target and LLVM mechanics
+  required to emit the verified semantic program.
+- Removed checker/HIR produced-value ledgers, their graph resolution and
+  verification, non-executable source anchors, and exclusive release adapters.
+  TypeFacts, declaration identities, extern contracts, and source mutability
+  and consume diagnostics remain in their existing authorities.
+- Preserved source-level checker and HIR coverage while retiring graph-shape
+  assertions. Expression-lowering fixtures with non-entry return types now use
+  ordinary named helpers, keeping the selected process-entry contract intact.
+- Native build, workspace consumer checks, retained native execution tests,
+  checker source tests, and HIR suites passed after the retirement.
+- Irrefutable tuple and record patterns now remain one ordered, typed HIR
+  destructure group instead of becoming unrelated synthetic projection lets.
+  Nested aggregate fields form a second group through their resolved binding;
+  HIR carries no ownership decision, leaving copy-versus-consume to SIR.
+- SIR validates each destructure group against that aggregate's exact ordered
+  descriptor, copies an ordinary owned source before consuming it, and binds
+  every field result as a separately tracked SSA value. Wildcard and nested
+  fields therefore remain explicit cleanup obligations; a malformed result
+  type is rejected by the verifier rather than reclassified downstream.

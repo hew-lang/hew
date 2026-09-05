@@ -258,6 +258,7 @@ fn visit_block<'a>(block: &'a hew_hir::HirBlock, out: &mut Vec<&'a HirExpr>) {
             HirStmtKind::Let(_, Some(expr))
             | HirStmtKind::Expr(expr)
             | HirStmtKind::Return(Some(expr)) => visit_expr(expr, out),
+            HirStmtKind::Destructure { value, .. } => visit_expr(value, out),
             HirStmtKind::Assign { target, value } => {
                 visit_expr(target, out);
                 visit_expr(value, out);
@@ -362,7 +363,7 @@ fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
             }
         }
 
-        fn main() -> Result<i64, AskError> {
+        fn request_value() -> Result<i64, AskError> {
             let g = spawn Getter;
             let v = await g.get();
             return v;
@@ -381,10 +382,10 @@ fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
         .items
         .iter()
         .find_map(|item| match item {
-            HirItem::Function(func) if func.name == "main" => Some(func),
+            HirItem::Function(func) if func.name == "request_value" => Some(func),
             _ => None,
         })
-        .expect("main function should lower");
+        .expect("request_value function should lower");
 
     let HirStmtKind::Let(binding, Some(value)) = &main.body.statements[1].kind else {
         panic!(

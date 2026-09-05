@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 
 use hew_hir::{
-    BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmtKind,
-    IntentKind, ResolvedRef,
+    BindingId, HirBinding, HirBlock, HirDestructureField, HirDestructureSelector, HirExpr,
+    HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmtKind, IntentKind, ResolvedRef,
 };
 use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeFactService, TypeInstanceKey};
 
@@ -1813,6 +1813,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    fn bind_source_value(&mut self, binding: &HirBinding, value: ValueId) -> Result<(), String> {
+        let declaration = self.source_bindings.len();
+        self.source_bindings.push(Binding {
+            id: crate::BindingId(
+                u32::try_from(self.source_bindings.len())
+                    .map_err(|_| "SIR source binding count exceeds u32".to_string())?,
+            ),
+            name: binding.name.clone(),
+            span: binding.span.clone(),
+            mutable: binding.mutable,
+            target: crate::BindingTarget::Value(value),
+        });
+        self.binding_declarations.insert(binding.id, declaration);
+        self.bindings.insert(binding.id, value);
+        Ok(())
+    }
+
     fn mutable_bindings(&self) -> Vec<BindingId> {
         let mut bindings: Vec<_> = self
             .binding_declarations
@@ -1880,19 +1897,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     // provenance lands on that definition — and only when it
                     // has none, because `let y = x` must not rename the
                     // parameter `x` already named.
-                    let declaration = self.source_bindings.len();
-                    self.source_bindings.push(Binding {
-                        id: crate::BindingId(
-                            u32::try_from(self.source_bindings.len())
-                                .map_err(|_| "SIR source binding count exceeds u32".to_string())?,
-                        ),
-                        name: binding.name.clone(),
-                        span: binding.span.clone(),
-                        mutable: binding.mutable,
-                        target: crate::BindingTarget::Value(value),
-                    });
-                    self.binding_declarations.insert(binding.id, declaration);
-                    self.bindings.insert(binding.id, value);
+                    self.bind_source_value(binding, value)?;
                 }
                 HirStmtKind::Expr(expr) => {
                     self.lower_discarded_expr(expr)?;
@@ -1924,6 +1929,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 HirStmtKind::Assign { target, value } => {
                     self.lower_assignment(target, value)?;
+                }
+                HirStmtKind::Destructure { value, fields } => {
+                    self.lower_destructure(value, fields)?;
                 }
                 HirStmtKind::LetElse { .. } | HirStmtKind::Defer { .. } => {
                     return Err(
@@ -2414,6 +2422,164 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 },
             )
         }
+    }
+
+    fn lower_initial_tuple_destructure(
+        &mut self,
+        value: &HirExpr,
+        fields: &[HirDestructureField],
+    ) -> Result<(), String> {
+        let aggregate_ty = self.ty(&value.ty);
+        let ResolvedTy::Tuple(field_tys) = &aggregate_ty else {
+            return Err(format!(
+                "irrefutable destructure has non-aggregate type `{}`",
+                aggregate_ty.user_facing()
+            ));
+        };
+        if fields.len() != field_tys.len() {
+            return Err(format!(
+                "tuple destructure for `{}` binds {} field(s), expected {}",
+                aggregate_ty.user_facing(),
+                fields.len(),
+                field_tys.len()
+            ));
+        }
+        require_initial_value_transfer(value.intent, &aggregate_ty, "tuple destructure source")?;
+        let tuple = self.lower_expr(value)?;
+        for (index, (field, expected_ty)) in fields.iter().zip(field_tys).enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| "tuple destructure index exceeds u32".to_string())?;
+            let expected_selector = HirDestructureSelector::Tuple(index);
+            let binding_ty = self.ty(&field.binding.ty);
+            if field.selector != expected_selector || binding_ty != *expected_ty {
+                return Err(format!(
+                    "tuple destructure field {index} has selector {:?} and type `{}`, expected {:?} and `{}`",
+                    field.selector,
+                    binding_ty.user_facing(),
+                    expected_selector,
+                    expected_ty.user_facing()
+                ));
+            }
+            let result = self.emit_typed(
+                Provenance::Site(value.site),
+                expected_ty,
+                SemOpKind::TupleGet {
+                    tuple: Operand { value: tuple },
+                    index,
+                },
+            )?;
+            self.bind_source_value(&field.binding, result)?;
+        }
+        Ok(())
+    }
+
+    /// Lower one checker-normalized irrefutable aggregate pattern.
+    ///
+    /// Owned source bindings are copied as whole values before the consuming
+    /// operation. The destructure itself then transfers every ordered field
+    /// into a distinct SSA result, including compiler-created wildcard
+    /// bindings, so cleanup remains explicit on every path.
+    fn lower_destructure(
+        &mut self,
+        value: &HirExpr,
+        fields: &[HirDestructureField],
+    ) -> Result<(), String> {
+        let aggregate_ty = self.ty(&value.ty);
+        if is_initial_value_type(&aggregate_ty) {
+            return self.lower_initial_tuple_destructure(value, fields);
+        }
+
+        let shape = self.service.require_aggregate_shape(&aggregate_ty)?;
+        let recipes = crate::aggregate_field_recipes(
+            shape,
+            &aggregate_ty,
+            &self.service.aggregate_shapes,
+            self.service.checked_facts.rows(),
+        )?;
+        let expected_selectors = match shape {
+            AggregateShapeRef::Tuple => (0..recipes.len())
+                .map(|index| {
+                    u32::try_from(index)
+                        .map(HirDestructureSelector::Tuple)
+                        .map_err(|_| "tuple destructure index exceeds u32".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            AggregateShapeRef::Record(id) => self
+                .service
+                .aggregate_shapes
+                .get(usize::try_from(id.0).map_err(|_| "aggregate shape id exceeds usize")?)
+                .ok_or_else(|| format!("aggregate shape {} disappeared during lowering", id.0))?
+                .fields
+                .iter()
+                .map(|field| HirDestructureSelector::Record(field.name.clone()))
+                .collect(),
+        };
+        if fields.len() != recipes.len() {
+            return Err(format!(
+                "aggregate destructure for `{}` binds {} field(s), expected {}",
+                aggregate_ty.user_facing(),
+                fields.len(),
+                recipes.len()
+            ));
+        }
+        for (index, ((field, recipe), expected_selector)) in fields
+            .iter()
+            .zip(&recipes)
+            .zip(&expected_selectors)
+            .enumerate()
+        {
+            let binding_ty = self.ty(&field.binding.ty);
+            if &field.selector != expected_selector || binding_ty != recipe.ty {
+                return Err(format!(
+                    "aggregate destructure field {index} has selector {:?} and type `{}`, expected {:?} and `{}`",
+                    field.selector,
+                    binding_ty.user_facing(),
+                    expected_selector,
+                    recipe.ty.user_facing()
+                ));
+            }
+        }
+
+        let aggregate = lower_initial_value_transfer(
+            self,
+            value,
+            "aggregate destructure source",
+            OwnedBindingUse::Copy,
+        )?;
+        if self.value_own_kind(aggregate) != Some(OwnKind::Owned) {
+            return Err(format!(
+                "aggregate destructure source `{}` is not an owned value",
+                aggregate_ty.user_facing()
+            ));
+        }
+        let mut results = Vec::with_capacity(recipes.len());
+        for recipe in &recipes {
+            self.service.require_type_facts(&recipe.ty)?;
+            results.push(ValueDef {
+                id: self.fresh_value(),
+                ty: recipe.ty.clone(),
+                own: recipe.own,
+            });
+        }
+        let operation = SemOp {
+            id: OpId(self.ops),
+            results: results.clone(),
+            kind: SemOpKind::Destructure {
+                shape,
+                aggregate: Operand { value: aggregate },
+            },
+            provenance: Provenance::Site(value.site),
+        };
+        self.current_block_mut().append_op(operation)?;
+        self.ops += 1;
+        self.owned_live.remove(&aggregate);
+        for (field, result) in fields.iter().zip(results) {
+            if result.own == OwnKind::Owned {
+                self.owned_live.insert(result.id, result.ty);
+            }
+            self.bind_source_value(&field.binding, result.id)?;
+        }
+        Ok(())
     }
 
     /// Lower one named aggregate construction in source evaluation order,

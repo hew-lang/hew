@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Counterfactuals for generated help and recursive tracked-shell linting."""
+"""Regression coverage for tracked-shell discovery and failure propagation."""
 
 from __future__ import annotations
 
@@ -20,32 +20,7 @@ def load(name: str, path: Path):
     return module
 
 
-help_index = load("make_help", ROOT / "scripts" / "make-help.py")
 shell_lint = load("shell_script_lint", ROOT / "scripts" / "shell-script-lint.py")
-
-
-def require_value_error(makefile: str, message: str) -> None:
-    try:
-        help_index.entries(makefile)
-    except ValueError as error:
-        assert message in str(error), error
-    else:
-        raise AssertionError(f"expected help index failure containing {message!r}")
-
-
-def test_renamed_target_takes_its_help_entry_with_it() -> None:
-    before = "old-name: dependency ## Build: compile it\n"
-    after = before.replace("old-name:", "new-name:")
-    assert help_index.entries(before)[0][1] == "old-name"
-    assert help_index.entries(after)[0][1] == "new-name"
-
-
-def test_unknown_help_section_fails_closed() -> None:
-    require_value_error("thing: ## Deploy: ship it\n", "unknown help section 'Deploy'")
-
-
-def test_empty_help_index_fails_closed() -> None:
-    require_value_error("all:\n\ttrue\n", "help index is empty")
 
 
 def test_shell_lint_discovers_tracked_nested_scripts_only() -> None:

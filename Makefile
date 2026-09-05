@@ -50,7 +50,8 @@
 #   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
 #   make playground-verify         — native run of every runnable playground example vs. its .expected
-#   make licenses-check            — verify THIRD-PARTY-LICENSES is current (used in CI)
+#   make release-checks            — validate release dependencies, notices and installer
+#   make licenses-check            — verify THIRD-PARTY-LICENSES is current
 #   make preflight                 — run every unconditional Linux gate, fail-fast
 #   make ci-preflight              — compatibility alias for make preflight
 #   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
@@ -75,7 +76,7 @@
 #   make clean        — remove generated build and test artifacts
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check baselines baselines-check
+.PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
 .PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check core-acceptance test-core-acceptance-runner
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
@@ -98,12 +99,7 @@ LINT_GATES += shell-script-lint
 shell-script-lint:
 	@$(PYTHON) scripts/shell-script-lint.py
 
-# The installer's newest-tag semver picker (installers/install.sh's
-# pick_newest_tag()) has no coverage anywhere else in the build: it never
-# runs from a compiled binary, only from a shell function that curl | sh
-# executes directly. Wired into LINT_GATES so it runs on every PR the same
-# way shell-script-lint does, without a release download or network access.
-LINT_GATES += test-install-version-resolution
+# Installer ordering belongs to release validation, not general source lint.
 test-install-version-resolution:
 	@sh installers/test-pick-newest-tag.sh
 
@@ -576,15 +572,24 @@ sandbox-fixtures:
 sandbox-fixtures-check:
 	cargo run -p xtask -- sandbox-fixtures --check
 
-# Regenerate THIRD-PARTY-LICENSES from the current dependency tree.
-# Requires cargo-about: cargo install cargo-about --locked
-licenses:
-	cargo about generate about.hbs --workspace > THIRD-PARTY-LICENSES
+# Release dependency tools: cargo-deny 0.19.6 and cargo-about 0.9.0.
+# Duplicate crate versions are not a release defect. Enforce only actionable
+# licence, advisory and source policy, with no non-blocking warning backlog.
+dependency-policy:
+	cargo deny --locked check licenses advisories sources --deny warnings
 
-# Verify THIRD-PARTY-LICENSES is current relative to Cargo.lock and about.hbs.
-# Exits non-zero if the file is stale; run `make baselines` to regenerate.
+# Keep the committed notice intact if licence generation fails.
+licenses:
+	@notice=$$(mktemp ./THIRD-PARTY-LICENSES.XXXXXX); trap 'rm -f "$$notice"' EXIT; \
+	cargo about generate about.hbs --workspace --locked --fail > "$$notice" && \
+	chmod 644 "$$notice" && \
+	mv "$$notice" THIRD-PARTY-LICENSES
+
+# Verify the notices for the exact locked dependency graph before publishing.
 licenses-check:
 	scripts/check-licenses-fresh.sh
+
+release-checks: dependency-policy licenses-check test-install-version-resolution ## Release: validate dependency policy, notices and installer ordering
 
 # ── Derived baselines ─────────────────────────────────────────────────────
 #
@@ -902,7 +907,7 @@ release: assemble-release test-release-lib-link ## Release: build optimized rele
 # Runs linux locally first (fail-fast), then remote platforms in parallel.
 #   make pre-release                    — all platforms
 #   make pre-release PLATFORMS="linux"  — linux only
-pre-release: ## Release: build and validate a release candidate on requested platforms
+pre-release: release-checks ## Release: build and validate a release candidate on requested platforms
 	scripts/pre-release-validate.sh $(PLATFORMS)
 
 # Build the staged source tree the Windows validator builds from
@@ -1576,7 +1581,7 @@ test-ast-grep-contract:
 	bash scripts/tests/test_ast_grep_contract.sh
 
 LINT_GATES += test-build-harness
-# Focused behavior tests for the Hew JUnit transaction, generated help, shell discovery,
+# Focused behaviour tests for the Hew JUnit transaction, shell discovery,
 # and compiled-Hew report aggregation. None needs a built compiler.
 test-build-harness:
 	$(PYTHON) scripts/tests/test_hew_suite_runner.py

@@ -141,6 +141,7 @@ fn spawn_pipeline() -> IrPipeline {
     };
 
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![spawn_fn, handler_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],

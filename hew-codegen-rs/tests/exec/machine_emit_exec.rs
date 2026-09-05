@@ -185,6 +185,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
     };
 
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![step_fn, caller],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),

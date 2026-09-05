@@ -21,6 +21,7 @@ mod branch_join;
 mod builtins;
 mod collections;
 mod control_flow;
+mod entry_exit;
 mod exhaustiveness;
 mod extern_fn;
 mod genblocks;

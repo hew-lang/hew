@@ -124,3 +124,23 @@
   while allowing incidental MIR presentation changes.
 - The known `actor_link_monitor` refusal remains reported by
   `make checked-mir-run`; it is not converted into a passing transcript.
+
+## Entry and test-root checkpoint
+
+- Reused the canonical file compiler for selected Hew tests and carried the
+  exact root occurrence plus its deterministic production peer through normal
+  compile options.
+- Removed the alternate frontend-to-native finishing route. A selected test no
+  longer deletes an authored `main`; HIR assigns that exact declaration a
+  stable internal callable symbol while the process adapter retains `main`.
+- Carried process exit policy through HIR, SIR and MIR. LLVM lookup now uses
+  complete callable keys for both the selected entry and its `Display` target.
+- A concrete specialized `Display` impl remains a declared callable; a blanket
+  generic impl is seeded into the normal HIR monomorphisation registry with its
+  concrete arguments.
+- Focused entry, selected-test, companion and callable-identity tests pass via
+  `make test-strict`.
+- A selected test can call an authored `main`, while the authored function is
+  not executed as the process root. Directory-module entry insertion preserves
+  the selection because real source occurrences are keyed by span, not item
+  position.

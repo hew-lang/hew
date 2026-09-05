@@ -6622,7 +6622,7 @@ impl Checker {
                             let enclosing: Vec<String> =
                                 type_tps.iter().map(|tp| tp.name.clone()).collect();
                             if !enclosing.is_empty() {
-                                let owner = Self::shadowed_method_declaration_key(
+                                let owner = Self::method_declaration_key(
                                     &self.declaration_owner_key(&td.name),
                                     &method.name,
                                 );
@@ -6865,7 +6865,7 @@ impl Checker {
     /// Declaration identity for the shadow-report dedup key: a module-qualified
     /// owner plus the method name. Built in one place so the three registration
     /// paths cannot drift into three spellings of the same identity.
-    fn shadowed_method_declaration_key(owner: &str, method_name: &str) -> String {
+    fn method_declaration_key(owner: &str, method_name: &str) -> String {
         format!("{owner}::{method_name}")
     }
 
@@ -6964,7 +6964,7 @@ impl Checker {
         // implementing modules an inherited default is re-registered under.
         let trait_params = self.trait_type_param_names(trait_name);
         if !trait_params.is_empty() {
-            let owner = Self::shadowed_method_declaration_key(&declaration_key, &method.name);
+            let owner = Self::method_declaration_key(&declaration_key, &method.name);
             self.reject_shadowing_method_type_params(
                 method.type_params.as_ref(),
                 &[(trait_params, format!("trait `{trait_name}`"))],
@@ -7744,6 +7744,34 @@ impl Checker {
         if let Some(bound) = trait_bound {
             let type_identity = self.trait_impl_type_identity(type_name);
             let trait_identity = self.trait_defs_key_for_bound(&bound.name);
+            let exact_type_identity = impl_type_params
+                .is_none_or(Vec::is_empty)
+                .then(|| {
+                    self.current_self_type
+                        .as_ref()
+                        .filter(|(self_type_name, args)| {
+                            self_type_name == type_name && !args.is_empty()
+                        })
+                        .and_then(|(_, args)| {
+                            args.iter()
+                                .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
+                                .collect::<Option<Vec<_>>>()
+                        })
+                        .and_then(|args| {
+                            crate::resolved_ty::mangle_impl_self_name(&type_identity, &args)
+                        })
+                })
+                .flatten();
+            if let Some(exact_type_identity) = exact_type_identity {
+                self.trait_impl_method_declaration_ids.insert(
+                    (
+                        exact_type_identity,
+                        trait_identity.clone(),
+                        method.name.clone(),
+                    ),
+                    declaration_id.clone(),
+                );
+            }
             self.trait_impl_method_declaration_ids
                 .entry((type_identity, trait_identity, method.name.clone()))
                 .or_insert_with(|| declaration_id.clone());
@@ -7856,10 +7884,8 @@ impl Checker {
             // The declaration is the impl METHOD, so its identity is the
             // implementing module's type and method name — not the trait's key,
             // which every file implementing that trait would share.
-            let owner = Self::shadowed_method_declaration_key(
-                &self.declaration_owner_key(type_name),
-                &method.name,
-            );
+            let owner =
+                Self::method_declaration_key(&self.declaration_owner_key(type_name), &method.name);
             self.reject_shadowing_method_type_params(
                 method.type_params.as_ref(),
                 &shadow_owners,
@@ -9507,6 +9533,47 @@ impl Checker {
                         || type_name.to_string(),
                         |module| format!("{module}.{type_name}"),
                     )
+            })
+    }
+
+    pub(super) fn trait_impl_method_declaration(
+        &self,
+        ty: &Ty,
+        trait_name: &str,
+        method_name: &str,
+    ) -> Option<(crate::DefId, String)> {
+        let Ty::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let type_identity = self.trait_impl_type_identity(name);
+        let trait_identity = self.trait_defs_key_for_bound(trait_name);
+        let exact_type_identity = (!args.is_empty())
+            .then(|| {
+                args.iter()
+                    .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|args| {
+                        crate::resolved_ty::mangle_impl_self_name(&type_identity, &args)
+                    })
+            })
+            .flatten();
+        exact_type_identity
+            .into_iter()
+            .chain(std::iter::once(type_identity))
+            .find_map(|owner| {
+                self.trait_impl_method_declaration_ids
+                    .get(&(
+                        owner.clone(),
+                        trait_identity.clone(),
+                        method_name.to_string(),
+                    ))
+                    .cloned()
+                    .map(|declaration| {
+                        (
+                            declaration,
+                            Self::method_declaration_key(&owner, method_name),
+                        )
+                    })
             })
     }
 

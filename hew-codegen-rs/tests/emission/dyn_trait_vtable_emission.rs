@@ -145,6 +145,7 @@ fn vtable_instance(
 
 fn pipeline_with(raw_mir: Vec<RawMirFunction>, registry: Vec<DynVtableInstance>) -> IrPipeline {
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir,
         checked_mir: vec![],
         elaborated_mir: vec![],

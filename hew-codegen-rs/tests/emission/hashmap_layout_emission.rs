@@ -83,6 +83,7 @@ fn base_pipeline(
     };
     let blocks = vec![entry_block, return_block];
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -541,6 +542,7 @@ fn hash_thunk_dedup_one_per_record_per_module() {
     };
     let blocks = vec![entry, mid, ret];
     let pipeline = IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -694,6 +696,7 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
     };
     let blocks = vec![entry, mid, ret];
     let pipeline = IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -1098,6 +1101,7 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
     };
     let blocks = vec![entry, mid, ret];
     let pipeline = IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),

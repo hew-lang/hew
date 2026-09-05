@@ -41,6 +41,7 @@ fn base_pipeline(
     };
     let blocks = vec![entry_block, return_block];
     IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),
@@ -665,6 +666,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
     let return_ty = ResolvedTy::Unit;
     let blocks = vec![entry_block, mid_block, return_block];
     let pipeline = IrPipeline {
+        entry_exit_plan: None,
         raw_mir: vec![RawMirFunction {
             source_origin: hew_mir::SourceOrigin::Unknown,
             key: hew_mir::MirCallableKey::for_test("main"),

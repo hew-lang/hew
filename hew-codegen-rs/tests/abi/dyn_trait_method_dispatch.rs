@@ -61,6 +61,7 @@ fn dyn_trait_ty(trait_name: &str) -> ResolvedTy {
 
 fn empty_pipeline(raw_mir: Vec<RawMirFunction>) -> IrPipeline {
     crate::mir_fixture::complete_stages(IrPipeline {
+        entry_exit_plan: None,
         raw_mir,
         checked_mir: vec![],
         elaborated_mir: vec![],

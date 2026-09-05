@@ -1,0 +1,17 @@
+enum BoxError<T> {
+    Failed(T);
+}
+
+impl<T: Display> Display for BoxError<T> {
+    fn fmt(self) -> string {
+        match self {
+            BoxError.Failed(value) => f"{value}",
+        }
+    }
+}
+
+impl<T: Display> Error for BoxError<T> {}
+
+fn main() -> Result<(), BoxError<string>> {
+    Err(BoxError.Failed("generic failure"))
+}

@@ -2798,6 +2798,16 @@ pub fn lower_program_host_target(
     lower_program(program, type_check_output, ctx, TargetArch::host())
 }
 
+/// Linker-safe internal symbol for an authored `main` that is not the selected
+/// process entry. A single `$` delimiter cannot be written in Hew source and is
+/// distinct from the `$$` generic-instantiation separator.
+fn authored_main_callable_symbol(declaration: &hew_types::DefId) -> String {
+    format!(
+        "__hew_callable${}",
+        crate::mangle_dotted_name(declaration.full_path())
+    )
+}
+
 /// Construct the sole legacy surface key for a tagged-union constructor.
 ///
 /// `machine_ctor_registry` is keyed by exact source-owner paths for imported
@@ -2833,6 +2843,7 @@ pub fn lower_program_with_mono_cap(
     target_arch: TargetArch,
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
+    let entry_exit_plan = type_check_output.entry_exit_plan.clone();
     let compiling_prelude_manifest = program.module_graph.as_ref().is_some_and(|graph| {
         graph
             .modules
@@ -3093,7 +3104,7 @@ pub fn lower_program_with_mono_cap(
     // references in call expressions resolve to the correct return type.
     // Diagnostics from this pass are discarded — the same types are re-lowered
     // in the second pass, which is where canonical diagnostics are emitted.
-    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+    for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
         ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
         ctx.current_module_name = span_indices
@@ -3101,7 +3112,18 @@ pub fn lower_program_with_mono_cap(
             .map(str::to_string);
         match item {
             Item::Function(func) => {
-                ctx.register_fn_entry(&func.name, func);
+                let item = ctx.register_fn_entry(&func.name, func);
+                if func.name == "main" {
+                    let declaration =
+                        ctx.source_declaration(span, hew_types::DeclarationKind::Function, 0);
+                    if let (Some(plan), Some(declaration)) = (entry_exit_plan.as_ref(), declaration)
+                    {
+                        if plan.entry != declaration {
+                            ctx.fn_symbol_overrides
+                                .insert(item, authored_main_callable_symbol(&declaration));
+                        }
+                    }
+                }
             }
             Item::ExternBlock(block) => {
                 // Register extern fn signatures so call sites resolve them
@@ -4799,9 +4821,19 @@ pub fn lower_program_with_mono_cap(
                     // Either way, do not lower a body — the declaration is a
                     // typed substrate stub that must match an existing catalog entry.
                 } else {
-                    let Some(hir_fn) = ctx.lower_fn(func, span.clone()) else {
+                    let Some(mut hir_fn) = ctx.lower_fn(func, span.clone()) else {
                         continue;
                     };
+                    // The process adapter owns the external `main` symbol. If
+                    // a selected test displaces an authored source `main`, keep
+                    // that declaration as an ordinary callable and give it a
+                    // stable internal HIR symbol. The exact checker `DefId`
+                    // remains the call authority: MIR's direct-call index maps
+                    // that declaration to this symbol, so neither call sites
+                    // nor codegen rediscover the target from its spelling.
+                    if let Some(symbol) = ctx.fn_symbol_overrides.get(&hir_fn.id) {
+                        hir_fn.name.clone_from(symbol);
+                    }
                     // Positive root-origin record: a free function lowered from
                     // the root file (module index 0) has a body span that
                     // indexes the root compilation unit's source, so codegen may
@@ -5796,6 +5828,46 @@ pub fn lower_program_with_mono_cap(
     // `Result`) continue to flow through `EnumLayoutRegistry` per-instantiation
     // (see below).
 
+    // A `Result<(), E>` process entry calls the checker-selected
+    // `Display::fmt` target from its generated boundary adapter. That edge has
+    // no source call expression, so it must enter the same monomorphisation
+    // registry explicitly or a generic impl body is never materialized.
+    if let Some((display, type_args)) =
+        entry_exit_plan
+            .as_ref()
+            .and_then(|plan| match &plan.action {
+                hew_types::EntryExitAction::Result { display, .. } => match &display.instance {
+                    hew_types::EntryCallableInstance::Generic { type_args } => {
+                        Some((display, type_args))
+                    }
+                    hew_types::EntryCallableInstance::Declared => None,
+                },
+                hew_types::EntryExitAction::Unit | hew_types::EntryExitAction::Integer(_) => None,
+            })
+    {
+        if let Some(function) = items.iter().find_map(|item| match item {
+            HirItem::Function(function) if function.declaration == display.declaration => {
+                Some(function)
+            }
+            _ => None,
+        }) {
+            let key = MonoKey {
+                origin: function.id,
+                declaration: display.declaration.clone(),
+                linker_symbol: function.name.clone(),
+                type_args: type_args.clone(),
+            };
+            if ctx.mono_registry.insert(key).is_err() && !ctx.mono_cap_diag_emitted {
+                ctx.mono_cap_diag_emitted = true;
+                ctx.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MonomorphisationCapExceeded { cap: mono_cap },
+                    function.span.clone(),
+                    "the selected process entry Display implementation exceeds the function monomorphisation cap",
+                ));
+            }
+        }
+    }
+
     let pending_produced_value_carrier = ctx.take_pending_produced_value_carrier();
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
@@ -5919,27 +5991,12 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.diagnostics,
     );
 
-    // The language's entry rule is applied here, once: the root compilation
-    // unit's monomorphic `main` declaration. Publishing the resolved `DefId`
-    // is what lets SIR and the strict driver select an entry callable without
-    // ever comparing a declaration path or an emitted symbol against "main".
-    let entry_declaration = items.iter().find_map(|item| match item {
-        HirItem::Function(function)
-            if function.name == "main"
-                && function.type_params.is_empty()
-                && ctx.root_item_ids.contains(&function.id) =>
-        {
-            Some(function.declaration.clone())
-        }
-        _ => None,
-    });
-
     let mut module = HirModule {
         items,
         produced_value_facts: HashMap::new(),
         diagnostic_source_modules,
         root_item_ids: ctx.root_item_ids,
-        entry_declaration,
+        entry_exit_plan,
         caller_visible_param_projections: ctx.caller_visible_param_projections,
         wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
         type_classes: ctx.type_classes,
@@ -7447,6 +7504,9 @@ struct LowerCtx {
     scopes: Vec<ScopeMap>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
+    /// Item-keyed linker-symbol substitutions for source callables whose
+    /// surface spelling is reserved by a generated process adapter.
+    fn_symbol_overrides: HashMap<ItemId, String>,
     /// Source-declared `extern` symbols. A resource argument crosses one of
     /// these bodyless ABI boundaries by borrow only when the generated
     /// per-symbol/per-parameter ownership contract says so; ordinary Hew
@@ -8631,6 +8691,7 @@ impl LowerCtx {
             ids: IdGen::default(),
             scopes: Vec::new(),
             fn_registry: HashMap::new(),
+            fn_symbol_overrides: HashMap::new(),
             extern_fn_names: HashSet::new(),
             imported_fn_rewrites: None,
             imported_actor_rewrites: None,
@@ -10830,7 +10891,7 @@ impl LowerCtx {
         }
     }
 
-    fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
+    fn register_fn_entry(&mut self, name: &str, func: &FnDecl) -> ItemId {
         // A later ordinary function registration must not inherit a stale
         // extern privilege merely by reusing its symbol spelling.
         self.extern_fn_names.remove(name);
@@ -10856,6 +10917,7 @@ impl LowerCtx {
                 builtin_family: None,
             },
         );
+        id
     }
 
     fn register_impl_method_fn_entry(
@@ -23889,9 +23951,10 @@ impl LowerCtx {
                     ret: Box::new(entry.return_ty.clone()),
                 };
                 let id = entry.id;
+                let emitted_symbol = self.fn_symbol_overrides.get(&id).cloned().unwrap_or(symbol);
                 return (
                     HirExprKind::BindingRef {
-                        name: symbol,
+                        name: emitted_symbol,
                         resolved: ResolvedRef::Item(id),
                     },
                     fn_ty,
@@ -23961,9 +24024,13 @@ impl LowerCtx {
             let resolved = entry
                 .builtin_family
                 .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin);
+            let emitted_name = self
+                .fn_symbol_overrides
+                .get(&entry.id)
+                .map_or_else(|| name.to_string(), Clone::clone);
             (
                 HirExprKind::BindingRef {
-                    name: name.to_string(),
+                    name: emitted_name,
                     resolved,
                 },
                 fn_ty,

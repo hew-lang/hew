@@ -392,11 +392,11 @@ pub struct SemModule {
     /// from [`Self::entry_callable`], so unrelated root bodies do not block a
     /// selected program.
     pub root_unit_callables: Vec<CallableId>,
-    /// Resolved entry callable, projected from `HirModule::entry_declaration`.
-    /// HIR applies the language's entry rule once and publishes the
-    /// declaration id; SIR only joins on it. Neither lowering nor the verifier
-    /// rediscovers an entry from a declaration path or an emitted symbol, so a
-    /// program whose entry is not spelled `main` selects exactly as well.
+    /// Checker-selected process entry and its complete typed exit contract.
+    pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
+    /// Resolved entry callable, projected by joining the entry plan's `DefId`.
+    /// Neither lowering nor the verifier rediscovers an entry from a
+    /// declaration path or emitted symbol.
     pub entry_callable: Option<CallableId>,
     pub functions: Vec<SemFunction>,
     /// The §6.3 fact table for every type this module's bodies mention,

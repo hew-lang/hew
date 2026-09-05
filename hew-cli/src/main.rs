@@ -882,6 +882,16 @@ pub(crate) fn compile_native_binary(
     bin_path: &Path,
     options: &compile::CompileOptions,
 ) -> Result<(), DiagChannel> {
+    compile_native_binary_with_paths(input, bin_path, options, None, &[])
+}
+
+fn compile_native_binary_with_paths(
+    input: &Path,
+    bin_path: &Path,
+    options: &compile::CompileOptions,
+    paths: Option<&NativeBuildPaths>,
+    extra_libs: &[String],
+) -> Result<(), DiagChannel> {
     let (pipeline, sir_report) = lower_file_to_mir_with_options(input, None, options)?;
     if let Some(report) = sir_report.as_ref() {
         report_sir_lane(report);
@@ -904,7 +914,12 @@ pub(crate) fn compile_native_binary(
         eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
         DiagChannel::User
     })?;
-    link_native_object(obj, bin_path)
+    link_native_object_with_hew_lib_and_extra(
+        obj,
+        bin_path,
+        paths.map(|paths| paths.hew_lib.as_path()),
+        extra_libs,
+    )
 }
 
 #[derive(Debug)]
@@ -967,7 +982,7 @@ pub(crate) fn compile_native_from_program_with_paths(
     })?;
     compile::render_frontend_diagnostics(&state.diagnostics);
 
-    let tco = state.typecheck_result.tco.ok_or_else(|| {
+    let tco = state.typecheck_result.tco.as_ref().ok_or_else(|| {
         eprintln!(
             "Error: eval compilation requires a type-checked program; \
              this path should be unreachable (no_typecheck = false)"
@@ -977,7 +992,7 @@ pub(crate) fn compile_native_from_program_with_paths(
 
     let lower_output = hew_hir::lower_program(
         &state.program,
-        &tco,
+        tco,
         &hew_hir::ResolutionCtx,
         hir_target_arch(&target),
     );
@@ -1002,7 +1017,7 @@ pub(crate) fn compile_native_from_program_with_paths(
     }
 
     let (pipeline, sir_report) =
-        lower_verified_hir_to_pipeline(&lower_output.module, &tco, &target, options.sir_mode)?;
+        lower_verified_hir_to_pipeline(&lower_output.module, tco, &target, options.sir_mode)?;
     if let Some(report) = sir_report.as_ref() {
         report_sir_lane(report);
     }

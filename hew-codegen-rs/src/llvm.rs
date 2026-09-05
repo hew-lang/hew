@@ -88,7 +88,8 @@ use hew_mir::{
 pub(crate) use hew_types::short_name;
 use hew_types::{
     runtime_call::{MathIntrinsic, RuntimeCapability, RuntimeDropOperandShape},
-    wasm_capability_ids, BuiltinType, NumericWidth, ResolvedTy, WasmCapabilityId,
+    wasm_capability_ids, BuiltinType, EntryCallableInstance, EntryDisplayTarget, EntryExitAction,
+    EntryExitPlan, EntryIntegerType, NumericWidth, ResolvedTy, WasmCapabilityId,
     WireCodecDirection, WireLayoutTable, WireTextFormat,
 };
 // Single source of truth for the trap discriminants codegen emits. Importing
@@ -2108,6 +2109,8 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// every drain/shutdown/cleanup epilogue above, so faults raised during
     /// the drain are included.
     pub(crate) emit_process_exit_status_epilogue: bool,
+    /// The checker-authored exit action for this process-entry body.
+    pub(crate) process_entry_action: Option<&'a EntryExitAction>,
     /// ABI layout authority for the module target. Native textual emission
     /// carries host data; cross-target emission carries the target machine data.
     pub(crate) target_data: &'a TargetData,
@@ -30964,20 +30967,53 @@ fn lower_terminator<'ctx>(
                 // always-non-zero value selected here and the load-bearing half
                 // for an explicit `exit(0)` in user code.
                 let exit_i64 = fn_ctx.ctx.i64_type();
-                let user_code = if matches!(fn_ctx.return_resolved_ty, ResolvedTy::Unit) {
-                    exit_i64.const_zero()
-                } else if let BasicTypeEnum::IntType(int_ty) = fn_ctx.return_ty {
-                    let loaded = fn_ctx
-                        .builder
-                        .build_load(int_ty, fn_ctx.return_slot, "hew_exit_user_code")
-                        .llvm_ctx("main return slot load for exit code")?
-                        .into_int_value();
-                    fn_ctx
-                        .builder
-                        .build_int_s_extend_or_bit_cast(loaded, exit_i64, "hew_exit_user_code_i64")
-                        .llvm_ctx("main return code widen")?
-                } else {
-                    exit_i64.const_zero()
+                let user_code = match fn_ctx.process_entry_action {
+                    Some(EntryExitAction::Unit | EntryExitAction::Result { .. }) => {
+                        exit_i64.const_zero()
+                    }
+                    Some(EntryExitAction::Integer(kind)) => {
+                        let BasicTypeEnum::IntType(int_ty) = fn_ctx.return_ty else {
+                            return Err(CodegenError::FailClosed(
+                                "integer entry plan has a non-integer return slot".into(),
+                            ));
+                        };
+                        let loaded = fn_ctx
+                            .builder
+                            .build_load(int_ty, fn_ctx.return_slot, "hew_exit_user_code")
+                            .llvm_ctx("main return slot load for exit code")?
+                            .into_int_value();
+                        if matches!(
+                            kind,
+                            EntryIntegerType::I8
+                                | EntryIntegerType::I16
+                                | EntryIntegerType::I32
+                                | EntryIntegerType::I64
+                                | EntryIntegerType::Isize
+                        ) {
+                            fn_ctx
+                                .builder
+                                .build_int_s_extend_or_bit_cast(
+                                    loaded,
+                                    exit_i64,
+                                    "hew_exit_user_code_i64",
+                                )
+                                .llvm_ctx("main signed return code widen")?
+                        } else {
+                            fn_ctx
+                                .builder
+                                .build_int_z_extend_or_bit_cast(
+                                    loaded,
+                                    exit_i64,
+                                    "hew_exit_user_code_i64",
+                                )
+                                .llvm_ctx("main unsigned return code widen")?
+                        }
+                    }
+                    None => {
+                        return Err(CodegenError::FailClosed(
+                            "process exit epilogue has no checker-authored action".into(),
+                        ));
+                    }
                 };
                 let user_code_set = fn_ctx
                     .builder
@@ -33960,6 +33996,35 @@ fn param_is_aliasable_representation_loan(func: &RawMirFunction, param_idx: usiz
 // Per-function declaration + body lowering
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
+enum ProcessEntryTarget {
+    Native,
+    Wasm,
+}
+
+/// Whether this MIR callable is the checker-selected process entry body.
+///
+/// A synthesized callable inherits its parent declaration identity, so the
+/// selected declaration alone is not enough to identify the one body that
+/// receives the process-entry ABI. The monomorphic instance is that direct
+/// source body; every synthesized child retains its ordinary callable ABI.
+fn is_selected_process_entry(func: &RawMirFunction, plan: &EntryExitPlan) -> bool {
+    func.key == entry_body_callable_key(plan)
+}
+
+fn entry_body_callable_key(plan: &EntryExitPlan) -> MirCallableKey {
+    MirCallableKey::declared(plan.entry.clone())
+}
+
+fn entry_display_callable_key(display: &EntryDisplayTarget) -> MirCallableKey {
+    match &display.instance {
+        EntryCallableInstance::Declared => MirCallableKey::declared(display.declaration.clone()),
+        EntryCallableInstance::Generic { type_args } => {
+            MirCallableKey::instance(display.declaration.clone(), type_args.clone())
+        }
+    }
+}
+
 fn declare_function<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -33967,9 +34032,9 @@ fn declare_function<'ctx>(
     func: &RawMirFunction,
     record_layouts: &RecordLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
-    emit_wasm_entry_alias: bool,
+    process_entry_target: Option<ProcessEntryTarget>,
 ) -> CodegenResult<FnSymbol<'ctx>> {
-    let linkage = if func.name == "main" {
+    let linkage = if process_entry_target.is_some() {
         Some(Linkage::External)
     } else {
         Some(Linkage::Internal)
@@ -34100,17 +34165,14 @@ fn declare_function<'ctx>(
         BasicTypeEnum::VectorType(v) => v.fn_type(&param_tys, false),
         BasicTypeEnum::ScalableVectorType(v) => v.fn_type(&param_tys, false),
     };
-    let wraps_native_entry = is_native_process_entry(func) && native_unwind_enabled(llvm_mod);
-    let symbol_name = if emit_wasm_entry_alias && func.name == "main" {
-        WASM_MAIN_BODY_SYMBOL
-    } else if wraps_native_entry {
-        NATIVE_MAIN_BODY_SYMBOL
-    } else {
-        &func.name
+    let symbol_name = match process_entry_target {
+        Some(ProcessEntryTarget::Wasm) => WASM_MAIN_BODY_SYMBOL,
+        Some(ProcessEntryTarget::Native) => NATIVE_MAIN_BODY_SYMBOL,
+        None => &func.name,
     };
     // The native entry body is reached only through the runtime's catch
     // boundary, so it is not part of the module's external surface.
-    let linkage = if wraps_native_entry {
+    let linkage = if process_entry_target.is_some() {
         Some(Linkage::Internal)
     } else {
         linkage
@@ -34160,15 +34222,6 @@ fn apply_uwtable<'ctx>(ctx: &'ctx Context, func: inkwell::values::FunctionValue<
     }
 }
 
-/// Whether this MIR function is the module's process entry.
-///
-/// A function that merely shares the name while carrying the receive-handler
-/// dispatch parameter is a handler, not an entry, and keeps the plain `main`
-/// symbol.
-fn is_native_process_entry(func: &RawMirFunction) -> bool {
-    func.name == "main" && !is_receive_handler(func)
-}
-
 /// Internal symbol carrying the generated program entry on native targets.
 ///
 /// The exported `main` is the wrapper emitted by
@@ -34179,7 +34232,7 @@ const NATIVE_MAIN_BODY_SYMBOL: &str = "__hew_main_body";
 /// Internal symbol carrying the generated program entry on wasm32.
 ///
 /// The exported `main` there is the export wrapper emitted by
-/// [`emit_wasm_main_export_wrapper`].
+/// [`emit_direct_process_entry_adapter`].
 const WASM_MAIN_BODY_SYMBOL: &str = "__original_main";
 
 /// The symbol carrying the program entry's own body on a given target.
@@ -34194,12 +34247,8 @@ const WASM_MAIN_BODY_SYMBOL: &str = "__original_main";
 pub fn entry_body_symbol_for_triple(triple: &str) -> &'static str {
     if triple.starts_with("wasm32") {
         WASM_MAIN_BODY_SYMBOL
-    } else if cleanup_capabilities_for_target(triple).unwind_strategy
-        == CleanupUnwindStrategy::StructuredLlvm
-    {
-        NATIVE_MAIN_BODY_SYMBOL
     } else {
-        "main"
+        NATIVE_MAIN_BODY_SYMBOL
     }
 }
 
@@ -34226,32 +34275,35 @@ const NATIVE_MAIN_ENTRY_SYMBOL: &str = "__hew_main_entry";
 fn emit_native_main_unwind_wrapper<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
-    fn_symbols: &FnSymbolMap<'ctx>,
+    plan: &EntryExitPlan,
+    fn_symbols_by_callable: &HashMap<MirCallableKey, FnSymbol<'ctx>>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
 ) -> CodegenResult<()> {
-    let Some(symbol) = fn_symbols.get("main").copied() else {
-        return Ok(());
-    };
-    let (body, _return_ty, _returns_unit) =
-        symbol.real("main", "emit_native_main_unwind_wrapper")?;
-    let body_ty = body.get_type();
-    let arg_tys: Vec<BasicTypeEnum<'ctx>> = body_ty
-        .get_param_types()
-        .into_iter()
-        .map(BasicTypeEnum::try_from)
-        .collect::<Result<_, _>>()
-        .map_err(|()| {
-            CodegenError::FailClosed("native entry parameter is not a basic type".into())
+    let entry_key = entry_body_callable_key(plan);
+    let symbol = fn_symbols_by_callable
+        .get(&entry_key)
+        .copied()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "process entry `{}` has no LLVM declaration",
+                mir_callable_key_label(&entry_key)
+            ))
         })?;
-    let body_return = body_ty.get_return_type();
-
-    // Frame layout: the entry's arguments, then its result slot.
-    let mut frame_fields: Vec<BasicTypeEnum<'ctx>> = arg_tys.clone();
-    if let Some(ret) = body_return {
-        frame_fields.push(ret);
+    let (body, _return_ty, _returns_unit) =
+        symbol.real(plan.entry.full_path(), "emit_native_main_unwind_wrapper")?;
+    let body_ty = body.get_type();
+    if body.count_params() != 0 {
+        return Err(CodegenError::FailClosed(
+            "process entry adapter requires a parameterless source function".into(),
+        ));
     }
-    let frame_ty = ctx.struct_type(&frame_fields, false);
-    let result_index = u32::try_from(arg_tys.len())
-        .map_err(|_| CodegenError::FailClosed("native entry has too many parameters".into()))?;
+    let body_return = body_ty.get_return_type().ok_or_else(|| {
+        CodegenError::FailClosed("process entry body has no representable return value".into())
+    })?;
+
+    let frame_ty = ctx.struct_type(&[body_return], false);
+    let result_index = 0;
 
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let builder = ctx.create_builder();
@@ -34273,38 +34325,24 @@ fn emit_native_main_unwind_wrapper<'ctx>(
         .get_first_param()
         .ok_or_else(|| CodegenError::Llvm("native entry adapter is missing its frame".into()))?
         .into_pointer_value();
-    let mut call_args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(arg_tys.len());
-    for (index, arg_ty) in arg_tys.iter().enumerate() {
-        let index = u32::try_from(index)
-            .map_err(|_| CodegenError::FailClosed("native entry has too many parameters".into()))?;
-        let slot = builder
-            .build_struct_gep(frame_ty, frame, index, "__hew_main_arg_slot")
-            .llvm_ctx("native entry adapter argument slot")?;
-        let value = builder
-            .build_load(*arg_ty, slot, "__hew_main_arg")
-            .llvm_ctx("native entry adapter argument load")?;
-        call_args.push(value.into());
-    }
     let call = builder
-        .build_call(body, &call_args, "__hew_main_body_call")
+        .build_call(body, &[], "__hew_main_body_call")
         .llvm_ctx("native entry adapter call")?;
-    if body_return.is_some() {
-        let value = call.try_as_basic_value().basic().ok_or_else(|| {
-            CodegenError::FailClosed("native entry adapter call returned void".into())
-        })?;
-        let slot = builder
-            .build_struct_gep(frame_ty, frame, result_index, "__hew_main_result_slot")
-            .llvm_ctx("native entry adapter result slot")?;
-        builder
-            .build_store(slot, value)
-            .llvm_ctx("native entry adapter result store")?;
-    }
+    let value = call.try_as_basic_value().basic().ok_or_else(|| {
+        CodegenError::FailClosed("native entry adapter call returned void".into())
+    })?;
+    let slot = builder
+        .build_struct_gep(frame_ty, frame, result_index, "__hew_main_result_slot")
+        .llvm_ctx("native entry adapter result slot")?;
+    builder
+        .build_store(slot, value)
+        .llvm_ctx("native entry adapter result store")?;
     builder
         .build_return(None)
         .llvm_ctx("native entry adapter return")?;
 
-    // The exported entry: `main` builds the frame, runs the body through the
-    // boundary, and returns whatever landed in the result slot.
+    // The exported entry has one canonical process ABI regardless of the
+    // source return representation.
     let boundary = llvm_mod
         .get_function("hew_main_unwind_boundary")
         .unwrap_or_else(|| {
@@ -34315,7 +34353,11 @@ fn emit_native_main_unwind_wrapper<'ctx>(
                 Some(Linkage::External),
             )
         });
-    let wrapper = llvm_mod.add_function("main", body_ty, Some(Linkage::External));
+    let wrapper = llvm_mod.add_function(
+        "main",
+        ctx.i32_type().fn_type(&[], false),
+        Some(Linkage::External),
+    );
     apply_uwtable(ctx, wrapper);
     let wrapper_block = ctx.append_basic_block(wrapper, "entry");
     builder.position_at_end(wrapper_block);
@@ -34328,17 +34370,6 @@ fn emit_native_main_unwind_wrapper<'ctx>(
     builder
         .build_store(wrapper_frame, frame_ty.const_zero())
         .llvm_ctx("native main frame init")?;
-    for index in 0..result_index {
-        let value = wrapper.get_nth_param(index).ok_or_else(|| {
-            CodegenError::Llvm("native main wrapper is missing a forwarded parameter".into())
-        })?;
-        let slot = builder
-            .build_struct_gep(frame_ty, wrapper_frame, index, "__hew_main_arg_slot")
-            .llvm_ctx("native main argument slot")?;
-        builder
-            .build_store(slot, value)
-            .llvm_ctx("native main argument store")?;
-    }
     builder
         .build_call(
             boundary,
@@ -34349,75 +34380,303 @@ fn emit_native_main_unwind_wrapper<'ctx>(
             "hew_main_unwind_boundary_call",
         )
         .llvm_ctx("native main boundary call")?;
-    match body_return {
-        None => {
-            builder
-                .build_return(None)
-                .llvm_ctx("native main wrapper return void")?;
-        }
-        Some(ret_ty) => {
-            let slot = builder
-                .build_struct_gep(
-                    frame_ty,
-                    wrapper_frame,
-                    result_index,
-                    "__hew_main_result_slot",
-                )
-                .llvm_ctx("native main result slot")?;
-            let value = builder
-                .build_load(ret_ty, slot, "__hew_main_result")
-                .llvm_ctx("native main result load")?;
-            builder
-                .build_return(Some(&value))
-                .llvm_ctx("native main wrapper return")?;
-        }
-    }
+    let slot = builder
+        .build_struct_gep(
+            frame_ty,
+            wrapper_frame,
+            result_index,
+            "__hew_main_result_slot",
+        )
+        .llvm_ctx("native main result slot")?;
+    let value = builder
+        .build_load(body_return, slot, "__hew_main_result")
+        .llvm_ctx("native main result load")?;
+    let exit_code = emit_entry_exit_code(
+        ctx,
+        llvm_mod,
+        &builder,
+        value,
+        &plan.action,
+        fn_symbols_by_callable,
+        machine_layouts,
+        enum_layouts,
+    )?;
+    builder
+        .build_return(Some(&exit_code))
+        .llvm_ctx("native main wrapper return")?;
 
     Ok(())
 }
 
-fn emit_wasm_main_export_wrapper<'ctx>(
+fn normalize_entry_integer<'ctx>(
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+    value: IntValue<'ctx>,
+    kind: EntryIntegerType,
+) -> CodegenResult<IntValue<'ctx>> {
+    let i32_ty = ctx.i32_type();
+    match value.get_type().get_bit_width().cmp(&32) {
+        std::cmp::Ordering::Greater => builder
+            .build_int_truncate(value, i32_ty, "entry_exit_trunc")
+            .llvm_ctx("truncate process exit status"),
+        std::cmp::Ordering::Less
+            if matches!(
+                kind,
+                EntryIntegerType::I8
+                    | EntryIntegerType::I16
+                    | EntryIntegerType::I32
+                    | EntryIntegerType::I64
+                    | EntryIntegerType::Isize
+            ) =>
+        {
+            builder
+                .build_int_s_extend(value, i32_ty, "entry_exit_sign_extend")
+                .llvm_ctx("sign-extend process exit status")
+        }
+        std::cmp::Ordering::Less => builder
+            .build_int_z_extend(value, i32_ty, "entry_exit_zero_extend")
+            .llvm_ctx("zero-extend process exit status"),
+        std::cmp::Ordering::Equal => Ok(value),
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "entry adaptation consumes explicit module authorities without rebuilding them"
+)]
+fn emit_entry_exit_code<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
-    fn_symbols: &FnSymbolMap<'ctx>,
-) -> CodegenResult<()> {
-    let Some(symbol) = fn_symbols.get("main").copied() else {
-        return Ok(());
-    };
-    let (original, _return_ty, returns_unit) =
-        symbol.real("main", "emit_wasm_main_export_wrapper")?;
-    let fn_ty = original.get_type();
-    let params = fn_ty.get_param_types();
-    if !params.is_empty() {
+    builder: &Builder<'ctx>,
+    result: BasicValueEnum<'ctx>,
+    action: &EntryExitAction,
+    fn_symbols_by_callable: &HashMap<MirCallableKey, FnSymbol<'ctx>>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<IntValue<'ctx>> {
+    match action {
+        EntryExitAction::Unit => Ok(ctx.i32_type().const_zero()),
+        EntryExitAction::Integer(kind) => {
+            let BasicValueEnum::IntValue(value) = result else {
+                return Err(CodegenError::FailClosed(
+                    "integer entry plan received a non-integer body result".into(),
+                ));
+            };
+            normalize_entry_integer(ctx, builder, value, *kind)
+        }
+        EntryExitAction::Result {
+            result_ty,
+            error_ty: _,
+            display,
+        } => {
+            let BasicValueEnum::StructValue(result) = result else {
+                return Err(CodegenError::FailClosed(
+                    "Result entry plan received a non-aggregate body result".into(),
+                ));
+            };
+            let layout_key = crate::layout::enum_layout_key_for_ty_from(enum_layouts, result_ty)?;
+            let layout = machine_layouts.get(&layout_key).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Result entry plan has no registered LLVM layout for `{layout_key}`"
+                ))
+            })?;
+            let result_slot = builder
+                .build_alloca(layout.outer_struct, "entry_result")
+                .llvm_ctx("allocate process entry Result")?;
+            builder
+                .build_store(result_slot, result)
+                .llvm_ctx("store process entry Result")?;
+            let tag_slot = builder
+                .build_struct_gep(layout.outer_struct, result_slot, 0, "entry_result_tag_slot")
+                .llvm_ctx("project process entry Result tag")?;
+            let tag = builder
+                .build_load(layout.tag_int_ty, tag_slot, "entry_result_tag")
+                .llvm_ctx("load process entry Result tag")?
+                .into_int_value();
+            let is_ok = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    tag,
+                    layout.tag_int_ty.const_zero(),
+                    "entry_result_is_ok",
+                )
+                .llvm_ctx("compare process entry Result tag")?;
+            let wrapper = builder
+                .get_insert_block()
+                .and_then(|block| block.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "process entry Result adapter has no containing function".into(),
+                    )
+                })?;
+            let ok_block = ctx.append_basic_block(wrapper, "entry_result_ok");
+            let err_block = ctx.append_basic_block(wrapper, "entry_result_err");
+            let merge_block = ctx.append_basic_block(wrapper, "entry_result_exit");
+            builder
+                .build_conditional_branch(is_ok, ok_block, err_block)
+                .llvm_ctx("branch on process entry Result")?;
+
+            builder.position_at_end(ok_block);
+            builder
+                .build_unconditional_branch(merge_block)
+                .llvm_ctx("finish process entry Ok")?;
+
+            builder.position_at_end(err_block);
+            let err_variant = *layout.variant_struct_tys.get(1).ok_or_else(|| {
+                CodegenError::FailClosed("Result entry layout has no Err variant".into())
+            })?;
+            let error_ty = err_variant.get_field_type_at_index(0).ok_or_else(|| {
+                CodegenError::FailClosed("Result entry Err variant has no payload".into())
+            })?;
+            let payload_slot = builder
+                .build_struct_gep(
+                    layout.outer_struct,
+                    result_slot,
+                    1,
+                    "entry_result_payload_slot",
+                )
+                .llvm_ctx("project process entry Result payload")?;
+            let error_slot = builder
+                .build_struct_gep(err_variant, payload_slot, 0, "entry_result_error_slot")
+                .llvm_ctx("project process entry error")?;
+            let error = builder
+                .build_load(error_ty, error_slot, "entry_result_error")
+                .llvm_ctx("load process entry error")?;
+            let display_key = entry_display_callable_key(display);
+            let display_symbol = fn_symbols_by_callable
+                .get(&display_key)
+                .copied()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "entry Display target `{}` has no LLVM declaration",
+                        mir_callable_key_label(&display_key)
+                    ))
+                })?;
+            let (display_fn, _display_return, _returns_unit) = display_symbol.real(
+                display.declaration.full_path(),
+                "process entry Display target",
+            )?;
+            let rendered = builder
+                .build_call(display_fn, &[error.into()], "entry_error_display")
+                .llvm_ctx("call process entry Display target")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("entry Display target returned no string".into())
+                })?;
+            let BasicValueEnum::PointerValue(rendered) = rendered else {
+                return Err(CodegenError::FailClosed(
+                    "entry Display target returned a non-string value".into(),
+                ));
+            };
+            let ptr_ty = ctx.ptr_type(AddressSpace::default());
+            let stderr_write = llvm_mod
+                .get_function("hew_stderr_write")
+                .unwrap_or_else(|| {
+                    llvm_mod.add_function(
+                        "hew_stderr_write",
+                        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                        Some(Linkage::External),
+                    )
+                });
+            let prefix = builder
+                .build_global_string_ptr("error: ", "__hew_entry_error_prefix")
+                .llvm_ctx("build process entry error prefix")?;
+            let newline = builder
+                .build_global_string_ptr("\n", "__hew_entry_error_newline")
+                .llvm_ctx("build process entry error newline")?;
+            for (value, label) in [
+                (prefix.as_pointer_value(), "entry_error_prefix_write"),
+                (rendered, "entry_error_display_write"),
+                (newline.as_pointer_value(), "entry_error_newline_write"),
+            ] {
+                builder
+                    .build_call(stderr_write, &[value.into()], label)
+                    .llvm_ctx("write process entry error")?;
+            }
+            let string_drop = llvm_mod.get_function("hew_string_drop").unwrap_or_else(|| {
+                llvm_mod.add_function(
+                    "hew_string_drop",
+                    ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                    Some(Linkage::External),
+                )
+            });
+            builder
+                .build_call(string_drop, &[rendered.into()], "entry_error_display_drop")
+                .llvm_ctx("drop process entry Display string")?;
+            builder
+                .build_unconditional_branch(merge_block)
+                .llvm_ctx("finish process entry Err")?;
+
+            builder.position_at_end(merge_block);
+            let exit_code = builder
+                .build_phi(ctx.i32_type(), "entry_result_exit_code")
+                .llvm_ctx("join process entry Result exit code")?;
+            let success = ctx.i32_type().const_zero();
+            let failure = ctx.i32_type().const_int(1, false);
+            exit_code.add_incoming(&[(&success, ok_block), (&failure, err_block)]);
+            Ok(exit_code.as_basic_value().into_int_value())
+        }
+    }
+}
+
+fn emit_direct_process_entry_adapter<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    plan: &EntryExitPlan,
+    fn_symbols_by_callable: &HashMap<MirCallableKey, FnSymbol<'ctx>>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let entry_key = entry_body_callable_key(plan);
+    let symbol = fn_symbols_by_callable
+        .get(&entry_key)
+        .copied()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "process entry `{}` has no LLVM declaration",
+                mir_callable_key_label(&entry_key)
+            ))
+        })?;
+    let (body, _return_ty, _returns_unit) =
+        symbol.real(plan.entry.full_path(), "emit_direct_process_entry_adapter")?;
+    if body.count_params() != 0 {
         return Err(CodegenError::FailClosed(format!(
-            "WASM entry wrapper expected parameterless main, got {} parameters",
-            params.len()
+            "process entry adapter expected a parameterless body, got {} parameters",
+            body.count_params()
         )));
     }
 
-    let wrapper = llvm_mod.add_function("main", fn_ty, Some(Linkage::External));
+    let wrapper = llvm_mod.add_function(
+        "main",
+        ctx.i32_type().fn_type(&[], false),
+        Some(Linkage::External),
+    );
     let entry = ctx.append_basic_block(wrapper, "entry");
     let builder = ctx.create_builder();
     builder.position_at_end(entry);
     let call = builder
-        .build_call(original, &[], "__original_main_call")
-        .llvm_ctx("WASM main wrapper call")?;
-    if fn_ty.get_return_type().is_some() {
-        let ret = call.try_as_basic_value().basic().ok_or_else(|| {
-            CodegenError::FailClosed("WASM main wrapper call returned void".into())
-        })?;
-        builder
-            .build_return(Some(&ret))
-            .llvm_ctx("WASM main wrapper return")?;
-    } else {
-        builder
-            .build_return(None)
-            .llvm_ctx("WASM main wrapper return void")?;
-    }
+        .build_call(body, &[], "hew_source_main_call")
+        .llvm_ctx("process entry body call")?;
+    let result = call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("process entry body returned no value".into()))?;
+    let exit_code = emit_entry_exit_code(
+        ctx,
+        llvm_mod,
+        &builder,
+        result,
+        &plan.action,
+        fn_symbols_by_callable,
+        machine_layouts,
+        enum_layouts,
+    )?;
+    builder
+        .build_return(Some(&exit_code))
+        .llvm_ctx("process entry adapter return")?;
 
-    emit_wasi_entry_adapter(ctx, llvm_mod, original, returns_unit)?;
-
-    Ok(())
+    Ok(wrapper)
 }
 
 /// Publish the canonical entry adapter consumed by the WASI runtime's `_start`.
@@ -34430,16 +34689,8 @@ fn emit_wasm_main_export_wrapper<'ctx>(
 pub fn emit_wasi_entry_adapter<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
-    source_main: FunctionValue<'ctx>,
-    returns_unit: bool,
+    process_main: FunctionValue<'ctx>,
 ) -> Result<FunctionValue<'ctx>, CodegenError> {
-    let params = source_main.get_type().get_param_types();
-    if !params.is_empty() {
-        return Err(CodegenError::FailClosed(format!(
-            "WASI entry adapter expected parameterless main, got {} parameters",
-            params.len()
-        )));
-    }
     if llvm_mod.get_function("__hew_wasi_main").is_some() {
         return Err(CodegenError::FailClosed(
             "WASI entry adapter symbol `__hew_wasi_main` is already defined".into(),
@@ -34452,33 +34703,13 @@ pub fn emit_wasi_entry_adapter<'ctx>(
     let wasi_builder = ctx.create_builder();
     wasi_builder.position_at_end(wasi_block);
     let wasi_call = wasi_builder
-        .build_call(source_main, &[], "hew_source_main_call")
-        .llvm_ctx("WASI source main adapter call")?;
-    let exit_code = if returns_unit {
-        ctx.i32_type().const_zero()
-    } else {
-        let value = wasi_call
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("WASI source main returned no value".into()))?;
-        let integer = match value {
-            BasicValueEnum::IntValue(integer) => integer,
-            _ => {
-                return Err(CodegenError::FailClosed(
-                    "WASI source main must return unit or an integer exit status".into(),
-                ));
-            }
-        };
-        match integer.get_type().get_bit_width().cmp(&32) {
-            std::cmp::Ordering::Greater => wasi_builder
-                .build_int_truncate(integer, ctx.i32_type(), "wasi_exit_trunc")
-                .llvm_ctx("truncate WASI exit status")?,
-            std::cmp::Ordering::Less => wasi_builder
-                .build_int_s_extend(integer, ctx.i32_type(), "wasi_exit_extend")
-                .llvm_ctx("extend WASI exit status")?,
-            std::cmp::Ordering::Equal => integer,
-        }
-    };
+        .build_call(process_main, &[], "hew_process_main_call")
+        .llvm_ctx("WASI process entry adapter call")?;
+    let exit_code = wasi_call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("WASI process entry returned no value".into()))?
+        .into_int_value();
     wasi_builder
         .build_return(Some(&exit_code))
         .llvm_ctx("WASI source main adapter return")?;
@@ -35905,6 +36136,7 @@ fn lower_function<'ctx>(
     frame_cleanup_thunks: &RefCell<FrameCleanupThunkCache<'ctx>>,
     lifecycle_registry: &hew_hir::LifecycleRegistry,
     emit_wasm_entry_alias: bool,
+    process_entry_action: Option<&EntryExitAction>,
     has_supervisors: bool,
     module_uses_runtime: bool,
     debug: Option<&ModuleDebugCtx<'_, 'ctx>>,
@@ -36718,20 +36950,17 @@ fn lower_function<'ctx>(
     // The WASM rename path (`emit_wasm_entry_alias = true`) doubles as the
     // "is WASM target" signal: `main` becomes `__original_main` on WASM
     // targets before body lowering.
-    let emit_drain_epilogue = func.name == "main"
-        && !actor_layouts.is_empty()
-        && !has_supervisors
-        && !emit_wasm_entry_alias;
+    let is_process_entry = process_entry_action.is_some();
+    let emit_drain_epilogue =
+        is_process_entry && !actor_layouts.is_empty() && !has_supervisors && !emit_wasm_entry_alias;
 
     // Native runtime programs that deliberately omit the generic idle drain
     // still need workers closed before the shared cleanup tail. Supervisors are
     // the primary case: their own actors stay live by design, so waiting for
     // scheduler idleness can hang. Node-only runtime users also take this
     // immediate path because there is no actor-drain behavior to preserve.
-    let emit_immediate_shutdown_epilogue = func.name == "main"
-        && module_uses_runtime
-        && !emit_drain_epilogue
-        && !emit_wasm_entry_alias;
+    let emit_immediate_shutdown_epilogue =
+        is_process_entry && module_uses_runtime && !emit_drain_epilogue && !emit_wasm_entry_alias;
 
     // All native runtime-using main functions converge on one ownership tail
     // after their intentionally different drain/shutdown behavior. The runtime
@@ -36739,7 +36968,7 @@ fn lower_function<'ctx>(
     // through InternalChildSpec::drop, sweeps actors/registries, and detaches
     // the runtime last. WASM owns an explicit, separate runtime-exit helper.
     let emit_runtime_cleanup_epilogue =
-        func.name == "main" && module_uses_runtime && !emit_wasm_entry_alias;
+        is_process_entry && module_uses_runtime && !emit_wasm_entry_alias;
 
     // Lambda-actor drain epilogue: gated on `main` (native target) and
     // unconditional w.r.t. lambda-actor usage. Each lambda actor runs on
@@ -36752,7 +36981,7 @@ fn lower_function<'ctx>(
     // native `main`) is cheap. Wasm32 lambda-actor support is HIR-gated
     // off — the scan in `uses_wasm_excluded_symbol` rejects modules that
     // would emit `Terminator::MakeLambdaActor` for a wasm target.
-    let emit_lambda_drain_epilogue = func.name == "main" && !emit_wasm_entry_alias;
+    let emit_lambda_drain_epilogue = is_process_entry && !emit_wasm_entry_alias;
 
     // Process exit-status epilogue: consult the runtime's ONE exit-status
     // authority on EVERY native `main` return, whichever drain/shutdown
@@ -36765,7 +36994,7 @@ fn lower_function<'ctx>(
     // unconditional lambda drain, so the runtime is linked here regardless of
     // actor usage, and `hew_runtime_exit_status` answers `0` on a runtime that
     // was never initialized.
-    let emit_process_exit_status_epilogue = func.name == "main" && !emit_wasm_entry_alias;
+    let emit_process_exit_status_epilogue = is_process_entry && !emit_wasm_entry_alias;
 
     // The wasm32 analogue: a standalone `hew run --target wasm32-wasi` actor
     // program has no scheduler driver or runtime-owned atexit hook, so `main`
@@ -36774,10 +37003,8 @@ fn lower_function<'ctx>(
     // wasm target (`emit_wasm_entry_alias`). Supervisors remain HIR-gated off
     // wasm32 (#1475), so `!has_supervisors` is always true for wasm32 programs;
     // it is kept for symmetry with the native drain condition.
-    let emit_wasm_runtime_exit = func.name == "main"
-        && !actor_layouts.is_empty()
-        && !has_supervisors
-        && emit_wasm_entry_alias;
+    let emit_wasm_runtime_exit =
+        is_process_entry && !actor_layouts.is_empty() && !has_supervisors && emit_wasm_entry_alias;
 
     // Install the default `RuntimeInner` at the native `main` entry for any
     // runtime-using program. The de-globalized runtime (#1228 M1) makes
@@ -36795,7 +37022,7 @@ fn lower_function<'ctx>(
     // supervisors, no node) never reach `module_uses_runtime`, so they pay
     // nothing.
     let install_runtime_at_entry =
-        func.name == "main" && !emit_wasm_entry_alias && module_uses_runtime;
+        is_process_entry && !emit_wasm_entry_alias && module_uses_runtime;
 
     // #46 var-overwrite owner set. Collect the locals the MIR elaborator admitted
     // for a scope-exit `DropKind::IndirectEnum` recursive free — i.e. the proven
@@ -36905,6 +37132,7 @@ fn lower_function<'ctx>(
         emit_immediate_shutdown_epilogue,
         emit_runtime_cleanup_epilogue,
         emit_process_exit_status_epilogue,
+        process_entry_action,
         emit_wasm_runtime_exit,
         emit_lambda_drain_epilogue,
         target_data,
@@ -38029,6 +38257,7 @@ fn build_module_for_target<'ctx>(
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     let mut fn_symbols_by_declaration: HashMap<hew_types::DefId, Option<FnSymbol<'ctx>>> =
         HashMap::new();
+    let mut fn_symbols_by_callable: HashMap<MirCallableKey, FnSymbol<'ctx>> = HashMap::new();
     predeclare_stdlib_catalog(
         ctx,
         &llvm_mod,
@@ -38076,6 +38305,15 @@ fn build_module_for_target<'ctx>(
                 func.name
             )));
         }
+        let is_process_entry = pipeline
+            .entry_exit_plan
+            .as_ref()
+            .is_some_and(|plan| is_selected_process_entry(func, plan));
+        let process_entry_target = is_process_entry.then_some(if emit_wasm_entry_alias {
+            ProcessEntryTarget::Wasm
+        } else {
+            ProcessEntryTarget::Native
+        });
         let sym = declare_function(
             ctx,
             &llvm_mod,
@@ -38083,7 +38321,7 @@ fn build_module_for_target<'ctx>(
             func,
             &record_layouts,
             &pipeline.enum_layouts,
-            emit_wasm_entry_alias,
+            process_entry_target,
         )
         // Attach the function's own source span to a fail-closed declaration
         // error ONLY when the function's body provably indexes the root
@@ -38098,6 +38336,15 @@ fn build_module_for_target<'ctx>(
             }
         })?;
         fn_symbols.insert(func.name.clone(), sym);
+        if fn_symbols_by_callable
+            .insert(func.key.clone(), sym)
+            .is_some()
+        {
+            return Err(CodegenError::FailClosed(format!(
+                "duplicate LLVM declaration for callable key {}",
+                mir_callable_key_label(&func.key)
+            )));
+        }
         fn_symbols_by_declaration
             .entry(func.key.declaration.clone())
             .and_modify(|entry| *entry = None)
@@ -38149,12 +38396,36 @@ fn build_module_for_target<'ctx>(
         .iter()
         .map(|func| Ok((func.name.clone(), parameter_boundary_modes(func)?)))
         .collect::<CodegenResult<HashMap<_, _>>>()?;
-    if emit_wasm_entry_alias {
-        emit_wasm_main_export_wrapper(ctx, &llvm_mod, &fn_symbols)?;
-    } else if native_unwind_enabled(&llvm_mod)
-        && pipeline.raw_mir.iter().any(is_native_process_entry)
-    {
-        emit_native_main_unwind_wrapper(ctx, &llvm_mod, &fn_symbols)?;
+    if let Some(plan) = &pipeline.entry_exit_plan {
+        if emit_wasm_entry_alias {
+            let main = emit_direct_process_entry_adapter(
+                ctx,
+                &llvm_mod,
+                plan,
+                &fn_symbols_by_callable,
+                &machine_layouts,
+                &pipeline.enum_layouts,
+            )?;
+            emit_wasi_entry_adapter(ctx, &llvm_mod, main)?;
+        } else if native_unwind_enabled(&llvm_mod) {
+            emit_native_main_unwind_wrapper(
+                ctx,
+                &llvm_mod,
+                plan,
+                &fn_symbols_by_callable,
+                &machine_layouts,
+                &pipeline.enum_layouts,
+            )?;
+        } else {
+            emit_direct_process_entry_adapter(
+                ctx,
+                &llvm_mod,
+                plan,
+                &fn_symbols_by_callable,
+                &machine_layouts,
+                &pipeline.enum_layouts,
+            )?;
+        }
     }
     // W3.030 Stage 2 V13: verify every `ElabDrop { drop_fn: Some(_) }`
     // resolves to one of the two `DropDispatch` arms (runtime symbol or
@@ -38397,6 +38668,11 @@ fn build_module_for_target<'ctx>(
                 func.name
             ))
         })?;
+        let process_entry_action = pipeline
+            .entry_exit_plan
+            .as_ref()
+            .filter(|plan| is_selected_process_entry(func, plan))
+            .map(|plan| &plan.action);
         lower_function(
             ctx,
             &llvm_mod,
@@ -38422,6 +38698,7 @@ fn build_module_for_target<'ctx>(
             &frame_cleanup_thunks,
             &pipeline.lifecycle_registry,
             emit_wasm_entry_alias,
+            process_entry_action,
             !pipeline.supervisor_layouts.is_empty(),
             module_uses_runtime,
             fn_debug_ctx.as_ref(),

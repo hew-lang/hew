@@ -66,7 +66,8 @@ pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
     AssignTargetShape, CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
     ClosureCaptureMode, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
-    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader,
+    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance,
+    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
     ExternMethodCallIdentity, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
     NumericSignedness, NumericWidth, OpaqueResourceCandidateGraph,
@@ -734,6 +735,11 @@ fn declaration_walk_terminates(
 }
 
 impl Checker {
+    /// Select one exact root declaration for the process entry plan.
+    pub fn set_entry_selection(&mut self, selection: crate::DeclarationOccurrence) {
+        self.entry_selection = Some(selection);
+    }
+
     /// Build the §6.3 fact table over every concrete accepted expression type.
     ///
     /// The walk is closed under a type's own components so a `Vec<Conn>` row is
@@ -1240,6 +1246,179 @@ impl Checker {
             ),
         ));
         None
+    }
+
+    fn selected_entry_item<'a>(
+        &mut self,
+        program: &'a Program,
+    ) -> Option<(crate::DeclarationOccurrence, &'a std::ops::Range<usize>)> {
+        let selected_entry = self.entry_selection?;
+        let selected_entry = if selected_entry.module().is_none() {
+            selected_entry.with_module(self.identity.root_module())
+        } else {
+            selected_entry
+        };
+        let matched = program
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(item_index, (item, span))| {
+                let Item::Function(_) = item else {
+                    return None;
+                };
+                let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    self.identity.root_module(),
+                    span,
+                    item_index,
+                    crate::DeclarationKind::Function,
+                    0,
+                );
+                (selected_entry == occurrence).then_some((occurrence, span))
+            });
+        if matched.is_none() {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                selected_entry.span(),
+                "selected process entry occurrence is not a root function in this compilation",
+            ));
+        }
+        matched
+    }
+
+    fn classify_entry_exit_action(
+        &mut self,
+        return_type: Ty,
+        span: &std::ops::Range<usize>,
+        resolved_fn_sigs: &HashMap<String, FnSig>,
+    ) -> Option<EntryExitAction> {
+        let resolved_return_type = ResolvedTy::from_ty(&return_type).ok();
+        match return_type {
+            Ty::Unit => Some(EntryExitAction::Unit),
+            integer if EntryIntegerType::from_ty(&integer).is_some() => Some(
+                EntryExitAction::Integer(EntryIntegerType::from_ty(&integer)?),
+            ),
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Result),
+                args,
+                ..
+            } if matches!(args.as_slice(), [Ty::Unit, _]) => {
+                let error_ty = args[1].clone();
+                if !self.type_satisfies_trait_bound(&error_ty, "Error") {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::BoundsNotSatisfied,
+                        span.clone(),
+                        format!(
+                            "process entry error type `{}` does not satisfy the bound `Error`",
+                            error_ty.user_facing()
+                        ),
+                    ));
+                    return None;
+                }
+                let Some((display_declaration, display_signature_key)) =
+                    self.trait_impl_method_declaration(&error_ty, "Display", "fmt")
+                else {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::BoundsNotSatisfied,
+                        span.clone(),
+                        format!(
+                            "process entry error type `{}` has no resolved Display format target",
+                            error_ty.user_facing()
+                        ),
+                    ));
+                    return None;
+                };
+                let resolved_error_ty = ResolvedTy::from_ty(&error_ty).ok()?;
+                let type_args = match &resolved_error_ty {
+                    ResolvedTy::Named { args, .. } => args.clone(),
+                    _ => Vec::new(),
+                };
+                let Some(display_signature) = resolved_fn_sigs.get(&display_signature_key) else {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        span.clone(),
+                        format!(
+                            "checker has no resolved signature for entry Display target `{}`",
+                            display_declaration.display_name()
+                        ),
+                    ));
+                    return None;
+                };
+                let instance = if display_signature.type_params.is_empty() {
+                    EntryCallableInstance::Declared
+                } else {
+                    EntryCallableInstance::Generic { type_args }
+                };
+                Some(EntryExitAction::Result {
+                    result_ty: resolved_return_type?,
+                    error_ty: resolved_error_ty,
+                    display: EntryDisplayTarget {
+                        declaration: display_declaration,
+                        instance,
+                    },
+                })
+            }
+            unsupported => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    format!(
+                        "process entry must return `()`, an integer, or `Result<(), E>`; found `{}`",
+                        unsupported.user_facing()
+                    ),
+                ));
+                None
+            }
+        }
+    }
+
+    fn classify_entry_exit_plan(
+        &mut self,
+        program: &Program,
+        resolved_fn_sigs: &HashMap<String, FnSig>,
+    ) -> Option<EntryExitPlan> {
+        let (occurrence, span) =
+            if self.entry_selection.is_some() {
+                self.selected_entry_item(program)?
+            } else {
+                program.items.iter().enumerate().find_map(
+                    |(item_index, (item, span))| match item {
+                        Item::Function(declaration)
+                            if declaration.name == "main"
+                                && declaration.type_params.as_ref().is_none_or(Vec::is_empty) =>
+                        {
+                            Some((
+                                crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                                    self.identity.root_module(),
+                                    span,
+                                    item_index,
+                                    crate::DeclarationKind::Function,
+                                    0,
+                                ),
+                                span,
+                            ))
+                        }
+                        _ => None,
+                    },
+                )?
+            };
+        let entry = self.identity.declaration(occurrence)?.clone();
+        let Some(return_type) = resolved_fn_sigs
+            .get(entry.full_path())
+            .map(|signature| signature.return_type.clone())
+        else {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "checker has no resolved signature for process entry `{}`",
+                    entry.display_name()
+                ),
+            ));
+            return None;
+        };
+        let action = self.classify_entry_exit_action(return_type, span, resolved_fn_sigs)?;
+
+        Some(EntryExitPlan { entry, action })
     }
 
     #[expect(
@@ -2039,6 +2218,7 @@ impl Checker {
         for sig in resolved_fn_sigs.values_mut() {
             *sig = self.resolve_fn_sig(sig);
         }
+        let entry_exit_plan = self.classify_entry_exit_plan(program, &resolved_fn_sigs);
         for type_def in resolved_type_defs.values_mut() {
             *type_def = self.resolve_type_def(type_def);
         }
@@ -2481,6 +2661,7 @@ impl Checker {
             type_defs: resolved_type_defs,
             internal_builtin_enum_names,
             identity: std::mem::take(&mut self.identity).freeze(),
+            entry_exit_plan,
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
@@ -2583,6 +2764,7 @@ impl Checker {
         let consume_receiver_methods = std::mem::take(&mut self.consume_receiver_methods);
         let lint_levels = self.lint_levels.clone();
         let lint_sources = self.lint_sources.clone();
+        let entry_selection = self.entry_selection;
 
         *self = Self::new(module_registry);
         self.wasm_target = wasm_target;
@@ -2593,6 +2775,7 @@ impl Checker {
         self.consume_receiver_methods = consume_receiver_methods;
         self.lint_levels = lint_levels;
         self.lint_sources = lint_sources;
+        self.entry_selection = entry_selection;
     }
 
     /// The canonical prelude is an import-only authority manifest: its imports

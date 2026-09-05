@@ -1049,7 +1049,7 @@ fn classification_poison_module() -> hew_hir::HirModule {
         produced_value_facts: std::collections::HashMap::new(),
         diagnostic_source_modules: std::collections::HashMap::new(),
         root_item_ids: [function_id].into_iter().collect(),
-        entry_declaration: None,
+        entry_exit_plan: None,
         caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(std::collections::HashMap::new()),
         type_classes,

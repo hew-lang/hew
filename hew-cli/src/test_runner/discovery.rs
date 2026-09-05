@@ -4,6 +4,7 @@ use hew_parser::ast::{Item, Program};
 use hew_parser::ParseError;
 #[cfg(test)]
 use hew_parser::Severity;
+use hew_types::{DeclarationKind, DeclarationOccurrence};
 
 /// A discovered test case.
 #[derive(Debug, Clone)]
@@ -12,6 +13,10 @@ pub struct TestCase {
     pub name: String,
     /// Source file path.
     pub file: String,
+    /// Exact source declaration selected for process entry.
+    pub occurrence: DeclarationOccurrence,
+    /// Canonical production peer matched to this test root.
+    pub companion: Option<String>,
     /// Whether the test has `#[ignore]`.
     pub ignored: bool,
     /// Whether the test has `#[should_panic]`.
@@ -48,7 +53,8 @@ impl DiscoveredTestFile {
 #[must_use]
 pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
     let mut tests = Vec::new();
-    for (item, _span) in &program.items {
+    let companion = matched_production_peer(std::path::Path::new(file));
+    for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
         if let Item::Function(f) = item {
             let is_test = f.attributes.iter().any(|a| a.name == "test");
             if is_test {
@@ -58,6 +64,14 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
                 tests.push(TestCase {
                     name: f.name.clone(),
                     file: file.to_string(),
+                    occurrence: DeclarationOccurrence::new_with_synthetic_ordinal(
+                        None,
+                        span,
+                        item_ordinal,
+                        DeclarationKind::Function,
+                        0,
+                    ),
+                    companion: companion.clone(),
                     ignored,
                     should_panic,
                     serial,
@@ -66,6 +80,15 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
         }
     }
     tests
+}
+
+fn matched_production_peer(path: &std::path::Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?.strip_suffix("_test")?;
+    let peer = path.with_file_name(format!("{stem}.hew"));
+    peer.is_file()
+        .then_some(peer)
+        .and_then(|peer| peer.canonicalize().ok())
+        .map(|peer| peer.display().to_string())
 }
 
 /// Parse a source file and discover tests.
@@ -272,9 +295,8 @@ fn test_panic() {
     #[test]
     fn hew_test_prefix_excluded_from_discovery() {
         // A leftover hew_test_*.hew temp file inside a tests/ dir must NOT be
-        // collected.  If it were picked up, the next run would inject a second
-        // synthetic `fn main()` into the compilation unit and fail with
-        // "main is defined multiple times".
+        // collected. It is not authored test input and may contain a stale
+        // process entry that competes with the selected test root.
         let dir = tempdir().unwrap();
         let tests_dir = dir.path().join("tests");
         std::fs::create_dir_all(&tests_dir).unwrap();

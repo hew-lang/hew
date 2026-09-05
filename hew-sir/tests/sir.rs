@@ -98,6 +98,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         callables,
         generic_templates: Vec::new(),
         root_unit_callables: Vec::new(),
+        entry_exit_plan: None,
         entry_callable: None,
         functions,
         type_facts: BTreeMap::new(),

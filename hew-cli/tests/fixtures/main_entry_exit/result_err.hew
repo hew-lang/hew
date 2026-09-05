@@ -1,0 +1,17 @@
+enum AppError {
+    Failed(string);
+}
+
+impl Display for AppError {
+    fn fmt(self) -> string {
+        match self {
+            AppError.Failed(message) => message,
+        }
+    }
+}
+
+impl Error for AppError {}
+
+fn main() -> Result<(), AppError> {
+    Err(AppError.Failed("displayed failure"))
+}

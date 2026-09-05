@@ -49,6 +49,10 @@ pub struct CompileOptions {
     pub project_dir: Option<PathBuf>,
     /// Exact standard-library and global-module roots for synthetic sources.
     pub module_search_paths: Option<Vec<PathBuf>>,
+    /// Exact source occurrence selected as the process entry by `hew test`.
+    pub entry_selection: Option<hew_types::DeclarationOccurrence>,
+    /// Canonical `<stem>.hew` production peer for a selected test root.
+    pub companion: Option<PathBuf>,
     /// Compile a synthetic `hew eval` REPL fragment rather than a finished
     /// program, suppressing the whole-program completeness lints. See
     /// [`hew_compile::FrontendOptions::repl_fragment`]. Only the eval paths
@@ -73,6 +77,8 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
         module_search_paths: options.module_search_paths.clone(),
+        entry_selection: options.entry_selection,
+        companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
     }
@@ -92,6 +98,8 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
         module_search_paths: options.module_search_paths.clone(),
+        entry_selection: options.entry_selection,
+        companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
     }

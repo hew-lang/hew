@@ -112,6 +112,15 @@ impl DeclarationOccurrence {
         self.module
     }
 
+    /// Attach the checker-interned source module to a frontend-selected
+    /// occurrence. Discovery happens before the checker owns its module table,
+    /// so root selections deliberately arrive with no module and are completed
+    /// exactly once at the checker boundary.
+    #[must_use]
+    pub fn with_module(self, module: Option<ModuleId>) -> Self {
+        Self { module, ..self }
+    }
+
     #[must_use]
     pub fn kind(self) -> DeclarationKind {
         self.kind

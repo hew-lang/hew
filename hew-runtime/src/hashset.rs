@@ -305,7 +305,14 @@ pub unsafe extern "C" fn hew_hashset_new_with_layout(
 /// `set` and `elem` must be non-null; either being null panics fail-closed
 /// (LESSONS `boundary-fail-closed` P0).
 ///
+/// Status zero initializes `present_out` and clears `fault_out`. Nonzero status
+/// forwards the callback fault unchanged and leaves the result untouched. The
+/// receiver and incoming element owners remain with the caller on failure.
+///
 /// # Safety
+///
+/// Result and fault outputs must be non-null, aligned, writable and disjoint
+/// from the receiver and input storage.
 ///
 /// `set` must be a valid `HewLayoutHashSet` pointer obtained from
 /// `hew_hashset_new_with_layout`.  `elem` must point to a readable blob whose
@@ -314,32 +321,51 @@ pub unsafe extern "C" fn hew_hashset_new_with_layout(
 pub unsafe extern "C" fn hew_hashset_insert_layout(
     set: *mut HewLayoutHashSet,
     elem: *const c_void,
-) -> bool {
+    present_out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     // SAFETY: shared validator; panics on null set or null elem.
     unsafe { validate_set_op_elem(set.cast_const(), elem) };
     // SAFETY: set non-null per validator; map is a valid HewLayoutHashMap pointer.
     // ZST value contract: pass ptr::null() — validate_op_inputs inside
     // hew_hashmap_insert_layout allows null val when val_size == 0.
-    unsafe { hew_hashmap_insert_layout((*set).map, elem, ptr::null()) }
+    unsafe { hew_hashmap_insert_layout((*set).map, elem, ptr::null(), present_out, fault_out) }
 }
 
 /// Insert an independent copy of a borrowed element.
 ///
-/// Returns true when the element was absent. The caller retains its element
-/// on both insertion and duplicate paths.
+/// On success, writes whether the element was absent to `present_out`. The
+/// caller retains its element on insertion, duplicate and callback failure paths.
+///
+/// Status zero initializes `present_out` and clears `fault_out`. Nonzero status
+/// forwards the callback fault unchanged and leaves the result untouched. The
+/// receiver and incoming element owners remain with the caller on failure.
 ///
 /// # Safety
+///
+/// Result and fault outputs must be non-null, aligned, writable and disjoint
+/// from the receiver and input storage.
 ///
 /// `set` must be live and `elem` must borrow a slot matching its element descriptor.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_insert_clone_layout(
     set: *mut HewLayoutHashSet,
     elem: *const c_void,
-) -> bool {
+    present_out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     // SAFETY: the shared validator checks the live set and element input.
     unsafe { validate_set_op_elem(set, elem) };
     // SAFETY: the set owns a live map with a plain zero-sized value descriptor.
-    unsafe { crate::hashmap::hew_hashmap_insert_clone_layout((*set).map, elem, ptr::null()) }
+    unsafe {
+        crate::hashmap::hew_hashmap_insert_clone_layout(
+            (*set).map,
+            elem,
+            ptr::null(),
+            present_out,
+            fault_out,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,18 +376,27 @@ pub unsafe extern "C" fn hew_hashset_insert_clone_layout(
 ///
 /// `set` and `elem` must be non-null.
 ///
+/// Status zero initializes `present_out` and clears `fault_out`. Nonzero status
+/// forwards the callback fault unchanged and leaves the result untouched. The
+/// receiver and incoming element owners remain with the caller on failure.
+///
 /// # Safety
+///
+/// Result and fault outputs must be non-null, aligned, writable and disjoint
+/// from the receiver and input storage.
 ///
 /// Same as [`hew_hashset_insert_layout`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_contains_layout(
     set: *const HewLayoutHashSet,
     elem: *const c_void,
-) -> bool {
+    present_out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     // SAFETY: shared validator; panics on null set or null elem.
     unsafe { validate_set_op_elem(set, elem) };
     // SAFETY: set non-null per validator; map pointer valid.
-    unsafe { hew_hashmap_contains_key_layout((*set).map, elem) }
+    unsafe { hew_hashmap_contains_key_layout((*set).map, elem, present_out, fault_out) }
 }
 
 // ---------------------------------------------------------------------------
@@ -370,22 +405,31 @@ pub unsafe extern "C" fn hew_hashset_contains_layout(
 
 /// Remove an element from the set.
 ///
-/// Returns `true` if the element was present and removed, `false` otherwise.
+/// On success, writes whether the element was present and removed.
 ///
 /// `set` and `elem` must be non-null.
 ///
+/// Status zero initializes `present_out` and clears `fault_out`. Nonzero status
+/// forwards the callback fault unchanged and leaves the result untouched. The
+/// receiver and incoming element owners remain with the caller on failure.
+///
 /// # Safety
+///
+/// Result and fault outputs must be non-null, aligned, writable and disjoint
+/// from the receiver and input storage.
 ///
 /// Same as [`hew_hashset_insert_layout`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_remove_layout(
     set: *mut HewLayoutHashSet,
     elem: *const c_void,
-) -> bool {
+    present_out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     // SAFETY: shared validator; panics on null set or null elem.
     unsafe { validate_set_op_elem(set.cast_const(), elem) };
     // SAFETY: set non-null per validator; map pointer valid.
-    unsafe { hew_hashmap_remove_layout((*set).map, elem) }
+    unsafe { hew_hashmap_remove_layout((*set).map, elem, present_out, fault_out) }
 }
 
 // ---------------------------------------------------------------------------

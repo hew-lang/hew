@@ -1,5 +1,8 @@
 //! Composite keys and values share collection copy/drop semantics.
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use core::ffi::c_void;
 use core::mem::{offset_of, MaybeUninit};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -59,31 +62,56 @@ unsafe extern "C" fn drop_record(slot: *mut c_void) {
     LIVE_NUMBERS.fetch_sub(1, Ordering::SeqCst);
 }
 
-unsafe extern "C" fn hash_record(slot: *const c_void) -> u64 {
-    assert!(slot.cast::<Record>().is_aligned());
-    // SAFETY: hash borrows the complete key and reads only its typed fields.
-    unsafe {
-        let value = &*slot.cast::<Record>();
-        let mut hash = (*value.number).cast_unsigned();
-        for byte in string_as_bytes(value.label) {
-            hash = hash.wrapping_mul(31).wrapping_add(u64::from(*byte));
+unsafe extern "C" fn hash_record(
+    slot: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        assert!(slot.cast::<Record>().is_aligned());
+        // SAFETY: hash borrows the complete key and reads only its typed fields.
+        unsafe {
+            let value = &*slot.cast::<Record>();
+            let mut hash = (*value.number).cast_unsigned();
+            for byte in string_as_bytes(value.label) {
+                hash = hash.wrapping_mul(31).wrapping_add(u64::from(*byte));
+            }
+            hash
         }
-        hash
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
     }
+    0
 }
 
-unsafe extern "C" fn equal_record(left: *const c_void, right: *const c_void) -> i32 {
-    assert!(left.cast::<Record>().is_aligned());
-    assert!(right.cast::<Record>().is_aligned());
-    // SAFETY: both arguments borrow Record keys with live owned fields.
+unsafe extern "C" fn equal_record(
+    left: *const c_void,
+    right: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        assert!(left.cast::<Record>().is_aligned());
+        assert!(right.cast::<Record>().is_aligned());
+        // SAFETY: both arguments borrow Record keys with live owned fields.
+        unsafe {
+            let left = &*left.cast::<Record>();
+            let right = &*right.cast::<Record>();
+            i32::from(
+                *left.number == *right.number
+                    && string_as_bytes(left.label) == string_as_bytes(right.label),
+            )
+        }
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
     unsafe {
-        let left = &*left.cast::<Record>();
-        let right = &*right.cast::<Record>();
-        i32::from(
-            *left.number == *right.number
-                && string_as_bytes(left.label) == string_as_bytes(right.label),
-        )
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
     }
+    0
 }
 
 unsafe extern "C" fn clone_pair(source: *const c_void, destination: *mut c_void) -> i32 {
@@ -188,11 +216,15 @@ fn map_composite_copies_and_projections_survive_their_source() {
         for number in 0..32 {
             let key = record("clé\0key", number);
             let value = record("雪\0value", number * 10);
-            assert!(hashmap::hew_hashmap_insert_layout(
-                original,
-                (&raw const key).cast(),
-                (&raw const value).cast(),
-            ));
+            assert!(map_status::success(|result_out, fault_out| {
+                hashmap::hew_hashmap_insert_layout(
+                    original,
+                    (&raw const key).cast(),
+                    (&raw const value).cast(),
+                    result_out,
+                    fault_out,
+                )
+            }));
         }
         let copy = hashmap::hew_hashmap_clone_layout(original);
         let keys = hashmap::hew_hashmap_keys_layout(original);
@@ -206,22 +238,30 @@ fn map_composite_copies_and_projections_survive_their_source() {
 
         let mut lookup = record("clé\0key", 7);
         let mut extracted = MaybeUninit::<Record>::uninit();
-        assert!(hashmap::hew_hashmap_get_clone_layout(
-            copy,
-            (&raw const lookup).cast(),
-            extracted.as_mut_ptr().cast(),
-        ));
+        assert!(map_status::success(|result_out, fault_out| {
+            hashmap::hew_hashmap_get_clone_layout(
+                copy,
+                (&raw const lookup).cast(),
+                extracted.as_mut_ptr().cast(),
+                result_out,
+                fault_out,
+            )
+        }));
         let mut extracted = extracted.assume_init();
         assert_eq!(string_as_str(extracted.label), "雪\0value");
         assert_eq!(*extracted.number, 70);
         *extracted.number = 999;
 
         let mut removed = MaybeUninit::<Record>::uninit();
-        assert!(hashmap::hew_hashmap_remove_take_layout(
-            copy,
-            (&raw const lookup).cast(),
-            removed.as_mut_ptr().cast(),
-        ));
+        assert!(map_status::success(|result_out, fault_out| {
+            hashmap::hew_hashmap_remove_take_layout(
+                copy,
+                (&raw const lookup).cast(),
+                removed.as_mut_ptr().cast(),
+                result_out,
+                fault_out,
+            )
+        }));
         let mut removed = removed.assume_init();
         assert_eq!(*removed.number, 70);
         hashmap::hew_hashmap_free_layout(copy);
@@ -259,16 +299,24 @@ fn set_composite_copy_and_projection_preserve_independent_elements() {
         let original = hashset::hew_hashset_new_with_layout(&KEY_LAYOUT);
         for number in 0..4 {
             let value = record("set\0element", number);
-            assert!(hashset::hew_hashset_insert_layout(
-                original,
-                (&raw const value).cast()
-            ));
+            assert!(map_status::success(|result_out, fault_out| {
+                hashset::hew_hashset_insert_layout(
+                    original,
+                    (&raw const value).cast(),
+                    result_out,
+                    fault_out,
+                )
+            }));
         }
         let copy = hashset::hew_hashset_clone_layout(original);
         let elements = hashset::hew_hashset_to_vec_layout(original);
         let borrowed = vec::hew_vec_get_owned(elements, 0);
-        assert!(hashset::hew_hashset_remove_layout(original, borrowed));
-        assert!(hashset::hew_hashset_contains_layout(copy, borrowed));
+        assert!(map_status::success(|result_out, fault_out| {
+            hashset::hew_hashset_remove_layout(original, borrowed, result_out, fault_out)
+        }));
+        assert!(map_status::success(|result_out, fault_out| {
+            hashset::hew_hashset_contains_layout(copy, borrowed, result_out, fault_out)
+        }));
         hashset::hew_hashset_free_layout(original);
         hashset::hew_hashset_free_layout(copy);
         assert_eq!(vec::hew_vec_len(elements), 4);
@@ -294,11 +342,15 @@ fn borrowed_insert_copies_inputs_before_replacement_or_growth() {
         for number in 0..11 {
             let mut key = record("copy\0key", number);
             let mut value = record("copy\0value", number * 10);
-            assert!(hashmap::hew_hashmap_insert_clone_layout(
-                map,
-                (&raw const key).cast(),
-                (&raw const value).cast(),
-            ));
+            assert!(map_status::success(|result_out, fault_out| {
+                hashmap::hew_hashmap_insert_clone_layout(
+                    map,
+                    (&raw const key).cast(),
+                    (&raw const value).cast(),
+                    result_out,
+                    fault_out,
+                )
+            }));
             *value.number = -1;
             drop_record((&raw mut key).cast());
             drop_record((&raw mut value).cast());
@@ -313,11 +365,15 @@ fn borrowed_insert_copies_inputs_before_replacement_or_growth() {
             &raw mut borrowed_value,
         ));
         hashmap::hew_hashmap_iter_free_layout(iterator);
-        assert!(!hashmap::hew_hashmap_insert_clone_layout(
-            map,
-            borrowed_key,
-            borrowed_value
-        ));
+        assert!(!map_status::success(|result_out, fault_out| {
+            hashmap::hew_hashmap_insert_clone_layout(
+                map,
+                borrowed_key,
+                borrowed_value,
+                result_out,
+                fault_out,
+            )
+        }));
         assert!((*map).cap > old_capacity);
         assert_eq!(hashmap::hew_hashmap_len_layout(map), 11);
 
@@ -341,20 +397,32 @@ fn borrowed_set_insert_retains_the_input_on_both_paths() {
     unsafe {
         let set = hashset::hew_hashset_new_with_layout(&KEY_LAYOUT);
         let mut value = record("set\0copy", 1);
-        assert!(hashset::hew_hashset_insert_clone_layout(
-            set,
-            (&raw const value).cast()
-        ));
-        assert!(!hashset::hew_hashset_insert_clone_layout(
-            set,
-            (&raw const value).cast()
-        ));
+        assert!(map_status::success(|result_out, fault_out| {
+            hashset::hew_hashset_insert_clone_layout(
+                set,
+                (&raw const value).cast(),
+                result_out,
+                fault_out,
+            )
+        }));
+        assert!(!map_status::success(|result_out, fault_out| {
+            hashset::hew_hashset_insert_clone_layout(
+                set,
+                (&raw const value).cast(),
+                result_out,
+                fault_out,
+            )
+        }));
         *value.number = 2;
         let mut lookup = record("set\0copy", 1);
-        assert!(hashset::hew_hashset_contains_layout(
-            set,
-            (&raw const lookup).cast()
-        ));
+        assert!(map_status::success(|result_out, fault_out| {
+            hashset::hew_hashset_contains_layout(
+                set,
+                (&raw const lookup).cast(),
+                result_out,
+                fault_out,
+            )
+        }));
         hashset::hew_hashset_free_layout(set);
         assert_eq!(string_as_str(value.label), "set\0copy");
         drop_record((&raw mut value).cast());
@@ -399,11 +467,15 @@ fn zero_sized_value_callbacks_follow_logical_owners() {
             &raw const layout,
         );
         for key in 0_i64..3 {
-            assert!(hashmap::hew_hashmap_insert_clone_layout(
-                map,
-                (&raw const key).cast(),
-                (&raw const unit).cast(),
-            ));
+            assert!(map_status::success(|result_out, fault_out| {
+                hashmap::hew_hashmap_insert_clone_layout(
+                    map,
+                    (&raw const key).cast(),
+                    (&raw const unit).cast(),
+                    result_out,
+                    fault_out,
+                )
+            }));
         }
         assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 3);
         let copy = hashmap::hew_hashmap_clone_layout(map);
@@ -413,22 +485,29 @@ fn zero_sized_value_callbacks_follow_logical_owners() {
         assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 9);
         let key = 1_i64;
         let mut output = ();
-        assert!(hashmap::hew_hashmap_get_clone_layout(
-            map,
-            (&raw const key).cast(),
-            (&raw mut output).cast(),
-        ));
+        assert!(map_status::success(|result_out, fault_out| {
+            hashmap::hew_hashmap_get_clone_layout(
+                map,
+                (&raw const key).cast(),
+                (&raw mut output).cast(),
+                result_out,
+                fault_out,
+            )
+        }));
         assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 10);
-        assert!(!hashmap::hew_hashmap_insert_clone_layout(
-            map,
-            (&raw const key).cast(),
-            (&raw const unit).cast(),
-        ));
+        assert!(!map_status::success(|result_out, fault_out| {
+            hashmap::hew_hashmap_insert_clone_layout(
+                map,
+                (&raw const key).cast(),
+                (&raw const unit).cast(),
+                result_out,
+                fault_out,
+            )
+        }));
         assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 10);
-        assert!(hashmap::hew_hashmap_remove_layout(
-            map,
-            (&raw const key).cast()
-        ));
+        assert!(map_status::success(|result_out, fault_out| {
+            hashmap::hew_hashmap_remove_layout(map, (&raw const key).cast(), result_out, fault_out)
+        }));
         assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 9);
         hashmap::hew_hashmap_clear_layout(map);
         hashmap::hew_hashmap_free_layout(map);

@@ -35,6 +35,9 @@
     reason = "tests read a u32 refcount out of a byte-addressed header"
 )]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -92,11 +95,15 @@ unsafe fn insert_move(
     // SAFETY: the slot locals are pointer-sized blobs matching the String
     // descriptor; insert copies their bits into the map (MOVE).
     unsafe {
-        hew_hashmap_insert_layout(
-            m,
-            (&raw const key_slot).cast::<c_void>(),
-            (&raw const val_slot).cast::<c_void>(),
-        )
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const key_slot).cast::<c_void>(),
+                (&raw const val_slot).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        })
     }
 }
 
@@ -195,7 +202,14 @@ fn hashmap_string_remove_releases_owners() {
 
         // Remove from the original by probing with the same-content key blob.
         let probe: *const HewString = k;
-        let removed = hew_hashmap_remove_layout(m, (&raw const probe).cast::<c_void>());
+        let removed = map_status::success(|result_out, fault_out| {
+            hew_hashmap_remove_layout(
+                m,
+                (&raw const probe).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(removed, "key was present, remove reports true");
         assert_eq!(
             element_refcount(k),
@@ -256,11 +270,15 @@ fn hashmap_string_overwrite_releases_old_value_keeps_key() {
         let v2 = make_string("second");
         let dup_key_slot: *const HewString = dup_key;
         let v2_slot: *const HewString = v2;
-        let was_new = hew_hashmap_insert_layout(
-            m,
-            (&raw const dup_key_slot).cast::<c_void>(),
-            (&raw const v2_slot).cast::<c_void>(),
-        );
+        let was_new = map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const dup_key_slot).cast::<c_void>(),
+                (&raw const v2_slot).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(!was_new, "overwrite reports an existing entry");
 
         // Overwrite dropped the map's owner of the OLD value v1: rc 2→1.
@@ -301,7 +319,14 @@ fn hashset_string_element_clone_retains_and_free_releases() {
         assert_eq!(element_refcount(e), 1, "fresh element is a sole owner");
 
         let e_slot: *const HewString = e;
-        let was_new = hew_hashset_insert_layout(s, (&raw const e_slot).cast::<c_void>());
+        let was_new = map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(
+                s,
+                (&raw const e_slot).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(was_new, "vacant insert reports a new element");
         assert_eq!(
             element_refcount(e),
@@ -319,7 +344,14 @@ fn hashset_string_element_clone_retains_and_free_releases() {
 
         // Remove from the original: releases the original's owner (2→1).
         let probe: *const HewString = e;
-        let removed = hew_hashset_remove_layout(s, (&raw const probe).cast::<c_void>());
+        let removed = map_status::success(|result_out, fault_out| {
+            hew_hashset_remove_layout(
+                s,
+                (&raw const probe).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(removed, "element present, remove reports true");
         assert_eq!(
             element_refcount(e),

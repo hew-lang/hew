@@ -64,16 +64,35 @@ fn fnv1a_64_with_len_prefix(bytes: &[u8]) -> u64 {
 // The kernel enforces this by allocating slot storage with the descriptor's
 // `size` + `align` and only invoking the thunk on OCCUPIED slots.
 
+/// Publish the successful result of an infallible derived key callback.
+unsafe fn key_result<T>(out: *mut T, value: T, fault_out: *mut *mut c_void) -> i32 {
+    // SAFETY: Derived callbacks receive writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
+}
+
 macro_rules! scalar_hash_eq {
     ($ty:ty, $hash_fn:ident, $eq_fn:ident) => {
-        unsafe extern "C" fn $hash_fn(key: *const c_void) -> u64 {
+        unsafe extern "C" fn $hash_fn(
+            key: *const c_void,
+            out: *mut u64,
+            fault_out: *mut *mut c_void,
+        ) -> i32 {
             let v: $ty = core::ptr::read(key.cast::<$ty>());
-            fnv1a_64(&v.to_le_bytes())
+            key_result(out, fnv1a_64(&v.to_le_bytes()), fault_out)
         }
-        unsafe extern "C" fn $eq_fn(lhs: *const c_void, rhs: *const c_void) -> i32 {
+        unsafe extern "C" fn $eq_fn(
+            lhs: *const c_void,
+            rhs: *const c_void,
+            out: *mut bool,
+            fault_out: *mut *mut c_void,
+        ) -> i32 {
             let l: $ty = core::ptr::read(lhs.cast::<$ty>());
             let r: $ty = core::ptr::read(rhs.cast::<$ty>());
-            i32::from(l == r)
+            key_result(out, l == r, fault_out)
         }
     };
 }
@@ -86,26 +105,44 @@ scalar_hash_eq!(u64, hew_layout_key_u64_hash, hew_layout_key_u64_eq);
 // bool: one byte, hash + eq via that byte. Hew never admits bool as a HashMap
 // key in practice (Hash impl is gated at the checker), but the descriptor is
 // shipped for ABI completeness and runtime fail-closed routing.
-unsafe extern "C" fn hew_layout_key_bool_hash(key: *const c_void) -> u64 {
+unsafe extern "C" fn hew_layout_key_bool_hash(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     let v: u8 = core::ptr::read(key.cast::<u8>());
-    fnv1a_64(&[v])
+    key_result(out, fnv1a_64(&[v]), fault_out)
 }
-unsafe extern "C" fn hew_layout_key_bool_eq(lhs: *const c_void, rhs: *const c_void) -> i32 {
+unsafe extern "C" fn hew_layout_key_bool_eq(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     let l: u8 = core::ptr::read(lhs.cast::<u8>());
     let r: u8 = core::ptr::read(rhs.cast::<u8>());
-    i32::from(l == r)
+    key_result(out, l == r, fault_out)
 }
 
 // char: Hew char is a 32-bit Unicode codepoint (LLVM lowering: i32 — see
 // hew-codegen-rs/src/llvm.rs:2490). Hash + eq over the u32 LE bytes.
-unsafe extern "C" fn hew_layout_key_char_hash(key: *const c_void) -> u64 {
+unsafe extern "C" fn hew_layout_key_char_hash(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     let v: u32 = core::ptr::read(key.cast::<u32>());
-    fnv1a_64(&v.to_le_bytes())
+    key_result(out, fnv1a_64(&v.to_le_bytes()), fault_out)
 }
-unsafe extern "C" fn hew_layout_key_char_eq(lhs: *const c_void, rhs: *const c_void) -> i32 {
+unsafe extern "C" fn hew_layout_key_char_eq(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     let l: u32 = core::ptr::read(lhs.cast::<u32>());
     let r: u32 = core::ptr::read(rhs.cast::<u32>());
-    i32::from(l == r)
+    key_result(out, l == r, fault_out)
 }
 
 // ---------------------------------------------------------------------------
@@ -116,20 +153,37 @@ unsafe extern "C" fn hew_layout_key_char_eq(lhs: *const c_void, rhs: *const c_vo
 // the carrier's complete length-bounded byte range, including embedded NUL.
 // Null is a valid occupied key because it is the canonical empty string.
 
-unsafe extern "C" fn hew_layout_key_string_hash(key: *const c_void) -> u64 {
+unsafe extern "C" fn hew_layout_key_string_hash(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     let p: *const hew_cabi::string::HewString =
         core::ptr::read(key.cast::<*const hew_cabi::string::HewString>());
     // SAFETY: the descriptor contract supplies null or a live managed handle.
-    fnv1a_64(unsafe { hew_cabi::string::string_as_bytes(p) })
+    key_result(
+        out,
+        fnv1a_64(unsafe { hew_cabi::string::string_as_bytes(p) }),
+        fault_out,
+    )
 }
 
-unsafe extern "C" fn hew_layout_key_string_eq(lhs: *const c_void, rhs: *const c_void) -> i32 {
+unsafe extern "C" fn hew_layout_key_string_eq(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     let lp: *const hew_cabi::string::HewString =
         core::ptr::read(lhs.cast::<*const hew_cabi::string::HewString>());
     let rp: *const hew_cabi::string::HewString =
         core::ptr::read(rhs.cast::<*const hew_cabi::string::HewString>());
     // SAFETY: the descriptor contract supplies null or live managed handles.
-    crate::string::hew_string_equals(lp, rp)
+    key_result(
+        out,
+        crate::string::hew_string_equals(lp, rp) != 0,
+        fault_out,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -149,10 +203,14 @@ struct BytesTripleRepr {
     len: u32,
 }
 
-unsafe extern "C" fn hew_layout_key_bytes_hash(key: *const c_void) -> u64 {
+unsafe extern "C" fn hew_layout_key_bytes_hash(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     let triple: BytesTripleRepr = core::ptr::read(key.cast::<BytesTripleRepr>());
     if triple.len == 0 {
-        return fnv1a_64_with_len_prefix(&[]);
+        return key_result(out, fnv1a_64_with_len_prefix(&[]), fault_out);
     }
     if triple.ptr.is_null() {
         crate::set_last_error("hew_layout_key_bytes_hash: null ptr with non-zero len");
@@ -160,17 +218,22 @@ unsafe extern "C" fn hew_layout_key_bytes_hash(key: *const c_void) -> u64 {
     }
     let start = triple.ptr.add(triple.offset as usize);
     let slice = core::slice::from_raw_parts(start, triple.len as usize);
-    fnv1a_64_with_len_prefix(slice)
+    key_result(out, fnv1a_64_with_len_prefix(slice), fault_out)
 }
 
-unsafe extern "C" fn hew_layout_key_bytes_eq(lhs: *const c_void, rhs: *const c_void) -> i32 {
+unsafe extern "C" fn hew_layout_key_bytes_eq(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
     let l: BytesTripleRepr = core::ptr::read(lhs.cast::<BytesTripleRepr>());
     let r: BytesTripleRepr = core::ptr::read(rhs.cast::<BytesTripleRepr>());
     if l.len != r.len {
-        return 0;
+        return key_result(out, false, fault_out);
     }
     if l.len == 0 {
-        return 1;
+        return key_result(out, true, fault_out);
     }
     if l.ptr.is_null() || r.ptr.is_null() {
         crate::set_last_error("hew_layout_key_bytes_eq: null ptr with non-zero len");
@@ -178,7 +241,7 @@ unsafe extern "C" fn hew_layout_key_bytes_eq(lhs: *const c_void, rhs: *const c_v
     }
     let ls = core::slice::from_raw_parts(l.ptr.add(l.offset as usize), l.len as usize);
     let rs = core::slice::from_raw_parts(r.ptr.add(r.offset as usize), r.len as usize);
-    i32::from(ls == rs)
+    key_result(out, ls == rs, fault_out)
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +527,10 @@ pub static hew_layout_val_unit: HewValueLayout = HewValueLayout {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[path = "../tests/common/map_status.rs"]
+mod map_status;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -538,17 +605,33 @@ mod tests {
         // SAFETY: `a` / `b` / `c` are i64 locals; raw-const addresses are
         // properly aligned 8-byte i64 blobs as the thunks require.
         unsafe {
-            let h_a = hew_layout_key_i64_hash((&raw const a).cast());
-            let h_b = hew_layout_key_i64_hash((&raw const b).cast());
-            let h_c = hew_layout_key_i64_hash((&raw const c).cast());
+            let h_a = map_status::success(|out, fault| {
+                hew_layout_key_i64_hash((&raw const a).cast(), out, fault)
+            });
+            let h_b = map_status::success(|out, fault| {
+                hew_layout_key_i64_hash((&raw const b).cast(), out, fault)
+            });
+            let h_c = map_status::success(|out, fault| {
+                hew_layout_key_i64_hash((&raw const c).cast(), out, fault)
+            });
             assert_eq!(h_a, h_b);
             assert_ne!(h_a, h_c);
             assert_eq!(
-                hew_layout_key_i64_eq((&raw const a).cast(), (&raw const b).cast()),
+                i32::from(map_status::success(|out, fault| hew_layout_key_i64_eq(
+                    (&raw const a).cast(),
+                    (&raw const b).cast(),
+                    out,
+                    fault
+                ))),
                 1
             );
             assert_eq!(
-                hew_layout_key_i64_eq((&raw const a).cast(), (&raw const c).cast()),
+                i32::from(map_status::success(|out, fault| hew_layout_key_i64_eq(
+                    (&raw const a).cast(),
+                    (&raw const c).cast(),
+                    out,
+                    fault
+                ))),
                 0
             );
         }
@@ -560,9 +643,13 @@ mod tests {
         let blob = &raw const p;
         // SAFETY: `blob` points to a properly aligned live managed-string slot.
         unsafe {
-            let h = hew_layout_key_string_hash(blob.cast());
+            let h = map_status::success(|out, fault| {
+                hew_layout_key_string_hash(blob.cast(), out, fault)
+            });
             assert_eq!(h, fnv1a_64(b"hello"));
-            let eq = hew_layout_key_string_eq(blob.cast(), blob.cast());
+            let eq = i32::from(map_status::success(|out, fault| {
+                hew_layout_key_string_eq(blob.cast(), blob.cast(), out, fault)
+            }));
             assert_eq!(eq, 1);
             hew_cabi::string::string_release(p);
         }
@@ -576,15 +663,29 @@ mod tests {
         // SAFETY: all blobs point to aligned live managed-string slots.
         unsafe {
             assert_eq!(
-                hew_layout_key_string_hash((&raw const left).cast()),
+                map_status::success(|out, fault| hew_layout_key_string_hash(
+                    (&raw const left).cast(),
+                    out,
+                    fault
+                )),
                 fnv1a_64(b"a\0b")
             );
             assert_eq!(
-                hew_layout_key_string_eq((&raw const left).cast(), (&raw const same).cast()),
+                i32::from(map_status::success(|out, fault| hew_layout_key_string_eq(
+                    (&raw const left).cast(),
+                    (&raw const same).cast(),
+                    out,
+                    fault
+                ))),
                 1
             );
             assert_eq!(
-                hew_layout_key_string_eq((&raw const left).cast(), (&raw const prefix).cast()),
+                i32::from(map_status::success(|out, fault| hew_layout_key_string_eq(
+                    (&raw const left).cast(),
+                    (&raw const prefix).cast(),
+                    out,
+                    fault
+                ))),
                 0
             );
             hew_cabi::string::string_release(left);

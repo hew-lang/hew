@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::os::unix::process::ExitStatusExt;
@@ -99,14 +102,39 @@ unsafe extern "C" fn drop_map_inner_record(slot: *mut c_void) {
     value.heap = core::ptr::null_mut();
 }
 
-unsafe extern "C" fn hash_i64(key: *const c_void) -> u64 {
-    // SAFETY: map tests pass an i64 key blob.
-    unsafe { (*key.cast::<i64>()).cast_unsigned() }
+unsafe extern "C" fn hash_i64(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        // SAFETY: map tests pass an i64 key blob.
+        unsafe { (*key.cast::<i64>()).cast_unsigned() }
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    // SAFETY: map tests pass i64 key blobs.
-    unsafe { i32::from(*lhs.cast::<i64>() == *rhs.cast::<i64>()) }
+unsafe extern "C" fn eq_i64(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        // SAFETY: map tests pass i64 key blobs.
+        unsafe { i32::from(*lhs.cast::<i64>() == *rhs.cast::<i64>()) }
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
 fn layout<T>(drop_fn: unsafe extern "C" fn(*mut c_void)) -> HewValueLayout {
@@ -210,6 +238,10 @@ fn descriptor_release_exact_counts_cover_issue_2553_shapes() {
     unsafe { hew_vec_free_owned(make_vec(&tuple_layout, &tuples)) };
     assert_eq!(TUPLE_DROPS.load(Ordering::SeqCst), 3);
 
+    assert_map_value_releases();
+}
+
+fn assert_map_value_releases() {
     reset(&MAP_VALUE_DROPS, &MAP_VALUE_EXPECTED, 2);
     reset(&MAP_INNER_DROPS, &MAP_INNER_EXPECTED, 4);
     let inner_layout = layout::<RecordOwningHeap>(drop_map_inner_record);
@@ -244,7 +276,15 @@ fn descriptor_release_exact_counts_cover_issue_2553_shapes() {
                 },
             ];
             let vec = make_vec(&inner_layout, &inner);
-            hew_hashmap_insert_layout(map, (&raw const key).cast(), (&raw const vec).cast());
+            map_status::success(|result_out, fault_out| {
+                hew_hashmap_insert_layout(
+                    map,
+                    (&raw const key).cast(),
+                    (&raw const vec).cast(),
+                    result_out,
+                    fault_out,
+                )
+            });
         }
         hew_hashmap_free_layout(map);
     }
@@ -336,7 +376,15 @@ fn suppressed_release_fails_exact_count_for_each_issue_2553_shape() {
     unsafe {
         let map =
             hew_hashmap_new_with_layout(&raw const key_layout, &raw const shallow_value_layout);
-        hew_hashmap_insert_layout(map, (&raw const key).cast(), (&raw const vec).cast());
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                map,
+                (&raw const key).cast(),
+                (&raw const vec).cast(),
+                result_out,
+                fault_out,
+            )
+        });
         hew_hashmap_free_layout(map);
     }
     assert_detector_rejects(&MAP_VALUE_DROPS, 1, "HashMap<K, Vec<record-owning-heap>>");
@@ -445,7 +493,15 @@ fn injected_extra_release_helper() {
             unsafe {
                 let map =
                     hew_hashmap_new_with_layout(&raw const key_layout, &raw const value_layout);
-                hew_hashmap_insert_layout(map, (&raw const key).cast(), (&raw const vec).cast());
+                map_status::success(|result_out, fault_out| {
+                    hew_hashmap_insert_layout(
+                        map,
+                        (&raw const key).cast(),
+                        (&raw const vec).cast(),
+                        result_out,
+                        fault_out,
+                    )
+                });
                 drop_map_vec_value((&raw const vec).cast_mut().cast());
                 hew_hashmap_free_layout(map);
             }

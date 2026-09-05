@@ -1169,3 +1169,21 @@ The complete hew-codegen-rs Make suite, scoped make lint-rust, Rust formatting a
 diff checks pass. The parent integration hook is isolated in its own commit; the
 child only consumes PhysicalValueMethod and PhysicalCallable, so the opaque
 checker-selection migration requires no emitter-side API change.
+
+## Map and Set callback fault ABI
+
+Start from `13c4e9c09`. Hash and equality callbacks now return logical status
+with scalar and opaque fault outputs. Map and Set operations migrate in place;
+operations that do not invoke callbacks retain their ABI. The kernel forwards
+fault status and ownership without inspecting or releasing the fault.
+
+Resize builds borrowed slot copies in separate storage and commits only after
+the insertion probe also succeeds. Failure frees that storage without dropping
+its copied elements. Transfer-in failure preserves both inputs; copy-in failure
+releases its staged key and value clones. Existing successful ownership paths
+remain covered by the migrated descriptor tests and benchmark.
+
+The runtime/CABI library and existing runtime/CABI tests pass. Scoped JSON
+Clippy passes. Fault-specific output, atomicity and release-balance tests follow
+this compiled interface checkpoint. Compiler consumers, ownership contracts and
+generated census updates remain with integration.

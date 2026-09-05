@@ -16,6 +16,9 @@
     reason = "test harness conventions; see hashmap_layout_drop_overwrite.rs"
 )]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -43,15 +46,40 @@ extern "C" fn v_drop_count(_blob: *mut c_void) {
     V_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
-unsafe extern "C" fn hash_i64(key: *const c_void) -> u64 {
-    let v = unsafe { *key.cast::<i64>() };
-    (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+unsafe extern "C" fn hash_i64(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        let v = unsafe { *key.cast::<i64>() };
+        (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    let l = unsafe { *lhs.cast::<i64>() };
-    let r = unsafe { *rhs.cast::<i64>() };
-    i32::from(l == r)
+unsafe extern "C" fn eq_i64(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        let l = unsafe { *lhs.cast::<i64>() };
+        let r = unsafe { *rhs.cast::<i64>() };
+        i32::from(l == r)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
 #[test]
@@ -83,17 +111,28 @@ fn remove_drops_stored_k_and_v_exactly_once_each() {
         let m = hew_hashmap_new_with_layout(&raw const kl, &raw const vl);
         let key: i64 = 42;
         let v: i64 = 100;
-        hew_hashmap_insert_layout(
-            m,
-            (&raw const key).cast::<c_void>(),
-            (&raw const v).cast::<c_void>(),
-        );
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const key).cast::<c_void>(),
+                (&raw const v).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert_eq!(K_DROP_COUNT.load(Ordering::SeqCst), 0);
         assert_eq!(V_DROP_COUNT.load(Ordering::SeqCst), 0);
 
         // Caller's lookup-K (borrowed) — kernel must not drop this.
         let lookup_key: i64 = 42;
-        let removed = hew_hashmap_remove_layout(m, (&raw const lookup_key).cast::<c_void>());
+        let removed = map_status::success(|result_out, fault_out| {
+            hew_hashmap_remove_layout(
+                m,
+                (&raw const lookup_key).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(removed);
         assert_eq!(
             K_DROP_COUNT.load(Ordering::SeqCst),
@@ -139,7 +178,14 @@ fn remove_missing_key_invokes_no_drops() {
     unsafe {
         let m = hew_hashmap_new_with_layout(&raw const kl, &raw const vl);
         let absent: i64 = 999;
-        let removed = hew_hashmap_remove_layout(m, (&raw const absent).cast::<c_void>());
+        let removed = map_status::success(|result_out, fault_out| {
+            hew_hashmap_remove_layout(
+                m,
+                (&raw const absent).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(!removed);
         assert_eq!(K_DROP_COUNT.load(Ordering::SeqCst), 0);
         assert_eq!(V_DROP_COUNT.load(Ordering::SeqCst), 0);

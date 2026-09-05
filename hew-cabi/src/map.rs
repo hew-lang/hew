@@ -5,7 +5,12 @@
 //! Descriptors are copied into each collection at construction, so the caller
 //! need not retain the descriptor storage.
 //!
-//! Insertion transfers the value on both vacant and occupied entries. It
+//! Successful transfer-in insertion transfers the value on vacant and occupied entries.
+//! On callback failure, the receiver, incoming key and value stay with the caller.
+//! Copy-in insertion always borrows both inputs. Callback faults pass unchanged
+//! through the kernel, which never inspects or releases the opaque fault owner.
+//! Status zero initializes result outputs and clears the fault output; nonzero
+//! status leaves result outputs untouched and transfers the callback fault. It
 //! transfers the key only when vacant; the caller retains a duplicate key on
 //! replacement. Lookups borrow keys, and cloning lookups produce independent
 //! values. Removal, replacement, clear and destruction release stored owners
@@ -21,15 +26,24 @@ pub use crate::value::{
 /// Hash a borrowed key's typed values, excluding padding bytes.
 ///
 /// # Safety
-/// The input must be valid for the key's concrete value descriptor.
-pub type HewMapKeyHashThunk = unsafe extern "C" fn(key: *const c_void) -> u64;
+/// The input must be valid for the key's concrete value descriptor. `out` and
+/// `fault_out` must be writable. Status zero initializes `out` and leaves the
+/// fault null. Nonzero status leaves `out` untouched and transfers an opaque
+/// `HewFault` owner through `fault_out`. The callback must not unwind or longjmp.
+pub type HewMapKeyHashThunk =
+    unsafe extern "C" fn(key: *const c_void, out: *mut u64, fault_out: *mut *mut c_void) -> i32;
 
-/// Compare two borrowed keys of the same concrete type, returning non-zero
-/// exactly when their values are equal.
+/// Compare two borrowed keys of the same concrete type.
 ///
 /// # Safety
-/// Both inputs must be valid for the key's concrete value descriptor.
-pub type HewMapKeyEqThunk = unsafe extern "C" fn(lhs: *const c_void, rhs: *const c_void) -> i32;
+/// Both inputs must be valid for the key's concrete value descriptor. Output
+/// and fault ownership follow [`HewMapKeyHashThunk`], with a Boolean result.
+pub type HewMapKeyEqThunk = unsafe extern "C" fn(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32;
 
 /// A shared value protocol plus key identity callbacks.
 ///

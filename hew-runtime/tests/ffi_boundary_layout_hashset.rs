@@ -27,6 +27,9 @@
     reason = "tests deliberately cast between pointer + integer for byte blobs"
 )]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use std::ffi::c_void;
 use std::ptr;
 
@@ -43,22 +46,47 @@ use hew_runtime::hashset::{
 // Synthetic thunks (Point key: two i64 fields, 16 bytes, align 8)
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" fn hash_point(key: *const c_void) -> u64 {
-    // SAFETY: blob is 16 bytes (two i64 fields, no padding in this layout).
-    let x = unsafe { *key.cast::<i64>() };
-    let y = unsafe { *key.cast::<i64>().add(1) };
-    (x as u64)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .wrapping_add(y as u64)
+unsafe extern "C" fn hash_point(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        // SAFETY: blob is 16 bytes (two i64 fields, no padding in this layout).
+        let x = unsafe { *key.cast::<i64>() };
+        let y = unsafe { *key.cast::<i64>().add(1) };
+        (x as u64)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(y as u64)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_point(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    // SAFETY: both blobs are 16 bytes (Point: two i64 fields).
-    let lx = unsafe { *lhs.cast::<i64>() };
-    let ly = unsafe { *lhs.cast::<i64>().add(1) };
-    let rx = unsafe { *rhs.cast::<i64>() };
-    let ry = unsafe { *rhs.cast::<i64>().add(1) };
-    i32::from(lx == rx && ly == ry)
+unsafe extern "C" fn eq_point(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        // SAFETY: both blobs are 16 bytes (Point: two i64 fields).
+        let lx = unsafe { *lhs.cast::<i64>() };
+        let ly = unsafe { *lhs.cast::<i64>().add(1) };
+        let rx = unsafe { *rhs.cast::<i64>() };
+        let ry = unsafe { *rhs.cast::<i64>().add(1) };
+        i32::from(lx == rx && ly == ry)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
 // ---------------------------------------------------------------------------
@@ -93,21 +121,32 @@ fn layout_hashset_insert_contains_copy_record() {
         assert!(!s.is_null(), "constructor must return non-null");
 
         let point: [i64; 2] = [3, 4]; // Point { x: 3, y: 4 }
-        let inserted = hew_hashset_insert_layout(s, point.as_ptr().cast::<c_void>());
+        let inserted = map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(s, point.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert!(inserted, "first insert must return true (newly added)");
 
-        let found = hew_hashset_contains_layout(s, point.as_ptr().cast::<c_void>());
+        let found = map_status::success(|result_out, fault_out| {
+            hew_hashset_contains_layout(s, point.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert!(found, "contains must return true after insert");
 
         // A different point must not be present.
         let other: [i64; 2] = [5, 6];
         assert!(
-            !hew_hashset_contains_layout(s, other.as_ptr().cast::<c_void>()),
+            !map_status::success(|result_out, fault_out| hew_hashset_contains_layout(
+                s,
+                other.as_ptr().cast::<c_void>(),
+                result_out,
+                fault_out
+            )),
             "contains must return false for absent element"
         );
 
         // Duplicate insert returns false.
-        let dup = hew_hashset_insert_layout(s, point.as_ptr().cast::<c_void>());
+        let dup = map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(s, point.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert!(!dup, "duplicate insert must return false");
 
         hew_hashset_free_layout(s);
@@ -123,16 +162,24 @@ fn layout_hashset_remove_copy_record() {
         let s = hew_hashset_new_with_layout(&raw const kl);
 
         let point: [i64; 2] = [10, 20];
-        hew_hashset_insert_layout(s, point.as_ptr().cast::<c_void>());
+        map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(s, point.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
 
-        let removed = hew_hashset_remove_layout(s, point.as_ptr().cast::<c_void>());
+        let removed = map_status::success(|result_out, fault_out| {
+            hew_hashset_remove_layout(s, point.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert!(removed, "remove must return true for a present element");
 
-        let still_there = hew_hashset_contains_layout(s, point.as_ptr().cast::<c_void>());
+        let still_there = map_status::success(|result_out, fault_out| {
+            hew_hashset_contains_layout(s, point.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert!(!still_there, "contains must return false after remove");
 
         // Removing an absent element returns false.
-        let again = hew_hashset_remove_layout(s, point.as_ptr().cast::<c_void>());
+        let again = map_status::success(|result_out, fault_out| {
+            hew_hashset_remove_layout(s, point.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert!(!again, "second remove of same element must return false");
 
         hew_hashset_free_layout(s);
@@ -152,16 +199,24 @@ fn layout_hashset_len_after_insert_remove() {
         let b: [i64; 2] = [3, 4];
         let c: [i64; 2] = [5, 6];
 
-        hew_hashset_insert_layout(s, a.as_ptr().cast::<c_void>());
-        hew_hashset_insert_layout(s, b.as_ptr().cast::<c_void>());
-        hew_hashset_insert_layout(s, c.as_ptr().cast::<c_void>());
+        map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(s, a.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
+        map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(s, b.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
+        map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(s, c.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert_eq!(
             hew_hashset_len_layout(s),
             3,
             "len must be 3 after 3 inserts"
         );
 
-        hew_hashset_remove_layout(s, b.as_ptr().cast::<c_void>());
+        map_status::success(|result_out, fault_out| {
+            hew_hashset_remove_layout(s, b.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert_eq!(
             hew_hashset_len_layout(s),
             2,
@@ -169,7 +224,9 @@ fn layout_hashset_len_after_insert_remove() {
         );
 
         // Duplicate insert must not inflate len.
-        hew_hashset_insert_layout(s, a.as_ptr().cast::<c_void>());
+        map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(s, a.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert_eq!(
             hew_hashset_len_layout(s),
             2,
@@ -206,9 +263,15 @@ fn layout_hashset_clone_deep_copies_non_empty() {
         let a: [i64; 2] = [1, 2];
         let b: [i64; 2] = [3, 4];
         let c: [i64; 2] = [5, 6];
-        hew_hashset_insert_layout(src, a.as_ptr().cast::<c_void>());
-        hew_hashset_insert_layout(src, b.as_ptr().cast::<c_void>());
-        hew_hashset_insert_layout(src, c.as_ptr().cast::<c_void>());
+        map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(src, a.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
+        map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(src, b.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
+        map_status::success(|result_out, fault_out| {
+            hew_hashset_insert_layout(src, c.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert_eq!(hew_hashset_len_layout(src), 3);
 
         let clone = hew_hashset_clone_layout(src.cast_const());
@@ -220,13 +283,20 @@ fn layout_hashset_clone_deep_copies_non_empty() {
         );
         for elem in [&a, &b, &c] {
             assert!(
-                hew_hashset_contains_layout(clone, elem.as_ptr().cast::<c_void>()),
+                map_status::success(|result_out, fault_out| hew_hashset_contains_layout(
+                    clone,
+                    elem.as_ptr().cast::<c_void>(),
+                    result_out,
+                    fault_out
+                )),
                 "clone must contain each original element"
             );
         }
 
         // Independence: removing from the source must not touch the clone.
-        hew_hashset_remove_layout(src, a.as_ptr().cast::<c_void>());
+        map_status::success(|result_out, fault_out| {
+            hew_hashset_remove_layout(src, a.as_ptr().cast::<c_void>(), result_out, fault_out)
+        });
         assert_eq!(hew_hashset_len_layout(src), 2);
         assert_eq!(
             hew_hashset_len_layout(clone),
@@ -234,7 +304,12 @@ fn layout_hashset_clone_deep_copies_non_empty() {
             "mutating the source must not affect the clone"
         );
         assert!(
-            hew_hashset_contains_layout(clone, a.as_ptr().cast::<c_void>()),
+            map_status::success(|result_out, fault_out| hew_hashset_contains_layout(
+                clone,
+                a.as_ptr().cast::<c_void>(),
+                result_out,
+                fault_out
+            )),
             "clone must retain an element removed from the source"
         );
 

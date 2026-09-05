@@ -43,6 +43,9 @@
               hew-runtime/tests/hashmap_layout_drop_*.rs"
 )]
 
+#[path = "../tests/common/map_status.rs"]
+mod map_status;
+
 use std::ffi::{c_char, c_void, CString};
 
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
@@ -73,43 +76,68 @@ extern "C" fn cstring_slot_drop(blob: *mut c_void) {
     }
 }
 
-unsafe extern "C" fn hash_cstr_slot(blob: *const c_void) -> u64 {
-    let cstr_ptr = unsafe { *blob.cast::<*const c_char>() };
-    // FNV-1a over the C string bytes.
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut p = cstr_ptr;
-    unsafe {
-        while *p != 0 {
-            h ^= u64::from(*p as u8);
-            h = h.wrapping_mul(0x0000_0100_0000_01B3);
-            p = p.add(1);
+unsafe extern "C" fn hash_cstr_slot(
+    blob: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        let cstr_ptr = unsafe { *blob.cast::<*const c_char>() };
+        // FNV-1a over the C string bytes.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut p = cstr_ptr;
+        unsafe {
+            while *p != 0 {
+                h ^= u64::from(*p as u8);
+                h = h.wrapping_mul(0x0000_0100_0000_01B3);
+                p = p.add(1);
+            }
         }
+        h
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
     }
-    h
+    0
 }
 
-unsafe extern "C" fn eq_cstr_slot(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    let l = unsafe { *lhs.cast::<*const c_char>() };
-    let r = unsafe { *rhs.cast::<*const c_char>() };
-    if l == r {
-        return 1;
-    }
-    unsafe {
-        let mut lp = l;
-        let mut rp = r;
-        loop {
-            let lc = *lp;
-            let rc = *rp;
-            if lc != rc {
-                return 0;
-            }
-            if lc == 0 {
-                return 1;
-            }
-            lp = lp.add(1);
-            rp = rp.add(1);
+unsafe extern "C" fn eq_cstr_slot(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = 'value: {
+        let l = unsafe { *lhs.cast::<*const c_char>() };
+        let r = unsafe { *rhs.cast::<*const c_char>() };
+        if l == r {
+            break 'value 1;
         }
+        unsafe {
+            let mut lp = l;
+            let mut rp = r;
+            loop {
+                let lc = *lp;
+                let rc = *rp;
+                if lc != rc {
+                    break 'value 0;
+                }
+                if lc == 0 {
+                    break 'value 1;
+                }
+                lp = lp.add(1);
+                rp = rp.add(1);
+            }
+        }
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
     }
+    0
 }
 
 fn string_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
@@ -150,15 +178,40 @@ fn make_string_pairs(n: usize) -> Vec<(*mut c_char, *mut c_char)> {
 // i64 / i64 Plain descriptors
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" fn hash_i64(key: *const c_void) -> u64 {
-    let v = unsafe { *key.cast::<i64>() };
-    (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+unsafe extern "C" fn hash_i64(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        let v = unsafe { *key.cast::<i64>() };
+        (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    let l = unsafe { *lhs.cast::<i64>() };
-    let r = unsafe { *rhs.cast::<i64>() };
-    i32::from(l == r)
+unsafe extern "C" fn eq_i64(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        let l = unsafe { *lhs.cast::<i64>() };
+        let r = unsafe { *rhs.cast::<i64>() };
+        i32::from(l == r)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
 fn i64_plain_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
@@ -200,11 +253,15 @@ fn bench_insert_string_kv(c: &mut Criterion) {
                     for (k_ptr, v_ptr) in &pairs {
                         let k_slot: *mut c_char = *k_ptr;
                         let v_slot: *mut c_char = *v_ptr;
-                        hew_hashmap_insert_layout(
-                            m,
-                            (&raw const k_slot).cast::<c_void>(),
-                            (&raw const v_slot).cast::<c_void>(),
-                        );
+                        map_status::success(|result_out, fault_out| {
+                            hew_hashmap_insert_layout(
+                                m,
+                                (&raw const k_slot).cast::<c_void>(),
+                                (&raw const v_slot).cast::<c_void>(),
+                                result_out,
+                                fault_out,
+                            )
+                        });
                     }
                     // Free drops every stored K + V via the registered drop_fn.
                     hew_hashmap_free_layout(m);
@@ -226,14 +283,25 @@ fn bench_insert_remove_i64(c: &mut Criterion) {
                 let m = hew_hashmap_new_with_layout(&raw const kl, &raw const vl);
                 for i in 0..n {
                     let v = i.wrapping_mul(2);
-                    hew_hashmap_insert_layout(
-                        m,
-                        (&raw const i).cast::<c_void>(),
-                        (&raw const v).cast::<c_void>(),
-                    );
+                    map_status::success(|result_out, fault_out| {
+                        hew_hashmap_insert_layout(
+                            m,
+                            (&raw const i).cast::<c_void>(),
+                            (&raw const v).cast::<c_void>(),
+                            result_out,
+                            fault_out,
+                        )
+                    });
                 }
                 for i in 0..n {
-                    let _ = hew_hashmap_remove_layout(m, (&raw const i).cast::<c_void>());
+                    let _ = map_status::success(|result_out, fault_out| {
+                        hew_hashmap_remove_layout(
+                            m,
+                            (&raw const i).cast::<c_void>(),
+                            result_out,
+                            fault_out,
+                        )
+                    });
                 }
                 hew_hashmap_free_layout(m);
             });
@@ -255,11 +323,15 @@ fn bench_free_string_kv(c: &mut Criterion) {
                     for (k_ptr, v_ptr) in make_string_pairs(n) {
                         let k_slot: *mut c_char = k_ptr;
                         let v_slot: *mut c_char = v_ptr;
-                        hew_hashmap_insert_layout(
-                            m,
-                            (&raw const k_slot).cast::<c_void>(),
-                            (&raw const v_slot).cast::<c_void>(),
-                        );
+                        map_status::success(|result_out, fault_out| {
+                            hew_hashmap_insert_layout(
+                                m,
+                                (&raw const k_slot).cast::<c_void>(),
+                                (&raw const v_slot).cast::<c_void>(),
+                                result_out,
+                                fault_out,
+                            )
+                        });
                     }
                     m
                 },
@@ -291,11 +363,15 @@ fn bench_insert_overwrite_string_v(c: &mut Criterion) {
                 for (k_ptr, v_ptr) in make_string_pairs(n) {
                     let k_slot: *mut c_char = k_ptr;
                     let v_slot: *mut c_char = v_ptr;
-                    hew_hashmap_insert_layout(
-                        m,
-                        (&raw const k_slot).cast::<c_void>(),
-                        (&raw const v_slot).cast::<c_void>(),
-                    );
+                    map_status::success(|result_out, fault_out| {
+                        hew_hashmap_insert_layout(
+                            m,
+                            (&raw const k_slot).cast::<c_void>(),
+                            (&raw const v_slot).cast::<c_void>(),
+                            result_out,
+                            fault_out,
+                        )
+                    });
                     // The same K bytes will be re-presented at overwrite time —
                     // build a fresh owned copy (per the C0a contract: kernel
                     // does NOT consume K_in on the occupied-slot path; the
@@ -319,11 +395,15 @@ fn bench_insert_overwrite_string_v(c: &mut Criterion) {
                 for (k_replay, v_new_ptr) in keys_for_replay.iter().zip(v_new.iter()) {
                     let k_slot: *mut c_char = *k_replay;
                     let v_slot: *mut c_char = *v_new_ptr;
-                    let was_new = hew_hashmap_insert_layout(
-                        m,
-                        (&raw const k_slot).cast::<c_void>(),
-                        (&raw const v_slot).cast::<c_void>(),
-                    );
+                    let was_new = map_status::success(|result_out, fault_out| {
+                        hew_hashmap_insert_layout(
+                            m,
+                            (&raw const k_slot).cast::<c_void>(),
+                            (&raw const v_slot).cast::<c_void>(),
+                            result_out,
+                            fault_out,
+                        )
+                    });
                     debug_assert!(!was_new, "expected overwrite path");
                 }
                 // Post-timed teardown (allocated in setup, freed here to keep
@@ -356,11 +436,15 @@ fn bench_remove_string_kv(c: &mut Criterion) {
                 for (k_ptr, v_ptr) in make_string_pairs(n) {
                     let k_slot: *mut c_char = k_ptr;
                     let v_slot: *mut c_char = v_ptr;
-                    hew_hashmap_insert_layout(
-                        m,
-                        (&raw const k_slot).cast::<c_void>(),
-                        (&raw const v_slot).cast::<c_void>(),
-                    );
+                    map_status::success(|result_out, fault_out| {
+                        hew_hashmap_insert_layout(
+                            m,
+                            (&raw const k_slot).cast::<c_void>(),
+                            (&raw const v_slot).cast::<c_void>(),
+                            result_out,
+                            fault_out,
+                        )
+                    });
                     let k_lookup = CString::new(format!("key-{:010}", lookup_keys.len()))
                         .unwrap()
                         .into_raw();
@@ -373,8 +457,14 @@ fn bench_remove_string_kv(c: &mut Criterion) {
                 // the stored slot (per-slot remove drop site).
                 for k_lookup in &lookup_keys {
                     let k_slot: *const c_char = *k_lookup;
-                    let removed =
-                        hew_hashmap_remove_layout(m, (&raw const k_slot).cast::<c_void>());
+                    let removed = map_status::success(|result_out, fault_out| {
+                        hew_hashmap_remove_layout(
+                            m,
+                            (&raw const k_slot).cast::<c_void>(),
+                            result_out,
+                            fault_out,
+                        )
+                    });
                     debug_assert!(removed, "expected hit on pre-populated key");
                 }
                 // Post-timed teardown: caller-owned lookup K_in (the kernel

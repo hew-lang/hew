@@ -17,6 +17,9 @@
     reason = "tests deliberately cast between pointer + integer for byte blobs"
 )]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use std::ffi::c_void;
 use std::ptr;
 
@@ -33,49 +36,124 @@ use hew_runtime::hashmap::{
 // Synthetic thunks (i64 key)
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" fn hash_i64(key: *const c_void) -> u64 {
-    // Simple mix; never read padding (the blob is exactly 8 bytes).
-    // SAFETY: the runtime guarantees key points to an i64-sized blob.
-    let v = unsafe { *key.cast::<i64>() };
-    (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+unsafe extern "C" fn hash_i64(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        // Simple mix; never read padding (the blob is exactly 8 bytes).
+        // SAFETY: the runtime guarantees key points to an i64-sized blob.
+        let v = unsafe { *key.cast::<i64>() };
+        (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    // SAFETY: caller guarantees both pointers are i64-sized blobs.
-    let l = unsafe { *lhs.cast::<i64>() };
-    let r = unsafe { *rhs.cast::<i64>() };
-    i32::from(l == r)
+unsafe extern "C" fn eq_i64(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        // SAFETY: caller guarantees both pointers are i64-sized blobs.
+        let l = unsafe { *lhs.cast::<i64>() };
+        let r = unsafe { *rhs.cast::<i64>() };
+        i32::from(l == r)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn hash_i32(key: *const c_void) -> u64 {
-    // SAFETY: blob is i32-sized.
-    let v = unsafe { *key.cast::<i32>() };
-    u64::from(v as u32).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+unsafe extern "C" fn hash_i32(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        // SAFETY: blob is i32-sized.
+        let v = unsafe { *key.cast::<i32>() };
+        u64::from(v as u32).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i32(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    // SAFETY: both blobs are i32-sized.
-    let l = unsafe { *lhs.cast::<i32>() };
-    let r = unsafe { *rhs.cast::<i32>() };
-    i32::from(l == r)
+unsafe extern "C" fn eq_i32(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        // SAFETY: both blobs are i32-sized.
+        let l = unsafe { *lhs.cast::<i32>() };
+        let r = unsafe { *rhs.cast::<i32>() };
+        i32::from(l == r)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn hash_point(key: *const c_void) -> u64 {
-    // SAFETY: blob is 16 bytes (two i64).
-    let x = unsafe { *key.cast::<i64>() };
-    let y = unsafe { *key.cast::<i64>().add(1) };
-    (x as u64)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .wrapping_add(y as u64)
+unsafe extern "C" fn hash_point(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        // SAFETY: blob is 16 bytes (two i64).
+        let x = unsafe { *key.cast::<i64>() };
+        let y = unsafe { *key.cast::<i64>().add(1) };
+        (x as u64)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(y as u64)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_point(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    // SAFETY: both blobs are 16 bytes (Point).
-    let lx = unsafe { *lhs.cast::<i64>() };
-    let ly = unsafe { *lhs.cast::<i64>().add(1) };
-    let rx = unsafe { *rhs.cast::<i64>() };
-    let ry = unsafe { *rhs.cast::<i64>().add(1) };
-    i32::from(lx == rx && ly == ry)
+unsafe extern "C" fn eq_point(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        // SAFETY: both blobs are 16 bytes (Point).
+        let lx = unsafe { *lhs.cast::<i64>() };
+        let ly = unsafe { *lhs.cast::<i64>().add(1) };
+        let rx = unsafe { *rhs.cast::<i64>() };
+        let ry = unsafe { *rhs.cast::<i64>().add(1) };
+        i32::from(lx == rx && ly == ry)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
 // ---------------------------------------------------------------------------
@@ -148,14 +226,23 @@ fn layout_hashmap_insert_contains_roundtrip_copy_record() {
 
         let key: [i64; 2] = [3, 4];
         let value: i64 = 25;
-        let added = hew_hashmap_insert_layout(
-            m,
-            key.as_ptr().cast::<c_void>(),
-            (&raw const value).cast::<c_void>(),
-        );
+        let added = map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                key.as_ptr().cast::<c_void>(),
+                (&raw const value).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(added, "first insert must report new entry");
         assert!(
-            hew_hashmap_contains_key_layout(m, key.as_ptr().cast::<c_void>()),
+            map_status::success(|result_out, fault_out| hew_hashmap_contains_key_layout(
+                m,
+                key.as_ptr().cast::<c_void>(),
+                result_out,
+                fault_out
+            )),
             "round-trip lookup must find the inserted record key"
         );
         assert_eq!(hew_hashmap_len_layout(m), 1);
@@ -173,13 +260,19 @@ fn layout_hashmap_get_returns_value_blob() {
 
         let key: i64 = 42;
         let val: i64 = 99;
-        hew_hashmap_insert_layout(
-            m,
-            (&raw const key).cast::<c_void>(),
-            (&raw const val).cast::<c_void>(),
-        );
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const key).cast::<c_void>(),
+                (&raw const val).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
 
-        let got = hew_hashmap_get_layout(m, (&raw const key).cast::<c_void>());
+        let got = map_status::success(|result_out, fault_out| {
+            hew_hashmap_get_layout(m, (&raw const key).cast::<c_void>(), result_out, fault_out)
+        });
         assert!(
             !got.is_null(),
             "get must return a non-null pointer for present key"
@@ -190,7 +283,14 @@ fn layout_hashmap_get_returns_value_blob() {
 
         // Absent key returns null.
         let missing: i64 = 1234;
-        let absent = hew_hashmap_get_layout(m, (&raw const missing).cast::<c_void>());
+        let absent = map_status::success(|result_out, fault_out| {
+            hew_hashmap_get_layout(
+                m,
+                (&raw const missing).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(absent.is_null(), "absent key must return null");
 
         hew_hashmap_free_layout(m);
@@ -205,30 +305,46 @@ fn layout_hashmap_remove_shrinks_len() {
         let m = hew_hashmap_new_with_layout(&raw const kl, &raw const vl);
         for i in 0..5_i64 {
             let v: i64 = i * 10;
-            hew_hashmap_insert_layout(
-                m,
-                (&raw const i).cast::<c_void>(),
-                (&raw const v).cast::<c_void>(),
-            );
+            map_status::success(|result_out, fault_out| {
+                hew_hashmap_insert_layout(
+                    m,
+                    (&raw const i).cast::<c_void>(),
+                    (&raw const v).cast::<c_void>(),
+                    result_out,
+                    fault_out,
+                )
+            });
         }
         assert_eq!(hew_hashmap_len_layout(m), 5);
 
         let target: i64 = 3;
-        assert!(hew_hashmap_remove_layout(
-            m,
-            (&raw const target).cast::<c_void>()
-        ));
+        assert!(map_status::success(|result_out, fault_out| {
+            hew_hashmap_remove_layout(
+                m,
+                (&raw const target).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        }));
         assert_eq!(hew_hashmap_len_layout(m), 4);
-        assert!(!hew_hashmap_contains_key_layout(
-            m,
-            (&raw const target).cast::<c_void>()
-        ));
+        assert!(!map_status::success(|result_out, fault_out| {
+            hew_hashmap_contains_key_layout(
+                m,
+                (&raw const target).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        }));
 
         // Removing an absent key returns false and does not shrink len.
-        assert!(!hew_hashmap_remove_layout(
-            m,
-            (&raw const target).cast::<c_void>()
-        ));
+        assert!(!map_status::success(|result_out, fault_out| {
+            hew_hashmap_remove_layout(
+                m,
+                (&raw const target).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        }));
         assert_eq!(hew_hashmap_len_layout(m), 4);
 
         hew_hashmap_free_layout(m);
@@ -246,16 +362,22 @@ fn layout_hashmap_resize_preserves_all_entries() {
         let n: i64 = 64;
         for i in 0..n {
             let v: i64 = i * 7;
-            hew_hashmap_insert_layout(
-                m,
-                (&raw const i).cast::<c_void>(),
-                (&raw const v).cast::<c_void>(),
-            );
+            map_status::success(|result_out, fault_out| {
+                hew_hashmap_insert_layout(
+                    m,
+                    (&raw const i).cast::<c_void>(),
+                    (&raw const v).cast::<c_void>(),
+                    result_out,
+                    fault_out,
+                )
+            });
         }
         assert_eq!(hew_hashmap_len_layout(m), n);
         // Each entry must still be retrievable post-resize.
         for i in 0..n {
-            let got = hew_hashmap_get_layout(m, (&raw const i).cast::<c_void>());
+            let got = map_status::success(|result_out, fault_out| {
+                hew_hashmap_get_layout(m, (&raw const i).cast::<c_void>(), result_out, fault_out)
+            });
             assert!(!got.is_null(), "key {i} missing after resize");
             assert_eq!(
                 *got.cast::<i64>(),
@@ -314,12 +436,18 @@ fn layout_hashmap_mixed_align_key_value_stride() {
         // Round-trip a mixed-align entry to confirm offsets are usable.
         let key: i64 = 7;
         let val: i32 = -123;
-        hew_hashmap_insert_layout(
-            m,
-            (&raw const key).cast::<c_void>(),
-            (&raw const val).cast::<c_void>(),
-        );
-        let got = hew_hashmap_get_layout(m, (&raw const key).cast::<c_void>());
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const key).cast::<c_void>(),
+                (&raw const val).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
+        let got = map_status::success(|result_out, fault_out| {
+            hew_hashmap_get_layout(m, (&raw const key).cast::<c_void>(), result_out, fault_out)
+        });
         assert!(!got.is_null());
         assert_eq!(*got.cast::<i32>(), -123);
         hew_hashmap_free_layout(m);
@@ -606,14 +734,32 @@ fn op_inputs_null_val_with_zero_size_ok() {
     }
 
     // Second: drive the actual extern entry point end-to-end with a null val.
-    let inserted =
-        unsafe { hew_hashmap_insert_layout(m, (&raw const key).cast::<c_void>(), ptr::null()) };
+    let inserted = unsafe {
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const key).cast::<c_void>(),
+                ptr::null(),
+                result_out,
+                fault_out,
+            )
+        })
+    };
     assert!(
         inserted,
         "first insert of ZST-value entry should report new"
     );
     assert_eq!(unsafe { hew_hashmap_len_layout(m) }, 1);
-    assert!(unsafe { hew_hashmap_contains_key_layout(m, (&raw const key).cast::<c_void>()) });
+    assert!(unsafe {
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_contains_key_layout(
+                m,
+                (&raw const key).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        })
+    });
 
     unsafe { hew_hashmap_free_layout(m) };
 }

@@ -5,6 +5,9 @@
     reason = "FFI ownership test keeps the invariants next to each operation"
 )]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -76,12 +79,33 @@ unsafe extern "C" fn drop_pair(blob: *mut c_void) {
     drop_value((value as *mut OwnedValue).cast());
 }
 
-unsafe extern "C" fn hash_i64(key: *const c_void) -> u64 {
-    unsafe { (*key.cast::<i64>()).cast_unsigned() }
+unsafe extern "C" fn hash_i64(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = { unsafe { (*key.cast::<i64>()).cast_unsigned() } };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    unsafe { i32::from(*lhs.cast::<i64>() == *rhs.cast::<i64>()) }
+unsafe extern "C" fn eq_i64(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = { unsafe { i32::from(*lhs.cast::<i64>() == *rhs.cast::<i64>()) } };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
 #[test]
@@ -122,7 +146,15 @@ fn owned_entries_allocations_are_freed_exactly_once_after_map_drop() {
         let map = hew_hashmap_new_with_layout(&raw const key_layout, &raw const value_layout);
         for key in [11_i64, 22_i64] {
             let source = allocate(key.cast_unsigned());
-            hew_hashmap_insert_layout(map, (&raw const key).cast(), (&raw const source).cast());
+            map_status::success(|result_out, fault_out| {
+                hew_hashmap_insert_layout(
+                    map,
+                    (&raw const key).cast(),
+                    (&raw const source).cast(),
+                    result_out,
+                    fault_out,
+                )
+            });
         }
 
         let entries = hew_hashmap_entries_layout(

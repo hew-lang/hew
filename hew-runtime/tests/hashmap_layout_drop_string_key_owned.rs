@@ -26,6 +26,9 @@
     reason = "test harness conventions; see hashmap_layout_drop_overwrite.rs"
 )]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use std::ffi::{c_char, c_void, CString};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -59,44 +62,69 @@ extern "C" fn string_key_drop(blob: *mut c_void) {
     }
 }
 
-unsafe extern "C" fn hash_cstr_slot(blob: *const c_void) -> u64 {
-    // Slot stores `*const c_char`; the actual chars live elsewhere.
-    let cstr_ptr = unsafe { *blob.cast::<*const c_char>() };
-    // FNV-1a over the C string bytes.
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut p = cstr_ptr;
-    unsafe {
-        while *p != 0 {
-            h ^= u64::from(*p as u8);
-            h = h.wrapping_mul(0x0000_0100_0000_01B3);
-            p = p.add(1);
+unsafe extern "C" fn hash_cstr_slot(
+    blob: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        // Slot stores `*const c_char`; the actual chars live elsewhere.
+        let cstr_ptr = unsafe { *blob.cast::<*const c_char>() };
+        // FNV-1a over the C string bytes.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut p = cstr_ptr;
+        unsafe {
+            while *p != 0 {
+                h ^= u64::from(*p as u8);
+                h = h.wrapping_mul(0x0000_0100_0000_01B3);
+                p = p.add(1);
+            }
         }
+        h
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
     }
-    h
+    0
 }
 
-unsafe extern "C" fn eq_cstr_slot(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    let l = unsafe { *lhs.cast::<*const c_char>() };
-    let r = unsafe { *rhs.cast::<*const c_char>() };
-    if l == r {
-        return 1;
-    }
-    unsafe {
-        let mut lp = l;
-        let mut rp = r;
-        loop {
-            let lc = *lp;
-            let rc = *rp;
-            if lc != rc {
-                return 0;
-            }
-            if lc == 0 {
-                return 1;
-            }
-            lp = lp.add(1);
-            rp = rp.add(1);
+unsafe extern "C" fn eq_cstr_slot(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = 'value: {
+        let l = unsafe { *lhs.cast::<*const c_char>() };
+        let r = unsafe { *rhs.cast::<*const c_char>() };
+        if l == r {
+            break 'value 1;
         }
+        unsafe {
+            let mut lp = l;
+            let mut rp = r;
+            loop {
+                let lc = *lp;
+                let rc = *rp;
+                if lc != rc {
+                    break 'value 0;
+                }
+                if lc == 0 {
+                    break 'value 1;
+                }
+                lp = lp.add(1);
+                rp = rp.add(1);
+            }
+        }
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
     }
+    0
 }
 
 fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
@@ -134,11 +162,15 @@ fn string_key_is_consumed_on_insert_vacant() {
         let owned_key = CString::new("hello").unwrap().into_raw();
         let key_slot: *mut c_char = owned_key;
         let v: i32 = 42;
-        let was_new = hew_hashmap_insert_layout(
-            m,
-            (&raw const key_slot).cast::<c_void>(),
-            (&raw const v).cast::<c_void>(),
-        );
+        let was_new = map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const key_slot).cast::<c_void>(),
+                (&raw const v).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(was_new);
         assert_eq!(
             STRING_FREE_COUNT.load(Ordering::SeqCst),
@@ -168,11 +200,15 @@ fn string_key_caller_owns_duplicate_on_insert_overwrite() {
         let first = CString::new("dup").unwrap().into_raw();
         let first_slot: *mut c_char = first;
         let v1: i32 = 1;
-        hew_hashmap_insert_layout(
-            m,
-            (&raw const first_slot).cast::<c_void>(),
-            (&raw const v1).cast::<c_void>(),
-        );
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const first_slot).cast::<c_void>(),
+                (&raw const v1).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert_eq!(STRING_FREE_COUNT.load(Ordering::SeqCst), 0);
 
         // Overwrite with a fresh equal-content K_in. Per plan rev6 §4
@@ -183,11 +219,15 @@ fn string_key_caller_owns_duplicate_on_insert_overwrite() {
         let duplicate = CString::new("dup").unwrap().into_raw();
         let duplicate_slot: *mut c_char = duplicate;
         let v2: i32 = 2;
-        let was_new = hew_hashmap_insert_layout(
-            m,
-            (&raw const duplicate_slot).cast::<c_void>(),
-            (&raw const v2).cast::<c_void>(),
-        );
+        let was_new = map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const duplicate_slot).cast::<c_void>(),
+                (&raw const v2).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(!was_new, "overwrite reports occupied slot");
         assert_eq!(
             STRING_FREE_COUNT.load(Ordering::SeqCst),

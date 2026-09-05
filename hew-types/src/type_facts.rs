@@ -86,6 +86,106 @@ pub struct TypeFacts {
     pub eq: bool,
 }
 
+/// Independently selected value operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ValueCapability {
+    Hash,
+    Eq,
+}
+
+/// The checker's authorization for one concrete value operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueMethodPlan {
+    /// The checker permits its structural implementation.
+    Derived,
+    /// Exact declaration and complete impl-then-method binder arguments.
+    User {
+        method: crate::DefId,
+        type_args: Vec<ResolvedTy>,
+    },
+}
+
+/// Registration-time receiver and binder order, keyed by the selected `DefId`.
+#[derive(Debug, Clone)]
+pub(crate) struct ImplMethodBinders {
+    pub receiver: crate::Ty,
+    pub impl_params: Vec<String>,
+    pub method_params: Vec<String>,
+}
+
+impl ImplMethodBinders {
+    fn instantiate(&self, receiver: &ResolvedTy) -> Result<Vec<ResolvedTy>, ClassError> {
+        if let Some(name) = self.method_params.first() {
+            return Err(ClassError::TypeParam { name: name.clone() });
+        }
+        let variables: Vec<_> = self
+            .impl_params
+            .iter()
+            .map(|_| crate::ty::TypeVar::fresh())
+            .collect();
+        let replacements: HashMap<_, _> = self
+            .impl_params
+            .iter()
+            .cloned()
+            .zip(variables.iter().copied().map(crate::Ty::Var))
+            .collect();
+        let pattern = self
+            .receiver
+            .substitute_named_params_parallel(&replacements);
+        let mut subst = crate::ty::Substitution::new();
+        crate::unify::unify(&mut subst, &pattern, &receiver.to_ty()).map_err(|_| {
+            ClassError::UnknownDeclaration {
+                name: receiver.user_facing().to_string(),
+            }
+        })?;
+        let type_args: Vec<_> = self
+            .impl_params
+            .iter()
+            .zip(variables)
+            .map(|(name, var)| {
+                ResolvedTy::from_ty(&subst.resolve(&crate::Ty::Var(var)))
+                    .map_err(|_| ClassError::TypeParam { name: name.clone() })
+            })
+            .collect::<Result<_, _>>()?;
+        // Unification permits checker aliases; final capability selection must
+        // retain exact builtin and nominal identities after substitution.
+        let instantiated = ResolvedTy::from_ty(&subst.resolve(&pattern)).map_err(|_| {
+            ClassError::UnknownDeclaration {
+                name: receiver.user_facing().to_string(),
+            }
+        })?;
+        if instantiated != *receiver {
+            return Err(ClassError::UnknownDeclaration {
+                name: receiver.user_facing().to_string(),
+            });
+        }
+        Ok(type_args)
+    }
+}
+
+/// Shared exact-specialization-then-nominal lookup over checker registration.
+pub(crate) fn selected_impl_method(
+    ids: &HashMap<(String, String, String), crate::DefId>,
+    owner: &str,
+    args: &[ResolvedTy],
+    trait_name: &str,
+    method_name: &str,
+) -> Option<(crate::DefId, String)> {
+    crate::resolved_ty::mangle_impl_self_name(owner, args)
+        .filter(|_| !args.is_empty())
+        .into_iter()
+        .chain(std::iter::once(owner.to_string()))
+        .find_map(|owner| {
+            ids.get(&(
+                owner.clone(),
+                trait_name.to_string(),
+                method_name.to_string(),
+            ))
+            .cloned()
+            .map(|id| (id, owner))
+        })
+}
+
 /// Checker-owned declaration context for concrete fact expansion.
 ///
 /// This is an immutable snapshot of the declarations and capability authority
@@ -97,6 +197,8 @@ pub struct TypeFactContext {
     declarations: BTreeMap<String, DeclaredType>,
     registry: TraitRegistry,
     type_defs: HashMap<String, TypeDef>,
+    method_ids: HashMap<(String, String, String), crate::DefId>,
+    method_binders: HashMap<crate::DefId, ImplMethodBinders>,
 }
 
 impl TypeFactContext {
@@ -110,7 +212,19 @@ impl TypeFactContext {
             declarations,
             registry,
             type_defs,
+            method_ids: HashMap::new(),
+            method_binders: HashMap::new(),
         }
+    }
+
+    pub(crate) fn with_impl_methods(
+        mut self,
+        ids: HashMap<(String, String, String), crate::DefId>,
+        binders: HashMap<crate::DefId, ImplMethodBinders>,
+    ) -> Self {
+        self.method_ids = ids;
+        self.method_binders = binders;
+        self
     }
 
     #[must_use]
@@ -231,25 +345,148 @@ impl TypeFactService {
         Ok(row)
     }
 
-    fn contextual_facts(&self, ty: &ResolvedTy) -> Result<TypeFacts, ClassError> {
-        let declarations = ClassContext::new(&self.context.declarations);
+    /// Select one operation independently from the other capability.
+    ///
+    /// # Errors
+    /// Refuses abstract receivers, absent declaration metadata, inconsistent
+    /// receiver patterns and method binders that cannot be inferred from self.
+    pub fn capability_plan(
+        &mut self,
+        ty: &ResolvedTy,
+        capability: ValueCapability,
+    ) -> Result<Option<ValueMethodPlan>, ClassError> {
+        self.select_capability(ty, capability)
+    }
+
+    fn select_capability(
+        &self,
+        ty: &ResolvedTy,
+        capability: ValueCapability,
+    ) -> Result<Option<ValueMethodPlan>, ClassError> {
+        crate::value_class::classify_ty(ty, &ClassContext::new(&self.context.declarations))?;
+        let mut components = Vec::new();
+        push_type_components(ty, &mut components);
+        if let ResolvedTy::TypeParam { name } = ty {
+            return Err(ClassError::TypeParam { name: name.clone() });
+        }
+        // Validate every binder-bearing component even when the class rule does
+        // not inspect it (for example a function's parameter types).
+        for component in components {
+            if ResolvedTy::from_ty(&component.to_ty()).is_err() {
+                return Err(ClassError::TypeParam {
+                    name: component.user_facing().to_string(),
+                });
+            }
+        }
         let as_ty = ty.to_ty();
-        let send = self.send_fact(ty, &as_ty);
-        let terminates = crate::check::declaration_walk_terminates(ty, &self.context.type_defs);
-        let hash = terminates
-            && matches!(
+        let (trait_name, method_name) = match capability {
+            ValueCapability::Hash => ("Hash", "hash"),
+            ValueCapability::Eq => ("Eq", "eq"),
+        };
+        let (owner, args) = match ty {
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                ..
+            } => (
+                builtin
+                    .as_ref()
+                    .map_or(name.as_str(), |builtin| builtin.canonical_name()),
+                args.as_slice(),
+            ),
+            _ => (as_ty.canonical_lowering_name().unwrap_or(""), &[][..]),
+        };
+        if let Some((method, _)) = selected_impl_method(
+            &self.context.method_ids,
+            owner,
+            args,
+            trait_name,
+            method_name,
+        ) {
+            let binders = self.context.method_binders.get(&method).ok_or_else(|| {
+                ClassError::UnknownDeclaration {
+                    name: method.display_name().to_string(),
+                }
+            })?;
+            let type_args = binders.instantiate(ty)?;
+            return Ok(Some(ValueMethodPlan::User { method, type_args }));
+        }
+        if !crate::check::declaration_walk_terminates(ty, &self.context.type_defs) {
+            return Ok(None);
+        }
+        let derived = match capability {
+            ValueCapability::Hash => self.derived_hash(ty)?,
+            ValueCapability::Eq => matches!(
+                crate::eq_eligibility::ty_is_eq_eligible(&as_ty, &self.context.type_defs),
+                crate::eq_eligibility::EqEligibility::Eligible
+            ),
+        };
+        Ok(derived.then_some(ValueMethodPlan::Derived))
+    }
+
+    fn derived_hash(&self, ty: &ResolvedTy) -> Result<bool, ClassError> {
+        match ty {
+            // Preserve the existing identity-aggregate exceptions exactly.
+            ResolvedTy::Named {
+                builtin: Some(builtin),
+                ..
+            } => Ok(matches!(
+                builtin,
+                crate::BuiltinType::NodeId
+                    | crate::BuiltinType::Location
+                    | crate::BuiltinType::RemotePid
+            )),
+            ResolvedTy::Named { name, args, .. } => {
+                let definition = self
+                    .context
+                    .type_defs
+                    .get(name)
+                    .ok_or_else(|| ClassError::UnknownDeclaration { name: name.clone() })?;
+                if definition.type_params.len() != args.len() {
+                    return Err(ClassError::UnknownDeclaration {
+                        name: ty.user_facing().to_string(),
+                    });
+                }
+                if definition.is_indirect
+                    || !matches!(
+                        definition.kind,
+                        crate::check::TypeDefKind::Struct | crate::check::TypeDefKind::Record
+                    )
+                    || self.context.registry.resource_type_names().contains(name)
+                {
+                    return Ok(false);
+                }
+                let (_, fields) = self
+                    .record_fields(ty)
+                    .map_err(|_| ClassError::UnknownDeclaration { name: name.clone() })?;
+                for (_, field) in fields {
+                    if self
+                        .select_capability(&field, ValueCapability::Hash)?
+                        .is_none()
+                    {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            _ => Ok(matches!(
                 crate::hash_eligibility::ty_is_hash_eligible_with_resources(
-                    &as_ty,
+                    &ty.to_ty(),
                     &self.context.type_defs,
                     self.context.registry.resource_type_names(),
                 ),
                 crate::hash_eligibility::HashEligibility::Eligible
-            );
-        let eq = terminates
-            && matches!(
-                crate::eq_eligibility::ty_is_eq_eligible(&as_ty, &self.context.type_defs,),
-                crate::eq_eligibility::EqEligibility::Eligible
-            );
+            )),
+        }
+    }
+
+    fn contextual_facts(&self, ty: &ResolvedTy) -> Result<TypeFacts, ClassError> {
+        let declarations = ClassContext::new(&self.context.declarations);
+        let as_ty = ty.to_ty();
+        let send = self.send_fact(ty, &as_ty);
+        let hash = self.select_capability(ty, ValueCapability::Hash)?.is_some();
+        let eq = self.select_capability(ty, ValueCapability::Eq)?.is_some();
         TypeFacts::of_type(ty, &declarations, send, hash, eq)
     }
 

@@ -7797,6 +7797,35 @@ impl Checker {
         if let Some(bound) = trait_bound {
             let type_identity = self.trait_impl_type_identity(type_name);
             let trait_identity = self.trait_defs_key_for_bound(&bound.name);
+            let receiver_args = self
+                .current_self_type
+                .as_ref()
+                .map(|(_, args)| args.clone())
+                .unwrap_or_default();
+            let receiver = Ty::from_name(&type_identity).unwrap_or_else(|| Ty::Named {
+                name: type_identity.clone(),
+                args: receiver_args,
+                builtin: self
+                    .canonical_primitive_or_builtin_key_for_impl_name(type_name)
+                    .and_then(|name| crate::lookup_builtin_type(&name)),
+            });
+            self.trait_impl_method_binders.insert(
+                declaration_id.clone(),
+                crate::type_facts::ImplMethodBinders {
+                    receiver: self.normalize_for_use(&receiver),
+                    impl_params: impl_type_params
+                        .into_iter()
+                        .flatten()
+                        .map(|param| param.name.clone())
+                        .collect(),
+                    method_params: method
+                        .type_params
+                        .iter()
+                        .flatten()
+                        .map(|param| param.name.clone())
+                        .collect(),
+                },
+            );
             let exact_type_identity = impl_type_params
                 .is_none_or(Vec::is_empty)
                 .then(|| {
@@ -9600,34 +9629,23 @@ impl Checker {
         };
         let type_identity = self.trait_impl_type_identity(name);
         let trait_identity = self.trait_defs_key_for_bound(trait_name);
-        let exact_type_identity = (!args.is_empty())
-            .then(|| {
-                args.iter()
-                    .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
-                    .collect::<Option<Vec<_>>>()
-                    .and_then(|args| {
-                        crate::resolved_ty::mangle_impl_self_name(&type_identity, &args)
-                    })
-            })
-            .flatten();
-        exact_type_identity
-            .into_iter()
-            .chain(std::iter::once(type_identity))
-            .find_map(|owner| {
-                self.trait_impl_method_declaration_ids
-                    .get(&(
-                        owner.clone(),
-                        trait_identity.clone(),
-                        method_name.to_string(),
-                    ))
-                    .cloned()
-                    .map(|declaration| {
-                        (
-                            declaration,
-                            Self::method_declaration_key(&owner, method_name),
-                        )
-                    })
-            })
+        let args = args
+            .iter()
+            .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
+            .collect::<Option<Vec<_>>>()?;
+        crate::type_facts::selected_impl_method(
+            &self.trait_impl_method_declaration_ids,
+            &type_identity,
+            &args,
+            &trait_identity,
+            method_name,
+        )
+        .map(|(declaration, owner)| {
+            (
+                declaration,
+                Self::method_declaration_key(&owner, method_name),
+            )
+        })
     }
 
     pub(super) fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {

@@ -3095,6 +3095,8 @@ pub struct Checker {
     /// Resolver-minted implementation method identities keyed by the exact
     /// implemented type, trait, and method selected during type checking.
     pub(super) trait_impl_method_declaration_ids: HashMap<(String, String, String), crate::DefId>,
+    pub(super) trait_impl_method_binders:
+        HashMap<crate::DefId, crate::type_facts::ImplMethodBinders>,
     /// Trait impls keyed by canonical receiver kind for primitives and
     /// compiler-builtin generics (e.g. `int`, `bool`, `String`, `Vec`,
     /// `HashMap`, `HashSet`, `Bytes`).  Method dispatch on these receivers
@@ -3931,6 +3933,7 @@ impl Checker {
             conflicting_trait_impl_reported: HashSet::new(),
             trait_impl_method_names: HashMap::new(),
             trait_impl_method_declaration_ids: HashMap::new(),
+            trait_impl_method_binders: HashMap::new(),
             primitive_trait_impls: HashMap::new(),
             primitive_trait_impl_self_args: HashMap::new(),
             supervisor_children: HashMap::new(),

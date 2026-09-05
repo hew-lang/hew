@@ -895,3 +895,15 @@ An initial invocation used an unsupported --report option and was corrected.
 Generated native code and sanitizer execution are therefore unproven for Map/Set
 sources here. This is a buildable producer checkpoint, not full acceptance.
 No type, shared IR, verifier, physical or backend files were changed.
+
+## Checker-owned value capability selection
+
+Published independent Hash/Eq plans carrying exact registered method identities
+and impl binder arguments. Registration now retains normalized receiver patterns
+and binder order in the immutable fact context; concrete specialization and
+nominal lookup share the checker index. TypeFacts projects the same selection.
+
+The focused record-contract suite compiles and passes, including user overrides,
+derived defaults, reordered generic binders, concrete specialization and builtin
+lookalikes. This is an incremental checker checkpoint; broader checker validation
+and refusal controls remain in progress. It does not establish native execution.

@@ -32,6 +32,10 @@ pub enum SirDiagnosticKind {
         shape: AggregateShapeId,
         reason: String,
     },
+    InvalidVectorType {
+        ty: ResolvedTy,
+        reason: String,
+    },
     InvalidVariantShape {
         shape: VariantShapeId,
         reason: String,
@@ -374,6 +378,21 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     let callables = verify_callable_table(module, &mut diagnostics);
     verify_aggregate_shapes(module, &mut diagnostics);
     verify_variant_shapes(module, &mut diagnostics);
+    for key in module.type_facts.keys() {
+        if hew_types::vector_element_type(&key.0).is_some() {
+            if let Err(reason) = crate::model::vector_value_dependencies(
+                &key.0,
+                &module.type_facts,
+                &module.aggregate_shapes,
+                &module.variant_shapes,
+            ) {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidVectorType {
+                    ty: key.0.clone(),
+                    reason,
+                }));
+            }
+        }
+    }
     let mut names = HashSet::new();
     let mut declarations = HashSet::new();
     for function in &module.functions {
@@ -902,6 +921,7 @@ fn verify_callable_table<'a>(
                     }));
                 }
                 verify_generic_callable_instance(
+                    module,
                     callable,
                     key,
                     &mut generic_instances,
@@ -1112,11 +1132,10 @@ fn verify_generic_template_headers<'a>(
 
 /// Verify the semantic identity of one concrete SIR generic body.
 ///
-/// The initial generic slice intentionally accepts only scalar concrete type
-/// arguments, but the key still records them as `ResolvedTy` rather than any
-/// representation property.  This makes malformed or residual generic SIR
-/// fail here, before raw MIR is allowed to choose storage or ABI details.
+/// Verify concrete semantic type arguments and substituted borrow contracts
+/// before physical MIR chooses storage or ABI details.
 fn verify_generic_callable_instance(
+    module: &SemModule,
     callable: &SemCallable,
     key: &SirInstanceKey,
     seen: &mut HashSet<SirInstanceKey>,
@@ -1150,11 +1169,11 @@ fn verify_generic_callable_instance(
         )));
     }
     for (index, argument) in key.type_args.iter().enumerate() {
-        if !is_initial_scalar(argument) {
+        if !is_supported_call_value(module, argument) {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                 callable: callable.id,
                 reason: format!(
-                    "generic semantic type argument {index} `{}` is outside the initial scalar SIR instance surface",
+                    "generic semantic type argument {index} `{}` has no concrete SIR value contract",
                     argument.user_facing()
                 ),
             }));
@@ -1193,7 +1212,17 @@ fn verify_generic_callable_instance(
         }));
         return;
     }
-    let expected_signature = substitute_template_signature(template, &key.type_args);
+    let expected_signature =
+        match substitute_template_signature(template, &key.type_args, &module.type_facts) {
+            Ok(signature) => signature,
+            Err(reason) => {
+                diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                    callable: callable.id,
+                    reason,
+                }));
+                return;
+            }
+        };
     if callable.signature != expected_signature {
         diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
             callable: callable.id,
@@ -1215,24 +1244,33 @@ fn verify_generic_callable_instance(
 fn substitute_template_signature(
     template: &SemGenericTemplate,
     type_args: &[ResolvedTy],
-) -> SemSignature {
-    SemSignature {
+    facts: &TypeFactTable,
+) -> Result<SemSignature, String> {
+    Ok(SemSignature {
         params: template
             .signature
             .params
             .iter()
-            .map(|parameter| crate::SemAbiParam {
-                ty: substitute_type_params(&parameter.ty, &template.type_params, type_args),
-                passing: parameter.passing,
-                caller_visible_projection: parameter.caller_visible_projection,
+            .map(|parameter| {
+                let ty = substitute_type_params(&parameter.ty, &template.type_params, type_args);
+                let own = crate::OwnKind::of_ty(&ty, facts)?;
+                Ok(crate::SemAbiParam {
+                    ty,
+                    passing: if own == crate::OwnKind::Owned {
+                        SemParamPassing::Borrow
+                    } else {
+                        SemParamPassing::ReadOnly
+                    },
+                    caller_visible_projection: parameter.caller_visible_projection,
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>, String>>()?,
         return_ty: substitute_type_params(
             &template.signature.return_ty,
             &template.type_params,
             type_args,
         ),
-    }
+    })
 }
 
 fn verify_function_callable_identity(
@@ -1303,6 +1341,7 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
 
 fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
+        || hew_types::vector_element_type(ty).is_some()
         || matches!(ty, ResolvedTy::Tuple(fields) if !fields.is_empty())
         || module.aggregate_shape_for_type(ty).is_some()
         || module.variant_shape_for_type(ty).is_some()
@@ -2084,33 +2123,25 @@ fn verify_runtime_call_terminator(
         );
         return;
     };
-    if args.len() != contract.arguments.len() {
-        invalid_operation(
-            function,
-            id,
-            format!(
-                "runtime family `{family:?}` has {} argument(s), expected {}",
-                args.len(),
-                contract.arguments.len()
-            ),
-            diagnostics,
-        );
-    }
-    for (index, (argument, expected)) in args.iter().zip(contract.arguments).enumerate() {
-        if let Some(actual) = types.get(&argument.operand.value) {
-            if !expected.ty.matches(actual) {
-                invalid_operation(
-                    function,
-                    id,
-                    format!(
-                        "runtime family `{family:?}` argument {index} has `{}`, expected {:?}",
-                        actual.user_facing(),
-                        expected.ty
-                    ),
-                    diagnostics,
-                );
-            }
+    let parameter_types = args
+        .iter()
+        .map(|argument| types.get(&argument.operand.value).cloned())
+        .collect::<Option<Vec<_>>>();
+    let Some(parameter_types) = parameter_types else {
+        return;
+    };
+    let result_ty = match result {
+        crate::CallResult::Unit => ResolvedTy::Unit,
+        crate::CallResult::Value(value) => value.ty.clone(),
+    };
+    let instantiated = match contract.instantiate(&parameter_types, &result_ty) {
+        Ok(contract) => contract,
+        Err(reason) => {
+            invalid_operation(function, id, reason, diagnostics);
+            return;
         }
+    };
+    for (index, (argument, expected)) in args.iter().zip(contract.arguments).enumerate() {
         let expected_decision = match expected.effect {
             RuntimeArgumentEffect::Borrow => crate::BoundaryDecision::Borrow,
             RuntimeArgumentEffect::Copy => crate::BoundaryDecision::Copy,
@@ -2129,15 +2160,24 @@ fn verify_runtime_call_terminator(
         }
     }
 
-    let expected_result = match contract.result {
+    let expected_own = match contract.result {
         RuntimeResultEffect::Unit => None,
-        RuntimeResultEffect::BitCopy(kind) => Some((Some(kind), crate::OwnKind::None)),
-        RuntimeResultEffect::FreshOwned(kind) | RuntimeResultEffect::UpdatedReceiver(kind) => {
-            Some((Some(kind), crate::OwnKind::Owned))
+        RuntimeResultEffect::BitCopy(_) => Some(crate::OwnKind::None),
+        RuntimeResultEffect::FreshOwned(_)
+        | RuntimeResultEffect::UpdatedReceiver(_)
+        | RuntimeResultEffect::FreshOwnedVariant(_)
+        | RuntimeResultEffect::UpdatedReceiverAndValue(_) => Some(crate::OwnKind::Owned),
+        RuntimeResultEffect::IndependentValue(_) => {
+            match crate::OwnKind::of_ty(&instantiated.result_ty, shapes.facts) {
+                Ok(own) => Some(own),
+                Err(reason) => {
+                    invalid_operation(function, id, reason, diagnostics);
+                    return;
+                }
+            }
         }
-        RuntimeResultEffect::FreshOwnedVariant(_) => Some((None, crate::OwnKind::Owned)),
     };
-    match (expected_result, result) {
+    match (expected_own, result) {
         (None, crate::CallResult::Unit) => {
             if !normal.args.is_empty() {
                 invalid_operation(
@@ -2148,24 +2188,16 @@ fn verify_runtime_call_terminator(
                 );
             }
         }
-        (Some((expected_kind, own)), crate::CallResult::Value(value)) => {
-            let type_matches = expected_kind.is_some_and(|kind| kind.matches(&value.ty))
-                || matches!(
-                    contract.result,
-                    RuntimeResultEffect::FreshOwnedVariant(kind) if kind.matches(&value.ty)
-                );
-            if !type_matches || value.own != own {
-                let expected = expected_kind.map_or_else(
-                    || "the exact runtime variant result".to_string(),
-                    |kind| kind.resolved_ty().user_facing().to_string(),
-                );
+        (Some(own), crate::CallResult::Value(value)) => {
+            if value.ty != instantiated.result_ty || value.own != own {
                 invalid_operation(
                     function,
                     id,
                     format!(
-                        "runtime family `{family:?}` result is `{}`/{:?}, expected `{expected}`/{own:?}",
+                        "runtime family `{family:?}` result is `{}`/{:?}, expected `{}`/{own:?}",
                         value.ty.user_facing(),
                         value.own,
+                        instantiated.result_ty.user_facing()
                     ),
                     diagnostics,
                 );

@@ -75,8 +75,14 @@ fn dotted_static_paths_lower_without_a_runtime_receiver() {
         .iter()
         .filter_map(|stmt| match &stmt.kind {
             HirStmtKind::Let(_, Some(expr)) | HirStmtKind::Expr(expr) => match &expr.kind {
-                HirExprKind::Call { callee, args, .. } => match &callee.kind {
-                    HirExprKind::BindingRef { name, .. } => Some((name.as_str(), args.len())),
+                HirExprKind::Call {
+                    target,
+                    callee,
+                    args,
+                } => match &callee.kind {
+                    HirExprKind::BindingRef { name, .. } => {
+                        Some((target, name.as_str(), args.len()))
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -84,9 +90,19 @@ fn dotted_static_paths_lower_without_a_runtime_receiver() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert!(calls.contains(&("Vec::new", 0)), "Vec.new call: {calls:#?}");
     assert!(
-        calls.contains(&("Node::start", 1)),
+        calls.iter().any(|(target, _, arity)| matches!(
+            target,
+            hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Vector(
+                hew_types::VecValueOp::New
+            ))
+        ) && *arity == 0),
+        "Vec.new call: {calls:#?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|(_, name, arity)| *name == "Node::start" && *arity == 1),
         "Node.start call: {calls:#?}"
     );
 }

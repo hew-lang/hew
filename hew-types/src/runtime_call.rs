@@ -107,11 +107,13 @@ pub enum RuntimeResultOwnership {
 /// Receiver-relative authority of a runtime result. This is deliberately
 /// orthogonal to the concrete retain/allocation ritual above: consumers that
 /// decide whether a result can outlive or be released independently from its
-/// receiver must use this closed four-way classification.
+/// receiver must use this closed classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeResultAuthority {
     /// The call returns or moves out one independently-owned value.
     IndependentOwned,
+    /// Independent semantic copy; concrete type facts decide owning versus bit-copy.
+    IndependentValue,
     /// The result points into storage owned by argument zero.
     InteriorAliasOfReceiver,
     /// The returned bits contain no receiver-owned storage.
@@ -129,6 +131,12 @@ pub enum RuntimeValueKind {
     I64,
     String,
     Bytes,
+    /// The single canonical Vec<T> instance bound by the signature.
+    Vector,
+    VectorElement,
+    OptionalVectorElement,
+    /// A checked pop returns the updated receiver and its removed element.
+    VectorPopResult,
 }
 
 impl RuntimeValueKind {
@@ -144,15 +152,26 @@ impl RuntimeValueKind {
         )
     }
 
+    /// Resolve a type expression using the signature's one vector binding.
     #[must_use]
-    pub fn resolved_ty(self) -> ResolvedTy {
-        match self {
+    pub fn resolve(self, vector: Option<&ResolvedTy>) -> Option<ResolvedTy> {
+        Some(match self {
             Self::Bool => ResolvedTy::Bool,
             Self::U8 => ResolvedTy::U8,
             Self::I64 => ResolvedTy::I64,
             Self::String => ResolvedTy::String,
             Self::Bytes => ResolvedTy::Bytes,
-        }
+            Self::Vector => vector?.clone(),
+            Self::VectorElement => vector_element_type(vector?)?.clone(),
+            Self::OptionalVectorElement => ResolvedTy::named_builtin(
+                "Option",
+                crate::BuiltinType::Option,
+                vec![vector_element_type(vector?)?.clone()],
+            ),
+            Self::VectorPopResult => {
+                ResolvedTy::Tuple(vec![vector?.clone(), Self::VectorElement.resolve(vector)?])
+            }
+        })
     }
 }
 
@@ -221,6 +240,13 @@ pub enum RuntimeResultEffect {
     Unit,
     BitCopy(RuntimeValueKind),
     FreshOwned(RuntimeValueKind),
+    /// An independent language value. Owning elements are semantically copied;
+    /// scalar elements are bit-copied, as decided by the concrete type facts.
+    /// Runtime interior borrows never escape through this result.
+    IndependentValue(RuntimeValueKind),
+    /// A transform yields `(receiver, value)`. SIR destructures the sole
+    /// result and writes the receiver back to its source binding.
+    UpdatedReceiverAndValue(RuntimeValueKind),
     /// A runtime operation constructs one exact owned enum value on its normal
     /// edge. Logical alternatives such as `Ok`/`Err` are payload data, not SIR
     /// fault edges.
@@ -253,21 +279,178 @@ impl RuntimeSemanticContract {
     /// verification, including exact nominal variant results.
     #[must_use]
     pub fn matches_signature(self, params: &[ResolvedTy], result: &ResolvedTy) -> bool {
-        if params.len() != self.arguments.len()
-            || !params
-                .iter()
-                .zip(self.arguments)
-                .all(|(actual, expected)| expected.ty.matches(actual))
-        {
-            return false;
-        }
+        self.instantiate(params, result)
+            .is_ok_and(|resolved| resolved.result_ty == *result)
+    }
 
-        match self.result {
-            RuntimeResultEffect::Unit => *result == ResolvedTy::Unit,
+    /// Bind the receiver, element and result through one checked relationship.
+    /// `result_hint` supplies the type argument for a zero-argument constructor;
+    /// it never overrides a receiver's element type.
+    ///
+    /// # Errors
+    /// Rejects wrong arity, noncanonical vectors and mismatched element types.
+    pub fn instantiate(
+        self,
+        params: &[ResolvedTy],
+        result_hint: &ResolvedTy,
+    ) -> Result<RuntimeInstantiatedContract, String> {
+        if params.len() != self.arguments.len() {
+            return Err(format!(
+                "runtime signature has {} arguments, expected {}",
+                params.len(),
+                self.arguments.len()
+            ));
+        }
+        let vector = params
+            .first()
+            .filter(|ty| vector_element_type(ty).is_some())
+            .or_else(|| {
+                params
+                    .is_empty()
+                    .then_some(result_hint)
+                    .filter(|ty| vector_element_type(ty).is_some())
+            });
+        let arguments = self
+            .arguments
+            .iter()
+            .zip(params)
+            .enumerate()
+            .map(|(index, (expected, actual))| {
+                let ty = expected.ty.resolve(vector).ok_or_else(|| {
+                    "runtime signature has no canonical Vec<T> binding".to_string()
+                })?;
+                if ty != *actual {
+                    return Err(format!(
+                        "runtime argument {index} has `{}`, expected `{}`",
+                        actual.user_facing(),
+                        ty.user_facing()
+                    ));
+                }
+                Ok(ty)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let result_ty = match self.result {
+            RuntimeResultEffect::Unit => ResolvedTy::Unit,
             RuntimeResultEffect::BitCopy(kind)
             | RuntimeResultEffect::FreshOwned(kind)
-            | RuntimeResultEffect::UpdatedReceiver(kind) => kind.matches(result),
-            RuntimeResultEffect::FreshOwnedVariant(kind) => kind.matches(result),
+            | RuntimeResultEffect::IndependentValue(kind)
+            | RuntimeResultEffect::UpdatedReceiver(kind)
+            | RuntimeResultEffect::UpdatedReceiverAndValue(kind) => kind
+                .resolve(vector)
+                .ok_or_else(|| "runtime result has no canonical Vec<T> binding".to_string())?,
+            RuntimeResultEffect::FreshOwnedVariant(kind) if kind.matches(result_hint) => {
+                result_hint.clone()
+            }
+            RuntimeResultEffect::FreshOwnedVariant(_) => {
+                return Err("exact runtime variant result does not admit this type".to_string())
+            }
+        };
+        Ok(RuntimeInstantiatedContract {
+            arguments,
+            result_ty,
+        })
+    }
+}
+
+/// Concrete types checked by the semantic operation's parametric authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeInstantiatedContract {
+    pub arguments: Vec<ResolvedTy>,
+    pub result_ty: ResolvedTy,
+}
+
+/// Recognize canonical Vec identity without inspecting a source leaf name.
+#[must_use]
+pub fn vector_element_type(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(crate::BuiltinType::Vec),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
+/// Ordinary vector value operations, independent of element representation.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+pub enum VecValueOp {
+    #[default]
+    New,
+    Len,
+    Index,
+    Get,
+    Push,
+    Set,
+    Pop,
+    Clear,
+}
+
+impl VecValueOp {
+    #[must_use]
+    pub const fn from_method(method: crate::VecMethod) -> Option<Self> {
+        Some(match method {
+            crate::VecMethod::Len => Self::Len,
+            crate::VecMethod::Get => Self::Get,
+            crate::VecMethod::Push => Self::Push,
+            crate::VecMethod::Set => Self::Set,
+            crate::VecMethod::Pop => Self::Pop,
+            crate::VecMethod::Clear => Self::Clear,
+            _ => return None,
+        })
+    }
+
+    const fn contract(self) -> RuntimeSemanticContract {
+        use RuntimeArgumentEffect::{Borrow, Copy, Move};
+        use RuntimeResultEffect::{
+            BitCopy, FreshOwned, IndependentValue, UpdatedReceiver, UpdatedReceiverAndValue,
+        };
+        use RuntimeValueKind::{
+            OptionalVectorElement, Vector, VectorElement, VectorPopResult, I64,
+        };
+        const READ: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: Vector,
+            effect: Borrow,
+        };
+        const WRITE: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: Vector,
+            effect: Move,
+        };
+        const INDEX: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: I64,
+            effect: Copy,
+        };
+        const ELEMENT: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: VectorElement,
+            effect: Borrow,
+        };
+        match self {
+            Self::New => runtime_semantic_contract(&[], FreshOwned(Vector), &[]),
+            Self::Len => runtime_semantic_contract(&[READ], BitCopy(I64), &[]),
+            Self::Index => runtime_semantic_contract(
+                &[READ, INDEX],
+                IndependentValue(VectorElement),
+                &[RuntimeLogicalFailure::IndexOutOfBounds],
+            ),
+            Self::Get => runtime_semantic_contract(
+                &[READ, INDEX],
+                IndependentValue(OptionalVectorElement),
+                &[],
+            ),
+            Self::Push => {
+                runtime_semantic_contract(&[WRITE, ELEMENT], UpdatedReceiver(Vector), &[])
+            }
+            Self::Set => runtime_semantic_contract(
+                &[WRITE, INDEX, ELEMENT],
+                UpdatedReceiver(Vector),
+                &[RuntimeLogicalFailure::IndexOutOfBounds],
+            ),
+            Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(Vector), &[]),
+            Self::Pop => runtime_semantic_contract(
+                &[WRITE],
+                UpdatedReceiverAndValue(VectorPopResult),
+                &[RuntimeLogicalFailure::IndexOutOfBounds],
+            ),
         }
     }
 }
@@ -864,6 +1047,8 @@ pub enum RuntimeCallFamily {
     TaskSpawnThread,
 
     // --- Vec<T> ------------------------------------------------------------
+    /// Final semantic values; target lowering chooses layout-backed runtime entry points.
+    Vector(VecValueOp),
     VecAppend,
     VecClear,
     VecClone,
@@ -1556,6 +1741,17 @@ impl RuntimeCallFamily {
             Self::TaskSetEnv => "hew_task_set_env",
             Self::TaskSetResult => "hew_task_set_result",
             Self::TaskSpawnThread => "hew_task_spawn_thread",
+            // Semantic labels are not C ABI entry points.
+            Self::Vector(op) => match op {
+                VecValueOp::New => "vec.value.new",
+                VecValueOp::Len => "vec.value.len",
+                VecValueOp::Index => "vec.value.index",
+                VecValueOp::Get => "vec.value.get",
+                VecValueOp::Push => "vec.value.push",
+                VecValueOp::Set => "vec.value.set",
+                VecValueOp::Pop => "vec.value.pop",
+                VecValueOp::Clear => "vec.value.clear",
+            },
             // Vec
             Self::VecAppend => "hew_vec_append",
             Self::VecClear => "hew_vec_clear",
@@ -1925,6 +2121,14 @@ impl RuntimeCallFamily {
             "hew_vec_is_empty" => Self::VecIsEmpty,
             "hew_vec_join_str" => Self::VecJoinStr,
             "hew_vec_len" => Self::VecLen,
+            "vec.value.new" => Self::Vector(VecValueOp::New),
+            "vec.value.len" => Self::Vector(VecValueOp::Len),
+            "vec.value.index" => Self::Vector(VecValueOp::Index),
+            "vec.value.get" => Self::Vector(VecValueOp::Get),
+            "vec.value.push" => Self::Vector(VecValueOp::Push),
+            "vec.value.set" => Self::Vector(VecValueOp::Set),
+            "vec.value.pop" => Self::Vector(VecValueOp::Pop),
+            "vec.value.clear" => Self::Vector(VecValueOp::Clear),
             "Vec::new" => Self::VecNew,
             "hew_vec_pop_bool" => Self::VecPopBool,
             "hew_vec_pop_layout" => Self::VecPopLayout,
@@ -2150,7 +2354,8 @@ impl RuntimeCallFamily {
     pub const fn is_synthetic_mir_symbol(self) -> bool {
         matches!(
             self,
-            Self::BytesGet
+            Self::Vector(_)
+                | Self::BytesGet
                 | Self::RegexCapture
                 | Self::RegexCompile
                 | Self::RegexFreeCapture
@@ -2252,6 +2457,16 @@ impl RuntimeCallFamily {
     /// listing.
     #[must_use]
     pub fn consumes_receiver(self) -> bool {
+        if let Self::Vector(op) = self {
+            let contract = op.contract();
+            return matches!(
+                contract.arguments.first(),
+                Some(RuntimeArgumentContract {
+                    effect: RuntimeArgumentEffect::Move,
+                    ..
+                })
+            );
+        }
         if self == Self::TcpAttachLocal {
             // The TCP handoff carries a scalar connection token at ABI level,
             // so this must not be a spelling-only ownership inference. An
@@ -2317,6 +2532,17 @@ impl RuntimeCallFamily {
     ///   lowering decision.
     #[must_use]
     pub fn arg_consume_verdict(self, index: usize) -> ConsumeVerdict {
+        if let Self::Vector(op) = self {
+            let contract = op.contract();
+            return match contract.arguments.get(index) {
+                Some(RuntimeArgumentContract {
+                    effect: RuntimeArgumentEffect::Move,
+                    ..
+                }) => ConsumeVerdict::ProvenConsume,
+                Some(_) => ConsumeVerdict::ProvenBorrow,
+                None => ConsumeVerdict::ConservativeConsume,
+            };
+        }
         if index == 0 {
             return if self.consumes_receiver() {
                 ConsumeVerdict::ProvenConsume
@@ -2417,6 +2643,10 @@ impl RuntimeCallFamily {
         const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
         const INDEX_FAILURES: &[RuntimeLogicalFailure] = &[RuntimeLogicalFailure::IndexOutOfBounds];
 
+        if let Self::Vector(op) = self {
+            return Some(op.contract());
+        }
+
         if let Some(contract) = self.text_variant_semantic_contract() {
             return Some(contract);
         }
@@ -2456,11 +2686,19 @@ impl RuntimeCallFamily {
                     RuntimeResultOwnership::FreshOwnedBytes
                 }
                 RuntimeResultEffect::Unit
+                | RuntimeResultEffect::IndependentValue(_)
+                | RuntimeResultEffect::UpdatedReceiverAndValue(_)
                 | RuntimeResultEffect::BitCopy(_)
                 | RuntimeResultEffect::UpdatedReceiver(_)
                 | RuntimeResultEffect::FreshOwnedVariant(_)
                 | RuntimeResultEffect::FreshOwned(
-                    RuntimeValueKind::Bool | RuntimeValueKind::U8 | RuntimeValueKind::I64,
+                    RuntimeValueKind::Bool
+                    | RuntimeValueKind::U8
+                    | RuntimeValueKind::I64
+                    | RuntimeValueKind::Vector
+                    | RuntimeValueKind::VectorElement
+                    | RuntimeValueKind::OptionalVectorElement
+                    | RuntimeValueKind::VectorPopResult,
                 ) => RuntimeResultOwnership::Untracked,
             };
         }
@@ -2483,7 +2721,11 @@ impl RuntimeCallFamily {
     pub const fn result_authority(self) -> RuntimeResultAuthority {
         if let Some(contract) = self.semantic_contract() {
             return match contract.result {
-                RuntimeResultEffect::FreshOwned(_)
+                RuntimeResultEffect::IndependentValue(_) => {
+                    RuntimeResultAuthority::IndependentValue
+                }
+                RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                | RuntimeResultEffect::FreshOwned(_)
                 | RuntimeResultEffect::FreshOwnedVariant(_)
                 | RuntimeResultEffect::UpdatedReceiver(_) => {
                     RuntimeResultAuthority::IndependentOwned
@@ -2527,6 +2769,19 @@ impl RuntimeCallFamily {
     /// an alias even when the backing allocation address happens not to move.
     #[must_use]
     pub const fn invalidates_collection_element_aliases(self) -> bool {
+        if let Self::Vector(op) = self {
+            let contract = op.contract();
+            return matches!(
+                contract.arguments,
+                [
+                    RuntimeArgumentContract {
+                        effect: RuntimeArgumentEffect::Move,
+                        ..
+                    },
+                    ..
+                ]
+            );
+        }
         matches!(
             self,
             Self::VecAppend
@@ -2602,7 +2857,8 @@ impl RuntimeCallFamily {
 
             // Everything else: NOT suspending today. Exhaustively listed
             // so adding a new variant requires an explicit decision.
-            F::StreamClose
+            F::Vector(_)
+            | F::StreamClose
             | F::StreamTryNextLayout
             | F::SinkTryWrite(_)
             | F::SinkClose
@@ -3368,6 +3624,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
     let mut out = Vec::new();
     for repr in F::iter() {
         match repr {
+            F::Vector(_) => out.extend(VecValueOp::iter().map(F::Vector)),
             F::MathIntrinsic(_) => out.extend(MathIntrinsic::iter().map(F::MathIntrinsic)),
             F::SinkWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkWrite)),
             F::SinkTryWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkTryWrite)),
@@ -3643,6 +3900,12 @@ mod tests {
     #[test]
     fn runtime_contract_perarg_drift() {
         for family in all_runtime_call_families() {
+            if family
+                .semantic_contract()
+                .is_some_and(|contract| contract.arguments.is_empty())
+            {
+                continue; // A constructor has no receiver whose contract can drift.
+            }
             let receiver = family.arg_consume_verdict(0);
             let expected = if family.consumes_receiver() {
                 ConsumeVerdict::ProvenConsume
@@ -3663,6 +3926,12 @@ mod tests {
             // fail-closed default.
             for index in 1..=3 {
                 let expected = match family {
+                    RuntimeCallFamily::Vector(
+                        VecValueOp::Index | VecValueOp::Get | VecValueOp::Push,
+                    ) if index == 1 => ConsumeVerdict::ProvenBorrow,
+                    RuntimeCallFamily::Vector(VecValueOp::Set) if index <= 2 => {
+                        ConsumeVerdict::ProvenBorrow
+                    }
                     RuntimeCallFamily::HashMapInsertLayout if matches!(index, 1 | 2) => {
                         ConsumeVerdict::ProvenConsume
                     }
@@ -3933,6 +4202,10 @@ mod tests {
             "hew_duplex_send_half",
             "hew_duplex_recv_half",
             "hew_lambda_actor_release",
+            "vec.value.push",
+            "vec.value.set",
+            "vec.value.pop",
+            "vec.value.clear",
         ]
         .into_iter()
         .collect();
@@ -4245,4 +4518,110 @@ mod tests {
     // in `hew-mir`. They moved to `hew-mir/tests/runtime_call_allowlist.rs`
     // alongside the re-export shim and run as integration tests against
     // the same substrate.
+}
+
+#[cfg(test)]
+mod vector_semantic_contract_tests {
+    use super::*;
+
+    fn vector(element: ResolvedTy) -> ResolvedTy {
+        ResolvedTy::named_builtin("Vec", crate::BuiltinType::Vec, vec![element])
+    }
+
+    #[test]
+    fn vector_contract_binds_receiver_element_and_result_together() {
+        let values = vector(ResolvedTy::String);
+        let other = vector(ResolvedTy::I64);
+        let contract = RuntimeCallFamily::Vector(VecValueOp::Push)
+            .semantic_contract()
+            .unwrap();
+        assert!(contract.matches_signature(&[values.clone(), ResolvedTy::String], &values));
+        assert!(!contract.matches_signature(&[values.clone(), ResolvedTy::I64], &values));
+        assert!(!contract.matches_signature(&[values.clone(), ResolvedTy::String], &other));
+        assert!(!contract.matches_signature(
+            &[
+                ResolvedTy::named_user("Vec", vec![ResolvedTy::String]),
+                ResolvedTy::String
+            ],
+            &values
+        ));
+        assert!(!contract.matches_signature(std::slice::from_ref(&values), &values));
+        let renamed = ResolvedTy::named_builtin(
+            "std.collections.Sequence",
+            crate::BuiltinType::Vec,
+            vec![ResolvedTy::String],
+        );
+        assert!(contract.matches_signature(&[renamed.clone(), ResolvedTy::String], &renamed));
+    }
+
+    #[test]
+    fn vector_results_are_exact_for_every_operation() {
+        let values = vector(vector(ResolvedTy::String));
+        let element = vector(ResolvedTy::String);
+        let optional =
+            ResolvedTy::named_builtin("Option", crate::BuiltinType::Option, vec![element.clone()]);
+        let cases = [
+            (VecValueOp::New, vec![], values.clone()),
+            (VecValueOp::Len, vec![values.clone()], ResolvedTy::I64),
+            (
+                VecValueOp::Index,
+                vec![values.clone(), ResolvedTy::I64],
+                element.clone(),
+            ),
+            (
+                VecValueOp::Get,
+                vec![values.clone(), ResolvedTy::I64],
+                optional.clone(),
+            ),
+            (
+                VecValueOp::Set,
+                vec![values.clone(), ResolvedTy::I64, element],
+                values.clone(),
+            ),
+            (
+                VecValueOp::Pop,
+                vec![values.clone()],
+                ResolvedTy::Tuple(vec![values.clone(), vector(ResolvedTy::String)]),
+            ),
+            (VecValueOp::Clear, vec![values.clone()], values),
+        ];
+        for (op, args, result) in cases {
+            let contract = RuntimeCallFamily::Vector(op).semantic_contract().unwrap();
+            assert!(contract.matches_signature(&args, &result), "{op:?}");
+            assert!(
+                !contract.matches_signature(&args, &ResolvedTy::Bool),
+                "{op:?} must reject an unrelated result"
+            );
+        }
+    }
+
+    #[test]
+    fn vector_read_contracts_never_publish_an_interior_owner() {
+        assert_eq!(
+            RuntimeCallFamily::Vector(VecValueOp::Index)
+                .semantic_contract()
+                .unwrap()
+                .result,
+            RuntimeResultEffect::IndependentValue(RuntimeValueKind::VectorElement)
+        );
+        assert_eq!(
+            RuntimeCallFamily::Vector(VecValueOp::Get)
+                .semantic_contract()
+                .unwrap()
+                .result,
+            RuntimeResultEffect::IndependentValue(RuntimeValueKind::OptionalVectorElement)
+        );
+        assert_eq!(
+            RuntimeCallFamily::Vector(VecValueOp::Index)
+                .semantic_contract()
+                .unwrap()
+                .failures,
+            &[RuntimeLogicalFailure::IndexOutOfBounds]
+        );
+        assert!(RuntimeCallFamily::Vector(VecValueOp::Get)
+            .semantic_contract()
+            .unwrap()
+            .failures
+            .is_empty());
+    }
 }

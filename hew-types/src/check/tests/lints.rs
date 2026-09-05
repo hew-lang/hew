@@ -272,7 +272,7 @@ fn where_clause_assoc_binding_projects_iterator_item_in_generic_body() {
         }
 
         fn main() -> i64 {
-            let v: Vec<i64> = Vec.new();
+            var v: Vec<i64> = Vec.new();
             v.push(42);
             first_or_zero(v.into_iter())
         }

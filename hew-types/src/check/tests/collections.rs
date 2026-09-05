@@ -531,11 +531,7 @@ fn vec_owned_record_new_admitted_via_owned_abi() {
 }
 
 #[test]
-fn vec_layout_unsupported_method_remains_fail_closed() {
-    // `Vec::clear` on layout-backed records has no runtime backing and
-    // must continue to fail closed.  (`Vec::remove`, `Vec::contains`,
-    // `Vec::push`, `Vec::get`, `Vec::set`, and `Vec::pop` are all lifted for
-    // Copy record/tuple elements as of W3.003 / W3.032.)
+fn vec_record_clear_has_semantic_contract() {
     let output = check_source(
         r"
         type Point { x: i64, y: i64 }
@@ -548,21 +544,14 @@ fn vec_layout_unsupported_method_remains_fail_closed() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        output.errors.iter().any(|error| {
-            error.message.contains("`Vec.clear`")
-                && error.message.contains("not")
-                && error.message.contains("runtime-backed yet")
-        }),
-        "Vec::clear on layout-backed records must fail closed, got {:#?}",
-        output.errors
-    );
-    assert!(
-        output.method_call_rewrites.values().all(|rewrite| {
-            !matches!(rewrite, MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "hew_vec_clear_layout")
-        }),
-        "layout-backed Vec::clear must not record a runtime rewrite: {:#?}",
-        output.method_call_rewrites
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Clear) }),
+        "missing semantic Vec::Clear: {:#?}",
+        output.resolved_calls
     );
 }
 
@@ -1435,11 +1424,7 @@ fn vec_contains_layout_managed_record_rejected_with_eq_eligibility_diagnostic() 
 }
 
 #[test]
-fn vec_owned_record_push_routes_to_owned_abi() {
-    // W5.016: pushing an owned record element routes to the owned-element ABI
-    // (`hew_vec_push_owned`) rather than failing the layout-managed Copy gate.
-    // The owned op deep-clones the element in; the record's per-type
-    // clone/drop thunks make it droppable.
+fn vec_owned_record_push_has_semantic_contract() {
     let output = check_source(
         r#"
         type Person { name: string }
@@ -1452,25 +1437,19 @@ fn vec_owned_record_push_routes_to_owned_abi() {
         "#,
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        !output.errors.iter().any(|error| {
-            error.message.contains("not `Copy`")
-                && error.message.contains("layout-managed Vec elements")
-        }),
-        "owned record Vec::push must be admitted via the owned ABI, got {:#?}",
-        output.errors
-    );
-    assert!(
-        output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_owned"
-        }),
-        "owned record Vec::push must route to hew_vec_push_owned via resolved_calls: {:#?}",
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Push) }),
+        "missing semantic Vec::Push: {:#?}",
         output.resolved_calls
     );
 }
 
 #[test]
-fn vec_generic_bitcopy_record_methods_route_to_plain_layout_abi() {
+fn vec_generic_record_methods_keep_semantic_identity() {
     let output = check_source(
         r"
         type Wrap<T> { v: T }
@@ -1504,44 +1483,25 @@ fn vec_generic_bitcopy_record_methods_route_to_plain_layout_abi() {
         output.errors
     );
 
-    for method in ["push", "set", "pop"] {
+    for method in [
+        VecMethod::Push,
+        VecMethod::Set,
+        VecMethod::Get,
+        VecMethod::Pop,
+    ] {
         assert!(
-            output.resolved_calls.values().any(|call| {
-                call.method_name == method
-                    && call.method_target.symbol_name == format!("hew_vec_{method}_layout")
-            }),
-            "Vec<Wrap<i64>> {method} must route to the Plain layout ABI, got: {:#?}",
+            output
+                .resolved_calls
+                .values()
+                .any(|call| { call.method_target.family == MethodTargetFamily::Vec(method) }),
+            "missing semantic Vec::{method:?}: {:#?}",
             output.resolved_calls
         );
     }
-    // `get` is trait-routed (`<Vec<T> as Index>::get`) to the element-agnostic
-    // fresh-owner choke point, NOT the per-element `_layout` getter.
-    assert!(
-        output.resolved_calls.values().any(|call| {
-            call.method_name == "get" && call.method_target.symbol_name == "hew_vec_get_clone"
-        }),
-        "Vec<Wrap<i64>>::get must route to the hew_vec_get_clone intrinsic, got: {:#?}",
-        output.resolved_calls
-    );
-    assert!(
-        output
-            .resolved_calls
-            .values()
-            .all(|call| !call.method_target.symbol_name.ends_with("_owned")),
-        "BitCopy generic records must not route to owned Vec ABI: {:#?}",
-        output.resolved_calls
-    );
 }
 
 #[test]
-fn vec_local_pid_push_routes_to_pointer_abi() {
-    // Regression: `Vec<LocalPid<T>>` is a collection of pointer-shaped actor
-    // handles. The constructor lowers `hew_vec_new_ptr` (null layout) in
-    // codegen; the checker MUST agree and route push to `hew_vec_push_ptr`, not
-    // `hew_vec_push_layout` (which would abort at runtime on the null layout —
-    // the constructor-vs-push authority split). Driven by the `builtin`
-    // discriminant (`BuiltinType::lowers_as_pointer_vec_element`), NOT the
-    // `TypeDef.is_indirect` flag, which actor handles leave `false`.
+fn vec_local_pid_push_keeps_semantic_identity() {
     let output = check_source(
         r"
         actor Worker {
@@ -1549,7 +1509,7 @@ fn vec_local_pid_push_routes_to_pointer_abi() {
         }
 
         fn main() {
-            let v: Vec<LocalPid<Worker>> = Vec.new();
+            var v: Vec<LocalPid<Worker>> = Vec.new();
             let w = spawn Worker;
             v.push(w);
             let _ = v.len();
@@ -1557,29 +1517,19 @@ fn vec_local_pid_push_routes_to_pointer_abi() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        output.errors.is_empty(),
-        "Vec<LocalPid<Worker>> must type-check: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_ptr"
-        }),
-        "Vec<LocalPid<Worker>>::push must route to hew_vec_push_ptr via resolved_calls: {:#?}",
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Push) }),
+        "missing semantic Vec::Push: {:#?}",
         output.resolved_calls
     );
 }
 
 #[test]
-fn vec_self_recursive_enum_push_routes_to_owned_abi() {
-    // A self-recursive enum (`Array(Vec<RedisReply>)` — the Redis/JSON reply
-    // shape) is admitted as an owned Vec element: its clone/drop thunk recurses
-    // through the inner `Vec<RedisReply>` via the owned-collection ABI. The
-    // self-recursion edge is keyed on the element's own name, so the container
-    // field no longer fails closed. Pushing a variant routes to the owned ABI;
-    // the copy-in clone + scope-exit drop are proven by the recursive-enum leak
-    // oracle.
+fn vec_self_recursive_enum_push_has_semantic_contract() {
     let output = check_source(
         r"
         enum RedisReply {
@@ -1595,30 +1545,19 @@ fn vec_self_recursive_enum_push_routes_to_owned_abi() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        !output
-            .errors
-            .iter()
-            .any(|error| { error.message.contains("cannot be a `Vec` element") }),
-        "self-recursive enum Vec element must now be admitted, got: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_owned"
-        }),
-        "self-recursive enum Vec::push must route to hew_vec_push_owned: {:#?}",
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Push) }),
+        "missing semantic Vec::Push: {:#?}",
         output.resolved_calls
     );
 }
 
 #[test]
-fn vec_record_collection_field_push_routes_to_owned_abi() {
-    // A record whose field is a collection (`Boxed { payload: Vec<i64> }`) is
-    // admitted as an owned Vec element: the record's `__hew_record_*_inplace`
-    // thunk clones/frees `payload` through the owned-collection ABI. Copy-in
-    // `.push` deep-clones the element so the source keeps its own scope-exit
-    // drop (proven by the push-clone leak oracle).
+fn vec_record_collection_field_push_has_semantic_contract() {
     let output = check_source(
         r"
         type Boxed { payload: Vec<i64> }
@@ -1631,19 +1570,13 @@ fn vec_record_collection_field_push_routes_to_owned_abi() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        !output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("cannot be a `Vec` element")),
-        "record-with-collection-field Vec element must be admitted: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_owned"
-        }),
-        "record-with-collection Vec::push must route to hew_vec_push_owned: {:#?}",
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Push) }),
+        "missing semantic Vec::Push: {:#?}",
         output.resolved_calls
     );
 }
@@ -2002,10 +1935,7 @@ fn array_repeat_collection_bearing_record_is_admitted() {
 }
 
 #[test]
-fn vec_record_closure_collection_field_fails_closed() {
-    // A record whose collection field holds an UNCLONABLE element (a
-    // function/closure) keeps the record fail-closed: the owned-collection ABI
-    // cannot clone a closure environment per element.
+fn vec_record_function_collection_field_defers_executable_admission() {
     let output = check_source(
         r"
         type Holder { cbs: Vec<fn() -> i64> }
@@ -2018,13 +1948,14 @@ fn vec_record_closure_collection_field_fails_closed() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        output.errors.iter().any(|error| {
-            error.message.contains("cannot be a `Vec` element")
-                && error.message.contains("no clone/drop thunk path")
-        }),
-        "record with a closure-bearing collection field must fail closed: {:#?}",
-        output.errors
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Push) }),
+        "missing semantic Vec::Push: {:#?}",
+        output.resolved_calls
     );
 }
 
@@ -3603,7 +3534,7 @@ fn vec_new_with_deferred_element_type_publishes_its_runtime_target() {
         type Bag<T> { items: Vec<T>, }
 
         fn main() {
-            let b = Bag { items: Vec.new() };
+            var b = Bag { items: Vec.new() };
             b.items.push(7);
         }
         ",
@@ -3637,7 +3568,7 @@ fn nested_generic_record_vec_new_publishes_its_runtime_target() {
         type Outer<T> { inner: Inner<T>, }
 
         fn main() {
-            let o = Outer { inner: Inner { xs: Vec.new() } };
+            var o = Outer { inner: Inner { xs: Vec.new() } };
             o.inner.xs.push(3);
         }
         ",

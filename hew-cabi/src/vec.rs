@@ -17,7 +17,7 @@ pub enum HewTypeOwnershipKind {
     /// Elements are C string pointers with refcounted retain/release ownership
     /// (`hew_string_clone` / `hew_string_drop`).
     String = 1,
-    /// Elements require layout-driven clone/drop semantics not implemented yet.
+    /// Elements use the descriptor's clone and drop callbacks.
     LayoutManaged = 2,
     /// Elements are `bytes` values (`BytesTriple` at the ABI). Used by the
     /// channel/stream element witness, where a bytes element travels as its
@@ -173,7 +173,8 @@ const _: () = assert!(
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HewVecElemLayout {
-    /// Size of one element in bytes.
+    /// Size of one element in bytes. Zero-sized elements still contribute to
+    /// the vector's logical length; their payload operations copy no bytes.
     pub size: usize,
     /// Required alignment in bytes (a non-zero power of two).
     pub align: usize,

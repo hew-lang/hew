@@ -947,7 +947,52 @@ impl<'a> InstanceService<'a> {
     }
 
     fn require_type_facts(&mut self, ty: &ResolvedTy) -> Result<(), String> {
-        require_type_facts(&mut self.checked_facts, ty)
+        let mut pending = vec![ty.clone()];
+        let mut seen = BTreeSet::new();
+        while let Some(ty) = pending.pop() {
+            if !seen.insert(ty.clone()) {
+                continue;
+            }
+            require_type_facts(&mut self.checked_facts, &ty)?;
+            if let Some(element) = hew_types::vector_element_type(&ty) {
+                if !is_supported_call_value(self.module, element) {
+                    return Err(format!(
+                        "vector element `{}` has no semantic value contract",
+                        element.user_facing()
+                    ));
+                }
+                require_type_facts(&mut self.checked_facts, element)?;
+                if self.checked_facts.rows()[&TypeInstanceKey(element.clone())].clone
+                    == hew_types::CloneKind::None
+                {
+                    return Err(format!(
+                        "vector element `{}` has no semantic copy",
+                        element.user_facing()
+                    ));
+                }
+                pending.push(element.clone());
+            } else if is_concrete_variant_type(self.module, &ty) {
+                let id = self.require_variant_shape(&ty)?;
+                pending.extend(
+                    self.variant_shapes[id.0 as usize]
+                        .variants
+                        .iter()
+                        .flat_map(|variant| &variant.fields)
+                        .map(|field| field.ty.clone()),
+                );
+            } else if is_concrete_aggregate_type(self.module, &ty) {
+                if let AggregateShapeRef::Record(id) = self.require_aggregate_shape(&ty)? {
+                    pending.extend(
+                        self.aggregate_shapes[id.0 as usize]
+                            .fields
+                            .iter()
+                            .map(|field| field.ty.clone()),
+                    );
+                }
+            }
+            hew_types::push_type_components(&ty, &mut pending);
+        }
+        Ok(())
     }
 
     /// Intern the exact checker-resolved shape of one concrete aggregate.
@@ -1031,6 +1076,17 @@ impl<'a> InstanceService<'a> {
                 &mut self.variant_shapes_by_type,
                 signature,
             )
+        });
+        let result = result.and_then(|()| {
+            for ty in signature
+                .params
+                .iter()
+                .map(|parameter| &parameter.ty)
+                .chain(std::iter::once(&signature.return_ty))
+            {
+                self.require_type_facts(ty)?;
+            }
+            Ok(())
         });
         if result.is_err() {
             self.aggregate_shapes.truncate(prior_aggregate_count);
@@ -1312,13 +1368,16 @@ impl<'a> InstanceService<'a> {
             ));
         }
         for (index, argument) in type_args.iter().enumerate() {
-            if !is_initial_scalar(argument) {
+            if !is_supported_call_value(self.module, argument) {
                 return Err(format!(
-                    "generic direct callee `{}` type argument {index} is `{}`; initial SIR generic instances require closed scalar i*/u*/bool types",
+                    "generic direct callee `{}` type argument {index} is `{}`; SIR generic instances require a concrete semantic value contract",
                     declaration.full_path(),
                     argument.user_facing()
                 ));
             }
+        }
+        for argument in &type_args {
+            self.require_type_facts(argument)?;
         }
         let key = SirInstanceKey {
             template: template.id,
@@ -1689,7 +1748,9 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 }
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
-    is_initial_scalar(ty) || matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
+    is_initial_scalar(ty)
+        || matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
+        || hew_types::vector_element_type(ty).is_some()
 }
 
 fn is_concrete_aggregate_type(module: &HirModule, ty: &ResolvedTy) -> bool {
@@ -1793,7 +1854,10 @@ fn lower_initial_value_transfer(
             ty.user_facing()
         ));
     }
-    if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
+    builder.service.require_type_facts(&ty)?;
+    if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
+        && hew_types::vector_element_type(&ty).is_none()
+    {
         if is_concrete_variant_type(builder.service.module, &ty) {
             builder
                 .service
@@ -1959,6 +2023,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 function.params.len()
             ));
         }
+        service.require_signature_shapes(&callable.signature)?;
         let entry = BlockId(0);
         let mut values = 0;
         let mut bindings = HashMap::new();
@@ -2875,6 +2940,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }),
             HirExprKind::SubsumedValue { source, .. } => {
                 self.lower_expr_with_binding_use(source, binding_use)
+            }
+            HirExprKind::Index { container, index }
+                if hew_types::vector_element_type(&self.ty(&container.ty)).is_some() =>
+            {
+                self.lower_runtime_operation(
+                    expr,
+                    hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Index),
+                    &[container.as_ref(), index.as_ref()],
+                    true,
+                )?
+                .ok_or_else(|| "vector index must produce a semantic copy".to_string())
             }
             HirExprKind::Index { container, index }
                 if self.ty(&container.ty) == ResolvedTy::Bytes =>
@@ -4134,6 +4210,31 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 aggregate_ty.user_facing()
             ));
         }
+        let results = self.emit_destructure_value(
+            aggregate,
+            &aggregate_ty,
+            shape,
+            Provenance::Site(value.site),
+        )?;
+        for (field, result) in fields.iter().zip(results) {
+            self.bind_source_value(&field.binding, result.id)?;
+        }
+        Ok(())
+    }
+
+    fn emit_destructure_value(
+        &mut self,
+        aggregate: ValueId,
+        ty: &ResolvedTy,
+        shape: AggregateShapeRef,
+        provenance: Provenance,
+    ) -> Result<Vec<ValueDef>, String> {
+        let recipes = crate::aggregate_field_recipes(
+            shape,
+            ty,
+            &self.service.aggregate_shapes,
+            self.service.checked_facts.rows(),
+        )?;
         let mut results = Vec::with_capacity(recipes.len());
         for recipe in &recipes {
             self.service.require_type_facts(&recipe.ty)?;
@@ -4150,18 +4251,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 shape,
                 aggregate: Operand { value: aggregate },
             },
-            provenance: Provenance::Site(value.site),
+            provenance,
         };
         self.current_block_mut().append_op(operation)?;
         self.ops += 1;
         self.owned_live.remove(&aggregate);
-        for (field, result) in fields.iter().zip(results) {
+        for result in &results {
             if result.own == OwnKind::Owned {
-                self.owned_live.insert(result.id, result.ty);
+                self.owned_live.insert(result.id, result.ty.clone());
             }
-            self.bind_source_value(&field.binding, result.id)?;
         }
-        Ok(())
+        Ok(results)
     }
 
     /// Lower one named aggregate construction in source evaluation order,
@@ -4515,26 +4615,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let contract = family.semantic_contract().ok_or_else(|| {
             format!("runtime family `{family:?}` has no ownership-SIR semantic contract")
         })?;
-        if args.len() != contract.arguments.len() {
-            return Err(format!(
-                "runtime family `{family:?}` expects {} argument(s), HIR carries {}",
-                contract.arguments.len(),
-                args.len()
-            ));
+        let parameter_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
+        let instantiated = contract.instantiate(&parameter_types, &self.ty(&expr.ty))?;
+        for ty in &instantiated.arguments {
+            self.service.require_type_facts(ty)?;
         }
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut transformed_binding = None;
         let mut lowered_args = Vec::with_capacity(args.len());
         for (index, (&arg, expected)) in args.iter().zip(contract.arguments).enumerate() {
-            let actual_ty = self.ty(&arg.ty);
-            if !expected.ty.matches(&actual_ty) {
-                return Err(format!(
-                    "runtime family `{family:?}` argument {index} has `{}`, expected {:?}",
-                    actual_ty.user_facing(),
-                    expected.ty
-                ));
-            }
             let (value, decision) = match expected.effect {
                 RuntimeArgumentEffect::Borrow => (
                     self.lower_read_operand(
@@ -4580,16 +4670,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                             "runtime transform binding `{binding}` has no live owned value"
                         ));
                     }
-                    self.owned_live.remove(&source);
-                    let moved = self.emit(
-                        arg,
-                        SemOpKind::Move {
-                            source: Operand { value: source },
-                        },
-                    )?;
-                    self.owned_live.remove(&moved);
                     transformed_binding = Some(*binding);
-                    (moved, crate::BoundaryDecision::Move)
+                    (source, crate::BoundaryDecision::Move)
                 }
             };
             lowered_args.push(crate::BoundaryOperand {
@@ -4598,28 +4680,42 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             });
         }
 
+        // Arguments may read the receiver (xs.push(xs[0])); finish those
+        // reads before transferring its sole owner to the operation.
+        if let Some(binding) = transformed_binding {
+            let source = *self
+                .bindings
+                .get(&binding)
+                .ok_or_else(|| "runtime receiver binding disappeared".to_string())?;
+            self.owned_live.remove(&source);
+            let moved = self.emit_typed(
+                Provenance::Site(expr.site),
+                &parameter_types[0],
+                SemOpKind::Move {
+                    source: Operand { value: source },
+                },
+            )?;
+            self.owned_live.remove(&moved);
+            lowered_args[0].operand.value = moved;
+        }
         let live_at_call = self.owned_live.clone();
         let argument_temporaries: Vec<_> = live_at_call
             .keys()
             .filter(|value| !live_before_arguments.contains(value))
             .copied()
             .collect();
-        let semantic_result_ty = match contract.result {
-            RuntimeResultEffect::Unit => None,
-            RuntimeResultEffect::BitCopy(kind)
-            | RuntimeResultEffect::FreshOwned(kind)
-            | RuntimeResultEffect::UpdatedReceiver(kind) => Some(kind.resolved_ty()),
-            RuntimeResultEffect::FreshOwnedVariant(kind) => {
-                let result_ty = self.ty(&expr.ty);
-                self.service
-                    .require_runtime_variant_result_shapes(kind, &result_ty)?;
-                Some(result_ty)
-            }
-        };
+        if let RuntimeResultEffect::FreshOwnedVariant(kind) = contract.result {
+            self.service
+                .require_runtime_variant_result_shapes(kind, &instantiated.result_ty)?;
+        }
+        let semantic_result_ty =
+            (instantiated.result_ty != ResolvedTy::Unit).then_some(instantiated.result_ty);
         match (contract.result, &semantic_result_ty) {
             (RuntimeResultEffect::Unit, None) if self.ty(&expr.ty) == ResolvedTy::Unit => {}
             (RuntimeResultEffect::UpdatedReceiver(_), Some(_))
                 if self.ty(&expr.ty) == ResolvedTy::Unit && !value_required => {}
+            (RuntimeResultEffect::UpdatedReceiverAndValue(_), Some(ResolvedTy::Tuple(fields)))
+                if fields.len() == 2 && self.ty(&expr.ty) == fields[1] => {}
             (_, Some(result_ty)) if self.ty(&expr.ty) == *result_ty => {}
             _ => {
                 return Err(format!(
@@ -4714,6 +4810,26 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 .expect("runtime continuation block argument was just created");
             if self.value_own_kind(continuation) == Some(OwnKind::Owned) {
                 self.owned_live.insert(continuation, result_ty);
+            }
+            if matches!(
+                contract.result,
+                RuntimeResultEffect::UpdatedReceiverAndValue(_)
+            ) {
+                let binding = transformed_binding
+                    .ok_or_else(|| "runtime pop has no transformed binding".to_string())?;
+                let ty = self
+                    .value_ty(continuation)
+                    .ok_or_else(|| "runtime pop result disappeared".to_string())?;
+                let shape = self.service.require_aggregate_shape(&ty)?;
+                let results = self.emit_destructure_value(
+                    continuation,
+                    &ty,
+                    shape,
+                    Provenance::Site(expr.site),
+                )?;
+                self.bindings.insert(binding, results[0].id);
+                self.record_binding_version(binding, results[0].id)?;
+                return Ok(Some(results[1].id));
             }
             if matches!(contract.result, RuntimeResultEffect::UpdatedReceiver(_)) {
                 let binding = transformed_binding.ok_or_else(|| {

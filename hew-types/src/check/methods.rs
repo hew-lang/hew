@@ -5537,6 +5537,16 @@ impl Checker {
         if !self.resolved_calls.contains_key(&key) {
             return;
         }
+        if let Some(op) = crate::VecValueOp::from_method(vec_method) {
+            // Final value operations retain semantic identity. Element ABI
+            // selection belongs to physical MIR after concrete type demand.
+            self.resolved_calls
+                .get_mut(&key)
+                .expect("resolved Vec call")
+                .method_target
+                .symbol_name = crate::RuntimeCallFamily::Vector(op).c_symbol().to_string();
+            return;
+        }
 
         let is_abstract = self.vec_element_contains_abstract_type_param(&elem_ty);
         let is_copy_layout = self.vec_element_has_copy_layout(&elem_ty);
@@ -7935,6 +7945,45 @@ impl Checker {
                 self.env.mark_written(name);
             }
         }
+        let vector_updates_receiver = self
+            .resolved_calls
+            .get(&key)
+            .and_then(|call| match call.target {
+                CallTarget::RuntimeCollection(crate::MethodTargetFamily::Vec(method)) => {
+                    crate::VecValueOp::from_method(method)
+                }
+                _ => None,
+            })
+            .is_some_and(|op| {
+                matches!(
+                    crate::RuntimeCallFamily::Vector(op)
+                        .semantic_contract()
+                        .map(|contract| contract.result),
+                    Some(
+                        crate::RuntimeResultEffect::UpdatedReceiver(_)
+                            | crate::RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                    )
+                )
+            });
+        if vector_updates_receiver {
+            let place = self.expr_place(&receiver.0);
+            let name = place.as_ref().map(|(name, _)| name.as_str());
+            if !name
+                .and_then(|name| self.env.lookup_ref(name))
+                .is_some_and(|binding| binding.is_mutable)
+            {
+                self.report_error(TypeErrorKind::MutabilityError, span,
+                    format!("vector method `{method}` requires a mutable binding receiver declared with `var`"));
+            } else if let Some(name) = name {
+                self.env.mark_written(name);
+                self.reject_private_param_mutable_receiver_call(
+                    name,
+                    &format!("method `{method}`"),
+                    span,
+                );
+            }
+        }
+
         if runtime_rewrite_consumes_receiver || builtin_option_result_consumes_receiver {
             self.method_call_consumes_receiver.insert(key);
             if let Expr::Identifier(name) = &receiver.0 {

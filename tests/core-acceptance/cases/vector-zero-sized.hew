@@ -1,0 +1,22 @@
+type Marker {
+}
+
+fn main() -> i64 {
+    var values: Vec<Marker> = Vec.new();
+    values.push(Marker {  });
+    values.push(Marker {  });
+    let copy = values;
+    let removed = values.pop();
+    values.clear();
+    if copy.len() != 2 || values.len() != 0 {
+        return 1;
+    }
+    match copy.get(1) {
+        Some(_) => {},
+        None => {
+            return 2;
+        },
+    }
+    println(copy.len());
+    0
+}

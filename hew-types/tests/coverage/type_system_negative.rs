@@ -2199,7 +2199,7 @@ fn vec_push_copy_record_element_is_accepted() {
             y: i32,
         }
         fn main() {
-            let v: Vec<Point> = Vec.new();
+            var v: Vec<Point> = Vec.new();
             v.push(Point { x: 1, y: 2 });
         }
         ",
@@ -2216,7 +2216,7 @@ fn vec_push_copy_tuple_element_is_accepted() {
     let output = typecheck(
         r"
         fn main() {
-            let v: Vec<(i32, f64)> = Vec.new();
+            var v: Vec<(i32, f64)> = Vec.new();
             v.push((1, 2.0));
         }
         ",
@@ -2233,7 +2233,7 @@ fn vec_push_nested_owned_tuple_element_is_accepted() {
     let output = typecheck(
         r#"
         fn main() {
-            let v: Vec<((string, i64), bool)> = Vec.new();
+            var v: Vec<((string, i64), bool)> = Vec.new();
             v.push((("a", 1), true));
         }
         "#,
@@ -2250,7 +2250,7 @@ fn vec_clone_nested_owned_tuple_element_is_accepted() {
     let output = typecheck(
         r#"
         fn main() {
-            let v: Vec<((string, i64), bool)> = Vec.new();
+            var v: Vec<((string, i64), bool)> = Vec.new();
             v.push((("a", 1), true));
             let _copy = v.clone();
         }
@@ -2264,23 +2264,24 @@ fn vec_clone_nested_owned_tuple_element_is_accepted() {
 }
 
 #[test]
-fn vec_push_nested_tuple_with_inner_vec_stays_rejected() {
+fn vec_push_nested_tuple_with_inner_vec_is_accepted() {
     let output = typecheck(
         r"
         fn main() {
             let inner: Vec<i64> = Vec.new();
-            let v: Vec<((Vec<i64>, i64), bool)> = Vec.new();
+            var v: Vec<((Vec<i64>, i64), bool)> = Vec.new();
             v.push(((inner, 1), true));
         }
         ",
     );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("contains a `Vec`/`HashMap`/`HashSet`")
+        output.resolved_calls.values().any(|call| {
+            call.method_target.family
+                == hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push)
         }),
-        "nested tuple with inner Vec must stay rejected, got errors: {:?}",
-        output.errors
+        "missing semantic Vec::Push: {:#?}",
+        output.resolved_calls
     );
 }
 
@@ -2478,7 +2479,7 @@ fn vec_remove_copy_tuple_element_now_succeeds() {
 }
 
 #[test]
-fn vec_clear_record_element_is_layout_fail_closed() {
+fn vec_clear_record_element_is_accepted() {
     let output = typecheck(
         r"
         type Point {
@@ -2486,44 +2487,40 @@ fn vec_clear_record_element_is_layout_fail_closed() {
             y: i32,
         }
         fn main() {
-            let v: Vec<Point> = Vec.new();
+            var v: Vec<Point> = Vec.new();
             v.clear();
         }
         ",
     );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec.clear`")
-                && e.message.contains("not runtime-backed yet")
-                && e.message.contains("hew_vec_clear_layout")),
-        "Expected layout fail-closed diagnostic for Vec<Point>::clear, got: {:?}",
-        output.errors
+        output.resolved_calls.values().any(|call| {
+            call.method_target.family
+                == hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Clear)
+        }),
+        "missing semantic Vec::Clear: {:#?}",
+        output.resolved_calls
     );
 }
 
 #[test]
-fn vec_clear_tuple_element_is_layout_fail_closed() {
+fn vec_clear_tuple_element_is_accepted() {
     let output = typecheck(
         r"
         fn main() {
-            let v: Vec<(i32, f64)> = Vec.new();
+            var v: Vec<(i32, f64)> = Vec.new();
             v.clear();
         }
         ",
     );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec.clear`")
-                && e.message.contains("not runtime-backed yet")
-                && e.message.contains("hew_vec_clear_layout")),
-        "Expected layout fail-closed diagnostic for Vec<(i32,f64)>::clear, got: {:?}",
-        output.errors
+        output.resolved_calls.values().any(|call| {
+            call.method_target.family
+                == hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Clear)
+        }),
+        "missing semantic Vec::Clear: {:#?}",
+        output.resolved_calls
     );
 }
 

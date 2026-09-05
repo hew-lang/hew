@@ -4193,7 +4193,7 @@ type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
-    let holders: Vec<Rc<Node>> = Vec.new();
+    var holders: Vec<Rc<Node>> = Vec.new();
     holders.push(shared);
     let copied = clone holders;
 
@@ -4216,7 +4216,7 @@ type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
-    let holders: Vec<Rc<Node>> = Vec.new();
+    var holders: Vec<Rc<Node>> = Vec.new();
     holders.push(shared);
     let pair: (Vec<Rc<Node>>, string) = (holders, "tag");
     let copied = clone pair;
@@ -4249,7 +4249,7 @@ fn dup<T: Clone>(value: Option<Vec<T>>) -> Option<Vec<T>> {
 }
 
 fn main() -> i64 {
-    let items: Vec<i64> = Vec.new();
+    var items: Vec<i64> = Vec.new();
     items.push(1);
     let held: Option<Vec<i64>> = Some(items);
     let copied = dup(held);

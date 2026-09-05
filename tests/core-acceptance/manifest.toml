@@ -3,6 +3,17 @@
 # failures are failures, not a differential pass.
 
 [[case]]
+id = "vector-zero-sized"
+intent = "Empty record vector elements preserve logical length through copying, extraction and mutation without reading payload bytes."
+source = "cases/vector-zero-sized.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\n"
+exit = 0
+
+[[case]]
 id = "vector-copy-values"
 intent = "Vector copies mutate independently, and extracted Unicode/NUL strings survive releasing their containing vector."
 source = "cases/vector-copy-values.hew"

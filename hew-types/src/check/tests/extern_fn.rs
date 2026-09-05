@@ -381,16 +381,14 @@ fn extern_symbol_on_extern_c_fn_populates_fn_sig_spec() {
     );
 }
 
-/// A generic declarative runtime method must retain its concrete, expanded
-/// linker endpoint at the call site.  The ownership graph is keyed by the same
-/// resolved call span, so downstream passes never have to recover either the
-/// endpoint or move-out semantics from the source spelling `pop`.
+/// Canonical vector methods retain their typed identity after generic dispatch.
 #[test]
-fn generic_extern_symbol_call_keeps_exact_endpoint_and_move_out_fact() {
+fn generic_vector_pop_retains_semantic_dispatch_identity() {
     let parsed = hew_parser::parse(
         r"
         fn take_last(values: Vec<string>) -> string {
-            values.pop()
+            var local = values;
+            local.pop()
         }
         ",
     );
@@ -402,8 +400,8 @@ fn generic_extern_symbol_call_keeps_exact_endpoint_and_move_out_fact() {
     let (_, call) = output
         .resolved_calls
         .iter()
-        .find(|(_, call)| call.method_target.symbol_name == "hew_vec_pop_str")
-        .expect("Vec<string>::pop must preserve its exact expanded extern endpoint");
+        .find(|(_, call)| call.method_name == "pop")
+        .expect("Vec<string>::pop must retain its resolved call");
     assert!(matches!(
         call.method_target.family,
         crate::check::dispatch::MethodTargetFamily::Vec(crate::check::dispatch::VecMethod::Pop)

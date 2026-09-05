@@ -203,13 +203,13 @@ fn array_literal_lowers_to_vec_desugar() {
             matches!(
                 &stmt.kind,
                 HirStmtKind::Expr(hew_hir::HirExpr {
-                    kind: HirExprKind::ResolvedImplCall {
-                        method_name,
-                        target_symbol,
+                    kind: HirExprKind::Call {
+                        target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Push)),
+                        args,
                         ..
                     },
                     ..
-                }) if method_name == "push" && target_symbol == "hew_vec_push_i64"
+                }) if args.len() == 2 && args[1].ty == hew_types::ResolvedTy::I64
             )
         })
         .count();
@@ -365,13 +365,13 @@ fn array_repeat_copy_lowers_to_vec_push_loop() {
         body.statements.iter().any(|stmt| matches!(
             &stmt.kind,
             HirStmtKind::Expr(hew_hir::HirExpr {
-                kind: HirExprKind::ResolvedImplCall {
-                    method_name,
-                    target_symbol,
+                kind: HirExprKind::Call {
+                    target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Push)),
+                    args,
                     ..
                 },
                 ..
-            }) if method_name == "push" && target_symbol == "hew_vec_push_i64"
+            }) if args.len() == 2 && args[1].ty == hew_types::ResolvedTy::I64
         )),
         "for-range body should push i64 values into the result Vec"
     );

@@ -827,6 +827,64 @@ impl EffectSet {
 
 /// The value, if any, produced by an invoke-style call terminator.
 ///
+/// Check the recursive semantic dependencies used by a vector's element glue.
+/// This carries no target layout and adds no parallel element descriptor table.
+///
+/// # Errors
+/// Refuses missing facts, missing nominal shapes and noncopyable elements.
+pub fn vector_value_dependencies(
+    vector: &ResolvedTy,
+    facts: &crate::ownership::TypeFactTable,
+    aggregates: &[SemAggregateShape],
+    variants: &[SemVariantShape],
+) -> Result<(), String> {
+    let element = hew_types::vector_element_type(vector)
+        .ok_or_else(|| "vector value requires canonical Vec<T> identity".to_string())?;
+    let mut pending = vec![element.clone()];
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(ty) = pending.pop() {
+        if !seen.insert(ty.clone()) {
+            continue;
+        }
+        let row = facts
+            .get(&hew_types::TypeInstanceKey(ty.clone()))
+            .ok_or_else(|| {
+                format!(
+                    "vector component `{}` has no concrete type facts",
+                    ty.user_facing()
+                )
+            })?;
+        if row.clone == hew_types::CloneKind::None {
+            return Err(format!(
+                "vector component `{}` has no semantic copy",
+                ty.user_facing()
+            ));
+        }
+        if let Some(element) = hew_types::vector_element_type(&ty) {
+            pending.push(element.clone());
+        } else if let ResolvedTy::Named { .. } = &ty {
+            if let Some(shape) = aggregates.iter().find(|shape| shape.aggregate_ty == ty) {
+                pending.extend(shape.fields.iter().map(|field| field.ty.clone()));
+            } else if let Some(shape) = variants.iter().find(|shape| shape.enum_ty == ty) {
+                pending.extend(
+                    shape
+                        .variants
+                        .iter()
+                        .flat_map(|variant| &variant.fields)
+                        .map(|field| field.ty.clone()),
+                );
+            } else {
+                return Err(format!(
+                    "vector component `{}` has no exact semantic shape",
+                    ty.user_facing()
+                ));
+            }
+        }
+        hew_types::push_type_components(&ty, &mut pending);
+    }
+    Ok(())
+}
+
 /// A value result is defined at the call and must be forwarded on its normal
 /// edge to a continuation block argument. It is never available for another
 /// operation in the terminated block.

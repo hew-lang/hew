@@ -11,7 +11,8 @@ use std::path::Path;
 use hew_mir::physical::{
     BlockId, CallableId, OwnKind, PhysicalAggregateDescriptor, PhysicalAggregateGlue,
     PhysicalAggregateId, PhysicalTypeInventory, PhysicalVariantArm, PhysicalVariantDescriptor,
-    PhysicalVariantGlue, PhysicalVariantId, PhysicalVariantLayout, TrapKind,
+    PhysicalVariantGlue, PhysicalVariantId, PhysicalVariantLayout, PhysicalVectorGlue,
+    PhysicalVectorId, PhysicalVectorOp, TrapKind,
 };
 use hew_mir::{
     ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier, PhysicalBlock, PhysicalCallable,
@@ -24,7 +25,8 @@ use hew_runtime::internal::types::{
     HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW,
     HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
 };
-use hew_types::{EntryExitAction, EntryIntegerType, ResolvedTy};
+use hew_runtime::vec::HewTypeOwnershipKind;
+use hew_types::{vector_element_type, EntryExitAction, EntryIntegerType, ResolvedTy};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -444,6 +446,7 @@ fn primitive_repr(
         ResolvedTy::F32 => PhysicalRepr::Float { bits: 32 },
         ResolvedTy::F64 => PhysicalRepr::Float { bits: 64 },
         ResolvedTy::String | ResolvedTy::CancellationToken => PhysicalRepr::Pointer,
+        vector if vector_element_type(vector).is_some() => PhysicalRepr::Pointer,
         ResolvedTy::Bytes => PhysicalRepr::Struct(vec![
             pointer_layout(ctx, target)?,
             integer_layout(ctx, target, 32)?,
@@ -689,6 +692,16 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 Ok(clone.into())
             }
             CloneAction::Variant(id) => self.clone_variant_value(value, layout, id),
+            CloneAction::Vector(id) => {
+                self.vector_glue(id)?;
+                let function = external_unary_ptr(self.ctx, self.llvm, "hew_vec_clone_owned")?;
+                self.builder
+                    .build_call(function, &[value.into()], "vector.clone")
+                    .llvm_ctx("clone descriptor-backed vector")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("vector clone returned void".into()))
+            }
         }
     }
 
@@ -709,12 +722,14 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                         .into_pointer_value(),
                     DestroyAction::Aggregate(_) => unreachable!("matched primitive release"),
                     DestroyAction::Variant(_) => unreachable!("matched primitive release"),
+                    DestroyAction::Vector(_) => unreachable!("matched primitive release"),
                 };
                 let symbol = match action {
                     DestroyAction::StringRelease => "hew_string_drop",
                     DestroyAction::BytesRelease => "hew_bytes_drop",
                     DestroyAction::Aggregate(_) => unreachable!("matched primitive release"),
                     DestroyAction::Variant(_) => unreachable!("matched primitive release"),
+                    DestroyAction::Vector(_) => unreachable!("matched primitive release"),
                 };
                 let function = external_drop(self.ctx, self.llvm, symbol)?;
                 self.builder
@@ -749,6 +764,14 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 Ok(())
             }
             DestroyAction::Variant(id) => self.destroy_variant_value(value, layout, id),
+            DestroyAction::Vector(id) => {
+                self.vector_glue(id)?;
+                let function = external_drop(self.ctx, self.llvm, "hew_vec_free_owned")?;
+                self.builder
+                    .build_call(function, &[value.into()], "vector.drop")
+                    .llvm_ctx("destroy descriptor-backed vector")?;
+                Ok(())
+            }
         }
     }
 
@@ -961,6 +984,16 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             })
     }
 
+    fn vector_glue(&self, id: PhysicalVectorId) -> CodegenResult<&'a PhysicalVectorGlue> {
+        self.module
+            .vector_glue
+            .get(id.0 as usize)
+            .filter(|glue| glue.id == id)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!("unknown physical vector glue {}", id.0))
+            })
+    }
+
     fn variant_glue(&self, id: PhysicalVariantId) -> CodegenResult<&'a PhysicalVariantGlue> {
         self.module
             .variant_glue
@@ -979,6 +1012,30 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             ))
         })
     }
+}
+
+fn vector_descriptor_symbol(id: PhysicalVectorId) -> String {
+    format!("__hew_vector_element_layout_{}", id.0)
+}
+
+fn vector_descriptor_type<'ctx>(
+    ctx: &'ctx Context,
+    target: &TargetData,
+) -> inkwell::types::StructType<'ctx> {
+    let size_ty = ctx.ptr_sized_int_type(target, None);
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    // HewVecElemLayout's C layout is realized for the selected target,
+    // including padding around its u8 ownership discriminant.
+    ctx.struct_type(
+        &[
+            size_ty.into(),
+            size_ty.into(),
+            ctx.i8_type().into(),
+            pointer.into(),
+            pointer.into(),
+        ],
+        false,
+    )
 }
 
 fn build_module<'ctx>(
@@ -1013,6 +1070,7 @@ fn build_module<'ctx>(
         functions: BTreeMap::new(),
     };
     emitter.declare_functions()?;
+    emitter.emit_vector_descriptors()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;
     emitter
@@ -1023,6 +1081,139 @@ fn build_module<'ctx>(
 }
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
+    fn emit_vector_descriptors(&self) -> CodegenResult<()> {
+        let target = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let descriptor_ty = vector_descriptor_type(self.ctx, &target);
+        for glue in &self.module.vector_glue {
+            let layout = self.module.target.layout(&glue.element.ty).ok_or_else(|| {
+                CodegenError::FailClosed("vector element has no target layout".into())
+            })?;
+            let clone = match glue.element.clone {
+                Some(CloneAction::Bitwise) | None => pointer.const_null(),
+                Some(action) => self.emit_vector_clone_callback(glue, layout, action)?,
+            };
+            let drop = match glue.element.destroy {
+                None => pointer.const_null(),
+                Some(action) => self.emit_vector_drop_callback(glue, layout, action)?,
+            };
+            let ownership = if glue.element.own == OwnKind::None {
+                HewTypeOwnershipKind::Plain
+            } else {
+                HewTypeOwnershipKind::LayoutManaged
+            };
+            let value = descriptor_ty.const_named_struct(&[
+                size_ty.const_int(layout.size, false).into(),
+                size_ty.const_int(u64::from(layout.align), false).into(),
+                self.ctx.i8_type().const_int(ownership as u64, false).into(),
+                clone.into(),
+                drop.into(),
+            ]);
+            let global =
+                self.llvm
+                    .add_global(descriptor_ty, None, &vector_descriptor_symbol(glue.id));
+            global.set_linkage(Linkage::Internal);
+            global.set_constant(true);
+            global.set_initializer(&value);
+        }
+        Ok(())
+    }
+
+    fn emit_vector_clone_callback(
+        &self,
+        glue: &PhysicalVectorGlue,
+        layout: &PhysicalLayout,
+        action: CloneAction,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let function = self.llvm.add_function(
+            &format!("__hew_vector_element_clone_{}", glue.id.0),
+            self.ctx
+                .i32_type()
+                .fn_type(&[pointer.into(), pointer.into()], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        let entry = self.ctx.append_basic_block(function, "entry");
+        let body = self.ctx.append_basic_block(function, "body");
+        builder.position_at_end(entry);
+        builder
+            .build_unconditional_branch(body)
+            .llvm_ctx("enter element clone")?;
+        builder.position_at_end(body);
+        let emitter = ValueEmitter {
+            module: self.module,
+            ctx: self.ctx,
+            llvm: &self.llvm,
+            builder: &builder,
+            value: function,
+        };
+        let source = function
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("element clone lacks source parameter".into()))?
+            .into_pointer_value();
+        let destination = function
+            .get_nth_param(1)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("element clone lacks destination parameter".into())
+            })?
+            .into_pointer_value();
+        let original = builder
+            .build_load(llvm_type(self.ctx, &layout.repr)?, source, "element.source")
+            .llvm_ctx("load borrowed vector element")?;
+        let cloned = emitter.clone_loaded_value(original, layout, action)?;
+        builder
+            .build_store(destination, cloned)
+            .llvm_ctx("initialize copied vector element")?;
+        builder
+            .build_return(Some(&self.ctx.i32_type().const_zero()))
+            .llvm_ctx("finish element clone")?;
+        Ok(function.as_global_value().as_pointer_value())
+    }
+
+    fn emit_vector_drop_callback(
+        &self,
+        glue: &PhysicalVectorGlue,
+        layout: &PhysicalLayout,
+        action: DestroyAction,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let function = self.llvm.add_function(
+            &format!("__hew_vector_element_drop_{}", glue.id.0),
+            self.ctx.void_type().fn_type(&[pointer.into()], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        let entry = self.ctx.append_basic_block(function, "entry");
+        let body = self.ctx.append_basic_block(function, "body");
+        builder.position_at_end(entry);
+        builder
+            .build_unconditional_branch(body)
+            .llvm_ctx("enter element destruction")?;
+        builder.position_at_end(body);
+        let emitter = ValueEmitter {
+            module: self.module,
+            ctx: self.ctx,
+            llvm: &self.llvm,
+            builder: &builder,
+            value: function,
+        };
+        let source = function
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("element drop lacks source parameter".into()))?
+            .into_pointer_value();
+        let value = builder
+            .build_load(llvm_type(self.ctx, &layout.repr)?, source, "element.owner")
+            .llvm_ctx("load owned vector element")?;
+        emitter.destroy_loaded_value(value, layout, action)?;
+        // Destruction releases the value's children. The caller owns the slot.
+        builder
+            .build_return(None)
+            .llvm_ctx("finish element destruction")?;
+        Ok(function.as_global_value().as_pointer_value())
+    }
+
     fn declare_functions(&mut self) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         for callable in &self.module.callables {
@@ -2344,6 +2535,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         match action {
+            PhysicalRuntimeAction::Vector { operation, glue } => {
+                return self.emit_vector_call(
+                    (operation, glue),
+                    transfers,
+                    result()?,
+                    normal,
+                    failure,
+                );
+            }
             PhysicalRuntimeAction::BytesDecodeUtf8 {
                 result: result_glue,
                 error,
@@ -2572,6 +2772,259 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             )));
         }
         self.emit_edge(normal)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each vector action executes its checked storage and failure contract"
+    )]
+    fn emit_vector_call(
+        &self,
+        action: (PhysicalVectorOp, PhysicalVectorId),
+        transfers: &[ArgumentTransfer],
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        let (operation, glue_id) = action;
+        let values = self.value_emitter();
+        let glue = values.vector_glue(glue_id)?;
+        let source = |index: usize| {
+            transfers.get(index).map(argument_source).ok_or_else(|| {
+                CodegenError::FailClosed(format!("vector action lacks argument {index}"))
+            })
+        };
+        let failure = || {
+            failure.ok_or_else(|| {
+                CodegenError::FailClosed("fallible vector action lacks its cleanup edge".into())
+            })
+        };
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let i64_ty = self.ctx.i64_type();
+        if operation == PhysicalVectorOp::New {
+            let descriptor = self
+                .llvm
+                .get_global(&vector_descriptor_symbol(glue_id))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("vector descriptor was not emitted".into())
+                })?;
+            let function = external_unary_ptr(self.ctx, self.llvm, "hew_vec_new_with_elem_layout")?;
+            let value = self.runtime_call_value(
+                function,
+                &[descriptor.as_pointer_value().into()],
+                "vector.new",
+            )?;
+            self.store(result, value)?;
+            return self.emit_edge(normal);
+        }
+        let receiver = source(0)?;
+        let vector = self.load(receiver, "vector.receiver")?.into_pointer_value();
+        match operation {
+            PhysicalVectorOp::New => unreachable!("new handled before receiver loading"),
+            PhysicalVectorOp::Len => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_len",
+                    i64_ty.fn_type(&[pointer.into()], false),
+                )?;
+                let length =
+                    self.runtime_call_value(function, &[vector.into()], "vector.length")?;
+                self.store(result, length)?;
+            }
+            PhysicalVectorOp::Push | PhysicalVectorOp::Clear => {
+                if operation == PhysicalVectorOp::Push {
+                    let function = get_or_declare_external(
+                        self.llvm,
+                        "hew_vec_push_owned",
+                        self.ctx
+                            .void_type()
+                            .fn_type(&[pointer.into(), pointer.into()], false),
+                    )?;
+                    self.runtime_call_void(
+                        function,
+                        &[vector.into(), self.slots[source(1)?.0 as usize].into()],
+                        "vector.push",
+                    )?;
+                } else {
+                    let function = external_drop(self.ctx, self.llvm, "hew_vec_clear")?;
+                    self.runtime_call_void(function, &[vector.into()], "vector.clear")?;
+                }
+                self.clear_owned(receiver)?;
+                self.store(result, vector.into())?;
+            }
+            PhysicalVectorOp::Set => {
+                let index = self.load(source(1)?, "vector.set.index")?.into_int_value();
+                let length_fn = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_len",
+                    i64_ty.fn_type(&[pointer.into()], false),
+                )?;
+                let length = self
+                    .runtime_call_value(length_fn, &[vector.into()], "vector.set.length")?
+                    .into_int_value();
+                // Unsigned comparison also rejects every negative signed index.
+                let in_bounds = self
+                    .builder
+                    .build_int_compare(IntPredicate::ULT, index, length, "vector.set.in.bounds")
+                    .llvm_ctx("check vector replacement bounds")?;
+                let safe = self.ctx.append_basic_block(self.value, "vector.set.safe");
+                let failed = self.ctx.append_basic_block(self.value, "vector.set.failed");
+                self.builder
+                    .build_conditional_branch(in_bounds, safe, failed)
+                    .llvm_ctx("select vector replacement outcome")?;
+                self.builder.position_at_end(failed);
+                self.release_failed_vector_receiver(receiver, vector, glue_id)?;
+                self.emit_edge(failure()?)?;
+                self.builder.position_at_end(safe);
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_set_owned",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
+                )?;
+                self.runtime_call_void(
+                    function,
+                    &[
+                        vector.into(),
+                        index.into(),
+                        self.slots[source(2)?.0 as usize].into(),
+                    ],
+                    "vector.set",
+                )?;
+                self.clear_owned(receiver)?;
+                self.store(result, vector.into())?;
+            }
+            PhysicalVectorOp::Index | PhysicalVectorOp::Get { .. } => {
+                let element_layout =
+                    self.module.target.layout(&glue.element.ty).ok_or_else(|| {
+                        CodegenError::FailClosed("vector element lacks its target layout".into())
+                    })?;
+                let element_ty = llvm_type(self.ctx, &element_layout.repr)?;
+                let output = if operation == PhysicalVectorOp::Index {
+                    self.slots[result.0 as usize]
+                } else {
+                    values.entry_scratch(element_ty, "vector.get.element")?
+                };
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_get_clone",
+                    self.ctx
+                        .bool_type()
+                        .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
+                )?;
+                let found = self
+                    .runtime_call_value(
+                        function,
+                        &[
+                            vector.into(),
+                            self.load(source(1)?, "vector.index")?.into(),
+                            output.into(),
+                        ],
+                        "vector.found",
+                    )?
+                    .into_int_value();
+                let present = self
+                    .ctx
+                    .append_basic_block(self.value, "vector.element.present");
+                let absent = self
+                    .ctx
+                    .append_basic_block(self.value, "vector.element.absent");
+                self.builder
+                    .build_conditional_branch(found, present, absent)
+                    .llvm_ctx("select vector read outcome")?;
+                self.builder.position_at_end(absent);
+                if let PhysicalVectorOp::Get { result: option } = operation {
+                    self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
+                    self.emit_edge(normal)?;
+                } else {
+                    self.emit_edge(failure()?)?;
+                }
+                self.builder.position_at_end(present);
+                if let PhysicalVectorOp::Get { result: option } = operation {
+                    let element = self
+                        .builder
+                        .build_load(element_ty, output, "vector.get.value")
+                        .llvm_ctx("load independent vector element")?;
+                    self.write_variant_value(self.slots[result.0 as usize], 0, &[element], option)?;
+                }
+            }
+            PhysicalVectorOp::Pop { result: tuple } => {
+                values.aggregate_glue(tuple)?;
+                let layout = self.module.target.layout(&glue.element.ty).ok_or_else(|| {
+                    CodegenError::FailClosed("vector element lacks its target layout".into())
+                })?;
+                let element_ty = llvm_type(self.ctx, &layout.repr)?;
+                let output = values.entry_scratch(element_ty, "vector.pop.element")?;
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_pop_owned",
+                    self.ctx
+                        .i32_type()
+                        .fn_type(&[pointer.into(), pointer.into()], false),
+                )?;
+                let status = self
+                    .runtime_call_value(
+                        function,
+                        &[vector.into(), output.into()],
+                        "vector.pop.status",
+                    )?
+                    .into_int_value();
+                let found = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        self.ctx.i32_type().const_zero(),
+                        "vector.pop.found",
+                    )
+                    .llvm_ctx("test vector pop outcome")?;
+                let present = self
+                    .ctx
+                    .append_basic_block(self.value, "vector.pop.present");
+                let absent = self.ctx.append_basic_block(self.value, "vector.pop.empty");
+                self.builder
+                    .build_conditional_branch(found, present, absent)
+                    .llvm_ctx("select vector pop outcome")?;
+                self.builder.position_at_end(absent);
+                self.release_failed_vector_receiver(receiver, vector, glue_id)?;
+                self.emit_edge(failure()?)?;
+                self.builder.position_at_end(present);
+                let element = self
+                    .builder
+                    .build_load(element_ty, output, "vector.pop.value")
+                    .llvm_ctx("load transferred vector element")?;
+                let tuple_ty =
+                    llvm_type(self.ctx, &self.storage(result)?.layout.repr)?.into_struct_type();
+                let pair = self
+                    .builder
+                    .build_insert_value(tuple_ty.const_zero(), vector, 0, "vector.pop.receiver")
+                    .llvm_ctx("construct updated vector result")?
+                    .into_struct_value();
+                let pair = self
+                    .builder
+                    .build_insert_value(pair, element, 1, "vector.pop.result")
+                    .llvm_ctx("construct removed element result")?
+                    .into_struct_value();
+                self.clear_owned(receiver)?;
+                self.store(result, pair.into())?;
+            }
+        }
+        self.emit_edge(normal)
+    }
+
+    fn release_failed_vector_receiver(
+        &self,
+        receiver: StorageId,
+        vector: PointerValue<'ctx>,
+        glue: PhysicalVectorId,
+    ) -> CodegenResult<()> {
+        self.value_emitter().destroy_loaded_value(
+            vector.into(),
+            &self.storage(receiver)?.layout,
+            DestroyAction::Vector(glue),
+        )?;
+        self.clear_owned(receiver)
     }
 
     fn emit_utf8_decode(
@@ -3210,6 +3663,41 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn vector_descriptor_matches_the_runtime_c_abi() {
+        use hew_runtime::vec::HewVecElemLayout;
+        use std::mem::{align_of, offset_of, size_of};
+
+        let triple = native_emission_triple();
+        let physical = physical_target_for_triple(&triple).unwrap();
+        let target = TargetData::create(&physical.data_layout);
+        let ctx = Context::create();
+        let descriptor = vector_descriptor_type(&ctx, &target);
+        assert_eq!(
+            target.get_abi_size(&descriptor),
+            size_of::<HewVecElemLayout>() as u64
+        );
+        assert_eq!(
+            target.get_abi_alignment(&descriptor) as usize,
+            align_of::<HewVecElemLayout>()
+        );
+        for (index, expected) in [
+            offset_of!(HewVecElemLayout, size),
+            offset_of!(HewVecElemLayout, align),
+            offset_of!(HewVecElemLayout, ownership_kind),
+            offset_of!(HewVecElemLayout, clone_fn),
+            offset_of!(HewVecElemLayout, drop_fn),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                target.offset_of_element(&descriptor, u32::try_from(index).unwrap()),
+                Some(expected as u64)
+            );
+        }
+    }
 
     #[test]
     fn utf8_decode_emits_typed_outcomes_with_reusable_scratch() {

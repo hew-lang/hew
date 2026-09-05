@@ -7,6 +7,7 @@ pub use physical::{
     PhysicalBlock, PhysicalCallable, PhysicalCheckedFailure, PhysicalConst, PhysicalEdge,
     PhysicalError, PhysicalFunction, PhysicalLayout, PhysicalModule, PhysicalOp, PhysicalParam,
     PhysicalRepr, PhysicalRuntimeAction, PhysicalStorage, PhysicalTarget, PhysicalTerminator,
+    PhysicalVectorDescriptor, PhysicalVectorGlue, PhysicalVectorId, PhysicalVectorOp,
     ReturnTransfer, StorageId, StorageOrigin, VerifiedPhysicalModule,
 };
 

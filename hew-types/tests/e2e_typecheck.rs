@@ -1925,7 +1925,7 @@ fn ordinary_actor_send_keeps_sender_binding_readable() {
 
         fn main() {
             let sink = spawn BoundarySink(_unused: 0);
-            let value = Boxed { payload: [1, 2] };
+            var value = Boxed { payload: [1, 2] };
             sink.take(value);
             sink.take(value);
             value.payload.push(3);
@@ -4163,7 +4163,8 @@ fn rc_vec_pop_supported() {
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Rc<i64> {
-            h.v.pop()
+            var local = h.v;
+            local.pop()
         }",
         "Vec.pop() on Vec<Rc<i64>>",
     );
@@ -4340,16 +4341,15 @@ fn rc_hashset_insert_rejected_without_hash_eq() {
 }
 
 #[test]
-fn rc_nested_in_vec_element_rejected_without_clone_drop_thunk() {
-    assert_invalid_operation_contains(
+fn rc_nested_in_vec_element_typechecks() {
+    assert_inline_typechecks_cleanly(
         r"
         fn main() {
             var v = Vec.new();
             let r = Rc.new(42);
             v.push(Some(r));
         }",
-        "no clone/drop thunk path",
-        "Vec.push(Option<Rc<i64>>) should fail closed without owned-element lowering",
+        "Vec.push(Option<Rc<i64>>) has an exact element type",
     );
 }
 
@@ -4604,7 +4604,7 @@ fn vec_clone_method_typechecks_and_returns_vec() {
         r"
         fn main() {
             let v: Vec<i64> = Vec.new();
-            let c = v.clone();
+            var c = v.clone();
             c.push(42);
             println(c.len());
         }",

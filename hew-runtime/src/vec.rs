@@ -99,7 +99,10 @@ unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         };
-        let new_data = libc::realloc(vec.data.cast(), alloc_size);
+        // Zero-sized values still have a logical length. Keep a non-null
+        // backing address for zero-byte copies without relying on realloc(0),
+        // which may free its input and return null on supported platforms.
+        let new_data = libc::realloc(vec.data.cast(), alloc_size.max(1));
         if new_data.is_null() {
             libc::abort();
         }
@@ -251,11 +254,6 @@ unsafe fn validate_elem_layout(layout: *const HewVecElemLayout) {
     // SAFETY: caller guarantees `layout` is valid.
     unsafe {
         let descriptor = &*layout;
-        if descriptor.size == 0 {
-            let msg = b"PANIC: HewVecElemLayout size must be non-zero\n\0";
-            write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
-        }
         if descriptor.align == 0 || !descriptor.align.is_power_of_two() {
             let msg = b"PANIC: HewVecElemLayout align must be a non-zero power of two\n\0";
             write_stderr(&msg[..msg.len() - 1]);
@@ -2628,16 +2626,10 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
 /// Push an owned element by MOVE: byte-copy it into a new slot and transfer
 /// ownership of its heap to the Vec WITHOUT running the descriptor `clone_fn`.
 ///
-/// Unlike [`hew_vec_push_owned`] (COPY-IN: deep-clone, source retains its own
-/// heap), this is the move-in variant for a FRESH, single-use element source —
-/// the array-literal desugar (`[Boxed { .. }, ..]`) constructs each element
-/// solely to hand it to the Vec, so deep-cloning would allocate a second copy
-/// and leak the original (the transient `record_init` temp has no binding and
-/// no scope-exit drop). Moving the bytes transfers the element's owned heap
-/// into the slot; the caller's source is dead after the call and must NOT be
-/// dropped (the MIR routes the array-literal owned push here exactly because
-/// the element operand is a throwaway temp). `hew_vec_free_owned` releases the
-/// element from the Vec slot, so the heap is freed exactly once.
+/// The caller transfers its source ownership and must not subsequently destroy
+/// that source. The vector releases the element when it is removed or the
+/// vector is destroyed. Use [`hew_vec_push_owned`] when the caller retains the
+/// source value.
 ///
 /// # Safety
 ///
@@ -2841,18 +2833,9 @@ pub unsafe extern "C-unwind" fn hew_vec_set_owned(
 /// `drop_fn`), then byte-copy the new one into the slot and transfer ownership
 /// of its heap to the Vec WITHOUT running the descriptor `clone_fn`.
 ///
-/// This is the move-in sibling of [`hew_vec_set_owned`] (COPY-IN: deep-clone,
-/// source retains its own heap) for a FRESH, single-use element source — an
-/// unbound materialised rvalue (`v.set(i, Record { .. })`, `v.set(i, make())`)
-/// constructed solely to hand to the Vec. A COPY-IN deep clone would allocate a
-/// second copy and leak the source temp's owned heap (the transient
-/// `record_init` temp has no binding and no scope-exit drop). Moving the bytes
-/// transfers the element's owned heap into the slot; the caller's source is dead
-/// after the call and must NOT be dropped (the MIR routes the materialised-owner
-/// set here exactly because the element operand is a throwaway temp). The
-/// overwrite-drop of the REPLACED element is preserved identically to
-/// [`hew_vec_set_owned`], so the previous element is freed exactly once and the
-/// new element's heap is freed exactly once by `hew_vec_free_owned`.
+/// On success, the caller has transferred its source ownership and must not
+/// destroy that source. The replaced element is released exactly once. Use
+/// [`hew_vec_set_owned`] when the caller retains the replacement value.
 ///
 /// # Safety
 ///
@@ -4881,6 +4864,47 @@ mod vec_owned_tests {
     use super::*;
     use core::sync::atomic::{AtomicI64, Ordering};
     use std::sync::{Mutex, MutexGuard};
+
+    #[test]
+    fn zero_sized_elements_preserve_length_without_reading_or_writing_payload() {
+        let layout = HewVecElemLayout {
+            size: 0,
+            align: 1,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        };
+        let input = ();
+        let mut output = 0xa5_u8;
+        // SAFETY: unit has no payload bytes; input/output are non-null aligned
+        // slots. Each created vector is released exactly once.
+        unsafe {
+            let original = hew_vec_new_with_elem_layout(&raw const layout);
+            for _ in 0..10 {
+                hew_vec_push_owned(original, (&raw const input).cast());
+            }
+            assert_eq!(hew_vec_len(original), 10);
+            assert_eq!((*original).elem_size, 0);
+            let copy = hew_vec_clone_owned(original);
+            let slice = hew_vec_slice_range_owned(original, 2, 5);
+            hew_vec_set_owned(copy, 0, (&raw const input).cast());
+            assert!(hew_vec_get_clone(copy, 9, (&raw mut output).cast()));
+            assert_eq!(hew_vec_pop_owned(copy, (&raw mut output).cast()), 1);
+            assert_eq!(hew_vec_len(copy), 9);
+            assert_eq!(hew_vec_len(original), 10);
+            assert_eq!(hew_vec_len(slice), 3);
+            assert_eq!(
+                output, 0xa5,
+                "zero-sized results do not initialize any byte"
+            );
+            hew_vec_clear(copy);
+            assert_eq!(hew_vec_len(copy), 0);
+            assert_eq!(hew_vec_pop_owned(copy, (&raw mut output).cast()), 0);
+            hew_vec_free_owned(copy);
+            hew_vec_free_owned(slice);
+            hew_vec_free_owned(original);
+        }
+    }
 
     #[test]
     fn plain_descriptor_uses_the_same_value_operations_without_thunks() {

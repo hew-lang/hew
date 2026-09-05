@@ -14,8 +14,8 @@ use hew_sir::{
 };
 pub use hew_sir::{BlockId, CallableId, OwnKind, TrapKind};
 use hew_types::{
-    CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect, RuntimeCallFamily,
-    RuntimeResultEffect, TypeInstanceKey,
+    vector_element_type, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect,
+    RuntimeCallFamily, RuntimeResultEffect, TypeInstanceKey, VecValueOp,
 };
 
 /// Function-local identity of one concrete storage allocation.
@@ -29,6 +29,17 @@ pub struct PhysicalAggregateId(pub u32);
 /// Module-local identity of one verified tagged-variant glue recipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalVariantId(pub u32);
+
+/// Module-local identity of one exact vector element copy/drop recipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalVectorId(pub u32);
+
+/// A vector value and its exact semantic element, before target layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalVectorDescriptor {
+    pub ty: ResolvedTy,
+    pub element: ResolvedTy,
+}
 
 /// One exact demanded aggregate descriptor in the physical type inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +62,7 @@ pub struct PhysicalTypeInventory {
     types: BTreeSet<ResolvedTy>,
     aggregates: BTreeMap<ResolvedTy, PhysicalAggregateDescriptor>,
     variants: BTreeMap<ResolvedTy, PhysicalVariantDescriptor>,
+    vectors: BTreeMap<ResolvedTy, PhysicalVectorDescriptor>,
 }
 
 impl PhysicalTypeInventory {
@@ -69,6 +81,10 @@ impl PhysicalTypeInventory {
 
     pub fn variants(&self) -> impl Iterator<Item = &PhysicalVariantDescriptor> {
         self.variants.values()
+    }
+
+    pub fn vectors(&self) -> impl Iterator<Item = &PhysicalVectorDescriptor> {
+        self.vectors.values()
     }
 }
 
@@ -214,6 +230,7 @@ pub enum CloneAction {
     BytesRetain,
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
+    Vector(PhysicalVectorId),
 }
 
 /// A release selected once from an explicit SIR destroy plus concrete type.
@@ -223,6 +240,7 @@ pub enum DestroyAction {
     BytesRelease,
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
+    Vector(PhysicalVectorId),
 }
 
 /// One field in an aggregate's physical copy/drop recipe.
@@ -257,6 +275,41 @@ pub struct PhysicalVariantGlue {
     pub own: OwnKind,
     pub is_indirect: bool,
     pub variants: Vec<PhysicalVariantCase>,
+}
+
+/// Element recipe shared by vector operations and ordinary value copy/drop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalVectorGlue {
+    pub id: PhysicalVectorId,
+    pub ty: ResolvedTy,
+    pub element: PhysicalAggregateField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PhysicalVectorOp {
+    New,
+    Len,
+    Index,
+    Get { result: PhysicalVariantId },
+    Push,
+    Set,
+    Pop { result: PhysicalAggregateId },
+    Clear,
+}
+
+impl PhysicalVectorOp {
+    const fn semantic_op(self) -> VecValueOp {
+        match self {
+            Self::New => VecValueOp::New,
+            Self::Len => VecValueOp::Len,
+            Self::Index => VecValueOp::Index,
+            Self::Get { .. } => VecValueOp::Get,
+            Self::Push => VecValueOp::Push,
+            Self::Set => VecValueOp::Set,
+            Self::Pop { .. } => VecValueOp::Pop,
+            Self::Clear => VecValueOp::Clear,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -413,6 +466,10 @@ pub enum PhysicalRuntimeAction {
     BytesLen,
     BytesIndex,
     BytesPushOwned,
+    Vector {
+        operation: PhysicalVectorOp,
+        glue: PhysicalVectorId,
+    },
 }
 
 impl PhysicalRuntimeAction {
@@ -433,6 +490,7 @@ impl PhysicalRuntimeAction {
             Self::BytesLen => RuntimeCallFamily::BytesLen,
             Self::BytesIndex => RuntimeCallFamily::BytesIndex,
             Self::BytesPushOwned => RuntimeCallFamily::BytesPush,
+            Self::Vector { operation, .. } => RuntimeCallFamily::Vector(operation.semantic_op()),
         }
     }
 }
@@ -509,6 +567,9 @@ pub struct PhysicalModule {
     pub target: PhysicalTarget,
     pub aggregate_glue: Vec<PhysicalAggregateGlue>,
     pub variant_glue: Vec<PhysicalVariantGlue>,
+    pub vector_glue: Vec<PhysicalVectorGlue>,
+    /// Retained semantic authority for verification, never a physical classifier.
+    type_facts: BTreeMap<TypeInstanceKey, hew_types::TypeFacts>,
     pub callables: Vec<PhysicalCallable>,
     pub functions: Vec<PhysicalFunction>,
     pub entry_callable: Option<CallableId>,
@@ -577,7 +638,8 @@ pub fn lower_physical_module(
         )));
     }
 
-    let (aggregate_glue, aggregate_ids, variant_glue, variant_ids) = build_glue(module)?;
+    let (aggregate_glue, aggregate_ids, variant_glue, variant_ids, vector_glue, vector_ids) =
+        build_glue(module)?;
 
     let callables = module
         .callables
@@ -621,13 +683,24 @@ pub fn lower_physical_module(
     let functions = module
         .functions
         .iter()
-        .map(|function| lower_function(module, &target, function, &aggregate_ids, &variant_ids))
+        .map(|function| {
+            lower_function(
+                module,
+                &target,
+                function,
+                &aggregate_ids,
+                &variant_ids,
+                &vector_ids,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     let physical = PhysicalModule {
         target,
         aggregate_glue,
         variant_glue,
+        vector_glue,
+        type_facts: module.type_facts.clone(),
         callables,
         functions,
         entry_callable: module.entry_callable,
@@ -652,6 +725,8 @@ fn build_glue(
         BTreeMap<ResolvedTy, PhysicalAggregateId>,
         Vec<PhysicalVariantGlue>,
         BTreeMap<ResolvedTy, PhysicalVariantId>,
+        Vec<PhysicalVectorGlue>,
+        BTreeMap<ResolvedTy, PhysicalVectorId>,
     ),
     PhysicalError,
 > {
@@ -690,6 +765,43 @@ fn build_glue(
             Ok((variant.ty.clone(), PhysicalVariantId(index)))
         })
         .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
+    let vector_ids = inventory
+        .vectors()
+        .enumerate()
+        .map(|(index, vector)| {
+            let index = u32::try_from(index)
+                .map_err(|_| PhysicalError::new("physical vector count exceeds u32"))?;
+            Ok((vector.ty.clone(), PhysicalVectorId(index)))
+        })
+        .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
+    let field_recipe = |ty: &ResolvedTy| -> Result<PhysicalAggregateField, PhysicalError> {
+        let facts = module
+            .type_facts
+            .get(&TypeInstanceKey(ty.clone()))
+            .ok_or_else(|| {
+                PhysicalError::new(format!(
+                    "physical field `{}` has no semantic type facts",
+                    ty.user_facing()
+                ))
+            })?;
+        let own = OwnKind::of_class(facts.class);
+        Ok(PhysicalAggregateField {
+            ty: ty.clone(),
+            own,
+            clone: clone_action_for_type(
+                ty,
+                facts.clone,
+                &aggregate_ids,
+                &variant_ids,
+                &vector_ids,
+            )?,
+            destroy: if own == OwnKind::Owned {
+                destroy_action_for_type(ty, &aggregate_ids, &variant_ids, &vector_ids)
+            } else {
+                None
+            },
+        })
+    };
     let aggregate_glue = aggregates
         .into_iter()
         .map(|(aggregate, own)| {
@@ -703,24 +815,8 @@ fn build_glue(
             )
             .map_err(PhysicalError::new)?;
             let fields = recipes
-                .into_iter()
-                .map(|recipe| {
-                    Ok(PhysicalAggregateField {
-                        clone: clone_action_for_type(
-                            &recipe.ty,
-                            recipe.clone,
-                            &aggregate_ids,
-                            &variant_ids,
-                        )?,
-                        destroy: if recipe.own == OwnKind::Owned {
-                            destroy_action_for_type(&recipe.ty, &aggregate_ids, &variant_ids)
-                        } else {
-                            None
-                        },
-                        ty: recipe.ty,
-                        own: recipe.own,
-                    })
-                })
+                .iter()
+                .map(|recipe| field_recipe(&recipe.ty))
                 .collect::<Result<Vec<_>, PhysicalError>>()?;
             Ok(PhysicalAggregateGlue {
                 id,
@@ -757,28 +853,8 @@ fn build_glue(
                     )
                     .map_err(PhysicalError::new)?;
                     let fields = recipes
-                        .into_iter()
-                        .map(|recipe| {
-                            Ok(PhysicalAggregateField {
-                                clone: clone_action_for_type(
-                                    &recipe.ty,
-                                    recipe.clone,
-                                    &aggregate_ids,
-                                    &variant_ids,
-                                )?,
-                                destroy: if recipe.own == OwnKind::Owned {
-                                    destroy_action_for_type(
-                                        &recipe.ty,
-                                        &aggregate_ids,
-                                        &variant_ids,
-                                    )
-                                } else {
-                                    None
-                                },
-                                ty: recipe.ty,
-                                own: recipe.own,
-                            })
-                        })
+                        .iter()
+                        .map(|recipe| field_recipe(&recipe.ty))
                         .collect::<Result<Vec<_>, PhysicalError>>()?;
                     Ok(PhysicalVariantCase { fields })
                 })
@@ -792,7 +868,33 @@ fn build_glue(
             })
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
-    Ok((aggregate_glue, aggregate_ids, variant_glue, variant_ids))
+    let vector_glue = inventory
+        .vectors()
+        .map(|descriptor| {
+            let element = field_recipe(&descriptor.element)?;
+            if element.clone.is_none()
+                || (element.own == OwnKind::Owned && element.destroy.is_none())
+            {
+                return Err(PhysicalError::new(format!(
+                    "vector element `{}` lacks a complete value recipe",
+                    descriptor.element.user_facing()
+                )));
+            }
+            Ok(PhysicalVectorGlue {
+                id: vector_ids[&descriptor.ty],
+                ty: descriptor.ty.clone(),
+                element,
+            })
+        })
+        .collect::<Result<Vec<_>, PhysicalError>>()?;
+    Ok((
+        aggregate_glue,
+        aggregate_ids,
+        variant_glue,
+        variant_ids,
+        vector_glue,
+        vector_ids,
+    ))
 }
 
 fn aggregate_shape_ref(
@@ -818,12 +920,16 @@ fn clone_action_for_type(
     clone: CloneKind,
     aggregate_ids: &BTreeMap<ResolvedTy, PhysicalAggregateId>,
     variant_ids: &BTreeMap<ResolvedTy, PhysicalVariantId>,
+    vector_ids: &BTreeMap<ResolvedTy, PhysicalVectorId>,
 ) -> Result<Option<CloneAction>, PhysicalError> {
     let action = match clone {
         CloneKind::None => return Ok(None),
         CloneKind::Bits => CloneAction::Bitwise,
         CloneKind::Retain if ty == &ResolvedTy::String => CloneAction::StringRetain,
         CloneKind::Retain if ty == &ResolvedTy::Bytes => CloneAction::BytesRetain,
+        CloneKind::DeepCopy | CloneKind::FieldWise if vector_ids.contains_key(ty) => {
+            CloneAction::Vector(vector_ids[ty])
+        }
         CloneKind::FieldWise if aggregate_ids.contains_key(ty) => {
             CloneAction::Aggregate(aggregate_ids[ty])
         }
@@ -850,10 +956,12 @@ fn destroy_action_for_type(
     ty: &ResolvedTy,
     aggregate_ids: &BTreeMap<ResolvedTy, PhysicalAggregateId>,
     variant_ids: &BTreeMap<ResolvedTy, PhysicalVariantId>,
+    vector_ids: &BTreeMap<ResolvedTy, PhysicalVectorId>,
 ) -> Option<DestroyAction> {
     match ty {
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
+        _ if vector_ids.contains_key(ty) => Some(DestroyAction::Vector(vector_ids[ty])),
         _ if aggregate_ids.contains_key(ty) => Some(DestroyAction::Aggregate(aggregate_ids[ty])),
         _ => variant_ids.get(ty).copied().map(DestroyAction::Variant),
     }
@@ -895,23 +1003,38 @@ pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
         types,
         aggregates: BTreeMap::new(),
         variants: BTreeMap::new(),
+        vectors: BTreeMap::new(),
     };
     let demanded = inventory.types.iter().cloned().collect::<Vec<_>>();
     for ty in demanded {
-        collect_inventory_aggregate(module, &mut inventory, &ty);
+        collect_inventory_type(module, &mut inventory, &ty);
     }
     inventory
 }
 
-fn collect_inventory_aggregate(
+fn collect_inventory_type(
     module: &SemModule,
     inventory: &mut PhysicalTypeInventory,
     ty: &ResolvedTy,
 ) {
-    if inventory.aggregates.contains_key(ty) || inventory.variants.contains_key(ty) {
+    if inventory.aggregates.contains_key(ty)
+        || inventory.variants.contains_key(ty)
+        || inventory.vectors.contains_key(ty)
+    {
         return;
     }
     inventory.types.insert(ty.clone());
+    if let Some(element) = vector_element_type(ty) {
+        inventory.vectors.insert(
+            ty.clone(),
+            PhysicalVectorDescriptor {
+                ty: ty.clone(),
+                element: element.clone(),
+            },
+        );
+        collect_inventory_type(module, inventory, element);
+        return;
+    }
     if let Some(shape) = module.variant_shape_for_type(ty) {
         let variants = shape
             .variants
@@ -934,7 +1057,7 @@ fn collect_inventory_aggregate(
         );
         for fields in variants {
             for field in fields {
-                collect_inventory_aggregate(module, inventory, &field);
+                collect_inventory_type(module, inventory, &field);
             }
         }
         return;
@@ -956,7 +1079,7 @@ fn collect_inventory_aggregate(
         },
     );
     for field in fields {
-        collect_inventory_aggregate(module, inventory, &field);
+        collect_inventory_type(module, inventory, &field);
     }
 }
 
@@ -979,6 +1102,7 @@ struct FunctionLowerer<'a> {
     function: &'a SemFunction,
     aggregate_ids: &'a BTreeMap<ResolvedTy, PhysicalAggregateId>,
     variant_ids: &'a BTreeMap<ResolvedTy, PhysicalVariantId>,
+    vector_ids: &'a BTreeMap<ResolvedTy, PhysicalVectorId>,
     values: BTreeMap<ValueId, StorageId>,
     places: BTreeMap<hew_sir::PlaceId, StorageId>,
     storage: Vec<PhysicalStorage>,
@@ -994,6 +1118,7 @@ fn lower_function(
     function: &SemFunction,
     aggregate_ids: &BTreeMap<ResolvedTy, PhysicalAggregateId>,
     variant_ids: &BTreeMap<ResolvedTy, PhysicalVariantId>,
+    vector_ids: &BTreeMap<ResolvedTy, PhysicalVectorId>,
 ) -> Result<PhysicalFunction, PhysicalError> {
     let mut lowerer = FunctionLowerer {
         module,
@@ -1001,6 +1126,7 @@ fn lower_function(
         function,
         aggregate_ids,
         variant_ids,
+        vector_ids,
         values: BTreeMap::new(),
         places: BTreeMap::new(),
         storage: Vec::new(),
@@ -1520,7 +1646,7 @@ impl FunctionLowerer<'_> {
                 unwind,
                 ..
             } => Ok(PhysicalTerminator::RuntimeCall {
-                action: self.runtime_action(*family, result)?,
+                action: self.runtime_action(*family, args, result)?,
                 args: args
                     .iter()
                     .map(|argument| {
@@ -1676,30 +1802,71 @@ impl FunctionLowerer<'_> {
                     ty.user_facing()
                 ))
             })?;
-        clone_action_for_type(ty, facts.clone, self.aggregate_ids, self.variant_ids)?.ok_or_else(
-            || {
-                PhysicalError::new(format!(
-                    "physical copy of `{}` has no admitted clone action",
-                    ty.user_facing()
-                ))
-            },
-        )
-    }
-
-    fn destroy_action(&self, ty: &ResolvedTy) -> Result<DestroyAction, PhysicalError> {
-        destroy_action_for_type(ty, self.aggregate_ids, self.variant_ids).ok_or_else(|| {
+        clone_action_for_type(
+            ty,
+            facts.clone,
+            self.aggregate_ids,
+            self.variant_ids,
+            self.vector_ids,
+        )?
+        .ok_or_else(|| {
             PhysicalError::new(format!(
-                "physical destroy action for `{}` is not implemented",
+                "physical copy of `{}` has no admitted clone action",
                 ty.user_facing()
             ))
         })
     }
 
+    fn destroy_action(&self, ty: &ResolvedTy) -> Result<DestroyAction, PhysicalError> {
+        destroy_action_for_type(ty, self.aggregate_ids, self.variant_ids, self.vector_ids)
+            .ok_or_else(|| {
+                PhysicalError::new(format!(
+                    "physical destroy action for `{}` is not implemented",
+                    ty.user_facing()
+                ))
+            })
+    }
+
     fn runtime_action(
         &self,
         family: RuntimeCallFamily,
+        args: &[hew_sir::BoundaryOperand],
         result: &CallResult,
     ) -> Result<PhysicalRuntimeAction, PhysicalError> {
+        if let RuntimeCallFamily::Vector(op) = family {
+            let CallResult::Value(value) = result else {
+                return Err(PhysicalError::new("vector operation has no result value"));
+            };
+            let vector = if op == VecValueOp::New {
+                &value.ty
+            } else {
+                let receiver = args
+                    .first()
+                    .ok_or_else(|| PhysicalError::new("vector operation has no receiver"))?;
+                &self.storage[self.value(receiver.operand.value)?.0 as usize].ty
+            };
+            let glue = self.vector_ids.get(vector).copied().ok_or_else(|| {
+                PhysicalError::new(format!(
+                    "vector `{}` has no physical glue identity",
+                    vector.user_facing()
+                ))
+            })?;
+            let operation = match op {
+                VecValueOp::New => PhysicalVectorOp::New,
+                VecValueOp::Len => PhysicalVectorOp::Len,
+                VecValueOp::Index => PhysicalVectorOp::Index,
+                VecValueOp::Get => PhysicalVectorOp::Get {
+                    result: self.variant_id(&value.ty)?,
+                },
+                VecValueOp::Push => PhysicalVectorOp::Push,
+                VecValueOp::Set => PhysicalVectorOp::Set,
+                VecValueOp::Pop => PhysicalVectorOp::Pop {
+                    result: self.aggregate_id(&value.ty)?,
+                },
+                VecValueOp::Clear => PhysicalVectorOp::Clear,
+            };
+            return Ok(PhysicalRuntimeAction::Vector { operation, glue });
+        }
         if family != RuntimeCallFamily::BytesDecodeUtf8 {
             return physical_runtime_action(family);
         }
@@ -1790,16 +1957,20 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
                     glue.id.0
                 )));
             }
-            if let Some(action) = field.clone {
-                verify_clone_action(module, &field.ty, field.own, action)?;
-            }
-            if let Some(action) = field.destroy {
-                verify_destroy_action(module, &field.ty, field.own, action)?;
-            }
+            verify_field_recipe(module, field)?;
         }
     }
     for (index, glue) in module.variant_glue.iter().enumerate() {
         verify_variant_glue(module, index, glue)?;
+    }
+    let mut vector_types = BTreeSet::new();
+    for (index, glue) in module.vector_glue.iter().enumerate() {
+        if !vector_types.insert(&glue.ty) {
+            return Err(PhysicalError::new(
+                "physical vector type has more than one glue identity",
+            ));
+        }
+        verify_vector_glue(module, index, glue)?;
     }
     for (index, callable) in module.callables.iter().enumerate() {
         if usize::try_from(callable.id.0).ok() != Some(index) {
@@ -1830,6 +2001,93 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
             )));
         }
         verify_physical_function(module, function)?;
+    }
+    Ok(())
+}
+
+fn semantic_type_facts<'a>(
+    module: &'a PhysicalModule,
+    ty: &ResolvedTy,
+) -> Result<&'a hew_types::TypeFacts, PhysicalError> {
+    module
+        .type_facts
+        .get(&TypeInstanceKey(ty.clone()))
+        .ok_or_else(|| {
+            PhysicalError::new(format!(
+                "physical value `{}` has no retained semantic type facts",
+                ty.user_facing()
+            ))
+        })
+}
+
+fn verify_field_recipe(
+    module: &PhysicalModule,
+    field: &PhysicalAggregateField,
+) -> Result<(), PhysicalError> {
+    let facts = semantic_type_facts(module, &field.ty)?;
+    if field.own != OwnKind::of_class(facts.class)
+        || field.clone.is_some() != (facts.clone != CloneKind::None)
+        || field.destroy.is_some() != (field.own == OwnKind::Owned)
+    {
+        return Err(PhysicalError::new(format!(
+            "physical field recipe for `{}` disagrees with semantic ownership or cloneability",
+            field.ty.user_facing()
+        )));
+    }
+    if let Some(action) = field.clone {
+        verify_clone_action(module, &field.ty, field.own, action)?;
+    }
+    if let Some(action) = field.destroy {
+        verify_destroy_action(module, &field.ty, field.own, action)?;
+    }
+    Ok(())
+}
+
+fn verify_vector_glue(
+    module: &PhysicalModule,
+    index: usize,
+    glue: &PhysicalVectorGlue,
+) -> Result<(), PhysicalError> {
+    if usize::try_from(glue.id.0).ok() != Some(index) {
+        return Err(PhysicalError::new(format!(
+            "physical vector glue {} is not at its canonical table index {index}",
+            glue.id.0
+        )));
+    }
+    if vector_element_type(&glue.ty) != Some(&glue.element.ty) {
+        return Err(PhysicalError::new(
+            "physical vector descriptor disagrees with canonical Vec<T> identity",
+        ));
+    }
+    let vector_facts = semantic_type_facts(module, &glue.ty)?;
+    if OwnKind::of_class(vector_facts.class) != OwnKind::Owned
+        || !matches!(
+            vector_facts.clone,
+            CloneKind::DeepCopy | CloneKind::FieldWise
+        )
+    {
+        return Err(PhysicalError::new(
+            "physical vector has no semantic owning copy contract",
+        ));
+    }
+    if required_layout(&module.target, &glue.ty)?.repr != PhysicalRepr::Pointer {
+        return Err(PhysicalError::new(
+            "physical vector descriptor requires its target pointer carrier",
+        ));
+    }
+    let element_layout = required_layout(&module.target, &glue.element.ty)?;
+    if !element_layout.align.is_power_of_two() {
+        return Err(PhysicalError::new(
+            "physical vector element has an invalid target alignment",
+        ));
+    }
+    // Zero-sized elements retain their exact target size. The runtime owns
+    // allocation bookkeeping; no payload byte is invented here.
+    verify_field_recipe(module, &glue.element)?;
+    if glue.element.clone.is_none() {
+        return Err(PhysicalError::new(
+            "physical vector element has no clone action",
+        ));
     }
     Ok(())
 }
@@ -1929,12 +2187,7 @@ fn verify_variant_glue(
                         glue.id.0
                     )));
             }
-            if let Some(action) = field.clone {
-                verify_clone_action(module, &field.ty, field.own, action)?;
-            }
-            if let Some(action) = field.destroy {
-                verify_destroy_action(module, &field.ty, field.own, action)?;
-            }
+            verify_field_recipe(module, field)?;
         }
     }
     Ok(())
@@ -2055,35 +2308,69 @@ fn variant_glue(
         .ok_or_else(|| PhysicalError::new(format!("unknown physical variant glue {}", id.0)))
 }
 
+fn vector_glue(
+    module: &PhysicalModule,
+    id: PhysicalVectorId,
+) -> Result<&PhysicalVectorGlue, PhysicalError> {
+    module
+        .vector_glue
+        .get(id.0 as usize)
+        .filter(|glue| glue.id == id)
+        .ok_or_else(|| PhysicalError::new(format!("unknown physical vector glue {}", id.0)))
+}
+
 fn verify_clone_action(
     module: &PhysicalModule,
     ty: &ResolvedTy,
     own: OwnKind,
     action: CloneAction,
 ) -> Result<(), PhysicalError> {
-    let valid = match action {
-        CloneAction::Bitwise => own == OwnKind::None,
-        CloneAction::StringRetain => ty == &ResolvedTy::String && own == OwnKind::Owned,
-        CloneAction::BytesRetain => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
-        CloneAction::Aggregate(id) => {
-            let glue = aggregate_glue(module, id)?;
-            glue.ty == *ty
-                && glue.own == OwnKind::Owned
-                && own == OwnKind::Owned
-                && glue.fields.iter().all(|field| field.clone.is_some())
-        }
-        CloneAction::Variant(id) => {
-            let glue = variant_glue(module, id)?;
-            glue.ty == *ty
-                && glue.own == OwnKind::Owned
-                && own == OwnKind::Owned
-                && glue
-                    .variants
-                    .iter()
-                    .flat_map(|variant| &variant.fields)
-                    .all(|field| field.clone.is_some())
-        }
-    };
+    let facts = semantic_type_facts(module, ty)?;
+    let clone_kind_matches = matches!(
+        (facts.clone, action),
+        (CloneKind::Bits, CloneAction::Bitwise)
+            | (
+                CloneKind::Retain,
+                CloneAction::StringRetain | CloneAction::BytesRetain
+            )
+            | (
+                CloneKind::FieldWise,
+                CloneAction::Aggregate(_) | CloneAction::Variant(_)
+            )
+            | (
+                CloneKind::DeepCopy | CloneKind::FieldWise,
+                CloneAction::Vector(_)
+            )
+    );
+    let valid = clone_kind_matches
+        && own == OwnKind::of_class(facts.class)
+        && match action {
+            CloneAction::Bitwise => own == OwnKind::None,
+            CloneAction::StringRetain => ty == &ResolvedTy::String && own == OwnKind::Owned,
+            CloneAction::BytesRetain => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
+            CloneAction::Aggregate(id) => {
+                let glue = aggregate_glue(module, id)?;
+                glue.ty == *ty
+                    && glue.own == OwnKind::Owned
+                    && own == OwnKind::Owned
+                    && glue.fields.iter().all(|field| field.clone.is_some())
+            }
+            CloneAction::Vector(id) => {
+                let glue = vector_glue(module, id)?;
+                glue.ty == *ty && own == OwnKind::Owned && glue.element.clone.is_some()
+            }
+            CloneAction::Variant(id) => {
+                let glue = variant_glue(module, id)?;
+                glue.ty == *ty
+                    && glue.own == OwnKind::Owned
+                    && own == OwnKind::Owned
+                    && glue
+                        .variants
+                        .iter()
+                        .flat_map(|variant| &variant.fields)
+                        .all(|field| field.clone.is_some())
+            }
+        };
     if valid {
         Ok(())
     } else {
@@ -2100,31 +2387,39 @@ fn verify_destroy_action(
     own: OwnKind,
     action: DestroyAction,
 ) -> Result<(), PhysicalError> {
-    let valid = match action {
-        DestroyAction::StringRelease => ty == &ResolvedTy::String && own == OwnKind::Owned,
-        DestroyAction::BytesRelease => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
-        DestroyAction::Aggregate(id) => {
-            let glue = aggregate_glue(module, id)?;
-            glue.ty == *ty
-                && glue.own == OwnKind::Owned
-                && own == OwnKind::Owned
-                && glue
-                    .fields
-                    .iter()
-                    .all(|field| field.own != OwnKind::Owned || field.destroy.is_some())
-        }
-        DestroyAction::Variant(id) => {
-            let glue = variant_glue(module, id)?;
-            glue.ty == *ty
-                && glue.own == OwnKind::Owned
-                && own == OwnKind::Owned
-                && glue
-                    .variants
-                    .iter()
-                    .flat_map(|variant| &variant.fields)
-                    .all(|field| field.own != OwnKind::Owned || field.destroy.is_some())
-        }
-    };
+    let own_from_facts = OwnKind::of_class(semantic_type_facts(module, ty)?.class);
+    let valid = own == own_from_facts
+        && match action {
+            DestroyAction::StringRelease => ty == &ResolvedTy::String && own == OwnKind::Owned,
+            DestroyAction::BytesRelease => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
+            DestroyAction::Aggregate(id) => {
+                let glue = aggregate_glue(module, id)?;
+                glue.ty == *ty
+                    && glue.own == OwnKind::Owned
+                    && own == OwnKind::Owned
+                    && glue
+                        .fields
+                        .iter()
+                        .all(|field| field.own != OwnKind::Owned || field.destroy.is_some())
+            }
+            DestroyAction::Vector(id) => {
+                let glue = vector_glue(module, id)?;
+                glue.ty == *ty
+                    && own == OwnKind::Owned
+                    && (glue.element.own != OwnKind::Owned || glue.element.destroy.is_some())
+            }
+            DestroyAction::Variant(id) => {
+                let glue = variant_glue(module, id)?;
+                glue.ty == *ty
+                    && glue.own == OwnKind::Owned
+                    && own == OwnKind::Owned
+                    && glue
+                        .variants
+                        .iter()
+                        .flat_map(|variant| &variant.fields)
+                        .all(|field| field.own != OwnKind::Owned || field.destroy.is_some())
+            }
+        };
     if valid {
         Ok(())
     } else {
@@ -2967,6 +3262,9 @@ fn terminator_successors(
             }
             let mut successors = vec![apply_edge(function, normal, normal_state, block)?];
             if let Some(failure) = failure {
+                if let Some(result) = result {
+                    state.slots[result.0 as usize] = InitState::Uninitialized;
+                }
                 successors.push(apply_edge(function, failure, state, block)?);
             }
             Ok(successors)
@@ -3247,6 +3545,26 @@ fn verify_terminator(
                     contract.arguments.len()
                 )));
             }
+            let parameter_types = args
+                .iter()
+                .map(|argument| {
+                    let id = match argument {
+                        ArgumentTransfer::Borrow(id)
+                        | ArgumentTransfer::Move(id)
+                        | ArgumentTransfer::Clone { source: id, .. } => *id,
+                    };
+                    Ok(slot(id)?.ty.clone())
+                })
+                .collect::<Result<Vec<_>, PhysicalError>>()?;
+            let result_type = result
+                .map(|id| slot(id).map(|slot| &slot.ty))
+                .transpose()?
+                .unwrap_or(&ResolvedTy::Unit);
+            let signature = contract.instantiate(&parameter_types, result_type)
+                .map_err(|reason| PhysicalError::new(format!("physical runtime action {action:?} signature disagrees with its semantic contract: {reason}")))?;
+            if &signature.result_ty != result_type {
+                return Err(PhysicalError::new(format!("physical runtime action {action:?} result type disagrees with its semantic contract")));
+            }
             for (argument, expected) in args.iter().zip(contract.arguments) {
                 let (id, actual_effect) = match argument {
                     ArgumentTransfer::Borrow(id) => (*id, RuntimeArgumentEffect::Borrow),
@@ -3272,7 +3590,8 @@ fn verify_terminator(
                         (*source, RuntimeArgumentEffect::Copy)
                     }
                 };
-                if actual_effect != expected.effect || !expected.ty.matches(&slot(id)?.ty) {
+                let _ = slot(id)?;
+                if actual_effect != expected.effect {
                     return Err(PhysicalError::new(format!(
                         "physical runtime action {action:?} argument disagrees with its semantic contract"
                     )));
@@ -3335,15 +3654,21 @@ fn verify_terminator(
                     )));
                 }
                 (
-                    RuntimeResultEffect::BitCopy(kind)
-                    | RuntimeResultEffect::FreshOwned(kind)
-                    | RuntimeResultEffect::UpdatedReceiver(kind),
+                    RuntimeResultEffect::BitCopy(_)
+                    | RuntimeResultEffect::FreshOwned(_)
+                    | RuntimeResultEffect::UpdatedReceiver(_)
+                    | RuntimeResultEffect::IndependentValue(_)
+                    | RuntimeResultEffect::UpdatedReceiverAndValue(_),
                     Some(id),
-                ) if kind.matches(&slot(*id)?.ty) => {
+                ) => {
                     let expected_own = match contract.result {
                         RuntimeResultEffect::BitCopy(_) => OwnKind::None,
                         RuntimeResultEffect::FreshOwned(_)
-                        | RuntimeResultEffect::UpdatedReceiver(_) => OwnKind::Owned,
+                        | RuntimeResultEffect::UpdatedReceiver(_)
+                        | RuntimeResultEffect::UpdatedReceiverAndValue(_) => OwnKind::Owned,
+                        RuntimeResultEffect::IndependentValue(_) => {
+                            OwnKind::of_class(semantic_type_facts(module, result_type)?.class)
+                        }
                         RuntimeResultEffect::Unit | RuntimeResultEffect::FreshOwnedVariant(_) => {
                             unreachable!()
                         }
@@ -3354,11 +3679,9 @@ fn verify_terminator(
                         )));
                     }
                 }
-                _ => {
-                    return Err(PhysicalError::new(format!(
-                        "physical runtime action {action:?} result type disagrees with its semantic contract"
-                    )));
-                }
+            }
+            if let PhysicalRuntimeAction::Vector { operation, glue } = *action {
+                verify_vector_call(module, operation, glue, &parameter_types, result_type)?;
             }
             match (contract.failures.is_empty(), failure) {
                 (true, None) | (false, Some(_)) => {}
@@ -3378,6 +3701,63 @@ fn verify_terminator(
         | PhysicalTerminator::PropagateFault
         | PhysicalTerminator::Unreachable => Ok(()),
     }
+}
+
+fn verify_vector_call(
+    module: &PhysicalModule,
+    operation: PhysicalVectorOp,
+    id: PhysicalVectorId,
+    arguments: &[ResolvedTy],
+    result: &ResolvedTy,
+) -> Result<(), PhysicalError> {
+    let glue = vector_glue(module, id)?;
+    let receiver = if operation == PhysicalVectorOp::New {
+        result
+    } else {
+        arguments
+            .first()
+            .ok_or_else(|| PhysicalError::new("physical vector operation lacks its receiver"))?
+    };
+    if receiver != &glue.ty {
+        return Err(PhysicalError::new(
+            "physical vector operation uses a foreign vector descriptor",
+        ));
+    }
+    match operation {
+        PhysicalVectorOp::Get { result: option } => {
+            let option = variant_glue(module, option)?;
+            if &option.ty != result
+                || option.is_indirect
+                || option.variants.len() != 2
+                || option.variants[0].fields.as_slice() != [glue.element.clone()]
+                || !option.variants[1].fields.is_empty()
+            {
+                return Err(PhysicalError::new(
+                    "physical vector get result descriptor is not its exact Some(T)/None value",
+                ));
+            }
+        }
+        PhysicalVectorOp::Pop { result: tuple } => {
+            let tuple = aggregate_glue(module, tuple)?;
+            if &tuple.ty != result
+                || tuple.own != OwnKind::Owned
+                || tuple.fields.len() != 2
+                || tuple.fields[0].ty != glue.ty
+                || tuple.fields[1] != glue.element
+            {
+                return Err(PhysicalError::new(
+                    "physical vector pop result descriptor is not its exact (Vec<T>, T) value",
+                ));
+            }
+        }
+        PhysicalVectorOp::New
+        | PhysicalVectorOp::Len
+        | PhysicalVectorOp::Index
+        | PhysicalVectorOp::Push
+        | PhysicalVectorOp::Set
+        | PhysicalVectorOp::Clear => {}
+    }
+    Ok(())
 }
 
 fn callable_for(
@@ -3605,13 +3985,37 @@ mod tests {
         );
     }
 
+    fn test_struct_layout(fields: Vec<PhysicalLayout>) -> PhysicalLayout {
+        let align = fields.iter().map(|field| field.align).max().unwrap_or(1);
+        let mut size = 0_u64;
+        for field in &fields {
+            size = size.next_multiple_of(u64::from(field.align)) + field.size;
+        }
+        PhysicalLayout {
+            size: size.next_multiple_of(u64::from(align)),
+            align,
+            repr: PhysicalRepr::Struct(fields),
+        }
+    }
+
     fn target_for_inventory(module: &SemModule) -> PhysicalTarget {
         let inventory = physical_type_inventory(module);
         let mut target = target();
-        let mut pending = inventory.aggregates().collect::<Vec<_>>();
-        while !pending.is_empty() {
-            let previous = pending.len();
-            pending.retain(|aggregate| {
+        for vector in inventory.vectors() {
+            target.insert_layout(
+                vector.ty.clone(),
+                PhysicalLayout {
+                    size: 8,
+                    align: 8,
+                    repr: PhysicalRepr::Pointer,
+                },
+            );
+        }
+        let mut aggregates = inventory.aggregates().collect::<Vec<_>>();
+        let mut variants = inventory.variants().collect::<Vec<_>>();
+        while !aggregates.is_empty() || !variants.is_empty() {
+            let previous = aggregates.len() + variants.len();
+            aggregates.retain(|aggregate| {
                 let Some(fields) = aggregate
                     .fields
                     .iter()
@@ -3620,21 +4024,61 @@ mod tests {
                 else {
                     return true;
                 };
-                let align = fields.iter().map(|field| field.align).max().unwrap_or(1);
-                let size = fields.iter().map(|field| field.size).sum();
-                target.insert_layout(
-                    aggregate.ty.clone(),
-                    PhysicalLayout {
-                        size,
-                        align,
-                        repr: PhysicalRepr::Struct(fields),
+                target.insert_layout(aggregate.ty.clone(), test_struct_layout(fields));
+                false
+            });
+            variants.retain(|variant| {
+                let Some(cases) = variant
+                    .variants
+                    .iter()
+                    .map(|fields| {
+                        fields
+                            .iter()
+                            .map(|field| target.layout(field).cloned())
+                            .collect::<Option<Vec<_>>>()
+                            .map(test_struct_layout)
+                    })
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return true;
+                };
+                let align = cases.iter().map(|case| case.align).max().unwrap();
+                let size = cases.iter().map(|case| case.size).max().unwrap();
+                let count = size.div_ceil(u64::from(align));
+                let payload = PhysicalLayout {
+                    size: count * u64::from(align),
+                    align,
+                    repr: PhysicalRepr::Array {
+                        element: Box::new(PhysicalLayout {
+                            size: u64::from(align),
+                            align,
+                            repr: PhysicalRepr::Integer {
+                                bits: u16::try_from(align * 8).unwrap(),
+                            },
+                        }),
+                        len: u32::try_from(count).unwrap(),
                     },
-                );
+                };
+                let object = test_struct_layout(vec![
+                    PhysicalLayout {
+                        size: 1,
+                        align: 1,
+                        repr: PhysicalRepr::Integer { bits: 8 },
+                    },
+                    payload,
+                ]);
+                target.insert_layout(variant.ty.clone(), object.clone());
+                target.insert_variant_layout(PhysicalVariantLayout {
+                    ty: variant.ty.clone(),
+                    is_indirect: variant.is_indirect,
+                    object,
+                    variants: cases,
+                });
                 false
             });
             assert!(
-                pending.len() < previous,
-                "test aggregate layouts must be acyclic"
+                aggregates.len() + variants.len() < previous,
+                "test layouts must terminate through concrete fields or vector pointers"
             );
         }
         target
@@ -4744,6 +5188,8 @@ mod tests {
             target: physical_target,
             aggregate_glue: vec![],
             variant_glue: vec![],
+            vector_glue: vec![],
+            type_facts: BTreeMap::new(),
             callables: vec![callable],
             functions: vec![function],
             entry_callable: None,
@@ -4757,5 +5203,521 @@ mod tests {
         let error = verify_physical_module(&physical)
             .expect_err("a path-dependent live owner cannot be overwritten");
         assert!(error.message.contains("may overwrite a live obligation"));
+    }
+
+    fn vector_fixture() -> PhysicalModule {
+        let module = lower_source(
+            r#"
+            fn main() -> i64 {
+                var values = ["one", "two"];
+                var numbers = [7, 8];
+                let snapshot = values;
+                let independent = values[0];
+                let optional = values.get(99);
+                let numeric_option = numbers.get(0);
+                values.set(0, "replacement");
+                let removed = values.pop();
+                let number = numbers.pop();
+                values.clear();
+                return snapshot.len();
+            }
+            "#,
+        );
+        lower_physical_module(&module, target_for_inventory(&module))
+            .expect("vector source must have a complete physical realization")
+            .into_unverified()
+    }
+
+    fn vector_block(function: &mut PhysicalFunction, op: VecValueOp) -> &mut PhysicalBlock {
+        function.blocks.iter_mut().find(|block| matches!(block.terminator,
+            PhysicalTerminator::RuntimeCall { action: PhysicalRuntimeAction::Vector { operation, .. }, .. }
+                if operation.semantic_op() == op)).expect("fixture vector operation")
+    }
+
+    #[test]
+    fn vector_values_use_shared_copy_drop_recipes_for_every_element_shape() {
+        for (declarations, element, value) in [
+            ("", "i64", "7"),
+            ("", "string", "\"payload\""),
+            (
+                "type Leaf { label: string, }",
+                "Leaf",
+                "Leaf { label: \"payload\" }",
+            ),
+            (
+                "enum Choice { Text(string), Empty, }",
+                "Choice",
+                "Choice.Text(\"payload\")",
+            ),
+            ("", "Vec<string>", "[\"payload\"]"),
+            ("", "(Vec<string>, i64)", "([\"payload\"], 1)"),
+        ] {
+            let source = format!(
+                r"
+                {declarations}
+                fn duplicate<T>(values: Vec<T>) -> Vec<T> {{ values }}
+                fn main() -> i64 {{
+                    var values: Vec<{element}> = Vec.new();
+                    values.push({value});
+                    let snapshot = duplicate(values);
+                    let independent = values[0];
+                    let optional = values.get(9);
+                    values.set(0, {value});
+                    let removed = values.pop();
+                    values.clear();
+                    return snapshot.len();
+                }}"
+            );
+            let module = lower_source(&source);
+            let physical = lower_physical_module(&module, target_for_inventory(&module))
+                .unwrap_or_else(|error| panic!("{element}: {error}"));
+            let physical = physical.module();
+            let operations = physical
+                .functions
+                .iter()
+                .flat_map(|function| &function.blocks)
+                .filter_map(|block| match block.terminator {
+                    PhysicalTerminator::RuntimeCall {
+                        action: PhysicalRuntimeAction::Vector { operation, .. },
+                        ..
+                    } => Some(operation.semantic_op()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            for operation in [
+                VecValueOp::New,
+                VecValueOp::Len,
+                VecValueOp::Index,
+                VecValueOp::Get,
+                VecValueOp::Push,
+                VecValueOp::Set,
+                VecValueOp::Pop,
+                VecValueOp::Clear,
+            ] {
+                assert!(
+                    operations.contains(&operation),
+                    "{element}: missing {operation:?}"
+                );
+            }
+            assert!(
+                physical
+                    .functions
+                    .iter()
+                    .flat_map(|function| &function.blocks)
+                    .flat_map(|block| &block.ops)
+                    .any(|op| matches!(
+                        op,
+                        PhysicalOp::Clone {
+                            action: CloneAction::Vector(_),
+                            ..
+                        }
+                    )),
+                "{element}: ordinary vector value must use the shared vector clone"
+            );
+            for glue in &physical.vector_glue {
+                assert_eq!(vector_element_type(&glue.ty), Some(&glue.element.ty));
+                assert_eq!(
+                    glue.element.own,
+                    OwnKind::of_ty(&glue.element.ty, &module.type_facts).unwrap()
+                );
+                assert!(glue.element.clone.is_some());
+                assert_eq!(
+                    glue.element.destroy.is_some(),
+                    glue.element.own == OwnKind::Owned
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vector_inventory_demands_recursive_element_shapes_without_payload_construction() {
+        let module = lower_source(
+            r"
+            type Leaf { text: string, }
+            enum Tree { Value(Leaf), Children(Vec<Tree>), }
+            fn main() -> i64 {
+                let trees: Vec<Tree> = Vec.new();
+                let snapshot = trees;
+                return snapshot.len();
+            }
+        ",
+        );
+        let inventory = physical_type_inventory(&module);
+        assert!(inventory
+            .aggregates()
+            .any(|shape| shape.fields == [ResolvedTy::String]));
+        assert_eq!(inventory.vectors().count(), 1);
+        let physical = lower_physical_module(&module, target_for_inventory(&module)).unwrap();
+        let physical = physical.module();
+        let vector = &physical.vector_glue[0];
+        let Some(CloneAction::Variant(tree)) = vector.element.clone else {
+            panic!("tree copy recipe");
+        };
+        let tree = variant_glue(physical, tree).unwrap();
+        assert_eq!(
+            tree.variants[1].fields[0].clone,
+            Some(CloneAction::Vector(vector.id))
+        );
+        assert_eq!(
+            tree.variants[1].fields[0].destroy,
+            Some(DestroyAction::Vector(vector.id))
+        );
+    }
+
+    #[test]
+    fn vector_zero_sized_elements_preserve_the_exact_target_layout() {
+        let module = lower_source(
+            r"
+            type Empty {}
+            fn main() -> i64 {
+                var values: Vec<Empty> = Vec.new();
+                values.push(Empty {});
+                let snapshot = values;
+                let extracted = values[0];
+                let optional = values.get(0);
+                let removed = values.pop();
+                values.clear();
+                return snapshot.len();
+            }
+        ",
+        );
+        let physical = lower_physical_module(&module, target_for_inventory(&module)).unwrap();
+        let physical = physical.module();
+        let element = &physical.vector_glue[0].element;
+        assert_eq!(physical.target.layout(&element.ty).unwrap().size, 0);
+        assert_eq!(element.clone, Some(CloneAction::Bitwise));
+        assert_eq!(element.destroy, None);
+        assert_eq!(element.own, OwnKind::None);
+    }
+
+    #[test]
+    fn verifier_rejects_vector_descriptor_identity_and_recipe_drift() {
+        let original = vector_fixture();
+        let string_id = original
+            .vector_glue
+            .iter()
+            .position(|glue| glue.element.ty == ResolvedTy::String)
+            .unwrap();
+        for mutation in 0..4 {
+            let mut physical = original.clone();
+            let glue = &mut physical.vector_glue[string_id];
+            match mutation {
+                0 => glue.element.ty = ResolvedTy::I64,
+                1 => glue.element.clone = None,
+                2 => glue.element.destroy = None,
+                3 => {
+                    glue.element.own = OwnKind::None;
+                    glue.element.clone = Some(CloneAction::Bitwise);
+                    glue.element.destroy = None;
+                }
+                _ => unreachable!(),
+            }
+            let error = verify_physical_module(&physical).expect_err("forged vector recipe");
+            let expected = match mutation {
+                0 => "canonical Vec<T> identity",
+                1 => "physical clone action Vector",
+                2 => "physical destroy action Vector",
+                3 => "semantic ownership or cloneability",
+                _ => unreachable!(),
+            };
+            assert!(error.message.contains(expected), "{mutation}: {error}");
+        }
+        let mut physical = original;
+        physical.vector_glue[string_id].id = PhysicalVectorId(999);
+        let error = verify_physical_module(&physical).unwrap_err();
+        assert!(
+            error.message.contains("unknown physical vector glue"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_foreign_vector_and_extraction_descriptors() {
+        let original = vector_fixture();
+        for operation in [VecValueOp::Len, VecValueOp::Get, VecValueOp::Pop] {
+            let mut physical = original.clone();
+            let foreign_vector = physical
+                .vector_glue
+                .iter()
+                .find(|glue| glue.element.ty == ResolvedTy::I64)
+                .unwrap()
+                .id;
+            let foreign_variant = physical
+                .variant_glue
+                .iter()
+                .find(|glue| {
+                    matches!(&glue.ty,
+                ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Option), args, .. }
+                    if args == &[ResolvedTy::I64])
+                })
+                .unwrap()
+                .id;
+            let foreign_tuple = physical
+                .aggregate_glue
+                .iter()
+                .find(|glue| {
+                    matches!(&glue.ty,
+                ResolvedTy::Tuple(fields) if fields.last() == Some(&ResolvedTy::I64))
+                })
+                .unwrap()
+                .id;
+            let block = vector_block(&mut physical.functions[0], operation);
+            let PhysicalTerminator::RuntimeCall {
+                action:
+                    PhysicalRuntimeAction::Vector {
+                        operation: action,
+                        glue,
+                    },
+                ..
+            } = &mut block.terminator
+            else {
+                unreachable!()
+            };
+            match operation {
+                VecValueOp::Len => *glue = foreign_vector,
+                VecValueOp::Get => {
+                    *action = PhysicalVectorOp::Get {
+                        result: foreign_variant,
+                    }
+                }
+                VecValueOp::Pop => {
+                    *action = PhysicalVectorOp::Pop {
+                        result: foreign_tuple,
+                    }
+                }
+                _ => unreachable!(),
+            }
+            let error = verify_physical_module(&physical).expect_err("foreign physical descriptor");
+            assert!(
+                error.message.contains("foreign vector descriptor")
+                    || error.message.contains("result descriptor"),
+                "{operation:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn verifier_checks_vector_element_types_and_result_ownership() {
+        let original = vector_fixture();
+        let mut physical = original.clone();
+        let integer = physical.functions[0]
+            .storage
+            .iter()
+            .find(|slot| slot.ty == ResolvedTy::I64)
+            .unwrap()
+            .id;
+        let block = vector_block(&mut physical.functions[0], VecValueOp::Set);
+        let PhysicalTerminator::RuntimeCall { args, .. } = &mut block.terminator else {
+            unreachable!()
+        };
+        args[2] = ArgumentTransfer::Borrow(integer);
+        let error = verify_physical_module(&physical).expect_err("right arity, wrong element type");
+        assert!(error.message.contains("runtime argument 2"), "{error}");
+
+        for operation in [VecValueOp::Index, VecValueOp::Get, VecValueOp::Pop] {
+            let mut physical = original.clone();
+            let block = vector_block(&mut physical.functions[0], operation);
+            let PhysicalTerminator::RuntimeCall {
+                result: Some(result),
+                ..
+            } = block.terminator
+            else {
+                unreachable!()
+            };
+            physical.functions[0].storage[result.0 as usize].own = OwnKind::Guaranteed;
+            let error = verify_physical_module(&physical)
+                .expect_err("extraction cannot yield an interior borrow");
+            assert!(
+                error.message.contains("result ownership"),
+                "{operation:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn verifier_checks_vector_failure_presence_and_consuming_receiver_contracts() {
+        let original = vector_fixture();
+        for operation in [VecValueOp::Index, VecValueOp::Set, VecValueOp::Pop] {
+            let mut physical = original.clone();
+            let block = vector_block(&mut physical.functions[0], operation);
+            let PhysicalTerminator::RuntimeCall { failure, .. } = &mut block.terminator else {
+                unreachable!()
+            };
+            *failure = None;
+            let error = verify_physical_module(&physical).expect_err("missing vector failure edge");
+            assert!(
+                error.message.contains("failure edge"),
+                "{operation:?}: {error}"
+            );
+        }
+        for operation in [
+            VecValueOp::Push,
+            VecValueOp::Set,
+            VecValueOp::Pop,
+            VecValueOp::Clear,
+        ] {
+            let mut physical = original.clone();
+            let block = vector_block(&mut physical.functions[0], operation);
+            let PhysicalTerminator::RuntimeCall { args, .. } = &mut block.terminator else {
+                unreachable!()
+            };
+            let ArgumentTransfer::Move(receiver) = args[0] else {
+                panic!("receiver must transfer");
+            };
+            args[0] = ArgumentTransfer::Borrow(receiver);
+            let error =
+                verify_physical_module(&physical).expect_err("mutation must transfer its receiver");
+            assert!(
+                error.message.contains("argument disagrees"),
+                "{operation:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn transferred_vector_receiver_is_unavailable_on_both_successors() {
+        let original = vector_fixture();
+        for operation in [VecValueOp::Set, VecValueOp::Pop] {
+            for failed in [false, true] {
+                let mut physical = original.clone();
+                let block = vector_block(&mut physical.functions[0], operation);
+                let PhysicalTerminator::RuntimeCall {
+                    action: PhysicalRuntimeAction::Vector { glue, .. },
+                    args,
+                    normal,
+                    failure,
+                    ..
+                } = &block.terminator
+                else {
+                    unreachable!()
+                };
+                let ArgumentTransfer::Move(receiver) = args[0] else {
+                    unreachable!()
+                };
+                let action = CloneAction::Vector(*glue);
+                let target = if failed {
+                    failure.as_ref().unwrap().target
+                } else {
+                    normal.target
+                };
+                physical.functions[0]
+                    .blocks
+                    .iter_mut()
+                    .find(|block| block.id == target)
+                    .unwrap()
+                    .ops
+                    .insert(
+                        0,
+                        PhysicalOp::Clone {
+                            dest: receiver,
+                            source: receiver,
+                            action,
+                        },
+                    );
+                let error =
+                    verify_physical_module(&physical).expect_err("transferred receiver was reused");
+                assert!(
+                    error.message.contains("uninitialized"),
+                    "{operation:?} failed={failed}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vector_index_failure_never_initializes_its_result_storage() {
+        let mut physical = vector_fixture();
+        let block = vector_block(&mut physical.functions[0], VecValueOp::Index);
+        let PhysicalTerminator::RuntimeCall {
+            result: Some(result),
+            failure: Some(failure),
+            ..
+        } = &block.terminator
+        else {
+            unreachable!()
+        };
+        let result = *result;
+        let target = failure.target;
+        physical.functions[0]
+            .blocks
+            .iter_mut()
+            .find(|block| block.id == target)
+            .unwrap()
+            .ops
+            .insert(
+                0,
+                PhysicalOp::Clone {
+                    dest: result,
+                    source: result,
+                    action: CloneAction::StringRetain,
+                },
+            );
+        let error =
+            verify_physical_module(&physical).expect_err("failed read did not produce an element");
+        assert!(error.message.contains("uninitialized"), "{error}");
+    }
+
+    #[test]
+    fn vector_copies_and_mutations_preserve_loop_and_early_return_storage() {
+        let module = lower_source(
+            r#"
+            fn grow(values: Vec<string>, stop: bool) -> i64 {
+                var current = values;
+                for i in 0..3 {
+                    let snapshot = current;
+                    current.push("loop");
+                    if stop && i == 1 { return snapshot.len(); }
+                }
+                return current.len();
+            }
+            fn main() -> i64 {
+                let input = ["seed"];
+                grow(input, true) + grow(input, false)
+            }
+        "#,
+        );
+        let physical = lower_physical_module(&module, target_for_inventory(&module))
+            .expect("each dynamic vector owner must discharge before its storage is reused");
+        assert_eq!(physical.module().functions.len(), 2);
+    }
+
+    #[test]
+    fn failed_vector_index_clears_a_previous_iteration_scalar_result() {
+        let module = lower_source("fn main() -> i64 { let values = [1]; values[0] }");
+        let mut physical = lower_physical_module(&module, target_for_inventory(&module))
+            .unwrap()
+            .into_unverified();
+        let function = &mut physical.functions[0];
+        let block = vector_block(function, VecValueOp::Index).clone();
+        let PhysicalTerminator::RuntimeCall {
+            result: Some(result),
+            failure: Some(failure),
+            normal,
+            ..
+        } = &block.terminator
+        else {
+            unreachable!()
+        };
+        assert_eq!(function.storage[result.0 as usize].own, OwnKind::None);
+        // Scalar storage may still hold the previous dynamic iteration's bits.
+        // A failed read initializes no result of the current invocation.
+        let state = FlowState {
+            slots: vec![InitState::Initialized; function.storage.len()],
+            fault: FaultState::None,
+        };
+        let successors =
+            terminator_successors(function, &block.terminator, state, block.id).unwrap();
+        let failed = &successors
+            .iter()
+            .find(|(id, _)| *id == failure.target)
+            .unwrap()
+            .1;
+        assert_eq!(failed.slots[result.0 as usize], InitState::Uninitialized);
+        let succeeded = &successors
+            .iter()
+            .find(|(id, _)| *id == normal.target)
+            .unwrap()
+            .1;
+        assert_eq!(succeeded.slots[result.0 as usize], InitState::Initialized);
     }
 }

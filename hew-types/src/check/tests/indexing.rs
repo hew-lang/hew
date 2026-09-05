@@ -16,7 +16,7 @@ fn vec_get_accepts_i32_index() {
     let output = check_source(
         r"
         fn main() {
-            let xs: Vec<i64> = Vec.new();
+            var xs: Vec<i64> = Vec.new();
             xs.push(10);
             let i: i32 = 0;
             let _v = xs.get(i);
@@ -35,7 +35,7 @@ fn vec_set_accepts_i32_index() {
     let output = check_source(
         r"
         fn main() {
-            let xs: Vec<i64> = Vec.new();
+            var xs: Vec<i64> = Vec.new();
             xs.push(0);
             let i: i32 = 0;
             xs.set(i, 99);
@@ -54,7 +54,7 @@ fn vec_index_accepts_i32_index() {
     let output = check_source(
         r"
         fn main() -> i64 {
-            let xs: Vec<i64> = Vec.new();
+            var xs: Vec<i64> = Vec.new();
             xs.push(42);
             let i: i32 = 0;
             xs[i]

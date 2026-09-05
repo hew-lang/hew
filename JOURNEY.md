@@ -484,3 +484,19 @@ builder mutable, matching the checker-enforced mutation contract.
 
 Regenerated the C ABI declarations after the managed OS and stream text
 migration so exported string handles agree with the runtime signatures.
+
+## Descriptor-backed native vector values
+
+Vector construction, independent reads, receiver updates and removal now have
+one typed runtime-operation contract through HIR, ownership SIR and physical
+MIR. Physical descriptors reference the same element copy/drop recipes used by
+ordinary aggregate values. LLVM emits one descriptor and any required callbacks
+per concrete vector type; callbacks reuse the shared value emitter and never
+free an inline element slot. Failed replacement and removal release the
+transferred receiver before following the semantic cleanup edge.
+
+The composed semantic and physical/codegen suites pass, including malformed
+ownership/result/descriptor cases and the runtime C ABI layout comparison.
+Zero-sized runtime elements preserve logical lengths while copying no payload
+bytes; vector unit tests and unsuppressed owned-vector ASan/LSan pass. Complete
+native execution and generated-code sanitizer acceptance follow this checkpoint.

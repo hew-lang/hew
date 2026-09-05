@@ -7,6 +7,11 @@ fn preserved() -> string {
     if removed != "TAIL" || values[0] != "TAIL" || values.len() != 2 {
         return "incorrect update";
     }
+    values.push(values[1]);
+    values.set(0, values[0]);
+    if values.len() != 3 || values[2] != "Aé\0B" || values[0] != "TAIL" {
+        return "incorrect self-reference";
+    }
     values.clear();
     match missing {
         Some(_) => {

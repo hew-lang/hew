@@ -20325,6 +20325,7 @@ impl LowerCtx {
                 )
             }
         };
+        let kind = self.normalize_vector_call(kind, &ty, &span);
         let inner = HirExpr {
             node: self.ids.node(),
             site,
@@ -22141,64 +22142,6 @@ impl LowerCtx {
         }
     }
 
-    #[allow(
-        clippy::match_same_arms,
-        reason = "tuple, nested-collection, and closure-pair arms intentionally stay \
-                  separate to document distinct ownership/release contracts, even where \
-                  two arms emit the same push symbol at this layer"
-    )]
-    fn vec_push_symbol_for_elem(&self, elem_ty: &ResolvedTy) -> Option<&'static str> {
-        match elem_ty {
-            ResolvedTy::Bool => Some("hew_vec_push_bool"),
-            ResolvedTy::I8 => Some("hew_vec_push_i8"),
-            ResolvedTy::U8 => Some("hew_vec_push_u8"),
-            ResolvedTy::I16 => Some("hew_vec_push_i16"),
-            ResolvedTy::U16 => Some("hew_vec_push_u16"),
-            ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => Some("hew_vec_push_i32"),
-            ResolvedTy::I64 | ResolvedTy::U64 => Some("hew_vec_push_i64"),
-            ResolvedTy::F32 => Some("hew_vec_push_f32"),
-            ResolvedTy::F64 => Some("hew_vec_push_f64"),
-            ResolvedTy::String => Some("hew_vec_push_str"),
-            ResolvedTy::Tuple(_) => Some("hew_vec_push_layout"),
-            // A closure-pair `Vec<fn>` / `Vec<closure>` element keeps the
-            // pointer push; the stamped Vec descriptor owns recursive release.
-            // Checked before
-            // the general collection arm so it is never routed to copy-in.
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::Vec),
-                args,
-                ..
-            } if args.first().is_some_and(|e| {
-                matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
-            }) =>
-            {
-                Some("hew_vec_push_ptr")
-            }
-            // Nested collection handles (Vec<T> / HashMap / HashSet) push
-            // through the layout-descriptor symbol; the MIR push-upgrade
-            // override (`vec_receiver_has_owned_element`) rewrites it to
-            // `hew_vec_push_owned` (COPY-IN) so each pushed collection is
-            // deep-copied and the outer Vec owns its storage (#1722).
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
-                ..
-            } => Some("hew_vec_push_layout"),
-            // Closure-pair elements ride the pointer convention: codegen's
-            // push marshalling boxes the 16-byte pair behind a heap handle
-            // (same pointer ABI classified by `vec_authority`).
-            ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => Some("hew_vec_push_ptr"),
-            ResolvedTy::Named { .. } => match ValueClass::of_ty(elem_ty, &self.type_classes) {
-                ValueClass::CowValue
-                | ValueClass::PersistentShare
-                | ValueClass::AffineResource
-                | ValueClass::Linear => Some("hew_vec_push_ptr"),
-                ValueClass::BitCopy | ValueClass::Unknown => Some("hew_vec_push_layout"),
-                ValueClass::View => None,
-            },
-            _ => None,
-        }
-    }
-
     fn make_vec_new_expr(&mut self, vec_ty: ResolvedTy, span: Span) -> HirExpr {
         let callee_ty = ResolvedTy::Function {
             params: Vec::new(),
@@ -22219,7 +22162,9 @@ impl LowerCtx {
         );
         self.make_expr(
             HirExprKind::Call {
-                target: CallTarget::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecNew),
+                target: CallTarget::Runtime(hew_types::RuntimeCallFamily::Vector(
+                    hew_types::VecValueOp::New,
+                )),
                 callee: Box::new(callee),
                 args: Vec::new(),
             },
@@ -22299,45 +22244,70 @@ impl LowerCtx {
         )
     }
 
-    fn make_vec_push_expr(
+    fn make_vec_push_expr(&mut self, vec_ref: HirExpr, elem: HirExpr, span: Span) -> HirExpr {
+        let kind = self.vector_call_kind(
+            hew_types::VecValueOp::Push,
+            vec![vec_ref, elem],
+            &ResolvedTy::Unit,
+            &span,
+        );
+        self.make_expr(kind, ResolvedTy::Unit, IntentKind::Read, span)
+    }
+
+    /// HIR retains semantic method identity and exact types, never an element ABI.
+    fn vector_call_kind(
         &mut self,
-        vec_ref: HirExpr,
-        elem: HirExpr,
-        elem_ty: &ResolvedTy,
-        span: Span,
-    ) -> Option<HirExpr> {
-        let Some(target_symbol) = self.vec_push_symbol_for_elem(elem_ty) else {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "array literal".to_string(),
-                    reason: format!("no Vec push runtime symbol for element type `{elem_ty}`"),
-                },
-                span,
-                "array literal desugar reuses Vec.push infrastructure and cannot fabricate an element ABI",
-            ));
-            return None;
-        };
-        Some(self.make_expr(
-            HirExprKind::ResolvedImplCall {
-                receiver: Box::new(vec_ref),
-                target: hew_types::CallTarget::RuntimeCollection(
-                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push),
-                ),
-                impl_id: ImplId(u32::MAX),
-                method_name: "push".to_string(),
-                target_symbol: target_symbol.to_string(),
-                // Array-literal desugar synthesises a Vec push call site
-                // bypassing the resolver; the family is unambiguously a
-                // Vec push (we just resolved a `hew_vec_push_*` symbol).
-                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push),
-                type_args: vec![Self::resolved_ty_pattern(elem_ty)],
-                args: vec![elem],
-                ret_ty: ResolvedTy::Unit,
+        op: hew_types::VecValueOp,
+        args: Vec<HirExpr>,
+        result_ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExprKind {
+        let family = hew_types::RuntimeCallFamily::Vector(op);
+        let callee = self.make_expr(
+            HirExprKind::BindingRef {
+                name: format!("vector.{op:?}"),
+                resolved: ResolvedRef::Builtin(family),
             },
-            ResolvedTy::Unit,
+            ResolvedTy::Function {
+                params: args.iter().map(|arg| arg.ty.clone()).collect(),
+                ret: Box::new(result_ty.clone()),
+            },
             IntentKind::Read,
-            span,
-        ))
+            span.clone(),
+        );
+        HirExprKind::Call {
+            target: CallTarget::Runtime(family),
+            callee: Box::new(callee),
+            args,
+        }
+    }
+
+    fn normalize_vector_call(
+        &mut self,
+        kind: HirExprKind,
+        ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExprKind {
+        match kind {
+            HirExprKind::Call {
+                target: CallTarget::Runtime(hew_types::RuntimeCallFamily::VecNew),
+                args,
+                ..
+            } => self.vector_call_kind(hew_types::VecValueOp::New, args, ty, span),
+            HirExprKind::ResolvedImplCall {
+                target: CallTarget::RuntimeCollection(hew_types::MethodTargetFamily::Vec(method)),
+                receiver,
+                args,
+                ..
+            } if hew_types::VecValueOp::from_method(method).is_some() => {
+                let op = hew_types::VecValueOp::from_method(method)
+                    .expect("matched semantic vector method");
+                let mut operands = vec![*receiver];
+                operands.extend(args);
+                self.vector_call_kind(op, operands, ty, span)
+            }
+            other => other,
+        }
     }
 
     fn lower_array_literal(
@@ -22345,7 +22315,7 @@ impl LowerCtx {
         elems: &[Spanned<Expr>],
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((vec_ty, elem_ty)) = self.array_literal_vec_ty(span) else {
+        let Some((vec_ty, _)) = self.array_literal_vec_ty(span) else {
             return (
                 HirExprKind::Unsupported("array literal missing checker element type".into()),
                 ResolvedTy::Unit,
@@ -22359,7 +22329,7 @@ impl LowerCtx {
         let block_scope = self.ids.scope();
         self.push_scope();
         let temp_name = format!("__hew_array_{}", self.ids.binding().0);
-        let temp_binding = self.bind(temp_name.clone(), vec_ty.clone(), false, span.clone());
+        let temp_binding = self.bind(temp_name.clone(), vec_ty.clone(), true, span.clone());
         let temp_binding_id = temp_binding.id;
         let init_stmt = HirStmt {
             node: self.ids.node(),
@@ -22371,7 +22341,6 @@ impl LowerCtx {
         };
         let mut statements = Vec::with_capacity(lowered_elems.len() + 1);
         statements.push(init_stmt);
-        let mut push_failed = false;
         for elem in lowered_elems {
             let vec_ref = self.make_binding_ref(
                 temp_name.clone(),
@@ -22380,16 +22349,12 @@ impl LowerCtx {
                 IntentKind::Read,
                 elem.span.clone(),
             );
-            if let Some(push_expr) = self.make_vec_push_expr(vec_ref, elem, &elem_ty, span.clone())
-            {
-                statements.push(HirStmt {
-                    node: self.ids.node(),
-                    kind: HirStmtKind::Expr(push_expr),
-                    span: span.clone(),
-                });
-            } else {
-                push_failed = true;
-            }
+            let push_expr = self.make_vec_push_expr(vec_ref, elem, span.clone());
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Expr(push_expr),
+                span: span.clone(),
+            });
         }
         let tail = self.make_binding_ref(
             temp_name,
@@ -22399,13 +22364,6 @@ impl LowerCtx {
             span.clone(),
         );
         self.pop_scope();
-
-        if push_failed {
-            return (
-                HirExprKind::Unsupported("array literal element type has no Vec push ABI".into()),
-                ResolvedTy::Unit,
-            );
-        }
 
         (
             HirExprKind::Block(HirBlock {
@@ -22450,7 +22408,7 @@ impl LowerCtx {
         let mut statements = Vec::new();
 
         let vec_name = format!("__hew_repeat_{}", self.ids.binding().0);
-        let vec_binding = self.bind(vec_name.clone(), vec_ty.clone(), false, span.clone());
+        let vec_binding = self.bind(vec_name.clone(), vec_ty.clone(), true, span.clone());
         let vec_id = vec_binding.id;
         statements.push(HirStmt {
             node: self.ids.node(),
@@ -22542,14 +22500,7 @@ impl LowerCtx {
             ),
             None => self.lower_expr(value, IntentKind::Read),
         };
-        let Some(push_expr) = self.make_vec_push_expr(vec_ref, push_elem, &elem_ty, span.clone())
-        else {
-            self.pop_scope();
-            return (
-                HirExprKind::Unsupported("array-repeat element type has no Vec push ABI".into()),
-                ResolvedTy::Unit,
-            );
-        };
+        let push_expr = self.make_vec_push_expr(vec_ref, push_elem, span.clone());
         let push_stmt = HirStmt {
             node: self.ids.node(),
             kind: HirStmtKind::Expr(push_expr),
@@ -22885,16 +22836,7 @@ impl LowerCtx {
                     IntentKind::Read,
                     span.clone(),
                 );
-                let Some(push) = self.make_vec_push_expr(out_ref, mapped, out_ty, span.clone())
-                else {
-                    self.pop_scope();
-                    return (
-                        HirExprKind::Unsupported(
-                            "Vec.map result element type has no Vec push ABI".into(),
-                        ),
-                        result_ty,
-                    );
-                };
+                let push = self.make_vec_push_expr(out_ref, mapped, span.clone());
                 let push_stmt = HirStmt {
                     node: self.ids.node(),
                     kind: HirStmtKind::Expr(push),
@@ -22929,16 +22871,7 @@ impl LowerCtx {
                     IntentKind::Read,
                     span.clone(),
                 );
-                let Some(push) = self.make_vec_push_expr(out_ref, kept_read, elem_ty, span.clone())
-                else {
-                    self.pop_scope();
-                    return (
-                        HirExprKind::Unsupported(
-                            "Vec.filter element type has no Vec push ABI".into(),
-                        ),
-                        result_ty,
-                    );
-                };
+                let push = self.make_vec_push_expr(out_ref, kept_read, span.clone());
                 let push_stmt = HirStmt {
                     node: self.ids.node(),
                     kind: HirStmtKind::Expr(push),

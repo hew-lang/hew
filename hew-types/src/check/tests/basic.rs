@@ -1099,7 +1099,7 @@ fn for_range_start_literal_and_unannotated_end_bound_narrow_together() {
     let source = r"
         fn main() {
             let n = 6;
-            let xs: Vec<i32> = Vec.new();
+            var xs: Vec<i32> = Vec.new();
             for i in 0 .. n {
                 xs.push(i);
             }
@@ -1123,11 +1123,11 @@ fn for_range_narrowing_does_not_leak_to_sibling_range_over_concrete_i64_bound() 
     let source = r"
         fn main() {
             let n = 6;
-            let xs: Vec<i32> = Vec.new();
+            var xs: Vec<i32> = Vec.new();
             for i in 0 .. n {
                 xs.push(i);
             }
-            let ys: Vec<i32> = Vec.new();
+            var ys: Vec<i32> = Vec.new();
             ys.push(1);
             let len = ys.len();
             for e in 0 .. len {

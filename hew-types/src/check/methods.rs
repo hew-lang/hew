@@ -7964,6 +7964,21 @@ impl Checker {
                     | OptionResultMethod::ResultUnwrapOr,
             })
         );
+        let runtime_rewrite_updates_receiver = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::RewriteToFunction {
+                descriptor: Some(descriptor),
+                ..
+            }) if matches!(
+                descriptor.family().semantic_contract().map(|contract| contract.result),
+                Some(crate::runtime_call::RuntimeResultEffect::UpdatedReceiver(_))
+            )
+        );
+        if runtime_rewrite_updates_receiver {
+            if let Expr::Identifier(name) = &receiver.0 {
+                self.env.mark_written(name);
+            }
+        }
         if runtime_rewrite_consumes_receiver || builtin_option_result_consumes_receiver {
             self.method_call_consumes_receiver.insert(key);
             if let Expr::Identifier(name) = &receiver.0 {

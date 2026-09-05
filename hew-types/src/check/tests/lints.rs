@@ -692,6 +692,18 @@ fn no_warn_var_actually_mutated() {
 }
 
 #[test]
+fn bytes_receiver_transform_counts_as_reassignment() {
+    let (errors, warnings) = parse_and_check_with_stdlib(include_str!(
+        "../../../../tests/core-acceptance/cases/bytes-copy-mutate.hew"
+    ));
+    assert!(errors.is_empty(), "errors: {errors:?}");
+    assert!(
+        warnings.is_empty(),
+        "the bytes receiver transform must remain clean under --Werror: {warnings:?}"
+    );
+}
+
+#[test]
 fn mutable_param_can_be_reassigned() {
     let (errors, warnings) = parse_and_check("fn bump(var x: i64) -> i64 { x = x + 1; x }");
     assert!(errors.is_empty(), "errors: {errors:?}");

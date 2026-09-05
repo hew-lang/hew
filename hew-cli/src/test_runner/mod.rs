@@ -210,7 +210,6 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             compile_paths: &compile_paths,
             timeout,
             jobs: requested_jobs(args.jobs),
-            sir_mode: args.sir.mode(),
         },
     );
     output::output_results(&summary, use_color, format, &root);

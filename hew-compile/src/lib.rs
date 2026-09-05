@@ -142,67 +142,76 @@ impl Session {
         )
     }
 
-    /// Lower already verified HIR through the complete build check set.
+    /// Verify and canonicalize ownership semantics shared by every host.
     ///
-    /// The MIR lowering below runs unconditionally for every host: it is the
-    /// one pipeline every `Session` produces, which is what keeps wasm and
-    /// native lint output identical. The native LLVM backend-front check
-    /// (`check_pipeline`) layers on top of that when the `codegen` feature is
-    /// compiled in; hosts that build without it (hew-wasm) still get the
-    /// exact same pipeline, just without a codegen verdict they never read.
-    #[must_use]
+    /// # Errors
+    ///
+    /// Returns the first failing semantic boundary with its diagnostics.
     pub fn lower_hir_module(
         &self,
         module: &hew_hir::HirModule,
         tco: &hew_types::TypeCheckOutput,
-    ) -> SessionOutput {
-        let mut pipeline = hew_mir::lower_hir_module_with_facts(module, self.target.pointer_width);
-        pipeline.attach_lowering_facts(tco);
-        #[cfg(feature = "codegen")]
-        let codegen_error = self.check_pipeline(&pipeline);
-        SessionOutput {
-            pipeline,
-            #[cfg(feature = "codegen")]
-            codegen_error,
+    ) -> Result<SessionOutput, SessionError> {
+        let diagnostics = hew_hir::verify_hir(module);
+        if !diagnostics.is_empty() {
+            return Err(SessionError::Hir(diagnostics));
         }
+        let mut sir = hew_sir::lower_module(module, tco);
+        let diagnostics = hew_sir::verify_module(&sir.module);
+        if !diagnostics.is_empty() {
+            return Err(SessionError::Semantic(diagnostics));
+        }
+        hew_sir::canonicalize_module_constant_cfg(&mut sir.module).map_err(
+            |error| match error {
+                hew_sir::SirOptimizationError::InvalidInput(diagnostics)
+                | hew_sir::SirOptimizationError::InvalidOutput(diagnostics) => {
+                    SessionError::Semantic(diagnostics)
+                }
+            },
+        )?;
+        Ok(SessionOutput { sir })
     }
+}
 
-    /// Lower the strict SIR lane through this same session authority.
+/// Verified semantic compilation result, independent of the execution host.
+#[derive(Debug)]
+pub struct SessionOutput {
+    pub sir: hew_sir::LoweredModule,
+}
+
+impl SessionOutput {
+    /// Realize verified semantics using the backend's measured target layouts.
     ///
     /// # Errors
     ///
-    /// Returns [`hew_mir::SirMirLoweringError`] when the entry point's
-    /// component cannot be closed over the SIR module (for example a
-    /// missing callable body).
-    pub fn lower_sir_module(
+    /// Returns a physical lowering or verification diagnostic.
+    pub fn lower_physical(
         &self,
-        module: &hew_sir::SemModule,
-    ) -> Result<hew_mir::SirMirComponent, hew_mir::SirMirLoweringError> {
-        hew_mir::lower_entry_component(module)
+        target: hew_mir::PhysicalTarget,
+    ) -> Result<hew_mir::VerifiedPhysicalModule, hew_mir::PhysicalError> {
+        hew_mir::lower_physical_module(&self.sir.module, target)
     }
+}
 
-    #[cfg(feature = "codegen")]
-    #[must_use]
-    pub fn check_pipeline(
-        &self,
-        pipeline: &hew_mir::IrPipeline,
-    ) -> Option<hew_codegen_rs::CodegenError> {
-        match self.target.codegen_triple.as_deref() {
-            Some(triple) => {
-                hew_codegen_rs::validate_codegen_front_for_triple(pipeline, triple).err()
+/// Diagnostics from the shared semantic compilation boundary.
+#[derive(Debug)]
+pub enum SessionError {
+    Hir(Vec<hew_hir::HirDiagnostic>),
+    Semantic(Vec<hew_sir::SirDiagnostic>),
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hir(diagnostics) => write!(formatter, "HIR verification failed: {diagnostics:?}"),
+            Self::Semantic(diagnostics) => {
+                write!(formatter, "SIR verification failed: {diagnostics:?}")
             }
-            None => hew_codegen_rs::validate_codegen_front(pipeline).err(),
         }
     }
 }
 
-/// Checked MIR and the backend-front result produced by [`Session`].
-#[derive(Debug)]
-pub struct SessionOutput {
-    pub pipeline: hew_mir::IrPipeline,
-    #[cfg(feature = "codegen")]
-    pub codegen_error: Option<hew_codegen_rs::CodegenError>,
-}
+impl std::error::Error for SessionError {}
 
 #[derive(Debug, Clone)]
 pub enum FrontendDiagnosticKind {
@@ -2894,8 +2903,10 @@ mod tests {
                     "diamond fixture must lower without HIR diagnostics: {:#?}",
                     hir.diagnostics
                 );
-                let output = session.lower_hir_module(&hir.module, tco);
-                hew_mir::dump_mir(&output.pipeline, hew_mir::DumpStage::Raw)
+                let output = session
+                    .lower_hir_module(&hir.module, tco)
+                    .expect("diamond fixture must verify");
+                hew_sir::dump_lowering(&output.sir)
             })
             .collect();
         assert!(

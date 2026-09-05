@@ -10616,15 +10616,17 @@ impl LowerCtx {
             // `hew_node_api_lookup_location`) is a different callee identity than
             // the family's `c_symbol()`, and carrying the family there
             // would break the `Terminator::Call` builtin↔callee invariant.
-            let primary_family = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                builtin.name,
-            )
-            .or_else(|| {
-                builtin
-                    .linkage
-                    .runtime_symbol()
-                    .and_then(hew_types::runtime_call::RuntimeCallFamily::from_c_symbol)
-            });
+            let primary_family =
+                hew_types::runtime_call::RuntimeCallFamily::from_catalog_endpoint(builtin.name)
+                    .or_else(|| {
+                        hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(builtin.name)
+                    })
+                    .or_else(|| {
+                        builtin
+                            .linkage
+                            .runtime_symbol()
+                            .and_then(hew_types::runtime_call::RuntimeCallFamily::from_c_symbol)
+                    });
             self.fn_registry.insert(
                 builtin.name.to_string(),
                 FnEntry {

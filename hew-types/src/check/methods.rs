@@ -1663,11 +1663,11 @@ impl Checker {
         if !canonical_stdlib {
             return None;
         }
-        let family = declaration.family?;
-        // The descriptor is a three-way join: the source table names the only
-        // signature that may lift this family, and the typed family
-        // independently confirms that it emits the same ABI endpoint.
-        (family.c_symbol() == c_symbol).then_some(family)
+        // The exact declaration table is the normalization boundary. Most
+        // rows retain their source ABI endpoint, while `bytes::len` deliberately
+        // maps the legacy Vec-shaped source bridge to the semantic Bytes
+        // family so later phases cannot accidentally choose a Vec ABI.
+        declaration.family
     }
 
     /// Record a rewrite for a **closed-set builtin** runtime-ABI method call.
@@ -8103,6 +8103,13 @@ impl Checker {
         ) || is_suspending_io_delivery
         {
             Ownership::owned(Acquisition::Delivery)
+        } else if runtime_family.is_some_and(|family| {
+            !matches!(
+                family.result_ownership(),
+                crate::runtime_call::RuntimeResultOwnership::Untracked
+            )
+        }) {
+            Ownership::owned(Acquisition::Fresh)
         } else if let Some(call) = resolved_call {
             call.method_target.family.result_ownership()
         } else {

@@ -17,6 +17,7 @@ pub mod liveness;
 pub mod lower;
 pub mod model;
 pub mod ownership;
+pub mod physical;
 pub mod raw_values;
 pub mod return_provenance;
 pub mod runtime_call;
@@ -93,6 +94,13 @@ pub use ownership::{
     AbiClass, CowHeapRelease, DropClass, FailClosedReason, HandleRole, HeapLeaf,
     InPlaceReleaseKind, LayoutClass, OwnershipCtx, OwnershipDecision, PlaceProvenance, Projection,
     ProvenanceOrigin, ValueOwnership, ValueProvenance,
+};
+pub use physical::{
+    lower_physical_module, ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier,
+    PhysicalBlock, PhysicalCallable, PhysicalCheckedFailure, PhysicalConst, PhysicalEdge,
+    PhysicalError, PhysicalFunction, PhysicalLayout, PhysicalModule, PhysicalOp, PhysicalParam,
+    PhysicalRepr, PhysicalRuntimeAction, PhysicalStorage, PhysicalTarget, PhysicalTerminator,
+    ReturnTransfer, StorageId, StorageOrigin, VerifiedPhysicalModule,
 };
 pub use raw_values::{
     is_supported_raw_virtual_scalar_type, raw_uses_virtual_values, raw_virtual_class,

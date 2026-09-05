@@ -120,6 +120,14 @@ pub enum TrapKind {
     DivideByZero,
     SignedMinDivNegOne,
     ShiftOutOfRange,
+    IndexOutOfBounds,
+}
+
+#[must_use]
+pub const fn runtime_failure_trap_kind(failure: hew_types::RuntimeLogicalFailure) -> TrapKind {
+    match failure {
+        hew_types::RuntimeLogicalFailure::IndexOutOfBounds => TrapKind::IndexOutOfBounds,
+    }
 }
 
 /// Exact language-visible failures for a checked binary integer operation.

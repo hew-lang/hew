@@ -35,13 +35,10 @@ pub(crate) mod arith;
 pub mod coro;
 pub(crate) mod layout;
 pub mod llvm;
+pub mod physical;
 pub(crate) mod runtime_abi;
 #[cfg(test)]
 mod runtime_family_parity;
-// The paired physical-emitter checkpoint owns the sanitizer option and calls
-// this helper. Unit tests exercise it now; remove this allowance when that
-// caller lands.
-#[allow(dead_code)]
 pub(crate) mod sanitizer;
 pub(crate) mod suspend;
 pub(crate) mod thunks;
@@ -53,4 +50,8 @@ pub use llvm::{
     entry_body_symbol_for_triple, native_emission_triple, validate_codegen_front,
     validate_codegen_front_for_triple, verify_pipeline, CleanupTargetCapabilities,
     CleanupUnwindStrategy, CodegenError, EmitArtefacts, EmitOptions, OptLevel,
+};
+pub use physical::{
+    emit_physical_object, physical_target_for_triple, validate_physical_codegen,
+    PhysicalEmitOptions,
 };

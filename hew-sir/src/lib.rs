@@ -36,9 +36,9 @@ pub use optimize::{
     canonicalize_module_constant_cfg, CfgCanonicalizationReport, SirOptimizationError,
 };
 pub use ownership::{
-    checked_binary_failure_kinds, Binding, BindingId, BindingTarget, BoundaryDecision,
-    BytesLiteralId, OwnKind, PlaceDecl, PlaceId, SnapshotDecision, StringLiteralId, SuspendKind,
-    TrapKind,
+    checked_binary_failure_kinds, runtime_failure_trap_kind, Binding, BindingId, BindingTarget,
+    BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl, PlaceId, SnapshotDecision,
+    StringLiteralId, SuspendKind, TrapKind,
 };
 pub use verify::{
     verify_function, verify_function_in_module, verify_module, CfgDiscardSafetyReason,

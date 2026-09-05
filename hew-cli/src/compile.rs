@@ -25,18 +25,6 @@ use hew_parser::ast::{ImportDecl, Item, Spanned};
 
 use crate::target::TargetSpec;
 
-/// Selects how the Semantic IR lane participates in a compilation.
-///
-/// `Lower` is the strict cutover lane for its admitted domain: it lowers a
-/// closed SIR direct-call graph into fresh raw/checked MIR and rejects every
-/// reachable unsupported callee instead of mixing legacy function bodies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SirMode {
-    #[default]
-    Disabled,
-    Lower,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
     pub no_typecheck: bool,
@@ -63,10 +51,6 @@ pub struct CompileOptions {
     /// [`hew_compile::FrontendOptions::lint_levels`]. Defaults to every lint's
     /// built-in level.
     pub lint_levels: hew_types::LintLevels,
-    /// Experimental SIR execution mode. Kept in compile options rather than
-    /// only the `compile` command so the test runner can exercise the same
-    /// lane through the in-process native compiler.
-    pub sir_mode: SirMode,
 }
 
 pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {

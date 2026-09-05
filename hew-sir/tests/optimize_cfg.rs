@@ -2,10 +2,10 @@ use hew_hir::ItemId;
 use hew_sir::{
     canonicalize_module_constant_cfg, verify_function_in_module, verify_module, BlockArg, BlockId,
     BoundaryDecision, BoundaryOperand, CallableId, CallableInstance, CfgCanonicalizationReport,
-    CfgDiscardSafetyReason, Edge, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance,
-    SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
-    SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
-    SirOptimizationError, ValueDef, ValueId,
+    Edge, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance, SemAbiParam, SemBlock,
+    SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind,
+    SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind, SirOptimizationError,
+    ValueDef, ValueId,
 };
 use hew_types::{DefId, ResolvedTy, TypeFactContext, TypeFactService};
 use std::collections::BTreeMap;
@@ -273,7 +273,7 @@ fn compaction_preserves_every_surviving_non_block_identity_and_fact() {
 }
 
 #[test]
-fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() {
+fn discard_safety_preserves_a_trapping_arm_that_structural_verification_accepts() {
     let mut function = function(
         "discarded_trap",
         Vec::new(),
@@ -332,19 +332,10 @@ fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() 
     )
     .is_empty());
 
-    let error =
-        canonicalize(&mut function).expect_err("discarding a trapping terminator must fail closed");
-    assert!(matches!(
-        error,
-        SirOptimizationError::InvalidOutput(diagnostics)
-            if diagnostics.iter().any(|diagnostic| matches!(
-                &diagnostic.kind,
-                SirDiagnosticKind::UnsafeCfgDiscard {
-                    block: BlockId(2),
-                    reason: CfgDiscardSafetyReason::MayTrapTerminator,
-                }
-            ))
-    ));
+    let report = canonicalize(&mut function)
+        .expect("an unsafe optional fold must retain the original valid CFG");
+    assert_eq!(report.folded_branches, 0);
+    assert!(report.removed_blocks.is_empty());
     assert_eq!(function, before);
 }
 

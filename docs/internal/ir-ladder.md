@@ -1,4 +1,11 @@
-# Hew IR Ladder — Normative Internal Reference (v2, revision 7)
+# Hew IR Ladder — Historical Design Reference (v2, revision 7)
+
+This is a historical design snapshot, not the current driver or gate contract.
+Native commands now consume verified ownership SIR through physical MIR. The
+alternate native body route, `sir-coverage` and `sir-parity` have been retired;
+`make core-acceptance` checks explicit native results at O0 and O2 instead.
+Remaining phase and command descriptions below document the earlier design,
+not evidence of implemented language support.
 
 This document is the contract for the final Hew IR ladder. It replaces
 `docs/internal/v05-ir-ladder.md` (deleted in P0; §9 lists every reference that

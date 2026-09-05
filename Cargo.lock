@@ -1795,6 +1795,7 @@ dependencies = [
  "hew-mir",
  "hew-parser",
  "hew-runtime",
+ "hew-sir",
  "hew-testutil",
  "hew-types",
  "inkwell",

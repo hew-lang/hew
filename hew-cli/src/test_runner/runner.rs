@@ -233,7 +233,6 @@ pub struct TestRunOptions<'a> {
     pub compile_paths: &'a TestCompilePaths,
     pub timeout: Duration,
     pub jobs: usize,
-    pub sir_mode: crate::compile::SirMode,
 }
 
 /// Run a set of test cases.
@@ -291,7 +290,6 @@ fn run_tests_serial(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestSum
                 options.ffi_lib,
                 options.compile_paths,
                 options.timeout,
-                options.sir_mode,
             );
             match &result.outcome {
                 TestOutcome::Passed => passed += 1,
@@ -387,7 +385,6 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                             options.ffi_lib,
                             options.compile_paths,
                             options.timeout,
-                            options.sir_mode,
                         )
                     } else {
                         run_single_test(
@@ -395,7 +392,6 @@ fn run_tests_parallel(tests: &[TestCase], options: &TestRunOptions<'_>) -> TestS
                             options.ffi_lib,
                             options.compile_paths,
                             options.timeout,
-                            options.sir_mode,
                         )
                     };
                     result_slots
@@ -445,7 +441,6 @@ fn compile_test(
     test: &TestCase,
     ffi_lib: Option<&str>,
     compile_paths: &TestCompilePaths,
-    sir_mode: crate::compile::SirMode,
 ) -> Result<CompiledTestArtifact, String> {
     let emit_dir = tempfile::Builder::new()
         .prefix("hew_test_emit_")
@@ -467,7 +462,6 @@ fn compile_test(
         module_search_paths: Some(compile_paths.paths.module_search_paths.clone()),
         entry_selection: Some(test.occurrence),
         companion: test.companion.as_deref().map(PathBuf::from),
-        sir_mode,
         ..crate::compile::CompileOptions::default()
     };
 
@@ -499,11 +493,10 @@ fn run_single_test(
     ffi_lib: Option<&str>,
     compile_paths: &TestCompilePaths,
     timeout: Duration,
-    sir_mode: crate::compile::SirMode,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
-    let artifact = match compile_test(test, ffi_lib, compile_paths, sir_mode) {
+    let artifact = match compile_test(test, ffi_lib, compile_paths) {
         Ok(artifact) => artifact,
         Err(msg) => {
             let outcome = if test.should_panic {
@@ -749,7 +742,6 @@ mod tests {
                 compile_paths: cargo_test_compile_paths(),
                 timeout,
                 jobs: 1,
-                sir_mode: crate::compile::SirMode::Disabled,
             },
         );
         drop(source_dir);
@@ -769,7 +761,6 @@ mod tests {
                 compile_paths: cargo_test_compile_paths(),
                 timeout: DEFAULT_TEST_TIMEOUT,
                 jobs: 1,
-                sir_mode: crate::compile::SirMode::Disabled,
             },
         )
     }
@@ -1110,7 +1101,6 @@ fn test_timeout() {
                 compile_paths: &unused_paths,
                 timeout: DEFAULT_TEST_TIMEOUT,
                 jobs: 2,
-                sir_mode: crate::compile::SirMode::Disabled,
             },
         );
         let names: Vec<_> = summary

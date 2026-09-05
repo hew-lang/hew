@@ -533,67 +533,43 @@ struct AnalyzedSource {
     /// unconditional `"error"` severity: MIR lints are level-controlled style
     /// findings and must never make the playground show red for code the
     /// native compiler accepts.
-    mir_lints: Vec<hew_mir::MirLint>,
+    semantic_diagnostics: Vec<WasmDiagnostic>,
 }
 
 /// Lower to MIR and collect the MIR-stage lint findings, applying the same
-/// suppression policy the CLI's `render_pipeline_mir_lints` applies.
+/// suppression policy the CLI's `render_pipeline_semantic_diagnostics` applies.
 ///
 /// Degrades silently to an empty vector on any lowering trouble. The shared
 /// session still runs the build check set at wasm32 pointer width; this browser
 /// renderer retains its historical warning-only presentation policy.
-fn collect_mir_lints(
-    source: &str,
+fn collect_semantic_diagnostics(
     hir_module: &hew_hir::HirModule,
     tco: &hew_types::TypeCheckOutput,
-) -> Vec<hew_mir::MirLint> {
+) -> Vec<WasmDiagnostic> {
     let session = hew_compile::Session::new(
         hew_compile::SessionTarget::wasm32(),
         hew_compile::DiagnosticPolicy::default(),
     );
-    let pipeline = session.lower_hir_module(hir_module, tco).pipeline;
-    let levels = hew_types::LintLevels::default();
-    pipeline
-        .lint_warnings
-        .into_iter()
-        .filter(|warning| {
-            let span_start = warning.span.0 as usize;
-            let span_end = warning.span.1 as usize;
-            // A span past the end of the buffer belongs to an imported module
-            // we cannot position in the single-source playground.
-            span_end <= source.len()
-                && !hew_types::directive_suppresses(source, span_start, warning.lint)
-                && levels.level(warning.lint) != hew_types::LintLevel::Allow
-        })
-        .collect()
-}
-
-/// Convert a MIR lint finding into a playground diagnostic.
-///
-/// Severity is `"warning"`, never `"error"` — the MIR lint path deliberately
-/// does not reuse [`hir_diagnostic_to_wasm`]'s unconditional error mapping.
-fn mir_lint_to_wasm(lint: &hew_mir::MirLint) -> WasmDiagnostic {
-    let span = WasmSpan {
-        start: lint.span.0 as usize,
-        end: lint.span.1 as usize,
-    };
-    WasmDiagnostic {
-        severity: "warning".to_string(),
-        phase: "mir",
-        message: lint.message.clone(),
-        span,
-        start_offset: span.start,
-        end_offset: span.end,
-        kind: lint.lint.as_str().to_string(),
-        notes: Vec::new(),
-        suggestions: Vec::new(),
-        source_module: None,
+    match session.lower_hir_module(hir_module, tco) {
+        Ok(_) => Vec::new(),
+        Err(error) => vec![WasmDiagnostic {
+            severity: "error".to_string(),
+            phase: "sir",
+            message: error.to_string(),
+            span: WasmSpan { start: 0, end: 0 },
+            start_offset: 0,
+            end_offset: 0,
+            kind: "E_SIR_VERIFY".to_string(),
+            notes: Vec::new(),
+            suggestions: Vec::new(),
+            source_module: None,
+        }],
     }
 }
 
 fn parse_and_type_check(source: &str) -> AnalyzedSource {
     let parse_result = hew_parser::parse(source);
-    let (type_output, hir_diagnostics, mir_lints) = if parse_result.errors.is_empty() {
+    let (type_output, hir_diagnostics, semantic_diagnostics) = if parse_result.errors.is_empty() {
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
             hew_types::module_registry::build_module_search_paths(),
         ));
@@ -614,7 +590,7 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
         // sandbox VM, which has its own coroutine scheduler). Using X86_64
         // lets actors/machines pass HIR lowering while still catching
         // CheckerBoundaryViolation diagnostics that arise regardless of target.
-        let mut mir_lints = Vec::new();
+        let mut semantic_diagnostics = Vec::new();
         let hir_diagnostics = if tco.errors.is_empty() {
             let lower_output = hew_hir::lower_program(
                 &parse_result.program,
@@ -641,13 +617,13 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
             // skipping it also keeps the added browser cost off every buffer
             // that is mid-edit and already erroring.
             if diags.is_empty() {
-                mir_lints = collect_mir_lints(source, &lower_output.module, &tco);
+                semantic_diagnostics = collect_semantic_diagnostics(&lower_output.module, &tco);
             }
             diags
         } else {
             Vec::new()
         };
-        (Some(tco), hir_diagnostics, mir_lints)
+        (Some(tco), hir_diagnostics, semantic_diagnostics)
     } else {
         (None, Vec::new(), Vec::new())
     };
@@ -656,7 +632,7 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
         parse_result,
         type_output,
         hir_diagnostics,
-        mir_lints,
+        semantic_diagnostics,
     }
 }
 
@@ -846,7 +822,7 @@ fn convert_diagnostics(
     parse_errors: Vec<hew_parser::ParseError>,
     type_output: Option<hew_types::TypeCheckOutput>,
     hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
-    mir_lints: &[hew_mir::MirLint],
+    semantic_diagnostics: Vec<WasmDiagnostic>,
 ) -> Vec<WasmDiagnostic> {
     let mut diagnostics = convert_parse_diagnostics(parse_errors);
     if let Some(type_output) = type_output {
@@ -854,7 +830,7 @@ fn convert_diagnostics(
         diagnostics.extend(type_output.warnings.into_iter().map(type_error_to_wasm));
     }
     diagnostics.extend(hir_diagnostics.into_iter().map(hir_diagnostic_to_wasm));
-    diagnostics.extend(mir_lints.iter().map(mir_lint_to_wasm));
+    diagnostics.extend(semantic_diagnostics);
     diagnostics
 }
 
@@ -890,13 +866,13 @@ fn run_type_check(source: &str) -> TypeCheckResult {
         parse_result,
         type_output,
         hir_diagnostics,
-        mir_lints,
+        semantic_diagnostics,
     } = analysis;
     let diagnostics = convert_diagnostics(
         parse_result.errors,
         type_output,
         hir_diagnostics,
-        &mir_lints,
+        semantic_diagnostics,
     );
 
     TypeCheckResult {
@@ -942,13 +918,13 @@ fn run_analysis(source: &str) -> AnalysisResult {
         parse_result,
         type_output,
         hir_diagnostics,
-        mir_lints,
+        semantic_diagnostics,
     } = analysis;
     let diagnostics = convert_diagnostics(
         parse_result.errors,
         type_output,
         hir_diagnostics,
-        &mir_lints,
+        semantic_diagnostics,
     );
 
     AnalysisResult {
@@ -2341,12 +2317,12 @@ mod tests {
         assert_eq!(wasm.target.pointer_width, hew_mir::PointerWidth::Bits32);
         assert_eq!(
             wasm.lower_hir_module(&hir.module, &tco)
-                .pipeline
-                .lint_warnings,
+                .map(|output| format!("{:?}", output.sir))
+                .map_err(|error| error.to_string()),
             build
                 .lower_hir_module(&hir.module, &tco)
-                .pipeline
-                .lint_warnings,
+                .map(|output| format!("{:?}", output.sir))
+                .map_err(|error| error.to_string()),
             "wasm must run the build check set while retaining its own ABI width"
         );
     }

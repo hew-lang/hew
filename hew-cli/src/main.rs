@@ -33,7 +33,6 @@ mod diagnostic;
 mod diagnostic_json;
 mod doc;
 mod eval;
-mod explain_cow;
 mod help;
 mod jit;
 mod link;
@@ -47,7 +46,6 @@ mod router;
 mod run_temp;
 #[cfg(unix)]
 mod signal;
-mod sir_coverage;
 mod target;
 mod test_runner;
 mod util;
@@ -143,253 +141,21 @@ impl Drop for JsonDiagnosticFlush {
 /// is unsupported (the error is already printed); the caller returns the exit
 /// code so the single flush chokepoint still runs (never `process::exit` here —
 /// that would bypass the [`JsonDiagnosticFlush`] guard and drop advisories).
-fn resolve_compile_emit_target(requested: Option<&str>) -> Result<CompileEmitTarget, ()> {
-    match requested {
-        None => Ok(CompileEmitTarget::Native),
-        Some("wasm32-unknown-unknown") => Ok(CompileEmitTarget::Wasm),
-        Some(other) => {
-            eprintln!(
-                "Error: unsupported --target `{other}` for `hew compile`; \
-                 supported targets: wasm32-unknown-unknown"
-            );
-            Err(())
-        }
-    }
-}
-
-/// Render the MIR pipeline diagnostics through the source-attributed renderer.
-///
-/// Shared by every native-lowering entry point so a MIR gate failure is
-/// reported identically (and never as a raw `MirDiagnostic { .. }` Debug
-/// payload) regardless of the command. Any MIR diagnostic is a blocking
-/// verifier error; LLVM emission never sees an ownership-invalid function.
-fn render_pipeline_mir_diagnostics(
-    program: &hew_parser::ast::Program,
-    source: &str,
-    label: &str,
-    module: &hew_hir::HirModule,
-    diagnostics: &[hew_mir::MirDiagnostic],
-) -> Option<hew_types::error::DiagChannel> {
-    if diagnostics.is_empty() {
-        return None;
-    }
-    let module_source_map = diagnostic::build_module_source_map(program);
-    let site_spans = hew_hir::collect_site_spans(module);
-    diagnostic::render_mir_diagnostics(source, label, &module_source_map, &site_spans, diagnostics)
-}
-
-/// Surface the MIR-stage lint warnings recorded on `pipeline`, applying the
-/// user's lint levels and in-source `// hew:allow(...)` directives. Returns
-/// `true` if any lint was promoted to an error (`--deny`), which the caller must
-/// turn into a build failure.
-///
-/// MIR lints are level-configurable warnings, so they render through the
-/// warning / error diagnostic path — never the hard `E_MIR_CHECK` family that
-/// [`render_pipeline_mir_diagnostics`] uses for move/init check failures.
-///
-/// Surfaced through the CLI front end only: the LSP and wasm front ends stop at
-/// HIR and never lower to MIR, so they never reach this path. Editor / web
-/// surfacing of MIR lints is tracked in issue #2176.
-fn render_pipeline_mir_lints(
-    source: &str,
-    label: &str,
-    pipeline: &hew_mir::IrPipeline,
-    levels: &hew_types::LintLevels,
-) -> bool {
-    let mut had_error = false;
-    for warning in &pipeline.lint_warnings {
-        let span_start = warning.span.0 as usize;
-        let span_end = warning.span.1 as usize;
-        // The MIR lint span is a raw byte offset carrying no module identity
-        // (post-flatten HIR spans are module-anonymous). For the single-root
-        // case it indexes the root source directly; a span past the end is from
-        // an imported module we cannot faithfully render here, so skip it rather
-        // than point at the wrong line. Precise multi-module MIR-lint surfacing
-        // rides the same editor/web track as the front ends (issue #2176).
-        if span_end > source.len() {
-            continue;
-        }
-        // An in-source `// hew:allow(lint)` wins over any flag level — the same
-        // precedence the HIR-stage lints honour.
-        if hew_types::directive_suppresses(source, span_start, warning.lint) {
-            continue;
-        }
-        let range = span_start..span_end;
-        match levels.level(warning.lint) {
-            hew_types::LintLevel::Allow => {}
-            hew_types::LintLevel::Warn => {
-                if diagnostic_json::json_output_active() {
-                    diagnostic_json::push_json_diagnostic(diagnostic_json::from_mir_lint(
-                        source,
-                        label,
-                        &range,
-                        warning.lint.as_str(),
-                        &warning.message,
-                        false,
-                        hew_types::error::DiagChannel::User,
-                    ));
-                } else {
-                    diagnostic::render_warning_with_raw_notes(
-                        source,
-                        label,
-                        &range,
-                        &warning.message,
-                        &[],
-                        &[],
-                    );
-                }
-            }
-            hew_types::LintLevel::Deny => {
-                if diagnostic_json::json_output_active() {
-                    diagnostic_json::push_json_diagnostic(diagnostic_json::from_mir_lint(
-                        source,
-                        label,
-                        &range,
-                        warning.lint.as_str(),
-                        &warning.message,
-                        true,
-                        hew_types::error::DiagChannel::User,
-                    ));
-                } else {
-                    diagnostic::render_diagnostic_with_raw_notes(
-                        source,
-                        label,
-                        &range,
-                        &warning.message,
-                        &[],
-                        &[],
-                    );
-                }
-                had_error = true;
-            }
-        }
-    }
-    had_error
-}
-
-/// What the strict SIR lane realized: the verified semantic module it started
-/// from and the closed set of callables it owns through raw/checked MIR. The
-/// lane never consults an established MIR body, so there is no second
-/// realization shape to distinguish here.
-#[derive(Debug)]
-struct SirLaneReport {
-    sir: hew_sir::LoweredModule,
-    callables: Vec<hew_sir::CallableId>,
-}
-
-/// Choose a body-lowering lane after HIR has been verified.
-///
-/// `Lower` builds a closed direct-call component from SIR and never asks the
-/// legacy HIR→MIR body lowerer for a function/template. This makes an
-/// unsupported reachable feature a clear compilation error, not a long-lived
-/// mixed-lowering compatibility path.
-fn lower_verified_hir_to_pipeline(
-    module: &hew_hir::HirModule,
-    tco: &hew_types::TypeCheckOutput,
-    target: &target::TargetSpec,
-    sir_mode: compile::SirMode,
-) -> Result<(hew_mir::IrPipeline, Option<SirLaneReport>), DiagChannel> {
-    match sir_mode {
-        compile::SirMode::Disabled => {
-            let output = compiler_session(target).lower_hir_module(module, tco);
-            Ok((output.pipeline, None))
-        }
-        compile::SirMode::Lower => {
-            let sir = lower_verified_hir_to_sir(module, tco)?;
-            let session = compiler_session(target);
-            let component = session.lower_sir_module(&sir.module).map_err(|error| {
-                eprintln!("SIR strict lowering failed: {error}");
-                report_strict_sir_missing_body(&sir, error.missing_body);
-                DiagChannel::User
-            })?;
-            let callables = component.callables().to_vec();
-            let pipeline = component.into_pipeline();
-            if let Some(error) = session.check_pipeline(&pipeline) {
-                eprintln!("SIR strict backend-front validation failed: {error}");
-                return Err(DiagChannel::User);
-            }
-            Ok((pipeline, Some(SirLaneReport { sir, callables })))
-        }
-    }
-}
-
-/// Explain a strict closed-component refusal using the authoritative HIR→SIR
-/// lowering status when the component reached a callable without a SIR body.
-///
-/// The resolved [`hew_sir::CallableId`] comes from the component lowerer, not
-/// its display text. This keeps the diagnostic useful for both an unsupported
-/// entry body and an unsupported direct callee while making the no-fallback
-/// policy explicit at the driver boundary. The source-level fallback joins on
-/// the callable's declaration identity, never on item position.
-fn report_strict_sir_missing_body(
-    sir: &hew_sir::LoweredModule,
-    missing_body: Option<hew_sir::CallableId>,
-) {
-    let Some(missing_body) = missing_body else {
-        return;
-    };
-    let Some(callable) = sir.module.callable(missing_body) else {
-        return;
-    };
-    let reason = sir_unsupported_reason(sir.status_for_callable(missing_body))
-        .or_else(|| sir_unsupported_reason(sir.status_for_declaration(&callable.declaration)));
-    match reason {
-        Some(reason) => eprintln!(
-            "SIR strict lowering: `{}` is outside the current semantic surface: {reason}; no legacy MIR fallback was used",
-            callable.symbol
-        ),
-        None => eprintln!(
-            "SIR strict lowering: `{}` has no SIR body; no legacy MIR fallback was used",
-            callable.symbol
-        ),
-    }
-}
-
-/// The refusal text behind a lowering status, when the status is a refusal.
-fn sir_unsupported_reason(status: Option<&hew_sir::SirLoweringStatus>) -> Option<&str> {
-    match status {
-        Some(hew_sir::SirLoweringStatus::Unsupported { reason }) => Some(reason.as_str()),
-        Some(
-            hew_sir::SirLoweringStatus::Lowered
-            | hew_sir::SirLoweringStatus::GenericTemplate { .. }
-            | hew_sir::SirLoweringStatus::NotReached,
-        )
-        | None => None,
-    }
-}
-
+/// Shared semantic verification for native and analysis consumers.
 fn lower_verified_hir_to_sir(
     module: &hew_hir::HirModule,
     tco: &hew_types::TypeCheckOutput,
 ) -> Result<hew_sir::LoweredModule, DiagChannel> {
-    let mut sir = hew_sir::lower_module(module, tco);
-    let diagnostics = hew_sir::verify_module(&sir.module);
-    if !diagnostics.is_empty() {
-        render_sir_diagnostics("verifier", diagnostics);
-        return Err(DiagChannel::User);
-    }
-    if let Err(error) = hew_sir::canonicalize_module_constant_cfg(&mut sir.module) {
-        let (stage, diagnostics) = match error {
-            hew_sir::SirOptimizationError::InvalidInput(diagnostics) => {
-                ("canonicalization input verifier", diagnostics)
-            }
-            hew_sir::SirOptimizationError::InvalidOutput(diagnostics) => {
-                ("canonicalization output verifier", diagnostics)
-            }
-        };
-        render_sir_diagnostics(stage, diagnostics);
-        return Err(DiagChannel::User);
-    }
-    Ok(sir)
-}
-
-fn render_sir_diagnostics(stage: &str, diagnostics: Vec<hew_sir::SirDiagnostic>) {
-    for diagnostic in diagnostics {
-        eprintln!(
-            "SIR {stage} error in `{}`: {:?}",
-            diagnostic.function, diagnostic.kind
-        );
-    }
+    hew_compile::Session::new(
+        hew_compile::SessionTarget::native(),
+        hew_compile::DiagnosticPolicy::default(),
+    )
+    .lower_hir_module(module, tco)
+    .map(|output| output.sir)
+    .map_err(|error| {
+        diagnostic::emit_plain_diagnostic_line(&format!("E_SIR_VERIFY: {error}"));
+        DiagChannel::Internal
+    })
 }
 
 /// File frontend plus verified HIR, shared by SIR inspection and every
@@ -397,7 +163,6 @@ fn render_sir_diagnostics(stage: &str, diagnostics: Vec<hew_sir::SirDiagnostic>)
 /// stops at the semantic layer instead of inheriting a backend limitation from
 /// an unrelated later stage.
 struct VerifiedFileHir {
-    input: String,
     state: hew_compile::FileFrontendState,
     lower_output: hew_hir::LowerOutput,
 }
@@ -467,7 +232,6 @@ fn lower_file_to_verified_hir(
     }
 
     Ok(VerifiedFileHir {
-        input,
         state,
         lower_output,
     })
@@ -488,87 +252,43 @@ fn lower_file_to_sir(
     lower_verified_hir_to_sir(&verified.lower_output.module, verified.typecheck_output())
 }
 
-fn lower_file_to_mir_with_options(
-    input_path: &Path,
-    requested_target: Option<&str>,
-    options: &compile::CompileOptions,
-) -> Result<(hew_mir::IrPipeline, Option<SirLaneReport>), DiagChannel> {
-    let target = target::TargetSpec::from_requested(requested_target).map_err(|e| {
-        eprintln!("Error: {e}");
-        DiagChannel::User
-    })?;
-    let verified = lower_file_to_verified_hir(input_path, &target, options)?;
-    let (pipeline, sir_report) = lower_verified_hir_to_pipeline(
-        &verified.lower_output.module,
-        verified.typecheck_output(),
-        &target,
-        options.sir_mode,
-    )?;
-    if let Some(channel) = render_pipeline_mir_diagnostics(
-        &verified.state.program,
-        &verified.state.source,
-        &verified.input,
-        &verified.lower_output.module,
-        &pipeline.diagnostics,
-    ) {
-        return Err(channel);
-    }
-
-    // `hew compile` exposes no `-A/-W/-D` flags, so MIR lints surface at their
-    // default levels (`// hew:allow(...)` still suppresses).
-    if render_pipeline_mir_lints(
-        &verified.state.source,
-        &verified.input,
-        &pipeline,
-        &hew_types::LintLevels::default(),
-    ) {
-        return Err(DiagChannel::User);
-    }
-
-    Ok((pipeline, sir_report))
-}
-
-/// Lower a source file to MIR for an explicit, already-resolved target.
-///
-/// Unlike `lower_file_to_mir` (which hardcodes `TargetArch::host()`), this
-/// lowers HIR with the requested target's architecture via `hir_target_arch`,
-/// so cross-target builds tag layout facts with the correct arch.
-fn lower_file_to_mir_for_target(
+fn lower_file_to_physical_for_target(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<(hew_mir::IrPipeline, Vec<std::path::PathBuf>), DiagChannel> {
+) -> Result<(hew_mir::VerifiedPhysicalModule, Vec<PathBuf>), DiagChannel> {
     let verified = lower_file_to_verified_hir(input_path, target, options)?;
-    let (pipeline, sir_report) = lower_verified_hir_to_pipeline(
-        &verified.lower_output.module,
-        verified.typecheck_output(),
-        target,
-        options.sir_mode,
-    )?;
-    if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report);
-    }
-    if let Some(channel) = render_pipeline_mir_diagnostics(
-        &verified.state.program,
-        &verified.state.source,
-        &verified.input,
-        &verified.lower_output.module,
-        &pipeline.diagnostics,
-    ) {
-        return Err(channel);
-    }
-
-    if render_pipeline_mir_lints(
-        &verified.state.source,
-        &verified.input,
-        &pipeline,
-        &options.lint_levels,
-    ) {
-        return Err(DiagChannel::User);
-    }
-
+    let sir =
+        lower_verified_hir_to_sir(&verified.lower_output.module, verified.typecheck_output())?;
+    let triple = target.linker_triple();
+    let physical_target = hew_codegen_rs::physical_target_for_triple(&triple).map_err(|error| {
+        diagnostic::render_codegen_emit_error(&error, Some(input_path));
+        diagnostic::codegen_channel(&error)
+    })?;
+    let physical =
+        hew_mir::lower_physical_module(&sir.module, physical_target).map_err(|error| {
+            eprintln!("Physical MIR lowering failed: {error}");
+            DiagChannel::User
+        })?;
     let native_pkg_dirs = native_link::collect_import_pkg_dirs(&verified.state.program);
-    Ok((pipeline, native_pkg_dirs))
+    Ok((physical, native_pkg_dirs))
+}
+
+fn lower_verified_hir_to_physical(
+    module: &hew_hir::HirModule,
+    tco: &hew_types::TypeCheckOutput,
+    target: &target::TargetSpec,
+) -> Result<hew_mir::VerifiedPhysicalModule, DiagChannel> {
+    let sir = lower_verified_hir_to_sir(module, tco)?;
+    let physical_target = hew_codegen_rs::physical_target_for_triple(&target.linker_triple())
+        .map_err(|error| {
+            diagnostic::render_codegen_emit_error(&error, None);
+            diagnostic::codegen_channel(&error)
+        })?;
+    hew_mir::lower_physical_module(&sir.module, physical_target).map_err(|error| {
+        eprintln!("Physical MIR lowering failed: {error}");
+        DiagChannel::Limitation
+    })
 }
 
 fn hir_target_arch(target: &target::TargetSpec) -> hew_hir::TargetArch {
@@ -577,30 +297,6 @@ fn hir_target_arch(target: &target::TargetSpec) -> hew_hir::TargetArch {
         target::TargetArch::X86_64 => hew_hir::TargetArch::X86_64,
         target::TargetArch::Wasm32 => hew_hir::TargetArch::Wasm32,
     }
-}
-
-/// Map the compile target to the MIR pointer width so the `isize`/`usize`
-/// div/rem and shift trap guards emit the correct per-target constant.
-///
-/// Derived from the requested `--target` (`Wasm32` is the only 32-bit target;
-/// `Aarch64`/`X86_64` are 64-bit), NOT from a host `cfg!` — a cross-compile to
-/// wasm32 on a 64-bit host must emit width-32 guards, not the host's width.
-fn mir_pointer_width(target: &target::TargetSpec) -> hew_mir::PointerWidth {
-    match target.arch() {
-        target::TargetArch::Wasm32 => hew_mir::PointerWidth::Bits32,
-        target::TargetArch::Aarch64 | target::TargetArch::X86_64 => hew_mir::PointerWidth::Bits64,
-    }
-}
-
-fn compiler_session(target: &target::TargetSpec) -> hew_compile::Session {
-    hew_compile::Session::new(
-        hew_compile::SessionTarget {
-            hir_arch: hir_target_arch(target),
-            pointer_width: mir_pointer_width(target),
-            codegen_triple: Some(target.normalized_triple().to_string()),
-        },
-        hew_compile::DiagnosticPolicy::default(),
-    )
 }
 
 /// `true` when `input` is a compiler-owned, import-only stdlib substrate in a
@@ -664,60 +360,13 @@ fn run_check_deep_gates(
         return Err(channel.unwrap_or(DiagChannel::User));
     }
 
-    let output = compiler_session(target).lower_hir_module(&lower_output.module, tco);
-    let codegen_error = output.codegen_error;
-    let pipeline = output.pipeline;
-    if let Some(channel) = render_pipeline_mir_diagnostics(
-        &state.program,
-        &state.source,
-        input,
-        &lower_output.module,
-        &pipeline.diagnostics,
-    ) {
-        return Err(channel);
-    }
-
-    // Surface MIR lint warnings before the codegen-front gate so they read in
-    // source order ahead of any hard error. A `--deny` lint fails the build, but
-    // only after the codegen-front gate has had its say.
-    let lint_denied = render_pipeline_mir_lints(&state.source, input, &pipeline, levels);
-
-    if let Some(error) = codegen_error {
-        diagnostic::render_codegen_front_diagnostic(&error, Some((state.source.as_str(), input)));
-        return Err(diagnostic::codegen_channel(&error));
-    }
-
-    if lint_denied {
-        return Err(DiagChannel::User);
-    }
-
+    let _ = levels;
+    lower_verified_hir_to_sir(&lower_output.module, tco)?;
     Ok(())
 }
 
-fn build_explain_cow_pipeline(
-    target: &target::TargetSpec,
-    state: &hew_compile::FileFrontendState,
-) -> Option<hew_mir::IrPipeline> {
-    let tco = state.typecheck_result.tco.as_ref()?;
-    let lowered = hew_hir::lower_program(
-        &state.program,
-        tco,
-        &hew_hir::ResolutionCtx,
-        hir_target_arch(target),
-    );
-    if !lowered.diagnostics.is_empty() {
-        return None;
-    }
-    let pipeline = compiler_session(target)
-        .lower_hir_module(&lowered.module, tco)
-        .pipeline;
-    // Advisory diagnostics (obligation under-release leaks) are non-blocking; the
-    // explain-cow view is still valid, so proceed unless a hard error is present.
-    pipeline.diagnostics.is_empty().then_some(pipeline)
-}
-
 fn emit_module(
-    pipeline: &hew_mir::IrPipeline,
+    pipeline: &hew_mir::VerifiedPhysicalModule,
     module_name: &str,
     emit_dir: &Path,
     emit_target: CompileEmitTarget,
@@ -750,7 +399,7 @@ fn emit_module(
     reason = "all args are direct fields of EmitOptions; no grouping improves clarity"
 )]
 fn emit_module_with_triple(
-    pipeline: &hew_mir::IrPipeline,
+    pipeline: &hew_mir::VerifiedPhysicalModule,
     module_name: &str,
     emit_dir: &Path,
     emit_target: CompileEmitTarget,
@@ -761,40 +410,33 @@ fn emit_module_with_triple(
     emit_llvm: bool,
     source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
-    let options = hew_codegen_rs::EmitOptions {
-        module_name,
-        out_dir: emit_dir,
-        native: emit_target == CompileEmitTarget::Native,
-        wasm: emit_target == CompileEmitTarget::Wasm,
-        target_triple,
-        debug,
-        opt_level,
-        source_path,
-    };
-    let result = if emit_target == CompileEmitTarget::Wasm && !link_freestanding_wasm {
-        if emit_llvm {
-            hew_codegen_rs::emit_module_objects(pipeline, &options)
-        } else {
-            hew_codegen_rs::emit_module_objects_without_llvm(pipeline, &options)
-        }
-    } else if emit_llvm {
-        hew_codegen_rs::emit_module(pipeline, &options)
-    } else {
-        hew_codegen_rs::emit_module_without_llvm(pipeline, &options)
-    };
-    match result {
-        Ok(artefacts) => Ok(artefacts),
-        Err(e @ hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { .. }) => {
-            let channel = diagnostic::codegen_channel(&e);
-            eprintln!("{}Error: {e}", channel.prefix());
-            Err(channel)
-        }
-        Err(e) => {
-            let channel = diagnostic::codegen_channel(&e);
-            diagnostic::render_codegen_emit_error(&e, source_path);
-            Err(channel)
-        }
+    if emit_target == CompileEmitTarget::Wasm {
+        eprintln!(
+            "E_NOT_YET_IMPLEMENTED: sandbox emission from verified semantics is not implemented"
+        );
+        return Err(DiagChannel::Limitation);
     }
+    if debug {
+        eprintln!("E_NOT_YET_IMPLEMENTED: physical native debug metadata is not implemented");
+        return Err(DiagChannel::Limitation);
+    }
+    let _ = link_freestanding_wasm;
+    hew_codegen_rs::emit_physical_object(
+        pipeline,
+        &hew_codegen_rs::PhysicalEmitOptions {
+            module_name,
+            out_dir: emit_dir,
+            target_triple: Some(target_triple.unwrap_or(&pipeline.module().target.triple)),
+            opt_level,
+            emit_llvm,
+            address_sanitizer: false,
+        },
+    )
+    .map_err(|error| {
+        let channel = diagnostic::codegen_channel(&error);
+        diagnostic::render_codegen_emit_error(&error, source_path);
+        channel
+    })
 }
 
 /// Emit artefacts for an explicit target, threading the target triple into
@@ -811,7 +453,7 @@ fn emit_module_with_triple(
     reason = "all args are direct fields of EmitOptions; no grouping improves clarity"
 )]
 fn emit_module_for_target(
-    pipeline: &hew_mir::IrPipeline,
+    pipeline: &hew_mir::VerifiedPhysicalModule,
     module_name: &str,
     emit_dir: &Path,
     emit_target: CompileEmitTarget,
@@ -838,18 +480,6 @@ fn emit_module_for_target(
         emit_llvm,
         source_path,
     )
-}
-
-fn link_native_object(obj: &Path, bin_path: &Path) -> Result<(), DiagChannel> {
-    link_native_object_with_hew_lib(obj, bin_path, None)
-}
-
-fn link_native_object_with_hew_lib(
-    obj: &Path,
-    bin_path: &Path,
-    hew_lib: Option<&Path>,
-) -> Result<(), DiagChannel> {
-    link_native_object_with_hew_lib_and_extra(obj, bin_path, hew_lib, &[])
 }
 
 fn link_native_object_with_hew_lib_and_extra(
@@ -892,10 +522,12 @@ fn compile_native_binary_with_paths(
     paths: Option<&NativeBuildPaths>,
     extra_libs: &[String],
 ) -> Result<(), DiagChannel> {
-    let (pipeline, sir_report) = lower_file_to_mir_with_options(input, None, options)?;
-    if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report);
-    }
+    let target =
+        target::TargetSpec::from_requested(options.target.as_deref()).map_err(|error| {
+            eprintln!("Error: {error}");
+            DiagChannel::User
+        })?;
+    let (pipeline, _) = lower_file_to_physical_for_target(input, &target, options)?;
     let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = bin_path
         .file_stem()
@@ -1016,25 +648,7 @@ pub(crate) fn compile_native_from_program_with_paths(
         return Err(channel.unwrap_or(DiagChannel::User));
     }
 
-    let (pipeline, sir_report) =
-        lower_verified_hir_to_pipeline(&lower_output.module, tco, &target, options.sir_mode)?;
-    if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report);
-    }
-    if let Some(channel) = render_pipeline_mir_diagnostics(
-        &state.program,
-        &state.source,
-        source_label,
-        &lower_output.module,
-        &pipeline.diagnostics,
-    ) {
-        return Err(channel);
-    }
-
-    if render_pipeline_mir_lints(&state.source, source_label, &pipeline, &options.lint_levels) {
-        return Err(DiagChannel::User);
-    }
-
+    let pipeline = lower_verified_hir_to_physical(&lower_output.module, tco, &target)?;
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = output_path
         .file_stem()
@@ -1224,86 +838,53 @@ fn compile_build_binary_with_hew_lib(
 ) -> Result<(), DiagChannel> {
     let wall_started = std::time::Instant::now();
     let lower_started = std::time::Instant::now();
-    let (pipeline, native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
-    measure_compile_phase("MIR lowering", lower_started.elapsed());
+    let (physical, native_pkg_dirs) = lower_file_to_physical_for_target(input, target, options)?;
+    measure_compile_phase("physical lowering", lower_started.elapsed());
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = output_path
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(|name| name.to_str())
         .unwrap_or("module");
-    let emit_target = if target.is_wasm() {
-        CompileEmitTarget::Wasm
-    } else {
-        CompileEmitTarget::Native
-    };
-    let backend_started = std::time::Instant::now();
     let artefacts = emit_module_for_target(
-        &pipeline,
+        &physical,
         module_name,
         emit_dir,
-        emit_target,
+        if target.is_wasm() {
+            CompileEmitTarget::Wasm
+        } else {
+            CompileEmitTarget::Native
+        },
         target,
-        // Link freestanding wasm so `hew build --target wasm32-unknown-unknown`
-        // yields a runnable `.wasm`; the native branch links separately below.
-        emit_target == CompileEmitTarget::Wasm,
+        false,
         debug,
         opt_level,
         emit_llvm,
         Some(input),
     )?;
-    measure_compile_phase("backend", backend_started.elapsed());
-
-    let result = match emit_target {
-        CompileEmitTarget::Native => {
-            let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
-                eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
-                DiagChannel::User
-            })?;
-            // Auto-link native (FFI) staticlibs declared by imported packages
-            // (`[native]` in their `hew.toml`), built on demand, in addition to
-            // any explicit `--link-lib` archives.
-            let auto_libs = native_link::build_native_link_libs(&native_pkg_dirs).map_err(|e| {
-                eprintln!("Error: {e}");
-                DiagChannel::User
-            })?;
-            let all_libs: Vec<String> = extra_libs.iter().cloned().chain(auto_libs).collect();
-            link_native_object_for_target_with_hew_lib(
-                obj,
-                output_path,
-                target,
-                debug,
-                &all_libs,
-                hew_lib,
-            )?;
-            remove_intermediate_object(obj)
-        }
-        CompileEmitTarget::Wasm => {
-            let wasm = artefacts.wasm_path.as_deref().ok_or_else(|| {
-                eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce a module");
-                DiagChannel::User
-            })?;
-            // `link_wasm_module` writes `<dir>/<name>.wasm`; rename to the
-            // requested output path when they differ.
-            if wasm != output_path {
-                std::fs::rename(wasm, output_path).map_err(|e| {
-                    eprintln!(
-                        "Error: cannot move wasm output to {}: {e}",
-                        output_path.display()
-                    );
-                    DiagChannel::User
-                })?;
-            }
-            let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
-                eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce an object");
-                DiagChannel::User
-            })?;
-            remove_intermediate_object(obj)
-        }
-    };
-    if result.is_ok() {
-        measure_compile_phase("wall", wall_started.elapsed());
-    }
-    result
+    let object = artefacts.native_obj_path.as_deref().ok_or_else(|| {
+        eprintln!("E_NOT_YET_IMPLEMENTED: physical codegen did not produce a native object");
+        DiagChannel::Limitation
+    })?;
+    let auto_libs = native_link::build_native_link_libs(&native_pkg_dirs).map_err(|error| {
+        eprintln!("Error: {error}");
+        DiagChannel::User
+    })?;
+    let libraries = extra_libs
+        .iter()
+        .cloned()
+        .chain(auto_libs)
+        .collect::<Vec<_>>();
+    link_native_object_for_target_with_hew_lib(
+        object,
+        output_path,
+        target,
+        debug,
+        &libraries,
+        hew_lib,
+    )?;
+    remove_intermediate_object(object)?;
+    measure_compile_phase("total", wall_started.elapsed());
+    Ok(())
 }
 
 fn measure_compile_phase(phase: &str, elapsed: std::time::Duration) {
@@ -1347,7 +928,7 @@ fn emit_obj_only(
     profile: &str,
     output: Option<&Path>,
 ) -> Result<(), DiagChannel> {
-    let (pipeline, _native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
+    let (pipeline, _native_pkg_dirs) = lower_file_to_physical_for_target(input, target, options)?;
     let final_path = resolve_output(Artifact::Object, input, package, profile, target, output);
     let out_dir = match final_path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
@@ -1595,42 +1176,24 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     if a.dump_sir {
         return cmd_dump_sir(a, json);
     }
-    let sir_mode = a.sir.mode();
-    let options = compile::CompileOptions {
-        sir_mode,
-        ..compile::CompileOptions::default()
+    let target = match target::TargetSpec::from_requested(a.target.as_deref()) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return 2;
+        }
     };
-    let (pipeline, sir_report) =
-        match lower_file_to_mir_with_options(&a.input, a.target.as_deref(), &options) {
+    let options = compile::CompileOptions::default();
+    let (pipeline, native_pkg_dirs) =
+        match lower_file_to_physical_for_target(&a.input, &target, &options) {
             Ok(result) => result,
             Err(channel) => return channel.exit_code(),
         };
-
-    if let Some(report) = sir_report.as_ref() {
-        report_sir_lane(report);
-    }
-
-    // Dump path: print the requested MIR stage and exit. Useful for
-    // spot-checking the lowering during development.
-    if let Some(stage) = a.dump_mir.as_deref() {
-        let dump_stage = match stage {
-            "raw" => hew_mir::DumpStage::Raw,
-            "checked" => hew_mir::DumpStage::Checked,
-            "elab" => hew_mir::DumpStage::Elab,
-            other => {
-                eprintln!("Error: unknown --dump-mir stage `{other}`");
-                return 2;
-            }
-        };
-        let dump = hew_mir::dump_mir(&pipeline, dump_stage);
+    if a.dump_mir.is_some() {
+        let dump = format!("{:#?}\n", pipeline.module());
         if json {
-            // Under JSON, stdout is the machine diagnostic contract; the MIR
-            // text dump is a human debug aid, so it goes to stderr to keep the
-            // JSON array (flushed by the guard) on stdout parseable.
             eprint!("{dump}");
         } else {
-            // Text mode: the warnings already rendered to stderr during
-            // lowering; the dump is the stdout payload the caller asked for.
             print!("{dump}");
         }
         return 0;
@@ -1656,9 +1219,15 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         return 2;
     };
 
-    let Ok(emit_target) = resolve_compile_emit_target(a.target.as_deref()) else {
-        return 2;
+    let emit_target = if target.is_wasm() {
+        CompileEmitTarget::Wasm
+    } else {
+        CompileEmitTarget::Native
     };
+    if !target.is_wasm() && !target.can_link_with_host_tools() {
+        eprintln!("{}", target.unsupported_native_link_error());
+        return 2;
+    }
     let artefacts = match emit_module(
         &pipeline,
         module_name,
@@ -1686,15 +1255,17 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         // `hew compile` links for the host, and on Windows the linker writes
         // `<stem>.exe` whatever stem it is given — so a suffixless name made
         // the reported `native:` path name a file that does not exist.
-        let host_target = match target::TargetSpec::from_requested(None) {
-            Ok(target) => target,
-            Err(e) => {
-                eprintln!("Error: {e}");
+        let bin_path = target.executable_path(emit_dir, module_name);
+        let libraries = match native_link::build_native_link_libs(&native_pkg_dirs) {
+            Ok(libraries) => libraries,
+            Err(error) => {
+                eprintln!("Error: {error}");
                 return 1;
             }
         };
-        let bin_path = host_target.executable_path(emit_dir, module_name);
-        if let Err(channel) = link_native_object(obj, &bin_path) {
+        if let Err(channel) = link_native_object_for_target_with_hew_lib(
+            obj, &bin_path, &target, false, &libraries, None,
+        ) {
             return channel.exit_code();
         }
         if !json {
@@ -1708,50 +1279,6 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     }
     // Clean compile: exit 0. The guard flushes the (possibly empty) JSON array.
     0
-}
-
-/// Render the per-callable outcome of strict SIR lowering.
-///
-/// `SirLaneReport` is constructed only inside the `SirMode::Lower` arm of
-/// `lower_verified_hir_to_pipeline`, so reaching this function already proves
-/// the strict lane ran; there is no mode to re-test.
-fn report_sir_lane(report: &SirLaneReport) {
-    let sir_lowered = report
-        .sir
-        .statuses
-        .iter()
-        .filter(|source| matches!(source.status, hew_sir::SirLoweringStatus::Lowered))
-        .count();
-    let sir_templates = report
-        .sir
-        .statuses
-        .iter()
-        .filter(|source| {
-            matches!(
-                source.status,
-                hew_sir::SirLoweringStatus::GenericTemplate { .. }
-            )
-        })
-        .count();
-    // Reaching this function means the strict component lowered, so no
-    // demanded body failed. What remains to account for is the declarations
-    // the entry never asked about.
-    let not_reached = report
-        .sir
-        .statuses
-        .iter()
-        .filter(|source| matches!(source.status, hew_sir::SirLoweringStatus::NotReached))
-        .count();
-    eprintln!(
-        "SIR lower: selected {} verified callable(s) from {sir_lowered} monomorphic HIR body/bodies and {sir_templates} generic template(s) across {} HIR function declaration(s); no legacy MIR bodies were lowered",
-        report.callables.len(),
-        report.sir.statuses.len(),
-    );
-    if not_reached > 0 {
-        eprintln!(
-            "SIR lower: {not_reached} HIR declaration(s) were never reached from the entry; they were not compiled or used as fallbacks"
-        );
-    }
 }
 
 /// Summarise a `--dump-sir` inspection.
@@ -1872,7 +1399,7 @@ fn compile_temp_wasi_module(
 
     let result = (|| -> Result<(), DiagChannel> {
         let (pipeline, _native_pkg_dirs) =
-            lower_file_to_mir_for_target(Path::new(input), &target_spec, options)?;
+            lower_file_to_physical_for_target(Path::new(input), &target_spec, options)?;
         let emit_dir = tmp_dir_of_path(&wasm_path);
         // Emit the wasm object only — the WASI runtime link happens in
         // `link::link_executable` below, which links against libhew_runtime.a.
@@ -2285,9 +1812,10 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
         if a.show_stack_hints {
             diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
         } else if a.explain_cow {
-            if let Some(pipeline) = build_explain_cow_pipeline(&target, &state) {
-                explain_cow::render_explain_cow(&pipeline, &input, &mut std::io::stdout());
-            }
+            eprintln!(
+                "E_NOT_YET_IMPLEMENTED: semantic copy-on-write explanations are not implemented"
+            );
+            return DiagChannel::Limitation.exit_code();
         }
     }
 
@@ -3303,163 +2831,5 @@ mod embedded_stdlib_tests {
             &root.join("std/prelude.hew").display().to_string(),
             "std/builtins.hew"
         ));
-    }
-}
-
-/// Driver-boundary coverage for the canonical SIR module the strict lane
-/// realizes.
-///
-/// Keep this at the private driver boundary rather than making production
-/// reports carry pass statistics solely for test observability.  The report
-/// already retains the exact SIR module passed into the strict component.
-#[cfg(test)]
-mod sir_driver_tests {
-    use super::{compile, lower_verified_hir_to_pipeline, target};
-    use hew_hir::{lower_program_host_target, ResolutionCtx};
-    use hew_mir::model::{Instr, RawValueOp, Terminator};
-    use hew_sir::{SemOpKind, SemTerminator};
-    use hew_types::{module_registry::ModuleRegistry, Checker};
-
-    /// The arm values are deliberately neither `0` nor `1`: the condition
-    /// `true` itself lowers to `ConstI64 { value: 1 }` into a `Bool` local, so
-    /// a fixture returning `1` from its unselected arm could not tell a
-    /// surviving dead arm from the live condition constant.
-    const DIRECT_CONSTANT_CFG: &str = r"
-        fn main() -> i64 {
-            if true {
-                7
-            } else {
-                9
-            }
-        }
-    ";
-
-    #[test]
-    fn strict_lane_realizes_the_canonicalized_sir_module() {
-        let parsed = hew_parser::parse(DIRECT_CONSTANT_CFG);
-        assert!(
-            parsed.errors.is_empty(),
-            "constant CFG fixture must parse: {:#?}",
-            parsed.errors
-        );
-        let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
-        let type_check = checker.check_program(&parsed.program);
-        assert!(
-            type_check.errors.is_empty(),
-            "constant CFG fixture must type-check: {:#?}",
-            type_check.errors
-        );
-        let lowered = lower_program_host_target(&parsed.program, &type_check, &ResolutionCtx);
-        assert!(
-            lowered.diagnostics.is_empty(),
-            "constant CFG fixture must lower to HIR: {:#?}",
-            lowered.diagnostics
-        );
-        let target = target::TargetSpec::from_requested(None)
-            .expect("host target must be available to the driver test");
-
-        // Negative control: the un-canonicalized HIR -> SIR lowering really does
-        // produce the branch and the unselected constant, so the assertions
-        // below pin canonicalization rather than an already-empty CFG.
-        let raw_sir = hew_sir::lower_module(&lowered.module, &type_check);
-        let raw_main = sir_main(&raw_sir.module);
-        assert!(
-            raw_main
-                .blocks
-                .iter()
-                .any(|block| matches!(&block.terminator, SemTerminator::Branch { .. })),
-            "the fixture must start with a real semantic branch: {raw_main:#?}"
-        );
-        assert!(
-            raw_main
-                .blocks
-                .iter()
-                .flat_map(|block| &block.ops)
-                .any(|operation| matches!(&operation.kind, SemOpKind::ConstI64(9))),
-            "the fixture must start with the unselected arm present: {raw_main:#?}"
-        );
-
-        let (strict_pipeline, strict_report) = lower_verified_hir_to_pipeline(
-            &lowered.module,
-            &type_check,
-            &target,
-            compile::SirMode::Lower,
-        )
-        .expect("strict lane must accept the scalar constant CFG");
-        let strict_report = strict_report.expect("strict lane must retain its SIR report");
-
-        // What the backend actually receives. The report retains whatever
-        // module the component was handed, so asserting on the report alone
-        // cannot tell a realized canonicalization apart from an inspector-only
-        // rewrite; these assertions are on the artifact itself.
-        assert_eq!(strict_pipeline.raw_mir.len(), 1);
-        let realized_main = &strict_pipeline.raw_mir[0];
-        assert_eq!(realized_main.name, "main");
-        assert!(
-            matches!(&realized_main.blocks[0].terminator, Terminator::Goto { .. }),
-            "the canonical single edge must survive into realized raw MIR: {realized_main:#?}"
-        );
-        assert!(
-            realized_main
-                .blocks
-                .iter()
-                .all(|block| !matches!(&block.terminator, Terminator::Branch { .. })),
-            "realized raw MIR must carry no conditional branch: {realized_main:#?}"
-        );
-        assert!(
-            realized_main
-                .blocks
-                .iter()
-                .flat_map(|block| &block.instructions)
-                .all(|instruction| !defines_i64_constant(instruction, 9)),
-            "the unselected arm must not be realized in raw MIR: {realized_main:#?}"
-        );
-        assert!(
-            realized_main
-                .blocks
-                .iter()
-                .flat_map(|block| &block.instructions)
-                .any(|instruction| defines_i64_constant(instruction, 7)),
-            "the selected arm must still be realized in raw MIR: {realized_main:#?}"
-        );
-
-        // And the retained module is that same canonical CFG, not a separate
-        // inspector copy taken before the pass.
-        let main = sir_main(&strict_report.sir.module);
-        assert!(
-            matches!(&main.blocks[0].terminator, SemTerminator::Goto(_)),
-            "the direct constant branch must be canonicalized before strict lowering: {main:#?}"
-        );
-        assert!(
-            main.blocks
-                .iter()
-                .all(|block| !matches!(&block.terminator, SemTerminator::Branch { .. })),
-            "canonical SIR must contain no remaining branch for a direct constant: {main:#?}"
-        );
-        assert!(
-            main.blocks
-                .iter()
-                .flat_map(|block| &block.ops)
-                .all(|operation| { !matches!(&operation.kind, SemOpKind::ConstI64(9)) }),
-            "the unselected arm must be compacted before strict lowering: {main:#?}"
-        );
-    }
-
-    /// `true` when `instruction` materializes `value` as an `i64`, in either the
-    /// place-based or the virtual-value form.
-    fn defines_i64_constant(instruction: &Instr, value: i64) -> bool {
-        match instruction {
-            Instr::ConstI64 { value: found, .. }
-            | Instr::Value(RawValueOp::ConstI64 { value: found, .. }) => *found == value,
-            _ => false,
-        }
-    }
-
-    fn sir_main(module: &hew_sir::SemModule) -> &hew_sir::SemFunction {
-        module
-            .functions
-            .iter()
-            .find(|function| function.name == "main")
-            .expect("constant CFG fixture must retain its SIR main body")
     }
 }

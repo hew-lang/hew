@@ -1161,7 +1161,7 @@ fn lower_initial_unit_return(builder: &mut Builder<'_, '_>, expr: &HirExpr) -> R
                 .to_string(),
         );
     }
-    builder.lower_direct_call(expr, false).map(|_| ())
+    builder.lower_call(expr, false).map(|_| ())
 }
 
 /// Builder-only block state.
@@ -1770,10 +1770,28 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 return self.lower_while(condition, body);
             }
+            HirExprKind::ForRange {
+                label,
+                binding,
+                start,
+                end,
+                inclusive,
+                step,
+                descending,
+                body,
+            } => {
+                if label.is_some() || *inclusive || *descending {
+                    return Err(
+                        "only unlabelled ascending exclusive ranges are in the owned SIR slice"
+                            .to_string(),
+                    );
+                }
+                return self.lower_for_range(binding, start, end, step, body);
+            }
             _ => {}
         }
         if matches!(expr.kind, HirExprKind::Call { .. }) {
-            if let Some(value) = self.lower_direct_call(expr, false)? {
+            if let Some(value) = self.lower_call(expr, false)? {
                 if self.owned_live.contains_key(&value) && !live_before_expression.contains(&value)
                 {
                     self.emit_destroy(value)?;
@@ -1796,6 +1814,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.lower_expr_with_binding_use(expr, OwnedBindingUse::Copy)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the closed initial HIR-to-SIR expression mapping remains intentionally local"
+    )]
     fn lower_expr_with_binding_use(
         &mut self,
         expr: &HirExpr,
@@ -1847,6 +1869,44 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 right,
             } => self.lower_logical_or(expr, left, right),
             HirExprKind::Binary { op, left, right } => {
+                if self.ty(&left.ty) == ResolvedTy::String {
+                    return match op {
+                        hew_parser::ast::BinaryOp::Add => self
+                            .lower_runtime_operation(
+                                expr,
+                                hew_types::RuntimeCallFamily::StringConcat,
+                                &[left.as_ref(), right.as_ref()],
+                                true,
+                            )?
+                            .ok_or_else(|| "string concatenation must produce a value".to_string()),
+                        hew_parser::ast::BinaryOp::Equal | hew_parser::ast::BinaryOp::NotEqual => {
+                            let equals = self
+                                .lower_runtime_operation(
+                                    expr,
+                                    hew_types::RuntimeCallFamily::StringEquals,
+                                    &[left.as_ref(), right.as_ref()],
+                                    true,
+                                )?
+                                .ok_or_else(|| {
+                                    "string comparison must produce a value".to_string()
+                                })?;
+                            if *op == hew_parser::ast::BinaryOp::NotEqual {
+                                self.emit(
+                                    expr,
+                                    SemOpKind::Unary {
+                                        op: hew_parser::ast::UnaryOp::Not,
+                                        value: Operand { value: equals },
+                                    },
+                                )
+                            } else {
+                                Ok(equals)
+                            }
+                        }
+                        _ => Err(format!(
+                            "string binary `{op}` has no ownership-SIR runtime operation"
+                        )),
+                    };
+                }
                 let lhs = self.lower_read_operand(left, "binary left operand")?;
                 let rhs = self.lower_read_operand(right, "binary right operand")?;
                 if crate::checked_binary_failure_kinds(*op, &self.ty(&expr.ty)).is_some() {
@@ -1865,10 +1925,24 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     },
                 )
             }
-            HirExprKind::Call { .. } => self.lower_direct_call(expr, true)?.ok_or_else(|| {
+            HirExprKind::Call { .. } => self.lower_call(expr, true)?.ok_or_else(|| {
                 "unit-valued direct calls are valid only in a discarded or unit-return context"
                     .to_string()
             }),
+            HirExprKind::SubsumedValue { source, .. } => {
+                self.lower_expr_with_binding_use(source, binding_use)
+            }
+            HirExprKind::Index { container, index }
+                if self.ty(&container.ty) == ResolvedTy::Bytes =>
+            {
+                self.lower_runtime_operation(
+                    expr,
+                    hew_types::RuntimeCallFamily::BytesIndex,
+                    &[container.as_ref(), index.as_ref()],
+                    true,
+                )?
+                .ok_or_else(|| "bytes index must produce a SIR value".to_string())
+            }
             HirExprKind::Block(block) => self
                 .lower_scoped_block(block, binding_use)?
                 .map(|value| value.value)
@@ -2197,6 +2271,249 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
     }
 
+    fn lower_call(
+        &mut self,
+        expr: &HirExpr,
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        let HirExprKind::Call { target, args, .. } = &expr.kind else {
+            return Err(
+                "internal SIR lowering error: call lowering received a non-call".to_string(),
+            );
+        };
+        match target {
+            CallTarget::Runtime(family) => self.lower_runtime_operation(
+                expr,
+                *family,
+                &args.iter().collect::<Vec<_>>(),
+                value_required,
+            ),
+            CallTarget::User(_) | CallTarget::ImplMethod(_) => {
+                self.lower_direct_call(expr, value_required)
+            }
+            _ => Err("call target has no verified ownership-SIR operation contract".to_string()),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "runtime contract admission and its explicit success/failure CFG form one semantic boundary"
+    )]
+    fn lower_runtime_operation(
+        &mut self,
+        expr: &HirExpr,
+        family: hew_types::RuntimeCallFamily,
+        args: &[&HirExpr],
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
+
+        let contract = family.semantic_contract().ok_or_else(|| {
+            format!("runtime family `{family:?}` has no ownership-SIR semantic contract")
+        })?;
+        if args.len() != contract.arguments.len() {
+            return Err(format!(
+                "runtime family `{family:?}` expects {} argument(s), HIR carries {}",
+                contract.arguments.len(),
+                args.len()
+            ));
+        }
+        let live_before_arguments: std::collections::HashSet<_> =
+            self.owned_live.keys().copied().collect();
+        let mut transformed_binding = None;
+        let mut lowered_args = Vec::with_capacity(args.len());
+        for (index, (&arg, expected)) in args.iter().zip(contract.arguments).enumerate() {
+            let actual_ty = self.ty(&arg.ty);
+            if !expected.ty.matches(&actual_ty) {
+                return Err(format!(
+                    "runtime family `{family:?}` argument {index} has `{}`, expected {:?}",
+                    actual_ty.user_facing(),
+                    expected.ty
+                ));
+            }
+            let (value, decision) = match expected.effect {
+                RuntimeArgumentEffect::Borrow => (
+                    self.lower_read_operand(
+                        arg,
+                        &format!("runtime family `{family:?}` argument {index}"),
+                    )?
+                    .value,
+                    crate::BoundaryDecision::Borrow,
+                ),
+                RuntimeArgumentEffect::Copy => (
+                    self.lower_read_operand(
+                        arg,
+                        &format!("runtime family `{family:?}` argument {index}"),
+                    )?
+                    .value,
+                    crate::BoundaryDecision::Copy,
+                ),
+                RuntimeArgumentEffect::Move => {
+                    let HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(binding),
+                        ..
+                    } = &arg.kind
+                    else {
+                        return Err(format!(
+                            "runtime family `{family:?}` moving argument {index} must name a local binding"
+                        ));
+                    };
+                    let declaration = *self.binding_declarations.get(binding).ok_or_else(|| {
+                        format!("runtime transform binding `{binding}` has no source declaration")
+                    })?;
+                    if !self.source_bindings[declaration].mutable {
+                        return Err(format!(
+                            "runtime transform binding `{binding}` must be mutable"
+                        ));
+                    }
+                    let source = *self.bindings.get(binding).ok_or_else(|| {
+                        format!("runtime transform binding `{binding}` is unavailable")
+                    })?;
+                    if self.value_own_kind(source) != Some(OwnKind::Owned)
+                        || !self.owned_live.contains_key(&source)
+                    {
+                        return Err(format!(
+                            "runtime transform binding `{binding}` has no live owned value"
+                        ));
+                    }
+                    self.owned_live.remove(&source);
+                    let moved = self.emit(
+                        arg,
+                        SemOpKind::Move {
+                            source: Operand { value: source },
+                        },
+                    )?;
+                    self.owned_live.remove(&moved);
+                    transformed_binding = Some(*binding);
+                    (moved, crate::BoundaryDecision::Move)
+                }
+            };
+            lowered_args.push(crate::BoundaryOperand {
+                operand: Operand { value },
+                decision,
+            });
+        }
+
+        let live_at_call = self.owned_live.clone();
+        let argument_temporaries: Vec<_> = live_at_call
+            .keys()
+            .filter(|value| !live_before_arguments.contains(value))
+            .copied()
+            .collect();
+        let semantic_result_ty = match contract.result {
+            RuntimeResultEffect::Unit => None,
+            RuntimeResultEffect::BitCopy(kind)
+            | RuntimeResultEffect::FreshOwned(kind)
+            | RuntimeResultEffect::UpdatedReceiver(kind) => Some(kind.resolved_ty()),
+        };
+        match (contract.result, &semantic_result_ty) {
+            (RuntimeResultEffect::Unit, None) if self.ty(&expr.ty) == ResolvedTy::Unit => {}
+            (RuntimeResultEffect::UpdatedReceiver(_), Some(_))
+                if self.ty(&expr.ty) == ResolvedTy::Unit && !value_required => {}
+            (_, Some(result_ty)) if self.ty(&expr.ty) == *result_ty => {}
+            _ => {
+                return Err(format!(
+                "runtime family `{family:?}` result contract disagrees with expression type `{}`",
+                self.ty(&expr.ty).user_facing()
+            ))
+            }
+        }
+
+        let (result, normal, continuation) = if let Some(result_ty) = semantic_result_ty {
+            self.service.require_type_facts(&result_ty)?;
+            let own = OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?;
+            let raw = self.fresh_value();
+            let continuation = self.fresh_value();
+            let normal = self.new_block(vec![BlockArg {
+                value: continuation,
+                ty: result_ty.clone(),
+                own,
+            }]);
+            (
+                CallResult::Value(ValueDef {
+                    id: raw,
+                    ty: result_ty,
+                    own,
+                }),
+                Edge {
+                    target: normal,
+                    args: vec![Operand { value: raw }],
+                },
+                Some(continuation),
+            )
+        } else {
+            (
+                CallResult::Unit,
+                Edge {
+                    target: self.new_block(Vec::new()),
+                    args: Vec::new(),
+                },
+                None,
+            )
+        };
+
+        let failure = contract.failures.first().copied();
+        if contract.failures.len() > 1 {
+            return Err(format!(
+                "runtime family `{family:?}` has more failure edges than RtCall currently represents"
+            ));
+        }
+        let failure_block = failure.map(|_| self.new_block(Vec::new()));
+        let unwind = failure_block.map_or(CallUnwind::NotApplicable, |target| {
+            CallUnwind::Cleanup(Edge {
+                target,
+                args: Vec::new(),
+            })
+        });
+        let id = OpId(self.ops);
+        self.ops += 1;
+        let normal_target = normal.target;
+        self.set_terminator(SemTerminator::RtCall {
+            id,
+            family,
+            args: lowered_args,
+            result,
+            normal,
+            unwind,
+        })?;
+
+        if let (Some(failure), Some(block)) = (failure, failure_block) {
+            self.current = block;
+            self.owned_live = live_at_call.clone();
+            self.destroy_all_live()?;
+            self.set_terminator(SemTerminator::Trap {
+                kind: crate::runtime_failure_trap_kind(failure),
+            })?;
+        }
+        self.current = normal_target;
+        self.owned_live = live_at_call;
+        for value in argument_temporaries.into_iter().rev() {
+            self.emit_destroy(value)?;
+        }
+        if let Some(continuation) = continuation {
+            let result_ty = self
+                .value_ty(continuation)
+                .expect("runtime continuation block argument was just created");
+            if self.value_own_kind(continuation) == Some(OwnKind::Owned) {
+                self.owned_live.insert(continuation, result_ty);
+            }
+            if matches!(contract.result, RuntimeResultEffect::UpdatedReceiver(_)) {
+                let binding = transformed_binding.ok_or_else(|| {
+                    format!("runtime family `{family:?}` has no transformed source binding")
+                })?;
+                self.bindings.insert(binding, continuation);
+                self.record_binding_version(binding, continuation)?;
+                return Ok(None);
+            }
+        }
+        if value_required && continuation.is_none() {
+            return Err(format!(
+                "unit-valued runtime family `{family:?}` cannot produce an SSA value"
+            ));
+        }
+        Ok(continuation)
+    }
+
     fn lower_unit_if(
         &mut self,
         condition: &HirExpr,
@@ -2434,6 +2751,162 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "range setup, SSA-carried bindings and checked back-edge arithmetic form one lowering"
+    )]
+    fn lower_for_range(
+        &mut self,
+        loop_binding: &hew_hir::HirBinding,
+        start: &HirExpr,
+        end: &HirExpr,
+        step: &HirExpr,
+        body: &HirBlock,
+    ) -> Result<(), String> {
+        if self.ty(&loop_binding.ty) != ResolvedTy::I64
+            || self.ty(&start.ty) != ResolvedTy::I64
+            || self.ty(&end.ty) != ResolvedTy::I64
+            || self.ty(&step.ty) != ResolvedTy::I64
+        {
+            return Err("initial SIR range loops require checker-resolved i64 bounds".to_string());
+        }
+        if !matches!(step.kind, HirExprKind::Literal(HirLiteral::Integer(1))) {
+            return Err("initial SIR range loops require the default positive step".to_string());
+        }
+        let counter_entry = self.lower_read_operand(start, "range start")?;
+        let bound = self.lower_read_operand(end, "range end")?;
+        let step_value = self.lower_read_operand(step, "range step")?;
+        let preheader = self.current;
+        let before_bindings = self.bindings.clone();
+        let mut header_bindings = before_bindings.clone();
+        let mut header_live = self.owned_live.clone();
+        let counter = self.fresh_value();
+        let mut header_args = vec![BlockArg {
+            value: counter,
+            ty: ResolvedTy::I64,
+            own: OwnKind::None,
+        }];
+        let mut entry_args = vec![counter_entry];
+        let mut carried = Vec::new();
+        for binding in self.mutable_bindings() {
+            let Some(&source) = before_bindings.get(&binding) else {
+                continue;
+            };
+            let ty = self.value_ty(source).ok_or_else(|| {
+                format!("mutable binding `{binding}` has no concrete type at its range header")
+            })?;
+            self.service.require_type_facts(&ty)?;
+            let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+            let header_value = self.fresh_value();
+            header_args.push(BlockArg {
+                value: header_value,
+                ty: ty.clone(),
+                own,
+            });
+            entry_args.push(Operand { value: source });
+            header_bindings.insert(binding, header_value);
+            header_live.remove(&source);
+            if own == OwnKind::Owned {
+                header_live.insert(header_value, ty);
+            }
+            carried.push(binding);
+            self.record_binding_version(binding, header_value)?;
+        }
+
+        let loop_declaration = self.source_bindings.len();
+        self.source_bindings.push(Binding {
+            id: crate::BindingId(
+                u32::try_from(loop_declaration)
+                    .map_err(|_| "SIR source binding count exceeds u32".to_string())?,
+            ),
+            name: loop_binding.name.clone(),
+            span: loop_binding.span.clone(),
+            mutable: false,
+            target: crate::BindingTarget::Value(counter),
+        });
+        self.binding_declarations
+            .insert(loop_binding.id, loop_declaration);
+        header_bindings.insert(loop_binding.id, counter);
+
+        let header = self.new_block(header_args);
+        self.current = preheader;
+        self.set_terminator(SemTerminator::Goto(Edge {
+            target: header,
+            args: entry_args,
+        }))?;
+        self.current = header;
+        self.bindings = header_bindings.clone();
+        self.owned_live = header_live.clone();
+        let condition = self.emit_typed(
+            Provenance::Synthesized,
+            &ResolvedTy::Bool,
+            SemOpKind::Binary {
+                op: hew_parser::ast::BinaryOp::Less,
+                lhs: Operand { value: counter },
+                rhs: bound,
+            },
+        )?;
+        let body_block = self.new_block(Vec::new());
+        let exit = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Branch {
+            condition: Operand { value: condition },
+            then_target: Edge {
+                target: body_block,
+                args: Vec::new(),
+            },
+            else_target: Edge {
+                target: exit,
+                args: Vec::new(),
+            },
+        })?;
+
+        self.current = body_block;
+        self.bindings = header_bindings.clone();
+        self.owned_live = header_live.clone();
+        let tail = self.lower_scoped_block(body, OwnedBindingUse::Copy)?;
+        if let Some(tail) = tail {
+            if self.owned_live.contains_key(&tail.value) {
+                self.emit_destroy(tail.value)?;
+            }
+        }
+        if self.is_open() {
+            let next = self.lower_checked_binary(
+                step,
+                hew_parser::ast::BinaryOp::Add,
+                Operand { value: counter },
+                step_value,
+            )?;
+            let mut back_args = vec![Operand { value: next }];
+            back_args.extend(
+                carried
+                    .iter()
+                    .map(|binding| {
+                        self.bindings
+                            .get(binding)
+                            .copied()
+                            .map(|value| Operand { value })
+                            .ok_or_else(|| {
+                                format!(
+                                    "range-carried binding `{binding}` is missing on its back edge"
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            self.set_terminator(SemTerminator::Goto(Edge {
+                target: header,
+                args: back_args,
+            }))?;
+        }
+
+        self.current = exit;
+        header_bindings.remove(&loop_binding.id);
+        self.bindings = header_bindings;
+        self.binding_declarations.remove(&loop_binding.id);
+        self.owned_live = header_live;
+        Ok(())
+    }
+
     fn lower_if(
         &mut self,
         whole: &HirExpr,
@@ -2580,18 +3053,26 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<ValueId, String> {
+        self.emit_typed(Provenance::Site(expr.site), &self.ty(&expr.ty), kind)
+    }
+
+    fn emit_typed(
+        &mut self,
+        provenance: Provenance,
+        result_ty: &ResolvedTy,
+        kind: SemOpKind,
+    ) -> Result<ValueId, String> {
         let value = self.fresh_value();
-        let result_ty = self.ty(&expr.ty);
-        self.service.require_type_facts(&result_ty)?;
+        self.service.require_type_facts(result_ty)?;
         let op = SemOp {
             id: OpId(self.ops),
             results: vec![ValueDef {
                 id: value,
-                own: OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?,
+                own: OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?,
                 ty: result_ty.clone(),
             }],
             kind,
-            provenance: Provenance::Site(expr.site),
+            provenance,
         };
         if op.results[0].own == OwnKind::Owned {
             self.owned_live.insert(value, result_ty.clone());

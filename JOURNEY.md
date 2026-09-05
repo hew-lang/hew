@@ -225,3 +225,17 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
 - The ASan execution test resolves clang from `llvm-config --bindir` exported
   by the crate build script, the same LLVM authority selected by `llvm-sys`.
   It therefore needs no ambient `LLVM_SYS_221_PREFIX` at test runtime.
+
+## Physical MIR checkpoint
+
+- Added one target-realized physical module beneath ownership SIR. It carries
+  exact callable identity, target-derived layouts, concrete storage, private
+  status/result/fault call edges, and an immutable verified wrapper.
+- Explicit SIR copy and destroy operations resolve once to typed bitwise,
+  string, or bytes actions. Physical CFG edges transfer storage and never hide
+  an implicit clone decision.
+- Physical lowering reruns SIR verification and fails closed on missing target
+  layouts, unsupported runtime wrappers, snapshot boundaries, and arithmetic
+  operations whose failure cleanup is not yet explicit in SIR.
+- Focused `hew-mir` physical tests cover scalar result-out lowering, concrete
+  copy selection, missing-layout refusal, and malformed callable identity.

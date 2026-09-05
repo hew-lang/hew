@@ -43,10 +43,6 @@ pub struct ReplSession {
     /// JIT execution mode.  When `None` (or `Worker`), uses the existing
     /// AOT+spawn path.  When `Inprocess`, routes through LLJIT.
     jit_mode: Option<crate::args::JitMode>,
-    /// SIR lane selected by `hew eval`. This stays on the session so every
-    /// synthetic fragment, loaded file, native AOT compile, and WASM AOT
-    /// compile makes the same explicit lowering choice.
-    sir_mode: crate::compile::SirMode,
 }
 
 #[derive(Debug)]
@@ -171,7 +167,6 @@ enum ExpressionEvalPlan {
 struct EvalBackendOptions<'a> {
     target: Option<&'a str>,
     jit_mode: Option<crate::args::JitMode>,
-    sir_mode: crate::compile::SirMode,
 }
 
 #[derive(Debug)]
@@ -619,7 +614,6 @@ impl ReplSession {
             project_dir: None,
             eval_target: None,
             jit_mode: None,
-            sir_mode: crate::compile::SirMode::Disabled,
         }
     }
 
@@ -639,7 +633,6 @@ impl ReplSession {
             project_dir,
             eval_target: None,
             jit_mode: None,
-            sir_mode: crate::compile::SirMode::Disabled,
         }
     }
 
@@ -672,12 +665,6 @@ impl ReplSession {
         self.jit_mode = mode;
     }
 
-    /// Select the SIR lowering lane for every compilation performed by this
-    /// session. `Disabled` remains the default for non-CLI embedding callers.
-    pub fn set_sir_mode(&mut self, mode: crate::compile::SirMode) {
-        self.sir_mode = mode;
-    }
-
     #[cfg(test)]
     pub(crate) fn add_item_for_test(&mut self, source: &str) {
         self.session.add_item(source);
@@ -693,7 +680,6 @@ impl ReplSession {
         EvalBackendOptions {
             target: self.eval_target.as_deref(),
             jit_mode: self.jit_mode,
-            sir_mode: self.sir_mode,
         }
     }
 
@@ -1471,7 +1457,6 @@ fn eval_compile_options(
         project_dir,
         target: backend.target.map(str::to_owned),
         repl_fragment: true,
-        sir_mode: backend.sir_mode,
         ..crate::compile::CompileOptions::default()
     }
 }
@@ -1659,7 +1644,6 @@ pub fn run_interactive(
     timeout: Duration,
     target: Option<&str>,
     jit: Option<crate::args::JitMode>,
-    sir_mode: crate::compile::SirMode,
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::IsTerminal;
@@ -1667,7 +1651,6 @@ pub fn run_interactive(
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
     session.set_jit_mode(jit);
-    session.set_sir_mode(sir_mode);
     let (primary_prompt, continuation_prompt) = prompts_for_terminal_state(
         std::io::stdin().is_terminal(),
         std::io::stdout().is_terminal(),
@@ -1740,11 +1723,9 @@ pub fn eval_one(
     timeout: Duration,
     target: Option<&str>,
     jit: Option<crate::args::JitMode>,
-    sir_mode: crate::compile::SirMode,
 ) -> Result<String, CliEvalError> {
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
     session.set_jit_mode(jit);
-    session.set_sir_mode(sir_mode);
     session.eval_cli(expr, "<eval>")
 }
 
@@ -1758,7 +1739,6 @@ pub fn eval_file(
     timeout: Duration,
     target: Option<&str>,
     jit: Option<crate::args::JitMode>,
-    sir_mode: crate::compile::SirMode,
 ) -> Result<String, CliEvalError> {
     let (source, input_name) = if path == "-" {
         let mut source = String::new();
@@ -1778,7 +1758,6 @@ pub fn eval_file(
         ReplSession::for_path_with_target(path, timeout, target)
     };
     session.set_jit_mode(jit);
-    session.set_sir_mode(sir_mode);
     session.eval_source_file_cli(&source, &input_name, &input_name)
 }
 
@@ -2203,13 +2182,7 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let result = eval_one(
-            "2 * 3",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            None,
-            crate::compile::SirMode::Disabled,
-        );
+        let result = eval_one("2 * 3", DEFAULT_EVAL_TIMEOUT, None, None);
         assert_eq!(result.unwrap(), "6\n");
     }
 
@@ -2355,13 +2328,7 @@ mod tests {
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(1, 2)\n",
         )
         .unwrap();
-        let result = eval_file(
-            path.to_str().unwrap(),
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            None,
-            crate::compile::SirMode::Disabled,
-        );
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None, None);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -2374,13 +2341,7 @@ mod tests {
         let path = dir.path().join("hew_eval_balanced_incomplete_expr.hew");
         std::fs::write(&path, "1 +\n2\n").unwrap();
 
-        let result = eval_file(
-            path.to_str().unwrap(),
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            None,
-            crate::compile::SirMode::Disabled,
-        );
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None, None);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -2478,7 +2439,6 @@ mod tests {
             DEFAULT_EVAL_TIMEOUT,
             None,
             None,
-            crate::compile::SirMode::Disabled,
         );
         assert!(
             result.is_ok(),
@@ -2637,13 +2597,7 @@ mod tests {
         if !require_wasi_toolchain() {
             return;
         }
-        let result = eval_one(
-            "1 + 2",
-            DEFAULT_EVAL_TIMEOUT,
-            Some("wasm32-wasi"),
-            None,
-            crate::compile::SirMode::Disabled,
-        );
+        let result = eval_one("1 + 2", DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"), None);
         assert_eq!(result.unwrap(), "3\n");
     }
 
@@ -2657,7 +2611,6 @@ mod tests {
             DEFAULT_EVAL_TIMEOUT,
             Some("wasm32-wasi"),
             None,
-            crate::compile::SirMode::Disabled,
         );
         assert_eq!(result.unwrap(), "hello from wasi\n");
     }
@@ -2705,7 +2658,6 @@ mod tests {
             DEFAULT_EVAL_TIMEOUT,
             Some("wasm32-wasi"),
             None,
-            crate::compile::SirMode::Disabled,
         );
         assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
     }
@@ -2735,7 +2687,6 @@ mod tests {
             EvalBackendOptions {
                 target: None,
                 jit_mode: Some(crate::args::JitMode::Inprocess),
-                sir_mode: crate::compile::SirMode::Disabled,
             },
         );
         assert!(
@@ -2757,7 +2708,6 @@ mod tests {
             EvalBackendOptions {
                 target: None,
                 jit_mode: Some(crate::args::JitMode::Auto),
-                sir_mode: crate::compile::SirMode::Disabled,
             },
         );
         assert_eq!(
@@ -2775,20 +2725,13 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let result_no_flag = eval_one(
-            "1 + 1",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            None,
-            crate::compile::SirMode::Disabled,
-        )
-        .expect("eval without --jit should succeed");
+        let result_no_flag = eval_one("1 + 1", DEFAULT_EVAL_TIMEOUT, None, None)
+            .expect("eval without --jit should succeed");
         let result_worker = eval_one(
             "1 + 1",
             DEFAULT_EVAL_TIMEOUT,
             None,
             Some(crate::args::JitMode::Worker),
-            crate::compile::SirMode::Disabled,
         )
         .expect("eval with --jit=worker should succeed");
         assert_eq!(
@@ -2815,40 +2758,5 @@ mod tests {
             session.jit_mode, None,
             "set_jit_mode(None) should clear the mode"
         );
-    }
-
-    #[test]
-    fn sir_mode_is_preserved_for_native_and_wasm_eval_compiles() {
-        let native = eval_compile_options(
-            None,
-            EvalBackendOptions {
-                target: None,
-                jit_mode: None,
-                sir_mode: crate::compile::SirMode::Lower,
-            },
-        );
-        assert_eq!(native.sir_mode, crate::compile::SirMode::Lower);
-        assert!(native.repl_fragment);
-        assert!(native.target.is_none());
-
-        let wasm = eval_compile_options(
-            None,
-            EvalBackendOptions {
-                target: Some("wasm32-wasi"),
-                jit_mode: None,
-                sir_mode: crate::compile::SirMode::Lower,
-            },
-        );
-        assert_eq!(wasm.sir_mode, crate::compile::SirMode::Lower);
-        assert!(wasm.repl_fragment);
-        assert_eq!(wasm.target.as_deref(), Some("wasm32-wasi"));
-    }
-
-    #[test]
-    fn set_sir_mode_stores_mode_on_session() {
-        let mut session = ReplSession::new();
-        assert_eq!(session.sir_mode, crate::compile::SirMode::Disabled);
-        session.set_sir_mode(crate::compile::SirMode::Lower);
-        assert_eq!(session.sir_mode, crate::compile::SirMode::Lower);
     }
 }

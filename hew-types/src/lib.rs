@@ -94,8 +94,10 @@ pub use resolved_ty::{
 };
 pub use runtime_call::{
     AsyncSuspendKind, DescriptorError, MathIntrinsic, ProducedArgumentBoundary,
-    ProducedValueAcquisition, ProducedValueOwnership, RuntimeCallDescriptor, RuntimeCallFamily,
-    RuntimeDropDescriptor, StreamElementKind, VecGetElem, VecSliceElem,
+    ProducedValueAcquisition, ProducedValueOwnership, RuntimeArgumentContract,
+    RuntimeArgumentEffect, RuntimeCallDescriptor, RuntimeCallFamily, RuntimeDropDescriptor,
+    RuntimeLogicalFailure, RuntimeResultEffect, RuntimeSemanticContract, RuntimeValueKind,
+    StreamElementKind, VecGetElem, VecSliceElem,
 };
 pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use stdlib_authority::{

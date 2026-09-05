@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use hew_hir::{lower_program_host_target, verify_hir, ResolutionCtx};
-use hew_mir::IrPipeline;
 use hew_parser::Severity;
 use hew_types::module_registry::{build_module_search_paths, ModuleRegistry};
 use hew_types::Checker;
@@ -28,7 +27,7 @@ pub fn checker() -> Checker {
 }
 
 #[allow(dead_code)]
-pub fn parse_check_lower(source: &str) -> Option<IrPipeline> {
+pub fn parse_check_lower(source: &str) -> Option<hew_compile::SessionOutput> {
     let parsed = hew_parser::parse(source);
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {
         return None;
@@ -45,14 +44,12 @@ pub fn parse_check_lower(source: &str) -> Option<IrPipeline> {
         return None;
     }
 
-    Some(
-        hew_compile::Session::new(
+    hew_compile::Session::new(
             hew_compile::SessionTarget::native(),
             hew_compile::DiagnosticPolicy::default(),
         )
         .lower_hir_module(&hir.module, &type_check)
-        .pipeline,
-    )
+        .ok()
 }
 
 #[allow(dead_code)]

@@ -4099,6 +4099,11 @@ pub(crate) fn lower_call_runtime_abi(
         | F::VecSetLayout
         | F::VecSetOwned
         | F::VecSetOwnedMove
+        | F::StringEquals
+        | F::StringToBytes
+        | F::StringToUppercase
+        | F::U8ToString
+        | F::PrintlnString
         | F::VtableDispatchPanicOnOob => {
             return Err(CodegenError::FailClosed(format!(
                 "Instr::CallRuntimeAbi(symbol={symbol:?}, family={:?}): codegen has no \

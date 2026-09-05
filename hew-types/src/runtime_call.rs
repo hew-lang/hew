@@ -199,6 +199,81 @@ pub enum RuntimeResultAuthority {
     FailClosed,
 }
 
+/// Target-independent value kinds used by the first executable ownership-SIR
+/// runtime surface. These are semantic types, not ABI storage classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeValueKind {
+    Bool,
+    U8,
+    I64,
+    String,
+    Bytes,
+}
+
+impl RuntimeValueKind {
+    #[must_use]
+    pub const fn matches(self, ty: &ResolvedTy) -> bool {
+        matches!(
+            (self, ty),
+            (Self::Bool, ResolvedTy::Bool)
+                | (Self::U8, ResolvedTy::U8)
+                | (Self::I64, ResolvedTy::I64)
+                | (Self::String, ResolvedTy::String)
+                | (Self::Bytes, ResolvedTy::Bytes)
+        )
+    }
+
+    #[must_use]
+    pub fn resolved_ty(self) -> ResolvedTy {
+        match self {
+            Self::Bool => ResolvedTy::Bool,
+            Self::U8 => ResolvedTy::U8,
+            Self::I64 => ResolvedTy::I64,
+            Self::String => ResolvedTy::String,
+            Self::Bytes => ResolvedTy::Bytes,
+        }
+    }
+}
+
+/// Ownership action required for one semantic runtime operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeArgumentEffect {
+    Borrow,
+    Copy,
+    Move,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RuntimeArgumentContract {
+    pub ty: RuntimeValueKind,
+    pub effect: RuntimeArgumentEffect,
+}
+
+/// Semantic result relation of one runtime operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeResultEffect {
+    Unit,
+    BitCopy(RuntimeValueKind),
+    FreshOwned(RuntimeValueKind),
+    /// A successful transform consumes argument zero and yields its sole
+    /// updated owner as a new SSA value. The physical ABI may use an out
+    /// pointer, but may not hide an in-place owner mutation from SIR.
+    UpdatedReceiver(RuntimeValueKind),
+}
+
+/// Closed language-visible failures of the initial runtime-operation surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeLogicalFailure {
+    IndexOutOfBounds,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RuntimeSemanticContract {
+    pub arguments: &'static [RuntimeArgumentContract],
+    pub result: RuntimeResultEffect,
+    pub failures: &'static [RuntimeLogicalFailure],
+}
+
 impl ConsumeVerdict {
     /// `true` iff the verdict directs the callee to own/drop the argument —
     /// the projection back onto the historical `bool` (both consume flavours
@@ -703,11 +778,16 @@ pub enum RuntimeCallFamily {
     StringCharAtUtf8,
     StringCharCount,
     StringConcat,
+    StringEquals,
     StructuralFormat,
     StringFind,
     StringGet,
     StringIndex,
     StringSliceCodepoints,
+    StringToBytes,
+    StringToUppercase,
+    U8ToString,
+    PrintlnString,
 
     // --- Supervisor --------------------------------------------------------
     /// Capture the stable direct identity for a live supervisor binding.
@@ -941,7 +1021,10 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         module: "std.io",
         signature_key: "bytes::len",
         symbol: "hew_vec_len",
-        family: Some(RuntimeCallFamily::VecLen),
+        // The source bridge historically reuses the Vec symbol, but the
+        // checked receiver is `bytes`; publish the semantic Bytes family so a
+        // downstream consumer can never apply the Vec header ABI by accident.
+        family: Some(RuntimeCallFamily::BytesLen),
         params: EMPTY,
         result: CanonicalExternTy::I64,
     },
@@ -1008,6 +1091,22 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         family: Some(RuntimeCallFamily::StringCharAtUtf8),
         params: I64,
         result: CanonicalExternTy::OptionI64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::to_bytes",
+        symbol: "hew_string_to_bytes",
+        family: Some(RuntimeCallFamily::StringToBytes),
+        params: EMPTY,
+        result: CanonicalExternTy::Bytes,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::to_upper",
+        symbol: "hew_string_to_uppercase",
+        family: Some(RuntimeCallFamily::StringToUppercase),
+        params: EMPTY,
+        result: CanonicalExternTy::String,
     },
 ];
 
@@ -1079,6 +1178,18 @@ impl RuntimeCallFamily {
             return Some(Self::RcNew);
         }
         Self::from_c_symbol(signature_key)
+    }
+
+    /// Resolve an exact compiler-owned stdlib catalogue endpoint to its
+    /// runtime family. Catalogue endpoint identity is established before this
+    /// call; arbitrary source names never reach it.
+    #[must_use]
+    pub fn from_catalog_endpoint(endpoint: &str) -> Option<Self> {
+        match endpoint {
+            "println_str" => Some(Self::PrintlnString),
+            "to_string_u8" => Some(Self::U8ToString),
+            _ => None,
+        }
     }
 
     /// Resolve the C-ABI symbol the family lowers to. Total function;
@@ -1306,11 +1417,16 @@ impl RuntimeCallFamily {
             Self::StringCharAtUtf8 => "hew_string_char_at_utf8",
             Self::StringCharCount => "hew_string_char_count",
             Self::StringConcat => "hew_string_concat",
+            Self::StringEquals => "hew_string_equals",
             Self::StructuralFormat => "hew_structural_format",
             Self::StringFind => "hew_string_find",
             Self::StringGet => "hew_string_get",
             Self::StringIndex => "hew_string_index",
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
+            Self::StringToBytes => "hew_string_to_bytes",
+            Self::StringToUppercase => "hew_string_to_uppercase",
+            Self::U8ToString => "hew_u8_to_string",
+            Self::PrintlnString => "hew_println_str",
             // Supervisor
             Self::SupervisorDirectId => "hew_supervisor_direct_id",
             Self::SupervisorChildGet => "hew_supervisor_child_get",
@@ -1633,11 +1749,16 @@ impl RuntimeCallFamily {
             "hew_string_char_at_utf8" => Self::StringCharAtUtf8,
             "hew_string_char_count" => Self::StringCharCount,
             "hew_string_concat" => Self::StringConcat,
+            "hew_string_equals" => Self::StringEquals,
             "hew_structural_format" => Self::StructuralFormat,
             "hew_string_find" => Self::StringFind,
             "hew_string_get" => Self::StringGet,
             "hew_string_index" => Self::StringIndex,
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
+            "hew_string_to_bytes" => Self::StringToBytes,
+            "hew_string_to_uppercase" => Self::StringToUppercase,
+            "hew_u8_to_string" => Self::U8ToString,
+            "hew_println_str" => Self::PrintlnString,
             // Supervisor
             "hew_supervisor_direct_id" => Self::SupervisorDirectId,
             "hew_supervisor_child_get" => Self::SupervisorChildGet,
@@ -2141,9 +2262,128 @@ impl RuntimeCallFamily {
         }
     }
 
+    /// Exact semantic operation contract currently admitted by ownership SIR.
+    /// Families outside this deliberately small surface fail closed.
+    #[must_use]
+    pub const fn semantic_contract(self) -> Option<RuntimeSemanticContract> {
+        use RuntimeArgumentEffect::{Borrow, Copy, Move};
+        use RuntimeResultEffect::{BitCopy, FreshOwned, Unit, UpdatedReceiver};
+        use RuntimeValueKind::{Bool, Bytes, String, I64, U8};
+
+        const STRING_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+            ty: String,
+            effect: Borrow,
+        }];
+        const STRING_PAIR_BORROW: &[RuntimeArgumentContract] = &[
+            RuntimeArgumentContract {
+                ty: String,
+                effect: Borrow,
+            },
+            RuntimeArgumentContract {
+                ty: String,
+                effect: Borrow,
+            },
+        ];
+        const U8_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+            ty: U8,
+            effect: Copy,
+        }];
+        const BYTES_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
+            ty: Bytes,
+            effect: Borrow,
+        }];
+        const BYTES_INDEX: &[RuntimeArgumentContract] = &[
+            RuntimeArgumentContract {
+                ty: Bytes,
+                effect: Borrow,
+            },
+            RuntimeArgumentContract {
+                ty: I64,
+                effect: Copy,
+            },
+        ];
+        const BYTES_PUSH: &[RuntimeArgumentContract] = &[
+            RuntimeArgumentContract {
+                ty: Bytes,
+                effect: Move,
+            },
+            RuntimeArgumentContract {
+                ty: U8,
+                effect: Copy,
+            },
+        ];
+        const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
+        const INDEX_FAILURES: &[RuntimeLogicalFailure] = &[RuntimeLogicalFailure::IndexOutOfBounds];
+
+        Some(match self {
+            Self::StringToUppercase => RuntimeSemanticContract {
+                arguments: STRING_BORROW,
+                result: FreshOwned(String),
+                failures: NO_FAILURES,
+            },
+            Self::StringToBytes => RuntimeSemanticContract {
+                arguments: STRING_BORROW,
+                result: FreshOwned(Bytes),
+                failures: NO_FAILURES,
+            },
+            Self::StringEquals => RuntimeSemanticContract {
+                arguments: STRING_PAIR_BORROW,
+                result: BitCopy(Bool),
+                failures: NO_FAILURES,
+            },
+            Self::StringConcat => RuntimeSemanticContract {
+                arguments: STRING_PAIR_BORROW,
+                result: FreshOwned(String),
+                failures: NO_FAILURES,
+            },
+            Self::U8ToString => RuntimeSemanticContract {
+                arguments: U8_COPY,
+                result: FreshOwned(String),
+                failures: NO_FAILURES,
+            },
+            Self::PrintlnString => RuntimeSemanticContract {
+                arguments: STRING_BORROW,
+                result: Unit,
+                failures: NO_FAILURES,
+            },
+            Self::BytesLen => RuntimeSemanticContract {
+                arguments: BYTES_BORROW,
+                result: BitCopy(I64),
+                failures: NO_FAILURES,
+            },
+            Self::BytesIndex => RuntimeSemanticContract {
+                arguments: BYTES_INDEX,
+                result: BitCopy(U8),
+                failures: INDEX_FAILURES,
+            },
+            Self::BytesPush => RuntimeSemanticContract {
+                arguments: BYTES_PUSH,
+                result: UpdatedReceiver(Bytes),
+                failures: NO_FAILURES,
+            },
+            _ => return None,
+        })
+    }
+
     /// Return-value ownership for the closed scalar Vec ABI surface.
     #[must_use]
     pub const fn result_ownership(self) -> RuntimeResultOwnership {
+        if let Some(contract) = self.semantic_contract() {
+            return match contract.result {
+                RuntimeResultEffect::FreshOwned(RuntimeValueKind::String) => {
+                    RuntimeResultOwnership::FreshOwnedString
+                }
+                RuntimeResultEffect::FreshOwned(RuntimeValueKind::Bytes) => {
+                    RuntimeResultOwnership::FreshOwnedBytes
+                }
+                RuntimeResultEffect::Unit
+                | RuntimeResultEffect::BitCopy(_)
+                | RuntimeResultEffect::UpdatedReceiver(_)
+                | RuntimeResultEffect::FreshOwned(
+                    RuntimeValueKind::Bool | RuntimeValueKind::U8 | RuntimeValueKind::I64,
+                ) => RuntimeResultOwnership::Untracked,
+            };
+        }
         match self {
             Self::VecScalar {
                 op: VecScalarOp::Pop | VecScalarOp::RemoveAt,
@@ -2161,6 +2401,15 @@ impl RuntimeCallFamily {
     /// silently inherit owner or borrow semantics from its C spelling.
     #[must_use]
     pub const fn result_authority(self) -> RuntimeResultAuthority {
+        if let Some(contract) = self.semantic_contract() {
+            return match contract.result {
+                RuntimeResultEffect::FreshOwned(_) | RuntimeResultEffect::UpdatedReceiver(_) => {
+                    RuntimeResultAuthority::IndependentOwned
+                }
+                RuntimeResultEffect::BitCopy(_) => RuntimeResultAuthority::IndependentBitCopy,
+                RuntimeResultEffect::Unit => RuntimeResultAuthority::FailClosed,
+            };
+        }
         match self {
             Self::VecGet(VecGetElem::Str | VecGetElem::Clone | VecGetElem::Take)
             | Self::VecClone
@@ -2431,11 +2680,16 @@ impl RuntimeCallFamily {
             | F::StringCharAtUtf8
             | F::StringCharCount
             | F::StringConcat
+            | F::StringEquals
             | F::StructuralFormat
             | F::StringFind
             | F::StringGet
             | F::StringIndex
             | F::StringSliceCodepoints
+            | F::StringToBytes
+            | F::StringToUppercase
+            | F::U8ToString
+            | F::PrintlnString
             | F::SupervisorDirectId
             | F::SupervisorChildGet
             | F::LocalPidSupervisorChildGet
@@ -3324,12 +3578,19 @@ mod tests {
                 "string::char_at",
                 "string::get",
                 "string::codepoint_at_utf8",
+                "string::to_bytes",
+                "string::to_upper",
             ],
             "a compiler-lowered stdlib extern must be described here before it can lift into a runtime family",
         );
         for entry in signatures {
             if let Some(family) = entry.family {
-                assert_eq!(family.c_symbol(), entry.symbol, "{entry:?}");
+                if entry.signature_key == "bytes::len" {
+                    assert_eq!(family, RuntimeCallFamily::BytesLen);
+                    assert_eq!(entry.symbol, "hew_vec_len");
+                } else {
+                    assert_eq!(family.c_symbol(), entry.symbol, "{entry:?}");
+                }
             }
         }
     }

@@ -505,22 +505,26 @@ fn compiled_stdlib_extern_method_uses_exact_contract_for_fresh_result() {
     let output = checker.check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 
-    let (span, identity) = output
+    let (span, descriptor) = output
         .method_call_rewrites
         .iter()
         .find_map(|(span, rewrite)| match rewrite {
             MethodCallRewrite::RewriteToFunction {
                 c_symbol,
-                extern_identity: Some(identity),
+                target:
+                    crate::check::CallTarget::Runtime(
+                        crate::runtime_call::RuntimeCallFamily::StringToBytes,
+                    ),
+                descriptor: Some(descriptor),
                 ..
-            } if c_symbol == "hew_string_to_bytes" => Some((span, identity)),
+            } if c_symbol == "hew_string_to_bytes" => Some((span, descriptor)),
             _ => None,
         })
-        .expect("string.to_bytes must carry its exact extern identity");
-    assert_eq!(identity.endpoint, "hew_string_to_bytes");
-    assert_eq!(identity.signature_key, "string::to_bytes");
-    assert_eq!(identity.declaring_module.as_deref(), Some("std.string"));
-    assert!(identity.trusted_compiled_stdlib);
+        .expect("canonical string.to_bytes must carry its typed runtime family");
+    assert_eq!(
+        descriptor.family(),
+        crate::runtime_call::RuntimeCallFamily::StringToBytes
+    );
 
     let fact = output
         .produced_value_ownership
@@ -537,6 +541,32 @@ fn compiled_stdlib_extern_method_uses_exact_contract_for_fresh_result() {
         Some(crate::runtime_call::ProducedArgumentBoundary::Borrow)
     );
     assert!(fact.arguments.is_empty());
+}
+
+#[test]
+fn user_extern_with_stdlib_endpoint_is_not_promoted_to_runtime_family() {
+    let output = check_source(
+        r#"
+        type Encoder { value: string }
+
+        impl Encoder {
+            #[extern_symbol(hew_string_to_bytes)]
+            fn encode(self) -> bytes { b"" }
+        }
+
+        fn use_encoder(value: Encoder) -> bytes { value.encode() }
+        "#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.method_call_rewrites.values().any(|rewrite| matches!(
+        rewrite,
+        MethodCallRewrite::RewriteToFunction {
+            c_symbol,
+            target: crate::check::CallTarget::Extern { .. },
+            descriptor: None,
+            ..
+        } if c_symbol == "hew_string_to_bytes"
+    )));
 }
 
 /// Extern fns without `#[extern_symbol]` carry `None` (regression

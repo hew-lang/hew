@@ -1632,6 +1632,162 @@ fn verify_direct_call_terminator(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one closed runtime relation boundary checks arguments, result and failure CFG"
+)]
+fn verify_runtime_call_terminator(
+    function: &SemFunction,
+    id: OpId,
+    family: hew_types::RuntimeCallFamily,
+    args: &[crate::BoundaryOperand],
+    result: &crate::CallResult,
+    normal: &crate::Edge,
+    unwind: &crate::CallUnwind,
+    types: &HashMap<ValueId, ResolvedTy>,
+    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
+
+    let Some(contract) = family.semantic_contract() else {
+        invalid_operation(
+            function,
+            id,
+            format!("runtime family `{family:?}` has no admitted semantic contract"),
+            diagnostics,
+        );
+        return;
+    };
+    if args.len() != contract.arguments.len() {
+        invalid_operation(
+            function,
+            id,
+            format!(
+                "runtime family `{family:?}` has {} argument(s), expected {}",
+                args.len(),
+                contract.arguments.len()
+            ),
+            diagnostics,
+        );
+    }
+    for (index, (argument, expected)) in args.iter().zip(contract.arguments).enumerate() {
+        if let Some(actual) = types.get(&argument.operand.value) {
+            if !expected.ty.matches(actual) {
+                invalid_operation(
+                    function,
+                    id,
+                    format!(
+                        "runtime family `{family:?}` argument {index} has `{}`, expected {:?}",
+                        actual.user_facing(),
+                        expected.ty
+                    ),
+                    diagnostics,
+                );
+            }
+        }
+        let expected_decision = match expected.effect {
+            RuntimeArgumentEffect::Borrow => crate::BoundaryDecision::Borrow,
+            RuntimeArgumentEffect::Copy => crate::BoundaryDecision::Copy,
+            RuntimeArgumentEffect::Move => crate::BoundaryDecision::Move,
+        };
+        if argument.decision != expected_decision {
+            invalid_operation(
+                function,
+                id,
+                format!(
+                    "runtime family `{family:?}` argument {index} has {:?} boundary, expected {expected_decision:?}",
+                    argument.decision
+                ),
+                diagnostics,
+            );
+        }
+    }
+
+    let expected_result = match contract.result {
+        RuntimeResultEffect::Unit => None,
+        RuntimeResultEffect::BitCopy(kind) => Some((kind, crate::OwnKind::None)),
+        RuntimeResultEffect::FreshOwned(kind) | RuntimeResultEffect::UpdatedReceiver(kind) => {
+            Some((kind, crate::OwnKind::Owned))
+        }
+    };
+    match (expected_result, result) {
+        (None, crate::CallResult::Unit) => {
+            if !normal.args.is_empty() {
+                invalid_operation(
+                    function,
+                    id,
+                    "unit runtime call forwards a normal-edge value".to_string(),
+                    diagnostics,
+                );
+            }
+        }
+        (Some((kind, own)), crate::CallResult::Value(value)) => {
+            let expected_ty = kind.resolved_ty();
+            if value.ty != expected_ty || value.own != own {
+                invalid_operation(
+                    function,
+                    id,
+                    format!(
+                        "runtime family `{family:?}` result is `{}`/{:?}, expected `{}`/{own:?}",
+                        value.ty.user_facing(),
+                        value.own,
+                        expected_ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+            let forwarded = normal
+                .args
+                .iter()
+                .filter(|operand| operand.value == value.id)
+                .count();
+            if forwarded != 1 {
+                invalid_operation(
+                    function,
+                    id,
+                    format!(
+                        "runtime family `{family:?}` result must be forwarded exactly once on its normal edge, found {forwarded}"
+                    ),
+                    diagnostics,
+                );
+            }
+        }
+        _ => invalid_operation(
+            function,
+            id,
+            format!("runtime family `{family:?}` result shape disagrees with its contract"),
+            diagnostics,
+        ),
+    }
+
+    match (contract.failures, unwind) {
+        ([], crate::CallUnwind::NotApplicable) => {}
+        ([failure], crate::CallUnwind::Cleanup(edge)) => {
+            let expected = crate::runtime_failure_trap_kind(*failure);
+            if !failure_cfg_matches_trap(edge, expected, blocks) {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidTerminator {
+                        reason: format!(
+                            "runtime family `{family:?}` failure edge does not end only in {expected:?}"
+                        ),
+                    },
+                ));
+            }
+        }
+        _ => diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: format!(
+                    "runtime family `{family:?}` unwind shape disagrees with its exact failure set"
+                ),
+            },
+        )),
+    }
+}
+
 fn invalid_operation(
     function: &SemFunction,
     op: OpId,
@@ -1800,6 +1956,10 @@ fn failure_cfg_matches_trap(
     )
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the verifier keeps the closed terminator dispatch visibly exhaustive"
+)]
 fn verify_terminator_shape(
     function: &SemFunction,
     terminator: &SemTerminator,
@@ -1889,6 +2049,25 @@ fn verify_terminator_shape(
             blocks,
             diagnostics,
         ),
+        SemTerminator::RtCall {
+            id,
+            family,
+            args,
+            result,
+            normal,
+            unwind,
+        } => verify_runtime_call_terminator(
+            function,
+            *id,
+            *family,
+            args,
+            result,
+            normal,
+            unwind,
+            types,
+            blocks,
+            diagnostics,
+        ),
         SemTerminator::Return { .. }
         | SemTerminator::Goto(_)
         | SemTerminator::Trap { .. }
@@ -1901,7 +2080,7 @@ fn verify_terminator_shape(
         // an unverified operation is: admitting it would let a shape nothing
         // checks reach MIR. This is the operation arm's refusal, not a new
         // ownership rule.
-        SemTerminator::RtCall { .. } | SemTerminator::Suspend { .. } => {
+        SemTerminator::Suspend { .. } => {
             diagnostics.push(diag(
                 function,
                 SirDiagnosticKind::InvalidTerminator {

@@ -133,9 +133,13 @@ fn canonicalize_verified_function(
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
-    let diagnostics = verify_cfg_discard_safety(&before_folding, function);
-    if !diagnostics.is_empty() {
-        return Err(diagnostics);
+    if !verify_cfg_discard_safety(&before_folding, function).is_empty() {
+        // Constant folding is optional. If removing the unselected region
+        // would erase a trap or ownership obligation, retain the original
+        // verified CFG instead of turning a refused optimization into a
+        // compilation failure.
+        *function = before_folding;
+        folded_branches = 0;
     }
 
     let post_fold_cfg = build_cfg_index(function);

@@ -1609,6 +1609,11 @@ fn wasm_excluded_call_family(
         | F::VecSetOwned
         | F::VecSetOwnedMove
         | F::VecSliceRange(_)
+        | F::StringEquals
+        | F::StringToBytes
+        | F::StringToUppercase
+        | F::U8ToString
+        | F::PrintlnString
         | F::VtableDispatchPanicOnOob => None,
     }
 }
@@ -1686,7 +1691,7 @@ fn emit_object_in_process(
 /// successful pass run the module is re-verified — `default<O2>` reshapes IR
 /// heavily, so a post-pass verify catches an optimizer-exposed invariant
 /// violation at the source rather than as a downstream backend crash.
-fn run_module_pipeline(
+pub(crate) fn run_module_pipeline(
     llvm_mod: &LlvmModule<'_>,
     machine: &TargetMachine,
     opt_level: OptLevel,
@@ -1777,7 +1782,7 @@ fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
     target_machine_for_triple_with_opt_level(triple, OptLevel::O0)
 }
 
-fn target_machine_for_triple_with_opt_level(
+pub(crate) fn target_machine_for_triple_with_opt_level(
     triple: &str,
     opt_level: OptLevel,
 ) -> CodegenResult<TargetMachine> {
@@ -1809,7 +1814,7 @@ fn target_machine_optimization_level(opt_level: OptLevel) -> inkwell::Optimizati
     }
 }
 
-fn initialise_llvm_targets() {
+pub(crate) fn initialise_llvm_targets() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
         Target::initialize_all(&InitializationConfig::default());

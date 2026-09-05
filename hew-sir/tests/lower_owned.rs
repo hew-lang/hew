@@ -1,7 +1,7 @@
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
-    lower_module, verify_module, BoundaryDecision, SemOpKind, SemParamPassing, SemTerminator,
-    SirLoweringStatus, TrapKind,
+    canonicalize_module_constant_cfg, lower_module, verify_module, BoundaryDecision, SemOpKind,
+    SemParamPassing, SemTerminator, SirLoweringStatus, TrapKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -22,6 +22,197 @@ fn lower_source(source: &str) -> hew_sir::LoweredModule {
         hir.diagnostics
     );
     lower_module(&hir.module, &facts)
+}
+
+#[test]
+fn core_owned_runtime_sources_lower_to_verified_sir() {
+    let sources = [
+        (
+            "owned-call-return",
+            include_str!("../../tests/core-acceptance/cases/owned-call-return.hew"),
+            &["echo", "main"][..],
+        ),
+        (
+            "bytes-copy-mutate",
+            include_str!("../../tests/core-acceptance/cases/bytes-copy-mutate.hew"),
+            &["main"][..],
+        ),
+        (
+            "owned-branch-reassign",
+            include_str!("../../tests/core-acceptance/cases/owned-branch-reassign.hew"),
+            &["main"][..],
+        ),
+        (
+            "owned-loop",
+            include_str!("../../tests/core-acceptance/cases/owned-loop.hew"),
+            &["append_mark", "main"][..],
+        ),
+        (
+            "owned-early-return",
+            include_str!("../../tests/core-acceptance/cases/owned-early-return.hew"),
+            &["choose", "main"][..],
+        ),
+    ];
+
+    for (name, source, source_functions) in sources {
+        let lowered = lower_source(source);
+        assert!(
+            source_functions.iter().all(|source_function| matches!(
+                lowered
+                    .statuses
+                    .iter()
+                    .find(|status| status.name == *source_function)
+                    .map(|status| &status.status),
+                Some(SirLoweringStatus::Lowered)
+            )),
+            "{name} must lower each authored source function: {:#?}",
+            lowered.statuses
+        );
+        assert!(
+            verify_module(&lowered.module).is_empty(),
+            "{name} must produce verified SIR: {:#?}",
+            verify_module(&lowered.module)
+        );
+    }
+}
+
+#[test]
+fn constant_owned_branch_that_needs_cleanup_remains_executable() {
+    let mut lowered = lower_source(include_str!(
+        "../../tests/core-acceptance/cases/owned-branch-reassign.hew"
+    ));
+    assert!(verify_module(&lowered.module).is_empty());
+
+    let main_before = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("owned branch acceptance entry must lower")
+        .clone();
+    let reports = canonicalize_module_constant_cfg(&mut lowered.module)
+        .expect("an optional CFG fold must preserve an unsafe-to-discard branch");
+    let main_report = reports
+        .iter()
+        .find(|(callable, _)| *callable == main_before.callable)
+        .map(|(_, report)| report)
+        .expect("the main callable must report canonicalization");
+    let main_after = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.callable == main_before.callable)
+        .expect("canonicalization must retain the main callable");
+
+    assert_eq!(main_report.folded_branches, 0);
+    assert_eq!(main_after, &main_before);
+    assert!(verify_module(&lowered.module).is_empty());
+}
+
+#[test]
+fn bytes_runtime_transform_and_failure_edges_are_explicit_and_checked() {
+    let lowered = lower_source(include_str!(
+        "../../tests/core-acceptance/cases/bytes-copy-mutate.hew"
+    ));
+    assert!(verify_module(&lowered.module).is_empty());
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("bytes acceptance entry must lower");
+
+    let (push_result, push_normal) = main
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            SemTerminator::RtCall {
+                family: hew_types::RuntimeCallFamily::BytesPush,
+                args,
+                result: hew_sir::CallResult::Value(result),
+                normal,
+                unwind: hew_sir::CallUnwind::NotApplicable,
+                ..
+            } => {
+                assert_eq!(args.len(), 2);
+                assert_eq!(args[0].decision, BoundaryDecision::Move);
+                assert_eq!(args[1].decision, BoundaryDecision::Copy);
+                assert_eq!(result.ty, hew_types::ResolvedTy::Bytes);
+                assert_eq!(result.own, hew_sir::OwnKind::Owned);
+                Some((result.id, normal.target))
+            }
+            _ => None,
+        })
+        .expect("bytes.push must consume one owner and return its updated owner");
+    let push_continuation = main.blocks[push_normal.0 as usize].args[0].value;
+    assert_ne!(push_result, push_continuation);
+    assert_eq!(
+        main.bindings
+            .iter()
+            .rev()
+            .find(|binding| binding.name == "copy")
+            .map(|binding| binding.target),
+        Some(hew_sir::BindingTarget::Value(push_continuation)),
+        "the mutable source binding must name the updated owner"
+    );
+
+    let index_unwind = main
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            SemTerminator::RtCall {
+                family: hew_types::RuntimeCallFamily::BytesIndex,
+                unwind: hew_sir::CallUnwind::Cleanup(edge),
+                ..
+            } => Some(edge.target),
+            _ => None,
+        })
+        .expect("bytes index must have an explicit bounds-failure edge");
+    let failure = &main.blocks[index_unwind.0 as usize];
+    assert!(failure
+        .ops
+        .iter()
+        .any(|op| matches!(op.kind, SemOpKind::DestroyValue { .. })));
+    assert_eq!(
+        failure.terminator,
+        SemTerminator::Trap {
+            kind: TrapKind::IndexOutOfBounds
+        }
+    );
+
+    let mut wrong_push_boundary = lowered.module.clone();
+    let push = wrong_push_boundary
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator {
+            SemTerminator::RtCall {
+                family: hew_types::RuntimeCallFamily::BytesPush,
+                args,
+                ..
+            } => Some(args),
+            _ => None,
+        })
+        .expect("fixture must contain bytes.push");
+    push[0].decision = BoundaryDecision::Borrow;
+    assert!(!verify_module(&wrong_push_boundary).is_empty());
+
+    let mut missing_bounds_edge = lowered.module.clone();
+    let index = missing_bounds_edge
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator {
+            SemTerminator::RtCall {
+                family: hew_types::RuntimeCallFamily::BytesIndex,
+                unwind,
+                ..
+            } => Some(unwind),
+            _ => None,
+        })
+        .expect("fixture must contain bytes index");
+    *index = hew_sir::CallUnwind::NotApplicable;
+    assert!(!verify_module(&missing_bounds_edge).is_empty());
 }
 
 #[test]

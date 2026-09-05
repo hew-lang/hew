@@ -500,3 +500,11 @@ ownership/result/descriptor cases and the runtime C ABI layout comparison.
 Zero-sized runtime elements preserve logical lengths while copying no payload
 bytes; vector unit tests and unsuppressed owned-vector ASan/LSan pass. Complete
 native execution and generated-code sanitizer acceptance follow this checkpoint.
+
+The native vector cases now pass at both optimization levels, including paired
+generated-code and runtime ASan/LSan. Initial failures were rejected fixture
+patterns using bare option variants; migrating them to `.Some` and `.None`
+allowed the intended zero-sized and retained-value behaviours to execute.
+Full lint reached the remaining machine/actor dogfood coverage and the older MIR
+measurement fixture, which still fail to compile through the new core. Those
+failures remain visible while the native language implementation continues.

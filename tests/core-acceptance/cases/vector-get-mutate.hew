@@ -14,14 +14,14 @@ fn preserved() -> string {
     }
     values.clear();
     match missing {
-        Some(_) => {
+        .Some(_) => {
             return "incorrect bounds";
         },
-        None => {},
+        .None => {},
     }
     match saved {
-        Some(value) => value,
-        None => "missing value",
+        .Some(value) => value,
+        .None => "missing value",
     }
 }
 

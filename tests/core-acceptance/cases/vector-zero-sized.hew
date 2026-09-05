@@ -6,14 +6,14 @@ fn main() -> i64 {
     values.push(Marker {  });
     values.push(Marker {  });
     let copy = values;
-    let removed = values.pop();
+    let _removed = values.pop();
     values.clear();
     if copy.len() != 2 || values.len() != 0 {
         return 1;
     }
     match copy.get(1) {
-        Some(_) => {},
-        None => {
+        .Some(_) => {},
+        .None => {
             return 2;
         },
     }

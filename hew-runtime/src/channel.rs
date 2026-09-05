@@ -763,7 +763,9 @@ mod tests {
             Some("hew_channel_new: invalid capacity -1 (must be >= 0)")
         );
     }
-    use std::ffi::{c_char, CStr};
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::{string_as_bytes, string_as_str, string_release, HewString};
+    use std::ffi::CStr;
     use std::thread;
 
     /// Send a NUL-terminated string element through the layout-witness entry
@@ -771,16 +773,17 @@ mod tests {
     /// slot address of the caller's string pointer is what the ABI carries.
     unsafe fn send_str(tx: *mut HewChannelSender, s: &CStr) {
         let layout = string_layout();
-        let slot: *const c_char = s.as_ptr();
+        let owner = ManagedString::new(s.to_str().unwrap());
+        let slot = owner.as_ptr();
         // SAFETY: forwarded from caller; slot/layout are live locals.
         unsafe { hew_channel_send_layout(tx, std::ptr::addr_of!(slot).cast(), &raw const layout) };
     }
 
     /// Blocking recv of one string element via the layout witness; returns the
-    /// owned header-aware cstring, or null when the channel is closed.
-    unsafe fn recv_str(rx: *mut HewChannelReceiver) -> *mut c_char {
+    /// owned managed string, or null when the channel is closed.
+    unsafe fn recv_str(rx: *mut HewChannelReceiver) -> *mut HewString {
         let layout = string_layout();
-        let mut out: *mut c_char = ptr::null_mut();
+        let mut out: *mut HewString = ptr::null_mut();
         // SAFETY: forwarded from caller; out/layout are live locals.
         let rc = unsafe {
             hew_channel_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout)
@@ -794,9 +797,9 @@ mod tests {
 
     /// Non-blocking recv of one string element via the layout witness; null
     /// when the queue is empty or closed.
-    unsafe fn try_recv_str(rx: *mut HewChannelReceiver) -> *mut c_char {
+    unsafe fn try_recv_str(rx: *mut HewChannelReceiver) -> *mut HewString {
         let layout = string_layout();
-        let mut out: *mut c_char = ptr::null_mut();
+        let mut out: *mut HewString = ptr::null_mut();
         // SAFETY: forwarded from caller; out/layout are live locals.
         let rc = unsafe {
             hew_channel_try_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout)
@@ -882,8 +885,8 @@ mod tests {
                 assert!(!(*tx).core.is_stream_closed());
                 send_str(tx, c"both");
                 let got = recv_str(rx);
-                assert_eq!(CStr::from_ptr(got).to_bytes(), b"both");
-                crate::cabi::free_cstring(got);
+                assert_eq!(string_as_bytes(got), b"both");
+                string_release(got);
                 hew_channel_sender_close(tx);
                 assert_eq!(senders.load(Ordering::Acquire), 0);
                 hew_channel_receiver_close(rx);
@@ -930,8 +933,8 @@ mod tests {
             assert_eq!(count.load(Ordering::Acquire), 1);
             send_str(tx2, c"clone");
             let got = recv_str(rx);
-            assert_eq!(CStr::from_ptr(got).to_bytes(), b"clone");
-            crate::cabi::free_cstring(got);
+            assert_eq!(string_as_bytes(got), b"clone");
+            string_release(got);
             hew_channel_sender_close(tx2);
             assert_eq!(count.load(Ordering::Acquire), 0);
             hew_channel_receiver_close(rx);
@@ -974,8 +977,8 @@ mod tests {
                 if result.is_null() {
                     break;
                 }
-                let s = CStr::from_ptr(result).to_str().unwrap().to_owned();
-                crate::cabi::free_cstring(result); // CSTRING-FREE: str-open (test frees layout recv string output; header-aware)
+                let s = string_as_str(result).to_owned();
+                string_release(result);
                 messages.push(s);
             }
 
@@ -1011,8 +1014,8 @@ mod tests {
 
             // The bind edge pops the queued item via try_recv.
             let got = try_recv_str(rx);
-            assert_eq!(CStr::from_ptr(got).to_bytes(), b"hi");
-            crate::cabi::free_cstring(got); // CSTRING-FREE: str-open (test)
+            assert_eq!(string_as_bytes(got), b"hi");
+            string_release(got);
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
@@ -1046,8 +1049,8 @@ mod tests {
 
             // Resume edge pops the actual item.
             let got = try_recv_str(rx);
-            assert_eq!(CStr::from_ptr(got).to_bytes(), b"woke");
-            crate::cabi::free_cstring(got); // CSTRING-FREE: str-open (test)
+            assert_eq!(string_as_bytes(got), b"woke");
+            string_release(got);
 
             hew_read_slot_free(slot);
             hew_channel_sender_close(tx);
@@ -1152,8 +1155,8 @@ mod tests {
 
             // Not consumed by the poll: the item is still queued for the winner.
             let got = try_recv_str(rx);
-            assert_eq!(CStr::from_ptr(got).to_bytes(), b"item");
-            crate::cabi::free_cstring(got); // CSTRING-FREE: str-open (test)
+            assert_eq!(string_as_bytes(got), b"item");
+            string_release(got);
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
@@ -1213,8 +1216,8 @@ mod tests {
 
             // The item is left intact for the next consumer.
             let got = try_recv_str(rx);
-            assert_eq!(CStr::from_ptr(got).to_bytes(), b"late");
-            crate::cabi::free_cstring(got); // CSTRING-FREE: str-open (test)
+            assert_eq!(string_as_bytes(got), b"late");
+            string_release(got);
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
@@ -1292,7 +1295,7 @@ mod tests {
                 assert!(spins < 1_000_000, "first poll callback never fired");
             }
             let first = try_recv_str(rx);
-            crate::cabi::free_cstring(first);
+            string_release(first);
 
             let second_id = hew_channel_poll(
                 rx,
@@ -1312,7 +1315,7 @@ mod tests {
                 assert!(spins < 1_000_000, "new poll was withdrawn by stale id");
             }
             let second = try_recv_str(rx);
-            crate::cabi::free_cstring(second);
+            string_release(second);
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
         }
@@ -1360,8 +1363,8 @@ mod tests {
 
     fn string_layout() -> HewVecElemLayout {
         HewVecElemLayout {
-            size: size_of::<*const c_char>(),
-            align: align_of::<*const c_char>(),
+            size: size_of::<*const HewString>(),
+            align: align_of::<*const HewString>(),
             ownership_kind: HewTypeOwnershipKind::String,
             clone_fn: None,
             drop_fn: None,
@@ -1424,7 +1427,7 @@ mod tests {
     }
 
     /// String elements stay content-encoded: send reads the caller's string
-    /// slot, recv materialises a fresh header-aware cstring the consumer owns.
+    /// slot, recv materialises a fresh managed string the consumer owns.
     /// An empty string is `Some("")` (rc 1), never `None`.
     #[test]
     fn layout_roundtrip_string_preserves_empty() {
@@ -1436,23 +1439,25 @@ mod tests {
             hew_channel_pair_free(pair);
 
             let layout = string_layout();
-            let hello: *const c_char = c"hello".as_ptr();
+            let hello_owner = ManagedString::new("hello");
+            let hello = hello_owner.as_ptr();
             hew_channel_send_layout(tx, std::ptr::addr_of!(hello).cast(), &raw const layout);
-            let empty: *const c_char = c"".as_ptr();
+            let empty_owner = ManagedString::new("");
+            let empty = empty_owner.as_ptr();
             hew_channel_send_layout(tx, std::ptr::addr_of!(empty).cast(), &raw const layout);
 
-            let mut out: *mut c_char = ptr::null_mut();
+            let mut out: *mut HewString = ptr::null_mut();
             let rc =
                 hew_channel_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout);
             assert_eq!(rc, 1);
-            assert_eq!(CStr::from_ptr(out).to_bytes(), b"hello");
-            crate::cabi::free_cstring(out); // CSTRING-FREE: str-open (test)
+            assert_eq!(string_as_bytes(out), b"hello");
+            string_release(out);
 
             let rc =
                 hew_channel_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout);
             assert_eq!(rc, 1, "empty string element is Some(\"\"), not None");
-            assert_eq!(CStr::from_ptr(out).to_bytes(), b"");
-            crate::cabi::free_cstring(out); // CSTRING-FREE: str-open (test)
+            assert_eq!(string_as_bytes(out), b"");
+            string_release(out);
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);

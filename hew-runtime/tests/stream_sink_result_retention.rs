@@ -26,14 +26,15 @@
 
 #![cfg(unix)]
 
-use std::ffi::CString;
-
+#[path = "../src/test_string.rs"]
+mod test_string;
 use hew_runtime::stream::{
     hew_sink_close, hew_sink_is_valid, hew_sink_write_string, hew_stream_from_file_write,
 };
+use test_string::ManagedString;
 
-fn c_path(path: &std::path::Path) -> CString {
-    CString::new(path.to_string_lossy().as_bytes()).expect("temporary path contains no NUL")
+fn c_path(path: &std::path::Path) -> ManagedString {
+    ManagedString::new(path.to_string_lossy())
 }
 
 #[test]
@@ -72,7 +73,7 @@ fn file_write_sink_result_is_transferred() {
         1,
         "hew_stream_from_file_write: releasing one result invalidated the other"
     );
-    let payload = CString::new("sink retention witness").expect("literal contains no NUL");
+    let payload = ManagedString::new("sink retention witness");
     // SAFETY: `second` is still live and `payload` outlives the call.
     unsafe { hew_sink_write_string(second, payload.as_ptr()) };
     // SAFETY: `second` is live and is not used again.
@@ -95,13 +96,15 @@ fn file_write_sink_result_is_transferred() {
     let written = std::fs::read(dir.path().join("second.txt")).expect("read second sink output");
     assert_eq!(
         written,
-        payload.as_bytes(),
+        // SAFETY: payload retains a managed owner throughout this assertion.
+        unsafe { hew_cabi::string::string_as_bytes(payload.as_ptr()) },
         "hew_stream_from_file_write: the surviving sink did not write its payload"
     );
     let rewritten = std::fs::read(dir.path().join("first.txt")).expect("read third sink output");
     assert_eq!(
         rewritten,
-        payload.as_bytes(),
+        // SAFETY: payload retains a managed owner throughout this assertion.
+        unsafe { hew_cabi::string::string_as_bytes(payload.as_ptr()) },
         "hew_stream_from_file_write: the post-release sink did not write its payload"
     );
 }

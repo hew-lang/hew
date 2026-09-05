@@ -538,7 +538,9 @@ fn active_handle_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{c_char, CStr};
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::{string_as_str, string_release, HewString};
+    use std::ffi::CStr;
 
     fn plain_layout(size: usize, align: usize) -> HewVecElemLayout {
         HewVecElemLayout {
@@ -552,8 +554,8 @@ mod tests {
 
     fn string_layout() -> HewVecElemLayout {
         HewVecElemLayout {
-            size: size_of::<*const c_char>(),
-            align: align_of::<*const c_char>(),
+            size: size_of::<*const HewString>(),
+            align: align_of::<*const HewString>(),
             ownership_kind: HewTypeOwnershipKind::String,
             clone_fn: None,
             drop_fn: None,
@@ -1061,7 +1063,8 @@ mod tests {
             let string_witness = string_layout();
             let plain_witness = plain_layout(8, 8);
 
-            let first: *const c_char = c"first".as_ptr();
+            let first_owner = ManagedString::new("first");
+            let first = first_owner.as_ptr();
             hew_channel_send_layout(
                 tx,
                 std::ptr::addr_of!(first).cast(),
@@ -1074,15 +1077,15 @@ mod tests {
                 &raw const plain_witness,
             );
 
-            let mut msg: *mut c_char = ptr::null_mut();
+            let mut msg: *mut HewString = ptr::null_mut();
             let rc = hew_channel_try_recv_layout(
                 rx,
                 std::ptr::addr_of_mut!(msg).cast(),
                 &raw const string_witness,
             );
             assert_eq!(rc, 1);
-            assert_eq!(CStr::from_ptr(msg).to_str().unwrap(), "first");
-            crate::cabi::free_cstring(msg); // CSTRING-FREE: str-open (test frees layout recv string output; header-aware)
+            assert_eq!(string_as_str(msg), "first");
+            string_release(msg);
 
             let mut value: i64 = -1;
             let rc = hew_channel_try_recv_layout(
@@ -1136,7 +1139,8 @@ mod tests {
             // Enqueue a 4-byte text envelope, then decode with an 8-byte
             // Plain witness — the width mismatch must bind no value.
             let string_witness = string_layout();
-            let tiny: *const c_char = c"tiny".as_ptr();
+            let tiny_owner = ManagedString::new("tiny");
+            let tiny = tiny_owner.as_ptr();
             hew_channel_send_layout(
                 tx,
                 std::ptr::addr_of!(tiny).cast(),

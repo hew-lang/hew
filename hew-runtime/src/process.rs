@@ -575,7 +575,8 @@ mod tests {
     unsafe fn read_last_error() -> String {
         let ptr = crate::hew_last_error();
         assert!(!ptr.is_null(), "expected hew_last_error to be populated");
-        // SAFETY: ptr is a live managed string owned by the runtime.
+        // SAFETY: hew_last_error returns a borrowed NUL-terminated TLS diagnostic,
+        // valid until the next error update on this thread.
         unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned()
     }
 

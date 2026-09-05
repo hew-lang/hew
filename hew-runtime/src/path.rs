@@ -26,85 +26,85 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::cabi::str_to_malloc;
-use std::ffi::{c_char, CStr};
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
+use std::ffi::CStr;
 
 // ── Simple filesystem-metadata helpers ──────────────────────────────────────
 
 /// Test whether `path` refers to a regular file.
 ///
 /// Returns `1` if the path names a regular file, `0` otherwise (including on
-/// null input, invalid UTF-8, I/O error, or any other failure).
+/// empty input, interior NUL, I/O error, or any other failure).
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string (or null).
+/// `path` must be a live managed string (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_path_is_file(path: *const c_char) -> i32 {
+pub unsafe extern "C" fn hew_path_is_file(path: *const HewString) -> i32 {
     if path.is_null() {
         return 0;
     }
-    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+    // SAFETY: caller guarantees `path` is a live managed string.
+    let rust_path = unsafe { string_as_str(path) };
+    if rust_path.contains('\0') {
         return 0;
-    };
+    }
     i32::from(std::path::Path::new(rust_path).is_file())
 }
 
 /// Test whether `path` refers to a directory.
 ///
 /// Returns `1` if the path names a directory, `0` otherwise (including on
-/// null input, invalid UTF-8, I/O error, or any other failure).
+/// empty input, interior NUL, I/O error, or any other failure).
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string (or null).
+/// `path` must be a live managed string (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_path_is_dir(path: *const c_char) -> i32 {
+pub unsafe extern "C" fn hew_path_is_dir(path: *const HewString) -> i32 {
     if path.is_null() {
         return 0;
     }
-    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+    // SAFETY: caller guarantees `path` is a live managed string.
+    let rust_path = unsafe { string_as_str(path) };
+    if rust_path.contains('\0') {
         return 0;
-    };
+    }
     i32::from(std::path::Path::new(rust_path).is_dir())
 }
 
 /// Return the absolute form of `path`.
 ///
 /// Resolves the path against the process working directory using
-/// [`std::path::absolute`].  Returns a `malloc`-allocated, NUL-terminated
-/// C string that the caller must free with `hew_string_drop`.
+/// [`std::path::absolute`]. Returns an owned managed string that the caller
+/// must release with `hew_string_drop`.
 ///
-/// Returns null on null input, invalid UTF-8, or resolution failure.
+/// Returns null on empty input, interior NUL, or resolution failure.
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string (or null).
+/// `path` must be a live managed string (or null).
 ///
 /// # Ownership
 ///
 /// The caller owns the returned pointer and must free it with `hew_string_drop`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_path_absolute(path: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn hew_path_absolute(path: *const HewString) -> *mut HewString {
     if path.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
+    // SAFETY: caller guarantees `path` is a live managed string.
+    let rust_path = unsafe { string_as_str(path) };
+    if rust_path.contains('\0') {
         return std::ptr::null_mut();
-    };
+    }
     let Ok(abs) = std::path::absolute(rust_path) else {
         return std::ptr::null_mut();
     };
     let Some(abs_str) = abs.to_str() else {
         return std::ptr::null_mut();
     };
-    str_to_malloc(abs_str)
+    string_from_str(abs_str)
 }
 
 // ── Glob expansion ───────────────────────────────────────────────────────────
@@ -137,13 +137,13 @@ type GlobExpansion = Result<Vec<String>, String>;
 ///
 /// # Safety
 ///
-/// `pattern` must be a valid, NUL-terminated C string (or null).
+/// `pattern` must be a live managed string (or null).
 ///
 /// # Ownership
 ///
 /// The caller owns the returned pointer and must release it with `hew_glob_free`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_glob(pattern: *const c_char) -> *mut HewGlobResult {
+pub unsafe extern "C" fn hew_glob(pattern: *const HewString) -> *mut HewGlobResult {
     if pattern.is_null() {
         crate::set_last_error("hew_glob: pattern is null");
         return Box::into_raw(Box::new(HewGlobResult {
@@ -151,10 +151,12 @@ pub unsafe extern "C" fn hew_glob(pattern: *const c_char) -> *mut HewGlobResult 
             error: Some("hew_glob: pattern is null".to_owned()),
         }));
     }
-    // SAFETY: caller guarantees `pattern` is a valid NUL-terminated C string.
-    let c_pattern = unsafe { CStr::from_ptr(pattern) };
+    // SAFETY: caller guarantees `pattern` is a live managed string.
+    let expansion = unsafe { hew_cabi::string::string_to_cstring(pattern) }
+        .map_err(|_| "hew_glob: pattern contains interior NUL".to_owned())
+        .and_then(|pattern| glob_expand(&pattern));
 
-    match glob_expand(c_pattern) {
+    match expansion {
         Ok(matches) => {
             crate::hew_clear_error();
             Box::into_raw(Box::new(HewGlobResult {
@@ -273,7 +275,7 @@ pub unsafe extern "C" fn hew_glob_is_valid(result: *mut HewGlobResult) -> bool {
     r.error.is_none()
 }
 
-/// Return the failure detail recorded on `result` as a `malloc`-allocated C
+/// Return the failure detail recorded on `result` as an owned managed
 /// string, or an empty string when the expansion completed.
 ///
 /// # Safety
@@ -283,18 +285,18 @@ pub unsafe extern "C" fn hew_glob_is_valid(result: *mut HewGlobResult) -> bool {
 ///
 /// # Ownership
 ///
-/// The returned pointer is `malloc`-allocated.  The caller must free it with
+/// The returned pointer is a managed owner.  The caller must free it with
 /// `hew_string_drop`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_glob_error(result: *mut HewGlobResult) -> *mut c_char {
+pub unsafe extern "C" fn hew_glob_error(result: *mut HewGlobResult) -> *mut HewString {
     if result.is_null() {
-        return str_to_malloc("hew_glob: result handle is null");
+        return string_from_str("hew_glob: result handle is null");
     }
     // SAFETY: caller guarantees `result` is a live HewGlobResult.
     let r = unsafe { &*result };
     match r.error.as_deref() {
-        Some(detail) => str_to_malloc(detail),
-        None => str_to_malloc(""),
+        Some(detail) => string_from_str(detail),
+        None => string_from_str(""),
     }
 }
 
@@ -316,9 +318,9 @@ pub unsafe extern "C" fn hew_glob_count(result: *mut HewGlobResult) -> i32 {
     i32::try_from(r.matches.len()).unwrap_or(i32::MAX)
 }
 
-/// Return the path at `index` from `result` as a `malloc`-allocated C string.
+/// Return the path at `index` from `result` as an owned managed string.
 ///
-/// Returns null on null input, out-of-range index, or interior NUL.
+/// Returns null on null input or out-of-range index.
 ///
 /// # Safety
 ///
@@ -327,10 +329,10 @@ pub unsafe extern "C" fn hew_glob_count(result: *mut HewGlobResult) -> i32 {
 ///
 /// # Ownership
 ///
-/// The returned pointer is `malloc`-allocated.  The caller must free it with
+/// The returned pointer is a managed owner.  The caller must free it with
 /// `hew_string_drop`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_glob_get(result: *mut HewGlobResult, index: i32) -> *mut c_char {
+pub unsafe extern "C" fn hew_glob_get(result: *mut HewGlobResult, index: i32) -> *mut HewString {
     if result.is_null() || index < 0 {
         return std::ptr::null_mut();
     }
@@ -342,11 +344,7 @@ pub unsafe extern "C" fn hew_glob_get(result: *mut HewGlobResult, index: i32) ->
     let Some(s) = r.matches.get(idx) else {
         return std::ptr::null_mut();
     };
-    // Verify no interior NUL before allocating the C string.
-    if s.contains('\0') {
-        return std::ptr::null_mut();
-    }
-    str_to_malloc(s)
+    string_from_str(s)
 }
 
 /// Free a `HewGlobResult` returned by [`hew_glob`].
@@ -372,11 +370,34 @@ pub unsafe extern "C" fn hew_glob_free(result: *mut HewGlobResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
+
+    #[test]
+    fn managed_paths_reject_nul_before_os_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("present.txt");
+        std::fs::write(&file, "unchanged").unwrap();
+        let file_path = ManagedString::new(format!("{}\0suffix", file.display()));
+        let dir_path = ManagedString::new(format!("{}\0suffix", dir.path().display()));
+        // SAFETY: the managed inputs remain live through every borrowed call.
+        unsafe {
+            assert_eq!(hew_path_is_file(file_path.as_ptr()), 0);
+            assert_eq!(hew_path_is_dir(dir_path.as_ptr()), 0);
+            assert!(hew_path_absolute(file_path.as_ptr()).is_null());
+            let glob = hew_glob(file_path.as_ptr());
+            assert!(!hew_glob_is_valid(glob));
+            let error = hew_glob_error(glob);
+            hew_glob_free(glob);
+            assert!(string_as_str(error).contains("interior NUL"));
+            string_release(error);
+        }
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "unchanged");
+    }
     use std::path::PathBuf;
 
-    fn cpath(p: &std::path::Path) -> CString {
-        CString::new(p.to_str().unwrap()).unwrap()
+    fn cpath(p: &std::path::Path) -> ManagedString {
+        ManagedString::new(p.to_str().unwrap())
     }
 
     fn test_dir(name: &str) -> PathBuf {
@@ -394,7 +415,7 @@ mod tests {
         let f = dir.join("test.txt");
         std::fs::write(&f, "x").unwrap();
         let p = cpath(&f);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_path_is_file(p.as_ptr()) }, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -403,15 +424,15 @@ mod tests {
     fn is_file_returns_zero_for_directory() {
         let dir = test_dir("is_file_dir");
         let p = cpath(&dir);
-        // SAFETY: p is a valid NUL-terminated C string (directory path).
+        // SAFETY: p is a live managed string (directory path).
         assert_eq!(unsafe { hew_path_is_file(p.as_ptr()) }, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn is_file_returns_zero_for_nonexistent() {
-        let p = CString::new("/tmp/hew_path_is_file_ghost_12345").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp/hew_path_is_file_ghost_12345");
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_path_is_file(p.as_ptr()) }, 0);
     }
 
@@ -427,7 +448,7 @@ mod tests {
     fn is_dir_returns_one_for_directory() {
         let dir = test_dir("is_dir_yes");
         let p = cpath(&dir);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_path_is_dir(p.as_ptr()) }, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -438,15 +459,15 @@ mod tests {
         let f = dir.join("test.txt");
         std::fs::write(&f, "x").unwrap();
         let p = cpath(&f);
-        // SAFETY: p is a valid NUL-terminated C string.
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_path_is_dir(p.as_ptr()) }, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn is_dir_returns_zero_for_nonexistent() {
-        let p = CString::new("/tmp/hew_path_is_dir_ghost_12345").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp/hew_path_is_dir_ghost_12345");
+        // SAFETY: p is a live managed string.
         assert_eq!(unsafe { hew_path_is_dir(p.as_ptr()) }, 0);
     }
 
@@ -460,26 +481,26 @@ mod tests {
 
     #[test]
     fn absolute_returns_non_null_for_valid_path() {
-        let p = CString::new("/tmp").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp");
+        // SAFETY: p is a live managed string.
         let ptr = unsafe { hew_path_absolute(p.as_ptr()) };
         assert!(!ptr.is_null());
-        // SAFETY: ptr was returned by hew_path_absolute (str_to_malloc alloc).
-        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open
+        // SAFETY: ptr was returned by hew_path_absolute (string_from_str alloc).
+        unsafe { string_release(ptr) };
     }
 
     #[test]
     fn absolute_resolves_dot_to_cwd() {
-        let p = CString::new(".").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new(".");
+        // SAFETY: p is a live managed string.
         let ptr = unsafe { hew_path_absolute(p.as_ptr()) };
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string from str_to_malloc.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        // SAFETY: ptr is a live managed string from string_from_str.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
         // SAFETY: ptr was returned by hew_path_absolute.
-        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open
-                                                   // Absoluteness is platform-shaped: POSIX roots at '/', Windows at a
-                                                   // drive prefix. Assert via the platform's own notion, not a literal.
+        unsafe { string_release(ptr) };
+        // Absoluteness is platform-shaped: POSIX roots at '/', Windows at a
+        // drive prefix. Assert via the platform's own notion, not a literal.
         assert!(
             std::path::Path::new(&s).is_absolute(),
             "absolute path must be platform-absolute; got {s}"
@@ -502,8 +523,8 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "").unwrap();
         std::fs::write(dir.join("b.txt"), "").unwrap();
         let pattern = format!("{}/*.txt", dir.to_str().unwrap());
-        let cp = CString::new(pattern).unwrap();
-        // SAFETY: cp is a valid NUL-terminated C string.
+        let cp = ManagedString::new(pattern);
+        // SAFETY: cp is a live managed string.
         let res = unsafe { hew_glob(cp.as_ptr()) };
         assert!(!res.is_null());
         // SAFETY: res is a live HewGlobResult.
@@ -514,9 +535,9 @@ mod tests {
         // SAFETY: res is live; index 0 is valid.
         let p0 = unsafe { hew_glob_get(res, 0) };
         assert!(!p0.is_null());
-        // SAFETY: p0 is a valid NUL-terminated C string from str_to_malloc.
-        unsafe { crate::cabi::free_cstring(p0) }; // CSTRING-FREE: str-open
-                                                  // SAFETY: res is a live HewGlobResult.
+        // SAFETY: p0 is a live managed string from string_from_str.
+        unsafe { string_release(p0) };
+        // SAFETY: res is a live HewGlobResult.
         unsafe { hew_glob_free(res) };
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -525,13 +546,10 @@ mod tests {
     fn glob_error_text(res: *mut HewGlobResult) -> String {
         // SAFETY: res is a live HewGlobResult or null; both are in contract.
         let ptr = unsafe { hew_glob_error(res) };
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string from str_to_malloc.
-        let text = unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned();
-        // SAFETY: ptr was returned by hew_glob_error (str_to_malloc alloc).
-        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open
+        // SAFETY: ptr is a live managed string from string_from_str.
+        let text = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: ptr was returned by hew_glob_error (string_from_str alloc).
+        unsafe { string_release(ptr) };
         text
     }
 
@@ -544,8 +562,8 @@ mod tests {
         let dir = test_dir("glob_match");
         std::fs::write(dir.join("a.txt"), "").unwrap();
         let pattern = format!("{}/*.txt", dir.to_str().unwrap());
-        let cp = CString::new(pattern).unwrap();
-        // SAFETY: cp is a valid NUL-terminated C string.
+        let cp = ManagedString::new(pattern);
+        // SAFETY: cp is a live managed string.
         let res = unsafe { hew_glob(cp.as_ptr()) };
         assert!(!res.is_null());
         // SAFETY: res is a live HewGlobResult.
@@ -558,8 +576,8 @@ mod tests {
 
     #[test]
     fn glob_no_match_reflects_the_platform_contract() {
-        let p = CString::new("/tmp/hew_path_glob_nomatch_*_zzz_999").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp/hew_path_glob_nomatch_*_zzz_999");
+        // SAFETY: p is a live managed string.
         let res = unsafe { hew_glob(p.as_ptr()) };
         assert!(!res.is_null());
         // SAFETY: res is a live HewGlobResult.
@@ -603,8 +621,8 @@ mod tests {
         // condition does not exist there, so there is nothing to assert.
         if !readable {
             let pattern = format!("{}/*", denied.to_str().unwrap());
-            let cp = CString::new(pattern).unwrap();
-            // SAFETY: cp is a valid NUL-terminated C string.
+            let cp = ManagedString::new(pattern);
+            // SAFETY: cp is a live managed string.
             let res = unsafe { hew_glob(cp.as_ptr()) };
             assert!(!res.is_null());
             // SAFETY: res is a live HewGlobResult.
@@ -666,8 +684,8 @@ mod tests {
 
     #[test]
     fn glob_get_out_of_range_returns_null() {
-        let p = CString::new("/tmp/hew_path_glob_oor_*_zzz_999").unwrap();
-        // SAFETY: p is a valid NUL-terminated C string.
+        let p = ManagedString::new("/tmp/hew_path_glob_oor_*_zzz_999");
+        // SAFETY: p is a live managed string.
         let res = unsafe { hew_glob(p.as_ptr()) };
         assert!(!res.is_null());
         // SAFETY: res is live; index 99 is out of range for zero matches.

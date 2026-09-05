@@ -1,60 +1,12 @@
-//! Who owns the buffer a `*_last_error` export hands back (hew-lang/hew#2828).
-//!
-//! # The question, and why it needs an instrument
-//!
-//! `hew_process_last_error() -> string` is *declared* a fresh owner by
-//! `scripts/jit-symbol-classification.toml`. A declaration is not evidence.
-//! Both readings of it are unsafe if guessed: withhold the caller's release and
-//! the buffer leaks; mint one over a pointer the runtime still owns and a double
-//! free becomes reachable. So the answer has to come from what the runtime
-//! actually does with the buffer after it returns it.
-//!
-//! # The instrument
-//!
-//! An owner-count / allocation-balance oracle read at the real allocation site.
-//! Every header-aware Hew string carries the runtime's own live-owner count in
-//! its 16-byte header: `alloc_cstring_data` stamps `rc = 1`, `free_cstring`
-//! decrements and releases the block at zero. [`cstring_ensure_unique`] is the
-//! public, non-destructive read of that count — it returns its argument
-//! unchanged exactly when `rc == 1`, and a *different* pointer (a copy-on-write
-//! fork) when any other owner exists. So `ensure_unique(p) == p` is a direct
-//! statement that no other owner of `p` exists anywhere in the process.
-//!
-//! Three probes per symbol, run by [`assert_result_is_transferred`]:
-//!
-//! * **R1 — distinct live addresses.** Two results obtained back to back, both
-//!   still live, must be different pointers. A borrow into storage the callee
-//!   keeps cannot satisfy this; a fresh allocation per call cannot fail it.
-//! * **R2 — sole ownership at handoff.** `rc == 1` on each result. If the
-//!   runtime had retained an owner the count would be at least two and the
-//!   caller's release would not be the balancing one.
-//! * **R3 — the callee's state survives the caller's release.** After the
-//!   caller releases both results through the named release symbol
-//!   (`hew_string_drop`), the next call still reports the same message. The
-//!   callee therefore held no pointer into what was freed.
-//!
-//! R1 ∧ R2 ∧ R3 is the transfer: exactly one owner exists, it is the caller's,
-//! and releasing it disturbs nothing the runtime kept.
-//!
-//! # The counterfactual that keeps the oracle load-bearing
-//!
-//! [`hew_last_error_is_a_borrow_not_a_transfer`] runs R1 against
-//! `hew_last_error`, the sibling export `hew_process_last_error` is built on
-//! top of. It FAILS R1 — repeated calls return the identical address, because
-//! the pointer is the interior of the thread-local `CString` the runtime keeps.
-//! That is a different answer for a symbol of the same family, established by
-//! the same probe, and it is why R1 is not a formality: a symbol that borrows
-//! is distinguishable here.
-//!
-//! The hew-std half of the family (`hew_tls_last_error`,
-//! `hew_smtp_last_error`, `hew_cron_last_error`, …) is probed by the identical
-//! harness in `hew-std/src/last_error_retention.rs`; it lives there because
-//! those exports are that crate's.
+//! Managed error results transfer ownership independently of the error slot.
+//! Two live reads own independent allocations. Releasing one must preserve the
+//! other, and releasing both must leave the producer usable. Sanitizer runs
+//! check the balancing releases. The generic `hew_last_error` diagnostic remains
+//! a borrowed foreign C string and supplies the contrasting lifetime case.
 
 use hew_cabi::string::{string_as_str, string_release};
-use std::ffi::{c_char, CStr};
+use std::ffi::CStr;
 
-use hew_cabi::cabi::cstring_ensure_unique;
 use hew_runtime::process::hew_process_last_error;
 use hew_runtime::stream_error::hew_stream_last_error;
 
@@ -77,17 +29,17 @@ fn induce_stream_error() {
     unsafe { hew_runtime::stream_error::hew_stream_set_last_error(msg.as_ptr(), msg.len()) };
 }
 
-/// Run R1/R2/R3 against one `-> string` export and assert the result is the
+/// Check independent ownership against one `-> string` export and assert the result is the
 /// caller's to release. `induce` runs before every read so a take-and-clear
 /// slot (`hew_stream_last_error`) and a clone-on-read slot
 /// (`hew_process_last_error`) are measured on the same terms.
 fn assert_result_is_transferred(
     symbol: &str,
     induce: fn(),
-    call: unsafe extern "C" fn() -> *mut c_char,
+    call: unsafe extern "C" fn() -> *mut hew_cabi::string::HewString,
 ) {
     induce();
-    // SAFETY: the export takes no arguments and returns null or a header-aware
+    // SAFETY: the export takes no arguments and returns null or a managed
     // Hew string.
     let first = unsafe { call() };
     assert!(
@@ -109,27 +61,17 @@ fn assert_result_is_transferred(
          borrow into storage it keeps rather than a fresh allocation"
     );
 
-    // R2 — the caller holds the sole owner of each.
-    for (label, ptr) in [("first", first), ("second", second)] {
-        // SAFETY: the pointer is a live header-aware Hew string from the export.
-        let unique = unsafe { cstring_ensure_unique(ptr) };
-        assert_eq!(
-            unique, ptr,
-            "{symbol}: the {label} result was not solely owned at handoff \
-             (rc > 1), so the caller's release would not balance it"
-        );
-    }
-
-    // SAFETY: `first` is a live header-aware Hew string.
-    let text = unsafe { CStr::from_ptr(first) }.to_owned();
+    // SAFETY: `first` is a live managed Hew string.
+    let text = unsafe { string_as_str(first) }.to_owned();
 
     // R3 — release both through the release symbol the contract names, then
     // read again: the callee's own state must be untouched by the free.
-    // SAFETY: each pointer is a live, solely-owned header-aware Hew string
-    // (R2), so this is its balancing release.
+    // SAFETY: each pointer is a live, solely-owned managed Hew string
+    // transferred by its getter, so this is its balancing release.
     unsafe {
-        hew_cabi::cabi::free_cstring(first);
-        hew_cabi::cabi::free_cstring(second);
+        string_release(first);
+        assert_eq!(string_as_str(second), text);
+        string_release(second);
     }
     induce();
     // SAFETY: as above.
@@ -138,19 +80,19 @@ fn assert_result_is_transferred(
         !third.is_null(),
         "{symbol}: the slot did not survive the release"
     );
-    // SAFETY: `third` is a live header-aware Hew string.
-    let after = unsafe { CStr::from_ptr(third) }.to_owned();
+    // SAFETY: `third` is a live managed Hew string.
+    let after = unsafe { string_as_str(third) }.to_owned();
     assert_eq!(
         text, after,
         "{symbol}: the message changed after the caller released an earlier \
          result, so the callee retained a pointer into the freed buffer"
     );
     // SAFETY: `third` is live and solely owned.
-    unsafe { hew_cabi::cabi::free_cstring(third) };
+    unsafe { string_release(third) };
 }
 
 /// `hew_process_last_error` transfers: it copies the thread-local message into
-/// a fresh header-aware allocation and keeps nothing.
+/// a fresh managed allocation and keeps nothing.
 #[test]
 fn process_last_error_result_is_transferred() {
     induce_process_error();
@@ -168,7 +110,7 @@ fn process_last_error_result_is_transferred() {
 }
 
 /// `hew_stream_last_error` transfers: it TAKES the stored message and allocates
-/// the returned C string from it. The take-and-clear shape is why `induce` runs
+/// the returned managed string from it. The take-and-clear shape is why `induce` runs
 /// before every read — the answer to the ownership question is the same.
 #[test]
 fn stream_last_error_result_is_transferred() {

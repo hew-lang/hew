@@ -1260,14 +1260,11 @@ mod tests {
 
         let err = hew_cabi::sink::hew_stream_last_error();
         assert!(!err.is_null());
-        // SAFETY: err is a valid NUL-terminated C string from hew_stream_last_error.
-        let err_msg = unsafe { CStr::from_ptr(err) }
-            .to_str()
-            .expect("error should be utf-8");
+        // SAFETY: the getter transferred a managed string owner that remains live.
+        let err_msg = unsafe { hew_cabi::string::string_as_str(err) };
         assert_eq!(err_msg, "request already responded to");
-        // SAFETY: err was allocated by hew_stream_last_error via alloc_cstring_from_str
-        // (header-aware, S1 path) — must be released through free_cstring, not bare libc::free.
-        unsafe { hew_cabi::cabi::free_cstring(err) }; // CSTRING-FREE: str-open (hew_stream_last_error now allocates via alloc_cstring_from_str)
+        // SAFETY: the managed borrow has ended; this releases the transferred owner.
+        unsafe { hew_cabi::string::string_release(err) };
     }
 
     #[test]

@@ -10,8 +10,9 @@
 )]
 
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+use hew_cabi::string::HewString;
+use std::ffi::c_int;
 use std::ffi::c_void;
-use std::ffi::{c_char, c_int, CStr};
 
 // ---------------------------------------------------------------------------
 // Duration
@@ -23,31 +24,18 @@ pub use crate::duration::{hew_milliseconds, hew_seconds, HewDuration};
 // File I/O
 // ---------------------------------------------------------------------------
 
-/// Read an entire file and return a `malloc`-allocated C string.
+/// Read an entire file and return an owned managed string.
 ///
 /// Returns a null pointer on failure.
 ///
 /// # Safety
 ///
-/// `path` must be a valid, NUL-terminated C string. The caller is responsible
-/// for calling `free()` on the returned pointer.
+/// `path` must be a live managed string or canonical null/empty.
+/// Release the returned managed owner with `hew_string_drop`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_read_file(path: *const c_char) -> *mut c_char {
-    cabi_guard!(path.is_null(), std::ptr::null_mut());
-    // SAFETY: caller guarantees `path` is a valid C string.
-    let c_path = unsafe { CStr::from_ptr(path) };
-    let Ok(rust_path) = c_path.to_str() else {
-        return std::ptr::null_mut();
-    };
-    let Ok(contents) = std::fs::read_to_string(rust_path) else {
-        return std::ptr::null_mut();
-    };
-    // Header-aware (S1): the result reaches hew_string_drop / free_cstring.
-    let buf = crate::cabi::alloc_cstring_from_str(&contents); // CSTRING-ALLOC: str-open (hew_read_file — header-aware String result; reaches hew_string_drop)
-    if buf.is_null() {
-        return std::ptr::null_mut();
-    }
-    buf
+pub unsafe extern "C" fn hew_read_file(path: *const HewString) -> *mut HewString {
+    // SAFETY: this alias shares the managed path and result contract.
+    unsafe { crate::file_io::hew_file_read(path) }
 }
 
 // ---------------------------------------------------------------------------
@@ -1911,7 +1899,8 @@ pub use platform::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::{string_as_str, string_release};
 
     // -- Duration -----------------------------------------------------------
 
@@ -1989,17 +1978,16 @@ mod tests {
 
     // -- File I/O -----------------------------------------------------------
 
-    /// Helper: read a malloc'd C string, assert non-null, free it.
+    /// Helper: read a managed string, assert non-null, free it.
     ///
     /// # Safety
     ///
-    /// `ptr` must be a non-null, NUL-terminated, malloc-allocated C string.
-    unsafe fn read_and_free(ptr: *mut c_char) -> String {
-        assert!(!ptr.is_null(), "expected non-null C string pointer");
-        // SAFETY: caller guarantees ptr is a valid NUL-terminated C string.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated header-aware by hew_read_file.
-        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (read_and_free test helper frees hew_read_file output)
+    /// `ptr` must be a live managed string, including canonical null/empty.
+    unsafe fn read_and_free(ptr: *mut HewString) -> String {
+        // SAFETY: caller guarantees ptr is a live managed string.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: ptr was allocated by hew_read_file.
+        unsafe { string_release(ptr) };
         s
     }
 
@@ -2012,8 +2000,8 @@ mod tests {
 
     #[test]
     fn read_file_nonexistent_path_returns_null() {
-        let path = CString::new("/tmp/hew_test_nonexistent_file_XXXXXX").unwrap();
-        // SAFETY: path is a valid NUL-terminated C string.
+        let path = ManagedString::new("/tmp/hew_test_nonexistent_file_XXXXXX");
+        // SAFETY: path is a live managed string.
         let result = unsafe { hew_read_file(path.as_ptr()) };
         assert!(result.is_null());
     }
@@ -2023,9 +2011,8 @@ mod tests {
         let tmp = std::env::temp_dir().join(std::format!("hew_iotime_read_{}", std::process::id()));
         std::fs::write(&tmp, "hello from hew").unwrap();
 
-        let path = CString::new(tmp.to_str().unwrap()).unwrap();
-        // SAFETY: path is valid NUL-terminated; returned pointer is
-        // malloc'd and non-null on success.
+        let path = ManagedString::new(tmp.to_str().unwrap());
+        // SAFETY: path is a live managed owner borrowed by the call.
         let text = unsafe { read_and_free(hew_read_file(path.as_ptr())) };
         assert_eq!(text, "hello from hew");
 
@@ -2038,8 +2025,8 @@ mod tests {
             std::env::temp_dir().join(std::format!("hew_iotime_empty_{}", std::process::id()));
         std::fs::write(&tmp, "").unwrap();
 
-        let path = CString::new(tmp.to_str().unwrap()).unwrap();
-        // SAFETY: path is a valid NUL-terminated C string.
+        let path = ManagedString::new(tmp.to_str().unwrap());
+        // SAFETY: path is a live managed string.
         let text = unsafe { read_and_free(hew_read_file(path.as_ptr())) };
         assert_eq!(text, "");
 
@@ -2047,38 +2034,28 @@ mod tests {
     }
 
     #[test]
-    fn read_file_invalid_utf8_path_returns_null() {
-        // Bytes that are valid Latin-1 but invalid UTF-8.
-        // CStr::to_str() fails inside hew_read_file -> returns null.
-        let bad_bytes: &[u8] = b"/tmp/\xff\xfe\x00";
-        let c_path = CStr::from_bytes_with_nul(bad_bytes).unwrap();
-        // SAFETY: c_path is a valid NUL-terminated C string.
+    fn read_file_nul_path_returns_null() {
+        let c_path = ManagedString::new("path\0suffix");
+        // SAFETY: the path is a live managed string.
         let result = unsafe { hew_read_file(c_path.as_ptr()) };
         assert!(result.is_null());
     }
 
     #[test]
-    fn read_file_embedded_nul_truncates_at_first_nul() {
-        // CONTRACT: hew_read_file returns a malloc'd C string (NUL-terminated).
-        // Files with interior NUL bytes are read successfully, but the
-        // returned C string is truncated at the first interior NUL — this
-        // is inherent to C string semantics, not a bug. The full 7-byte
-        // buffer ("abc\0def") is allocated, but CStr::from_ptr and any
-        // C caller will only see "abc".
+    fn read_file_embedded_nul_preserves_content() {
         let tmp = std::env::temp_dir().join(std::format!("hew_iotime_nul_{}", std::process::id()));
         std::fs::write(&tmp, "abc\0def").unwrap();
 
-        let path = CString::new(tmp.to_str().unwrap()).unwrap();
-        // SAFETY: path is valid NUL-terminated.
+        let path = ManagedString::new(tmp.to_str().unwrap());
+        // SAFETY: path is a live managed value.
         let ptr = unsafe { hew_read_file(path.as_ptr()) };
         assert!(!ptr.is_null());
-        // SAFETY: ptr is malloc'd and NUL-terminated.
-        let seen = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
-        // C string truncates at first interior NUL.
-        assert_eq!(seen, "abc");
-        assert_eq!(seen.len(), 3, "C string length should stop at interior NUL");
-        // SAFETY: ptr was allocated header-aware by hew_read_file.
-        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test frees hew_read_file output)
+        // SAFETY: ptr is a live managed result.
+        let seen = unsafe { string_as_str(ptr) };
+        assert_eq!(seen, "abc\0def");
+        assert_eq!(seen.len(), 7);
+        // SAFETY: ptr was allocated by hew_read_file.
+        unsafe { string_release(ptr) };
 
         let _ = std::fs::remove_file(&tmp);
     }

@@ -1905,9 +1905,9 @@ fn clear_tcp_error_state() {
     let _ = hew_cabi::sink::hew_stream_last_errno();
     let ptr = hew_cabi::sink::hew_stream_last_error();
     if !ptr.is_null() {
-        // SAFETY: `ptr` is the fresh header-aware cstring the getter handed us;
-        // it must be released through the matching header-aware free path.
-        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open
+        // SAFETY: `ptr` is the fresh managed string the getter handed us;
+        // it must be released through the matching managed release path.
+        unsafe { hew_cabi::string::string_release(ptr) };
     }
 }
 

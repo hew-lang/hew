@@ -1218,7 +1218,7 @@ mod tests {
 
         // The message must still be there for a caller that goes on to drain
         // it (the fix), and it must be this call's own message, not empty.
-        // SAFETY: hew_stream_last_error() returns a fresh, valid C string or
+        // SAFETY: hew_stream_last_error() transfers a managed string owner or
         // null; we only read it and then free it via the documented path.
         unsafe {
             let msg_ptr = hew_stream_last_error();
@@ -1229,8 +1229,8 @@ mod tests {
                  as independent reads, so try_read_bytes's fix must explicitly \
                  drain this instead of assuming the errno read already did"
             );
-            let message = CStr::from_ptr(msg_ptr).to_str().unwrap_or("").to_owned();
-            crate::cabi::free_cstring(msg_ptr);
+            let message = hew_cabi::string::string_as_str(msg_ptr).to_owned();
+            hew_cabi::string::string_release(msg_ptr);
             assert!(
                 message.contains("hew_file_read_bytes"),
                 "expected the current failed read's own message, got {message:?}"

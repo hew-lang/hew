@@ -14,14 +14,14 @@
 //!
 //! All functions use `#[no_mangle] extern "C"` with opaque `*mut c_void`
 //! pointers for the stream/sink handles. Items are transferred as
-//! header-aware string allocations (for the string-element entries) or
+//! managed string allocations (for the string-element entries) or
 //! malloc-allocated byte buffers (for the bytes-element / raw-byte entries):
 //!
 //! - `hew_stream_next_layout` / `hew_stream_try_next_layout` /
 //!   `hew_stream_pop_layout` are the recv entries: an element-layout witness
 //!   selects the envelope decode (string elements materialise a refcount-1,
-//!   NUL-terminated `*mut c_char` via
-//!   [`crate::channel_common::bytes_to_cstr`] the MIR drop spine releases
+//!   managed `*mut HewString` via
+//!   [`crate::channel_common::decode_elem_envelope`] the MIR drop spine releases
 //!   through `hew_string_drop`; bytes elements a fresh refcounted
 //!   `BytesTriple`; Plain/owned elements decode into the out slot directly).
 //! - `hew_sink_write` accepts a pointer+size; the runtime copies the bytes.
@@ -45,8 +45,11 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use hew_cabi::string::{
+    string_as_bytes, string_as_str, string_from_utf8, string_release, HewString,
+};
 use std::collections::VecDeque;
-use std::ffi::{c_char, c_int, c_void, CStr};
+use std::ffi::{c_int, c_void};
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
@@ -667,26 +670,30 @@ macro_rules! define_filter_stream {
 
 // ── Map adapter (string) ──────────────────────────────────────────────────────
 
-/// Calling convention matching the Hew closure ABI: (env, string) → owned C string.
-type StringMapFn = unsafe extern "C" fn(*const c_void, *const c_char) -> *mut c_char;
+/// Calling convention matching the Hew closure ABI: (env, string) → owned managed string.
+type StringMapFn = unsafe extern "C" fn(*const c_void, *const HewString) -> *mut HewString;
 
 define_map_stream!(MapStringStream, StringMapFn);
 
 impl StreamBacking for MapStringStream {
     fn next(&mut self) -> Option<Item> {
         let item = self.upstream.next()?;
-        let mut with_nul = item.clone();
-        with_nul.push(0);
-        // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
-        let result_ptr = unsafe { (self.fn_ptr)(self.env_ptr, with_nul.as_ptr().cast::<c_char>()) };
-        if result_ptr.is_null() {
-            return Some(Vec::new());
-        }
-        // SAFETY: result_ptr is a valid null-terminated C string from the closure.
-        let result_cstr = unsafe { std::ffi::CStr::from_ptr(result_ptr) };
-        let bytes = result_cstr.to_bytes().to_vec();
-        // SAFETY: result_ptr is the closure's header-aware Hew string; we own it.
-        unsafe { crate::cabi::free_cstring(result_ptr) }; // CSTRING-FREE: str-open (StringMapFn closure output = Hew (string)->string; header-aware in S1)
+        let input = match string_from_utf8(&item) {
+            Ok(input) => input,
+            Err(error) => {
+                set_last_error(format!("stream string map: {error}"));
+                return None;
+            }
+        };
+        // SAFETY: input is a managed owner borrowed by the live Hew closure.
+        let result_ptr = unsafe { (self.fn_ptr)(self.env_ptr, input) };
+        // SAFETY: the callback returned an owned managed string; input is still ours.
+        let bytes = unsafe {
+            let bytes = string_as_bytes(result_ptr).to_vec();
+            string_release(result_ptr);
+            string_release(input);
+            bytes
+        };
         Some(bytes)
     }
 
@@ -702,7 +709,7 @@ impl StreamBacking for MapStringStream {
 // ── Filter adapter (string) ───────────────────────────────────────────────────
 
 /// Calling convention: (env, string) → i32 (non-zero means keep the item).
-type StringFilterFn = unsafe extern "C" fn(*const c_void, *const c_char) -> i32;
+type StringFilterFn = unsafe extern "C" fn(*const c_void, *const HewString) -> i32;
 
 define_filter_stream!(FilterStringStream, StringFilterFn);
 
@@ -713,10 +720,20 @@ impl StreamBacking for FilterStringStream {
                 return None;
             }
             let item = self.upstream.next()?;
-            let mut with_nul = item.clone();
-            with_nul.push(0);
-            // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
-            let keep = unsafe { (self.fn_ptr)(self.env_ptr, with_nul.as_ptr().cast::<c_char>()) };
+            let input = match string_from_utf8(&item) {
+                Ok(input) => input,
+                Err(error) => {
+                    set_last_error(format!("stream string filter: {error}"));
+                    self.done = true;
+                    return None;
+                }
+            };
+            // SAFETY: input is borrowed by the live Hew closure and released afterwards.
+            let keep = unsafe {
+                let keep = (self.fn_ptr)(self.env_ptr, input);
+                string_release(input);
+                keep
+            };
             if keep != 0 {
                 return Some(item);
             }
@@ -1215,15 +1232,16 @@ pub unsafe extern "C" fn hew_stream_pair_stream_bytes(pair: *mut HewStreamPair) 
 ///
 /// # Safety
 ///
-/// `path` must be a valid null-terminated C string.
+/// `path` must be a live managed string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut HewStream {
+pub unsafe extern "C" fn hew_stream_from_file_read(path: *const HewString) -> *mut HewStream {
     cabi_guard!(path.is_null(), ptr::null_mut());
-    // SAFETY: Caller guarantees path is a valid null-terminated C string.
-    let s = unsafe { CStr::from_ptr(path) };
-    let Ok(path_str) = s.to_str() else {
+    // SAFETY: Caller guarantees path is a live managed string.
+    let path_str = unsafe { string_as_str(path) };
+    if path_str.contains('\0') {
+        set_last_error("path contains interior NUL".into());
         return ptr::null_mut();
-    };
+    }
     match fs::File::open(path_str) {
         Ok(f) => {
             let _ = take_last_error();
@@ -1252,7 +1270,7 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut 
 ///
 /// Same preconditions as [`hew_stream_from_file_read`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_file_read_stream_open(path: *const c_char) -> *mut HewStream {
+pub unsafe extern "C" fn hew_file_read_stream_open(path: *const HewString) -> *mut HewStream {
     // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
     unsafe { hew_stream_from_file_read(path) }
 }
@@ -1264,16 +1282,16 @@ pub unsafe extern "C" fn hew_file_read_stream_open(path: *const c_char) -> *mut 
 ///
 /// # Safety
 ///
-/// `path` must be a valid null-terminated C string.
+/// `path` must be a live managed string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_stream_from_file_write(path: *const c_char) -> *mut HewSink {
+pub unsafe extern "C" fn hew_stream_from_file_write(path: *const HewString) -> *mut HewSink {
     cabi_guard!(path.is_null(), ptr::null_mut());
-    // SAFETY: Caller guarantees path is a valid null-terminated C string.
-    let s = unsafe { CStr::from_ptr(path) };
-    let Ok(path_str) = s.to_str() else {
-        set_last_error("invalid UTF-8 in path".into());
+    // SAFETY: Caller guarantees path is a live managed string.
+    let path_str = unsafe { string_as_str(path) };
+    if path_str.contains('\0') {
+        set_last_error("path contains interior NUL".into());
         return ptr::null_mut();
-    };
+    }
     match fs::File::create(path_str) {
         Ok(f) => into_write_sink_ptr(f),
         Err(e) => {
@@ -1434,7 +1452,7 @@ pub unsafe extern "C" fn hew_stream_next_view(
 /// `libc::malloc`-allocated copy of the item bytes (the callback MUST free
 /// it via `libc::free`) or null for EOF. This is the bare-bytes adapter
 /// ownership contract — distinct from [`hew_stream_next`], which on the
-/// `Stream<string>::recv` surface returns a header-aware `*mut c_char` the
+/// `Stream<string>::recv` surface returns a managed `*mut HewString` the
 /// MIR drop spine frees via `hew_string_drop`.
 ///
 /// ## Ownership contract
@@ -1618,7 +1636,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                     // SAFETY: Provenance + Failure mode — item_ptr was
                     // malloc'd by libc::malloc above; null is excluded
                     // by the if-guard. Ownership transfers to free here.
-                    unsafe { libc::free(item_ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (stream item byte buffer)
+                    unsafe { libc::free(item_ptr) }; // ALLOCATOR-PAIRING: libc
                 }
             }
             ParkState::Pending => {
@@ -1652,7 +1670,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                 if !item_ptr.is_null() {
                     // SAFETY: same as Cancelled branch — malloc'd above,
                     // non-null guarded, ownership transferred to free.
-                    unsafe { libc::free(item_ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (stream item byte buffer)
+                    unsafe { libc::free(item_ptr) }; // ALLOCATOR-PAIRING: libc
                 }
             }
         }
@@ -2086,9 +2104,9 @@ pub unsafe extern "C" fn hew_stream_chunks(
 
 // ── Convenience functions ─────────────────────────────────────────────────────
 
-/// Read all remaining items from a stream and concatenate them as a C string.
+/// Read all remaining items from a stream and concatenate them as a managed string.
 ///
-/// Returns a header-aware null-terminated string. The caller must free it with
+/// Returns an owned managed string. The caller must free it with
 /// `hew_string_drop`.
 /// Consumes the stream.
 ///
@@ -2096,7 +2114,7 @@ pub unsafe extern "C" fn hew_stream_chunks(
 ///
 /// `stream` must be a valid `HewStream` pointer or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *mut c_char {
+pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *mut HewString {
     cabi_guard!(stream.is_null(), ptr::null_mut());
 
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
@@ -2107,20 +2125,13 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
         buffer.extend_from_slice(&chunk);
     }
 
-    // Ensure null termination
-    buffer.push(0);
-
-    let len = buffer.len();
-    // Header-aware (S1): buffer already includes the trailing NUL, so request
-    // exactly `len` data bytes. Released via hew_string_drop / free_cstring.
-    let ptr = crate::cabi::alloc_cstring_data(len); // CSTRING-ALLOC: str-open (hew_stream_collect_string — header-aware String result; reaches hew_string_drop)
-    if ptr.is_null() {
-        return ptr::null_mut();
+    match string_from_utf8(&buffer) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(format!("stream string collection: {error}"));
+            ptr::null_mut()
+        }
     }
-
-    // SAFETY: ptr is len bytes allocated above; buffer.as_ptr() points to len bytes.
-    unsafe { ptr::copy_nonoverlapping(buffer.as_ptr(), ptr.cast::<u8>(), len) };
-    ptr.cast::<c_char>()
 }
 
 /// Drain and consume a nominal `std.fs.FileReadStream` into one string.
@@ -2135,7 +2146,7 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_read_stream_collect_string(
     stream: *mut HewStream,
-) -> *mut c_char {
+) -> *mut HewString {
     // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
     unsafe { hew_stream_collect_string(stream) }
 }
@@ -2161,18 +2172,17 @@ pub unsafe extern "C" fn hew_stream_count(stream: *mut HewStream) -> i64 {
     count
 }
 
-/// Write a null-terminated C string to the sink.
+/// Write a managed string to the sink.
 ///
 /// # Safety
 ///
-/// `sink` must be a valid pointer. `data` must be a valid null-terminated C string.
+/// `sink` must be a valid pointer. `data` must be a live managed string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_sink_write_string(sink: *mut HewSink, data: *const c_char) {
-    cabi_guard!(sink.is_null() || data.is_null());
+pub unsafe extern "C" fn hew_sink_write_string(sink: *mut HewSink, data: *const HewString) {
+    cabi_guard!(sink.is_null());
 
-    // SAFETY: data is a valid C string.
-    let s = unsafe { CStr::from_ptr(data) };
-    let bytes = s.to_bytes();
+    // SAFETY: data is a live managed string.
+    let bytes = unsafe { string_as_bytes(data) };
 
     // SAFETY: sink is valid per caller contract.
     unsafe { (*sink).write_item(bytes) };
@@ -2229,7 +2239,7 @@ unsafe fn stream_transform_entry(
 ///
 /// - `stream` must be a valid `HewStream` pointer.
 /// - `fn_ptr` must be a valid Hew closure function pointer matching the
-///   `(env: *const c_void, s: *const c_char) -> *mut c_char` ABI.
+///   `(env: *const c_void, s: *const HewString) -> *mut HewString` ABI.
 /// - `env_ptr` must be null or a valid Hew RC block already retained for this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_map_string(
@@ -2260,7 +2270,7 @@ pub unsafe extern "C" fn hew_stream_map_string(
 /// # Safety
 ///
 /// - `stream` must be a valid `HewStream` pointer.
-/// - `fn_ptr` must match the `(env: *const c_void, s: *const c_char) -> i32` ABI.
+/// - `fn_ptr` must match the `(env: *const c_void, s: *const HewString) -> i32` ABI.
 /// - `env_ptr` must be null or a valid Hew RC block already retained for this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_filter_string(
@@ -2488,7 +2498,7 @@ pub unsafe extern "C" fn hew_stream_send_layout(
     data: *const c_void,
     layout: *const crate::vec::HewVecElemLayout,
 ) {
-    cabi_guard!(sink.is_null() || data.is_null());
+    cabi_guard!(sink.is_null());
     // SAFETY: layout validity is the caller's contract; the helper aborts
     // fail-closed on a malformed witness.
     let layout =
@@ -2798,7 +2808,7 @@ pub unsafe extern "C" fn hew_sink_detach_await(
 
 /// Non-blocking variant of [`hew_sink_write_string`].
 ///
-/// Writes a null-terminated C string to the sink if the backing buffer has
+/// Writes a managed string to the sink if the backing buffer has
 /// capacity. Returns `0` (`SendError::Ok`) on success, `1`
 /// (`SendError::Closed`) if the sink or its receiving peer is closed, or `2`
 /// (`SendError::Full`) if the buffer is at capacity and the write would have
@@ -2812,7 +2822,7 @@ pub unsafe extern "C" fn hew_sink_detach_await(
 /// ## Pointer validity
 /// `sink` must be a non-null pointer obtained from a `hew_stream_*` or
 /// `hew_sink_*` constructor and must not have been freed.
-/// `data` must be a non-null pointer to a valid NUL-terminated C string.
+/// `data` must be a live managed string or canonical null/empty.
 ///
 /// ## Aliasing
 /// No other thread may concurrently write to `sink` during this call.
@@ -2827,20 +2837,17 @@ pub unsafe extern "C" fn hew_sink_detach_await(
 /// ## Caller responsibility
 /// The caller retains ownership of `data`; the runtime copies the bytes.
 #[no_mangle]
-pub unsafe extern "C" fn hew_sink_try_write_string(sink: *mut HewSink, data: *const c_char) -> i32 {
+pub unsafe extern "C" fn hew_sink_try_write_string(
+    sink: *mut HewSink,
+    data: *const HewString,
+) -> i32 {
     // SendError::Closed = 1
-    if sink.is_null() || data.is_null() {
+    if sink.is_null() {
         return 1;
     }
-    // SAFETY:
-    //   Provenance: `data` is a NUL-terminated C string per caller contract; non-null by guard.
-    //   Type tag: c_char → CStr → &[u8]; the CStr scan validates NUL-termination.
-    //   Lifetime owner: caller retains `data`; we only borrow for this call (no take/free).
-    //   Aliasing/concurrency: read-only borrow; safe under caller's "no concurrent modification" contract.
-    //   Bounds: CStr::from_ptr walks until NUL; caller-promised termination keeps it bounded.
-    //   Failure mode: violation (missing NUL or invalid ptr) is UB — documented at fn level.
-    let s = unsafe { CStr::from_ptr(data) };
-    let bytes = s.to_bytes();
+    // SAFETY: data is a borrowed managed value (null represents empty);
+    // the immutable stored length bounds this read.
+    let bytes = unsafe { string_as_bytes(data) };
     // Channel-backed sinks use the core's genuine non-blocking `try_send`.
     // SAFETY: sink is valid per the guard above.
     if let Some(core) = unsafe { sink_channel_core(sink) } {
@@ -2917,7 +2924,7 @@ pub unsafe extern "C" fn hew_sink_try_write_bytes(
     data: *const crate::bytes::BytesTriple,
 ) -> i32 {
     // SendError::Closed = 1
-    if sink.is_null() || data.is_null() {
+    if sink.is_null() {
         return 1;
     }
     // SAFETY: `data` points to the caller's valid BytesTriple slot.
@@ -2949,6 +2956,7 @@ pub unsafe extern "C" fn hew_sink_try_write_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_string::ManagedString;
     use std::ffi::CString;
 
     /// Wrapper to send raw sink pointers across thread boundaries.
@@ -2979,7 +2987,7 @@ mod tests {
             // SAFETY: ptr is valid for `size` bytes per hew_stream_next_sized contract.
             let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), size).to_vec() };
             // SAFETY: ptr was malloc'd by hew_stream_next_sized.
-            unsafe { libc::free(ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test stream byte buffer)
+            unsafe { libc::free(ptr) }; // ALLOCATOR-PAIRING: libc
             items.push(bytes);
         }
         items
@@ -3244,7 +3252,7 @@ mod tests {
             let buf = hew_stream_next_sized(stream, &raw mut size);
             assert!(!buf.is_null());
             assert_eq!(size, 7);
-            libc::free(buf); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test stream byte buffer)
+            libc::free(buf); // ALLOCATOR-PAIRING: libc
             hew_stream_close(stream);
         }
     }
@@ -3313,7 +3321,7 @@ mod tests {
             let n = usize::try_from(ret).unwrap();
             let slice = std::slice::from_raw_parts(buf, n);
             assert_eq!(slice, b"hello");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
             hew_stream_close(stream);
         }
     }
@@ -3333,7 +3341,7 @@ mod tests {
             let n = usize::try_from(ret).unwrap();
             let slice = std::slice::from_raw_parts(buf, n);
             assert_eq!(slice, data);
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
             hew_stream_close(stream);
         }
     }
@@ -3354,7 +3362,7 @@ mod tests {
             let n = usize::try_from(ret).unwrap();
             let slice = std::slice::from_raw_parts(buf, n);
             assert_eq!(slice, b"from_null");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
             hew_stream_close(stream);
         }
     }
@@ -3374,7 +3382,7 @@ mod tests {
             assert!(!buf.is_null(), "must allocate when *buf is null");
             let slice = std::slice::from_raw_parts(buf, usize::try_from(ret).unwrap());
             assert_eq!(slice, b"safe");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
             hew_stream_close(stream);
         }
     }
@@ -3388,7 +3396,7 @@ mod tests {
             let mut cap: usize = 16;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, -1, "EOF must return -1");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
             hew_stream_close(stream);
         }
     }
@@ -3407,7 +3415,7 @@ mod tests {
             assert_eq!(cap, 4, "capacity unchanged on exact fit");
             let slice = std::slice::from_raw_parts(buf, 4);
             assert_eq!(slice, b"ABCD");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
             hew_stream_close(stream);
         }
     }
@@ -3454,7 +3462,7 @@ mod tests {
             let r3 = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(r3, -1, "EOF after all items consumed");
 
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
             hew_stream_close(stream);
         }
     }
@@ -3473,7 +3481,7 @@ mod tests {
             assert_eq!(*buf, b'X');
             let eof = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(eof, -1, "EOF after the single item");
-            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc
             hew_stream_close(stream);
         }
     }
@@ -3559,7 +3567,7 @@ mod tests {
 
     #[test]
     fn sink_try_write_string_reports_accepted_full_and_closed() {
-        let data = CString::new("message").unwrap();
+        let data = ManagedString::new("message");
         // SAFETY: all handles and data pointers come from their matching constructors.
         unsafe {
             let pair = hew_stream_channel(1);
@@ -3615,8 +3623,8 @@ mod tests {
 
     #[test]
     fn file_read_nonexistent_returns_null_with_error() {
-        let path = CString::new("/tmp/hew_nonexistent_file_xyz_42").unwrap();
-        // SAFETY: path is a valid C string.
+        let path = ManagedString::new("/tmp/hew_nonexistent_file_xyz_42");
+        // SAFETY: path is a live managed string.
         let result = unsafe { hew_stream_from_file_read(path.as_ptr()) };
         assert!(result.is_null());
         // An error should have been recorded.
@@ -3630,8 +3638,8 @@ mod tests {
         let content = b"Colour, behaviour, neighbour.";
         std::fs::write(&path, content).unwrap();
 
-        let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        // SAFETY: c_path is a valid C string pointing to an existing file.
+        let c_path = ManagedString::new(path.to_str().unwrap());
+        // SAFETY: c_path is a live managed string pointing to an existing file.
         unsafe {
             let stream = hew_stream_from_file_read(c_path.as_ptr());
             assert!(!stream.is_null());
@@ -3649,7 +3657,7 @@ mod tests {
         let content = b"one nominal owner";
         std::fs::write(&path, content).unwrap();
 
-        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let c_path = ManagedString::new(path.to_str().unwrap());
         // SAFETY: c_path names an existing file, and the returned handle is
         // released exactly once through its nominal close endpoint.
         unsafe {
@@ -3669,8 +3677,8 @@ mod tests {
         let path = temp_path("read_empty");
         std::fs::write(&path, b"").unwrap();
 
-        let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        // SAFETY: c_path is a valid C string pointing to an existing empty file.
+        let c_path = ManagedString::new(path.to_str().unwrap());
+        // SAFETY: c_path is a live managed string pointing to an existing empty file.
         unsafe {
             let stream = hew_stream_from_file_read(c_path.as_ptr());
             assert!(!stream.is_null());
@@ -3691,7 +3699,7 @@ mod tests {
     #[test]
     fn file_write_then_read_roundtrip() {
         let path = temp_path("write_roundtrip");
-        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let c_path = ManagedString::new(path.to_str().unwrap());
 
         // Write via sink FFI.
         // SAFETY: c_path points to a valid path; sink is created from it.
@@ -3717,7 +3725,7 @@ mod tests {
     #[test]
     fn file_write_then_stream_read_roundtrip() {
         let path = temp_path("file_roundtrip");
-        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let c_path = ManagedString::new(path.to_str().unwrap());
         let payload = b"roundtrip payload";
 
         // SAFETY: all FFI calls use valid pointers.
@@ -3742,7 +3750,7 @@ mod tests {
     #[test]
     fn file_write_binary_data_preserved() {
         let path = temp_path("binary_write");
-        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let c_path = ManagedString::new(path.to_str().unwrap());
         let binary: Vec<u8> = (0..=255).collect();
 
         // SAFETY: all FFI calls use valid pointers.
@@ -3766,7 +3774,7 @@ mod tests {
     #[test]
     fn pipe_transfers_all_items() {
         let path = temp_path("pipe_output");
-        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let c_path = ManagedString::new(path.to_str().unwrap());
 
         let data = b"piped content";
         // SAFETY: all FFI calls use valid pointers.
@@ -4126,10 +4134,10 @@ mod tests {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 5);
             let cstr_ptr = hew_stream_collect_string(stream);
             assert!(!cstr_ptr.is_null());
-            let result = CStr::from_ptr(cstr_ptr).to_str().unwrap();
+            let result = string_as_str(cstr_ptr);
             assert_eq!(result, "hello world");
-            crate::cabi::free_cstring(cstr_ptr); // CSTRING-FREE: str-open (test frees hew_stream_collect_string output)
-                                                 // stream is consumed by collect_string; do not close.
+            string_release(cstr_ptr);
+            // stream is consumed by collect_string; do not close.
         }
     }
 
@@ -4141,15 +4149,112 @@ mod tests {
     }
 
     #[test]
+    fn managed_stream_collection_preserves_nul_and_decodes_after_joining_chunks() {
+        let payload = "é\0中🙂".as_bytes();
+        // SAFETY: input bytes remain live; collect consumes the stream and transfers a string.
+        unsafe {
+            let stream = hew_stream_from_bytes(payload.as_ptr(), payload.len(), 1);
+            let result = hew_stream_collect_string(stream);
+            assert_eq!(string_as_bytes(result), payload);
+            string_release(result);
+            let invalid = [0xff, 0x00, b'a'];
+            let stream = hew_stream_from_bytes(invalid.as_ptr(), invalid.len(), 1);
+            assert!(hew_stream_collect_string(stream).is_null());
+            assert!(take_last_error().unwrap().contains("invalid utf-8"));
+        }
+    }
+
+    #[test]
+    fn managed_stream_layout_rejects_invalid_utf8_without_publishing_a_value() {
+        let sentinel = ManagedString::new("still owned");
+        let invalid = [0xff];
+        // SAFETY: the raw source owns its copied bytes; out and layout are live slots.
+        unsafe {
+            let stream = hew_stream_from_bytes(invalid.as_ptr(), invalid.len(), 0);
+            let layout = string_elem_layout();
+            let mut out = sentinel.as_ptr().cast_mut();
+            assert_eq!(
+                hew_stream_next_layout(
+                    stream,
+                    std::ptr::addr_of_mut!(out).cast(),
+                    &raw const layout
+                ),
+                0
+            );
+            assert_eq!(out.cast_const(), sentinel.as_ptr());
+            assert_eq!(string_as_str(out), "still owned");
+            assert!(take_last_error()
+                .unwrap()
+                .contains("invalid string element"));
+            hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn managed_stream_callbacks_and_sink_preserve_content_and_owners() {
+        unsafe extern "C" fn retain_input(
+            _env: *const c_void,
+            value: *const HewString,
+        ) -> *mut HewString {
+            // SAFETY: the callback borrows value and returns a separate owned reference.
+            unsafe { hew_cabi::string::string_retain(value) }
+        }
+        unsafe extern "C" fn keep_nul_or_empty(
+            _env: *const c_void,
+            value: *const HewString,
+        ) -> i32 {
+            // SAFETY: value is borrowed for this callback, including canonical empty.
+            let bytes = unsafe { string_as_bytes(value) };
+            i32::from(bytes.is_empty() || bytes.contains(&0))
+        }
+        let value = ManagedString::new("é\0中🙂");
+        // SAFETY: each constructor transfers a live handle; adapters consume their upstream.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+            hew_sink_write_string(sink, value.as_ptr());
+            assert_eq!(hew_sink_try_write_string(sink, ptr::null()), 0);
+            drop(value);
+            hew_sink_close(sink);
+            let mapped = hew_stream_map_string(stream, retain_input as *const c_void, ptr::null());
+            let filtered =
+                hew_stream_filter_string(mapped, keep_nul_or_empty as *const c_void, ptr::null());
+            assert_eq!(
+                drain_stream(filtered),
+                vec!["é\0中🙂".as_bytes().to_vec(), vec![]]
+            );
+            hew_stream_close(filtered);
+        }
+    }
+
+    #[test]
+    fn managed_stream_file_paths_reject_nul_without_truncating_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.txt");
+        std::fs::write(&path, "unchanged").unwrap();
+        let value = ManagedString::new(format!("{}\0suffix", path.display()));
+        // SAFETY: value remains a live managed string throughout both calls.
+        unsafe {
+            assert!(hew_stream_from_file_read(value.as_ptr()).is_null());
+            assert!(take_last_error().unwrap().contains("interior NUL"));
+            assert!(hew_stream_from_file_write(value.as_ptr()).is_null());
+            assert!(take_last_error().unwrap().contains("interior NUL"));
+        }
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "unchanged");
+    }
+
+    #[test]
     fn collect_string_empty_stream_returns_empty() {
         // SAFETY: null data yields an empty vec stream.
         unsafe {
             let stream = hew_stream_from_bytes(ptr::null(), 0, 0);
             let cstr_ptr = hew_stream_collect_string(stream);
-            assert!(!cstr_ptr.is_null());
-            let result = CStr::from_ptr(cstr_ptr).to_str().unwrap();
+            assert!(cstr_ptr.is_null());
+            let result = string_as_str(cstr_ptr);
             assert!(result.is_empty());
-            crate::cabi::free_cstring(cstr_ptr); // CSTRING-FREE: str-open (test frees hew_stream_collect_string output)
+            string_release(cstr_ptr);
         }
     }
 
@@ -4192,7 +4297,7 @@ mod tests {
             let sink = hew_stream_pair_sink(pair);
             let stream = hew_stream_pair_stream(pair);
 
-            let msg = CString::new("bonjour").unwrap();
+            let msg = ManagedString::new("bonjour");
             hew_sink_write_string(sink, msg.as_ptr());
             hew_sink_close(sink);
 
@@ -4206,7 +4311,7 @@ mod tests {
 
     #[test]
     fn write_string_null_sink_is_safe() {
-        let msg = CString::new("ignored").unwrap();
+        let msg = ManagedString::new("ignored");
         // SAFETY: null sink is handled by cabi_guard.
         unsafe { hew_sink_write_string(ptr::null_mut(), msg.as_ptr()) };
     }
@@ -4355,7 +4460,7 @@ mod tests {
     #[test]
     fn large_file_roundtrip() {
         let path = temp_path("large_file");
-        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let c_path = ManagedString::new(path.to_str().unwrap());
         let large: Vec<u8> = (0..100_000u32).map(|i| (i % 199) as u8).collect();
 
         // SAFETY: all FFI calls use valid pointers.
@@ -4388,8 +4493,8 @@ mod tests {
         // PermissionDenied instead of the old Other(5). Here we pin the NotFound
         // wiring, which is reproducible without a Windows host.
         use crate::stream_error::{take_last_errno, take_last_error_kind, IO_ERROR_KIND_NOT_FOUND};
-        let c_path = CString::new("/tmp/hew_stream_missing_open_read.txt").unwrap();
-        // SAFETY: c_path is a valid NUL-terminated C string.
+        let c_path = ManagedString::new("/tmp/hew_stream_missing_open_read.txt");
+        // SAFETY: c_path is a live managed string.
         let s = unsafe { hew_stream_from_file_read(c_path.as_ptr()) };
         assert!(s.is_null(), "opening a missing file for read must fail");
         // Read the kind BEFORE the errno (take_last_errno clears the tag).
@@ -4412,8 +4517,8 @@ mod tests {
         // every OS, and the sink-open path must tag it so try_to_file classifies
         // through the canonical kind rather than the raw errno.
         use crate::stream_error::{take_last_errno, take_last_error_kind, IO_ERROR_KIND_NOT_FOUND};
-        let c_path = CString::new("/tmp/hew_stream_missing_dir_open/child.txt").unwrap();
-        // SAFETY: c_path is a valid NUL-terminated C string.
+        let c_path = ManagedString::new("/tmp/hew_stream_missing_dir_open/child.txt");
+        // SAFETY: c_path is a live managed string.
         let s = unsafe { hew_stream_from_file_write(c_path.as_ptr()) };
         assert!(
             s.is_null(),
@@ -4557,7 +4662,7 @@ mod tests {
                 .store(first as usize, TestOrdering::Release);
             // The callback owns the buffer.
             // SAFETY: item was malloc'd by hew_stream_poll's park thread.
-            unsafe { libc::free(item) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (stream poll item byte buffer)
+            unsafe { libc::free(item) }; // ALLOCATOR-PAIRING: libc
         }
         sink.fired.fetch_add(1, TestOrdering::Release);
         // Signal the waiter — set ready under the lock, then notify.
@@ -5343,8 +5448,8 @@ mod tests {
 
     fn string_elem_layout() -> HewVecElemLayout {
         HewVecElemLayout {
-            size: size_of::<*const c_char>(),
-            align: align_of::<*const c_char>(),
+            size: size_of::<*const HewString>(),
+            align: align_of::<*const HewString>(),
             ownership_kind: HewTypeOwnershipKind::String,
             clone_fn: None,
             drop_fn: None,
@@ -5362,8 +5467,8 @@ mod tests {
     }
 
     /// String elements ride the witness path content-encoded: the sink reads
-    /// the caller's string slot, the stream materialises a fresh header-aware
-    /// cstring. An empty string survives as `Some("")` (rc 1).
+    /// the caller's string slot, the stream materialises a fresh managed
+    /// string. An empty string survives as `Some("")` (rc 1).
     #[test]
     fn layout_stream_string_roundtrip_preserves_empty() {
         // SAFETY: hew_stream_channel returns a valid pair; slots are locals.
@@ -5373,21 +5478,22 @@ mod tests {
             let stream = hew_stream_pair_stream(pair);
 
             let layout = string_elem_layout();
-            let alpha: *const c_char = c"alpha".as_ptr();
+            let alpha_owner = ManagedString::new("alpha\0é");
+            let alpha = alpha_owner.as_ptr();
             hew_stream_send_layout(sink, std::ptr::addr_of!(alpha).cast(), &raw const layout);
-            let empty: *const c_char = c"".as_ptr();
+            let empty: *const HewString = ptr::null();
             hew_stream_send_layout(sink, std::ptr::addr_of!(empty).cast(), &raw const layout);
             hew_sink_close(sink);
 
-            let mut out: *mut c_char = ptr::null_mut();
+            let mut out: *mut HewString = ptr::null_mut();
             let rc = hew_stream_next_layout(
                 stream,
                 std::ptr::addr_of_mut!(out).cast(),
                 &raw const layout,
             );
             assert_eq!(rc, 1);
-            assert_eq!(CStr::from_ptr(out).to_bytes(), b"alpha");
-            crate::cabi::free_cstring(out);
+            assert_eq!(string_as_bytes(out), "alpha\0é".as_bytes());
+            string_release(out);
 
             let rc = hew_stream_next_layout(
                 stream,
@@ -5395,8 +5501,8 @@ mod tests {
                 &raw const layout,
             );
             assert_eq!(rc, 1, "empty string element is Some(\"\"), not None");
-            assert_eq!(CStr::from_ptr(out).to_bytes(), b"");
-            crate::cabi::free_cstring(out);
+            assert_eq!(string_as_bytes(out), b"");
+            string_release(out);
 
             let rc = hew_stream_next_layout(
                 stream,

@@ -450,3 +450,25 @@ into a function-independent value emitter. Ordinary bodies and container
 callbacks can now use the same checked physical recipes without synthesizing a
 function body or duplicating ownership decisions. Focused MIR/codegen tests,
 including the LLVM sanitizer instrumentation control, pass after the extraction.
+
+## Managed environment, path and stream boundaries
+
+Environment, path, file-stream and stream error exports now borrow or return
+managed UTF-8 strings. OS-facing environment values and paths reject interior
+NUL before any operation, while stream data, callback arguments, collected file
+contents and error messages preserve every byte. Empty string values use the
+canonical null handle. The legacy file-read alias delegates to the same managed
+file reader instead of allocating another string representation.
+
+The stream layout regression exposed a remaining C-string encoder and decoder
+in the shared channel envelope helper. String envelopes now copy the managed
+value's complete bytes and validate UTF-8 before publishing a received owner.
+The channel fixtures use managed slots; byte and aggregate envelope operations
+retain their existing contracts. Callback tests exercise retained results and
+independent input release, while filesystem probes prove rejected NUL paths
+cannot open or truncate a valid prefix. Runtime tests and focused sanitizer
+checks exercise the migrated ownership and error paths.
+
+The HTTP stream-error test consumes the same managed error result through
+`string_as_str` and `string_release`, preserving the runtime allocator contract
+across the standard-library test boundary.

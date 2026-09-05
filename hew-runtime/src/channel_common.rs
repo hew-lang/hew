@@ -1,25 +1,9 @@
-use std::ffi::c_char;
+use hew_cabi::string::{string_as_bytes, string_from_utf8, HewString};
 use std::ptr;
 
 use std::ffi::c_void;
 
 use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
-
-pub(crate) fn bytes_to_cstr(item: &[u8]) -> *mut c_char {
-    let len = item.len();
-    // Header-aware (S1): backs channel<string> recv; released via hew_string_drop / free_cstring.
-    let buf = crate::cabi::alloc_cstring_data(len + 1); // CSTRING-ALLOC: str-open (bytes_to_cstr — header-aware String backing channel<string> recv; reaches hew_string_drop)
-    if buf.is_null() {
-        return ptr::null_mut();
-    }
-    if len > 0 {
-        // SAFETY: `buf` has `len + 1` bytes and `item` has `len` readable bytes.
-        unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
-    }
-    // SAFETY: writing the NUL terminator at offset `len` stays in-bounds.
-    unsafe { *buf.cast::<u8>().add(len) = 0 };
-    buf.cast::<c_char>()
-}
 
 pub(crate) unsafe fn free_channel_pair<P, S, R>(
     pair: *mut P,
@@ -60,7 +44,7 @@ pub(crate) unsafe fn free_channel_pair<P, S, R>(
 // | ownership_kind  | envelope contents                       | thunks      |
 // |-----------------|-----------------------------------------|-------------|
 // | `Plain`         | the element's raw bytes (`size` wide)   | none        |
-// | `String`        | the string's CONTENT bytes (no NUL)     | none        |
+// | `String`        | the string's UTF-8 bytes (including NUL) | none        |
 // | `Bytes`         | the bytes value's content bytes         | none        |
 // | `LayoutManaged` | the element representation (`size` wide)| clone + drop|
 //
@@ -157,7 +141,7 @@ pub(crate) fn drop_elem_envelope(
 /// # Safety
 ///
 /// `data` must point to one live element of the witness's type: `size`
-/// readable bytes for `Plain`/`LayoutManaged`, a `*const c_char` slot for
+/// readable bytes for `Plain`/`LayoutManaged`, a `*const HewString` slot for
 /// `String`, a `BytesTriple` slot for `Bytes`.
 pub(crate) unsafe fn encode_elem_envelope(
     data: *const c_void,
@@ -171,15 +155,9 @@ pub(crate) unsafe fn encode_elem_envelope(
         }
         HewTypeOwnershipKind::String => {
             // SAFETY: caller guarantees `data` is a string slot.
-            let sptr = unsafe { *data.cast::<*const c_char>() };
-            if sptr.is_null() {
-                Vec::new()
-            } else {
-                // SAFETY: a non-null Hew string is a valid NUL-terminated buffer.
-                unsafe { std::ffi::CStr::from_ptr(sptr) }
-                    .to_bytes()
-                    .to_vec()
-            }
+            let sptr = unsafe { *data.cast::<*const HewString>() };
+            // SAFETY: the slot contains a borrowed managed string, including null/empty.
+            unsafe { string_as_bytes(sptr) }.to_vec()
         }
         HewTypeOwnershipKind::Bytes => {
             // SAFETY: caller guarantees `data` is a BytesTriple slot.
@@ -246,12 +224,19 @@ pub(crate) unsafe fn decode_elem_envelope(
     };
     match layout.ownership_kind {
         HewTypeOwnershipKind::String => {
-            // Empty contents are a valid `Some("")` — only `None` maps to 0.
-            // CSTRING-ALLOC: str-open (header-aware String element decode;
-            // reaches hew_string_drop on the Hew side).
-            let s = bytes_to_cstr(&item);
+            // Empty contents are a valid `Some("")`; malformed UTF-8 reports
+            // an error without initializing a string slot.
+            let s = match string_from_utf8(&item) {
+                Ok(value) => value,
+                Err(error) => {
+                    crate::stream_error::set_last_error(format!(
+                        "{context}: invalid string element: {error}"
+                    ));
+                    return 0;
+                }
+            };
             // SAFETY: caller guarantees `out` is a string slot.
-            unsafe { *out.cast::<*mut c_char>() = s };
+            unsafe { *out.cast::<*mut HewString>() = s };
             1
         }
         HewTypeOwnershipKind::Bytes => {

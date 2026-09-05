@@ -81,12 +81,7 @@ pub use lang_items::{
     LangItem, LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT,
 };
 pub use lowering_facts::{
-    assert_lowering_facts_consistent, hashmap_layout_key_fact,
-    hashmap_layout_key_layout_value_fact, hashset_layout_element_admissible, hashset_layout_fact,
-    CollectionMethodDispatch, DropKind, HashMapAbi, HashMapKeyType, HashMapLoweringFact,
-    HashMapLoweringFactError, HashMapLoweringFactState, HashMapValueType, HashSetAbi,
-    HashSetElementType, HashSetLoweringFact, HashSetLoweringFactError, LoweringFact,
-    LoweringFactConsistencyError, LoweringFactError, LoweringKind,
+    DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringFactError, LoweringKind,
 };
 pub use mangle::mangle_resolved_ty;
 pub use resolved_ty::{

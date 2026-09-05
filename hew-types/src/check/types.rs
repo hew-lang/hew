@@ -730,20 +730,6 @@ pub struct TypeCheckOutput {
     /// for f-string `Display` dispatch instead of hard-coding `"Display"` /
     /// `"fmt"` symbols. See [`crate::LangItemRegistry`].
     pub lang_items: crate::LangItemRegistry,
-    /// Checker-authored layout-key `HashMap` lowering facts keyed by call-site span.
-    ///
-    /// Populated by `finalize_hashmap_admission` for `HashMap<CopyRecord, V>` sites
-    /// after hash-eligibility validation.  Facts begin in the `Pending` state;
-    /// codegen (C-3) transitions each to `Finalized` after emitting the key-layout
-    /// global.  Absent entry for a Named-key site means the checker rejected the key.
-    pub hashmap_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashMapLoweringFact>,
-    /// Checker-authored layout-element `HashSet` lowering facts keyed by call-site span.
-    ///
-    /// Populated by `finalize_lowering_facts` for `HashSet<CopyRecord>` sites
-    /// after hash-eligibility validation.  Facts begin in the `Pending` state;
-    /// codegen (C-3) transitions each to `Finalized` after emitting the elem-layout
-    /// global.  Absent entry for a Named-element site means the checker rejected the element.
-    pub hashset_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashSetLoweringFact>,
     /// Per-spawn-site type arguments for generic actor instantiations.
     ///
     /// Keyed by the `SpanKey` of the `spawn` expression. Each entry holds the
@@ -1436,8 +1422,6 @@ impl Default for TypeCheckOutput {
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: crate::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             import_type_name_aliases: HashMap::new(),
@@ -2180,8 +2164,8 @@ pub(super) struct PendingLoweringFact {
 }
 
 /// A `HashMap` key/value admission check deferred until after all inference
-/// has settled.  Recorded when `validate_hashmap_key_value_types` encounters
-/// `Ty::Var` arguments (type still in-flight); drained by
+/// has settled and every declaration is registered. Recorded by
+/// `validate_hashmap_key_value_types`; drained by
 /// `finalize_hashmap_admission` in `check_program`.
 #[derive(Debug, Clone)]
 pub(super) struct DeferredHashMapAdmission {
@@ -2190,6 +2174,7 @@ pub(super) struct DeferredHashMapAdmission {
     pub(super) val_ty: Ty,
     pub(super) source_module: Option<String>,
     pub(super) is_abstract_key_param: bool,
+    pub(super) type_params: HashSet<String>,
 }
 
 /// A `HashSet` element admission check deferred until after all inference has
@@ -2766,16 +2751,6 @@ pub struct Checker {
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same set).
     pub(super) deferred_hashset_admission: HashMap<SpanKey, DeferredHashSetAdmission>,
-    /// Layout-key `HashMap` lowering facts accumulated by `finalize_hashmap_admission`.
-    ///
-    /// Keyed by the span of the admission site (type annotation or method call).
-    /// Drained into `TypeCheckOutput::hashmap_layout_facts` at the output boundary.
-    pub(super) hashmap_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashMapLoweringFact>,
-    /// Layout-element `HashSet` lowering facts accumulated by `finalize_lowering_facts`.
-    ///
-    /// Keyed by the span of the call site that triggered the `HashSet` method.
-    /// Drained into `TypeCheckOutput::hashset_layout_facts` at the output boundary.
-    pub(super) hashset_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashSetLoweringFact>,
     /// `Vec` element admission checks deferred until after inference
     /// completes. Keyed by span to suppress duplicates from repeated traversals
     /// of the same site.
@@ -3848,8 +3823,6 @@ impl Checker {
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
             deferred_hashset_admission: HashMap::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
             deferred_vec_admission: HashMap::new(),
             deferred_builtin_clone_admission: HashMap::new(),
             shadowed_method_type_param_reports: HashSet::new(),

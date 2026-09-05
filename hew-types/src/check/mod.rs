@@ -84,7 +84,7 @@ use self::util::{
     integer_fits_type, integer_type_info, integer_type_range, is_float_literal, is_integer_literal,
     lookup_scoped_item, scoped_module_item_name,
 };
-use crate::lowering_facts::{LoweringFact, LoweringFactError};
+use crate::lowering_facts::LoweringFact;
 
 static BUILTIN_FUNCTION_NAMES: OnceLock<HashSet<String>> = OnceLock::new();
 
@@ -2104,11 +2104,7 @@ impl Checker {
                 &cycle.edge.to,
             ));
         }
-        // The layout-backed HashMap/HashSet admission finalizers below still
-        // consult `self.type_defs` to prove named record hash-eligibility and
-        // compute key/value ABI sizes. `resolved_type_defs` is the authoritative
-        // post-substitution snapshot after the checked-output boundary pass, so
-        // restore it into the checker before draining those deferred queues.
+        // Admission consumes the complete post-substitution declarations.
         self.type_defs = resolved_type_defs.clone();
         self.finalize_builtin_clone_admission();
         let mut resolved_lowering_facts = self.finalize_lowering_facts();
@@ -2121,14 +2117,6 @@ impl Checker {
         self.finalize_vec_admission();
         self.finalize_channel_rewrites();
         self.finalize_generic_structural_eq();
-
-        // Prune any layout facts whose span is not in the validated expr_types map.
-        // This prevents orphaned layout facts (from expressions that were pruned
-        // by validate_checker_output_contract) from reaching codegen.
-        self.hashmap_layout_facts
-            .retain(|key, _| resolved_expr_types.contains_key(key));
-        self.hashset_layout_facts
-            .retain(|key, _| resolved_expr_types.contains_key(key));
 
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();
@@ -2369,8 +2357,6 @@ impl Checker {
                 })
                 .collect(),
             lang_items: std::mem::take(&mut self.lang_items),
-            hashmap_layout_facts: std::mem::take(&mut self.hashmap_layout_facts),
-            hashset_layout_facts: std::mem::take(&mut self.hashset_layout_facts),
             actor_spawn_type_args: {
                 // Resolve any lingering inference variables in the type args
                 // before publishing to the output table.

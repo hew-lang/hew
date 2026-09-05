@@ -4,19 +4,11 @@
 )]
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
-use crate::check::admissibility::{
-    compute_copy_record_layout, hash_key_record_layout, identity_aggregate_layout,
-    CollectionClonePath,
-};
+use crate::check::admissibility::CollectionClonePath;
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
 use crate::check::types::GenericCallee;
 use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission};
-use crate::hash_eligibility::{ty_is_hash_eligible_with_resources, HashEligibility};
-use crate::lowering_facts::{
-    hashmap_layout_key_fact, hashmap_layout_key_layout_value_fact, hashset_layout_fact,
-    CollectionMethodDispatch, HashMapValueType,
-};
 use crate::method_resolution::{
     collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
@@ -433,588 +425,104 @@ impl Checker {
         // InferenceFailed diagnostic at this site.  Remove the deferred entry
         // to prevent a duplicate error from finalize_hashset_admission.
         self.deferred_hashset_admission.remove(&key);
+        // The resolver proves a template key from its declared bounds. No
+        // concrete scalar metadata exists until the type is instantiated.
+        if self.is_hashmap_abstract_key_param(elem_ty) {
+            return;
+        }
         self.pending_lowering_facts.insert(
             key,
             PendingLoweringFact::hashset(elem_ty.clone(), self.current_module.clone()),
         );
     }
 
-    /// Drain `pending_lowering_facts`, resolve element types through the
-    /// substitution, and materialize concrete [`LoweringFact`] entries.
-    ///
-    /// Any fact whose element type is still unresolved after inference emits a
-    /// checker error and is **not** inserted into the returned map.  Downstream
-    /// codegen (`requireLoweringFactOf`) will detect the missing entry and fail
-    /// closed rather than guessing.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "branching over HashSet element types including the new C-2c Named path is \
-                  inherently wide; factoring into sub-functions would obscure the single-pass flow"
-    )]
+    /// Retain scalar collection call metadata. Key admission is decided by the
+    /// semantic capability service, independently of target representation.
     pub(super) fn finalize_lowering_facts(&mut self) -> HashMap<SpanKey, LoweringFact> {
         let pending = std::mem::take(&mut self.pending_lowering_facts);
-        let mut result = HashMap::with_capacity(pending.len());
-        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
-        // Track which unresolved TypeVars have already produced a diagnostic so
-        // that repeated method calls on the same unresolved HashSet (e.g.
-        // `s.len(); s.is_empty()`) emit exactly one InferenceFailed rather than
-        // one per call site.  Each unique unresolved root var gets one error.
-        let mut reported_unresolved_vars: std::collections::HashSet<TypeVar> =
-            std::collections::HashSet::new();
-
-        for (span_key, pending_fact) in pending {
-            let resolved_ty = self
+        let mut result = HashMap::new();
+        let mut reported_vars = HashSet::new();
+        for (site, fact) in pending {
+            let ty = self
                 .subst
-                .resolve(&pending_fact.hashset_element_ty)
+                .resolve(&fact.hashset_element_ty)
                 .materialize_literal_defaults();
-            // Guard 1: element type is already erroneous — a prior diagnostic was
-            // reported on the upstream expression.  Drop the pending fact silently;
-            // downstream codegen fails closed via the absent lowering-fact entry.
-            // Emitting a new diagnostic here would produce a spurious secondary
-            // "element type is unresolved" error even though inference completed
-            // correctly — it just completed to Ty::Error.
-            if resolved_ty.contains_error() {
+            if ty.contains_error() {
                 continue;
             }
-            match LoweringFact::from_hashset_element_type(&resolved_ty) {
-                Ok(fact) => {
-                    result.insert(span_key, fact);
-                }
-                Err(LoweringFactError::UnresolvedHashSetElementType) => {
-                    // Inference did not resolve the element type by the checker
-                    // boundary.  Emit a clear diagnostic (at most once per
-                    // unique unresolved TypeVar) and prune the fact so
-                    // downstream codegen fails closed via requireLoweringFactOf.
-                    if let Ty::Var(var) = resolved_ty {
-                        if !reported_unresolved_vars.insert(var) {
-                            // Already emitted for this root var (another call
-                            // site on the same unresolved set).  Skip to avoid
-                            // spraying one error per method-call site.
-                            continue;
-                        }
-                    }
-                    let span = span_key.start..span_key.end;
-                    let mut err = crate::error::TypeError::new(
+            let before = self.errors.len();
+            if let Ty::Var(var) = &ty {
+                if reported_vars.insert(*var) {
+                    self.report_error(
                         TypeErrorKind::InferenceFailed,
-                        span,
-                        "cannot lower HashSet: element type is unresolved at the checker \
-                         boundary — add an explicit type annotation, e.g. \
-                         `HashSet<i64>` or `HashSet<String>`"
-                            .to_string(),
+                        &(site.start..site.end),
+                        "cannot infer HashSet element type; add an explicit type annotation".into(),
                     );
-                    if let Some(module) = &pending_fact.source_module {
-                        err = err.with_source_module(module.clone());
-                    }
-                    new_errors.push(err);
-                    // Fact NOT inserted — downstream will fail closed.
                 }
-                Err(LoweringFactError::UnsupportedHashSetElementType { .. }) => {
-                    // For Named (record) element types: run hash-eligibility (C-2c).
-                    // The inline `validate_hashset_element_type` pass already admitted Named
-                    // types optimistically; here we either produce a HashSetLoweringFact
-                    // (Eligible) or a diagnostic (ineligible).
-                    if let Ty::Named { name, .. } = &resolved_ty {
-                        let type_defs_snapshot = self.type_defs.clone();
-                        let hash_dispatch = self
-                            .user_trait_impl_method(name, "Hash", "hash")
-                            .map_or(CollectionMethodDispatch::Derived, |method| {
-                                CollectionMethodDispatch::User { method }
-                            });
-                        let eq_dispatch = self
-                            .user_trait_impl_method(name, "Eq", "eq")
-                            .map_or(CollectionMethodDispatch::Derived, |method| {
-                                CollectionMethodDispatch::User { method }
-                            });
-                        let has_user_hash =
-                            matches!(hash_dispatch, CollectionMethodDispatch::User { .. });
-                        let has_eq = matches!(eq_dispatch, CollectionMethodDispatch::User { .. })
-                            || self
-                                .registry
-                                .implements_marker(&resolved_ty, MarkerTrait::Eq);
-                        let eligibility = if has_user_hash && has_eq {
-                            HashEligibility::Eligible
-                        } else {
-                            ty_is_hash_eligible_with_resources(
-                                &resolved_ty,
-                                &type_defs_snapshot,
-                                self.registry.resource_type_names(),
-                            )
-                        };
-                        match eligibility {
-                            HashEligibility::Eligible => {
-                                let type_def = self.lookup_type_def(name);
-                                let layout =
-                                    identity_aggregate_layout(&resolved_ty).or_else(|| {
-                                        type_def.as_ref().and_then(|td| {
-                                            hash_key_record_layout(td, &type_defs_snapshot)
-                                        })
-                                    });
-                                if let Some((elem_size, elem_align)) = layout {
-                                    let mut fact =
-                                        hashset_layout_fact(name.clone(), elem_size, elem_align);
-                                    fact.hash_dispatch = hash_dispatch;
-                                    fact.eq_dispatch = eq_dispatch;
-                                    self.hashset_layout_facts.insert(span_key, fact);
-                                    // Fact inserted into hashset_layout_facts;
-                                    // NOT inserted into lowering_facts result.
-                                } else if type_def.is_some() {
-                                    let span = span_key.start..span_key.end;
-                                    let mut err = crate::error::TypeError::new(
-                                        TypeErrorKind::InvalidOperation,
-                                        span,
-                                        format!(
-                                            "`HashSet` element type `{name}` has zero size \
-                                             or contains a type whose layout cannot be \
-                                             determined; layout element types must have \
-                                             non-zero size",
-                                        ),
-                                    );
-                                    if let Some(module) = &pending_fact.source_module {
-                                        err = err.with_source_module(module.clone());
-                                    }
-                                    new_errors.push(err);
-                                }
-                                // TypeDef not found — silently drop; lookup failure
-                                // is a pre-existing error from the type-resolution pass.
-                            }
-                            HashEligibility::IneligibleManaged(bad_ty) => {
-                                let span = span_key.start..span_key.end;
-                                let msg = if bad_ty == resolved_ty {
-                                    format!(
-                                        "layout-managed HashSet elements require Copy; \
-                                         `{name}` is an indirect (managed) record and is not yet \
-                                         supported as a layout HashSet element"
-                                    )
-                                } else {
-                                    format!(
-                                        "`HashSet` element type `{name}` contains a managed field \
-                                         (`{}`); layout-element hashing requires fixed-size Copy \
-                                         fields — use a type without heap-managed fields",
-                                        bad_ty.user_facing(),
-                                    )
-                                };
-                                let mut err = crate::error::TypeError::new(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    msg,
-                                );
-                                if let Some(module) = &pending_fact.source_module {
-                                    err = err.with_source_module(module.clone());
-                                }
-                                new_errors.push(err);
-                            }
-                            HashEligibility::IneligibleOwned(bad_ty)
-                            | HashEligibility::IneligibleTuple(bad_ty) => {
-                                let span = span_key.start..span_key.end;
-                                let mut err = crate::error::TypeError::new(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    format!(
-                                        "`HashSet` element type `{name}` contains a field of type \
-                                         `{}` which is not a fixed-size Copy type; layout element \
-                                         types require all fields to be fixed-width primitives or \
-                                         nested Copy records",
-                                        bad_ty.user_facing(),
-                                    ),
-                                );
-                                if let Some(module) = &pending_fact.source_module {
-                                    err = err.with_source_module(module.clone());
-                                }
-                                new_errors.push(err);
-                            }
-                            HashEligibility::IneligibleNamedNonRecord(bad_ty) => {
-                                let span = span_key.start..span_key.end;
-                                let mut err = crate::error::TypeError::new(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    format!(
-                                        "`HashSet` element type `{}` must be a `record`-keyword type \
-                                         to use the layout element ABI; non-record named types are \
-                                         not guaranteed to be Copy value-semantic",
-                                        bad_ty.user_facing(),
-                                    ),
-                                );
-                                if let Some(module) = &pending_fact.source_module {
-                                    err = err.with_source_module(module.clone());
-                                }
-                                new_errors.push(err);
-                            }
-                            HashEligibility::IneligibleVar | HashEligibility::IneligibleError => {
-                                // Ty::Var / Ty::Error already guarded above; silently drop.
-                            }
-                        }
-                    }
-                    // For non-Named types that are unsupported: the checker already
-                    // rejected them via validate_hashset_element_type; skip silently
-                    // to avoid a duplicate diagnostic.
+            } else {
+                self.validate_collection_key_capabilities(&ty, "Set", &(site.start..site.end));
+                if let Ok(fact) = LoweringFact::from_hashset_element_type(&ty) {
+                    result.insert(site, fact);
                 }
             }
+            for error in &mut self.errors[before..] {
+                error.source_module.clone_from(&fact.source_module);
+            }
         }
-
-        self.errors.extend(new_errors);
         result
     }
 
-    /// Drain `deferred_hashmap_admission`, resolve key/value types through the
-    /// current substitution, and fail closed on any that are still unresolved
-    /// or error-typed at the checker boundary.
-    ///
-    /// * `Ty::Var` → `InferenceFailed`: inference did not resolve the type.
-    /// * `Ty::Error` → silent drop: upstream already emitted a diagnostic.
-    /// * `Ty::Named` key → hash-eligibility check via C-2a predicate; produces a
-    ///   `HashMapLoweringFact` on success or a diagnostic on failure.
-    /// * Fully-resolved scalar (String) unsupported pairs → already caught inline;
-    ///   silently skipped here to avoid duplicate diagnostics.
-    #[allow(
-        clippy::too_many_lines,
-        clippy::single_match_else,
-        reason = "branching over HashEligibility + key/value layout paths is inherently wide; \
-                  factoring into sub-functions would obscure the flow more than help"
-    )]
+    /// Finish map admission after inference and declaration registration.
+    /// The saved template scope distinguishes abstract members from undefined
+    /// declarations; concrete keys are checked at their exact instantiation.
     pub(super) fn finalize_hashmap_admission(&mut self) {
         let checks = std::mem::take(&mut self.deferred_hashmap_admission);
-        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
-        let mut new_layout_facts: Vec<(SpanKey, crate::lowering_facts::HashMapLoweringFact)> =
-            Vec::new();
-        // Track which (key_var, val_var) pairs have already produced a
-        // diagnostic so that repeated method calls on the same unresolved
-        // HashMap (e.g. `m.len(); m.is_empty()`) emit exactly one
-        // InferenceFailed rather than one per call site.
-        let mut reported_var_pairs: std::collections::HashSet<(Option<TypeVar>, Option<TypeVar>)> =
-            std::collections::HashSet::new();
-
-        for (span_key, check) in checks {
-            let resolved_key = self
+        let mut reported_var_pairs = HashSet::new();
+        for (_, check) in checks {
+            let key = self
                 .subst
                 .resolve(&check.key_ty)
                 .materialize_literal_defaults();
-            let resolved_val = self
+            let value = self
                 .subst
                 .resolve(&check.val_ty)
                 .materialize_literal_defaults();
-
-            // Already-errored types: fail closed without cascading.
-            if matches!(resolved_key, Ty::Error) || matches!(resolved_val, Ty::Error) {
+            if key.contains_error() || value.contains_error() {
                 continue;
             }
-
-            // Bare type-parameter keys are checked against their declared
-            // `K: Hash + Eq` bounds at the call site.  They have no concrete
-            // layout fact before monomorphization; the HashMap handle bakes the
-            // substituted K/V layouts at `HashMap::new()` for each instantiation.
-            if check.is_abstract_key_param {
-                continue;
-            }
-
-            // Still unresolved at the checker boundary → fail closed, but
-            // deduplicate across multiple call sites that share the same
-            // unresolved root vars.
-            if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
-                let key_var = if let Ty::Var(v) = resolved_key {
-                    Some(v)
-                } else {
-                    None
-                };
-                let val_var = if let Ty::Var(v) = resolved_val {
-                    Some(v)
-                } else {
-                    None
-                };
-                if !reported_var_pairs.insert((key_var, val_var)) {
-                    // Already emitted for this root (key_var, val_var) pair.
-                    continue;
+            let before = self.errors.len();
+            if key.has_inference_var() || value.has_inference_var() {
+                if reported_var_pairs.insert((key.clone(), value.clone())) {
+                    self.report_error(
+                        TypeErrorKind::InferenceFailed,
+                        &check.span,
+                        format!(
+                            "cannot infer HashMap key or value type at the checker boundary \
+                            (HashMap<{}, {}>); add an explicit type annotation",
+                            key.user_facing(),
+                            value.user_facing()
+                        ),
+                    );
                 }
-                let key_resolved_display = self
-                    .subst
-                    .resolve(&check.key_ty)
-                    .materialize_literal_defaults();
-                let val_resolved_display = self
-                    .subst
-                    .resolve(&check.val_ty)
-                    .materialize_literal_defaults();
-                let key_display = key_resolved_display.user_facing();
-                let val_display = val_resolved_display.user_facing();
-                let mut err = crate::error::TypeError::new(
-                    TypeErrorKind::InferenceFailed,
-                    check.span.clone(),
-                    format!(
-                        "cannot infer HashMap key or value type at the checker boundary \
-                         (HashMap<{key_display}, {val_display}>); add an explicit type \
-                         annotation, e.g. `HashMap<String, i64>`",
-                    ),
-                );
-                if let Some(module) = check.source_module {
-                    err = err.with_source_module(module);
+            } else {
+                self.current_type_param_bounds
+                    .push(super::types::TypeParamScope::new(
+                        check
+                            .type_params
+                            .into_iter()
+                            .map(|name| (name, Vec::new()))
+                            .collect(),
+                        HashMap::new(),
+                    ));
+                if !check.is_abstract_key_param {
+                    self.validate_collection_key_capabilities(&key, "Map", &check.span);
                 }
-                new_errors.push(err);
-                continue;
+                self.validate_hashmap_value_clone_type(&value, &check.span);
+                self.current_type_param_bounds.pop();
             }
-
-            // Named record key: run hash-eligibility check and produce a
-            // HashMapLoweringFact (C-2c). Fail closed with a diagnostic on
-            // any ineligibility reason.
-            if let Ty::Named { name: key_name, .. } = &resolved_key {
-                // Collect the type_defs snapshot before borrowing self mutably below.
-                let type_defs_snapshot = self.type_defs.clone();
-
-                let hash_dispatch = self
-                    .user_trait_impl_method(key_name, "Hash", "hash")
-                    .map_or(CollectionMethodDispatch::Derived, |method| {
-                        CollectionMethodDispatch::User { method }
-                    });
-                let eq_dispatch = self
-                    .user_trait_impl_method(key_name, "Eq", "eq")
-                    .map_or(CollectionMethodDispatch::Derived, |method| {
-                        CollectionMethodDispatch::User { method }
-                    });
-                let has_user_hash = matches!(hash_dispatch, CollectionMethodDispatch::User { .. });
-                let has_eq = matches!(eq_dispatch, CollectionMethodDispatch::User { .. })
-                    || self
-                        .registry
-                        .implements_marker(&resolved_key, MarkerTrait::Eq);
-                let eligibility = if has_user_hash && has_eq {
-                    HashEligibility::Eligible
-                } else {
-                    ty_is_hash_eligible_with_resources(
-                        &resolved_key,
-                        &type_defs_snapshot,
-                        self.registry.resource_type_names(),
-                    )
-                };
-
-                match eligibility {
-                    HashEligibility::Eligible => {
-                        let key_type_def = self.lookup_type_def(key_name);
-                        let key_layout = identity_aggregate_layout(&resolved_key).or_else(|| {
-                            key_type_def
-                                .as_ref()
-                                .and_then(|td| hash_key_record_layout(td, &type_defs_snapshot))
-                        });
-                        match key_layout {
-                            Some((key_size, key_align)) => {
-                                // Determine value type routing.
-                                match HashMapValueType::from_ty(&resolved_val) {
-                                    Ok(HashMapValueType::Layout) => {
-                                        // Value is also a Named record.
-                                        if let Ty::Named { name: val_name, .. } = &resolved_val {
-                                            let val_type_def = self.lookup_type_def(val_name);
-                                            match val_type_def {
-                                                Some(ref vtd) => {
-                                                    match compute_copy_record_layout(
-                                                        vtd,
-                                                        &type_defs_snapshot,
-                                                    ) {
-                                                        Some((val_size, val_align)) => {
-                                                            let mut fact =
-                                                                        hashmap_layout_key_layout_value_fact(
-                                                                            key_name.clone(),
-                                                                            key_size,
-                                                                            key_align,
-                                                                            val_name,
-                                                                            val_size,
-                                                                            val_align,
-                                                                        );
-                                                            fact.hash_dispatch
-                                                                .clone_from(&hash_dispatch);
-                                                            fact.eq_dispatch
-                                                                .clone_from(&eq_dispatch);
-                                                            new_layout_facts.push((span_key, fact));
-                                                        }
-                                                        None => {
-                                                            let mut err =
-                                                                crate::error::TypeError::new(
-                                                                    TypeErrorKind::InvalidOperation,
-                                                                    check.span.clone(),
-                                                                    format!(
-                                                                        "`HashMap` value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
-                                                                    ),
-                                                                );
-                                                            if let Some(module) =
-                                                                check.source_module
-                                                            {
-                                                                err =
-                                                                    err.with_source_module(module);
-                                                            }
-                                                            new_errors.push(err);
-                                                        }
-                                                    }
-                                                }
-                                                None => {
-                                                    let mut err = crate::error::TypeError::new(
-                                                        TypeErrorKind::InvalidOperation,
-                                                        check.span.clone(),
-                                                        format!(
-                                                            "`HashMap` value type `{val_name}` is not defined; cannot compute layout for layout-key `HashMap`",
-                                                        ),
-                                                    );
-                                                    if let Some(module) = check.source_module {
-                                                        err = err.with_source_module(module);
-                                                    }
-                                                    new_errors.push(err);
-                                                }
-                                            }
-                                        } else {
-                                            // Should not happen: HashMapValueType::Layout implies Named.
-                                            unreachable!(
-                                                "HashMapValueType::Layout produced for non-Named value type"
-                                            );
-                                        }
-                                    }
-                                    Ok(val_type) => {
-                                        // Scalar value path.
-                                        let mut fact = hashmap_layout_key_fact(
-                                            key_name.clone(),
-                                            key_size,
-                                            key_align,
-                                            val_type,
-                                        );
-                                        fact.hash_dispatch.clone_from(&hash_dispatch);
-                                        fact.eq_dispatch.clone_from(&eq_dispatch);
-                                        new_layout_facts.push((span_key, fact));
-                                    }
-                                    Err(e) => {
-                                        let mut err = crate::error::TypeError::new(
-                                            TypeErrorKind::InvalidOperation,
-                                            check.span.clone(),
-                                            format!(
-                                                "HashMap<{key_name}, {}> value type is not supported for layout-key HashMap: {:?}",
-                                                resolved_val.user_facing(),
-                                                e,
-                                            ),
-                                        );
-                                        if let Some(module) = check.source_module {
-                                            err = err.with_source_module(module);
-                                        }
-                                        new_errors.push(err);
-                                    }
-                                }
-                            }
-                            None => {
-                                let message = if key_type_def.is_some() {
-                                    format!(
-                                        "HashMap key type `{key_name}` has zero size or contains a type \
-                                         whose layout cannot be determined; layout keys must have non-zero size",
-                                    )
-                                } else {
-                                    format!(
-                                        "HashMap key type `{key_name}` is not defined; \
-                                         cannot verify hash eligibility for layout-key HashMap",
-                                    )
-                                };
-                                let mut err = crate::error::TypeError::new(
-                                    TypeErrorKind::InvalidOperation,
-                                    check.span.clone(),
-                                    message,
-                                );
-                                if let Some(module) = check.source_module {
-                                    err = err.with_source_module(module);
-                                }
-                                new_errors.push(err);
-                            }
-                        }
-                    }
-
-                    HashEligibility::IneligibleManaged(bad_ty) => {
-                        // Distinguish: is the key itself a managed (indirect) record,
-                        // or does it contain a managed field?
-                        let msg = if bad_ty == resolved_key {
-                            format!(
-                                "layout-managed HashMap keys require Copy; \
-                                 `{key_name}` is an indirect (managed) record and is not yet supported \
-                                 as a layout HashMap key"
-                            )
-                        } else {
-                            format!(
-                                "HashMap key type `{key_name}` contains a managed field \
-                                 (`{}`); layout-key hashing requires fixed-size Copy fields — \
-                                 use a type without heap-managed fields as the key",
-                                bad_ty.user_facing(),
-                            )
-                        };
-                        let mut err = crate::error::TypeError::new(
-                            TypeErrorKind::InvalidOperation,
-                            check.span.clone(),
-                            msg,
-                        );
-                        if let Some(module) = check.source_module {
-                            err = err.with_source_module(module);
-                        }
-                        new_errors.push(err);
-                    }
-
-                    HashEligibility::IneligibleOwned(bad_ty) => {
-                        let mut err = crate::error::TypeError::new(
-                            TypeErrorKind::InvalidOperation,
-                            check.span.clone(),
-                            format!(
-                                "HashMap key type `{key_name}` contains a field of type `{}` \
-                                 which is not a fixed-size Copy type; layout keys require all fields \
-                                 to be fixed-width primitives or nested Copy records",
-                                bad_ty.user_facing(),
-                            ),
-                        );
-                        if let Some(module) = check.source_module {
-                            err = err.with_source_module(module);
-                        }
-                        new_errors.push(err);
-                    }
-
-                    HashEligibility::IneligibleTuple(_) => {
-                        let mut err = crate::error::TypeError::new(
-                            TypeErrorKind::InvalidOperation,
-                            check.span.clone(),
-                            format!(
-                                "HashMap key type `{key_name}` is or contains a tuple; \
-                                 tuple keys are not supported for the layout key ABI",
-                            ),
-                        );
-                        if let Some(module) = check.source_module {
-                            err = err.with_source_module(module);
-                        }
-                        new_errors.push(err);
-                    }
-
-                    HashEligibility::IneligibleNamedNonRecord(bad_ty) => {
-                        let kind_name = self.lookup_type_def(key_name).map_or(
-                            "a non-record type",
-                            |td| match td.kind {
-                                TypeDefKind::Enum => "an enum",
-                                TypeDefKind::Struct => "a type",
-                                TypeDefKind::Actor => "an actor",
-                                TypeDefKind::Machine => "a machine",
-                                TypeDefKind::Record => "a record",
-                            },
-                        );
-                        let mut err = crate::error::TypeError::new(
-                            TypeErrorKind::InvalidOperation,
-                            check.span.clone(),
-                            format!(
-                                "HashMap key type `{}` must be a `record`-keyword type to use the \
-                                 layout key ABI; found {kind_name} which is not guaranteed Copy \
-                                 value-semantic",
-                                bad_ty.user_facing(),
-                            ),
-                        );
-                        if let Some(module) = check.source_module {
-                            err = err.with_source_module(module);
-                        }
-                        new_errors.push(err);
-                    }
-
-                    HashEligibility::IneligibleVar | HashEligibility::IneligibleError => {
-                        // Ty::Var / Ty::Error already handled above; should not reach here
-                        // for a Named key. Fail closed silently.
-                    }
-                }
+            for error in &mut self.errors[before..] {
+                error.source_module.clone_from(&check.source_module);
             }
-
-            // Fully resolved scalar (String/i64/u64) unsupported pair: the inline
-            // check should have already emitted a diagnostic. Skip to avoid duplicates.
-        }
-
-        self.errors.extend(new_errors);
-        for (span_key, fact) in new_layout_facts {
-            self.hashmap_layout_facts.insert(span_key, fact);
         }
     }
 
@@ -1059,8 +567,9 @@ impl Checker {
                 new_errors.push(err);
             }
 
-            // Fully resolved but unsupported element: the inline check should
-            // have already emitted a diagnostic. Skip to avoid duplicates.
+            if !resolved.has_inference_var() {
+                self.validate_collection_key_capabilities(&resolved, "Set", &check.span);
+            }
         }
 
         self.errors.extend(new_errors);
@@ -5328,7 +4837,7 @@ impl Checker {
         let resolved =
             resolve_method_call(&registry, trait_name, method, receiver, &|marker, ty| {
                 let ty = Self::dispatch_pattern_to_ty(ty);
-                self.registry.implements_marker(&ty, marker)
+                self.collection_key_marker_available(&ty, marker)
             });
         match resolved {
             Ok(call) => {
@@ -11858,6 +11367,7 @@ mod tests {
                 val_ty: Ty::I64,
                 source_module: None,
                 is_abstract_key_param: false,
+                type_params: HashSet::new(),
             },
         );
 
@@ -11885,6 +11395,7 @@ mod tests {
                 val_ty: Ty::Var(TypeVar::fresh()),
                 source_module: None,
                 is_abstract_key_param: false,
+                type_params: HashSet::new(),
             },
         );
 
@@ -11915,6 +11426,7 @@ mod tests {
                 val_ty: Ty::normalize_named("V".to_string(), vec![]),
                 source_module: None,
                 is_abstract_key_param: true,
+                type_params: HashSet::from(["K".into(), "V".into()]),
             },
         );
 
@@ -11924,10 +11436,6 @@ mod tests {
             checker.errors.is_empty(),
             "abstract HashMap key params are checked via declared bounds, not layout eligibility; got: {:?}",
             checker.errors
-        );
-        assert!(
-            checker.hashmap_layout_facts.is_empty(),
-            "abstract HashMap key params must not produce concrete layout facts"
         );
     }
 
@@ -11982,6 +11490,7 @@ mod tests {
                 val_ty: Ty::Var(val_var),
                 source_module: None,
                 is_abstract_key_param: false,
+                type_params: HashSet::new(),
             },
         );
         checker.deferred_hashmap_admission.insert(
@@ -11992,6 +11501,7 @@ mod tests {
                 val_ty: Ty::Var(val_var),
                 source_module: None,
                 is_abstract_key_param: false,
+                type_params: HashSet::new(),
             },
         );
 

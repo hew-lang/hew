@@ -189,34 +189,6 @@ fn primitive_copy_layout_member_on_path(
     }
 }
 
-/// Compute `(total_size, max_align)` for a Copy named-record type.
-///
-/// Fields are walked in **declaration order** — the order fields appear in the
-/// source declaration.  This matches the order used by HIR `RecordLayout.fields`,
-/// MIR `RecordLayout.field_tys`, and codegen's LLVM struct body emission, ensuring
-/// that the checker-computed key size/alignment agrees with the binary ABI.
-///
-/// Uses `type_def.field_order` (populated by `register_record_decl` and friends in
-/// `registration.rs`).  For synthetic/test `TypeDef`s where `field_order` is empty
-/// but `fields` is non-empty, falls back to **alphabetical order** so that unit
-/// tests that build `TypeDef`s by hand still produce a deterministic result.  This
-/// fallback should not occur in production paths (the registration pass always
-/// populates `field_order` for named-field records).
-///
-/// Returns `None` when:
-/// - The record has no fields (zero-size keys are an ABI violation).
-/// - A field's layout cannot be determined (type not in scope, generic param, etc.).
-///
-/// The computed size is the C-like struct size: fields are padded to their
-/// natural alignment, and the total size is rounded up to the struct's max-field
-/// alignment (i.e., `sizeof(struct { ... })` in C terms).
-pub(crate) fn compute_copy_record_layout(
-    type_def: &TypeDef,
-    type_defs: &HashMap<String, TypeDef>,
-) -> Option<(usize, usize)> {
-    compute_copy_record_layout_on_path(type_def, type_defs, &mut HashSet::new())
-}
-
 fn compute_copy_record_layout_on_path(
     type_def: &TypeDef,
     type_defs: &HashMap<String, TypeDef>,
@@ -269,111 +241,6 @@ fn compute_copy_record_layout_with_args_on_path(
     }
 
     // Round the total size up to the struct's natural alignment.
-    let total_size = align_up(offset, max_align);
-    if total_size == 0 {
-        return None;
-    }
-
-    Some((total_size, max_align))
-}
-
-/// Slot-blob size/alignment of a hash-key leaf, admitting `string` as a single
-/// owned pointer in addition to the fixed-size Copy primitives.
-///
-/// This is the hash-key counterpart of [`primitive_copy_layout`] and must NOT be
-/// confused with it: `primitive_copy_layout` is the **Copy authority** (`None`
-/// for `string`) consulted by `vec_element_has_copy_layout`, where a `string`
-/// field makes a type non-Copy. Here we
-/// answer a different question — "what is the byte layout of this leaf when it
-/// sits in a `HashMap` key slot?" — for which a `string` is a pointer-width blob
-/// (its heap payload is hashed by descent and freed by the per-record key drop
-/// thunk). Eligibility (`ty_is_hash_eligible`) gates which leaves reach this
-/// sizer; this only computes the layout of an already-admitted key.
-fn primitive_hash_key_layout(
-    ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
-) -> Option<(usize, usize)> {
-    match ty {
-        // String slot blob: a single owned `*const c_char` (pointer-width /
-        // pointer-aligned; 8/8 on the 64-bit targets this sizer serves).
-        Ty::String => Some((8, 8)),
-        Ty::Array(elem, count) => {
-            let (elem_size, elem_align) = primitive_hash_key_layout(elem, type_defs)?;
-            let count = usize::try_from(*count).ok()?;
-            Some((elem_size.checked_mul(count)?, elem_align))
-        }
-        Ty::Named { name, args, .. } => {
-            let type_def = type_defs.get(name.as_str()).or_else(|| {
-                name.split_once('.')
-                    .and_then(|(_, local)| type_defs.get(local))
-            })?;
-            if args.is_empty() {
-                hash_key_record_layout(type_def, type_defs)
-            } else {
-                if type_def.type_params.len() != args.len() {
-                    return None;
-                }
-                let subst: HashMap<String, Ty> = type_def
-                    .type_params
-                    .iter()
-                    .zip(args.iter())
-                    .map(|(param, arg)| (param.clone(), arg.clone()))
-                    .collect();
-                let mut instantiated = type_def.clone();
-                instantiated.fields = type_def
-                    .fields
-                    .iter()
-                    .map(|(field, ty)| (field.clone(), ty.substitute_named_params_parallel(&subst)))
-                    .collect();
-                hash_key_record_layout(&instantiated, type_defs)
-            }
-        }
-        // All other leaves: defer to the Copy sizer (fixed-size primitives /
-        // nested Copy records). A non-Copy, non-string leaf returns `None`,
-        // matching `ty_is_hash_eligible`'s fail-closed conjunction.
-        _ => primitive_copy_layout(ty, type_defs),
-    }
-}
-
-/// `(total_size, max_align)` for a hash-key record whose fields are each
-/// hash-eligible-or-`string`. The hash-key counterpart of
-/// [`compute_copy_record_layout`]: identical field-walk and padding rules, but
-/// it sizes a `string` field as a pointer blob via [`primitive_hash_key_layout`]
-/// rather than rejecting it. Used only at the HashMap/HashSet key/element
-/// admission sites; never as a Copy-ness decision.
-pub(crate) fn hash_key_record_layout(
-    type_def: &TypeDef,
-    type_defs: &HashMap<String, TypeDef>,
-) -> Option<(usize, usize)> {
-    if type_def.fields.is_empty() {
-        return None;
-    }
-
-    let mut offset: usize = 0;
-    let mut max_align: usize = 1;
-
-    let ordered_names: Vec<&String>;
-    let mut alpha_sorted: Vec<&String>;
-    let field_names: &[&String] = if type_def.field_order.is_empty() {
-        alpha_sorted = type_def.fields.keys().collect();
-        alpha_sorted.sort();
-        &alpha_sorted
-    } else {
-        ordered_names = type_def.field_order.iter().collect();
-        &ordered_names
-    };
-
-    for name in field_names {
-        let field_ty = type_def.fields.get(*name)?;
-        let (field_size, field_align) = primitive_hash_key_layout(field_ty, type_defs)?;
-
-        offset = align_up(offset, field_align);
-        offset = offset.checked_add(field_size)?;
-        if field_align > max_align {
-            max_align = field_align;
-        }
-    }
-
     let total_size = align_up(offset, max_align);
     if total_size == 0 {
         return None;
@@ -1046,17 +913,62 @@ impl Checker {
         Ty::Error
     }
 
-    fn is_supported_hashmap_key_type(&self, ty: &Ty) -> bool {
-        // W4.001 Stage C3: legacy per-K allowlist retired. Admit any K that
-        // implements both `Hash` and `Eq` markers — the resolver's
-        // `where K: Hash + Eq` bound is the sole admission contract.
-        // Unsatisfied bounds (e.g. `f64: Hash` failing) surface as a
-        // `BoundsNotSatisfied` diagnostic from `record_resolved_hashmap_call`.
-        matches!(
-            crate::hash_eligibility::collection_key_ownership_capability(ty),
-            crate::hash_eligibility::CollectionKeyOwnershipCapability::Complete
-        ) && self.registry.implements_marker(ty, MarkerTrait::Hash)
-            && self.registry.implements_marker(ty, MarkerTrait::Eq)
+    /// Concrete key operations come from the exact semantic type and selected
+    /// impl bounds. A bare template parameter is governed by its declared bound.
+    pub(super) fn collection_key_marker_available(&self, ty: &Ty, marker: MarkerTrait) -> bool {
+        let capability = match marker {
+            MarkerTrait::Hash => crate::ValueCapability::Hash,
+            MarkerTrait::Eq => crate::ValueCapability::Eq,
+            _ => return self.registry.implements_marker(ty, marker),
+        };
+        if let Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } = ty
+        {
+            if args.is_empty() && self.is_type_param_in_scope(name) {
+                return self.type_param_has_marker_bound(name, marker);
+            }
+        }
+        let ty = self.subst.resolve(ty).materialize_literal_defaults();
+        let Ok(resolved) =
+            crate::ResolvedTy::from_ty_with_type_params(&ty, &self.current_type_param_names())
+        else {
+            return false;
+        };
+        crate::TypeFactService::new(self.type_fact_context(), BTreeMap::new())
+            .capability_plan(&resolved, capability)
+            .is_ok_and(|selection| selection.is_some())
+    }
+
+    pub(super) fn validate_collection_key_capabilities(
+        &mut self,
+        ty: &Ty,
+        collection: &str,
+        span: &Span,
+    ) -> bool {
+        let mut missing = Vec::new();
+        for marker in [MarkerTrait::Hash, MarkerTrait::Eq] {
+            if !self.collection_key_marker_available(ty, marker) {
+                missing.push(marker.to_string());
+            }
+        }
+        if missing.is_empty() {
+            return true;
+        }
+        if !self.has_bounds_not_satisfied_at(span) {
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "`{}` does not satisfy the required bounds for `{collection}` ({})",
+                    ty.user_facing(),
+                    missing.join(" + ")
+                ),
+            );
+        }
+        false
     }
 
     /// Opaque declarations are nominal. Imported uses must carry the exact
@@ -1548,7 +1460,7 @@ impl Checker {
         })
     }
 
-    fn validate_hashmap_value_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
+    pub(super) fn validate_hashmap_value_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let mut visiting = CollectionClonePath::default();
         if let Some(blocker) = self.vec_iter_clone_blocker(ty, &mut visiting) {
             let resolved = self.subst.resolve(ty).materialize_literal_defaults();
@@ -1600,102 +1512,41 @@ impl Checker {
             return false;
         }
 
-        // Ty::Var: inference is still in-flight at this call site.  Defer the
-        // admission check until finalize_hashmap_admission() runs after all
-        // inference has settled, mirroring the HashSet lowering-fact pattern.
-        if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
-            self.deferred_hashmap_admission
-                .entry(SpanKey::in_module(span, self.current_module_idx))
-                .or_insert_with(|| DeferredHashMapAdmission {
-                    span: span.clone(),
-                    key_ty: key_ty.clone(),
-                    val_ty: val_ty.clone(),
-                    source_module: self.current_module.clone(),
-                    is_abstract_key_param: false,
-                });
-            return true; // optimistically admit; finalization will fail closed
-        }
-
+        // Registration sees legal forward references before their declarations
+        // exist. Keep this obligation in the existing inference queue and check
+        // it once the complete declaration graph and substitution are available.
         let is_abstract_key_param = matches!(
             &resolved_key,
             Ty::Named { name, args, builtin: None }
                 if args.is_empty() && self.is_type_param_in_scope(name)
         );
-        let is_abstract_val_param = matches!(
-            &resolved_val,
-            Ty::Named { name, args, builtin: None }
-                if args.is_empty() && self.is_type_param_in_scope(name)
-        );
-
-        if !is_abstract_val_param && !self.validate_hashmap_value_clone_type(&resolved_val, span) {
-            return false;
-        }
-
-        // Named record key: defer to finalize_hashmap_admission for full hash-eligibility
-        // check and HashMapLoweringFact production (C-2c).  Optimistically admit here;
-        // finalize will fail closed with a diagnostic if the key is ineligible.
-        if matches!(&resolved_key, Ty::Named { .. }) {
-            self.deferred_hashmap_admission
-                .entry(SpanKey::in_module(span, self.current_module_idx))
-                .and_modify(|existing| {
-                    existing.is_abstract_key_param |= is_abstract_key_param;
-                })
-                .or_insert_with(|| DeferredHashMapAdmission {
-                    span: span.clone(),
-                    key_ty: resolved_key.clone(),
-                    val_ty: resolved_val.clone(),
-                    source_module: self.current_module.clone(),
-                    is_abstract_key_param,
-                });
+        let type_params = self.current_type_param_names();
+        self.deferred_hashmap_admission
+            .entry(SpanKey::in_module(span, self.current_module_idx))
+            .and_modify(|check| {
+                check.is_abstract_key_param |= is_abstract_key_param;
+                check.type_params.extend(type_params.iter().cloned());
+            })
+            .or_insert_with(|| DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: resolved_key.clone(),
+                val_ty: resolved_val.clone(),
+                source_module: self.current_module.clone(),
+                is_abstract_key_param,
+                type_params,
+            });
+        if !self.type_decls_registered
+            || resolved_key.has_inference_var()
+            || resolved_val.has_inference_var()
+        {
             return true;
         }
-
-        if self.is_supported_hashmap_key_type(&resolved_key) {
-            return true;
-        }
-
-        // Key fails resolver bounds (e.g. `f64: Hash`). Emit the structured
-        // `BoundsNotSatisfied(Hash/Eq, K)` diagnostic here and return false
-        // so callers fail closed uniformly (bare-type annotation paths via
-        // `validate_concrete_hashmap_type` plus all HashMap method arms,
-        // including the resolver-bypass arms `is_empty` / `keys` /
-        // `values` / `clone`). Method arms that also invoke
-        // `record_resolved_hashmap_call` short-circuit on `Ty::Error`
-        // before reaching the resolver, so no double-emit.
-        if !self.has_bounds_not_satisfied_at(span) {
-            let hash_ok = self
-                .registry
-                .implements_marker(&resolved_key, MarkerTrait::Hash);
-            let eq_ok = self
-                .registry
-                .implements_marker(&resolved_key, MarkerTrait::Eq);
-            let mut missing: Vec<&'static str> = Vec::new();
-            if !hash_ok {
-                missing.push("Hash");
-            }
-            if !eq_ok {
-                missing.push("Eq");
-            }
-            let bound_summary = if missing.is_empty() {
-                "Hash + Eq".to_string()
-            } else {
-                missing
-                    .iter()
-                    .map(|m| format!("K: {m}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            self.report_error(
-                TypeErrorKind::BoundsNotSatisfied,
-                span,
-                format!(
-                    "`{}` does not satisfy the required bounds for `Map` \
-                     ({bound_summary})",
-                    resolved_key.user_facing()
-                ),
-            );
-        }
-        false
+        // Named keys wait until all impls are registered. Concrete operation
+        // sites additionally prove the same capabilities through the resolver.
+        let key_ok = matches!(&resolved_key, Ty::Named { .. })
+            || self.validate_collection_key_capabilities(&resolved_key, "Map", span);
+        let value_ok = self.validate_hashmap_value_clone_type(&resolved_val, span);
+        key_ok && value_ok
     }
 
     pub(super) fn validate_hashmap_owned_element_types(
@@ -1733,6 +1584,12 @@ impl Checker {
             return false;
         }
 
+        if matches!(&resolved, Ty::Named { name, args, builtin: None }
+            if args.is_empty() && self.is_type_param_in_scope(name))
+        {
+            return self.validate_collection_key_capabilities(&resolved, "Set", span);
+        }
+
         // Ty::Var: inference is still in-flight at this call site.  Defer the
         // admission check until finalize_hashset_admission() runs after all
         // inference has settled, mirroring the HashMap deferred-admission pattern.
@@ -1747,62 +1604,17 @@ impl Checker {
             return true; // optimistically admit; finalization will fail closed
         }
 
-        if matches!(resolved, Ty::String | Ty::I64 | Ty::U64 | Ty::IntLiteral) {
+        if matches!(&resolved, Ty::Named { .. }) || !self.type_decls_registered {
+            self.deferred_hashset_admission
+                .entry(SpanKey::in_module(span, self.current_module_idx))
+                .or_insert_with(|| DeferredHashSetAdmission {
+                    span: span.clone(),
+                    elem_ty: resolved,
+                    source_module: self.current_module.clone(),
+                });
             return true;
         }
-
-        // Named type: optimistically admit.  `record_hashset_lowering_fact` adds
-        // the element type to `pending_lowering_facts`; `finalize_lowering_facts`
-        // runs hash-eligibility and produces a `HashSetLoweringFact` or emits a
-        // diagnostic (C-2c).
-        if matches!(&resolved, Ty::Named { .. }) {
-            return true;
-        }
-
-        // W4.001 Stage C3: legacy per-element allowlist retired. Admit any
-        // T that implements `Hash + Eq`; otherwise emit a structured
-        // `BoundsNotSatisfied` diagnostic and fail closed (see the
-        // matching rationale in `validate_hashmap_key_value_types`).
-        if self
-            .registry
-            .implements_marker(&resolved, MarkerTrait::Hash)
-            && self.registry.implements_marker(&resolved, MarkerTrait::Eq)
-        {
-            return true;
-        }
-
-        if !self.has_bounds_not_satisfied_at(span) {
-            let hash_ok = self
-                .registry
-                .implements_marker(&resolved, MarkerTrait::Hash);
-            let eq_ok = self.registry.implements_marker(&resolved, MarkerTrait::Eq);
-            let mut missing: Vec<&'static str> = Vec::new();
-            if !hash_ok {
-                missing.push("Hash");
-            }
-            if !eq_ok {
-                missing.push("Eq");
-            }
-            let bound_summary = if missing.is_empty() {
-                "Hash + Eq".to_string()
-            } else {
-                missing
-                    .iter()
-                    .map(|m| format!("T: {m}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            self.report_error(
-                TypeErrorKind::BoundsNotSatisfied,
-                span,
-                format!(
-                    "`{}` does not satisfy the required bounds for `Set` \
-                     ({bound_summary})",
-                    resolved.user_facing()
-                ),
-            );
-        }
-        false
+        self.validate_collection_key_capabilities(&resolved, "Set", span)
     }
 
     /// Returns true if a `BoundsNotSatisfied` diagnostic has already been
@@ -3592,49 +3404,9 @@ mod tests {
     #[test]
     fn primitive_copy_layout_string_returns_none() {
         // String is heap-managed; not a fixed-layout Copy type. The hash-key
-        // sizer (`primitive_hash_key_layout`) admits it separately as a pointer
+        // Its payload requires a clone rather than a bit copy.
         // blob — `primitive_copy_layout` stays the Copy authority.
         assert_eq!(primitive_copy_layout(&Ty::String, &HashMap::new()), None);
-    }
-
-    #[test]
-    fn primitive_hash_key_layout_string_is_pointer_width() {
-        // The hash-key sizer admits a `string` leaf as a single owned pointer
-        // (the heap payload lives elsewhere and is hashed/dropped by descent).
-        assert_eq!(
-            primitive_hash_key_layout(&Ty::String, &HashMap::new()),
-            Some((8, 8))
-        );
-    }
-
-    #[test]
-    fn hash_key_record_layout_admits_string_field() {
-        // A record key with a string field has a well-defined slot layout: the
-        // string is a pointer-width blob, sized after the i64 field.
-        let mut tds = HashMap::new();
-        tds.insert(
-            "Person".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Record,
-                name: "Person".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: [
-                    ("name".to_string(), Ty::String),
-                    ("age".to_string(), Ty::I64),
-                ]
-                .into_iter()
-                .collect(),
-                field_order: vec!["name".to_string(), "age".to_string()],
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                is_indirect: false,
-            },
-        );
-        let td = tds.get("Person").unwrap().clone();
-        // name (8/8 pointer) + age (8/8) => 16 bytes, align 8.
-        assert_eq!(hash_key_record_layout(&td, &tds), Some((16, 8)));
     }
 
     #[test]
@@ -3735,627 +3507,6 @@ mod tests {
         assert_eq!(
             primitive_copy_layout(&nested_wrap, &type_defs),
             Some((8, 8))
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_empty_record_returns_none() {
-        let td = make_record("Empty", vec![]);
-        assert_eq!(
-            compute_copy_record_layout(&td, &HashMap::new()),
-            None,
-            "zero-field records must return None (zero-size ABI violation)"
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_single_i32_field() {
-        // record Point { x: i32 }  →  size=4, align=4
-        let td = make_record("Point", vec![("x", Ty::I32)]);
-        assert_eq!(
-            compute_copy_record_layout(&td, &HashMap::new()),
-            Some((4, 4))
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_two_i32_fields() {
-        // record Point { x: i32, y: i32 }  →  size=8, align=4
-        let td = make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]);
-        assert_eq!(
-            compute_copy_record_layout(&td, &HashMap::new()),
-            Some((8, 4))
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_mixed_alignment_respects_padding() {
-        // record Padded { a: bool, b: i32 }
-        // Fields sorted alphabetically: a (bool,1,1) then b (i32,4,4)
-        //   offset after a:  0+1 = 1
-        //   offset after padding to align(4): 4
-        //   offset after b:  4+4 = 8
-        //   total size rounded to align(4): 8
-        let td = make_record("Padded", vec![("a", Ty::Bool), ("b", Ty::I32)]);
-        assert_eq!(
-            compute_copy_record_layout(&td, &HashMap::new()),
-            Some((8, 4))
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_declaration_order_is_respected() {
-        // Both records have the same fields but in different declaration order.
-        // Since `make_record` populates `field_order` from the Vec input,
-        // these represent records declared with different field orderings.
-        // This specific case (x:i8 then z:i64 vs z:i64 then x:i8) happens to
-        // produce the same *size* — but the test confirms both variants are
-        // handled correctly using their own field_order.
-        let td1 = make_record("R", vec![("x", Ty::I8), ("z", Ty::I64)]);
-        let td2 = make_record("R", vec![("z", Ty::I64), ("x", Ty::I8)]);
-        // td1 declaration order [x, z]: x(1) at 0 → 1; z(8) align to 8 → 16; total=16
-        // td2 declaration order [z, x]: z(8) at 0 → 8; x(1) at 8 → 9; total=align_up(9,8)=16
-        // Both happen to produce size=16 (same struct size despite different order).
-        assert_eq!(
-            compute_copy_record_layout(&td1, &HashMap::new()),
-            Some((16, 8))
-        );
-        assert_eq!(
-            compute_copy_record_layout(&td2, &HashMap::new()),
-            Some((16, 8))
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_declaration_order_diverges_from_alphabetical() {
-        // record R { y: i32, z: i64, x: i32 }
-        // Declaration order [y, z, x] vs alphabetical order [x, y, z] produce DIFFERENT sizes.
-        //
-        // Declaration order [y, z, x]:
-        //   y(i32,4) at 0 → offset=4
-        //   z(i64,8): align_up(4,8)=8 → offset=16  (4 bytes padding inserted)
-        //   x(i32,4) at 16 → offset=20
-        //   total = align_up(20,8) = 24; align=8
-        //
-        // Alphabetical order [x, y, z]:
-        //   x(i32,4) at 0 → offset=4
-        //   y(i32,4) at 4 → offset=8
-        //   z(i64,8): align_up(8,8)=8 → offset=16  (no padding needed)
-        //   total = align_up(16,8) = 16; align=8
-        //
-        // The divergence demonstrates why declaration order must be used to match codegen.
-        let td_decl = make_record("R", vec![("y", Ty::I32), ("z", Ty::I64), ("x", Ty::I32)]);
-        // Manually build a TypeDef with alphabetical field_order for comparison
-        let td_alpha = {
-            let fields = vec![("x", Ty::I32), ("y", Ty::I32), ("z", Ty::I64)];
-            make_record("R", fields)
-        };
-        let decl_layout = compute_copy_record_layout(&td_decl, &HashMap::new());
-        let alpha_layout = compute_copy_record_layout(&td_alpha, &HashMap::new());
-        assert_eq!(
-            decl_layout,
-            Some((24, 8)),
-            "declaration order [y,z,x] → size=24"
-        );
-        assert_eq!(
-            alpha_layout,
-            Some((16, 8)),
-            "alphabetical order [x,y,z] → size=16"
-        );
-        assert_ne!(
-            decl_layout, alpha_layout,
-            "declaration order and alphabetical order must diverge for this field combination"
-        );
-    }
-
-    #[test]
-    fn finalize_hashmap_named_key_eligible_scalar_value_produces_layout_fact() {
-        use crate::lowering_facts::{HashMapAbi, HashMapLoweringFactState};
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 10..20;
-        // Register a simple Copy record: record Point { x: i32, y: i32 }
-        checker.type_defs.insert(
-            "Point".to_string(),
-            make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]),
-        );
-        // Insert a deferred entry: HashMap<Point, i64>
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("Point".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            checker.errors.is_empty(),
-            "eligible Named key with i64 value must produce no errors; got: {:?}",
-            checker.errors
-        );
-        let key = SpanKey::in_module(&span, 0);
-        let fact = checker.hashmap_layout_facts.get(&key).expect(
-            "finalize_hashmap_admission must produce a HashMapLoweringFact for eligible Named key",
-        );
-        assert_eq!(
-            fact.state,
-            HashMapLoweringFactState::Pending,
-            "produced fact must be in Pending state"
-        );
-        assert!(
-            matches!(&fact.abi, HashMapAbi::LayoutKey { key_record_name, .. } if key_record_name == "Point"),
-            "abi must be LayoutKey with key_record_name == Point; got: {:?}",
-            fact.abi
-        );
-        // Point has two i32 fields → size=8, align=4
-        assert_eq!(
-            fact.key_size,
-            Some(8),
-            "key_size must be Some(8) for two-i32 record"
-        );
-        assert_eq!(
-            fact.key_align,
-            Some(4),
-            "key_align must be Some(4) for two-i32 record"
-        );
-    }
-
-    #[test]
-    fn hashmap_source_record_key_i64_fields_is_hash_eligible() {
-        let source = r"
-            type Point { x: i64, y: i64 }
-            fn main() {
-                var m: HashMap<Point, i64> = HashMap.new();
-                m.insert(Point { x: 1, y: 2 }, 10);
-            }
-        ";
-        let parsed = hew_parser::parse(source);
-        assert!(
-            parsed.errors.is_empty(),
-            "parse errors: {:?}",
-            parsed.errors
-        );
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&parsed.program);
-        let point_def = checker.type_defs.get("Point").cloned();
-        assert!(
-            matches!(
-                point_def.as_ref().and_then(|td| td.fields.get("x")),
-                Some(Ty::I64)
-            ),
-            "Point.x should register as i64; got: {point_def:?}"
-        );
-        assert!(
-            output.errors.is_empty(),
-            "HashMap<Point, i64> with i64 record fields must be admitted; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn hashmap_resource_struct_key_is_refused_before_layout_fact_derivation() {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 21..31;
-        let mut token = make_record("Token", vec![("id", Ty::I64)]);
-        token.kind = TypeDefKind::Struct;
-        checker.type_defs.insert("Token".to_string(), token);
-        checker.registry.register_resource_type("Token".to_string());
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("Token".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-
-        checker.finalize_hashmap_admission();
-
-        assert!(
-            !checker.errors.is_empty(),
-            "a #[resource] struct must be refused as a HashMap key"
-        );
-        assert!(
-            !checker
-                .hashmap_layout_facts
-                .contains_key(&SpanKey::in_module(&span, 0)),
-            "a #[resource] struct must not produce a layout-key fact"
-        );
-    }
-
-    #[test]
-    fn finalize_hashmap_named_key_float_field_is_admitted() {
-        use crate::lowering_facts::{HashMapAbi, HashMapLoweringFactState};
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 50..60;
-        // record FKey { x: f64 } — float fields hash on their bit pattern, so
-        // the record is hash-eligible and admitted as a layout key.
-        let key = SpanKey::in_module(&span, 0);
-        checker.type_defs.insert(
-            "FKey".to_string(),
-            make_record("FKey", vec![("x", Ty::F64)]),
-        );
-        checker.deferred_hashmap_admission.insert(
-            key.clone(),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("FKey".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            checker.errors.is_empty(),
-            "float-field key must be admitted (bitwise hash); got: {:?}",
-            checker.errors
-        );
-        let fact = checker
-            .hashmap_layout_facts
-            .get(&key)
-            .expect("admitted float-field key must produce a layout fact");
-        assert_eq!(fact.state, HashMapLoweringFactState::Pending);
-        assert!(
-            matches!(&fact.abi, HashMapAbi::LayoutKey { key_record_name, .. } if key_record_name == "FKey"),
-            "abi must be LayoutKey with key_record_name == FKey; got: {:?}",
-            fact.abi
-        );
-        // One f64 field → size=8, align=8.
-        assert_eq!(fact.key_size, Some(8));
-        assert_eq!(fact.key_align, Some(8));
-    }
-
-    #[test]
-    fn finalize_hashset_named_elem_eligible_produces_layout_fact() {
-        use crate::lowering_facts::{HashMapLoweringFactState, HashSetAbi};
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 70..80;
-        // record Point { x: i32, y: i32 }
-        checker.type_defs.insert(
-            "Point".to_string(),
-            make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]),
-        );
-        // Simulate record_hashset_lowering_fact adding to pending_lowering_facts
-        // (the Named path is admitted inline, then finalize_lowering_facts is called).
-        // We bypass record_hashset_lowering_fact and inject directly into pending_lowering_facts.
-        checker.pending_lowering_facts.insert(
-            SpanKey::in_module(&span, 0),
-            crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::normalize_named("Point".to_string(), vec![]),
-                source_module: None,
-            },
-        );
-        let _result = checker.finalize_lowering_facts();
-        assert!(
-            checker.errors.is_empty(),
-            "eligible Named element must produce no errors; got: {:?}",
-            checker.errors
-        );
-        let key = SpanKey::in_module(&span, 0);
-        let fact = checker.hashset_layout_facts.get(&key).expect(
-            "finalize_lowering_facts must produce a HashSetLoweringFact for eligible Named element",
-        );
-        assert_eq!(
-            fact.state,
-            HashMapLoweringFactState::Pending,
-            "produced fact must be in Pending state"
-        );
-        assert!(
-            matches!(&fact.abi, HashSetAbi::Layout { elem_record_name } if elem_record_name == "Point"),
-            "abi must be Layout with elem_record_name == Point; got: {:?}",
-            fact.abi
-        );
-        assert_eq!(
-            fact.elem_size,
-            Some(8),
-            "elem_size must be Some(8) for two-i32 record"
-        );
-        assert_eq!(
-            fact.elem_align,
-            Some(4),
-            "elem_align must be Some(4) for two-i32 record"
-        );
-    }
-
-    #[test]
-    fn finalize_hashset_named_elem_float_field_is_admitted() {
-        use crate::lowering_facts::{HashMapLoweringFactState, HashSetAbi};
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 90..100;
-        // record FElem { v: f32 } — float fields hash on their bit pattern, so
-        // the record is hash-eligible and admitted as a layout element.
-        let key = SpanKey::in_module(&span, 0);
-        checker.type_defs.insert(
-            "FElem".to_string(),
-            make_record("FElem", vec![("v", Ty::F32)]),
-        );
-        checker.pending_lowering_facts.insert(
-            key.clone(),
-            crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::normalize_named("FElem".to_string(), vec![]),
-                source_module: None,
-            },
-        );
-        let _result = checker.finalize_lowering_facts();
-        assert!(
-            checker.errors.is_empty(),
-            "float-field element must be admitted (bitwise hash); got: {:?}",
-            checker.errors
-        );
-        let fact = checker
-            .hashset_layout_facts
-            .get(&key)
-            .expect("admitted float-field element must produce a layout fact");
-        assert_eq!(fact.state, HashMapLoweringFactState::Pending);
-        assert!(
-            matches!(&fact.abi, HashSetAbi::Layout { elem_record_name } if elem_record_name == "FElem"),
-            "abi must be Layout with elem_record_name == FElem; got: {:?}",
-            fact.abi
-        );
-        // One f32 field → size=4, align=4.
-        assert_eq!(fact.elem_size, Some(4));
-        assert_eq!(fact.elem_align, Some(4));
-    }
-
-    // ── Additional admissibility tests from independent review ────────────────
-
-    #[test]
-    fn hashmap_string_field_key_admitted() {
-        // record K { s: string } — a string field is structurally hashable, so
-        // K is admitted as a layout key (string field hashed by descent, owned
-        // key dropped via the per-record key drop thunk). A layout fact is
-        // produced and no diagnostic is emitted.
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 1..10;
-        let mut td = make_record("K", vec![("s", Ty::String)]);
-        td.field_order = vec!["s".to_string()];
-        checker.type_defs.insert("K".to_string(), td);
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("K".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            checker.errors.is_empty(),
-            "string-field key must be admitted; errors: {:?}",
-            checker.errors
-        );
-        assert!(
-            !checker.hashmap_layout_facts.is_empty(),
-            "a layout fact must be produced for an admitted string-field key"
-        );
-    }
-
-    #[test]
-    fn hashmap_managed_key_rejected() {
-        // record Handle — is_indirect = true makes it IneligibleManaged
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 2..11;
-        let mut td = make_record("Handle", vec![("fd", Ty::I32)]);
-        td.is_indirect = true;
-        checker.type_defs.insert("Handle".to_string(), td);
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("Handle".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            !checker.errors.is_empty(),
-            "indirect/managed key must be rejected; errors: {:?}",
-            checker.errors
-        );
-        assert!(
-            checker.hashmap_layout_facts.is_empty(),
-            "no layout fact for indirect key"
-        );
-    }
-
-    #[test]
-    fn hashmap_enum_key_rejected() {
-        // type Color = Enum — Enum kind must be rejected (IneligibleNamedNonRecord)
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 3..12;
-        let td = TypeDef {
-            kind: TypeDefKind::Enum,
-            name: "Color".to_string(),
-            type_params: vec![],
-            bounds: HashMap::new(),
-            fields: HashMap::new(),
-            field_order: vec![],
-            variants: HashMap::new(),
-            methods: HashMap::new(),
-            doc_comment: None,
-            is_indirect: false,
-        };
-        checker.type_defs.insert("Color".to_string(), td);
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("Color".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            !checker.errors.is_empty(),
-            "Enum key must be rejected; errors: {:?}",
-            checker.errors
-        );
-        assert!(
-            checker.hashmap_layout_facts.is_empty(),
-            "no layout fact for Enum key"
-        );
-    }
-
-    #[test]
-    fn hashmap_layout_key_with_layout_value_record_admitted() {
-        // HashMap<Point, Pos> — both key and value are Copy named records
-        use crate::lowering_facts::{HashMapAbi, HashMapLoweringFactState, HashMapValueType};
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 4..13;
-        // record Point { x: i32, y: i32 }
-        checker.type_defs.insert(
-            "Point".to_string(),
-            make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]),
-        );
-        // record Pos { lat: i64, lon: i64 }
-        checker.type_defs.insert(
-            "Pos".to_string(),
-            make_record("Pos", vec![("lat", Ty::I64), ("lon", Ty::I64)]),
-        );
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("Point".to_string(), vec![]),
-                val_ty: Ty::normalize_named("Pos".to_string(), vec![]),
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            checker.errors.is_empty(),
-            "eligible Named key + Named value must produce no errors; got: {:?}",
-            checker.errors
-        );
-        let key = SpanKey::in_module(&span, 0);
-        let fact = checker
-            .hashmap_layout_facts
-            .get(&key)
-            .expect("layout key + layout value must produce a HashMapLoweringFact");
-        assert_eq!(fact.state, HashMapLoweringFactState::Pending);
-        assert!(
-            matches!(
-                &fact.abi,
-                HashMapAbi::LayoutKey { key_record_name, val: HashMapValueType::Layout }
-                    if key_record_name == "Point"
-            ),
-            "abi must be LayoutKey with val=Layout; got: {:?}",
-            fact.abi
-        );
-        // Point has two i32 fields → size=8, align=4
-        assert_eq!(fact.key_size, Some(8));
-        assert_eq!(fact.key_align, Some(4));
-        // Pos has two i64 fields → size=16, align=8
-        assert_eq!(fact.val_size, Some(16));
-        assert_eq!(fact.val_align, Some(8));
-    }
-
-    #[test]
-    fn hashset_indirect_record_rejected() {
-        // record Handle — is_indirect=true element must be rejected
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 5..14;
-        let mut td = make_record("Handle", vec![("fd", Ty::I32)]);
-        td.is_indirect = true;
-        checker.type_defs.insert("Handle".to_string(), td);
-        checker.pending_lowering_facts.insert(
-            SpanKey::in_module(&span, 0),
-            crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::normalize_named("Handle".to_string(), vec![]),
-                source_module: None,
-            },
-        );
-        let _result = checker.finalize_lowering_facts();
-        assert!(
-            !checker.errors.is_empty(),
-            "indirect/managed element must be rejected; errors: {:?}",
-            checker.errors
-        );
-        assert!(
-            checker.hashset_layout_facts.is_empty(),
-            "no layout fact for indirect element"
-        );
-    }
-
-    #[test]
-    fn hashset_string_element_still_uses_string_abi() {
-        // Regression: HashSet<String> must still produce LoweringFact with String ABI.
-        use crate::lowering_facts::HashSetAbi;
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 6..15;
-        checker.pending_lowering_facts.insert(
-            SpanKey::in_module(&span, 0),
-            crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::String,
-                source_module: None,
-            },
-        );
-        let lowering_facts = checker.finalize_lowering_facts();
-        assert!(
-            checker.errors.is_empty(),
-            "String element must produce no errors; got: {:?}",
-            checker.errors
-        );
-        let key = SpanKey::in_module(&span, 0);
-        let fact = lowering_facts
-            .get(&key)
-            .expect("finalize_lowering_facts must produce a LoweringFact for String element");
-        assert_eq!(
-            fact.abi_variant,
-            HashSetAbi::String,
-            "String element must produce String ABI; got: {:?}",
-            fact.abi_variant
-        );
-        assert!(
-            checker.hashset_layout_facts.is_empty(),
-            "String element must NOT produce a HashSetLoweringFact (uses scalar path)"
-        );
-    }
-
-    #[test]
-    fn hashset_i64_element_still_uses_int64_abi() {
-        // Regression: HashSet<i64> must still produce LoweringFact with Int64 ABI.
-        use crate::lowering_facts::HashSetAbi;
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 7..16;
-        checker.pending_lowering_facts.insert(
-            SpanKey::in_module(&span, 0),
-            crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::I64,
-                source_module: None,
-            },
-        );
-        let lowering_facts = checker.finalize_lowering_facts();
-        assert!(
-            checker.errors.is_empty(),
-            "I64 element must produce no errors; got: {:?}",
-            checker.errors
-        );
-        let key = SpanKey::in_module(&span, 0);
-        let fact = lowering_facts
-            .get(&key)
-            .expect("finalize_lowering_facts must produce a LoweringFact for I64 element");
-        assert_eq!(
-            fact.abi_variant,
-            HashSetAbi::Int64,
-            "I64 element must produce Int64 ABI; got: {:?}",
-            fact.abi_variant
-        );
-        assert!(
-            checker.hashset_layout_facts.is_empty(),
-            "I64 element must NOT produce a HashSetLoweringFact (uses scalar path)"
         );
     }
 

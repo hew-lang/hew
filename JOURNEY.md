@@ -1077,3 +1077,32 @@ in HIR, matching the existing Vec and Set path. The permanent emptiness, owned
 Map projection and Set snapshot SIR controls pass after composing the checker
 checkpoints. Generic key admission and construction-plan verification remain
 pending their compiled follow-up checkpoints; native callbacks are still pending.
+
+## Exact collection key admission
+
+Replace named-layout Map/Set admission with independent Hash and Eq selection
+from TypeFactService at the exact substituted semantic type. The source resolver
+uses the same capability authority. Remove the obsolete layout tables, their
+name-only method selector, geometry helpers, public exports and consumers. Keep
+the existing scalar Set metadata and its malformed-output controls.
+
+Map value-copy admission now retains forward declarations in the existing
+admission queue until registration and inference finish. Preserve the owning
+template scope in that obligation, and check its values even when the key is
+abstract. Concrete resource/function values remain refused. Bare template Set
+keys use their declared bounds and do not acquire concrete scalar metadata.
+
+The exact generic Key<i64> Map/Set examples, owned generic keys with nested
+projection results, both forward-declaration orders, recursive Map values,
+resource and closure refusals, and bounded template controls are covered by
+source tests. The prior owned-key nested-value and recursive-forward-value
+failures are repaired. Literal-defaulting tests caught a missing conversion
+before semantic capability lookup; use the existing materialization operation.
+
+Validation runs through Make: the complete hew-types library/integration suite
+and scoped hew-types/hew-analysis Clippy. Removed tests asserted the retired
+geometry tables and are replaced by source capability and failure controls.
+This checkpoint changes checker admission only; root owns SIR capability
+construction, physical lowering and native callback acceptance. No new native,
+Windows or macOS execution is claimed. runtime_call.rs remains handed back to
+the fault-ABI owner after the earlier MapIsEmpty checkpoint.

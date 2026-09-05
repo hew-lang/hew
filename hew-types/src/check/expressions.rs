@@ -5471,25 +5471,6 @@ impl Checker {
         );
     }
 
-    /// Return the exact implementation method selected for a nominal marker
-    /// trait override. The registration key preserves trait identity, so an
-    /// `Ord::lt` implementation cannot be confused with `PartialOrd::lt`.
-    pub(super) fn user_trait_impl_method(
-        &self,
-        type_name: &str,
-        trait_name: &str,
-        method_name: &str,
-    ) -> Option<crate::DefId> {
-        crate::type_facts::selected_impl_method(
-            &self.trait_impl_method_declaration_ids,
-            type_name,
-            &[],
-            trait_name,
-            method_name,
-        )
-        .map(|(method, _)| method)
-    }
-
     /// Record that the binary expression at `span` must dispatch to a user
     /// trait impl rather than the compiler's structural comparison. See
     /// [`UserComparisonDispatch`].

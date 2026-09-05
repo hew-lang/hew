@@ -272,3 +272,125 @@ fn map_snapshots_preserve_resource_and_function_value_refusals() {
         }
     }
 }
+
+#[test]
+fn generic_key_uses_its_substituted_semantic_capabilities() {
+    for collection in ["HashMap<Key<i64>, string>", "HashSet<Key<i64>>"] {
+        let (constructor, insert) = if collection.starts_with("HashMap") {
+            ("HashMap", "values.insert(Key { value: 7 }, \"kept\");")
+        } else {
+            ("HashSet", "values.insert(Key { value: 7 });")
+        };
+        check_ok(&format!(
+            "type Key<T> {{ value: T }}
+             impl<T> Hash for Key<T> {{ fn hash(self) -> i64 {{ 1 }} }}
+             fn main() -> i64 {{
+                 var values: {collection} = {constructor}.new();
+                 {insert}
+                 values.len()
+             }}"
+        ));
+    }
+}
+
+#[test]
+fn generic_keys_keep_owned_values_and_projection_types() {
+    check_ok(
+        r#"
+        type Key<T> { value: T }
+        impl<T> Hash for Key<T> { fn hash(self) -> i64 { 1 } }
+        type Payload<T> { value: T }
+        fn main() -> i64 {
+            var values: HashMap<Key<string>, Vec<Payload<string>>> = HashMap.new();
+            values.insert(Key { value: "key" }, Vec.new());
+            let keys: Vec<Key<string>> = values.keys();
+            let payloads: Vec<Vec<Payload<string>>> = values.values();
+            let entries: Vec<(Key<string>, Vec<Payload<string>>)> = values.entries();
+            keys.len() + payloads.len() + entries.len()
+        }
+    "#,
+    );
+}
+
+#[test]
+fn key_hash_override_does_not_invent_eq_or_resource_copy() {
+    for (declarations, key) in [
+        (
+            "#[resource] type Token { id: i64 } impl Token { fn close(self) {} }",
+            "Token",
+        ),
+        ("type Key<T> { value: T }", "Key<fn(i64) -> i64>"),
+        ("enum Choice { A, B }", "Choice"),
+    ] {
+        for collection in [format!("HashMap<{key}, i64>"), format!("HashSet<{key}>")] {
+            let source = format!("{declarations} fn inspect(values: {collection}) -> i64 {{ values.len() }} fn main() {{}}");
+            let output = check(&source);
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied),
+                "unsupported key {collection} must fail semantic capability admission: {:#?}",
+                output.errors
+            );
+        }
+    }
+    let output = check("type Key<T> { value: T } impl<T> Hash for Key<T> { fn hash(self) -> i64 { 1 } } fn main() { let values: HashMap<Key<fn(i64) -> i64>, string> = HashMap.new(); }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("Eq")),
+        "Hash override must not imply Eq: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn forward_declared_map_values_are_checked_after_registration() {
+    for declarations in [
+        "type First { values: HashMap<string, Second> } type Second { name: string }",
+        "type Second { name: string } type First { values: HashMap<string, Second> }",
+    ] {
+        check_ok(&format!(
+            "{declarations} fn main() {{ let value = First {{ values: HashMap.new() }}; }}"
+        ));
+    }
+    for declarations in [
+        "type First { values: HashMap<string, Second> } #[resource] type Second { id: i64 } impl Second { fn close(self) {} }",
+        "#[resource] type Second { id: i64 } impl Second { fn close(self) {} } type First { values: HashMap<string, Second> }",
+    ] {
+        let output = check(&format!("{declarations} fn main() {{}}"));
+        assert!(output.errors.iter().any(|error| error.kind == TypeErrorKind::InvalidOperation && error.message.contains("resource/linear")), "forward resource member must fail even without construction: {:#?}", output.errors);
+    }
+}
+
+#[test]
+fn abstract_map_key_does_not_hide_a_forward_resource_value() {
+    let output = check("type First<K> { values: HashMap<K, Second> } #[resource] type Second { id: i64 } impl Second { fn close(self) {} } fn main() {}");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::InvalidOperation
+                && error.message.contains("resource/linear")),
+        "an abstract key must not bypass value admission: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn bounded_collection_parameter_keeps_its_template_capabilities() {
+    check_ok("fn inspect<T: Hash + Eq>(values: HashSet<T>) -> i64 { values.len() } fn main() -> i64 { let values: HashSet<i64> = HashSet.new(); inspect(values) }");
+    check_ok("fn inspect<K: Hash + Eq, V>(values: HashMap<K, V>) -> i64 { values.len() } fn main() -> i64 { let values: HashMap<i64, string> = HashMap.new(); inspect(values) }");
+    let output = check("fn inspect<T>(values: HashSet<T>) -> i64 { values.len() } fn main() {}");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied),
+        "an unbounded template parameter has no key capabilities: {:#?}",
+        output.errors
+    );
+}

@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::fmt;
 
 use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmtKind,
@@ -45,16 +46,9 @@ pub enum SirLoweringDemand {
     /// reported [`SirLoweringStatus::NotReached`], and so is a declaration
     /// whose header was refused, because no call can name it.
     ///
-    /// WHY this shortcut exists: the strict route currently proves only the
-    /// entry-reachable slice of the module, matching `hew_mir`'s closed
-    /// scalar component.
-    /// WHEN obsolete: the final-ladder plan's whole-module admission lands
-    /// (plan §6 — "every function body lowers and verifies whether or not it
-    /// is reachable from an entry; reachability is an optimization input,
-    /// never an admission rule").
-    /// WHAT the real fix looks like: `--sir-lower` demands
-    /// [`Self::EveryCallable`] instead of `Self::Entry`, and this variant is
-    /// deleted once nothing asks for entry-only demand any more.
+    /// Library, test, and export consumers add their resolved declarations
+    /// through [`lower_module_with_roots`]; they do not broaden this demand by
+    /// scanning names or requesting every callable.
     Entry,
     /// Demand every admitted callable header, entry or not: the coverage
     /// inventory. A refused header is reported
@@ -63,6 +57,28 @@ pub enum SirLoweringDemand {
     /// need it".
     EveryCallable,
 }
+
+/// Why an exact checker-owned declaration could not seed SIR body demand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SirRootSelectionError {
+    /// The exact declaration requested by the caller.
+    pub declaration: DefId,
+    /// A stable, human-readable explanation suitable for driver diagnostics.
+    pub reason: String,
+}
+
+impl fmt::Display for SirRootSelectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SIR root `{}` was refused: {}",
+            self.declaration.full_path(),
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for SirRootSelectionError {}
 
 /// The lowering outcome for one HIR function declaration.
 #[derive(Debug, Clone, PartialEq)]
@@ -116,8 +132,7 @@ impl LoweredModule {
 /// declaration — it is the resolved direct-call authority, and a header must
 /// exist before a call can name it. Body lowering, by contrast, is
 /// demand-driven: it starts at the module's entry callable and follows
-/// resolved call edges, exactly like the strict component closure in
-/// `hew_mir::lower_closed_scalar_component`. A declaration the entry cannot
+/// resolved call edges into physical MIR. A declaration the entry cannot
 /// reach is reported [`SirLoweringStatus::NotReached`] and costs nothing, so
 /// an unsupported body in an unrelated corner of the module can neither
 /// consume lowering effort nor be mistaken for a fact about this program.
@@ -152,23 +167,57 @@ pub fn lower_module_with_demand(
     }
     service.lower_pending();
 
-    let statuses = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            HirItem::Function(function) => Some(SirSourceStatus {
-                declaration: function.declaration.clone(),
-                name: function.name.clone(),
-                status: service.source_status(function),
-            }),
-            _ => None,
-        })
-        .collect();
-    let callable_statuses = service.callable_statuses();
-    LoweredModule {
-        module: service.into_module(),
-        statuses,
-        callable_statuses,
+    service.finish()
+}
+
+/// Lower the resolved entry and a caller-selected set of declaration roots.
+///
+/// Root identities must come from the checker. SIR admits only exact,
+/// monomorphic HIR function declarations, deduplicates them deterministically,
+/// and follows resolved call edges from that seed set. Generic templates need
+/// a concrete call-site specialization and therefore cannot be selected by
+/// their declaration alone.
+///
+/// Every refused request is returned with its original [`DefId`]. No body is
+/// published when root selection fails.
+///
+/// # Errors
+///
+/// Returns every requested declaration that is absent, ineligible for a SIR
+/// callable header, or a generic template without a concrete specialization.
+pub fn lower_module_with_roots(
+    module: &HirModule,
+    facts: &TypeCheckOutput,
+    roots: &[DefId],
+) -> Result<LoweredModule, Vec<SirRootSelectionError>> {
+    let mut service = InstanceService::new(module, facts, SirLoweringDemand::Entry);
+    service.request_roots(roots)?;
+    service.request_entry();
+    service.lower_pending();
+    Ok(service.finish())
+}
+
+impl InstanceService<'_> {
+    fn finish(self) -> LoweredModule {
+        let statuses = self
+            .module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(function) => Some(SirSourceStatus {
+                    declaration: function.declaration.clone(),
+                    name: function.name.clone(),
+                    status: self.source_status(function),
+                }),
+                _ => None,
+            })
+            .collect();
+        let callable_statuses = self.callable_statuses();
+        LoweredModule {
+            module: self.into_module(),
+            statuses,
+            callable_statuses,
+        }
     }
 }
 
@@ -501,6 +550,45 @@ impl<'a> InstanceService<'a> {
         if let Some(entry) = self.table.entry_callable {
             self.request_body(entry);
         }
+    }
+
+    /// Seed exact caller-selected declarations after validating the complete
+    /// set. Validation precedes queue mutation so one bad root cannot leave a
+    /// partially selected lowering behind.
+    fn request_roots(&mut self, roots: &[DefId]) -> Result<(), Vec<SirRootSelectionError>> {
+        let mut callables = Vec::new();
+        let mut errors = Vec::new();
+        for declaration in roots.iter().collect::<BTreeSet<_>>() {
+            if let Some(callable) = self
+                .table
+                .monomorphic_by_declaration
+                .get(declaration)
+                .copied()
+            {
+                callables.push(callable);
+                continue;
+            }
+            let reason = if self.table.templates.contains_key(declaration) {
+                "generic declarations require a concrete call-site specialization".to_string()
+            } else if let Some(reason) = self.table.ineligible.get(declaration) {
+                reason.clone()
+            } else {
+                "the declaration is not present as a HIR function in this module".to_string()
+            };
+            errors.push(SirRootSelectionError {
+                declaration: (*declaration).clone(),
+                reason,
+            });
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        callables.sort_unstable();
+        callables.dedup();
+        for callable in callables {
+            self.request_body(callable);
+        }
+        Ok(())
     }
 
     /// Seed the worklist with every admitted header, in `CallableId` order.

@@ -967,6 +967,7 @@ pub(super) fn analyze_document(
                 uri,
                 source,
                 &line_offsets,
+                &parse_result.program,
                 hir_module,
                 type_output.as_ref().expect("HIR requires type checking"),
             );
@@ -1260,31 +1261,14 @@ fn collect_hir_diagnostics(
     (diagnostics, lower_output.module)
 }
 
-/// Run the MIR-stage lint pass (`dead_store` today, plus any future MIR lint
-/// that lands on `IrPipeline::lint_warnings`) and render the findings as LSP
-/// **warnings**.
-///
-/// This is the editor half of issue #2176. It deliberately does NOT reuse
-/// [`build_hir_lsp_diagnostics`], which maps every HIR diagnostic to
-/// `DiagnosticSeverity::ERROR`: MIR lints are level-controlled warnings, not
-/// hard errors, and must never fail an editor buffer the compiler accepts.
-///
-/// Policy parity with the CLI's `render_pipeline_mir_lints`
-/// (`hew-cli/src/main.rs`): findings whose span runs past the root source come
-/// from an imported module we cannot faithfully position here and are skipped;
-/// an in-source `// hew:allow(<lint>)` suppresses; `LintLevel::Allow` drops the
-/// finding. The LSP exposes no `-A/-W/-D` flags, so levels resolve at their
-/// registry defaults and a `Deny`-level lint still renders as a WARNING here —
-/// an editor buffer is not a build, and the CLI remains the gate that fails.
-///
-/// # Panics
-///
-/// Never. The shared compiler session owns MIR lowering and all build checks;
-/// this presentation layer only chooses how its lint findings are rendered.
+/// Render shared semantic-boundary errors for an editor document.
+/// Target-independent ownership checks use the same resolved roots as native
+/// compilation; source-lint presentation remains separate.
 fn build_semantic_lsp_diagnostics(
     root_uri: &Url,
     root_source: &str,
     root_line_offsets: &[usize],
+    program: &hew_parser::ast::Program,
     hir_module: &hew_hir::HirModule,
     tco: &TypeCheckOutput,
 ) -> DiagnosticMap {
@@ -1296,7 +1280,9 @@ fn build_semantic_lsp_diagnostics(
         hew_compile::SessionTarget::native(),
         hew_compile::DiagnosticPolicy::default(),
     );
-    if let Err(error) = session.lower_hir_module(hir_module, tco) {
+    let result = hew_compile::Session::source_roots(program, tco)
+        .and_then(|roots| session.lower_hir_module(hir_module, tco, &roots));
+    if let Err(error) = result {
         insert_diagnostic(
             &mut diagnostics_by_uri,
             root_uri.clone(),
@@ -2657,10 +2643,17 @@ mod tests {
             hir_diagnostics.is_empty(),
             "fixture must lower cleanly: {hir_diagnostics:?}"
         );
-        build_semantic_lsp_diagnostics(&uri, source, &line_offsets, &module, &type_output)
-            .get(&uri)
-            .cloned()
-            .unwrap_or_default()
+        build_semantic_lsp_diagnostics(
+            &uri,
+            source,
+            &line_offsets,
+            &parse_result.program,
+            &module,
+            &type_output,
+        )
+        .get(&uri)
+        .cloned()
+        .unwrap_or_default()
     }
 
     #[test]
@@ -2676,11 +2669,12 @@ mod tests {
             hew_compile::SessionTarget::native(),
             hew_compile::DiagnosticPolicy::default(),
         )
-        .lower_hir_module(&module, &tco);
+        .lower_hir_module(&module, &tco, &[]);
         let lsp = build_semantic_lsp_diagnostics(
             &uri,
             MIR_DEAD_STORE,
             &compute_line_offsets(MIR_DEAD_STORE),
+            &parse_result.program,
             &module,
             &tco,
         );

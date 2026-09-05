@@ -3,12 +3,12 @@
 
 use std::fmt::Write as _;
 
-use hew_hir::{lower_program_host_target, HirModule, ResolutionCtx};
+use hew_hir::{lower_program_host_target, HirItem, HirModule, ResolutionCtx};
 use hew_sir::{
-    dump_lowering, lower_module, lower_module_with_demand, verify_module, LoweredModule,
-    SirLoweringDemand, SirLoweringStatus,
+    dump_lowering, lower_module, lower_module_with_demand, lower_module_with_roots, verify_module,
+    LoweredModule, SirLoweringDemand, SirLoweringStatus,
 };
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_types::{module_registry::ModuleRegistry, Checker, DefId};
 
 fn lower_hir(source: &str) -> (HirModule, hew_types::TypeCheckOutput) {
     let parsed = hew_parser::parse(source);
@@ -41,6 +41,19 @@ fn status_of<'a>(lowered: &'a LoweredModule, name: &str) -> &'a SirLoweringStatu
         .iter()
         .find_map(|source| (source.name == name).then_some(&source.status))
         .unwrap_or_else(|| panic!("source must declare `{name}`"))
+}
+
+fn declaration_of(module: &HirModule, name: &str) -> DefId {
+    module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == name => {
+                Some(function.declaration.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("HIR module must declare `{name}`"))
 }
 
 /// Aggregate array construction remains outside this executable SIR slice.
@@ -219,6 +232,133 @@ fn a_module_without_an_entry_lowers_no_bodies_and_says_why() {
             .collect::<Vec<_>>()
     );
     assert!(dump_lowering(&lowered).contains("; no entry callable"));
+}
+
+#[test]
+fn an_explicit_root_lowers_only_its_resolved_library_call_closure() {
+    let (hir, type_facts) = lower_hir(&format!(
+        r"
+        fn helper(value: i64) -> i64 {{
+            value + 1
+        }}
+
+        fn library_root() -> i64 {{
+            helper(41)
+        }}
+
+        fn stranded(value: i64) -> i64 {{
+            {UNSUPPORTED_BODY}
+        }}
+        "
+    ));
+    let root = declaration_of(&hir, "library_root");
+
+    let lowered = lower_module_with_roots(&hir, &type_facts, std::slice::from_ref(&root))
+        .expect("a monomorphic library root must be selectable by exact declaration identity");
+
+    for name in ["library_root", "helper"] {
+        assert!(
+            matches!(status_of(&lowered, name), SirLoweringStatus::Lowered),
+            "the selected root closure must lower `{name}`: {:#?}",
+            lowered.statuses
+        );
+    }
+    assert!(
+        matches!(
+            status_of(&lowered, "stranded"),
+            SirLoweringStatus::NotReached
+        ),
+        "explicit roots must not turn unrelated declarations into demand: {:#?}",
+        lowered.statuses
+    );
+    assert!(verify_module(&lowered.module).is_empty());
+}
+
+#[test]
+fn explicit_roots_are_unioned_with_the_resolved_entry() {
+    let (hir, type_facts) = lower_hir(
+        r"
+        fn published() -> i64 {
+            7
+        }
+
+        fn stranded() -> i64 {
+            9
+        }
+
+        fn main() -> i64 {
+            0
+        }
+        ",
+    );
+    let published = declaration_of(&hir, "published");
+
+    let lowered = lower_module_with_roots(&hir, &type_facts, &[published])
+        .expect("an exact monomorphic root must be admitted alongside entry");
+
+    for name in ["main", "published"] {
+        assert!(matches!(
+            status_of(&lowered, name),
+            SirLoweringStatus::Lowered
+        ));
+    }
+    assert!(matches!(
+        status_of(&lowered, "stranded"),
+        SirLoweringStatus::NotReached
+    ));
+}
+
+#[test]
+fn explicit_root_refusals_name_each_requested_declaration() {
+    let (mut hir, type_facts) = lower_hir(
+        r"
+        fn generic<T>(value: T) -> T {
+            value
+        }
+
+        fn refused(value: Option<i64>) -> i64 {
+            0
+        }
+
+        fn vanished() -> i64 {
+            0
+        }
+        ",
+    );
+    let generic = declaration_of(&hir, "generic");
+    let refused = declaration_of(&hir, "refused");
+    let vanished = declaration_of(&hir, "vanished");
+    hir.items.retain(
+        |item| !matches!(item, HirItem::Function(function) if function.declaration == vanished),
+    );
+
+    let errors = lower_module_with_roots(
+        &hir,
+        &type_facts,
+        &[vanished.clone(), refused.clone(), generic.clone()],
+    )
+    .expect_err("generic, ineligible, and absent declarations must fail closed as roots");
+
+    assert_eq!(
+        errors.len(),
+        3,
+        "each refused identity needs its own reason"
+    );
+    let generic_error = errors
+        .iter()
+        .find(|error| error.declaration == generic)
+        .expect("generic root refusal must retain its declaration");
+    assert!(generic_error.to_string().contains("concrete"));
+    let refused_error = errors
+        .iter()
+        .find(|error| error.declaration == refused)
+        .expect("ineligible root refusal must retain its declaration");
+    assert!(refused_error.to_string().contains("Option<i64>"));
+    let missing_error = errors
+        .iter()
+        .find(|error| error.declaration == vanished)
+        .expect("missing root refusal must retain its declaration");
+    assert!(missing_error.to_string().contains("not present"));
 }
 
 /// Every-callable demand is the coverage question: it lowers bodies the entry

@@ -21,8 +21,8 @@ pub use analysis::{
 };
 pub use dump::{dump_lowering, dump_sir};
 pub use lower::{
-    lower_module, lower_module_with_demand, LoweredModule, SirLoweringDemand, SirLoweringStatus,
-    SirSourceStatus,
+    lower_module, lower_module_with_demand, lower_module_with_roots, LoweredModule,
+    SirLoweringDemand, SirLoweringStatus, SirRootSelectionError, SirSourceStatus,
 };
 pub use model::{
     BlockArg, BlockId, BoundaryOperand, CallResult, CallUnwind, CallableId, CallableInstance,

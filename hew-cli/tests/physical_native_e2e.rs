@@ -207,3 +207,138 @@ fn requested_sanitizer_instruments_the_emitted_object() {
         );
     }
 }
+
+#[test]
+fn no_entry_object_contains_its_public_function() {
+    use object::{Object, ObjectSymbol};
+    require_codegen();
+    let dir = tempdir();
+    let source = dir.path().join("exports.hew");
+    std::fs::write(&source, "pub fn answer() -> i64 { 42 }").unwrap();
+    for release in [false, true] {
+        let output = dir
+            .path()
+            .join(if release { "release.o" } else { "debug.o" });
+        let mut command = Command::new(hew_binary());
+        command
+            .arg("build")
+            .arg(&source)
+            .arg("--emit-obj")
+            .arg("-o")
+            .arg(&output);
+        if release {
+            command.arg("--release");
+        }
+        let result = run_bounded_command(command, "emit no-entry public function");
+        assert!(result.status.success(), "{}", describe_output(&result));
+        let bytes = std::fs::read(output).unwrap();
+        let object = object::File::parse(bytes.as_slice()).unwrap();
+        assert!(
+            object.symbols().any(|symbol| symbol.is_definition()
+                && symbol
+                    .name()
+                    .is_ok_and(|name| name.trim_start_matches('_') == "answer")),
+            "the object must define its selected public function"
+        );
+    }
+}
+
+#[test]
+fn rootless_object_is_refused_without_creating_an_artifact() {
+    require_codegen();
+    let dir = tempdir();
+    let source = dir.path().join("private.hew");
+    let object = dir.path().join("private.o");
+    std::fs::write(&source, "fn private_value() -> i64 { 42 }").unwrap();
+    let mut command = Command::new(hew_binary());
+    command
+        .arg("build")
+        .arg(&source)
+        .arg("--emit-obj")
+        .arg("-o")
+        .arg(&object);
+    let result = run_bounded_command(command, "refuse rootless object");
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "{}",
+        describe_output(&result)
+    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains("E_NO_COMPILATION_ROOTS"));
+    assert!(!object.exists());
+}
+
+#[test]
+fn bytes_copy_mutation_preserves_the_original_at_both_optimization_levels() {
+    assert_native_case(
+        include_str!("../../tests/core-acceptance/cases/bytes-copy-mutate.hew"),
+        0,
+        b"original=65;copy=65,66\n",
+        b"",
+    );
+}
+
+#[test]
+fn negative_bytes_index_takes_the_owned_cleanup_failure_edge() {
+    assert_native_case(
+        r#"fn main() -> i64 {
+    let live_owner = "negative-cleanup".to_upper();
+    let value = "A".to_bytes();
+    value[-1];
+    println(live_owner);
+    0
+}"#,
+        205,
+        b"",
+        b"hew: failure: IndexOutOfBounds (205)\n",
+    );
+}
+
+#[test]
+fn past_end_bytes_index_takes_the_owned_cleanup_failure_edge() {
+    assert_native_case(
+        r#"fn main() -> i64 {
+    let live_owner = "upper-cleanup".to_upper();
+    let value = "A".to_bytes();
+    value[1];
+    println(live_owner);
+    0
+}"#,
+        205,
+        b"",
+        b"hew: failure: IndexOutOfBounds (205)\n",
+    );
+}
+
+fn assert_native_case(source: &str, exit: i32, stdout: &[u8], stderr: &[u8]) {
+    require_codegen();
+    let dir = tempdir();
+    let source_path = dir.path().join("case.hew");
+    std::fs::write(&source_path, source).unwrap();
+    for release in [false, true] {
+        let binary = hew_testutil::compiled_binary_path(
+            dir.path(),
+            if release { "release" } else { "debug" },
+        );
+        let mut command = Command::new(hew_binary());
+        command
+            .arg("build")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary);
+        if release {
+            command.arg("--release");
+        }
+        let result = run_bounded_command(command, "build semantic behaviour case");
+        assert!(result.status.success(), "{}", describe_output(&result));
+        let result = run_bounded_command(Command::new(&binary), "execute semantic behaviour case");
+        assert_eq!(
+            result.status.code(),
+            Some(exit),
+            "{}",
+            describe_output(&result)
+        );
+        assert_eq!(result.stdout, stdout, "{}", describe_output(&result));
+        assert_eq!(result.stderr, stderr, "{}", describe_output(&result));
+    }
+}

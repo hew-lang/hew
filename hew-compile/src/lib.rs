@@ -112,8 +112,8 @@ pub struct DiagnosticPolicy {
     pub lint_levels: hew_types::LintLevels,
 }
 
-/// The sole authority for HIR verification, MIR lowering, and backend-front
-/// checks. Every host enters through this type with its target facts explicit.
+/// The shared semantic compilation boundary. Every host enters through this
+/// type with its target facts and resolved compilation roots explicit.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub target: SessionTarget,
@@ -157,10 +157,67 @@ impl Session {
         if !lowered.diagnostics.is_empty() {
             return Err(SessionError::Hir(lowered.diagnostics));
         }
-        self.lower_hir_module(&lowered.module, tco)
+        let roots = Self::source_roots(program, tco)?;
+        self.lower_hir_module(&lowered.module, tco, &roots)
+    }
+
+    /// Select concrete declarations exported by this checked source module.
+    ///
+    /// Root-source `pub` and `package` monomorphic functions require bodies.
+    /// Imported declarations are not roots. Generic exports are templates:
+    /// concrete caller demand supplies their specializations. These roots do
+    /// not establish a public C calling convention or a stable embedding ABI.
+    /// The checker-selected process entry is added by semantic lowering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a selected declaration lacks checker identity.
+    pub fn source_roots(
+        program: &hew_parser::ast::Program,
+        tco: &hew_types::TypeCheckOutput,
+    ) -> Result<Vec<hew_types::DefId>, SessionError> {
+        program
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(ordinal, (item, span))| {
+                let hew_parser::ast::Item::Function(function) = item else {
+                    return None;
+                };
+                if !function.visibility.is_pub()
+                    || function
+                        .type_params
+                        .as_ref()
+                        .is_some_and(|params| !params.is_empty())
+                {
+                    return None;
+                }
+                let occurrence = hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    tco.identity.root_module(),
+                    span,
+                    ordinal,
+                    hew_types::DeclarationKind::Function,
+                    0,
+                );
+                Some(
+                    tco.identity
+                        .declaration(occurrence)
+                        .cloned()
+                        .ok_or_else(|| SessionError::Unsupported {
+                            callable: None,
+                            message: format!(
+                                "exported source declaration at {span:?} has no checked identity"
+                            ),
+                        }),
+                )
+            })
+            .collect()
     }
 
     /// Verify and canonicalize ownership semantics shared by every host.
+    /// `roots` are resolved concrete declarations, in addition to the selected
+    /// process entry. Source consumers use [`Self::source_roots`] to preserve
+    /// the same export policy as [`Self::lower_program`].
     ///
     /// # Errors
     ///
@@ -169,17 +226,50 @@ impl Session {
         &self,
         module: &hew_hir::HirModule,
         tco: &hew_types::TypeCheckOutput,
+        roots: &[hew_types::DefId],
     ) -> Result<SessionOutput, SessionError> {
         let diagnostics = hew_hir::verify_hir(module);
         if !diagnostics.is_empty() {
             return Err(SessionError::Hir(diagnostics));
         }
-        let mut sir = hew_sir::lower_module(module, tco);
+        let mut sir = hew_sir::lower_module_with_roots(module, tco, roots).map_err(|errors| {
+            SessionError::Unsupported {
+                callable: None,
+                message: errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            }
+        })?;
         let diagnostics = hew_sir::verify_module(&sir.module);
         if !diagnostics.is_empty() {
             return Err(SessionError::Semantic(diagnostics));
         }
         require_complete_semantics(&sir, module.entry_exit_plan.is_some())?;
+        let body_index = sir.module.function_index();
+        let mut compiled_roots = roots
+            .iter()
+            .map(|declaration| {
+                let callable = sir
+                    .module
+                    .callable_for_declaration(declaration)
+                    .ok_or_else(|| SessionError::Unsupported {
+                        callable: None,
+                        message: format!(
+                            "selected declaration {declaration:?} has no semantic callable"
+                        ),
+                    })?
+                    .id;
+                require_semantic_body(&sir.module, &body_index, callable)?;
+                Ok(callable)
+            })
+            .collect::<Result<Vec<_>, SessionError>>()?;
+        if let Some(entry) = sir.module.entry_callable {
+            compiled_roots.push(entry);
+        }
+        compiled_roots.sort_unstable();
+        compiled_roots.dedup();
         hew_sir::canonicalize_module_constant_cfg(&mut sir.module).map_err(
             |error| match error {
                 hew_sir::SirOptimizationError::InvalidInput(diagnostics)
@@ -188,7 +278,10 @@ impl Session {
                 }
             },
         )?;
-        Ok(SessionOutput { sir })
+        Ok(SessionOutput {
+            sir,
+            compiled_roots,
+        })
     }
 }
 
@@ -196,9 +289,16 @@ impl Session {
 #[derive(Debug)]
 pub struct SessionOutput {
     sir: hew_sir::LoweredModule,
+    compiled_roots: Vec<hew_sir::CallableId>,
 }
 
 impl SessionOutput {
+    /// Resolved entry and export roots whose complete call closures were lowered.
+    #[must_use]
+    pub fn compiled_roots(&self) -> &[hew_sir::CallableId] {
+        &self.compiled_roots
+    }
+
     /// Inspect the verified semantic result without invalidating it.
     #[must_use]
     pub fn semantics(&self) -> &hew_sir::LoweredModule {
@@ -273,29 +373,33 @@ fn require_complete_semantics(
             });
         }
     }
-    let index = sir.module.function_index();
-    let require_body = |callable| {
-        if index.function(callable).is_none() {
-            let name = sir
-                .module
-                .callable(callable)
-                .map_or("<unknown>", |item| item.symbol.as_str());
-            return Err(SessionError::Unsupported {
-                callable: Some(callable),
-                message: format!("required semantic callable `{name}` has no body"),
-            });
-        }
-        Ok(())
-    };
+    let body_index = sir.module.function_index();
     if let Some(entry) = sir.module.entry_callable {
-        require_body(entry)?;
+        require_semantic_body(&sir.module, &body_index, entry)?;
     }
     for function in &sir.module.functions {
         for block in &function.blocks {
             if let hew_sir::SemTerminator::Call { callee, .. } = &block.terminator {
-                require_body(*callee)?;
+                require_semantic_body(&sir.module, &body_index, *callee)?;
             }
         }
+    }
+    Ok(())
+}
+
+fn require_semantic_body(
+    module: &hew_sir::SemModule,
+    body_index: &hew_sir::SemFunctionIndex<'_>,
+    callable: hew_sir::CallableId,
+) -> Result<(), SessionError> {
+    if body_index.function(callable).is_none() {
+        let name = module
+            .callable(callable)
+            .map_or("<unknown>", |item| item.symbol.as_str());
+        return Err(SessionError::Unsupported {
+            callable: Some(callable),
+            message: format!("required semantic callable `{name}` has no body"),
+        });
     }
     Ok(())
 }
@@ -384,6 +488,39 @@ mod session_completion_tests {
             Err(SessionError::Unsupported { callable: Some(id), message })
                 if id == entry && message.contains("deliberate incomplete lowering")
         ));
+    }
+
+    #[test]
+    fn source_exports_select_only_concrete_root_declarations() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("library.hew"),
+            "pub fn imported() -> i64 { 99 }",
+        )
+        .unwrap();
+        let source = dir.path().join("exports.hew");
+        std::fs::write(&source,
+            "import library; pub fn answer() -> i64 { helper() } package fn neighbour() -> i64 { 8 } fn helper() -> i64 { 42 } pub fn generic<T>(value: T) -> T { value }").unwrap();
+        let state =
+            run_file_frontend_to_typecheck(source.to_str().unwrap(), &FrontendOptions::default())
+                .unwrap();
+        let tco = state.typecheck_result.tco.as_ref().unwrap();
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, tco)
+            .unwrap();
+        let module = &output.semantics().module;
+        assert!(module.entry_callable.is_none());
+        assert_eq!(output.compiled_roots().len(), 2);
+        let mut bodies = module
+            .functions
+            .iter()
+            .map(|function| function.name.as_str())
+            .collect::<Vec<_>>();
+        bodies.sort_unstable();
+        assert_eq!(bodies, ["answer", "helper", "neighbour"]);
+        for root in output.compiled_roots() {
+            assert!(module.function_index().function(*root).is_some());
+        }
     }
 }
 
@@ -3078,7 +3215,7 @@ mod tests {
                     hir.diagnostics
                 );
                 let output = session
-                    .lower_hir_module(&hir.module, tco)
+                    .lower_hir_module(&hir.module, tco, &[])
                     .expect("diamond fixture must verify");
                 hew_sir::dump_lowering(&output.sir)
             })

@@ -536,13 +536,11 @@ struct AnalyzedSource {
     semantic_diagnostics: Vec<WasmDiagnostic>,
 }
 
-/// Lower to MIR and collect the MIR-stage lint findings, applying the same
-/// suppression policy the CLI's `render_pipeline_semantic_diagnostics` applies.
-///
-/// Degrades silently to an empty vector on any lowering trouble. The shared
-/// session still runs the build check set at wasm32 pointer width; this browser
-/// renderer retains its historical warning-only presentation policy.
+/// Run the shared semantic boundary with the browser target and render errors.
+/// Root selection matches native compilation; bytecode execution is a separate
+/// consumer and does not replace semantic verification.
 fn collect_semantic_diagnostics(
+    program: &hew_parser::ast::Program,
     hir_module: &hew_hir::HirModule,
     tco: &hew_types::TypeCheckOutput,
 ) -> Vec<WasmDiagnostic> {
@@ -550,7 +548,9 @@ fn collect_semantic_diagnostics(
         hew_compile::SessionTarget::wasm32(),
         hew_compile::DiagnosticPolicy::default(),
     );
-    match session.lower_hir_module(hir_module, tco) {
+    let result = hew_compile::Session::source_roots(program, tco)
+        .and_then(|roots| session.lower_hir_module(hir_module, tco, &roots));
+    match result {
         Ok(_) => Vec::new(),
         Err(error) => vec![WasmDiagnostic {
             severity: "error".to_string(),
@@ -617,7 +617,8 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
             // skipping it also keeps the added browser cost off every buffer
             // that is mid-edit and already erroring.
             if diags.is_empty() {
-                semantic_diagnostics = collect_semantic_diagnostics(&lower_output.module, &tco);
+                semantic_diagnostics =
+                    collect_semantic_diagnostics(&parse_result.program, &lower_output.module, &tco);
             }
             diags
         } else {
@@ -2316,11 +2317,11 @@ mod tests {
         assert_eq!(wasm.checks, build.checks);
         assert_eq!(wasm.target.pointer_width, hew_mir::PointerWidth::Bits32);
         assert_eq!(
-            wasm.lower_hir_module(&hir.module, &tco)
+            wasm.lower_hir_module(&hir.module, &tco, &[])
                 .map(|output| format!("{:?}", output.semantics()))
                 .map_err(|error| error.to_string()),
             build
-                .lower_hir_module(&hir.module, &tco)
+                .lower_hir_module(&hir.module, &tco, &[])
                 .map(|output| format!("{:?}", output.semantics()))
                 .map_err(|error| error.to_string()),
             "wasm must run the build check set while retaining its own ABI width"

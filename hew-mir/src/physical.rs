@@ -164,6 +164,15 @@ pub enum PhysicalOp {
         source: StorageId,
         to: ResolvedTy,
     },
+    TupleMake {
+        dest: StorageId,
+        elements: Vec<StorageId>,
+    },
+    TupleGet {
+        dest: StorageId,
+        tuple: StorageId,
+        index: u32,
+    },
     Transfer {
         dest: StorageId,
         source: StorageId,
@@ -453,6 +462,41 @@ pub fn lower_physical_module(
     };
     verify_physical_module(&physical)?;
     Ok(VerifiedPhysicalModule(physical))
+}
+
+/// Collect the concrete semantic types that the physical module must realize.
+///
+/// Generic templates and unrelated checker fact rows are deliberately absent:
+/// the inventory follows only callable headers and storage-producing types in
+/// the verified concrete SIR module.
+#[must_use]
+pub fn physical_type_inventory(module: &SemModule) -> BTreeSet<ResolvedTy> {
+    let mut types = BTreeSet::new();
+    for callable in &module.callables {
+        types.extend(
+            callable
+                .signature
+                .params
+                .iter()
+                .map(|parameter| parameter.ty.clone()),
+        );
+        types.insert(callable.signature.return_ty.clone());
+    }
+    for function in &module.functions {
+        types.insert(function.return_ty.clone());
+        types.extend(function.params.iter().map(|parameter| parameter.ty.clone()));
+        types.extend(function.places.iter().map(|place| place.ty.clone()));
+        for block in &function.blocks {
+            types.extend(block.args.iter().map(|argument| argument.ty.clone()));
+            for operation in &block.ops {
+                types.extend(operation.results.iter().map(|result| result.ty.clone()));
+            }
+            if let Some(result) = terminator_result(&block.terminator) {
+                types.insert(result.ty.clone());
+            }
+        }
+    }
+    types
 }
 
 fn required_layout<'a>(
@@ -755,6 +799,18 @@ impl FunctionLowerer<'_> {
                 source: self.value(value.value)?,
                 to: to.clone(),
             }),
+            SemOpKind::TupleMake { elements } => one(PhysicalOp::TupleMake {
+                dest: self.one_result(operation)?,
+                elements: elements
+                    .iter()
+                    .map(|element| self.value(element.value))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            SemOpKind::TupleGet { tuple, index } => one(PhysicalOp::TupleGet {
+                dest: self.one_result(operation)?,
+                tuple: self.value(tuple.value)?,
+                index: *index,
+            }),
             SemOpKind::CopyValue { source } => {
                 let dest = self.one_result(operation)?;
                 let ty = &operation.results[0].ty;
@@ -829,14 +885,12 @@ impl FunctionLowerer<'_> {
                     destroy: Self::destroy_action(&self.storage[storage.0 as usize].ty)?,
                 })
             }
-            SemOpKind::TupleMake { .. }
-            | SemOpKind::TupleGet { .. }
-            | SemOpKind::StrEq { .. }
-            | SemOpKind::BytesEq { .. }
-            | SemOpKind::Destructure { .. } => Err(PhysicalError::new(format!(
-                "SIR op {} is not yet admitted by physical MIR",
-                operation.id.0
-            ))),
+            SemOpKind::StrEq { .. } | SemOpKind::BytesEq { .. } | SemOpKind::Destructure { .. } => {
+                Err(PhysicalError::new(format!(
+                    "SIR op {} is not yet admitted by physical MIR",
+                    operation.id.0
+                )))
+            }
         }
     }
 
@@ -1188,6 +1242,59 @@ fn verify_operation_storage(
             storage(function, *dest)?;
             storage(function, *source)?;
         }
+        PhysicalOp::TupleMake { dest, elements } => {
+            let destination = storage(function, *dest)?;
+            let ResolvedTy::Tuple(field_types) = &destination.ty else {
+                return Err(PhysicalError::new(
+                    "physical tuple construction has a non-tuple destination",
+                ));
+            };
+            if destination.own != OwnKind::None {
+                return Err(PhysicalError::new(
+                    "physical tuple construction is limited to no-drop values",
+                ));
+            }
+            if field_types.len() != elements.len() {
+                return Err(PhysicalError::new(format!(
+                    "physical tuple construction has {} elements for {} fields",
+                    elements.len(),
+                    field_types.len()
+                )));
+            }
+            for (index, (element, expected)) in elements.iter().zip(field_types).enumerate() {
+                let element = storage(function, *element)?;
+                if element.own != OwnKind::None || &element.ty != expected {
+                    return Err(PhysicalError::new(format!(
+                        "physical tuple element {index} disagrees with its no-drop field type"
+                    )));
+                }
+            }
+        }
+        PhysicalOp::TupleGet { dest, tuple, index } => {
+            let destination = storage(function, *dest)?;
+            let tuple = storage(function, *tuple)?;
+            let ResolvedTy::Tuple(field_types) = &tuple.ty else {
+                return Err(PhysicalError::new(
+                    "physical tuple projection reads a non-tuple value",
+                ));
+            };
+            let field = usize::try_from(*index)
+                .ok()
+                .and_then(|index| field_types.get(index))
+                .ok_or_else(|| {
+                    PhysicalError::new(format!(
+                        "physical tuple projection index {index} is out of bounds"
+                    ))
+                })?;
+            if tuple.own != OwnKind::None
+                || destination.own != OwnKind::None
+                || &destination.ty != field
+            {
+                return Err(PhysicalError::new(
+                    "physical tuple projection disagrees with its no-drop field type",
+                ));
+            }
+        }
         PhysicalOp::Binary { dest, lhs, rhs, .. } => {
             storage(function, *dest)?;
             require_same_storage_type(function, *lhs, *rhs, "physical binary operation")?;
@@ -1342,6 +1449,16 @@ fn apply_operation(
         PhysicalOp::Unary { dest, source, .. } | PhysicalOp::Cast { dest, source, .. } => {
             initialized(state, *source, block, "operation")?;
             define(function, state, *dest, block, "operation")?;
+        }
+        PhysicalOp::TupleMake { dest, elements } => {
+            for element in elements {
+                initialized(state, *element, block, "tuple construction")?;
+            }
+            define(function, state, *dest, block, "tuple construction")?;
+        }
+        PhysicalOp::TupleGet { dest, tuple, .. } => {
+            initialized(state, *tuple, block, "tuple projection")?;
+            define(function, state, *dest, block, "tuple projection")?;
         }
         PhysicalOp::Binary { dest, lhs, rhs, .. } => {
             initialized(state, *lhs, block, "binary operation")?;
@@ -1933,6 +2050,19 @@ mod tests {
         target
     }
 
+    fn target_with_i64_pair() -> PhysicalTarget {
+        let mut target = target();
+        target.insert_layout(
+            ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+            PhysicalLayout {
+                size: 16,
+                align: 8,
+                repr: PhysicalRepr::Struct(vec![i64_layout(), i64_layout()]),
+            },
+        );
+        target
+    }
+
     fn lower_source(source: &str) -> SemModule {
         let parsed = hew_parser::parse(source);
         assert!(
@@ -2203,6 +2333,98 @@ mod tests {
                 value: Some(ReturnTransfer::Move(StorageId(0)))
             }
         ));
+    }
+
+    #[test]
+    fn inventories_only_types_used_by_concrete_sir_bodies() {
+        let module = lower_source(
+            r"
+            fn pair_second(x: i64, y: i64) -> i64 {
+                let pair = (x, y);
+                pair.1
+            }
+
+            fn main() -> i64 { pair_second(0, 42) }
+            ",
+        );
+        let inventory = physical_type_inventory(&module);
+        assert!(inventory.contains(&ResolvedTy::I64));
+        assert!(inventory.contains(&ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64,])));
+        assert!(!inventory.contains(&ResolvedTy::String));
+    }
+
+    #[test]
+    fn lowers_scalar_tuple_construction_and_projection_to_explicit_ops() {
+        let module = lower_source(
+            r"
+            fn main() -> i64 {
+                let pair = (0, 42);
+                pair.1
+            }
+            ",
+        );
+        let verified =
+            lower_physical_module(&module, target_with_i64_pair()).expect("physical tuple");
+        let operations = verified
+            .module()
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.ops)
+            .collect::<Vec<_>>();
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            PhysicalOp::TupleMake { elements, .. } if elements.len() == 2
+        )));
+        assert!(operations
+            .iter()
+            .any(|operation| matches!(operation, PhysicalOp::TupleGet { index: 1, .. })));
+    }
+
+    #[test]
+    fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
+        let module = lower_source(
+            r"
+            fn main() -> i64 {
+                let pair = (0, 42);
+                pair.1
+            }
+            ",
+        );
+
+        let mut owned_tuple = lower_physical_module(&module, target_with_i64_pair())
+            .expect("valid physical tuple")
+            .into_unverified();
+        let tuple_dest = owned_tuple.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find_map(|operation| match operation {
+                PhysicalOp::TupleMake { dest, .. } => Some(*dest),
+                _ => None,
+            })
+            .expect("tuple construction");
+        owned_tuple.functions[0].storage[tuple_dest.0 as usize].own = OwnKind::Owned;
+        let error = verify_physical_module(&owned_tuple)
+            .expect_err("physical tuple must not infer aggregate ownership");
+        assert!(error.message.contains("limited to no-drop values"));
+
+        let mut bad_index = lower_physical_module(&module, target_with_i64_pair())
+            .expect("valid physical tuple")
+            .into_unverified();
+        let index = bad_index.functions[0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.ops)
+            .find_map(|operation| match operation {
+                PhysicalOp::TupleGet { index, .. } => Some(index),
+                _ => None,
+            })
+            .expect("tuple projection");
+        *index = 2;
+        let error = verify_physical_module(&bad_index)
+            .expect_err("physical tuple projection must stay in bounds");
+        assert!(error.message.contains("index 2 is out of bounds"));
     }
 
     #[test]

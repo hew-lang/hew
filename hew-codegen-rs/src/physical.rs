@@ -57,6 +57,20 @@ pub struct PhysicalEmitOptions<'a> {
 /// triple, or a fail-closed error when a measured layout cannot fit the
 /// physical model.
 pub fn physical_target_for_triple(triple: &str) -> Result<PhysicalTarget, CodegenError> {
+    physical_target_for_types(triple, std::iter::empty::<&ResolvedTy>())
+}
+
+/// Resolve physical layouts for primitives and the concrete SIR type inventory
+/// using the exact LLVM target machine.
+///
+/// # Errors
+///
+/// Returns a target setup error or a fail-closed error when any demanded type
+/// has no admitted physical representation.
+pub fn physical_target_for_types<'a>(
+    triple: &str,
+    types: impl IntoIterator<Item = &'a ResolvedTy>,
+) -> Result<PhysicalTarget, CodegenError> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, OptLevel::O0)?;
     let data = machine.get_target_data();
     let data_layout = data
@@ -67,12 +81,43 @@ pub fn physical_target_for_triple(triple: &str) -> Result<PhysicalTarget, Codege
     let mut target = PhysicalTarget::new(triple, data_layout);
     let ctx = Context::create();
     for ty in primitive_types() {
-        let repr = primitive_repr(&ctx, &data, &ty)?;
-        let llvm_ty = llvm_type(&ctx, &repr)?;
-        let (size, align) = measure_layout(&data, llvm_ty);
-        target.insert_layout(ty, PhysicalLayout { size, align, repr });
+        realize_layout(&ctx, &data, &mut target, &ty)?;
+    }
+    for ty in types {
+        realize_layout(&ctx, &data, &mut target, ty)?;
     }
     Ok(target)
+}
+
+fn realize_layout(
+    ctx: &Context,
+    data: &TargetData,
+    target: &mut PhysicalTarget,
+    ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    if target.layout(ty).is_some() {
+        return Ok(());
+    }
+    let repr = match ty {
+        ResolvedTy::Tuple(fields) => {
+            let mut layouts = Vec::with_capacity(fields.len());
+            for field in fields {
+                realize_layout(ctx, data, target, field)?;
+                layouts.push(target.layout(field).cloned().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "physical target did not realize tuple field `{}`",
+                        field.user_facing()
+                    ))
+                })?);
+            }
+            PhysicalRepr::Struct(layouts)
+        }
+        _ => primitive_repr(ctx, data, ty)?,
+    };
+    let llvm_ty = llvm_type(ctx, &repr)?;
+    let (size, align) = measure_layout(data, llvm_ty);
+    target.insert_layout(ty.clone(), PhysicalLayout { size, align, repr });
+    Ok(())
 }
 
 /// Emit one native object and, when requested, diagnostic LLVM IR from
@@ -682,6 +727,43 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalOp::Binary { dest, op, lhs, rhs } => self.emit_binary(*dest, *op, *lhs, *rhs),
             PhysicalOp::Cast { dest, source, to } => self.emit_cast(*dest, *source, to),
+            PhysicalOp::TupleMake { dest, elements } => {
+                let BasicTypeEnum::StructType(tuple_ty) =
+                    llvm_type(self.ctx, &self.storage(*dest)?.layout.repr)?
+                else {
+                    return Err(CodegenError::FailClosed(
+                        "physical tuple destination is not an LLVM struct".into(),
+                    ));
+                };
+                let mut aggregate = tuple_ty.get_undef();
+                for (index, element) in elements.iter().enumerate() {
+                    let field = self.load(*element, "tuple.field")?;
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed("physical tuple field index exceeds u32".into())
+                    })?;
+                    aggregate = match self
+                        .builder
+                        .build_insert_value(aggregate, field, index, "tuple.make")
+                        .llvm_ctx("insert physical tuple field")?
+                    {
+                        inkwell::values::AggregateValueEnum::StructValue(value) => value,
+                        inkwell::values::AggregateValueEnum::ArrayValue(_) => {
+                            return Err(CodegenError::FailClosed(
+                                "physical tuple insertion produced an LLVM array".into(),
+                            ));
+                        }
+                    };
+                }
+                self.store(*dest, aggregate.into())
+            }
+            PhysicalOp::TupleGet { dest, tuple, index } => {
+                let tuple = self.load(*tuple, "tuple.source")?.into_struct_value();
+                let field = self
+                    .builder
+                    .build_extract_value(tuple, *index, "tuple.get")
+                    .llvm_ctx("extract physical tuple field")?;
+                self.store(*dest, field)
+            }
             PhysicalOp::Transfer { dest, source } => {
                 let value = self.load(*source, "transfer")?;
                 self.store(*dest, value)?;
@@ -2345,6 +2427,35 @@ mod tests {
         let triple = native_emission_triple();
         let verified = verified_scalar_for(&triple);
         validate_physical_codegen(&verified, "scalar_entry").expect("verified LLVM module");
+    }
+
+    #[test]
+    fn tuple_layout_is_measured_by_the_active_target_data() {
+        let triple = native_emission_triple();
+        let tuple = ResolvedTy::Tuple(vec![ResolvedTy::I8, ResolvedTy::I64]);
+        let target = physical_target_for_types(&triple, [&tuple]).expect("tuple target layout");
+        let layout = target.layout(&tuple).expect("measured tuple layout");
+
+        let ctx = Context::create();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0)
+            .expect("target machine");
+        let llvm_tuple = ctx.struct_type(&[ctx.i8_type().into(), ctx.i64_type().into()], false);
+        assert_eq!(
+            layout.size,
+            machine.get_target_data().get_abi_size(&llvm_tuple)
+        );
+        assert_eq!(
+            layout.align,
+            machine.get_target_data().get_abi_alignment(&llvm_tuple)
+        );
+        assert!(matches!(
+            layout.repr,
+            PhysicalRepr::Struct(ref fields)
+                if matches!(fields.as_slice(), [
+                    PhysicalLayout { repr: PhysicalRepr::Integer { bits: 8 }, .. },
+                    PhysicalLayout { repr: PhysicalRepr::Integer { bits: 64 }, .. },
+                ])
+        ));
     }
 
     #[test]

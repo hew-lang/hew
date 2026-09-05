@@ -234,11 +234,22 @@ fn lower_session_to_physical(
     output: &hew_compile::SessionOutput,
     target: &target::TargetSpec,
 ) -> Result<hew_mir::VerifiedPhysicalModule, DiagChannel> {
-    let physical_target = hew_codegen_rs::physical_target_for_triple(&target.linker_triple())
-        .map_err(|error| {
-            diagnostic::render_codegen_emit_error(&error, None);
-            diagnostic::codegen_channel(&error)
-        })?;
+    if output.compiled_roots().is_empty() {
+        return Err(emit_semantic_error(
+            "E_NO_COMPILATION_ROOTS",
+            "native emission requires a selected entry or a concrete public source function",
+            DiagChannel::User,
+        ));
+    }
+    let inventory = hew_mir::physical::physical_type_inventory(&output.semantics().module);
+    let physical_target = hew_codegen_rs::physical::physical_target_for_types(
+        &target.linker_triple(),
+        inventory.iter(),
+    )
+    .map_err(|error| {
+        diagnostic::render_codegen_emit_error(&error, None);
+        diagnostic::codegen_channel(&error)
+    })?;
     output.lower_physical(physical_target).map_err(|error| {
         emit_semantic_error(
             "E_PHYSICAL_LOWERING",

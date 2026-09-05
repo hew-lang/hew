@@ -3,6 +3,39 @@
 # failures are failures, not a differential pass.
 
 [[case]]
+id = "vector-copy-values"
+intent = "Vector copies mutate independently, and extracted Unicode/NUL strings survive releasing their containing vector."
+source = "cases/vector-copy-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2:3:4\n"
+exit = 0
+
+[[case]]
+id = "vector-sibling-extraction"
+intent = "Extracting a sibling string from a record with a nested vector preserves both cleanup obligations."
+source = "cases/vector-sibling-extraction.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "self\n"
+exit = 0
+
+[[case]]
+id = "vector-nested-result-extraction"
+intent = "Nested Result/enum matching and sibling-field extraction preserve an owning vector through a source method call and cleanup."
+source = "cases/vector-nested-result-extraction.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "3\n"
+exit = 0
+
+[[case]]
 id = "utf8-error-value"
 intent = "The canonical UTF-8 error is an ordinary reusable record whose Display distinguishes invalid from incomplete byte sequences."
 source = "cases/utf8-error-value.hew"

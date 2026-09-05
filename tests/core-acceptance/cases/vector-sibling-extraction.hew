@@ -1,0 +1,20 @@
+type RunnerProvides {
+    harnesses: Vec<string>,
+}
+
+type Runner {
+    name: string,
+    provides: RunnerProvides,
+}
+
+type Plan {
+    runner: string,
+}
+
+fn main() {
+    var harnesses: Vec<string> = Vec.new();
+    harnesses.push("copilot");
+    let selected = Runner { name: "self", provides: RunnerProvides { harnesses: harnesses } };
+    let plan = Plan { runner: selected.name };
+    println(plan.runner);
+}

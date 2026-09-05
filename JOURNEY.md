@@ -409,3 +409,16 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
 - Byte-oriented examples and retained fixtures now decode explicitly and handle
   errors. The downloader collects bytes before decoding so a scalar can span
   network reads. Existing SIR resource/collection gaps still limit execution.
+
+### One element protocol for vectors
+
+Descriptor-backed vector operations now accept plain values without inventing
+clone or drop callbacks. Owning elements retain their required callbacks;
+copy-in, move-in, extraction, replacement and destruction keep distinct
+ownership contracts. Runtime tests exercise independent copies and both plain
+and recursive cleanup, including sanitizer execution.
+
+The native corpus now retains nested-vector sibling extraction and nested
+Result/enum extraction from application reports, plus independent vector copies
+and strings that escape their parent. These remain explicit unsupported native
+cases until semantic operations and their physical consumer are complete.

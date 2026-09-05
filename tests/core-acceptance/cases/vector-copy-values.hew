@@ -1,0 +1,29 @@
+fn words() -> Vec<string> {
+    var values: Vec<string> = Vec.new();
+    values.push("Aé\0B");
+    values.push("tail");
+    values
+}
+
+fn extract() -> string {
+    let values = words();
+    values[0]
+}
+
+fn main() -> i64 {
+    let original = words();
+    var copy = original;
+    copy.push("extra");
+    if original.len() != 2 || copy.len() != 3 {
+        return 1;
+    }
+    if original[0] != "Aé\0B" || copy[1] != "tail" {
+        return 2;
+    }
+    let escaped = extract();
+    if escaped != "Aé\0B" {
+        return 3;
+    }
+    println(f"{original.len()}:{copy.len()}:{escaped.len()}");
+    0
+}

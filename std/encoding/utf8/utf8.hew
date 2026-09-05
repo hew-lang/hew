@@ -20,10 +20,8 @@ impl Display for Utf8Error {
 /// Decode UTF-8 bytes, returning the first byte-position error as ordinary
 /// `Result` data. Valid input preserves every Unicode scalar, including NUL.
 #[intrinsic("utf8.decode")]
-pub fn decode(data: bytes) -> string fails Utf8Error {
-}
+pub fn decode(data: bytes) -> string fails Utf8Error {}
 
 /// Decode UTF-8 bytes and replace malformed sequences with U+FFFD.
 #[intrinsic("utf8.decode_lossy")]
-pub fn decode_lossy(data: bytes) -> string {
-}
+pub fn decode_lossy(data: bytes) -> string {}

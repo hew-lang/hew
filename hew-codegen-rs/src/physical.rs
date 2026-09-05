@@ -2194,6 +2194,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 normal,
                 unwind,
             } => self.emit_call(*callee, args, *result, normal, unwind.as_ref()),
+            PhysicalTerminator::ValueCall { .. } => Err(CodegenError::FailClosed(
+                "selected value calls require LLVM callback lowering".into(),
+            )),
             PhysicalTerminator::RuntimeCall {
                 action,
                 args,

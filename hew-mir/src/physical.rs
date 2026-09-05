@@ -20,7 +20,7 @@ pub use hew_sir::{BlockId, CallableId, OwnKind, TrapKind};
 use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp};
 use hew_types::{
     vector_element_type, BuiltinType, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect,
-    RuntimeCallFamily, RuntimeResultEffect, TypeInstanceKey, VecValueOp,
+    RuntimeCallFamily, RuntimeResultEffect, TypeInstanceKey, ValueCapability, VecValueOp,
 };
 
 /// Function-local identity of one concrete storage allocation.
@@ -676,6 +676,16 @@ pub enum PhysicalTerminator {
         result: Option<StorageId>,
         normal: PhysicalEdge,
         unwind: Option<PhysicalEdge>,
+    },
+    /// Execute the exact selected value callback with borrowed slots. Success
+    /// initializes the scalar result; failure owns a fault on the cleanup edge.
+    ValueCall {
+        ty: ResolvedTy,
+        capability: ValueCapability,
+        args: Vec<ArgumentTransfer>,
+        result: StorageId,
+        normal: PhysicalEdge,
+        unwind: PhysicalEdge,
     },
     /// A closed no-unwind runtime operation. Logical failures are explicit
     /// SIR-authored CFG edges and never become C unwinds.
@@ -1874,12 +1884,7 @@ impl FunctionLowerer<'_> {
                 ..
             } => Ok(PhysicalTerminator::Call {
                 callee: *callee,
-                args: args
-                    .iter()
-                    .map(|argument| {
-                        self.argument_transfer(argument.operand.value, argument.decision)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
+                args: self.argument_transfers(args)?,
                 result: match result {
                     CallResult::Unit => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
@@ -1899,12 +1904,7 @@ impl FunctionLowerer<'_> {
                 ..
             } => Ok(PhysicalTerminator::RuntimeCall {
                 action: self.runtime_action(*family, args, result)?,
-                args: args
-                    .iter()
-                    .map(|argument| {
-                        self.argument_transfer(argument.operand.value, argument.decision)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
+                args: self.argument_transfers(args)?,
                 result: match result {
                     CallResult::Unit => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
@@ -1915,9 +1915,30 @@ impl FunctionLowerer<'_> {
                     CallUnwind::Cleanup(edge) => Some(self.lower_edge(edge)?),
                 },
             }),
-            SemTerminator::ValueCall { .. } => Err(PhysicalError::new(
-                "selected value calls require physical callback lowering",
-            )),
+            SemTerminator::ValueCall {
+                ty,
+                capability,
+                args,
+                result,
+                normal,
+                unwind,
+                ..
+            } => {
+                let (CallResult::Value(result), CallUnwind::Cleanup(unwind)) = (result, unwind)
+                else {
+                    return Err(PhysicalError::new(
+                        "selected value call requires a scalar result and fault cleanup",
+                    ));
+                };
+                Ok(PhysicalTerminator::ValueCall {
+                    ty: ty.clone(),
+                    capability: *capability,
+                    args: self.argument_transfers(args)?,
+                    result: self.value(result.id)?,
+                    normal: self.lower_edge(normal)?,
+                    unwind: self.lower_edge(unwind)?,
+                })
+            }
             SemTerminator::Trap { kind } => Ok(PhysicalTerminator::Trap(*kind)),
             SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),
@@ -2000,6 +2021,15 @@ impl FunctionLowerer<'_> {
                 })
                 .collect::<Result<Vec<_>, PhysicalError>>()?,
         })
+    }
+
+    fn argument_transfers(
+        &self,
+        args: &[hew_sir::BoundaryOperand],
+    ) -> Result<Vec<ArgumentTransfer>, PhysicalError> {
+        args.iter()
+            .map(|argument| self.argument_transfer(argument.operand.value, argument.decision))
+            .collect()
     }
 
     fn argument_transfer(
@@ -3711,6 +3741,57 @@ fn apply_edge(
     Ok((edge.target, state))
 }
 
+fn call_successors(
+    function: &PhysicalFunction,
+    args: &[ArgumentTransfer],
+    result: Option<StorageId>,
+    normal: &PhysicalEdge,
+    unwind: Option<&PhysicalEdge>,
+    mut state: FlowState,
+    block: BlockId,
+) -> Result<Vec<(BlockId, FlowState)>, PhysicalError> {
+    if state.fault != FaultState::None {
+        return Err(PhysicalError::new(format!(
+            "physical bb{} issues a call while an earlier fault is active",
+            block.0
+        )));
+    }
+    for argument in args {
+        let (source, moves) = match argument {
+            ArgumentTransfer::Borrow(source) | ArgumentTransfer::Clone { source, .. } => {
+                (*source, false)
+            }
+            ArgumentTransfer::Move(source) => (*source, true),
+        };
+        initialized(&state, source, block, "call argument")?;
+        if storage(function, source)?.own == OwnKind::Guaranteed
+            && !matches!(argument, ArgumentTransfer::Borrow(_))
+        {
+            return Err(PhysicalError::new(
+                "physical guaranteed call argument must use its borrow contract",
+            ));
+        }
+        if moves {
+            consume_if_owned(function, &mut state, source)?;
+        }
+    }
+    let mut normal_state = state.clone();
+    if let Some(result) = result {
+        define(function, &mut normal_state, result, block, "call result")?;
+    }
+    let normal_state = apply_edge(function, normal, normal_state, block)?;
+    let mut successors = vec![normal_state];
+    if let Some(unwind) = unwind {
+        let mut failure_state = state;
+        if let Some(result) = result {
+            failure_state.slots[result.0 as usize] = InitState::Uninitialized;
+        }
+        failure_state.fault = FaultState::Active;
+        successors.push(apply_edge(function, unwind, failure_state, block)?);
+    }
+    Ok(successors)
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the terminator transfer is the complete status/result/fault initialization contract"
@@ -3810,48 +3891,30 @@ fn terminator_successors(
             normal,
             unwind,
             ..
-        } => {
-            if state.fault != FaultState::None {
-                return Err(PhysicalError::new(format!(
-                    "physical bb{} issues a call while an earlier fault is active",
-                    block.0
-                )));
-            }
-            for argument in args {
-                let (source, moves) = match argument {
-                    ArgumentTransfer::Borrow(source) | ArgumentTransfer::Clone { source, .. } => {
-                        (*source, false)
-                    }
-                    ArgumentTransfer::Move(source) => (*source, true),
-                };
-                initialized(&state, source, block, "call argument")?;
-                if storage(function, source)?.own == OwnKind::Guaranteed
-                    && !matches!(argument, ArgumentTransfer::Borrow(_))
-                {
-                    return Err(PhysicalError::new(
-                        "physical guaranteed call argument must use its borrow contract",
-                    ));
-                }
-                if moves {
-                    consume_if_owned(function, &mut state, source)?;
-                }
-            }
-            let mut normal_state = state.clone();
-            if let Some(result) = result {
-                define(function, &mut normal_state, *result, block, "call result")?;
-            }
-            let normal_state = apply_edge(function, normal, normal_state, block)?;
-            let mut successors = vec![normal_state];
-            if let Some(unwind) = unwind {
-                let mut failure_state = state;
-                if let Some(result) = result {
-                    failure_state.slots[result.0 as usize] = InitState::Uninitialized;
-                }
-                failure_state.fault = FaultState::Active;
-                successors.push(apply_edge(function, unwind, failure_state, block)?);
-            }
-            Ok(successors)
-        }
+        } => call_successors(
+            function,
+            args,
+            *result,
+            normal,
+            unwind.as_ref(),
+            state,
+            block,
+        ),
+        PhysicalTerminator::ValueCall {
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => call_successors(
+            function,
+            args,
+            Some(*result),
+            normal,
+            Some(unwind),
+            state,
+            block,
+        ),
         PhysicalTerminator::RuntimeCall {
             action,
             args,
@@ -4178,6 +4241,52 @@ fn verify_terminator(
                 edge(unwind)?;
             }
             Ok(())
+        }
+        PhysicalTerminator::ValueCall {
+            ty,
+            capability,
+            args,
+            result,
+            normal,
+            unwind,
+        } => {
+            if !module
+                .value_capabilities
+                .contains_key(&(ty.clone(), *capability))
+            {
+                return Err(PhysicalError::new(
+                    "physical value call lacks its exact selected capability",
+                ));
+            }
+            let (arity, result_ty) = match capability {
+                ValueCapability::Hash => (1, ResolvedTy::I64),
+                ValueCapability::Eq => (2, ResolvedTy::Bool),
+            };
+            if args.len() != arity {
+                return Err(PhysicalError::new(
+                    "physical value call has the wrong callback arity",
+                ));
+            }
+            for argument in args {
+                let ArgumentTransfer::Borrow(source) = argument else {
+                    return Err(PhysicalError::new(
+                        "physical value call arguments must borrow their slots",
+                    ));
+                };
+                if &slot(*source)?.ty != ty {
+                    return Err(PhysicalError::new(
+                        "physical value call argument has another type",
+                    ));
+                }
+            }
+            let result = slot(*result)?;
+            if result.ty != result_ty || result.own != OwnKind::None {
+                return Err(PhysicalError::new(
+                    "physical value call requires its scalar callback result",
+                ));
+            }
+            edge(normal)?;
+            edge(unwind)
         }
         PhysicalTerminator::RuntimeCall {
             action,
@@ -6880,5 +6989,238 @@ mod tests {
             .unwrap()
             .1;
         assert_eq!(succeeded.slots[result.0 as usize], InitState::Initialized);
+    }
+
+    fn selected_value_call_module(capability: ValueCapability) -> PhysicalModule {
+        let (method, invocation) = match capability {
+            ValueCapability::Hash => ("fn selected(a: i64) -> i64 { a }", "selected(7)"),
+            ValueCapability::Eq => (
+                "fn selected(a: i64, b: i64) -> bool { a == b }",
+                "if selected(1, 2) { 1 } else { 0 }",
+            ),
+        };
+        let mut module = lower_source(&format!("{method} fn main() -> i64 {{ let map: HashMap<i64, string> = HashMap.new(); {invocation} }}"));
+        let selected = module
+            .functions
+            .iter()
+            .find(|function| function.name == "selected")
+            .unwrap()
+            .callable;
+        let mut converted = 0;
+        for function in &mut module.functions {
+            for block in &mut function.blocks {
+                if let SemTerminator::Call {
+                    id,
+                    callee,
+                    args,
+                    result,
+                    normal,
+                    unwind,
+                } = &block.terminator
+                {
+                    if *callee == selected {
+                        let mut args = args.clone();
+                        for argument in &mut args {
+                            argument.decision = BoundaryDecision::Borrow;
+                        }
+                        block.terminator = SemTerminator::ValueCall {
+                            id: *id,
+                            ty: ResolvedTy::I64,
+                            capability,
+                            args,
+                            result: result.clone(),
+                            normal: normal.clone(),
+                            unwind: unwind.clone(),
+                        };
+                        converted += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(converted, 1);
+        assert!(
+            hew_sir::verify_module(&module).is_empty(),
+            "{:?}",
+            hew_sir::verify_module(&module)
+        );
+        lower_physical_module(&module, target_for_inventory(&module))
+            .unwrap()
+            .module()
+            .clone()
+    }
+
+    #[test]
+    fn selected_value_calls_keep_borrowed_operands_and_success_only_results() {
+        for capability in [ValueCapability::Hash, ValueCapability::Eq] {
+            let module = selected_value_call_module(capability);
+            let (function, block) = module
+                .functions
+                .iter()
+                .find_map(|function| {
+                    function
+                        .blocks
+                        .iter()
+                        .find(|block| {
+                            matches!(block.terminator, PhysicalTerminator::ValueCall { .. })
+                        })
+                        .map(|block| (function, block))
+                })
+                .unwrap();
+            let PhysicalTerminator::ValueCall {
+                args,
+                result,
+                normal,
+                unwind,
+                ..
+            } = &block.terminator
+            else {
+                unreachable!()
+            };
+            let mut state = FlowState {
+                slots: vec![InitState::Initialized; function.storage.len()],
+                fault: FaultState::None,
+            };
+            state.slots[result.0 as usize] = InitState::Uninitialized;
+            let successors =
+                terminator_successors(function, &block.terminator, state, block.id).unwrap();
+            for (edge, outcome) in successors {
+                assert_eq!(
+                    outcome.slots[result.0 as usize],
+                    if edge == normal.target {
+                        InitState::Initialized
+                    } else {
+                        InitState::Uninitialized
+                    }
+                );
+                assert_eq!(
+                    outcome.fault,
+                    if edge == unwind.target {
+                        FaultState::Active
+                    } else {
+                        FaultState::None
+                    }
+                );
+                for arg in args {
+                    let ArgumentTransfer::Borrow(source) = arg else {
+                        panic!("selected calls must borrow")
+                    };
+                    assert_eq!(outcome.slots[source.0 as usize], InitState::Initialized);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selected_value_call_verifier_rejects_signature_and_selection_drift() {
+        for mutation in 0..5 {
+            let mut module = selected_value_call_module(ValueCapability::Eq);
+            let function_index = module
+                .functions
+                .iter()
+                .position(|function| {
+                    function.blocks.iter().any(|block| {
+                        matches!(block.terminator, PhysicalTerminator::ValueCall { .. })
+                    })
+                })
+                .unwrap();
+            let function = &mut module.functions[function_index];
+            let block = function
+                .blocks
+                .iter_mut()
+                .find(|block| matches!(block.terminator, PhysicalTerminator::ValueCall { .. }))
+                .unwrap();
+            let PhysicalTerminator::ValueCall {
+                ty, args, result, ..
+            } = &mut block.terminator
+            else {
+                unreachable!()
+            };
+            match mutation {
+                0 => {
+                    module
+                        .value_capabilities
+                        .remove(&(ResolvedTy::I64, ValueCapability::Eq));
+                }
+                1 => {
+                    args.pop();
+                }
+                2 => {
+                    let ArgumentTransfer::Borrow(source) = args[0] else {
+                        unreachable!()
+                    };
+                    args[0] = ArgumentTransfer::Move(source);
+                }
+                3 => *ty = ResolvedTy::Bool,
+                4 => {
+                    let ArgumentTransfer::Borrow(source) = args[0] else {
+                        unreachable!()
+                    };
+                    *result = source;
+                }
+                _ => unreachable!(),
+            }
+            let function = &module.functions[function_index];
+            let block = function
+                .blocks
+                .iter()
+                .find(|block| matches!(block.terminator, PhysicalTerminator::ValueCall { .. }))
+                .unwrap();
+            let blocks = function.blocks.iter().map(|block| block.id).collect();
+            assert!(
+                verify_terminator(&module, function, &blocks, &block.terminator).is_err(),
+                "mutation {mutation}"
+            );
+            assert!(
+                verify_physical_module(&module).is_err(),
+                "mutation {mutation}"
+            );
+        }
+    }
+
+    #[test]
+    fn selected_value_call_cleanup_cannot_discard_fault_or_read_failed_result() {
+        for discard_fault in [false, true] {
+            let mut module = selected_value_call_module(ValueCapability::Eq);
+            let function = module
+                .functions
+                .iter_mut()
+                .find(|function| {
+                    function.blocks.iter().any(|block| {
+                        matches!(block.terminator, PhysicalTerminator::ValueCall { .. })
+                    })
+                })
+                .unwrap();
+            let (result, cleanup) = function
+                .blocks
+                .iter()
+                .find_map(|block| match &block.terminator {
+                    PhysicalTerminator::ValueCall { result, unwind, .. } => {
+                        Some((*result, unwind.target))
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let cleanup = function
+                .blocks
+                .iter_mut()
+                .find(|block| block.id == cleanup)
+                .unwrap();
+            if discard_fault {
+                cleanup.terminator = PhysicalTerminator::Unreachable;
+            } else {
+                cleanup.terminator = PhysicalTerminator::Branch {
+                    condition: result,
+                    then_target: PhysicalEdge {
+                        target: cleanup.id,
+                        transfers: vec![],
+                    },
+                    else_target: PhysicalEdge {
+                        target: cleanup.id,
+                        transfers: vec![],
+                    },
+                };
+            }
+            assert!(verify_physical_module(&module).is_err());
+        }
     }
 }

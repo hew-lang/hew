@@ -1444,3 +1444,17 @@ concrete types agree, then applies the existing copy/move and protected-binding
 rules. Paired bare, wrapped and nested-wrapper controls and the permanent native
 read-order source cover the fix. The complete SIR suite and scoped Rust lint
 pass; native wrapper execution remains part of selected-call integration.
+
+## Selected value calls in physical MIR
+
+Lower the semantic selected-value terminator to a distinct physical call using
+its exact type and capability. Its operands borrow storage, its scalar result
+exists only after success, and its required cleanup edge receives the original
+fault. Ordinary and selected calls share argument transfer lowering and the
+status/result/fault dataflow transfer. Physical verification checks selection,
+arity, argument and result types, borrowed transfers and both CFG paths.
+
+Focused verifier controls cover missing selections, malformed signatures,
+forbidden transfers, failed-result visibility and discarded faults. The physical
+MIR library tests and scoped MIR/codegen JSON Clippy pass. LLVM still refuses the
+new terminator explicitly in this compiled layer; callback emission follows.

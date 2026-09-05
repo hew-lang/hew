@@ -680,13 +680,7 @@ impl Parser<'_> {
             }
             Some(Token::Return) => {
                 self.advance();
-                if matches!(self.peek(), Some(Token::Identifier("error")))
-                    && !matches!(
-                        self.peek_at(self.pos + 1),
-                        None | Some(Token::Semicolon | Token::RightBrace)
-                    )
-                {
-                    self.advance();
+                if self.eat_error_return_marker() {
                     let value = self.parse_expr()?;
                     let end = value.1.end;
                     if self.peek() != Some(&Token::RightBrace) {

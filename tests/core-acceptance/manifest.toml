@@ -326,6 +326,50 @@ stdout = "a\u0000b\nA\u0000B\n3:4:3\n"
 exit = 0
 
 [[case]]
+id = "utf8-decode-valid"
+intent = "Validating decoding propagates an ordinary typed result and preserves Unicode, NUL and empty strings beyond source-byte scope and independent mutation."
+source = "cases/utf8-decode-valid.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Aé中🙂\na\u0000b\n4:10:0\n"
+exit = 0
+
+[[case]]
+id = "utf8-decode-errors"
+intent = "Malformed, incomplete, overlong and surrogate UTF-8 inputs produce ordinary inspectable error values with exact byte positions and optional sequence lengths."
+source = "cases/utf8-decode-errors.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "invalid UTF-8 at byte 1 (1-byte sequence)\ninvalid UTF-8 at byte 1 (1-byte sequence)\nincomplete UTF-8 sequence at byte 1\ninvalid UTF-8 at byte 0 (1-byte sequence)\ninvalid UTF-8 at byte 0 (1-byte sequence)\n"
+exit = 0
+
+[[case]]
+id = "utf8-decode-lossy"
+intent = "Named import aliases preserve decoder identity; lossy decoding replaces invalid and incomplete sequences and returns an independent string owner."
+source = "cases/utf8-decode-lossy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "A�B�\n4:8:9\n"
+exit = 0
+
+[[case]]
+id = "utf8-decode-loop"
+intent = "Alternating valid and malformed UTF-8 decoding reuses bounded scratch storage and cleans every result while retaining the source bytes across iterations."
+source = "cases/utf8-decode-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1152:2:1\n"
+exit = 0
+
+[[case]]
 id = "integer-format-width"
 intent = "Integer interpolation preserves signed i64 values beyond the 32-bit range and cleans its temporary strings."
 source = "cases/integer-format-width.hew"

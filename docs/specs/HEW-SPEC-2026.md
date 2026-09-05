@@ -421,6 +421,12 @@ used elsewhere. Ordinary returns and the function tail produce exactly `T`.
 of a complete Result at a success boundary: use `?` or `handle` explicitly.
 This distinction also holds when `T` is itself a Result, tuple or record.
 
+`error` remains an ordinary binding name. Member access, calls, indexing,
+propagation and operators take priority after `return`: `return error.fmt();`
+returns that method's result, and `return error + 1;` returns the sum. For an
+ambiguous failure payload, use a named local or a block, such as
+`return error { -1 };` or `return error { .Invalid };`.
+
 ```hew
 fn pair() -> (i64, string) fails string {
     return (10, "hello");

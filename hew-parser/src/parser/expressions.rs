@@ -759,7 +759,7 @@ impl Parser<'_> {
                     .and_then(|s| s.strip_suffix('"'))
                     .unwrap_or(s);
                 let tok_start = start;
-                let (unescaped, unescape_errs) = unescape_string(inner);
+                let (unescaped, unescape_errs) = unescape_bytes(inner);
                 for (off, msg) in unescape_errs {
                     let err_start = tok_start + 2 + off;
                     self.errors.push(ParseError {
@@ -771,7 +771,7 @@ impl Parser<'_> {
                     });
                 }
                 self.advance();
-                Expr::ByteStringLiteral(unescaped.into_bytes())
+                Expr::ByteStringLiteral(unescaped)
             }
             Token::InterpolatedString(s) => {
                 let s = s.to_string();
@@ -1336,20 +1336,7 @@ impl Parser<'_> {
             }
             Token::Return => {
                 self.advance();
-                if matches!(self.peek(), Some(Token::Identifier("error")))
-                    && !matches!(
-                        self.peek_at(self.pos + 1),
-                        None | Some(
-                            Token::Semicolon
-                                | Token::RightBrace
-                                | Token::RightParen
-                                | Token::RightBracket
-                                | Token::Comma
-                                | Token::Else
-                        )
-                    )
-                {
-                    self.advance();
+                if self.eat_error_return_marker() {
                     let value = self.parse_expr()?;
                     let end = value.1.end;
                     return Some((Expr::ReturnError(Box::new(value)), start..end));

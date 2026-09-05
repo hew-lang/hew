@@ -2321,6 +2321,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             } => {
                 self.emit_utf8_decode(source(0)?, result()?, result_glue, error, error_len)?;
             }
+            PhysicalRuntimeAction::BytesDecodeUtf8Lossy => {
+                let function =
+                    external_unary_ptr(self.ctx, self.llvm, "hew_bytes_decode_utf8_lossy")?;
+                let value = self.runtime_call_value(
+                    function,
+                    &[self.slots[source(0)?.0 as usize].into()],
+                    "bytes.decode.utf8.lossy",
+                )?;
+                self.store(result()?, value)?;
+            }
             PhysicalRuntimeAction::StringConcat => {
                 let function = get_or_declare_external(
                     self.llvm,

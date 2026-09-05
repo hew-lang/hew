@@ -390,6 +390,39 @@ pub(crate) fn unescape_string(s: &str) -> (String, Vec<(usize, &'static str)>) {
     (out, errors)
 }
 
+/// Decode byte literals without UTF-8 re-encoding `\xHH` byte escapes.
+/// Ordinary text and Unicode escapes retain their UTF-8 encoding.
+pub(crate) fn unescape_bytes(s: &str) -> (Vec<u8>, Vec<(usize, &'static str)>) {
+    let mut out = Vec::with_capacity(s.len());
+    let mut errors = Vec::new();
+    let chars: Vec<_> = s.char_indices().collect();
+    let mut escaped = String::new();
+    let mut idx = 0;
+    while idx < chars.len() {
+        if chars[idx].1 == '\\' {
+            if let Some([(_, 'x'), (_, hi), (_, lo)]) = chars.get(idx + 1..idx + 4) {
+                if let (Some(hi), Some(lo)) = (hi.to_digit(16), lo.to_digit(16)) {
+                    out.push(u8::try_from(hi * 16 + lo).expect("two hex digits fit in a byte"));
+                    idx += 4;
+                    continue;
+                }
+            }
+            escaped.clear();
+            let (consumed, error) = push_unescaped_sequence(&chars, idx, &mut escaped, &[]);
+            if let Some(message) = error {
+                errors.push((chars[idx].0, message));
+            }
+            out.extend_from_slice(escaped.as_bytes());
+            idx += consumed;
+        } else {
+            let mut bytes = [0; 4];
+            out.extend_from_slice(chars[idx].1.encode_utf8(&mut bytes).as_bytes());
+            idx += 1;
+        }
+    }
+    (out, errors)
+}
+
 /// Split an interpolated string (f-string or template literal) into literal
 /// segments and parsed expression segments.
 ///

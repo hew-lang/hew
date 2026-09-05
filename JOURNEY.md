@@ -385,3 +385,14 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   to lower a placeholder, while inconsistent signature facts report an error.
 - Checker and HIR tests exercise canonical imports, user lookalikes, altered
   signatures, foreign error types and inconsistent compiler boundary facts.
+
+- Validating and lossy decoding now execute through the shared native ownership
+  pipeline. Native and paired sanitizer cases cover exact malformed/incomplete
+  errors, Unicode and NUL preservation, source-scope exit, independent byte
+  mutation, named import aliases and repeated decoding through both result arms.
+- Byte-literal hex escapes preserve their raw byte values instead of re-encoding
+  them as Unicode. Parser and formatter coverage retains every possible byte.
+- Ordinary expressions rooted at an `error` binding take priority after return.
+  Both statement and expression returns preserve member access, calls, indexing,
+  propagation and operators; ambiguous explicit failure payloads use a named
+  local or a block. This lets a handler return its error's formatted description.

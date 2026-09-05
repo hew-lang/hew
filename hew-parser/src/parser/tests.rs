@@ -5596,6 +5596,7 @@ fn fallible_function_and_error_return_roundtrip() {
         "fn f() -> i64 fails string { (return error \"missing\") + 1 }",
         "fn f() -> i64 fails string { -(return error \"missing\") }",
         "fn f(error: i64) -> i64 fails string { return error; }",
+        "fn f() -> i64 fails i64 { return error { -1 }; }",
     ] {
         let before = crate::parse(source);
         assert!(before.errors.is_empty(), "{source}: {:?}", before.errors);
@@ -5606,5 +5607,65 @@ fn fallible_function_and_error_return_roundtrip() {
             crate::ast_eq::program_eq_ignoring_spans(&before.program, &after.program),
             "{source} became {formatted}"
         );
+    }
+}
+
+#[test]
+fn ordinary_error_binding_expressions_take_priority_after_return() {
+    for operand in [
+        "error",
+        "error.fmt()",
+        "error .fmt()",
+        "error()",
+        "error(1)",
+        "error[0]",
+        "error?",
+        "error ?? 1",
+        "error + 1",
+        "error - 1",
+        "error as i64",
+        "error handle problem { 1 }",
+    ] {
+        for expression_position in [false, true] {
+            let statement = if expression_position {
+                format!("let ignored = (return {operand});")
+            } else {
+                format!("return {operand};")
+            };
+            let source = format!("fn f() {{ {statement} }}");
+            let parsed = parse(&source);
+            assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+            let Item::Function(function) = &parsed.program.items[0].0 else {
+                panic!("expected function");
+            };
+            if expression_position {
+                assert!(
+                    matches!(
+                        function.body.stmts[0].0,
+                        Stmt::Let {
+                            value: Some((Expr::Return(Some(_)), _)),
+                            ..
+                        }
+                    ),
+                    "{source}"
+                );
+            } else {
+                assert!(
+                    matches!(function.body.stmts[0].0, Stmt::Return(Some(_))),
+                    "{source}"
+                );
+            }
+            let formatted = crate::fmt::format_program(&parsed.program);
+            let reparsed = parse(&formatted);
+            assert!(
+                reparsed.errors.is_empty(),
+                "{formatted}: {:?}",
+                reparsed.errors
+            );
+            assert!(
+                crate::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+                "{source} became {formatted}"
+            );
+        }
     }
 }

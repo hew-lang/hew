@@ -1602,6 +1602,37 @@ fn fmt_byte_string_literal_escapes() {
 }
 
 #[test]
+fn byte_literal_hex_escapes_preserve_every_byte_through_formatting() {
+    use std::fmt::Write as _;
+
+    let mut source = String::from("fn main() { let data = b\"");
+    for byte in 0..=u8::MAX {
+        write!(source, "\\x{byte:02x}").unwrap();
+    }
+    source.push_str("\"; }");
+    let parsed = parse(&source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Function(function) = &parsed.program.items[0].0 else {
+        panic!("expected function");
+    };
+    let Stmt::Let {
+        value: Some((Expr::ByteStringLiteral(data), _)),
+        ..
+    } = &function.body.stmts[0].0
+    else {
+        panic!("expected bytes binding");
+    };
+    assert_eq!(data, &(0..=u8::MAX).collect::<Vec<_>>());
+
+    let formatted = roundtrip(&source);
+    let reparsed = parse(&formatted);
+    assert!(program_eq_ignoring_spans(
+        &parsed.program,
+        &reparsed.program
+    ));
+}
+
+#[test]
 fn fmt_bytes_array_roundtrip() {
     exact_roundtrip("fn main() {\n    let data = bytes [0x48, 0x65, 0x77];\n}\n");
 }

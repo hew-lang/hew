@@ -240,6 +240,39 @@ impl<'src> Parser<'src> {
                 .is_some_and(token_begins_clone_operand)
     }
 
+    /// Ordinary expressions rooted at a binding named `error` take priority
+    /// over the contextual failure-return marker, in either return position.
+    pub(crate) fn eat_error_return_marker(&mut self) -> bool {
+        if !matches!(self.peek(), Some(Token::Identifier("error"))) {
+            return false;
+        }
+        let Some(next) = self.peek_at(self.pos + 1) else {
+            return false;
+        };
+        if infix_bp(next).is_some()
+            || matches!(
+                next,
+                Token::Semicolon
+                    | Token::RightBrace
+                    | Token::RightParen
+                    | Token::RightBracket
+                    | Token::Comma
+                    | Token::Else
+                    | Token::Dot
+                    | Token::LeftParen
+                    | Token::LeftBracket
+                    | Token::Question
+                    | Token::QuestionQuestion
+                    | Token::As
+                    | Token::Identifier("handle")
+            )
+        {
+            return false;
+        }
+        self.advance();
+        true
+    }
+
     /// Whether the current position begins a `consume <param>` modifier inside a
     /// parameter list. `consume` is a contextual keyword (lexed as an ordinary
     /// identifier, like `clone`): it carries the by-move modifier meaning only

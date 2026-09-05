@@ -1,0 +1,17 @@
+import std.encoding.utf8;
+
+fn main() -> i64 {
+    let valid = b"\xc3\xa9";
+    let invalid = b"\xff";
+    var total = 0;
+    for i in 0..256 {
+        let input = if i % 2 == 0 { valid } else { invalid };
+        let text = utf8.decode(input) handle error {
+            if error.valid_up_to != 0 { return 1; }
+            "repaired"
+        };
+        total += text.len();
+    }
+    println(f"{total}:{valid.len()}:{invalid.len()}");
+    0
+}

@@ -1008,3 +1008,23 @@ semantic and collection-method consumers require coordinated API migration.
 
 Rust formatting and scoped make lint-rust pass. Validation is Linux Types-only;
 full-workspace and native/platform execution checks were not run for this API slice.
+
+### Checked capability provenance through semantic and physical lowering
+
+Semantic plans now retain the immutable checker selection and only add the
+executable callable demanded for a user method. Verification checks the exact
+receiver, operation, declaration and specialization. Physical callables retain
+that declaration and specialization so the physical verifier can enforce the
+same selection after lowering. The callable metadata is integrated from the
+compiled fault-ownership checkpoint.
+
+New negative tests reject compatible substitute functions, missing user bodies,
+structural selections with user callables, and selections transplanted across
+operations or types. The corresponding semantic and physical tests pass. Borrowed
+collection length reads now demand no key callbacks; construction remains the
+point at which a key descriptor and its selected bodies are needed.
+
+Combined SIR, physical MIR and compiler-session tests compile. The new missing
+construction-plan oracle exposes the verifier check pending integration; existing
+generic-key, map projection/emptiness and set projection frontiers remain enabled.
+Scoped Rust lint passes. This is a compiled checkpoint, not native Map acceptance.

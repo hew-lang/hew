@@ -245,6 +245,8 @@ pub enum ParamCarrier {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalCallable {
     pub id: CallableId,
+    pub declaration: hew_types::DefId,
+    pub instance: hew_sir::CallableInstance,
     pub symbol: String,
     pub params: Vec<PhysicalParam>,
     pub return_ty: ResolvedTy,
@@ -828,6 +830,8 @@ pub fn lower_physical_module(
             };
             Ok(PhysicalCallable {
                 id: callable.id,
+                declaration: callable.declaration.clone(),
+                instance: callable.instance.clone(),
                 symbol: callable.symbol.clone(),
                 params,
                 return_ty: callable.signature.return_ty.clone(),
@@ -5974,6 +5978,8 @@ mod tests {
         );
         let callable = PhysicalCallable {
             id: CallableId(0),
+            declaration: hew_types::DefId::for_test("malformed_owner_merge"),
+            instance: CallableInstance::Monomorphic,
             symbol: "malformed_owner_merge".to_string(),
             params: vec![],
             return_ty: ResolvedTy::Unit,
@@ -6165,6 +6171,29 @@ mod tests {
             .unwrap_err()
             .message
             .contains("changed its selected callable"));
+
+        let mut forged_identity = physical.clone();
+        forged_identity.callables[callable.0 as usize].declaration =
+            hew_types::DefId::for_test("unselected_compatible_hash");
+        assert!(verify_physical_module(&forged_identity)
+            .unwrap_err()
+            .message
+            .contains("checker selection"));
+
+        let mut transplanted = physical.clone();
+        let derived = physical
+            .value_capabilities
+            .get(&(user_key.0.clone(), hew_types::ValueCapability::Eq))
+            .unwrap();
+        transplanted
+            .value_capabilities
+            .get_mut(user_key)
+            .unwrap()
+            .selection = derived.selection.clone();
+        assert!(verify_physical_module(&transplanted)
+            .unwrap_err()
+            .message
+            .contains("another type or capability"));
 
         let mut missing_component = physical.clone();
         missing_component.value_capabilities.remove(user_key);

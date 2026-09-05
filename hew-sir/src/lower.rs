@@ -940,11 +940,11 @@ impl<'a> InstanceService<'a> {
                     ty.user_facing()
                 )
             })?;
-        let plan = match selected {
-            hew_types::ValueMethodPlan::Derived => crate::SemValueMethodPlan::Derived,
+        let callable = match selected.plan() {
+            hew_types::ValueMethodPlan::Derived => None,
             hew_types::ValueMethodPlan::User { method, type_args } => {
-                let callable = if self.table.templates.contains_key(&method) {
-                    self.request_instance(&method, type_args.clone())?
+                let callable = if self.table.templates.contains_key(method) {
+                    self.request_instance(method, type_args.clone())?
                 } else {
                     if !type_args.is_empty() {
                         return Err("selected nongeneric capability has type arguments".to_string());
@@ -952,7 +952,7 @@ impl<'a> InstanceService<'a> {
                     let id = self
                         .table
                         .monomorphic_by_declaration
-                        .get(&method)
+                        .get(method)
                         .copied()
                         .ok_or_else(|| {
                             format!(
@@ -972,15 +972,17 @@ impl<'a> InstanceService<'a> {
                     .get(&TypeInstanceKey(ty.clone()))
                     .ok_or_else(|| "selected capability type facts disappeared".to_string())?;
                 crate::capability::verify_capability_signature(ty, capability, metadata, *facts)?;
-                crate::SemValueMethodPlan::User {
-                    declaration: method,
-                    type_args,
-                    callable,
-                }
+                Some(callable)
             }
         };
-        let derived = matches!(plan, crate::SemValueMethodPlan::Derived);
-        self.value_capabilities.insert(key.clone(), plan);
+        let derived = matches!(selected.plan(), hew_types::ValueMethodPlan::Derived);
+        self.value_capabilities.insert(
+            key.clone(),
+            crate::SemValueMethodPlan {
+                selection: selected,
+                callable,
+            },
+        );
         if derived {
             let result = crate::derived_capability_components(
                 ty,
@@ -4971,7 +4973,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let instantiated = contract.instantiate(&parameter_types, &self.ty(&expr.ty))?;
         if matches!(
             family,
-            hew_types::RuntimeCallFamily::Map(_) | hew_types::RuntimeCallFamily::Set(_)
+            hew_types::RuntimeCallFamily::Map(hew_types::runtime_call::MapValueOp::New)
+                | hew_types::RuntimeCallFamily::Set(hew_types::runtime_call::SetValueOp::New)
         ) {
             let result_ty = self.ty(&expr.ty);
             let collection_ty = parameter_types.first().unwrap_or(&result_ty);

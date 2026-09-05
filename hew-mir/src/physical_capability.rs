@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use hew_types::{ResolvedTy, ValueCapability};
+use hew_types::{ResolvedTy, ValueCapability, ValueMethodPlan};
 
 use super::{
     PhysicalAggregateId, PhysicalError, PhysicalGlueIds, PhysicalMapId, PhysicalModule,
@@ -36,11 +36,9 @@ pub(super) fn build(
         .value_capabilities
         .iter()
         .map(|(key, selection)| {
-            let method = match selection {
-                hew_sir::SemValueMethodPlan::User { callable, .. } => {
-                    PhysicalValueMethod::User(*callable)
-                }
-                hew_sir::SemValueMethodPlan::Derived => derived_method(&key.0, ids)?,
+            let method = match selection.callable {
+                Some(callable) => PhysicalValueMethod::User(callable),
+                None => derived_method(&key.0, ids)?,
             };
             Ok((
                 key.clone(),
@@ -77,6 +75,12 @@ fn derived_method(
 
 pub(super) fn verify(module: &PhysicalModule) -> Result<(), PhysicalError> {
     for ((ty, capability), plan) in &module.value_capabilities {
+        let selected = &plan.selection.selection;
+        if selected.ty() != ty || selected.capability() != *capability {
+            return Err(PhysicalError::new(
+                "physical value selection belongs to another type or capability",
+            ));
+        }
         let facts = super::semantic_type_facts(module, ty)?;
         let admitted = match capability {
             ValueCapability::Hash => facts.hash,
@@ -87,14 +91,22 @@ pub(super) fn verify(module: &PhysicalModule) -> Result<(), PhysicalError> {
                 "physical value capability disagrees with its type facts",
             ));
         }
-        if let hew_sir::SemValueMethodPlan::User { callable, .. } = &plan.selection {
-            if plan.method != PhysicalValueMethod::User(*callable) {
+        if let ValueMethodPlan::User { method, type_args } = selected.plan() {
+            let callable = plan.selection.callable.ok_or_else(|| {
+                PhysicalError::new("physical user capability has no executable callable")
+            })?;
+            if plan.method != PhysicalValueMethod::User(callable) {
                 return Err(PhysicalError::new(
                     "physical value capability changed its selected callable",
                 ));
             }
-            verify_user(module, ty, *capability, *callable)?;
+            verify_user(module, ty, *capability, callable, method, type_args)?;
         } else {
+            if plan.selection.callable.is_some() {
+                return Err(PhysicalError::new(
+                    "physical derived capability carries an unselected callable",
+                ));
+            }
             let components = derived_components(module, ty, plan.method)?;
             for component in components {
                 if !module
@@ -170,12 +182,25 @@ fn verify_user(
     ty: &ResolvedTy,
     capability: ValueCapability,
     id: hew_sir::CallableId,
+    declaration: &hew_types::DefId,
+    type_args: &[ResolvedTy],
 ) -> Result<(), PhysicalError> {
     let callable = module
         .callables
         .get(id.0 as usize)
         .filter(|callable| callable.id == id)
         .ok_or_else(|| PhysicalError::new("physical capability has no callable"))?;
+    let exact_instance = match &callable.instance {
+        hew_sir::CallableInstance::Monomorphic => type_args.is_empty(),
+        hew_sir::CallableInstance::Generic(key) => {
+            &key.template.declaration == declaration && key.type_args == type_args
+        }
+    };
+    if &callable.declaration != declaration || !exact_instance {
+        return Err(PhysicalError::new(
+            "physical capability callable disagrees with its checker selection",
+        ));
+    }
     let (arity, return_ty) = match capability {
         ValueCapability::Hash => (1, ResolvedTy::I64),
         ValueCapability::Eq => (2, ResolvedTy::Bool),

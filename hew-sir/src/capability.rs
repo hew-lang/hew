@@ -1,16 +1,16 @@
-use hew_types::{DefId, ResolvedTy, TypeInstanceKey, ValueCapability};
+use hew_types::{
+    ResolvedTy, TypeInstanceKey, ValueCapability, ValueMethodPlan, ValueMethodSelection,
+};
 
 use crate::{CallableId, CallableInstance, OwnKind, SemModule, SemParamPassing};
 
 /// Executable semantic selection, independent of native callback layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SemValueMethodPlan {
-    Derived,
-    User {
-        declaration: DefId,
-        type_args: Vec<ResolvedTy>,
-        callable: CallableId,
-    },
+pub struct SemValueMethodPlan {
+    /// Immutable evidence of the checker's choice for this exact type and operation.
+    pub selection: ValueMethodSelection,
+    /// Executable body demanded for a user selection; absent for structural operations.
+    pub callable: Option<CallableId>,
 }
 
 /// Components traversed by a checker-authorized structural operation.
@@ -72,6 +72,9 @@ pub(crate) fn verify_value_capability(
     capability: ValueCapability,
     plan: &SemValueMethodPlan,
 ) -> Result<(), String> {
+    if plan.selection.ty() != ty || plan.selection.capability() != capability {
+        return Err("selected operation belongs to another type or capability".to_string());
+    }
     let facts = module
         .type_facts
         .get(&TypeInstanceKey(ty.clone()))
@@ -82,12 +85,14 @@ pub(crate) fn verify_value_capability(
     } {
         return Err("selected operation disagrees with checker capability facts".to_string());
     }
-    let SemValueMethodPlan::User {
-        declaration,
+    let ValueMethodPlan::User {
+        method: declaration,
         type_args,
-        callable,
-    } = plan
+    } = plan.selection.plan()
     else {
+        if plan.callable.is_some() {
+            return Err("derived operation carries an unselected callable".to_string());
+        }
         for component in
             derived_capability_components(ty, &module.aggregate_shapes, &module.variant_shapes)?
         {
@@ -100,7 +105,10 @@ pub(crate) fn verify_value_capability(
         }
         return Ok(());
     };
-    let selected = module.callable(*callable).ok_or_else(|| {
+    let callable = plan
+        .callable
+        .ok_or_else(|| "selected user operation has no executable callable".to_string())?;
+    let selected = module.callable(callable).ok_or_else(|| {
         "selected capability callable is absent from the canonical table".to_string()
     })?;
     if &selected.declaration != declaration {

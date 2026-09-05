@@ -419,8 +419,7 @@ fn map_emptiness_uses_the_semantic_length_operation() {
 
 #[test]
 fn collection_keys_demand_selected_methods_even_without_direct_source_calls() {
-    use hew_sir::SemValueMethodPlan;
-    use hew_types::ValueCapability;
+    use hew_types::{ValueCapability, ValueMethodPlan};
     let module = lower_source(
         r#"
         type Key { id: i64 }
@@ -441,24 +440,21 @@ fn collection_keys_demand_selected_methods_even_without_direct_source_calls() {
             .iter()
             .find(|((ty, op), _)| ty.user_facing().to_string() == "Key" && *op == capability)
             .expect("derived outer operation must select the field override");
-        let SemValueMethodPlan::User {
-            declaration,
+        let ValueMethodPlan::User {
+            method: declaration,
             type_args,
-            callable,
-        } = plan
+        } = plan.selection.plan()
         else {
             panic!("must preserve the user implementation");
         };
+        let callable = plan.callable.expect("selected executable body");
         assert!(type_args.is_empty());
-        assert_eq!(
-            &module.callable(*callable).unwrap().declaration,
-            declaration
-        );
+        assert_eq!(&module.callable(callable).unwrap().declaration, declaration);
         assert!(
-            module.function_index().function(*callable).is_some(),
+            module.function_index().function(callable).is_some(),
             "callback body must be demanded"
         );
-        selected.push((key.clone(), *callable));
+        selected.push((key.clone(), callable));
     }
     assert_ne!(selected[0].1, selected[1].1);
 
@@ -473,14 +469,11 @@ fn collection_keys_demand_selected_methods_even_without_direct_source_calls() {
     );
 
     let mut mismatched = module.clone();
-    let SemValueMethodPlan::User { callable, .. } = mismatched
+    mismatched
         .value_capabilities
         .get_mut(&selected[0].0)
         .unwrap()
-    else {
-        unreachable!()
-    };
-    *callable = selected[1].1;
+        .callable = Some(selected[1].1);
     assert!(
         verify_module(&mismatched).iter().any(|diagnostic| matches!(
             diagnostic.kind,
@@ -492,7 +485,8 @@ fn collection_keys_demand_selected_methods_even_without_direct_source_calls() {
 
 #[test]
 fn collection_keys_demand_the_exact_generic_impl_specialization() {
-    use hew_sir::{CallableInstance, SemValueMethodPlan};
+    use hew_sir::CallableInstance;
+    use hew_types::ValueMethodPlan;
     let module = lower_source(
         r#"
         type Key<T> { value: T }
@@ -509,24 +503,166 @@ fn collection_keys_demand_the_exact_generic_impl_specialization() {
         .iter()
         .find_map(|((_, capability), plan)| {
             (*capability == hew_types::ValueCapability::Hash
-                && matches!(plan, SemValueMethodPlan::User { .. }))
+                && matches!(plan.selection.plan(), ValueMethodPlan::User { .. }))
             .then_some(plan)
         })
         .expect("generic key hash implementation");
-    let SemValueMethodPlan::User {
-        declaration,
+    let ValueMethodPlan::User {
+        method: declaration,
         type_args,
-        callable,
-    } = plan
+    } = plan.selection.plan()
     else {
         unreachable!()
     };
+    let callable = plan.callable.expect("selected executable body");
     assert_eq!(type_args, &[hew_types::ResolvedTy::I64]);
-    let selected = module.callable(*callable).unwrap();
+    let selected = module.callable(callable).unwrap();
     let CallableInstance::Generic(instance) = &selected.instance else {
         panic!("concrete specialization")
     };
     assert_eq!(&instance.template.declaration, declaration);
     assert_eq!(&instance.type_args, type_args);
-    assert!(module.function_index().function(*callable).is_some());
+    assert!(module.function_index().function(callable).is_some());
+}
+
+#[test]
+fn selected_key_capabilities_reject_forged_evidence_and_compatible_substitutes() {
+    use hew_types::{ValueCapability, ValueMethodPlan};
+    let module = lower_source(
+        r"
+        type Key { id: i64 }
+        impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
+        fn other_hash(value: Key) -> i64 { value.id }
+        fn main() -> i64 {
+            let values: HashMap<Key, string> = HashMap.new();
+            values.len() + other_hash(Key { id: 7 })
+        }
+        ",
+    );
+    let (user_key, user) = module
+        .value_capabilities
+        .iter()
+        .find(|(_, plan)| matches!(plan.selection.plan(), ValueMethodPlan::User { .. }))
+        .unwrap();
+    let alternative = module
+        .callables
+        .iter()
+        .find(|callable| callable.symbol.ends_with("other_hash"))
+        .unwrap();
+    let selected = module.callable(user.callable.unwrap()).unwrap();
+    assert_eq!(selected.signature, alternative.signature);
+    let derived_key = (user_key.0.clone(), ValueCapability::Eq);
+    let derived = &module.value_capabilities[&derived_key];
+    assert!(matches!(derived.selection.plan(), ValueMethodPlan::Derived));
+
+    for mutation in 0..5 {
+        let mut altered = module.clone();
+        match mutation {
+            0 => {
+                altered
+                    .value_capabilities
+                    .get_mut(user_key)
+                    .unwrap()
+                    .callable = Some(alternative.id);
+            }
+            1 => {
+                altered
+                    .value_capabilities
+                    .get_mut(user_key)
+                    .unwrap()
+                    .callable = None;
+            }
+            2 => {
+                let plan = altered.value_capabilities.get_mut(user_key).unwrap();
+                plan.selection = derived.selection.clone();
+                plan.callable = None;
+            }
+            3 => {
+                altered
+                    .value_capabilities
+                    .get_mut(&derived_key)
+                    .unwrap()
+                    .callable = user.callable;
+            }
+            4 => {
+                let scalar = module
+                    .value_capabilities
+                    .get(&(hew_types::ResolvedTy::I64, ValueCapability::Eq))
+                    .unwrap();
+                altered
+                    .value_capabilities
+                    .get_mut(&derived_key)
+                    .unwrap()
+                    .selection = scalar.selection.clone();
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            verify_module(&altered).iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                hew_sir::SirDiagnosticKind::InvalidValueCapability { .. }
+            )),
+            "forged capability evidence must be rejected (mutation {mutation})"
+        );
+    }
+}
+
+#[test]
+fn collection_construction_requires_both_selected_key_operations() {
+    use hew_types::{ResolvedTy, ValueCapability};
+    for collection in ["HashMap<i64, string>", "HashSet<i64>"] {
+        let module = lower_source(&format!(
+            "fn main() -> i64 {{ let values: {collection} = {}.new(); values.len() }}",
+            collection.split('<').next().unwrap()
+        ));
+        for capability in [ValueCapability::Hash, ValueCapability::Eq] {
+            let mut missing = module.clone();
+            missing
+                .value_capabilities
+                .remove(&(ResolvedTy::I64, capability));
+            assert!(
+                verify_module(&missing).iter().any(|diagnostic| matches!(
+                    diagnostic.kind,
+                    hew_sir::SirDiagnosticKind::InvalidValueCapability { .. }
+                )),
+                "construction requires the {capability:?} plan for {collection}"
+            );
+        }
+    }
+}
+
+#[test]
+fn borrowed_collection_reads_do_not_demand_key_callbacks() {
+    let parsed = hew_parser::parse(
+        r"
+        type Key { id: i64 }
+        impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
+        fn size(values: HashMap<Key, string>, keys: HashSet<Key>) -> i64 {
+            values.len() + keys.len()
+        }
+        ",
+    );
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+    let facts = checker.check_program(&parsed.program);
+    assert!(facts.errors.is_empty(), "{:#?}", facts.errors);
+    let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let declaration = hir
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "size" => {
+                Some(function.declaration.clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    let lowered = hew_sir::lower_module_with_roots(&hir.module, &facts, &[declaration]).unwrap();
+    let families = operation_families(&lowered.module);
+    assert!(families.contains(&RuntimeCallFamily::Map(MapValueOp::Len)));
+    assert!(families.contains(&RuntimeCallFamily::Set(SetValueOp::Len)));
+    assert!(lowered.module.value_capabilities.is_empty());
+    assert!(verify_module(&lowered.module).is_empty());
 }

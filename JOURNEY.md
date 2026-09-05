@@ -1048,3 +1048,26 @@ tests cover exact Set dispatch/results, invalid snapshot calls, direct and field
 mutations, read-only controls and the permanent Map/Set mutation warnings.
 Map projection admission and canonical Map emptiness dispatch remain follow-up
 work; HIR/SIR lowering and runtime capability/fault producers remain root-owned.
+
+## Collection source admission: semantic projections and Map emptiness
+
+Removed the separate representation allowlist for Map projections and its stale
+tests. Projection calls and both iterator producers now use common collection
+admission, and Map value copying uses the recursive clone proof already shared
+by collection iteration. Nested collection keys follow that same semantic proof;
+the replaced Map-specific clone walk and layout-based key copy predicate are
+deleted. Resource and function-bearing values remain refused by source tests.
+
+Map is_empty now has canonical typed dispatch with a Boolean result and no
+runtime endpoint. Its runtime-operation conversion explicitly returns None;
+root owns the HIR composition from Map length. The linked-symbol tests still
+check actual runtime endpoints and separately require this composition to have
+no symbol. Public Map emptiness checks arity before recording dispatch.
+
+The checker selection builds, but this intermediate checkpoint is not full
+acceptance: the stricter shared clone proof exposes a forward-declaration timing
+defect in mutual recursive Map values, and nested owned-key projections still
+hit the old layout-key value-admission path. The next bounded step consumes the
+selected capability API and removes that obsolete key-admission contract,
+including the reported generic Key<i64> refusal. These failures remain visible;
+the tests are neither ignored nor changed to expect rejection.

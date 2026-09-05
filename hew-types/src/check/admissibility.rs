@@ -1059,33 +1059,6 @@ impl Checker {
             && self.registry.implements_marker(ty, MarkerTrait::Eq)
     }
 
-    fn hashmap_nested_key_clone_blocker(&self, ty: &Ty) -> Option<String> {
-        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if primitive_copy_layout(&resolved, &self.type_defs).is_some() {
-            return None;
-        }
-        match &resolved {
-            Ty::String => None,
-            // `hew_hashmap_clone_layout` can deep-clone Plain and string keys.
-            // Bytes/layout-managed keys have no key-side clone thunk field in
-            // `HewMapKeyLayout`, so a HashMap with such a key is not cloneable
-            // when nested inside another owned value.
-            Ty::Bytes => Some("bytes key".to_string()),
-            Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::TraitObject { .. }
-            | Ty::CancellationToken
-            | Ty::Task(_) => Some(resolved.user_facing().to_string()),
-            Ty::Named { name, .. }
-                if self.canonical_owned_handle_type_name(name).is_some()
-                    || self.is_user_opaque_type_name(name) =>
-            {
-                Some(name.clone())
-            }
-            other => Some(format!("non-cloneable map key `{}`", other.user_facing())),
-        }
-    }
-
     /// Opaque declarations are nominal. Imported uses must carry the exact
     /// owner, so a same-leaf foreign type cannot inherit opacity.
     fn is_user_opaque_type_name(&self, name: &str) -> bool {
@@ -1118,124 +1091,6 @@ impl Checker {
                 (return_name == name).then(|| sig.params.clone())
             })
             .unwrap_or_default()
-    }
-
-    fn hashmap_type_def_clone_blocker(
-        &self,
-        type_def: &TypeDef,
-        args: &[Ty],
-        visiting: &mut HashSet<String>,
-    ) -> Option<String> {
-        let field_blocker = type_def.fields.values().find_map(|field_ty| {
-            let field_ty = Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-            self.hashmap_value_clone_blocker(&field_ty, visiting)
-        });
-        if field_blocker.is_some() {
-            return field_blocker;
-        }
-
-        type_def
-            .variants
-            .values()
-            .find_map(|variant| match variant {
-                VariantDef::Unit => None,
-                VariantDef::Tuple(tys) => tys.iter().find_map(|field_ty| {
-                    let field_ty =
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-                    self.hashmap_value_clone_blocker(&field_ty, visiting)
-                }),
-                VariantDef::Struct(fields) => fields.iter().find_map(|(_, field_ty)| {
-                    let field_ty =
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-                    self.hashmap_value_clone_blocker(&field_ty, visiting)
-                }),
-            })
-    }
-
-    fn hashmap_named_value_clone_blocker(
-        &self,
-        name: &str,
-        args: &[Ty],
-        builtin: Option<BuiltinType>,
-        visiting: &mut HashSet<String>,
-    ) -> Option<String> {
-        if self.canonical_owned_handle_type_name(name).is_some()
-            || self.is_user_opaque_type_name(name)
-        {
-            return Some(name.to_string());
-        }
-
-        match builtin {
-            Some(BuiltinType::Vec) => {
-                return args
-                    .first()
-                    .and_then(|elem| self.hashmap_value_clone_blocker(elem, visiting));
-            }
-            Some(BuiltinType::HashMap) if args.len() == 2 => {
-                return self
-                    .hashmap_nested_key_clone_blocker(&args[0])
-                    .or_else(|| self.hashmap_value_clone_blocker(&args[1], visiting));
-            }
-            Some(BuiltinType::HashSet) => {
-                return args
-                    .first()
-                    .and_then(|elem| self.hashmap_nested_key_clone_blocker(elem));
-            }
-            Some(BuiltinType::Option | BuiltinType::Result | BuiltinType::Range) => {
-                if let Some(blocker) = args
-                    .iter()
-                    .find_map(|arg| self.hashmap_value_clone_blocker(arg, visiting))
-                {
-                    return Some(blocker);
-                }
-            }
-            _ => {}
-        }
-
-        if let Some(blocker) = args
-            .iter()
-            .find_map(|arg| self.hashmap_value_clone_blocker(arg, visiting))
-        {
-            return Some(blocker);
-        }
-
-        let type_def = self.lookup_type_def(name)?;
-        // Track declaration identity, not the resolved display spelling: a
-        // generic or qualified recursive use must re-enter this same frame.
-        let visit_key = type_def.name.clone();
-        if !visiting.insert(visit_key.clone()) {
-            return None;
-        }
-        let blocker = self.hashmap_type_def_clone_blocker(&type_def, args, visiting);
-        visiting.remove(&visit_key);
-        blocker
-    }
-
-    fn hashmap_value_clone_blocker(
-        &self,
-        ty: &Ty,
-        visiting: &mut HashSet<String>,
-    ) -> Option<String> {
-        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        match &resolved {
-            Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::TraitObject { .. }
-            | Ty::CancellationToken
-            | Ty::Task(_) => Some(resolved.user_facing().to_string()),
-            Ty::Tuple(items) => items
-                .iter()
-                .find_map(|item| self.hashmap_value_clone_blocker(item, visiting)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => {
-                self.hashmap_value_clone_blocker(elem, visiting)
-            }
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => self.hashmap_named_value_clone_blocker(name, args, *builtin, visiting),
-            _ => None,
-        }
     }
 
     /// Cross a descriptor-backed buffer while retaining the active type path.
@@ -1320,16 +1175,13 @@ impl Checker {
                 }
                 match builtin {
                     Some(BuiltinType::Rc | BuiltinType::Weak) if args.len() == 1 => return None,
-                    Some(BuiltinType::Vec) if args.len() == 1 => {
+                    Some(BuiltinType::Vec | BuiltinType::HashSet) if args.len() == 1 => {
                         return self.vec_iter_container_element_clone_blocker(&args[0], visiting);
                     }
                     Some(BuiltinType::HashMap) if args.len() == 2 => {
-                        return self.hashmap_nested_key_clone_blocker(&args[0]).or_else(|| {
-                            self.vec_iter_container_element_clone_blocker(&args[1], visiting)
+                        return args.iter().find_map(|arg| {
+                            self.vec_iter_container_element_clone_blocker(arg, visiting)
                         });
-                    }
-                    Some(BuiltinType::HashSet) if args.len() == 1 => {
-                        return self.hashmap_nested_key_clone_blocker(&args[0]);
                     }
                     Some(BuiltinType::Option | BuiltinType::Result | BuiltinType::Range) => {
                         return args
@@ -1697,16 +1549,16 @@ impl Checker {
     }
 
     fn validate_hashmap_value_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
-        let mut visiting = HashSet::new();
-        if let Some(blocker) = self.hashmap_value_clone_blocker(ty, &mut visiting) {
+        let mut visiting = CollectionClonePath::default();
+        if let Some(blocker) = self.vec_iter_clone_blocker(ty, &mut visiting) {
             let resolved = self.subst.resolve(ty).materialize_literal_defaults();
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
                     "`HashMap<_, {}>` is not supported: `HashMap.get()` returns an owned \
-                     `Option<V>`, but value type `{}` contains `{blocker}` which has no \
-                     map value clone_fn; use a cloneable value type",
+                     `Option<V>`, but value type `{}` contains {blocker} which has no \
+                     semantic clone/retain operation; use a cloneable value type",
                     resolved.user_facing(),
                     resolved.user_facing(),
                 ),
@@ -1714,39 +1566,6 @@ impl Checker {
             return false;
         }
         true
-    }
-
-    fn is_supported_hashmap_projection_element_type(&self, ty: &Ty) -> bool {
-        match ty {
-            Ty::Bool
-            | Ty::Char
-            | Ty::I32
-            | Ty::U32
-            | Ty::I64
-            | Ty::U64
-            | Ty::F32
-            | Ty::F64
-            | Ty::String => true,
-            Ty::Named {
-                name,
-                builtin: None,
-                ..
-            } => {
-                let Some(type_def) = self.type_defs.get(name.as_str()).or_else(|| {
-                    name.split_once('.')
-                        .and_then(|(_, local)| self.type_defs.get(local))
-                }) else {
-                    return false;
-                };
-                matches!(
-                    type_def.kind,
-                    TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
-                ) && !self.registry.is_resource(name)
-                    && (primitive_copy_layout(ty, &self.type_defs).is_some()
-                        || self.registry.implements_marker(ty, MarkerTrait::Copy))
-            }
-            _ => false,
-        }
     }
 
     pub(super) fn validate_hashmap_key_value_types(
@@ -1886,68 +1705,6 @@ impl Checker {
         span: &Span,
     ) -> bool {
         self.validate_hashmap_key_value_types(key_ty, val_ty, span)
-    }
-
-    pub(super) fn validate_hashmap_projection_element_types(
-        &mut self,
-        key_ty: &Ty,
-        val_ty: &Ty,
-        method: &str,
-        span: &Span,
-    ) -> bool {
-        if !self.validate_hashmap_owned_element_types(key_ty, val_ty, span) {
-            return false;
-        }
-
-        let resolved_key = self.subst.resolve(key_ty).materialize_literal_defaults();
-        let resolved_val = self.subst.resolve(val_ty).materialize_literal_defaults();
-
-        if matches!(resolved_key, Ty::Error) || matches!(resolved_val, Ty::Error) {
-            return false;
-        }
-
-        if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
-            return true;
-        }
-
-        // `keys()` only needs the key layout — `hew_hashmap_keys_layout`
-        // (hew-runtime/src/hashmap.rs) branches solely on `map.key_layout` and
-        // never reads the value layout at all, so a value type unsupported for
-        // projection (e.g. a managed `Vec<i64>`) must not block `.keys()`; it
-        // only actually blocks `.values()` (and the `into_iter`/`for (k, v) in m`
-        // desugars, which separately call this function again with
-        // `method == "values"` and so still gate the value type there).
-        if method != "keys" && !self.is_supported_hashmap_projection_element_type(&resolved_val) {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`HashMap<{}, {}>.{method}()` is not yet supported: projecting from a map with value type `{}` into an owned `Vec` is not lowered; supported projection value types are scalar primitives, `string`, and Copy record/enum types",
-                    resolved_key.user_facing(),
-                    resolved_val.user_facing(),
-                    resolved_val.user_facing()
-                ),
-            );
-            return false;
-        }
-
-        if matches!(method, "keys" | "entries")
-            && !self.is_supported_hashmap_projection_element_type(&resolved_key)
-        {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`HashMap<{}, {}>.{method}()` is not yet supported: projecting key type `{}` into an owned `Vec` is not lowered; supported projection key types are scalar primitives, `string`, and Copy record/enum types",
-                    resolved_key.user_facing(),
-                    resolved_val.user_facing(),
-                    resolved_key.user_facing()
-                ),
-            );
-            return false;
-        }
-
-        true
     }
 
     pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
@@ -3751,24 +3508,6 @@ mod tests {
         td
     }
 
-    fn make_enum(name: &str, variants: Vec<(&str, VariantDef)>) -> TypeDef {
-        TypeDef {
-            kind: TypeDefKind::Enum,
-            name: name.to_string(),
-            type_params: vec![],
-            bounds: HashMap::new(),
-            fields: HashMap::new(),
-            field_order: vec![],
-            variants: variants
-                .into_iter()
-                .map(|(name, variant)| (name.to_string(), variant))
-                .collect(),
-            methods: HashMap::new(),
-            doc_comment: None,
-            is_indirect: false,
-        }
-    }
-
     #[test]
     fn primitive_copy_layout_bool_is_1_1() {
         assert_eq!(
@@ -3896,103 +3635,6 @@ mod tests {
         let td = tds.get("Person").unwrap().clone();
         // name (8/8 pointer) + age (8/8) => 16 bytes, align 8.
         assert_eq!(hash_key_record_layout(&td, &tds), Some((16, 8)));
-    }
-
-    #[test]
-    fn hashmap_projection_element_gate_accepts_lowered_scalars_and_string() {
-        let checker = Checker::new(ModuleRegistry::new(vec![]));
-        for ty in [
-            Ty::Bool,
-            Ty::Char,
-            Ty::I32,
-            Ty::U32,
-            Ty::I64,
-            Ty::U64,
-            Ty::F32,
-            Ty::F64,
-            Ty::String,
-        ] {
-            assert!(
-                checker.is_supported_hashmap_projection_element_type(&ty),
-                "expected `{}` to be admitted for HashMap projection",
-                ty.user_facing()
-            );
-        }
-    }
-
-    #[test]
-    fn hashmap_projection_element_gate_accepts_copy_record_and_enum() {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        checker.type_defs.insert(
-            "Point".to_string(),
-            make_record("Point", vec![("x", Ty::I64), ("y", Ty::I64)]),
-        );
-        checker.type_defs.insert(
-            "Direction".to_string(),
-            make_enum(
-                "Direction",
-                vec![
-                    ("North", VariantDef::Unit),
-                    ("Delta", VariantDef::Tuple(vec![Ty::I64])),
-                ],
-            ),
-        );
-        checker
-            .registry
-            .register_type("Direction".to_string(), vec![Ty::I64]);
-
-        for ty in [
-            Ty::normalize_named("Point".to_string(), vec![]),
-            Ty::normalize_named("Direction".to_string(), vec![]),
-        ] {
-            assert!(
-                checker.is_supported_hashmap_projection_element_type(&ty),
-                "expected `{}` to be admitted for HashMap projection",
-                ty.user_facing()
-            );
-        }
-    }
-
-    #[test]
-    fn hashmap_projection_element_gate_rejects_owned_aggregate_shapes() {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        checker.type_defs.insert(
-            "User".to_string(),
-            make_record("User", vec![("name", Ty::String), ("id", Ty::I64)]),
-        );
-        checker.type_defs.insert(
-            "Payload".to_string(),
-            make_enum(
-                "Payload",
-                vec![(
-                    "Chunk",
-                    VariantDef::Tuple(vec![Ty::Named {
-                        name: "Vec".to_string(),
-                        args: vec![Ty::I64],
-                        builtin: Some(BuiltinType::Vec),
-                    }]),
-                )],
-            ),
-        );
-        checker.registry.register_type(
-            "Payload".to_string(),
-            vec![Ty::Named {
-                name: "Vec".to_string(),
-                args: vec![Ty::I64],
-                builtin: Some(BuiltinType::Vec),
-            }],
-        );
-
-        let record_ty = Ty::normalize_named("User".to_string(), vec![]);
-        let enum_ty = Ty::normalize_named("Payload".to_string(), vec![]);
-        let vec_ty = Ty::Named {
-            name: "Vec".to_string(),
-            args: vec![Ty::I64],
-            builtin: Some(BuiltinType::Vec),
-        };
-        assert!(!checker.is_supported_hashmap_projection_element_type(&record_ty));
-        assert!(!checker.is_supported_hashmap_projection_element_type(&enum_ty));
-        assert!(!checker.is_supported_hashmap_projection_element_type(&vec_ty));
     }
 
     #[test]

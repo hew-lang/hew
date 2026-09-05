@@ -523,7 +523,7 @@ impl MapValueOp {
             crate::HashMapMethod::Keys => Self::Keys,
             crate::HashMapMethod::Values => Self::Values,
             crate::HashMapMethod::Entries => Self::Entries,
-            crate::HashMapMethod::Clone => return None,
+            crate::HashMapMethod::Clone | crate::HashMapMethod::IsEmpty => return None,
         })
     }
 

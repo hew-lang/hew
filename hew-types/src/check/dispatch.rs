@@ -173,7 +173,8 @@ pub struct MethodTarget {
     /// *dispatch decisions* (which collection? which method?) must read
     /// [`MethodTarget::family`] instead — the string is then only used
     /// as the literal callee name for `Terminator::Call`. A later slice
-    /// retires the string for fully-typed runtime calls.
+    /// retires the string for fully-typed runtime calls. A composed semantic
+    /// method has no linker endpoint and carries an empty string.
     pub symbol_name: String,
     /// Typed dispatch family — the *closed-set* identity of this method
     /// target. Consumers that need to ask "is this a `HashMap` insert?"
@@ -321,6 +322,8 @@ pub enum HashMapMethod {
     ContainsKey,
     Remove,
     Len,
+    /// Composed from semantic length and comparison; has no runtime endpoint.
+    IsEmpty,
     Keys,
     Values,
     Entries,

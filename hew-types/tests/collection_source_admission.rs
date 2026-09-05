@@ -1,7 +1,7 @@
 use hew_types::error::TypeErrorKind;
 use hew_types::{
-    module_registry::ModuleRegistry, CallTarget, Checker, HashSetMethod, MethodTargetFamily,
-    SpanKey, Ty, TypeCheckOutput,
+    module_registry::ModuleRegistry, CallTarget, Checker, HashMapMethod, HashSetMethod,
+    MethodTargetFamily, SpanKey, Ty, TypeCheckOutput,
 };
 
 fn check(source: &str) -> TypeCheckOutput {
@@ -152,6 +152,7 @@ fn collection_field_mutation_tracks_the_containing_binding() {
 fn permanent_map_and_set_mutations_do_not_warn_about_unused_mutability() {
     for source in [
         include_str!("../../tests/core-acceptance/cases/map-value-copy.hew"),
+        include_str!("../../tests/core-acceptance/cases/map-owned-projections.hew"),
         include_str!("../../tests/core-acceptance/cases/map-scalar-growth-remove.hew"),
         include_str!("../../tests/core-acceptance/cases/map-record-key.hew"),
         include_str!("../../tests/core-acceptance/cases/map-index-fault.hew"),
@@ -166,5 +167,108 @@ fn permanent_map_and_set_mutations_do_not_warn_about_unused_mutability() {
             "permanent source mutations must be recognised: {:#?}",
             output.warnings
         );
+    }
+}
+
+#[test]
+fn map_emptiness_resolves_to_a_composed_typed_method() {
+    let source = r"
+        fn inspect() -> bool {
+            let values: HashMap<string, Vec<string>> = HashMap.new();
+            let empty = values.is_empty();
+            empty
+        }
+        fn main() -> i64 { if inspect() { 1 } else { 0 } }
+    ";
+    let output = check_ok(source);
+    let start = source.find("values.is_empty()").unwrap();
+    let site = SpanKey::from(&(start..start + "values.is_empty()".len()));
+    assert_eq!(output.expr_types[&site], Ty::Bool);
+    assert_eq!(
+        output.resolved_calls[&site].target,
+        CallTarget::RuntimeCollection(MethodTargetFamily::HashMap(HashMapMethod::IsEmpty))
+    );
+    assert!(output.resolved_calls[&site]
+        .method_target
+        .symbol_name
+        .is_empty());
+    assert!(hew_types::runtime_call::MapValueOp::from_method(HashMapMethod::IsEmpty).is_none());
+    let invalid = check(&source.replace("values.is_empty()", "values.is_empty(1)"));
+    assert!(invalid
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::ArityMismatch));
+}
+
+#[test]
+fn map_snapshots_admit_nested_ordinary_values_and_owned_keys() {
+    for value in [
+        "Vec<string>",
+        "Payload",
+        "Vec<Payload>",
+        "Option<Result<Payload, string>>",
+        "HashMap<Key, Vec<Payload>>",
+        "HashSet<Key>",
+        "Rc<Payload>",
+    ] {
+        let source = format!(
+            r"
+            type Key {{ name: string, rank: i64 }}
+            enum Payload {{ Empty, Text(string), Children(Vec<Payload>), }}
+            fn main() -> i64 {{
+                let values: HashMap<Key, {value}> = HashMap.new();
+                let keys: Vec<Key> = values.keys();
+                let snapshot: Vec<{value}> = values.values();
+                let entries: Vec<(Key, {value})> = values.entries();
+                keys.len() + snapshot.len() + entries.len()
+            }}
+        "
+        );
+        check_ok(&source);
+    }
+}
+
+#[test]
+fn map_iteration_uses_the_same_recursive_snapshot_admission() {
+    check_ok(
+        r"
+        enum Carrier<T> { Leaf(T), Branches(Vec<Entry<T>>), }
+        type Entry<T> { value: Carrier<T> }
+        fn main() -> i64 {
+            let values: HashMap<string, Carrier<string>> = HashMap.new();
+            var count = 0;
+            for (key, value) in values { count += key.len(); }
+            var cursor = values.into_iter();
+            match cursor.next() {
+                .Some((key, value)) => count + key.len(),
+                .None => count,
+            }
+        }
+    ",
+    );
+}
+
+#[test]
+fn map_snapshots_preserve_resource_and_function_value_refusals() {
+    for (declarations, value, reason) in [
+        ("#[resource] type Token { id: i64 } impl Token { fn close(self) {} }", "Token", "resource/linear"),
+        ("#[resource] type Token { id: i64 } impl Token { fn close(self) {} } type Holder { token: Token }", "Holder", "resource/linear"),
+        ("#[resource] type Token { id: i64 } impl Token { fn close(self) {} }", "Vec<Token>", "resource/linear"),
+        ("", "fn(i64) -> i64", "closure value"),
+        ("type Holder { callback: fn(i64) -> i64 }", "Holder", "closure value"),
+        ("", "Vec<fn(i64) -> i64>", "closure value"),
+    ] {
+        for projection in ["keys", "values", "entries", "into_iter"] {
+            let source = format!(
+                "{declarations} fn main() {{ let values: HashMap<string, {value}> = HashMap.new(); values.{projection}(); }}"
+            );
+            let output = check(&source);
+            assert!(
+                output.errors.iter().any(|error| error.kind == TypeErrorKind::InvalidOperation
+                    && error.message.contains(reason)),
+                "{value}.{projection} must refuse an unavailable copy operation: {:#?}",
+                output.errors
+            );
+        }
     }
 }

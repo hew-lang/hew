@@ -301,7 +301,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "entries" => desc(Some(0), &[], VecOfPair),
             "clone" => desc(Some(0), &[], SelfTy),
             "len" => desc(None, &[], RetI64),
-            "is_empty" => desc(None, &[], Bool),
+            "is_empty" => desc(Some(0), &[], Bool),
             "clear" => desc(Some(0), &[], Unit),
             _ => return None,
         },
@@ -5927,11 +5927,9 @@ impl Checker {
             CollectionKind::HashMap => {
                 // Owned-vs-key_value validator split (deliberate per-arm asymmetry).
                 let validated = match method {
-                    "insert" | "get" | "remove" => {
+                    "insert" | "get" | "remove" | "keys" | "values" | "entries" => {
                         self.validate_hashmap_owned_element_types(&cx.key, &cx.val, span)
                     }
-                    "keys" | "values" | "entries" => self
-                        .validate_hashmap_projection_element_types(&cx.key, &cx.val, method, span),
                     _ => self.validate_hashmap_key_value_types(&cx.key, &cx.val, span),
                 };
                 if !validated {
@@ -5944,6 +5942,7 @@ impl Checker {
                         | "remove"
                         | "contains_key"
                         | "len"
+                        | "is_empty"
                         | "keys"
                         | "values"
                         | "entries"
@@ -6145,14 +6144,7 @@ impl Checker {
             let keys_span = span.start..span.start;
             let values_span = span.end..span.end;
             let mut iter_ty = Ty::Error;
-            if self.validate_hashmap_projection_element_types(&key_ty, &val_ty, "keys", &keys_span)
-                && self.validate_hashmap_projection_element_types(
-                    &key_ty,
-                    &val_ty,
-                    "values",
-                    &values_span,
-                )
-            {
+            if self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
                 let key_vec = self.make_vec_type(key_ty.clone(), &keys_span);
                 let val_vec = self.make_vec_type(val_ty.clone(), &values_span);
                 self.record_type(&keys_span, &key_vec);
@@ -11242,6 +11234,18 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 },
             ),
             (
+                "is_empty".to_string(),
+                MethodTarget {
+                    // HIR composes semantic Len == 0 from this typed method.
+                    // There is no separate runtime entry point to invoke.
+                    symbol_name: String::new(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::IsEmpty),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
                 "keys".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_keys_layout".to_string(),
@@ -12152,17 +12156,12 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_table_arity_skips_len_and_is_empty() {
-        // `len`/`is_empty` historically never called `check_arity`; the
-        // `Option<usize>` arity field must encode that asymmetry as `None`.
+    fn descriptor_table_preserves_existing_length_arities() {
         for kind in [CollectionKind::HashMap, CollectionKind::HashSet] {
             assert_eq!(arity_of(kind, "len"), None, "{kind:?}::len skips arity");
-            assert_eq!(
-                arity_of(kind, "is_empty"),
-                None,
-                "{kind:?}::is_empty skips arity"
-            );
         }
+        assert_eq!(arity_of(CollectionKind::HashSet, "is_empty"), None);
+        assert_eq!(arity_of(CollectionKind::HashMap, "is_empty"), Some(0));
     }
 
     #[test]

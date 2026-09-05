@@ -4307,8 +4307,8 @@ fn rc_hashmap_keys_supported_when_value_type_is_rc() {
 }
 
 #[test]
-fn rc_hashmap_values_rejected_without_projection_lowering() {
-    assert_invalid_operation_contains(
+fn rc_hashmap_values_share_collection_value_admission() {
+    assert_inline_typechecks_cleanly(
         r"
         type Holder {
             items: HashMap<string, Rc<i64>>
@@ -4316,8 +4316,7 @@ fn rc_hashmap_values_rejected_without_projection_lowering() {
         fn leak(h: Holder) -> Vec<Rc<i64>> {
             h.items.values()
         }",
-        "is not lowered",
-        "HashMap.values() on HashMap<string, Rc<i64>> should fail closed at projection lowering",
+        "HashMap.values() preserves independently owned Rc values",
     );
 }
 

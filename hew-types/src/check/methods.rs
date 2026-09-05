@@ -235,6 +235,8 @@ pub(super) enum RetTemplate {
     VecOfVal,
     /// `Vec<(K, V)>` (`HashMap` `entries`).
     VecOfPair,
+    /// `Vec<T>` (`HashSet` `to_vec`).
+    VecOfElem,
     /// The receiver collection type itself (`clone`).
     SelfTy,
 }
@@ -275,7 +277,9 @@ const fn desc(
 )]
 fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<CollectionMethodDesc> {
     use ArgTemplate::{Elem, Key, Value};
-    use RetTemplate::{Bool, SelfTy, Unit, VecOfKey, VecOfPair, VecOfVal, I64 as RetI64};
+    use RetTemplate::{
+        Bool, SelfTy, Unit, VecOfElem, VecOfKey, VecOfPair, VecOfVal, I64 as RetI64,
+    };
     Some(match kind {
         CollectionKind::HashMap => match method {
             "insert" => desc(Some(2), &[Key, Value], Unit),
@@ -305,6 +309,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "insert" => desc(Some(1), &[Elem], Bool),
             "contains" | "remove" => desc(Some(1), &[Elem], Bool),
             "clone" => desc(Some(0), &[], SelfTy),
+            "to_vec" => desc(Some(0), &[], VecOfElem),
             "len" => desc(None, &[], RetI64),
             "is_empty" => desc(None, &[], Bool),
             "clear" => desc(Some(0), &[], Unit),
@@ -5882,6 +5887,7 @@ impl Checker {
             RetTemplate::I64 => Ty::I64,
             RetTemplate::VecOfKey => self.make_vec_type(cx.key.clone(), span),
             RetTemplate::VecOfVal => self.make_vec_type(cx.val.clone(), span),
+            RetTemplate::VecOfElem => self.make_vec_type(cx.elem.clone(), span),
             RetTemplate::VecOfPair => {
                 self.make_vec_type(Ty::Tuple(vec![cx.key.clone(), cx.val.clone()]), span)
             }
@@ -5961,7 +5967,14 @@ impl Checker {
                 self.record_hashset_lowering_fact(span, &cx.elem);
                 if matches!(
                     method,
-                    "insert" | "contains" | "remove" | "len" | "is_empty" | "clone" | "clear"
+                    "insert"
+                        | "contains"
+                        | "remove"
+                        | "len"
+                        | "is_empty"
+                        | "clone"
+                        | "clear"
+                        | "to_vec"
                 ) {
                     self.record_resolved_hashset_call(method, &cx.elem, span);
                 }
@@ -7874,27 +7887,33 @@ impl Checker {
                 self.env.mark_written(name);
             }
         }
-        let vector_updates_receiver = self
+        let collection_updates_receiver = self
             .resolved_calls
             .get(&key)
             .and_then(|call| match call.target {
                 CallTarget::RuntimeCollection(crate::MethodTargetFamily::Vec(method)) => {
-                    crate::VecValueOp::from_method(method)
+                    crate::VecValueOp::from_method(method).map(crate::RuntimeCallFamily::Vector)
+                }
+                CallTarget::RuntimeCollection(crate::MethodTargetFamily::HashMap(method)) => {
+                    crate::runtime_call::MapValueOp::from_method(method)
+                        .map(crate::RuntimeCallFamily::Map)
+                }
+                CallTarget::RuntimeCollection(crate::MethodTargetFamily::HashSet(method)) => {
+                    crate::runtime_call::SetValueOp::from_method(method)
+                        .map(crate::RuntimeCallFamily::Set)
                 }
                 _ => None,
             })
-            .is_some_and(|op| {
+            .is_some_and(|family| {
                 matches!(
-                    crate::RuntimeCallFamily::Vector(op)
-                        .semantic_contract()
-                        .map(|contract| contract.result),
+                    family.semantic_contract().map(|contract| contract.result),
                     Some(
                         crate::RuntimeResultEffect::UpdatedReceiver(_)
                             | crate::RuntimeResultEffect::UpdatedReceiverAndValue(_)
                     )
                 )
             });
-        if vector_updates_receiver {
+        if collection_updates_receiver {
             let place = self.expr_place(&receiver.0);
             let name = place.as_ref().map(|(name, _)| name.as_str());
             if !name
@@ -7902,7 +7921,7 @@ impl Checker {
                 .is_some_and(|binding| binding.is_mutable)
             {
                 self.report_error(TypeErrorKind::MutabilityError, span,
-                    format!("vector method `{method}` requires a mutable binding receiver declared with `var`"));
+                    format!("collection method `{method}` requires a mutable binding receiver declared with `var`"));
             } else if let Some(name) = name {
                 self.env.mark_written(name);
                 self.reject_private_param_mutable_receiver_call(

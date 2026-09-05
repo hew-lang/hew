@@ -1028,3 +1028,23 @@ Combined SIR, physical MIR and compiler-session tests compile. The new missing
 construction-plan oracle exposes the verifier check pending integration; existing
 generic-key, map projection/emptiness and set projection frontiers remain enabled.
 Scoped Rust lint passes. This is a compiled checkpoint, not native Map acceptance.
+
+## Collection source admission: public set snapshots and mutation tracking
+
+Started the disjoint checker lane from 82bd0c645 and retained the recursive
+admission prerequisite abb4a9123, preserving both prior journal sections.
+The baseline complete checker suite passes.
+
+HashSet.to_vec now uses the existing ToVec dispatch and returns Vec<T> through
+the shared collection signature table. It checks arity and inferred result
+types without adding a runtime alias. Map and Set mutating methods now share
+Vec's semantic UpdatedReceiver/UpdatedReceiverAndValue interpretation, so writes
+count for mutability warnings and require var on the containing binding. Private
+record parameter mutations retain the existing Vec refusal.
+
+The complete checker Make selection passes after correcting older positive test
+receivers to use var and retaining the private-parameter negative. New source
+tests cover exact Set dispatch/results, invalid snapshot calls, direct and field
+mutations, read-only controls and the permanent Map/Set mutation warnings.
+Map projection admission and canonical Map emptiness dispatch remain follow-up
+work; HIR/SIR lowering and runtime capability/fault producers remain root-owned.

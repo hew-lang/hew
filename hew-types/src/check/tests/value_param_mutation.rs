@@ -289,11 +289,23 @@ fn record_vec_field_index_projection_is_not_flagged() {
 }
 
 #[test]
-fn record_hashmap_field_mutation_is_not_flagged() {
-    assert_check_clean(concat!(
-        "type Holder { items: HashMap<string, i64>, }\n",
-        "fn put(var holder: Holder) { holder.items.insert(\"k\", 9); }\n",
-    ));
+fn record_collection_field_mutation_rejects_a_private_parameter_update() {
+    for (ty, mutation) in [
+        ("Vec<i64>", "push(9)"),
+        ("HashMap<string, i64>", "insert(\"k\", 9)"),
+        ("HashSet<i64>", "insert(9)"),
+    ] {
+        let (errors, _) = parse_and_check(&format!(
+            "type Holder {{ items: {ty} }} fn put(var holder: Holder) {{ holder.items.{mutation}; }}"
+        ));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::MutabilityError
+                    && error.message.contains("private copy")),
+            "{ty} mutation must reject an update confined to a private parameter: {errors:?}"
+        );
+    }
 }
 
 /// The root has a valid shared projection, so it cannot be rejected wholesale.

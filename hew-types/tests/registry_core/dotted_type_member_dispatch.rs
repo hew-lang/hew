@@ -19,7 +19,7 @@ fn main() {
     let some: Option<i64> = Option.Some(5);
     let none: Option<i64> = Option.None;
     let ok: Result<i64, string> = Result.Ok(6);
-    let set: HashSet<i64> = HashSet<i64>.new();
+    var set: HashSet<i64> = HashSet<i64>.new();
     let explicit: Option<i64> = Option<i64>.Some(7);
     set.insert(8);
     println(f"{start.state_name()} {running.state_name()} {some.unwrap()} {none.is_none()} {ok.unwrap()} {explicit.unwrap()} {set.len()}");

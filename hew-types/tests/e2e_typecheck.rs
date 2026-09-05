@@ -457,7 +457,7 @@ fn hashmap_remove_typechecks_as_option() {
     assert_inline_typechecks_cleanly(
         r#"
 fn main() {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 1);
     let removed: Option<i64> = m.remove("a");
     let missing: Option<i64> = m.remove("a");
@@ -4285,7 +4285,8 @@ fn rc_hashmap_remove_value_supported() {
             items: HashMap<string, Rc<i64>>
         }
         fn remove_key(h: Holder) -> Option<Rc<i64>> {
-            h.items.remove("key")
+            var items = h.items;
+            items.remove("key")
         }"#,
         "HashMap.remove() on HashMap<string, Rc<i64>>",
     );
@@ -4578,7 +4579,7 @@ fn hashmap_string_i64_annotation_typechecks_before_codegen() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let m: HashMap<string, i64> = HashMap.new();
+            var m: HashMap<string, i64> = HashMap.new();
             m.insert("answer", 42);
             println(m.len());
         }"#,
@@ -4618,7 +4619,7 @@ fn hashmap_clone_method_typechecks_and_returns_hashmap() {
         r#"
         fn main() {
             let m: HashMap<string, i64> = HashMap.new();
-            let c = m.clone();
+            var c = m.clone();
             c.insert("key", 7);
             println(c.contains_key("key"));
         }"#,
@@ -4632,7 +4633,7 @@ fn hashset_clone_method_typechecks_and_returns_hashset() {
         r#"
         fn main() {
             let s: HashSet<string> = HashSet.new();
-            let c = s.clone();
+            var c = s.clone();
             c.insert("value");
             println(c.contains("value"));
         }"#,

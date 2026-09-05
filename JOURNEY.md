@@ -442,3 +442,11 @@ output-directory resolution to fail.
 Validated missing-file handling, propagation of local settings to a child
 process, and command-line precedence with Make. `make test-build-harness` passed
 on Linux. Windows and macOS checks were not run for this change.
+
+## Shared physical value emission
+
+Extracted the existing concrete copy, destruction and variant-layout emission
+into a function-independent value emitter. Ordinary bodies and container
+callbacks can now use the same checked physical recipes without synthesizing a
+function body or duplicating ownership decisions. Focused MIR/codegen tests,
+including the LLVM sanitizer instrumentation control, pass after the extraction.

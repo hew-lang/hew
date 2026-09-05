@@ -549,309 +549,17 @@ struct FunctionEmitter<'a, 'ctx> {
     functions: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
 }
 
-fn build_module<'ctx>(
+/// Execute verified type recipes in either a language body or a container
+/// element callback. Storage ownership and ABI transfers remain physical MIR facts.
+struct ValueEmitter<'a, 'ctx> {
+    module: &'a PhysicalModule,
     ctx: &'ctx Context,
-    physical: &PhysicalModule,
-    name: &str,
-    machine: &TargetMachine,
-) -> CodegenResult<Module<'ctx>> {
-    let triple = machine.get_triple();
-    let triple_text = triple.as_str().to_string_lossy();
-    if triple_text != physical.target.triple {
-        return Err(CodegenError::FailClosed(format!(
-            "LLVM machine `{triple_text}` disagrees with physical target `{}`",
-            physical.target.triple
-        )));
-    }
-    let target_data = machine.get_target_data();
-    let data_layout = target_data.get_data_layout();
-    let layout_text = data_layout.as_str().to_string_lossy();
-    if layout_text != physical.target.data_layout {
-        return Err(CodegenError::FailClosed(
-            "LLVM data layout disagrees with verified physical MIR".into(),
-        ));
-    }
-    let llvm = ctx.create_module(name);
-    llvm.set_triple(&triple);
-    llvm.set_data_layout(&data_layout);
-    let mut emitter = ModuleEmitter {
-        ctx,
-        module: physical,
-        llvm,
-        functions: BTreeMap::new(),
-    };
-    emitter.declare_functions()?;
-    emitter.emit_functions()?;
-    emitter.emit_entry()?;
-    emitter
-        .llvm
-        .verify()
-        .map_err(|error| CodegenError::LlvmVerify(error.to_string()))?;
-    Ok(emitter.llvm)
+    llvm: &'a Module<'ctx>,
+    builder: &'a Builder<'ctx>,
+    value: FunctionValue<'ctx>,
 }
 
-impl<'ctx> ModuleEmitter<'ctx, '_> {
-    fn declare_functions(&mut self) -> CodegenResult<()> {
-        let ptr = self.ctx.ptr_type(AddressSpace::default());
-        for callable in &self.module.callables {
-            let mut params = callable
-                .params
-                .iter()
-                .map(|param| match param.carrier {
-                    ParamCarrier::Direct => llvm_type(self.ctx, &param.layout.repr).map(Into::into),
-                    ParamCarrier::Indirect => Ok(ptr.into()),
-                })
-                .collect::<CodegenResult<Vec<BasicMetadataTypeEnum<'ctx>>>>()?;
-            if callable.return_layout.is_some() {
-                params.push(ptr.into());
-            }
-            params.push(ptr.into());
-            let function_type = self.ctx.i32_type().fn_type(&params, false);
-            let symbol = emitted_symbol(self.module, callable);
-            let function = self.llvm.add_function(&symbol, function_type, None);
-            self.functions.insert(callable.id, function);
-        }
-        Ok(())
-    }
-
-    fn emit_functions(&self) -> CodegenResult<()> {
-        for function in &self.module.functions {
-            let callable = callable(self.module, function.callable)?;
-            let value = *self.functions.get(&function.callable).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "physical callable {} has no LLVM declaration",
-                    function.callable.0
-                ))
-            })?;
-            FunctionEmitter::new(self, function, callable, value)?.emit()?;
-        }
-        Ok(())
-    }
-
-    fn emit_entry(&self) -> CodegenResult<()> {
-        let Some(entry_id) = self.module.entry_callable else {
-            return Ok(());
-        };
-        let plan = self.module.entry_exit_plan.as_ref().ok_or_else(|| {
-            CodegenError::FailClosed("physical executable entry has no typed exit plan".into())
-        })?;
-        let callable = callable(self.module, entry_id)?;
-        if !callable.params.is_empty() {
-            return Err(CodegenError::FailClosed(
-                "physical process entry must be parameterless".into(),
-            ));
-        }
-        let body = *self.functions.get(&entry_id).ok_or_else(|| {
-            CodegenError::FailClosed("physical process entry has no LLVM body".into())
-        })?;
-        let wrapper = self.llvm.add_function(
-            "main",
-            self.ctx.i32_type().fn_type(&[], false),
-            Some(Linkage::External),
-        );
-        let entry = self.ctx.append_basic_block(wrapper, "entry");
-        let success = self.ctx.append_basic_block(wrapper, "success");
-        let failure = self.ctx.append_basic_block(wrapper, "failure");
-        let builder = self.ctx.create_builder();
-        builder.position_at_end(entry);
-        let result = if let Some(layout) = &callable.return_layout {
-            Some(
-                builder
-                    .build_alloca(llvm_type(self.ctx, &layout.repr)?, "entry.result")
-                    .llvm_ctx("allocate physical entry result")?,
-            )
-        } else {
-            None
-        };
-        let fault = builder
-            .build_alloca(self.ctx.ptr_type(AddressSpace::default()), "entry.fault")
-            .llvm_ctx("allocate physical entry fault")?;
-        builder
-            .build_store(
-                fault,
-                self.ctx.ptr_type(AddressSpace::default()).const_null(),
-            )
-            .llvm_ctx("initialize physical entry fault")?;
-        let mut args = Vec::<BasicMetadataValueEnum<'ctx>>::new();
-        if let Some(result) = result {
-            args.push(result.into());
-        }
-        args.push(fault.into());
-        let status = builder
-            .build_call(body, &args, "entry.status")
-            .llvm_ctx("call physical process entry")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("physical body returned no status".into()))?
-            .into_int_value();
-        let ok = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.ctx.i32_type().const_zero(),
-                "entry.ok",
-            )
-            .llvm_ctx("compare physical entry status")?;
-        builder
-            .build_conditional_branch(ok, success, failure)
-            .llvm_ctx("branch on physical entry status")?;
-
-        builder.position_at_end(failure);
-        let fault_value = builder
-            .build_load(
-                self.ctx.ptr_type(AddressSpace::default()),
-                fault,
-                "entry.fault.value",
-            )
-            .llvm_ctx("load physical entry fault")?
-            .into_pointer_value();
-        let report = external_fault_report(self.ctx, &self.llvm)?;
-        builder
-            .build_call(report, &[fault_value.into()], "entry.fault.report")
-            .llvm_ctx("report physical entry fault")?;
-        let drop = external_fault_drop(self.ctx, &self.llvm)?;
-        builder
-            .build_call(drop, &[fault_value.into()], "entry.fault.drop")
-            .llvm_ctx("drop physical entry fault")?;
-        builder
-            .build_return(Some(&status))
-            .llvm_ctx("return physical failure status")?;
-
-        builder.position_at_end(success);
-        let exit = emit_entry_success(self.ctx, &builder, result, plan.action.clone(), callable)?;
-        builder
-            .build_return(Some(&exit))
-            .llvm_ctx("return physical process status")?;
-        Ok(())
-    }
-}
-
-impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
-    fn new(
-        module: &'a ModuleEmitter<'ctx, '_>,
-        function: &'a PhysicalFunction,
-        callable: &PhysicalCallable,
-        value: FunctionValue<'ctx>,
-    ) -> CodegenResult<Self> {
-        let ctx = module.ctx;
-        let builder = ctx.create_builder();
-        let prologue = ctx.append_basic_block(value, "physical.prologue");
-        builder.position_at_end(prologue);
-        let slots = function
-            .storage
-            .iter()
-            .map(|storage| {
-                builder
-                    .build_alloca(
-                        llvm_type(ctx, &storage.layout.repr)?,
-                        &format!("s{}", storage.id.0),
-                    )
-                    .llvm_ctx("allocate physical storage")
-            })
-            .collect::<CodegenResult<Vec<_>>>()?;
-        let active_fault = builder
-            .build_alloca(ctx.ptr_type(AddressSpace::default()), "active.fault")
-            .llvm_ctx("allocate active fault")?;
-        let active_status = builder
-            .build_alloca(ctx.i32_type(), "active.status")
-            .llvm_ctx("allocate active status")?;
-        builder
-            .build_store(
-                active_fault,
-                ctx.ptr_type(AddressSpace::default()).const_null(),
-            )
-            .llvm_ctx("initialize active fault")?;
-        builder
-            .build_store(active_status, ctx.i32_type().const_zero())
-            .llvm_ctx("initialize active status")?;
-
-        let mut param_index = 0u32;
-        for ((parameter, storage_id), physical_param) in value
-            .get_params()
-            .into_iter()
-            .zip(&function.parameters)
-            .zip(&callable.params)
-        {
-            let loaded = match physical_param.carrier {
-                ParamCarrier::Direct => parameter,
-                ParamCarrier::Indirect => builder
-                    .build_load(
-                        llvm_type(ctx, &physical_param.layout.repr)?,
-                        parameter.into_pointer_value(),
-                        "param.indirect",
-                    )
-                    .llvm_ctx("load indirect physical parameter")?,
-            };
-            builder
-                .build_store(slots[storage_id.0 as usize], loaded)
-                .llvm_ctx("store physical parameter")?;
-            param_index += 1;
-        }
-        let result_out = if callable.return_layout.is_some() {
-            let result = value
-                .get_nth_param(param_index)
-                .ok_or_else(|| CodegenError::FailClosed("missing result-out parameter".into()))?
-                .into_pointer_value();
-            param_index += 1;
-            Some(result)
-        } else {
-            None
-        };
-        let fault_out = value
-            .get_nth_param(param_index)
-            .ok_or_else(|| CodegenError::FailClosed("missing fault-out parameter".into()))?
-            .into_pointer_value();
-        let blocks = function
-            .blocks
-            .iter()
-            .map(|block| {
-                (
-                    block.id,
-                    ctx.append_basic_block(value, &format!("bb{}", block.id.0)),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        builder
-            .build_unconditional_branch(blocks[&function.entry])
-            .llvm_ctx("branch to physical entry")?;
-        Ok(Self {
-            module: module.module,
-            function,
-            ctx,
-            llvm: &module.llvm,
-            builder,
-            value,
-            blocks,
-            slots,
-            result_out,
-            fault_out,
-            active_fault,
-            active_status,
-            functions: &module.functions,
-        })
-    }
-
-    fn emit(self) -> CodegenResult<()> {
-        for block in &self.function.blocks {
-            self.builder.position_at_end(self.blocks[&block.id]);
-            for operation in &block.ops {
-                self.emit_op(operation)?;
-            }
-            self.emit_terminator(block)?;
-        }
-        Ok(())
-    }
-
-    fn load(&self, id: StorageId, name: &str) -> CodegenResult<BasicValueEnum<'ctx>> {
-        self.builder
-            .build_load(
-                llvm_type(self.ctx, &self.storage(id)?.layout.repr)?,
-                self.slots[id.0 as usize],
-                name,
-            )
-            .llvm_ctx("load physical storage")
-    }
-
+impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
     fn entry_scratch(
         &self,
         ty: BasicTypeEnum<'ctx>,
@@ -869,369 +577,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         builder
             .build_alloca(ty, name)
             .llvm_ctx("allocate reusable physical scratch storage")
-    }
-
-    fn storage(&self, id: StorageId) -> CodegenResult<&PhysicalStorage> {
-        self.function
-            .storage
-            .get(id.0 as usize)
-            .filter(|storage| storage.id == id)
-            .ok_or_else(|| CodegenError::FailClosed(format!("unknown physical storage {}", id.0)))
-    }
-
-    fn store(&self, id: StorageId, value: BasicValueEnum<'ctx>) -> CodegenResult<()> {
-        self.builder
-            .build_store(self.slots[id.0 as usize], value)
-            .llvm_ctx("store physical storage")?;
-        Ok(())
-    }
-
-    fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
-        if self.storage(id)?.own == OwnKind::Owned {
-            let zero = llvm_type(self.ctx, &self.storage(id)?.layout.repr)?.const_zero();
-            self.store(id, zero)?;
-        }
-        Ok(())
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the physical operation match is deliberately exhaustive and contains no ownership selection"
-    )]
-    fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
-        match operation {
-            PhysicalOp::Const { dest, value } => self.emit_const(*dest, value),
-            PhysicalOp::Unary { dest, op, source } => {
-                let source_value = self.load(*source, "unary.source")?;
-                let value = match op {
-                    UnaryOp::Not => {
-                        let source = source_value.into_int_value();
-                        let logical = self
-                            .builder
-                            .build_int_compare(
-                                IntPredicate::EQ,
-                                source,
-                                source.get_type().const_zero(),
-                                "logical.not",
-                            )
-                            .llvm_ctx("emit physical logical not")?;
-                        let target =
-                            llvm_type(self.ctx, &self.storage(*dest)?.layout.repr)?.into_int_type();
-                        self.builder
-                            .build_int_z_extend(logical, target, "logical.not.widen")
-                            .llvm_ctx("widen physical logical not")?
-                            .into()
-                    }
-                    UnaryOp::BitNot => self
-                        .builder
-                        .build_not(source_value.into_int_value(), "bitnot")
-                        .llvm_ctx("emit physical bit not")?
-                        .into(),
-                    UnaryOp::Negate | UnaryOp::RawDeref => {
-                        return Err(CodegenError::FailClosed(
-                            "fallible or raw unary operation reached physical emitter".into(),
-                        ));
-                    }
-                };
-                self.store(*dest, value)
-            }
-            PhysicalOp::Binary { dest, op, lhs, rhs } => self.emit_binary(*dest, *op, *lhs, *rhs),
-            PhysicalOp::Cast { dest, source, to } => self.emit_cast(*dest, *source, to),
-            PhysicalOp::TupleMake { dest, elements } => {
-                let BasicTypeEnum::StructType(tuple_ty) =
-                    llvm_type(self.ctx, &self.storage(*dest)?.layout.repr)?
-                else {
-                    return Err(CodegenError::FailClosed(
-                        "physical tuple destination is not an LLVM struct".into(),
-                    ));
-                };
-                let mut aggregate = tuple_ty.get_undef();
-                for (index, element) in elements.iter().enumerate() {
-                    let field = self.load(*element, "tuple.field")?;
-                    let index = u32::try_from(index).map_err(|_| {
-                        CodegenError::FailClosed("physical tuple field index exceeds u32".into())
-                    })?;
-                    aggregate = match self
-                        .builder
-                        .build_insert_value(aggregate, field, index, "tuple.make")
-                        .llvm_ctx("insert physical tuple field")?
-                    {
-                        inkwell::values::AggregateValueEnum::StructValue(value) => value,
-                        inkwell::values::AggregateValueEnum::ArrayValue(_) => {
-                            return Err(CodegenError::FailClosed(
-                                "physical tuple insertion produced an LLVM array".into(),
-                            ));
-                        }
-                    };
-                }
-                self.store(*dest, aggregate.into())
-            }
-            PhysicalOp::TupleGet { dest, tuple, index } => {
-                let tuple = self.load(*tuple, "tuple.source")?.into_struct_value();
-                let field = self
-                    .builder
-                    .build_extract_value(tuple, *index, "tuple.get")
-                    .llvm_ctx("extract physical tuple field")?;
-                self.store(*dest, field)
-            }
-            PhysicalOp::AggregateMake { dest, fields, .. } => {
-                let BasicTypeEnum::StructType(aggregate_ty) =
-                    llvm_type(self.ctx, &self.storage(*dest)?.layout.repr)?
-                else {
-                    return Err(CodegenError::FailClosed(
-                        "physical aggregate destination is not an LLVM struct".into(),
-                    ));
-                };
-                let mut aggregate = aggregate_ty.get_undef();
-                for (index, field) in fields.iter().enumerate() {
-                    let value = self.load(*field, "aggregate.field")?;
-                    let index = u32::try_from(index).map_err(|_| {
-                        CodegenError::FailClosed(
-                            "physical aggregate field index exceeds u32".into(),
-                        )
-                    })?;
-                    aggregate = match self
-                        .builder
-                        .build_insert_value(aggregate, value, index, "aggregate.make")
-                        .llvm_ctx("insert physical aggregate field")?
-                    {
-                        inkwell::values::AggregateValueEnum::StructValue(value) => value,
-                        inkwell::values::AggregateValueEnum::ArrayValue(_) => {
-                            return Err(CodegenError::FailClosed(
-                                "physical aggregate insertion produced an LLVM array".into(),
-                            ));
-                        }
-                    };
-                }
-                self.store(*dest, aggregate.into())?;
-                for field in fields {
-                    self.clear_owned(*field)?;
-                }
-                Ok(())
-            }
-            PhysicalOp::AggregateProjectCopy {
-                dest,
-                aggregate,
-                field,
-                action,
-                ..
-            } => {
-                let aggregate = self
-                    .load(*aggregate, "aggregate.project.source")?
-                    .into_struct_value();
-                let field_value = self
-                    .builder
-                    .build_extract_value(aggregate, *field, "aggregate.project.field")
-                    .llvm_ctx("extract physical aggregate field for copy")?;
-                let value =
-                    self.clone_loaded_value(field_value, &self.storage(*dest)?.layout, *action)?;
-                self.store(*dest, value)
-            }
-            PhysicalOp::AggregateDestructure {
-                aggregate, fields, ..
-            } => {
-                let value = self
-                    .load(*aggregate, "aggregate.destructure.source")?
-                    .into_struct_value();
-                for (index, field) in fields.iter().enumerate() {
-                    let index = u32::try_from(index).map_err(|_| {
-                        CodegenError::FailClosed(
-                            "physical aggregate field index exceeds u32".into(),
-                        )
-                    })?;
-                    let field_value = self
-                        .builder
-                        .build_extract_value(value, index, "aggregate.destructure.field")
-                        .llvm_ctx("extract physical aggregate field")?;
-                    self.store(*field, field_value)?;
-                }
-                self.clear_owned(*aggregate)
-            }
-            PhysicalOp::VariantMake {
-                dest,
-                variant,
-                fields,
-                glue,
-            } => self.emit_variant_make(*dest, *variant, fields, *glue),
-            PhysicalOp::Transfer { dest, source } => {
-                let value = self.load(*source, "transfer")?;
-                self.store(*dest, value)?;
-                if dest != source {
-                    self.clear_owned(*source)?;
-                }
-                Ok(())
-            }
-            PhysicalOp::Clone {
-                dest,
-                source,
-                action,
-            } => {
-                let value = self.clone_value(*source, *action)?;
-                self.store(*dest, value)
-            }
-            PhysicalOp::Destroy { source, action } => self.destroy_value(*source, *action),
-            PhysicalOp::Borrow { dest, source } => {
-                let value = self.load(*source, "borrow")?;
-                self.store(*dest, value)
-            }
-            PhysicalOp::EndBorrow { .. } | PhysicalOp::StorageLive { .. } => Ok(()),
-            PhysicalOp::Assign {
-                dest,
-                source,
-                destroy_old,
-            } => {
-                self.destroy_value(*dest, *destroy_old)?;
-                let value = self.load(*source, "assign")?;
-                self.store(*dest, value)?;
-                self.clear_owned(*source)
-            }
-            PhysicalOp::StorageDead { storage, destroy } => self.destroy_value(*storage, *destroy),
-        }
-    }
-
-    fn emit_variant_make(
-        &self,
-        dest: StorageId,
-        variant: u32,
-        fields: &[StorageId],
-        glue_id: PhysicalVariantId,
-    ) -> CodegenResult<()> {
-        let values = fields
-            .iter()
-            .map(|field| self.load(*field, "variant.make.field"))
-            .collect::<CodegenResult<Vec<_>>>()?;
-        self.write_variant_value(self.slots[dest.0 as usize], variant, &values, glue_id)?;
-        for field in fields {
-            self.clear_owned(*field)?;
-        }
-        Ok(())
-    }
-
-    fn write_variant_value(
-        &self,
-        destination: PointerValue<'ctx>,
-        variant: u32,
-        fields: &[BasicValueEnum<'ctx>],
-        glue_id: PhysicalVariantId,
-    ) -> CodegenResult<()> {
-        let glue = self.variant_glue(glue_id)?;
-        let layout = self.variant_layout(&glue.ty)?;
-        if layout.is_indirect {
-            return Err(CodegenError::FailClosed(
-                "physical indirect variant construction is not yet admitted".into(),
-            ));
-        }
-        let object_ty = llvm_type(self.ctx, &layout.object.repr)?.into_struct_type();
-        let tag_ty = object_ty
-            .get_field_type_at_index(0)
-            .ok_or_else(|| CodegenError::FailClosed("variant object has no tag field".into()))?
-            .into_int_type();
-        let tag = tag_ty.const_int(u64::from(variant), false);
-        let object = self
-            .builder
-            .build_insert_value(object_ty.const_zero(), tag, 0, "variant.make.tag")
-            .llvm_ctx("write physical variant tag")?
-            .into_struct_value();
-        self.builder
-            .build_store(destination, object)
-            .llvm_ctx("initialize physical variant storage")?;
-        let case = glue.variants.get(variant as usize).ok_or_else(|| {
-            CodegenError::FailClosed("variant construction tag is invalid".into())
-        })?;
-        let payload_layout = layout
-            .variants
-            .get(variant as usize)
-            .ok_or_else(|| CodegenError::FailClosed("variant payload layout is absent".into()))?;
-        if case.fields.len() != fields.len() {
-            return Err(CodegenError::FailClosed(
-                "variant construction field count changed after verification".into(),
-            ));
-        }
-        if !fields.is_empty() {
-            let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
-            let mut payload = payload_ty.get_undef();
-            for (index, field) in fields.iter().enumerate() {
-                let value = *field;
-                let index = u32::try_from(index).map_err(|_| {
-                    CodegenError::FailClosed("variant field index exceeds u32".into())
-                })?;
-                payload = self
-                    .builder
-                    .build_insert_value(payload, value, index, "variant.make.payload")
-                    .llvm_ctx("write physical variant payload field")?
-                    .into_struct_value();
-            }
-            let payload_ptr = self.variant_payload_ptr(destination, layout)?;
-            self.builder
-                .build_store(payload_ptr, payload)
-                .llvm_ctx("store physical variant payload")?;
-        }
-        Ok(())
-    }
-
-    fn emit_variant_switch(
-        &self,
-        scrutinee: StorageId,
-        glue_id: PhysicalVariantId,
-        arms: &[PhysicalVariantArm],
-    ) -> CodegenResult<()> {
-        let glue = self.variant_glue(glue_id)?;
-        let layout = self.variant_layout(&glue.ty)?;
-        if layout.is_indirect {
-            return Err(CodegenError::FailClosed(
-                "physical indirect variant switch is not yet admitted".into(),
-            ));
-        }
-        let object = self
-            .load(scrutinee, "variant.switch.source")?
-            .into_struct_value();
-        let tag = self
-            .builder
-            .build_extract_value(object, 0, "variant.switch.tag")
-            .llvm_ctx("read physical variant tag")?
-            .into_int_value();
-        let invalid = self.ctx.append_basic_block(self.value, "variant.invalid");
-        let arm_blocks = arms
-            .iter()
-            .map(|arm| {
-                (
-                    tag.get_type().const_int(u64::from(arm.variant), false),
-                    self.ctx
-                        .append_basic_block(self.value, &format!("variant.case.{}", arm.variant)),
-                )
-            })
-            .collect::<Vec<_>>();
-        self.builder
-            .build_switch(tag, invalid, &arm_blocks)
-            .llvm_ctx("emit physical variant switch")?;
-        for (arm, (_, arm_block)) in arms.iter().zip(&arm_blocks) {
-            self.builder.position_at_end(*arm_block);
-            let payload_layout = &layout.variants[arm.variant as usize];
-            if !arm.fields.is_empty() {
-                let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
-                let payload_ptr =
-                    self.variant_payload_ptr(self.slots[scrutinee.0 as usize], layout)?;
-                let payload = self
-                    .builder
-                    .build_load(payload_ty, payload_ptr, "variant.switch.payload")
-                    .llvm_ctx("load physical variant payload")?
-                    .into_struct_value();
-                for (index, field) in arm.fields.iter().enumerate() {
-                    let index = u32::try_from(index).map_err(|_| {
-                        CodegenError::FailClosed("variant field index exceeds u32".into())
-                    })?;
-                    let value = self
-                        .builder
-                        .build_extract_value(payload, index, "variant.switch.field")
-                        .llvm_ctx("extract physical variant payload field")?;
-                    self.store(*field, value)?;
-                }
-            }
-            self.clear_owned(scrutinee)?;
-            self.emit_edge(&arm.target)?;
-        }
-        self.builder.position_at_end(invalid);
-        self.emit_invalid_variant_tag()
     }
 
     fn variant_payload_ptr(
@@ -1257,177 +602,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_unreachable()
             .llvm_ctx("terminate invalid variant tag")?;
         Ok(())
-    }
-
-    fn emit_const(&self, dest: StorageId, value: &PhysicalConst) -> CodegenResult<()> {
-        let llvm_ty = llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?;
-        match value {
-            PhysicalConst::I64(value) | PhysicalConst::Duration(value) => self.store(
-                dest,
-                llvm_ty
-                    .into_int_type()
-                    .const_int(*value as u64, true)
-                    .into(),
-            ),
-            PhysicalConst::Bool(value) => self.store(
-                dest,
-                llvm_ty
-                    .into_int_type()
-                    .const_int(u64::from(*value), false)
-                    .into(),
-            ),
-            PhysicalConst::F64(value) => {
-                self.store(dest, llvm_ty.into_float_type().const_float(*value).into())
-            }
-            PhysicalConst::Char(value) => self.store(
-                dest,
-                llvm_ty
-                    .into_int_type()
-                    .const_int(u64::from(u32::from(*value)), false)
-                    .into(),
-            ),
-            PhysicalConst::Unit => self.store(dest, llvm_ty.const_zero()),
-            PhysicalConst::String(id) => {
-                let bytes = self.module.string_literals.get(id).ok_or_else(|| {
-                    CodegenError::FailClosed(format!("missing physical string literal {}", id.0))
-                })?;
-                self.emit_literal(dest, bytes.as_bytes(), "hew_string_literal_new")
-            }
-            PhysicalConst::Bytes(id) => {
-                let bytes = self.module.bytes_literals.get(id).ok_or_else(|| {
-                    CodegenError::FailClosed(format!("missing physical bytes literal {}", id.0))
-                })?;
-                self.emit_literal(dest, bytes, "hew_bytes_literal_new")
-            }
-        }
-    }
-
-    fn emit_literal(&self, dest: StorageId, bytes: &[u8], symbol: &str) -> CodegenResult<()> {
-        let len = u32::try_from(bytes.len()).map_err(|_| {
-            CodegenError::FailClosed(format!("{symbol} literal exceeds the u32 runtime ABI"))
-        })?;
-        let data = self.ctx.const_string(bytes, false);
-        let global = self
-            .llvm
-            .add_global(data.get_type(), None, "physical.literal");
-        global.set_initializer(&data);
-        global.set_constant(true);
-        let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let function = get_or_declare_external(
-            self.llvm,
-            symbol,
-            self.ctx
-                .void_type()
-                .fn_type(&[ptr.into(), self.ctx.i32_type().into(), ptr.into()], false),
-        )?;
-        self.builder
-            .build_call(
-                function,
-                &[
-                    global.as_pointer_value().into(),
-                    self.ctx.i32_type().const_int(u64::from(len), false).into(),
-                    self.slots[dest.0 as usize].into(),
-                ],
-                "literal.new",
-            )
-            .llvm_ctx("create owned physical literal")?;
-        Ok(())
-    }
-
-    fn emit_binary(
-        &self,
-        dest: StorageId,
-        op: BinaryOp,
-        lhs: StorageId,
-        rhs: StorageId,
-    ) -> CodegenResult<()> {
-        let left = self.load(lhs, "binary.left")?;
-        let right = self.load(rhs, "binary.right")?;
-        let ty = &self.storage(lhs)?.ty;
-        let mut value: BasicValueEnum<'ctx> = match (left, right) {
-            (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) => {
-                emit_integer_binary(&self.builder, op, left, right, is_signed(ty))?.into()
-            }
-            (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
-                emit_float_binary(&self.builder, op, left, right)?.into()
-            }
-            _ => {
-                return Err(CodegenError::FailClosed(
-                    "physical binary operands have unsupported carriers".into(),
-                ));
-            }
-        };
-        if self.storage(dest)?.ty == ResolvedTy::Bool {
-            let int = value.into_int_value();
-            let bool_ty = llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?.into_int_type();
-            if int.get_type() != bool_ty {
-                value = self
-                    .builder
-                    .build_int_z_extend(int, bool_ty, "bool.widen")
-                    .llvm_ctx("widen physical boolean result")?
-                    .into();
-            }
-        }
-        self.store(dest, value)
-    }
-
-    fn emit_cast(&self, dest: StorageId, source: StorageId, to: &ResolvedTy) -> CodegenResult<()> {
-        let value = self.load(source, "cast.source")?;
-        let target = llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?;
-        let source_ty = &self.storage(source)?.ty;
-        let cast = match (value, target) {
-            (BasicValueEnum::IntValue(value), BasicTypeEnum::IntType(target)) => self
-                .builder
-                .build_int_cast_sign_flag(value, target, is_signed(source_ty), "int.cast")
-                .llvm_ctx("emit physical integer cast")?
-                .into(),
-            (BasicValueEnum::FloatValue(value), BasicTypeEnum::FloatType(target)) => self
-                .builder
-                .build_float_cast(value, target, "float.cast")
-                .llvm_ctx("emit physical float cast")?
-                .into(),
-            (BasicValueEnum::IntValue(value), BasicTypeEnum::FloatType(target)) => {
-                if is_signed(source_ty) {
-                    self.builder
-                        .build_signed_int_to_float(value, target, "signed.to.float")
-                        .llvm_ctx("emit signed integer-to-float cast")?
-                        .into()
-                } else {
-                    self.builder
-                        .build_unsigned_int_to_float(value, target, "unsigned.to.float")
-                        .llvm_ctx("emit unsigned integer-to-float cast")?
-                        .into()
-                }
-            }
-            (BasicValueEnum::FloatValue(value), BasicTypeEnum::IntType(target)) => {
-                if is_signed(to) {
-                    self.builder
-                        .build_float_to_signed_int(value, target, "float.to.signed")
-                        .llvm_ctx("emit float-to-signed cast")?
-                        .into()
-                } else {
-                    self.builder
-                        .build_float_to_unsigned_int(value, target, "float.to.unsigned")
-                        .llvm_ctx("emit float-to-unsigned cast")?
-                        .into()
-                }
-            }
-            _ => {
-                return Err(CodegenError::FailClosed(
-                    "physical cast has unsupported carriers".into(),
-                ));
-            }
-        };
-        self.store(dest, cast)
-    }
-
-    fn clone_value(
-        &self,
-        source: StorageId,
-        action: CloneAction,
-    ) -> CodegenResult<BasicValueEnum<'ctx>> {
-        let value = self.load(source, "clone.source")?;
-        self.clone_loaded_value(value, &self.storage(source)?.layout, action)
     }
 
     fn clone_loaded_value(
@@ -1516,13 +690,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             CloneAction::Variant(id) => self.clone_variant_value(value, layout, id),
         }
-    }
-
-    fn destroy_value(&self, source: StorageId, action: DestroyAction) -> CodegenResult<()> {
-        let value = self.load(source, "destroy.source")?;
-        self.destroy_loaded_value(value, &self.storage(source)?.layout, action)?;
-        let zero = llvm_type(self.ctx, &self.storage(source)?.layout.repr)?.const_zero();
-        self.store(source, zero)
     }
 
     fn destroy_loaded_value(
@@ -1784,7 +951,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         Ok(())
     }
 
-    fn aggregate_glue(&self, id: PhysicalAggregateId) -> CodegenResult<&PhysicalAggregateGlue> {
+    fn aggregate_glue(&self, id: PhysicalAggregateId) -> CodegenResult<&'a PhysicalAggregateGlue> {
         self.module
             .aggregate_glue
             .get(id.0 as usize)
@@ -1794,7 +961,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             })
     }
 
-    fn variant_glue(&self, id: PhysicalVariantId) -> CodegenResult<&PhysicalVariantGlue> {
+    fn variant_glue(&self, id: PhysicalVariantId) -> CodegenResult<&'a PhysicalVariantGlue> {
         self.module
             .variant_glue
             .get(id.0 as usize)
@@ -1804,13 +971,876 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             })
     }
 
-    fn variant_layout(&self, ty: &ResolvedTy) -> CodegenResult<&PhysicalVariantLayout> {
+    fn variant_layout(&self, ty: &ResolvedTy) -> CodegenResult<&'a PhysicalVariantLayout> {
         self.module.target.variant_layout(ty).ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "physical variant `{}` has no target layout",
                 ty.user_facing()
             ))
         })
+    }
+}
+
+fn build_module<'ctx>(
+    ctx: &'ctx Context,
+    physical: &PhysicalModule,
+    name: &str,
+    machine: &TargetMachine,
+) -> CodegenResult<Module<'ctx>> {
+    let triple = machine.get_triple();
+    let triple_text = triple.as_str().to_string_lossy();
+    if triple_text != physical.target.triple {
+        return Err(CodegenError::FailClosed(format!(
+            "LLVM machine `{triple_text}` disagrees with physical target `{}`",
+            physical.target.triple
+        )));
+    }
+    let target_data = machine.get_target_data();
+    let data_layout = target_data.get_data_layout();
+    let layout_text = data_layout.as_str().to_string_lossy();
+    if layout_text != physical.target.data_layout {
+        return Err(CodegenError::FailClosed(
+            "LLVM data layout disagrees with verified physical MIR".into(),
+        ));
+    }
+    let llvm = ctx.create_module(name);
+    llvm.set_triple(&triple);
+    llvm.set_data_layout(&data_layout);
+    let mut emitter = ModuleEmitter {
+        ctx,
+        module: physical,
+        llvm,
+        functions: BTreeMap::new(),
+    };
+    emitter.declare_functions()?;
+    emitter.emit_functions()?;
+    emitter.emit_entry()?;
+    emitter
+        .llvm
+        .verify()
+        .map_err(|error| CodegenError::LlvmVerify(error.to_string()))?;
+    Ok(emitter.llvm)
+}
+
+impl<'ctx> ModuleEmitter<'ctx, '_> {
+    fn declare_functions(&mut self) -> CodegenResult<()> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        for callable in &self.module.callables {
+            let mut params = callable
+                .params
+                .iter()
+                .map(|param| match param.carrier {
+                    ParamCarrier::Direct => llvm_type(self.ctx, &param.layout.repr).map(Into::into),
+                    ParamCarrier::Indirect => Ok(ptr.into()),
+                })
+                .collect::<CodegenResult<Vec<BasicMetadataTypeEnum<'ctx>>>>()?;
+            if callable.return_layout.is_some() {
+                params.push(ptr.into());
+            }
+            params.push(ptr.into());
+            let function_type = self.ctx.i32_type().fn_type(&params, false);
+            let symbol = emitted_symbol(self.module, callable);
+            let function = self.llvm.add_function(&symbol, function_type, None);
+            self.functions.insert(callable.id, function);
+        }
+        Ok(())
+    }
+
+    fn emit_functions(&self) -> CodegenResult<()> {
+        for function in &self.module.functions {
+            let callable = callable(self.module, function.callable)?;
+            let value = *self.functions.get(&function.callable).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "physical callable {} has no LLVM declaration",
+                    function.callable.0
+                ))
+            })?;
+            FunctionEmitter::new(self, function, callable, value)?.emit()?;
+        }
+        Ok(())
+    }
+
+    fn emit_entry(&self) -> CodegenResult<()> {
+        let Some(entry_id) = self.module.entry_callable else {
+            return Ok(());
+        };
+        let plan = self.module.entry_exit_plan.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("physical executable entry has no typed exit plan".into())
+        })?;
+        let callable = callable(self.module, entry_id)?;
+        if !callable.params.is_empty() {
+            return Err(CodegenError::FailClosed(
+                "physical process entry must be parameterless".into(),
+            ));
+        }
+        let body = *self.functions.get(&entry_id).ok_or_else(|| {
+            CodegenError::FailClosed("physical process entry has no LLVM body".into())
+        })?;
+        let wrapper = self.llvm.add_function(
+            "main",
+            self.ctx.i32_type().fn_type(&[], false),
+            Some(Linkage::External),
+        );
+        let entry = self.ctx.append_basic_block(wrapper, "entry");
+        let success = self.ctx.append_basic_block(wrapper, "success");
+        let failure = self.ctx.append_basic_block(wrapper, "failure");
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(entry);
+        let result = if let Some(layout) = &callable.return_layout {
+            Some(
+                builder
+                    .build_alloca(llvm_type(self.ctx, &layout.repr)?, "entry.result")
+                    .llvm_ctx("allocate physical entry result")?,
+            )
+        } else {
+            None
+        };
+        let fault = builder
+            .build_alloca(self.ctx.ptr_type(AddressSpace::default()), "entry.fault")
+            .llvm_ctx("allocate physical entry fault")?;
+        builder
+            .build_store(
+                fault,
+                self.ctx.ptr_type(AddressSpace::default()).const_null(),
+            )
+            .llvm_ctx("initialize physical entry fault")?;
+        let mut args = Vec::<BasicMetadataValueEnum<'ctx>>::new();
+        if let Some(result) = result {
+            args.push(result.into());
+        }
+        args.push(fault.into());
+        let status = builder
+            .build_call(body, &args, "entry.status")
+            .llvm_ctx("call physical process entry")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("physical body returned no status".into()))?
+            .into_int_value();
+        let ok = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "entry.ok",
+            )
+            .llvm_ctx("compare physical entry status")?;
+        builder
+            .build_conditional_branch(ok, success, failure)
+            .llvm_ctx("branch on physical entry status")?;
+
+        builder.position_at_end(failure);
+        let fault_value = builder
+            .build_load(
+                self.ctx.ptr_type(AddressSpace::default()),
+                fault,
+                "entry.fault.value",
+            )
+            .llvm_ctx("load physical entry fault")?
+            .into_pointer_value();
+        let report = external_fault_report(self.ctx, &self.llvm)?;
+        builder
+            .build_call(report, &[fault_value.into()], "entry.fault.report")
+            .llvm_ctx("report physical entry fault")?;
+        let drop = external_fault_drop(self.ctx, &self.llvm)?;
+        builder
+            .build_call(drop, &[fault_value.into()], "entry.fault.drop")
+            .llvm_ctx("drop physical entry fault")?;
+        builder
+            .build_return(Some(&status))
+            .llvm_ctx("return physical failure status")?;
+
+        builder.position_at_end(success);
+        let exit = emit_entry_success(self.ctx, &builder, result, plan.action.clone(), callable)?;
+        builder
+            .build_return(Some(&exit))
+            .llvm_ctx("return physical process status")?;
+        Ok(())
+    }
+}
+
+impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
+    fn value_emitter(&self) -> ValueEmitter<'_, 'ctx> {
+        ValueEmitter {
+            module: self.module,
+            ctx: self.ctx,
+            llvm: self.llvm,
+            builder: &self.builder,
+            value: self.value,
+        }
+    }
+
+    fn new(
+        module: &'a ModuleEmitter<'ctx, '_>,
+        function: &'a PhysicalFunction,
+        callable: &PhysicalCallable,
+        value: FunctionValue<'ctx>,
+    ) -> CodegenResult<Self> {
+        let ctx = module.ctx;
+        let builder = ctx.create_builder();
+        let prologue = ctx.append_basic_block(value, "physical.prologue");
+        builder.position_at_end(prologue);
+        let slots = function
+            .storage
+            .iter()
+            .map(|storage| {
+                builder
+                    .build_alloca(
+                        llvm_type(ctx, &storage.layout.repr)?,
+                        &format!("s{}", storage.id.0),
+                    )
+                    .llvm_ctx("allocate physical storage")
+            })
+            .collect::<CodegenResult<Vec<_>>>()?;
+        let active_fault = builder
+            .build_alloca(ctx.ptr_type(AddressSpace::default()), "active.fault")
+            .llvm_ctx("allocate active fault")?;
+        let active_status = builder
+            .build_alloca(ctx.i32_type(), "active.status")
+            .llvm_ctx("allocate active status")?;
+        builder
+            .build_store(
+                active_fault,
+                ctx.ptr_type(AddressSpace::default()).const_null(),
+            )
+            .llvm_ctx("initialize active fault")?;
+        builder
+            .build_store(active_status, ctx.i32_type().const_zero())
+            .llvm_ctx("initialize active status")?;
+
+        let mut param_index = 0u32;
+        for ((parameter, storage_id), physical_param) in value
+            .get_params()
+            .into_iter()
+            .zip(&function.parameters)
+            .zip(&callable.params)
+        {
+            let loaded = match physical_param.carrier {
+                ParamCarrier::Direct => parameter,
+                ParamCarrier::Indirect => builder
+                    .build_load(
+                        llvm_type(ctx, &physical_param.layout.repr)?,
+                        parameter.into_pointer_value(),
+                        "param.indirect",
+                    )
+                    .llvm_ctx("load indirect physical parameter")?,
+            };
+            builder
+                .build_store(slots[storage_id.0 as usize], loaded)
+                .llvm_ctx("store physical parameter")?;
+            param_index += 1;
+        }
+        let result_out = if callable.return_layout.is_some() {
+            let result = value
+                .get_nth_param(param_index)
+                .ok_or_else(|| CodegenError::FailClosed("missing result-out parameter".into()))?
+                .into_pointer_value();
+            param_index += 1;
+            Some(result)
+        } else {
+            None
+        };
+        let fault_out = value
+            .get_nth_param(param_index)
+            .ok_or_else(|| CodegenError::FailClosed("missing fault-out parameter".into()))?
+            .into_pointer_value();
+        let blocks = function
+            .blocks
+            .iter()
+            .map(|block| {
+                (
+                    block.id,
+                    ctx.append_basic_block(value, &format!("bb{}", block.id.0)),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        builder
+            .build_unconditional_branch(blocks[&function.entry])
+            .llvm_ctx("branch to physical entry")?;
+        Ok(Self {
+            module: module.module,
+            function,
+            ctx,
+            llvm: &module.llvm,
+            builder,
+            value,
+            blocks,
+            slots,
+            result_out,
+            fault_out,
+            active_fault,
+            active_status,
+            functions: &module.functions,
+        })
+    }
+
+    fn emit(self) -> CodegenResult<()> {
+        for block in &self.function.blocks {
+            self.builder.position_at_end(self.blocks[&block.id]);
+            for operation in &block.ops {
+                self.emit_op(operation)?;
+            }
+            self.emit_terminator(block)?;
+        }
+        Ok(())
+    }
+
+    fn load(&self, id: StorageId, name: &str) -> CodegenResult<BasicValueEnum<'ctx>> {
+        self.builder
+            .build_load(
+                llvm_type(self.ctx, &self.storage(id)?.layout.repr)?,
+                self.slots[id.0 as usize],
+                name,
+            )
+            .llvm_ctx("load physical storage")
+    }
+
+    fn storage(&self, id: StorageId) -> CodegenResult<&PhysicalStorage> {
+        self.function
+            .storage
+            .get(id.0 as usize)
+            .filter(|storage| storage.id == id)
+            .ok_or_else(|| CodegenError::FailClosed(format!("unknown physical storage {}", id.0)))
+    }
+
+    fn store(&self, id: StorageId, value: BasicValueEnum<'ctx>) -> CodegenResult<()> {
+        self.builder
+            .build_store(self.slots[id.0 as usize], value)
+            .llvm_ctx("store physical storage")?;
+        Ok(())
+    }
+
+    fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
+        if self.storage(id)?.own == OwnKind::Owned {
+            let zero = llvm_type(self.ctx, &self.storage(id)?.layout.repr)?.const_zero();
+            self.store(id, zero)?;
+        }
+        Ok(())
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the physical operation match is deliberately exhaustive and contains no ownership selection"
+    )]
+    fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
+        match operation {
+            PhysicalOp::Const { dest, value } => self.emit_const(*dest, value),
+            PhysicalOp::Unary { dest, op, source } => {
+                let source_value = self.load(*source, "unary.source")?;
+                let value = match op {
+                    UnaryOp::Not => {
+                        let source = source_value.into_int_value();
+                        let logical = self
+                            .builder
+                            .build_int_compare(
+                                IntPredicate::EQ,
+                                source,
+                                source.get_type().const_zero(),
+                                "logical.not",
+                            )
+                            .llvm_ctx("emit physical logical not")?;
+                        let target =
+                            llvm_type(self.ctx, &self.storage(*dest)?.layout.repr)?.into_int_type();
+                        self.builder
+                            .build_int_z_extend(logical, target, "logical.not.widen")
+                            .llvm_ctx("widen physical logical not")?
+                            .into()
+                    }
+                    UnaryOp::BitNot => self
+                        .builder
+                        .build_not(source_value.into_int_value(), "bitnot")
+                        .llvm_ctx("emit physical bit not")?
+                        .into(),
+                    UnaryOp::Negate | UnaryOp::RawDeref => {
+                        return Err(CodegenError::FailClosed(
+                            "fallible or raw unary operation reached physical emitter".into(),
+                        ));
+                    }
+                };
+                self.store(*dest, value)
+            }
+            PhysicalOp::Binary { dest, op, lhs, rhs } => self.emit_binary(*dest, *op, *lhs, *rhs),
+            PhysicalOp::Cast { dest, source, to } => self.emit_cast(*dest, *source, to),
+            PhysicalOp::TupleMake { dest, elements } => {
+                let BasicTypeEnum::StructType(tuple_ty) =
+                    llvm_type(self.ctx, &self.storage(*dest)?.layout.repr)?
+                else {
+                    return Err(CodegenError::FailClosed(
+                        "physical tuple destination is not an LLVM struct".into(),
+                    ));
+                };
+                let mut aggregate = tuple_ty.get_undef();
+                for (index, element) in elements.iter().enumerate() {
+                    let field = self.load(*element, "tuple.field")?;
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed("physical tuple field index exceeds u32".into())
+                    })?;
+                    aggregate = match self
+                        .builder
+                        .build_insert_value(aggregate, field, index, "tuple.make")
+                        .llvm_ctx("insert physical tuple field")?
+                    {
+                        inkwell::values::AggregateValueEnum::StructValue(value) => value,
+                        inkwell::values::AggregateValueEnum::ArrayValue(_) => {
+                            return Err(CodegenError::FailClosed(
+                                "physical tuple insertion produced an LLVM array".into(),
+                            ));
+                        }
+                    };
+                }
+                self.store(*dest, aggregate.into())
+            }
+            PhysicalOp::TupleGet { dest, tuple, index } => {
+                let tuple = self.load(*tuple, "tuple.source")?.into_struct_value();
+                let field = self
+                    .builder
+                    .build_extract_value(tuple, *index, "tuple.get")
+                    .llvm_ctx("extract physical tuple field")?;
+                self.store(*dest, field)
+            }
+            PhysicalOp::AggregateMake { dest, fields, .. } => {
+                let BasicTypeEnum::StructType(aggregate_ty) =
+                    llvm_type(self.ctx, &self.storage(*dest)?.layout.repr)?
+                else {
+                    return Err(CodegenError::FailClosed(
+                        "physical aggregate destination is not an LLVM struct".into(),
+                    ));
+                };
+                let mut aggregate = aggregate_ty.get_undef();
+                for (index, field) in fields.iter().enumerate() {
+                    let value = self.load(*field, "aggregate.field")?;
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed(
+                            "physical aggregate field index exceeds u32".into(),
+                        )
+                    })?;
+                    aggregate = match self
+                        .builder
+                        .build_insert_value(aggregate, value, index, "aggregate.make")
+                        .llvm_ctx("insert physical aggregate field")?
+                    {
+                        inkwell::values::AggregateValueEnum::StructValue(value) => value,
+                        inkwell::values::AggregateValueEnum::ArrayValue(_) => {
+                            return Err(CodegenError::FailClosed(
+                                "physical aggregate insertion produced an LLVM array".into(),
+                            ));
+                        }
+                    };
+                }
+                self.store(*dest, aggregate.into())?;
+                for field in fields {
+                    self.clear_owned(*field)?;
+                }
+                Ok(())
+            }
+            PhysicalOp::AggregateProjectCopy {
+                dest,
+                aggregate,
+                field,
+                action,
+                ..
+            } => {
+                let aggregate = self
+                    .load(*aggregate, "aggregate.project.source")?
+                    .into_struct_value();
+                let field_value = self
+                    .builder
+                    .build_extract_value(aggregate, *field, "aggregate.project.field")
+                    .llvm_ctx("extract physical aggregate field for copy")?;
+                let value = self.value_emitter().clone_loaded_value(
+                    field_value,
+                    &self.storage(*dest)?.layout,
+                    *action,
+                )?;
+                self.store(*dest, value)
+            }
+            PhysicalOp::AggregateDestructure {
+                aggregate, fields, ..
+            } => {
+                let value = self
+                    .load(*aggregate, "aggregate.destructure.source")?
+                    .into_struct_value();
+                for (index, field) in fields.iter().enumerate() {
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed(
+                            "physical aggregate field index exceeds u32".into(),
+                        )
+                    })?;
+                    let field_value = self
+                        .builder
+                        .build_extract_value(value, index, "aggregate.destructure.field")
+                        .llvm_ctx("extract physical aggregate field")?;
+                    self.store(*field, field_value)?;
+                }
+                self.clear_owned(*aggregate)
+            }
+            PhysicalOp::VariantMake {
+                dest,
+                variant,
+                fields,
+                glue,
+            } => self.emit_variant_make(*dest, *variant, fields, *glue),
+            PhysicalOp::Transfer { dest, source } => {
+                let value = self.load(*source, "transfer")?;
+                self.store(*dest, value)?;
+                if dest != source {
+                    self.clear_owned(*source)?;
+                }
+                Ok(())
+            }
+            PhysicalOp::Clone {
+                dest,
+                source,
+                action,
+            } => {
+                let value = self.clone_value(*source, *action)?;
+                self.store(*dest, value)
+            }
+            PhysicalOp::Destroy { source, action } => self.destroy_value(*source, *action),
+            PhysicalOp::Borrow { dest, source } => {
+                let value = self.load(*source, "borrow")?;
+                self.store(*dest, value)
+            }
+            PhysicalOp::EndBorrow { .. } | PhysicalOp::StorageLive { .. } => Ok(()),
+            PhysicalOp::Assign {
+                dest,
+                source,
+                destroy_old,
+            } => {
+                self.destroy_value(*dest, *destroy_old)?;
+                let value = self.load(*source, "assign")?;
+                self.store(*dest, value)?;
+                self.clear_owned(*source)
+            }
+            PhysicalOp::StorageDead { storage, destroy } => self.destroy_value(*storage, *destroy),
+        }
+    }
+
+    fn emit_variant_make(
+        &self,
+        dest: StorageId,
+        variant: u32,
+        fields: &[StorageId],
+        glue_id: PhysicalVariantId,
+    ) -> CodegenResult<()> {
+        let values = fields
+            .iter()
+            .map(|field| self.load(*field, "variant.make.field"))
+            .collect::<CodegenResult<Vec<_>>>()?;
+        self.write_variant_value(self.slots[dest.0 as usize], variant, &values, glue_id)?;
+        for field in fields {
+            self.clear_owned(*field)?;
+        }
+        Ok(())
+    }
+
+    fn write_variant_value(
+        &self,
+        destination: PointerValue<'ctx>,
+        variant: u32,
+        fields: &[BasicValueEnum<'ctx>],
+        glue_id: PhysicalVariantId,
+    ) -> CodegenResult<()> {
+        let glue = self.value_emitter().variant_glue(glue_id)?;
+        let layout = self.value_emitter().variant_layout(&glue.ty)?;
+        if layout.is_indirect {
+            return Err(CodegenError::FailClosed(
+                "physical indirect variant construction is not yet admitted".into(),
+            ));
+        }
+        let object_ty = llvm_type(self.ctx, &layout.object.repr)?.into_struct_type();
+        let tag_ty = object_ty
+            .get_field_type_at_index(0)
+            .ok_or_else(|| CodegenError::FailClosed("variant object has no tag field".into()))?
+            .into_int_type();
+        let tag = tag_ty.const_int(u64::from(variant), false);
+        let object = self
+            .builder
+            .build_insert_value(object_ty.const_zero(), tag, 0, "variant.make.tag")
+            .llvm_ctx("write physical variant tag")?
+            .into_struct_value();
+        self.builder
+            .build_store(destination, object)
+            .llvm_ctx("initialize physical variant storage")?;
+        let case = glue.variants.get(variant as usize).ok_or_else(|| {
+            CodegenError::FailClosed("variant construction tag is invalid".into())
+        })?;
+        let payload_layout = layout
+            .variants
+            .get(variant as usize)
+            .ok_or_else(|| CodegenError::FailClosed("variant payload layout is absent".into()))?;
+        if case.fields.len() != fields.len() {
+            return Err(CodegenError::FailClosed(
+                "variant construction field count changed after verification".into(),
+            ));
+        }
+        if !fields.is_empty() {
+            let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
+            let mut payload = payload_ty.get_undef();
+            for (index, field) in fields.iter().enumerate() {
+                let value = *field;
+                let index = u32::try_from(index).map_err(|_| {
+                    CodegenError::FailClosed("variant field index exceeds u32".into())
+                })?;
+                payload = self
+                    .builder
+                    .build_insert_value(payload, value, index, "variant.make.payload")
+                    .llvm_ctx("write physical variant payload field")?
+                    .into_struct_value();
+            }
+            let payload_ptr = self
+                .value_emitter()
+                .variant_payload_ptr(destination, layout)?;
+            self.builder
+                .build_store(payload_ptr, payload)
+                .llvm_ctx("store physical variant payload")?;
+        }
+        Ok(())
+    }
+
+    fn emit_variant_switch(
+        &self,
+        scrutinee: StorageId,
+        glue_id: PhysicalVariantId,
+        arms: &[PhysicalVariantArm],
+    ) -> CodegenResult<()> {
+        let glue = self.value_emitter().variant_glue(glue_id)?;
+        let layout = self.value_emitter().variant_layout(&glue.ty)?;
+        if layout.is_indirect {
+            return Err(CodegenError::FailClosed(
+                "physical indirect variant switch is not yet admitted".into(),
+            ));
+        }
+        let object = self
+            .load(scrutinee, "variant.switch.source")?
+            .into_struct_value();
+        let tag = self
+            .builder
+            .build_extract_value(object, 0, "variant.switch.tag")
+            .llvm_ctx("read physical variant tag")?
+            .into_int_value();
+        let invalid = self.ctx.append_basic_block(self.value, "variant.invalid");
+        let arm_blocks = arms
+            .iter()
+            .map(|arm| {
+                (
+                    tag.get_type().const_int(u64::from(arm.variant), false),
+                    self.ctx
+                        .append_basic_block(self.value, &format!("variant.case.{}", arm.variant)),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.builder
+            .build_switch(tag, invalid, &arm_blocks)
+            .llvm_ctx("emit physical variant switch")?;
+        for (arm, (_, arm_block)) in arms.iter().zip(&arm_blocks) {
+            self.builder.position_at_end(*arm_block);
+            let payload_layout = &layout.variants[arm.variant as usize];
+            if !arm.fields.is_empty() {
+                let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
+                let payload_ptr = self
+                    .value_emitter()
+                    .variant_payload_ptr(self.slots[scrutinee.0 as usize], layout)?;
+                let payload = self
+                    .builder
+                    .build_load(payload_ty, payload_ptr, "variant.switch.payload")
+                    .llvm_ctx("load physical variant payload")?
+                    .into_struct_value();
+                for (index, field) in arm.fields.iter().enumerate() {
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed("variant field index exceeds u32".into())
+                    })?;
+                    let value = self
+                        .builder
+                        .build_extract_value(payload, index, "variant.switch.field")
+                        .llvm_ctx("extract physical variant payload field")?;
+                    self.store(*field, value)?;
+                }
+            }
+            self.clear_owned(scrutinee)?;
+            self.emit_edge(&arm.target)?;
+        }
+        self.builder.position_at_end(invalid);
+        self.value_emitter().emit_invalid_variant_tag()
+    }
+
+    fn emit_const(&self, dest: StorageId, value: &PhysicalConst) -> CodegenResult<()> {
+        let llvm_ty = llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?;
+        match value {
+            PhysicalConst::I64(value) | PhysicalConst::Duration(value) => self.store(
+                dest,
+                llvm_ty
+                    .into_int_type()
+                    .const_int(*value as u64, true)
+                    .into(),
+            ),
+            PhysicalConst::Bool(value) => self.store(
+                dest,
+                llvm_ty
+                    .into_int_type()
+                    .const_int(u64::from(*value), false)
+                    .into(),
+            ),
+            PhysicalConst::F64(value) => {
+                self.store(dest, llvm_ty.into_float_type().const_float(*value).into())
+            }
+            PhysicalConst::Char(value) => self.store(
+                dest,
+                llvm_ty
+                    .into_int_type()
+                    .const_int(u64::from(u32::from(*value)), false)
+                    .into(),
+            ),
+            PhysicalConst::Unit => self.store(dest, llvm_ty.const_zero()),
+            PhysicalConst::String(id) => {
+                let bytes = self.module.string_literals.get(id).ok_or_else(|| {
+                    CodegenError::FailClosed(format!("missing physical string literal {}", id.0))
+                })?;
+                self.emit_literal(dest, bytes.as_bytes(), "hew_string_literal_new")
+            }
+            PhysicalConst::Bytes(id) => {
+                let bytes = self.module.bytes_literals.get(id).ok_or_else(|| {
+                    CodegenError::FailClosed(format!("missing physical bytes literal {}", id.0))
+                })?;
+                self.emit_literal(dest, bytes, "hew_bytes_literal_new")
+            }
+        }
+    }
+
+    fn emit_literal(&self, dest: StorageId, bytes: &[u8], symbol: &str) -> CodegenResult<()> {
+        let len = u32::try_from(bytes.len()).map_err(|_| {
+            CodegenError::FailClosed(format!("{symbol} literal exceeds the u32 runtime ABI"))
+        })?;
+        let data = self.ctx.const_string(bytes, false);
+        let global = self
+            .llvm
+            .add_global(data.get_type(), None, "physical.literal");
+        global.set_initializer(&data);
+        global.set_constant(true);
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let function = get_or_declare_external(
+            self.llvm,
+            symbol,
+            self.ctx
+                .void_type()
+                .fn_type(&[ptr.into(), self.ctx.i32_type().into(), ptr.into()], false),
+        )?;
+        self.builder
+            .build_call(
+                function,
+                &[
+                    global.as_pointer_value().into(),
+                    self.ctx.i32_type().const_int(u64::from(len), false).into(),
+                    self.slots[dest.0 as usize].into(),
+                ],
+                "literal.new",
+            )
+            .llvm_ctx("create owned physical literal")?;
+        Ok(())
+    }
+
+    fn emit_binary(
+        &self,
+        dest: StorageId,
+        op: BinaryOp,
+        lhs: StorageId,
+        rhs: StorageId,
+    ) -> CodegenResult<()> {
+        let left = self.load(lhs, "binary.left")?;
+        let right = self.load(rhs, "binary.right")?;
+        let ty = &self.storage(lhs)?.ty;
+        let mut value: BasicValueEnum<'ctx> = match (left, right) {
+            (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) => {
+                emit_integer_binary(&self.builder, op, left, right, is_signed(ty))?.into()
+            }
+            (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
+                emit_float_binary(&self.builder, op, left, right)?.into()
+            }
+            _ => {
+                return Err(CodegenError::FailClosed(
+                    "physical binary operands have unsupported carriers".into(),
+                ));
+            }
+        };
+        if self.storage(dest)?.ty == ResolvedTy::Bool {
+            let int = value.into_int_value();
+            let bool_ty = llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?.into_int_type();
+            if int.get_type() != bool_ty {
+                value = self
+                    .builder
+                    .build_int_z_extend(int, bool_ty, "bool.widen")
+                    .llvm_ctx("widen physical boolean result")?
+                    .into();
+            }
+        }
+        self.store(dest, value)
+    }
+
+    fn emit_cast(&self, dest: StorageId, source: StorageId, to: &ResolvedTy) -> CodegenResult<()> {
+        let value = self.load(source, "cast.source")?;
+        let target = llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?;
+        let source_ty = &self.storage(source)?.ty;
+        let cast = match (value, target) {
+            (BasicValueEnum::IntValue(value), BasicTypeEnum::IntType(target)) => self
+                .builder
+                .build_int_cast_sign_flag(value, target, is_signed(source_ty), "int.cast")
+                .llvm_ctx("emit physical integer cast")?
+                .into(),
+            (BasicValueEnum::FloatValue(value), BasicTypeEnum::FloatType(target)) => self
+                .builder
+                .build_float_cast(value, target, "float.cast")
+                .llvm_ctx("emit physical float cast")?
+                .into(),
+            (BasicValueEnum::IntValue(value), BasicTypeEnum::FloatType(target)) => {
+                if is_signed(source_ty) {
+                    self.builder
+                        .build_signed_int_to_float(value, target, "signed.to.float")
+                        .llvm_ctx("emit signed integer-to-float cast")?
+                        .into()
+                } else {
+                    self.builder
+                        .build_unsigned_int_to_float(value, target, "unsigned.to.float")
+                        .llvm_ctx("emit unsigned integer-to-float cast")?
+                        .into()
+                }
+            }
+            (BasicValueEnum::FloatValue(value), BasicTypeEnum::IntType(target)) => {
+                if is_signed(to) {
+                    self.builder
+                        .build_float_to_signed_int(value, target, "float.to.signed")
+                        .llvm_ctx("emit float-to-signed cast")?
+                        .into()
+                } else {
+                    self.builder
+                        .build_float_to_unsigned_int(value, target, "float.to.unsigned")
+                        .llvm_ctx("emit float-to-unsigned cast")?
+                        .into()
+                }
+            }
+            _ => {
+                return Err(CodegenError::FailClosed(
+                    "physical cast has unsupported carriers".into(),
+                ));
+            }
+        };
+        self.store(dest, cast)
+    }
+
+    fn clone_value(
+        &self,
+        source: StorageId,
+        action: CloneAction,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let value = self.load(source, "clone.source")?;
+        self.value_emitter()
+            .clone_loaded_value(value, &self.storage(source)?.layout, action)
+    }
+
+    fn destroy_value(&self, source: StorageId, action: DestroyAction) -> CodegenResult<()> {
+        let value = self.load(source, "destroy.source")?;
+        self.value_emitter()
+            .destroy_loaded_value(value, &self.storage(source)?.layout, action)?;
+        let zero = llvm_type(self.ctx, &self.storage(source)?.layout.repr)?.const_zero();
+        self.store(source, zero)
     }
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
@@ -2230,7 +2260,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 ),
                 ParamCarrier::Indirect => {
                     if let Some(value) = value {
-                        let temp = self.entry_scratch(
+                        let temp = self.value_emitter().entry_scratch(
                             llvm_type(self.ctx, &parameter.layout.repr)?,
                             "call.clone.argument",
                         )?;
@@ -2555,9 +2585,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
-        let value_out = self.entry_scratch(ptr.into(), "utf8.value")?;
-        let valid_out = self.entry_scratch(size_ty.into(), "utf8.valid.up.to")?;
-        let length_out = self.entry_scratch(size_ty.into(), "utf8.error.length")?;
+        let value_out = self
+            .value_emitter()
+            .entry_scratch(ptr.into(), "utf8.value")?;
+        let valid_out = self
+            .value_emitter()
+            .entry_scratch(size_ty.into(), "utf8.valid.up.to")?;
+        let length_out = self
+            .value_emitter()
+            .entry_scratch(size_ty.into(), "utf8.error.length")?;
         let function = get_or_declare_external(
             self.llvm,
             "hew_bytes_decode_utf8",
@@ -2626,11 +2662,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let option_ty = llvm_type(
             self.ctx,
             &self
-                .variant_layout(&self.variant_glue(option_glue)?.ty)?
+                .value_emitter()
+                .variant_layout(&self.value_emitter().variant_glue(option_glue)?.ty)?
                 .object
                 .repr,
         )?;
-        let option = self.entry_scratch(option_ty, "utf8.optional.length")?;
+        let option = self
+            .value_emitter()
+            .entry_scratch(option_ty, "utf8.optional.length")?;
         let some = self.ctx.append_basic_block(self.value, "utf8.length.some");
         let none = self.ctx.append_basic_block(self.value, "utf8.length.none");
         let error_ready = self.ctx.append_basic_block(self.value, "utf8.error.ready");
@@ -2661,7 +2700,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .builder
             .build_load(option_ty, option, "utf8.error.option")
             .llvm_ctx("load initialized UTF-8 error length")?;
-        let error_ty = &self.aggregate_glue(error_glue)?.ty;
+        let error_ty = &self.value_emitter().aggregate_glue(error_glue)?.ty;
         let error_layout =
             self.module.target.layout(error_ty).ok_or_else(|| {
                 CodegenError::FailClosed("UTF-8 error has no physical layout".into())
@@ -2687,7 +2726,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_unconditional_branch(complete)
             .llvm_ctx("finish UTF-8 error")?;
         self.builder.position_at_end(invalid);
-        self.emit_invalid_variant_tag()?;
+        self.value_emitter().emit_invalid_variant_tag()?;
         self.builder.position_at_end(complete);
         Ok(())
     }

@@ -972,3 +972,15 @@ callable. Its verifier checks component selections, method signature and body
 presence, and refuses collection construction without both key capabilities.
 The physical suite passes, including deliberate recipe/body/selection corruption.
 Native callback emission and dynamic runtime fault propagation remain pending.
+
+## Source mutability fixture alignment
+
+Use a mutable stack in std.path.normalize. Keep privslot's private generic
+Slot<T>, cross-module Store<T> impl identities and generation stamps, while
+making add copy self into a mutable local and return the updated Store<T>.
+The importer now rebinds its mutable store explicitly after each addition.
+
+The focused hew-compile tests
+imported_generic_impl_bodies_publish_each_checker_owned_declaration and
+cross_module_span_key_collision_unary_minus_and_string_lit_do_not_collide
+pass through Make. Native package-fixture validation is in progress.

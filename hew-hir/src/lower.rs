@@ -22248,6 +22248,9 @@ impl LowerCtx {
                 target:
                     CallTarget::RuntimeCollection(
                         method @ (hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::IsEmpty)
+                        | hew_types::MethodTargetFamily::HashMap(
+                            hew_types::HashMapMethod::IsEmpty,
+                        )
                         | hew_types::MethodTargetFamily::HashSet(
                             hew_types::HashSetMethod::IsEmpty,
                         )),
@@ -22259,9 +22262,7 @@ impl LowerCtx {
                 let family = match method {
                     hew_types::MethodTargetFamily::Vec(_) => Family::Vector(VecValueOp::Len),
                     hew_types::MethodTargetFamily::HashSet(_) => Family::Set(SetValueOp::Len),
-                    hew_types::MethodTargetFamily::HashMap(_) => {
-                        unreachable!("matched emptiness method")
-                    }
+                    hew_types::MethodTargetFamily::HashMap(_) => Family::Map(MapValueOp::Len),
                 };
                 let length =
                     self.collection_call_kind(family, vec![*receiver], &ResolvedTy::I64, span);

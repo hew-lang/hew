@@ -1071,3 +1071,9 @@ hit the old layout-key value-admission path. The next bounded step consumes the
 selected capability API and removes that obsolete key-admission contract,
 including the reported generic Key<i64> refusal. These failures remain visible;
 the tests are neither ignored nor changed to expect rejection.
+
+Map emptiness now composes the checked Map length operation with integer zero
+in HIR, matching the existing Vec and Set path. The permanent emptiness, owned
+Map projection and Set snapshot SIR controls pass after composing the checker
+checkpoints. Generic key admission and construction-plan verification remain
+pending their compiled follow-up checkpoints; native callbacks are still pending.

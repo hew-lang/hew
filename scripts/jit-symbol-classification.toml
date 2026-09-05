@@ -353,6 +353,7 @@ stable = [
   "hew_hashmap_free_layout",
   "hew_hashmap_get_clone_layout",
   "hew_hashmap_get_layout",
+  "hew_hashmap_insert_clone_layout",
   "hew_hashmap_insert_layout",
   "hew_hashmap_iter_free_layout",
   "hew_hashmap_iter_new_layout",
@@ -368,6 +369,7 @@ stable = [
   "hew_hashset_clone_layout",
   "hew_hashset_contains_layout",
   "hew_hashset_free_layout",
+  "hew_hashset_insert_clone_layout",
   "hew_hashset_insert_layout",
   "hew_hashset_is_empty_layout",
   "hew_hashset_iter_free_layout",
@@ -1979,6 +1981,21 @@ substantive justification is on that edge in the table above; this entry only \
 stops the call site from being read as an independent lane operation."""
 
 [ownership]
+
+# Copy-in preserves all caller owners; the collection owns semantic copies.
+[[ownership.contracts]]
+symbol = "hew_hashmap_insert_clone_layout"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_hashset_insert_clone_layout"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
 
 # Scalar positive identity (or zero exhaustion sentinel); no owned value crosses
 # the boundary.

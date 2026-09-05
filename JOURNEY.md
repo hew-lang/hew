@@ -659,3 +659,9 @@ and paired generated/runtime sanitizer suites. These cover independent cursor
 positions, nested value extraction, record replacement, source mutation and
 single evaluation, plus cleanup on nested loop exits, return and fault. Managed
 regex/DNS declarations are included in the regenerated C ABI surface.
+
+Full lint caught missing ABI classifications for the new borrowed map/set
+insertion functions. Their explicit borrowing contracts and generated surface
+now agree. The retained native and paired sanitizer suites and the combined
+runtime/C ABI/stdlib suite pass. Unsupported language coverage and the pinned
+structural grammar remain separate full-lint failures.

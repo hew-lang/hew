@@ -2155,7 +2155,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1500] = {
      "HewLayoutHashMap, *const c_void, *const c_void, ) -> bool\", "
      "\"wasm32-wasip1\": \"fn hew_hashmap_insert_clone_layout( *mut "
      "HewLayoutHashMap, *const c_void, *const c_void, ) -> bool\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_insert_layout",
      "{\"native\": \"fn hew_hashmap_insert_layout( *mut HewLayoutHashMap, "
@@ -2255,7 +2255,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1500] = {
      "HewLayoutHashSet, *const c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
      "hew_hashset_insert_clone_layout( *mut HewLayoutHashSet, *const c_void, ) "
      "-> bool\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_insert_layout",
      "{\"native\": \"fn hew_hashset_insert_layout( *mut HewLayoutHashSet, "

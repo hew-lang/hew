@@ -716,3 +716,42 @@ language surfaces, including LocalPid aggregate transfer. No checks were weakene
 This checkpoint establishes the contract only: HIR-to-SIR call operands still
 produce owned field copies, so cursor complexity and native safety acceptance
 remain pending the scoped producer change.
+
+## Borrowed call-argument producers
+
+HIR-to-SIR lowering now borrows aggregate field chains for read-only call
+arguments through AggregateProjectBorrow. Tuple and record projections share
+exact field validation with owned extraction. Each call ends its local loans
+in reverse order on normal and failure paths before cleaning up argument owners.
+No MIR, codegen, model, lifetime or verifier interface changed in this delta.
+
+A later argument that can mutate or fail still requires earlier fields to be
+captured as independent owners. Native validation exposed a related call cleanup
+bug: argument evaluation could replace an outer binding, then temporary cleanup
+destroyed its new owner. Both call producers now retain values still bound after
+argument evaluation. Permanent controls read the replacement binding afterwards;
+the missing-clone negative still exercises an owning extraction.
+
+Validation through Make:
+
+- `test-strict -o test-artifacts` selecting HIR/SIR/MIR/codegen libraries and
+  integration tests passed. The final focused `lower_aggregates` test run also
+  passed after adding runtime index-expression mutation coverage.
+- Scoped `lint-rust` for HIR/SIR and `core-acceptance -o hew-native` passed.
+- An external native matrix passed at O0/O2: nested record/tuple fields,
+  temporary receivers, independent returned items, explicit next, loops,
+  mutation snapshots, empty vectors, early exits and index/callee faults.
+  The same cases passed with a paired compiler/runtime from `core-safety-build`,
+  generated sanitize_address/\_\_asan_init evidence and ASan/LSan error exits.
+- A linker-wrapped runtime counter proved that N=0,64,4096 traversals at O0/O2
+  perform two setup vector clones, N+1 length reads and N item reads. Generated
+  LLVM places the clones before traversal. A separate 4096-item case also passed
+  under ASan/LSan. There are no per-step whole-vector clones.
+- `bench-mir -o hew` remains red: `quote` has a call without a verified SIR
+  contract. The benchmark then divides by zero on absent measurements. The
+  earlier cursor and is_empty refusals are gone; no benchmark checks changed.
+
+Native evidence is Linux only. Owned extraction and captures across later effects
+remain copies by contract; this is a bounded call-argument borrowing change.
+Map/Set source admission and the other owner's physical hash/equality work remain
+outside this checkpoint. Native sources and runner logs are preserved for intake.

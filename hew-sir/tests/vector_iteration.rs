@@ -70,7 +70,7 @@ fn explicit_next_uses_the_common_vector_and_aggregate_contracts() {
 
 #[test]
 fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
-    lower_source(
+    let module = lower_source(
         r"
         fn main() -> i64 {
             let values = [1, 2, 3];
@@ -79,6 +79,37 @@ fn vector_for_in_uses_ordinary_cfg_and_cursor_updates() {
             sum
         }
     ",
+    );
+    let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+    let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
+    let mut reads = 0;
+    for block in &main.blocks {
+        if let hew_sir::SemTerminator::RtCall {
+            family:
+                hew_types::RuntimeCallFamily::Vector(
+                    hew_types::VecValueOp::Len | hew_types::VecValueOp::Get,
+                ),
+            args,
+            ..
+        } = &block.terminator
+        {
+            reads += 1;
+            assert!(
+                operations.iter().any(|op| {
+                    matches!(op.kind, hew_sir::SemOpKind::AggregateProjectBorrow { .. })
+                        && op.results[0].id == args[0].operand.value
+                }),
+                "each cursor read must borrow its vector field"
+            );
+        }
+    }
+    assert_eq!(reads, 2, "cursor next needs one length and one item read");
+    assert!(
+        !operations.iter().any(|op| {
+            matches!(op.kind, hew_sir::SemOpKind::AggregateProjectCopy { .. })
+                && op.results[0].own == hew_sir::OwnKind::Owned
+        }),
+        "cursor traversal must not clone its owning fields"
     );
 }
 

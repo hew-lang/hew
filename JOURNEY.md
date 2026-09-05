@@ -422,3 +422,11 @@ The native corpus now retains nested-vector sibling extraction and nested
 Result/enum extraction from application reports, plus independent vector copies
 and strings that escape their parent. These remain explicit unsupported native
 cases until semantic operations and their physical consumer are complete.
+
+### Linear ASCII encoder construction
+
+- Restored byte-buffer emission for Base64 and hex, avoiding repeated immutable
+  string concatenation. Each encoder validates its completed ASCII output once
+  with the canonical UTF-8 decoder and panics on an invariant violation.
+- Kept URL byte/scalar/NUL fixes and compiler ownership boundaries unchanged.
+  Special awaited text-read lowering remains with its compiler owner.

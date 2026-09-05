@@ -1,0 +1,21 @@
+fn main() -> i64 {
+    var source: HashMap<i64, i64> = HashMap.new();
+    for key in 0 .. 32 {
+        source.insert(key, key * 10);
+    }
+    let saved = source;
+    source.insert(31, 999);
+    println(source[31]);
+    println(saved[31]);
+    match source.remove(31) {
+        .Some(value) => println(value),
+        .None => println(-1),
+    }
+    match source.get(31) {
+        .Some(_) => println("present"),
+        .None => println("absent"),
+    }
+    println(source.len());
+    println(saved.len());
+    0
+}

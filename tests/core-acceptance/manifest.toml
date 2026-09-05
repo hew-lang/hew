@@ -600,3 +600,70 @@ timeout_seconds = 15
 stdout = "AkeepBkeep\n"
 exit = 0
 stderr = ""
+
+[[case]]
+id = "map-value-copy"
+intent = "Map insertion borrows its inputs, copies stay independent, and nested selected values outlive clear and replacement."
+source = "cases/map-value-copy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first\n2\nreplacement\n0\n0\n"
+exit = 0
+
+[[case]]
+id = "map-owned-projections"
+intent = "Keys, values and entry pairs preserve owning payloads after their source map is cleared."
+source = "cases/map-owned-projections.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "LABEL\nPAYLOAD\nLABEL\nPAYLOAD\n"
+exit = 0
+
+[[case]]
+id = "map-scalar-growth-remove"
+intent = "Map growth, replacement and removal preserve an independent copy and return the exact removed value."
+source = "cases/map-scalar-growth-remove.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "999\n310\n999\nabsent\n31\n32\n"
+exit = 0
+
+[[case]]
+id = "map-record-key"
+intent = "Owning record keys use content equality and hashing, retain their input owners and preserve independent map copies."
+source = "cases/map-record-key.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "VALUE\n7\n1\n"
+exit = 0
+
+[[case]]
+id = "set-value-copy"
+intent = "Set insertion and removal report membership while preserving the input element and an independent set copy."
+source = "cases/set-value-copy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\nfalse\ntrue\nfalse\ntrue\nMEMBER\n0\n"
+exit = 0
+
+[[case]]
+id = "map-index-fault"
+intent = "Missing-key indexing cleans nested map payloads and surrounding owners through the common indexing fault edge."
+source = "cases/map-index-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 205

@@ -679,3 +679,10 @@ wrong keys, forged builtin names, incorrect arities and mismatched result types.
 The full checker suite passes. Source producers, verified physical recipes and
 native consumers remain the next layer; this checkpoint does not admit map/set
 source programs through native lowering yet.
+
+Permanent map/set acceptance now covers borrowed insertion, independent copies,
+nested selected values, owned projections, scalar growth/removal, record keys,
+membership results and indexing-fault cleanup. The first targeted map case
+currently stops in SIR admission: the constructor still reaches aggregate
+transfer lookup for a builtin map. The source/physical producers must consume
+the new contracts before these positive cases can pass.

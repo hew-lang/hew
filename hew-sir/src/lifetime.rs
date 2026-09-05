@@ -295,7 +295,14 @@ impl<'a> Flow<'a> {
                     .visit_results(|result| self.define(id, result.id, &mut returned, emit));
                 successors.extend(self.edge(id, normal, returned, emit));
                 if let CallUnwind::Cleanup(edge) = unwind {
-                    if matches!(block.terminator, SemTerminator::Call { .. }) {
+                    let transfers_fault = match &block.terminator {
+                        SemTerminator::Call { .. } => true,
+                        SemTerminator::RtCall { family, .. } => family
+                            .semantic_contract()
+                            .is_some_and(hew_types::RuntimeSemanticContract::propagates_fault),
+                        _ => unreachable!("matched call terminator"),
+                    };
+                    if transfers_fault {
                         state.fault = LIVE;
                     }
                     successors.extend(self.edge(id, edge, state, emit));

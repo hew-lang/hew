@@ -5154,7 +5154,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         };
 
         let failure = contract.failures.first().copied();
-        if contract.failures.len() > 1 {
+        if contract.failures.len() > 1 && !contract.propagates_fault() {
             return Err(format!(
                 "runtime family `{family:?}` has more failure edges than RtCall currently represents"
             ));
@@ -5183,9 +5183,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.owned_live = live_at_call.clone();
             self.end_call_loans(&loans)?;
             self.destroy_all_live()?;
-            self.set_terminator(SemTerminator::Trap {
-                kind: crate::runtime_failure_trap_kind(failure),
-            })?;
+            let terminal = if contract.propagates_fault() {
+                SemTerminator::ResumeUnwind
+            } else {
+                SemTerminator::Trap {
+                    kind: crate::runtime_failure_trap_kind(failure)
+                        .ok_or_else(|| "static runtime failure has no trap kind".to_string())?,
+                }
+            };
+            self.set_terminator(terminal)?;
         }
         self.current = normal_target;
         self.owned_live = live_at_call;

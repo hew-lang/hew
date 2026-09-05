@@ -2351,9 +2351,15 @@ fn verify_runtime_call_terminator(
 
     match (contract.failures, unwind) {
         ([], crate::CallUnwind::NotApplicable) => {}
-        ([failure], crate::CallUnwind::Cleanup(edge)) => {
-            let expected = crate::runtime_failure_trap_kind(*failure);
-            if !failure_cfg_matches_trap(edge, expected, blocks) {
+        (failures, crate::CallUnwind::Cleanup(edge))
+            if !failures.is_empty() && (failures.len() == 1 || contract.propagates_fault()) =>
+        {
+            let expected = if contract.propagates_fault() {
+                None
+            } else {
+                crate::runtime_failure_trap_kind(failures[0])
+            };
+            if !failure_cfg_matches_exit(edge, expected, blocks) {
                 diagnostics.push(diag(
                     function,
                     SirDiagnosticKind::InvalidTerminator {
@@ -2460,7 +2466,7 @@ fn verify_checked_binary_terminator(
         );
     }
     for failure in failures {
-        if !failure_cfg_matches_trap(&failure.edge, failure.kind, blocks) {
+        if !failure_cfg_matches_exit(&failure.edge, Some(failure.kind), blocks) {
             diagnostics.push(diag(
                 function,
                 SirDiagnosticKind::InvalidTerminator {
@@ -2474,14 +2480,14 @@ fn verify_checked_binary_terminator(
     }
 }
 
-fn failure_cfg_matches_trap(
+fn failure_cfg_matches_exit(
     edge: &crate::Edge,
-    expected: crate::TrapKind,
+    expected: Option<crate::TrapKind>,
     blocks: &BTreeMap<BlockId, &crate::SemBlock>,
 ) -> bool {
-    fn reaches_only_matching_traps(
+    fn reaches_only_matching_exits(
         block_id: BlockId,
-        expected: crate::TrapKind,
+        expected: Option<crate::TrapKind>,
         blocks: &BTreeMap<BlockId, &crate::SemBlock>,
         visiting: &mut std::collections::HashSet<BlockId>,
         complete: &mut std::collections::HashSet<BlockId>,
@@ -2496,22 +2502,23 @@ fn failure_cfg_matches_trap(
             return false;
         };
         let valid = match &block.terminator {
-            SemTerminator::Trap { kind } => *kind == expected,
+            SemTerminator::Trap { kind } => Some(*kind) == expected,
+            SemTerminator::ResumeUnwind => expected.is_none(),
             SemTerminator::Goto(next) => {
-                reaches_only_matching_traps(next.target, expected, blocks, visiting, complete)
+                reaches_only_matching_exits(next.target, expected, blocks, visiting, complete)
             }
             SemTerminator::Branch {
                 then_target,
                 else_target,
                 ..
             } => {
-                reaches_only_matching_traps(
+                reaches_only_matching_exits(
                     then_target.target,
                     expected,
                     blocks,
                     visiting,
                     complete,
-                ) && reaches_only_matching_traps(
+                ) && reaches_only_matching_exits(
                     else_target.target,
                     expected,
                     blocks,
@@ -2525,7 +2532,6 @@ fn failure_cfg_matches_trap(
             | SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
             | SemTerminator::Suspend { .. }
-            | SemTerminator::ResumeUnwind
             | SemTerminator::Unreachable => false,
         };
         visiting.remove(&block_id);
@@ -2535,7 +2541,7 @@ fn failure_cfg_matches_trap(
         valid
     }
 
-    reaches_only_matching_traps(
+    reaches_only_matching_exits(
         edge.target,
         expected,
         blocks,

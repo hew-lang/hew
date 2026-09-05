@@ -278,6 +278,8 @@ pub enum RuntimeResultEffect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeLogicalFailure {
     IndexOutOfBounds,
+    /// A selected user callback returns an existing logical fault owner.
+    CallbackFault,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -288,6 +290,15 @@ pub struct RuntimeSemanticContract {
 }
 
 impl RuntimeSemanticContract {
+    /// All failures on this call's cleanup edge carry an active fault owner.
+    /// Static failures sharing a callback edge are materialized by the runtime
+    /// boundary before cleanup, preserving a single fault transfer path.
+    #[must_use]
+    pub fn propagates_fault(self) -> bool {
+        self.failures
+            .contains(&RuntimeLogicalFailure::CallbackFault)
+    }
+
     /// Check a concrete language signature against this runtime operation.
     ///
     /// The checker calls this only after proving the declaration is canonical
@@ -557,19 +568,30 @@ impl MapValueOp {
             Self::Index => runtime_semantic_contract(
                 &[READ, KEY],
                 IndependentValue(TypeArgument(1)),
-                &[RuntimeLogicalFailure::IndexOutOfBounds],
+                &[
+                    RuntimeLogicalFailure::CallbackFault,
+                    RuntimeLogicalFailure::IndexOutOfBounds,
+                ],
             ),
-            Self::Get => {
-                runtime_semantic_contract(&[READ, KEY], IndependentValue(OPTIONAL_VALUE), &[])
-            }
-            Self::ContainsKey => runtime_semantic_contract(&[READ, KEY], BitCopy(Bool), &[]),
-            Self::Insert => {
-                runtime_semantic_contract(&[WRITE, KEY, VALUE], UpdatedReceiver(MAP), &[])
-            }
+            Self::Get => runtime_semantic_contract(
+                &[READ, KEY],
+                IndependentValue(OPTIONAL_VALUE),
+                &[RuntimeLogicalFailure::CallbackFault],
+            ),
+            Self::ContainsKey => runtime_semantic_contract(
+                &[READ, KEY],
+                BitCopy(Bool),
+                &[RuntimeLogicalFailure::CallbackFault],
+            ),
+            Self::Insert => runtime_semantic_contract(
+                &[WRITE, KEY, VALUE],
+                UpdatedReceiver(MAP),
+                &[RuntimeLogicalFailure::CallbackFault],
+            ),
             Self::Remove => runtime_semantic_contract(
                 &[WRITE, KEY],
                 UpdatedReceiverAndValue(Tuple(&[MAP, OPTIONAL_VALUE])),
-                &[],
+                &[RuntimeLogicalFailure::CallbackFault],
             ),
             Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(MAP), &[]),
             Self::Keys => runtime_semantic_contract(
@@ -643,11 +665,15 @@ impl SetValueOp {
         match self {
             Self::New => runtime_semantic_contract(&[], FreshOwned(SET), &[]),
             Self::Len => runtime_semantic_contract(&[READ], BitCopy(I64), &[]),
-            Self::Contains => runtime_semantic_contract(&[READ, ELEMENT], BitCopy(Bool), &[]),
+            Self::Contains => runtime_semantic_contract(
+                &[READ, ELEMENT],
+                BitCopy(Bool),
+                &[RuntimeLogicalFailure::CallbackFault],
+            ),
             Self::Insert | Self::Remove => runtime_semantic_contract(
                 &[WRITE, ELEMENT],
                 UpdatedReceiverAndValue(Tuple(&[SET, Bool])),
-                &[],
+                &[RuntimeLogicalFailure::CallbackFault],
             ),
             Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(SET), &[]),
             Self::Elements => runtime_semantic_contract(

@@ -1214,3 +1214,11 @@ Validation: SIR and physical MIR unit suites pass. The full SIR run reaches four
 Native Map/Set callback kernels use status plus presence/fault outputs. Emission tests status before reading outputs and releases a semantically consumed receiver on callback failure before SIR cleanup. Map index absence initializes the bounds fault only on successful lookup; existing callback faults retain their status and owner. Regenerated the C ABI census and corrected clone-in ownership parameter arities.
 
 Compiler checks and scoped SIR/MIR/codegen JSON Clippy pass. The Windows private status/result/fault ABI test passes. FFI classification and its regression tests pass; generated-surface regressions are running. This is an intermediate compiled checkpoint: source contracts and SIR/MIR callback-failure edges still require their coordinated file handback, and native Map execution awaits key descriptor emission.
+
+### Collection callback faults through the compiler
+
+The runtime semantic contract now identifies callback faults and determines when a cleanup edge carries an active fault owner. Map/Set hashing operations propagate that owner through SIR ResumeUnwind and physical fault state. Map index materializes a missing-key fault on the same edge only after a successful absent lookup; existing callback status and fault owners are preserved. Static vector and bytes bounds checks keep their static trap cleanup.
+
+Source SIR tests cover all callback families and reject abandoned/replaced faults and failure-edge result use. Physical MIR rejects replaced and absent callback faults. The LLVM protocol oracle follows actual control flow and output operands to prove status-first reads, receiver cleanup and exact fault/status forwarding. Its collection ABI matrix verifies Linux, Windows x64 and macOS arm64 targets.
+
+Validation: complete Types suite, SIR/MIR unit suites, focused collection fault tests, complete codegen suite and scoped JSON Clippy pass. Native selected-key and callback-fault acceptance is pending the key descriptor emitter and permanent source fixtures being integrated separately; no native Map acceptance is claimed here.

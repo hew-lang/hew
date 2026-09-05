@@ -3846,6 +3846,7 @@ fn terminator_successors(
             Ok(successors)
         }
         PhysicalTerminator::RuntimeCall {
+            action,
             args,
             result,
             normal,
@@ -3889,6 +3890,13 @@ fn terminator_successors(
             }
             let mut successors = vec![apply_edge(function, normal, normal_state, block)?];
             if let Some(failure) = failure {
+                if action
+                    .semantic_family()
+                    .semantic_contract()
+                    .is_some_and(hew_types::RuntimeSemanticContract::propagates_fault)
+                {
+                    state.fault = FaultState::Active;
+                }
                 if let Some(result) = result {
                     state.slots[result.0 as usize] = InitState::Uninitialized;
                 }
@@ -6124,6 +6132,79 @@ mod tests {
         lower_physical_module(&module, target_for_inventory(&module))
             .expect("collection parameters have complete physical value recipes")
             .into_unverified()
+    }
+
+    #[test]
+    fn collection_callback_cleanup_requires_its_existing_fault_owner() {
+        let semantic = lower_source(
+            r#"fn main() -> i64 {
+                var values: HashMap<i64, string> = HashMap.new();
+                values.insert(1, "one");
+                if values.contains_key(1) { 0 } else { 1 }
+            }"#,
+        );
+        let physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
+            .unwrap()
+            .into_unverified();
+        let function = physical
+            .functions
+            .iter()
+            .position(|function| {
+                function.blocks.iter().any(|block| {
+                    matches!(
+                        block.terminator,
+                        PhysicalTerminator::RuntimeCall {
+                            action: PhysicalRuntimeAction::Map {
+                                operation: PhysicalMapOp::ContainsKey,
+                                ..
+                            },
+                            ..
+                        }
+                    )
+                })
+            })
+            .unwrap();
+        let cleanup = physical.functions[function]
+            .blocks
+            .iter()
+            .find_map(|block| match &block.terminator {
+                PhysicalTerminator::RuntimeCall {
+                    action:
+                        PhysicalRuntimeAction::Map {
+                            operation: PhysicalMapOp::ContainsKey,
+                            ..
+                        },
+                    failure: Some(edge),
+                    ..
+                } => Some(edge.target),
+                _ => None,
+            })
+            .unwrap();
+        let mut invalid = physical.clone();
+        invalid.functions[function].blocks[cleanup.0 as usize].terminator =
+            PhysicalTerminator::Trap(TrapKind::IndexOutOfBounds);
+        let error = verify_physical_module(&invalid).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("creates a trap while an earlier fault is active"),
+            "{error}"
+        );
+
+        let mut invalid = physical;
+        let success = invalid.functions[function]
+            .blocks
+            .iter_mut()
+            .find(|block| matches!(block.terminator, PhysicalTerminator::Return { .. }))
+            .unwrap();
+        success.terminator = PhysicalTerminator::PropagateFault;
+        let error = verify_physical_module(&invalid).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("propagates a fault that is not initialized"),
+            "{error}"
+        );
     }
 
     #[test]

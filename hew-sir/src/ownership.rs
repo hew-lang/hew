@@ -297,9 +297,12 @@ pub enum TrapKind {
 }
 
 #[must_use]
-pub const fn runtime_failure_trap_kind(failure: hew_types::RuntimeLogicalFailure) -> TrapKind {
+pub const fn runtime_failure_trap_kind(
+    failure: hew_types::RuntimeLogicalFailure,
+) -> Option<TrapKind> {
     match failure {
-        hew_types::RuntimeLogicalFailure::IndexOutOfBounds => TrapKind::IndexOutOfBounds,
+        hew_types::RuntimeLogicalFailure::IndexOutOfBounds => Some(TrapKind::IndexOutOfBounds),
+        hew_types::RuntimeLogicalFailure::CallbackFault => None,
     }
 }
 

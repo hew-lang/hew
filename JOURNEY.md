@@ -201,3 +201,18 @@
 - Every HIR block expression now enters the same scoped lowering path. Its
   yielded value survives according to the surrounding copy or move context,
   while owned locals are destroyed before control leaves the lexical block.
+
+## LLVM AddressSanitizer helper
+
+- Added the crate-private LLVM 22 AddressSanitizer pass helper for the paired
+  physical emitter. It marks only defined generated functions, rejects a
+  missing target triple before mutation, runs the `asan` module pipeline and
+  re-verifies the module.
+- Focused tests prove emitted load/store checks and the ASan module constructor,
+  retain runtime declarations as uninstrumented inputs, and link/run a local
+  one-byte allocation overflow at both O0 and O2. Each execution requires an
+  AddressSanitizer diagnostic rather than accepting a generic non-zero exit.
+- The O2 sentinel initially disappeared as dead code because LLVM recognized
+  the libc allocation/free pair. The fixture now uses the LLVM `nobuiltin`
+  declaration attribute so the test observes generated instrumentation rather
+  than an optimizer-elided access.

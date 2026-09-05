@@ -38,6 +38,11 @@ pub mod llvm;
 pub(crate) mod runtime_abi;
 #[cfg(test)]
 mod runtime_family_parity;
+// The paired physical-emitter checkpoint owns the sanitizer option and calls
+// this helper. Unit tests exercise it now; remove this allowance when that
+// caller lands.
+#[allow(dead_code)]
+pub(crate) mod sanitizer;
 pub(crate) mod suspend;
 pub(crate) mod thunks;
 pub(crate) mod wire;

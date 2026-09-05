@@ -412,6 +412,7 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     let mut names = HashSet::new();
     let mut declarations = HashSet::new();
     for function in &module.functions {
+        verify_constructed_key_capabilities(module, function, &mut diagnostics);
         if !names.insert(function.name.clone()) {
             diagnostics.push(diag(
                 function,
@@ -456,6 +457,49 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
         ));
     }
     diagnostics
+}
+
+fn verify_constructed_key_capabilities(
+    module: &SemModule,
+    function: &SemFunction,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    use hew_types::runtime_call::{MapValueOp, SetValueOp};
+    use hew_types::{RuntimeCallFamily, ValueCapability};
+
+    for block in &function.blocks {
+        let SemTerminator::RtCall {
+            family:
+                RuntimeCallFamily::Map(MapValueOp::New) | RuntimeCallFamily::Set(SetValueOp::New),
+            result: crate::CallResult::Value(result),
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(&result.ty)
+        else {
+            continue;
+        };
+        let Some(key) = arguments.first() else {
+            continue;
+        };
+        for capability in [ValueCapability::Hash, ValueCapability::Eq] {
+            if !module
+                .value_capabilities
+                .contains_key(&(key.clone(), capability))
+            {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidValueCapability {
+                        ty: key.clone(),
+                        capability,
+                        reason: "collection construction requires a selected key method".into(),
+                    },
+                ));
+            }
+        }
+    }
 }
 
 /// Verify one function against the resolved callable table in `module`.

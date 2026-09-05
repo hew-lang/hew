@@ -1106,3 +1106,11 @@ This checkpoint changes checker admission only; root owns SIR capability
 construction, physical lowering and native callback acceptance. No new native,
 Windows or macOS execution is claimed. runtime_call.rs remains handed back to
 the fault-ABI owner after the earlier MapIsEmpty checkpoint.
+
+Construction verification now requires both selected key operations at Map and
+Set construction, integrating the completed semantic check from the fault lane.
+Together with exact generic key admission, the combined checker, analysis,
+SIR, physical MIR and compiler-session suites pass. This includes capability
+provenance mutations, absent construction plans, borrowed read demand, generic
+impl specialization, owned projections and source capability refusals. Native
+key callback emission and runtime fault consumers remain the next boundary.

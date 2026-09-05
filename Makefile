@@ -698,8 +698,9 @@ ci-preflight-smoke:
 # and the parity principle in docs/internal/engineering-invariants.md.
 #
 #   make ci-local-linux CI_LINUX_HOST=user@host                   # full Linux job
-#   make ci-local-linux CI_LINUX_HOST=user@host STEP=vertical-slice
-#   STEP ∈ { wasm workspace vertical-slice pkg-import hew-ratchet stdlib-ratchet sandbox all }
+#   make ci-local-linux CI_LINUX_HOST=user@host STEP=test-vertical-slice
+#   STEP ∈ { all preflight lint ci-shard-1 ci-shard-2 ci-shard-3
+#            test-vertical-slice test-pkg-import test-hew-ratchet test-stdlib-ratchet sandbox-parity }
 #
 # The host must provide CI's toolchain (LLVM via LLVM_SYS_221_PREFIX, the pinned
 # Rust toolchain, cargo-nextest, wasmtime). Override the remote LLVM prefix with
@@ -1606,6 +1607,7 @@ LINT_GATES += test-build-harness
 # Focused behaviour tests for the Hew JUnit transaction, shell discovery,
 # and compiled-Hew report aggregation. None needs a built compiler.
 test-build-harness:
+	$(PYTHON) scripts/tests/test_ci_local_linux.py
 	$(PYTHON) scripts/tests/test_hew_suite_runner.py
 	$(PYTHON) scripts/tests/test_makefile_interfaces.py
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py

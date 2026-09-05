@@ -1,0 +1,16 @@
+fn first(values: Vec<string>) -> string {
+    let outer = "alive";
+    for value in values {
+        let local = value.to_upper();
+        if local == "RETURN" {
+            return local;
+        }
+    }
+    outer
+}
+
+fn main() -> i64 {
+    println(first(["skip", "return", "unseen"]));
+    println(first([]));
+    0
+}

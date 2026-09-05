@@ -492,3 +492,111 @@ timeout_seconds = 15
 stdout = ""
 stderr = "hew: failure: IndexOutOfBounds (205)\n"
 exit = 205
+
+[[case]]
+id = "vector-iteration-scalar"
+intent = "Vector iteration visits each scalar once through the common cursor contract."
+source = "cases/vector-iteration-scalar.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "6\n"
+exit = 0
+stderr = ""
+
+[[case]]
+id = "vector-iteration-next"
+intent = "Copied cursors keep independent positions and items after source mutation and exhaustion."
+source = "cases/vector-iteration-next.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first\nfirst\nsecond\nempty\nempty\n"
+exit = 0
+stderr = ""
+
+[[case]]
+id = "vector-iteration-strings"
+intent = "Iteration snapshots survive source clear and release loop temporaries on continue and break."
+source = "cases/vector-iteration-strings.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "LAST\n0\n"
+exit = 0
+stderr = ""
+
+[[case]]
+id = "vector-iteration-nested"
+intent = "Nested vector items remain independently mutable after their source is cleared."
+source = "cases/vector-iteration-nested.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\nthird\nfirst\n1\n"
+exit = 0
+stderr = ""
+
+[[case]]
+id = "vector-iteration-record"
+intent = "Generic record field replacement preserves siblings and independent source records during iteration."
+source = "cases/vector-iteration-record.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "changed\nleft\nnested\n"
+exit = 0
+stderr = ""
+
+[[case]]
+id = "vector-iteration-early-return"
+intent = "Returning an owned item from a loop cleans cursor and local owners while preserving the result."
+source = "cases/vector-iteration-early-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "RETURN\nalive\n"
+exit = 0
+stderr = ""
+
+[[case]]
+id = "vector-iteration-single-evaluation"
+intent = "Iterable expressions are evaluated once for for-in and explicit cursor construction."
+source = "cases/vector-iteration-single-evaluation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "evaluated\nfirst\nsecond\nevaluated\nfirst\n"
+exit = 0
+stderr = ""
+
+[[case]]
+id = "vector-iteration-fault"
+intent = "A fault inside vector iteration cleans the cursor, current item and enclosing owners."
+source = "cases/vector-iteration-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 205
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+
+[[case]]
+id = "vector-iteration-nested-loops"
+intent = "Nested vector loops route break and continue to their own cursor cleanup edges."
+source = "cases/vector-iteration-nested-loops.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "AkeepBkeep\n"
+exit = 0
+stderr = ""

@@ -1,0 +1,15 @@
+fn main() -> i64 {
+    var source = [["first", "second"], ["third"]];
+    let saved = source;
+    var retained = ["initial"];
+    for value in source {
+        source.clear();
+        retained = value;
+        retained.push("added");
+    }
+    println(retained.len());
+    println(retained[0]);
+    println(saved[0][0]);
+    println(saved[1].len());
+    0
+}

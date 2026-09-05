@@ -4833,10 +4833,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dns_lookup_host( *const c_char) -> *mut c_char"
+        "native": "fn hew_dns_lookup_host( *const HewString) -> *mut HewString"
       },
       "symbol": "hew_dns_lookup_host"
     },
@@ -4846,10 +4846,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dns_lookup_host_timed( *const c_char, i64, ) -> *mut c_char"
+        "native": "fn hew_dns_lookup_host_timed( *const HewString, i64, ) -> *mut HewString"
       },
       "symbol": "hew_dns_lookup_host_timed"
     },
@@ -4859,10 +4859,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dns_resolve( *const c_char) -> *mut HewVec"
+        "native": "fn hew_dns_resolve( *const HewString) -> *mut HewVec"
       },
       "symbol": "hew_dns_resolve"
     },
@@ -4872,10 +4872,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dns_resolve_timed( *const c_char, i64, ) -> *mut HewVec"
+        "native": "fn hew_dns_resolve_timed( *const HewString, i64, ) -> *mut HewVec"
       },
       "symbol": "hew_dns_resolve_timed"
     },
@@ -11935,10 +11935,10 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_capture( *const HewRegex, *const c_char, i64, ) -> *mut c_char"
+        "native": "fn hew_regex_capture( *const HewRegex, *const HewString, i64, ) -> *mut HewString"
       },
       "symbol": "hew_regex_capture"
     },
@@ -11948,10 +11948,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_capture_index_one( *const HewRegex, *const c_char, i64, ) -> *mut HewVec"
+        "native": "fn hew_regex_capture_index_one( *const HewRegex, *const HewString, i64, ) -> *mut HewVec"
       },
       "symbol": "hew_regex_capture_index_one"
     },
@@ -11961,10 +11961,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_capture_name_one( *const HewRegex, *const c_char, *const c_char, ) -> *mut HewVec"
+        "native": "fn hew_regex_capture_name_one( *const HewRegex, *const HewString, *const HewString, ) -> *mut HewVec"
       },
       "symbol": "hew_regex_capture_name_one"
     },
@@ -11987,10 +11987,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_captures_flat( *const HewRegex, *const c_char, ) -> *mut HewVec"
+        "native": "fn hew_regex_captures_flat( *const HewRegex, *const HewString, ) -> *mut HewVec"
       },
       "symbol": "hew_regex_captures_flat"
     },
@@ -12013,10 +12013,10 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_compile( *const c_char) -> *mut HewRegex"
+        "native": "fn hew_regex_compile( *const HewString) -> *mut HewRegex"
       },
       "symbol": "hew_regex_compile"
     },
@@ -12026,10 +12026,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_find( *const HewRegex, *const c_char) -> *mut c_char"
+        "native": "fn hew_regex_find( *const HewRegex, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_regex_find"
     },
@@ -12039,10 +12039,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_find_all( *const HewRegex, *const c_char, ) -> *mut HewVec"
+        "native": "fn hew_regex_find_all( *const HewRegex, *const HewString, ) -> *mut HewVec"
       },
       "symbol": "hew_regex_find_all"
     },
@@ -12052,10 +12052,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_find_all_submatch_flat( *const HewRegex, *const c_char, ) -> *mut HewVec"
+        "native": "fn hew_regex_find_all_submatch_flat( *const HewRegex, *const HewString, ) -> *mut HewVec"
       },
       "symbol": "hew_regex_find_all_submatch_flat"
     },
@@ -12078,10 +12078,10 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_free_capture( *mut c_char)"
+        "native": "fn hew_regex_free_capture( *mut HewString)"
       },
       "symbol": "hew_regex_free_capture"
     },
@@ -12091,10 +12091,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_is_match( *const HewRegex, *const c_char) -> bool"
+        "native": "fn hew_regex_is_match( *const HewRegex, *const HewString) -> bool"
       },
       "symbol": "hew_regex_is_match"
     },
@@ -12117,10 +12117,10 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_match( *const HewRegex, *const c_char) -> i32"
+        "native": "fn hew_regex_match( *const HewRegex, *const HewString) -> i32"
       },
       "symbol": "hew_regex_match"
     },
@@ -12130,10 +12130,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_new( *const c_char) -> *mut HewRegex"
+        "native": "fn hew_regex_new( *const HewString) -> *mut HewRegex"
       },
       "symbol": "hew_regex_new"
     },
@@ -12143,10 +12143,10 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_replace( *const HewRegex, *const c_char, *const c_char, ) -> *mut c_char"
+        "native": "fn hew_regex_replace( *const HewRegex, *const HewString, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_regex_replace"
     },

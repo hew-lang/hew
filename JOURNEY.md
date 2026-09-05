@@ -653,3 +653,9 @@ its length and item reads. This is safe but makes traversal copying quadratic;
 a future common borrowed-projection contract should remove those copies without
 introducing iterator-specific backend behaviour. MIR/backend/runtime, acceptance
 fixtures and the other owner's stdlib catalog change remain outside this lane.
+
+The combined integration retains the iteration examples in native acceptance
+and paired generated/runtime sanitizer suites. These cover independent cursor
+positions, nested value extraction, record replacement, source mutation and
+single evaluation, plus cleanup on nested loop exits, return and fault. Managed
+regex/DNS declarations are included in the regenerated C ABI surface.

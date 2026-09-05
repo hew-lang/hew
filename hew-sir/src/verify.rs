@@ -135,6 +135,11 @@ pub enum SirDiagnosticKind {
         value: ValueId,
         reason: &'static str,
     },
+    /// The function-owned fault must be present at propagation and cannot be lost.
+    FaultLifetime {
+        block: BlockId,
+        reason: &'static str,
+    },
     /// Call results must be forwarded through that call's normal edge; the
     /// continuation uses its block argument, never the edge-local definition.
     InvalidCallResultUse {
@@ -907,10 +912,16 @@ pub(crate) fn verify_function_with_context(
             .map(|violation| {
                 diag(
                     function,
-                    SirDiagnosticKind::OwnershipLifetime {
-                        block: violation.block,
-                        value: violation.value,
-                        reason: violation.reason,
+                    match violation.value {
+                        Some(value) => SirDiagnosticKind::OwnershipLifetime {
+                            block: violation.block,
+                            value,
+                            reason: violation.reason,
+                        },
+                        None => SirDiagnosticKind::FaultLifetime {
+                            block: violation.block,
+                            reason: violation.reason,
+                        },
                     },
                 )
             }),

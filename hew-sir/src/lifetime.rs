@@ -14,7 +14,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Violation {
     pub block: BlockId,
-    pub value: ValueId,
+    pub value: Option<ValueId>,
     pub reason: &'static str,
 }
 
@@ -24,19 +24,24 @@ pub(crate) struct Violation {
 // obligation rather than inheriting the previous iteration's consumption.
 const DEAD: u8 = 1;
 const LIVE: u8 = 2;
-type State = Vec<u8>;
+#[derive(Clone)]
+struct State {
+    values: Vec<u8>,
+    fault: u8,
+}
 
 pub(crate) fn verify(function: &SemFunction) -> Vec<Violation> {
     let flow = Flow::new(function);
-    if (flow.values.is_empty() && flow.guaranteed.is_empty())
-        || !flow.blocks.contains_key(&function.entry)
-    {
+    if !flow.blocks.contains_key(&function.entry) {
         return Vec::new();
     }
-    let mut initial = vec![DEAD; flow.values.len()];
+    let mut initial = State {
+        values: vec![DEAD; flow.values.len()],
+        fault: DEAD,
+    };
     for param in &function.params {
         if let Some(&index) = flow.indices.get(&param.value) {
-            initial[index] = LIVE;
+            initial.values[index] = LIVE;
         }
     }
     let mut incoming = BTreeMap::from([(function.entry, initial)]);
@@ -46,8 +51,10 @@ pub(crate) fn verify(function: &SemFunction) -> Vec<Violation> {
         queued.remove(&block);
         for (target, state) in flow.block(block, incoming[&block].clone(), &mut |_| {}) {
             let changed = if let Some(previous) = incoming.get_mut(&target) {
-                let mut changed = false;
-                for (before, after) in previous.iter_mut().zip(state) {
+                let joined_fault = previous.fault | state.fault;
+                let mut changed = joined_fault != previous.fault;
+                previous.fault = joined_fault;
+                for (before, after) in previous.values.iter_mut().zip(state.values) {
                     let joined = *before | after;
                     changed |= joined != *before;
                     *before = joined;
@@ -148,7 +155,7 @@ impl<'a> Flow<'a> {
         if consume && self.guaranteed.contains(&value) {
             emit(Violation {
                 block,
-                value,
+                value: Some(value),
                 reason: "guaranteed input cannot be consumed; copy it into an owned value first",
             });
             return;
@@ -156,10 +163,10 @@ impl<'a> Flow<'a> {
         let Some(&index) = self.indices.get(&value) else {
             return;
         };
-        if state[index] != LIVE {
+        if state.values[index] != LIVE {
             emit(Violation {
                 block,
-                value,
+                value: Some(value),
                 reason: if self.local_borrows.contains(&value) {
                     "borrow is not live on every incoming path"
                 } else {
@@ -169,7 +176,7 @@ impl<'a> Flow<'a> {
         }
         if consume {
             self.require_no_live_borrows(block, value, state, emit);
-            state[index] = DEAD;
+            state.values[index] = DEAD;
         }
     }
 
@@ -183,11 +190,11 @@ impl<'a> Flow<'a> {
         if self.borrowers.get(&value).is_some_and(|borrows| {
             borrows
                 .iter()
-                .any(|borrow| state[self.indices[borrow]] & LIVE != 0)
+                .any(|borrow| state.values[self.indices[borrow]] & LIVE != 0)
         }) {
             emit(Violation {
                 block,
-                value,
+                value: Some(value),
                 reason: "value cannot be consumed or ended while a dependent borrow is live",
             });
         }
@@ -203,14 +210,14 @@ impl<'a> Flow<'a> {
         if !self.local_borrows.contains(&value) {
             emit(Violation {
                 block,
-                value,
+                value: Some(value),
                 reason: "end_borrow requires a local borrow producer",
             });
             return;
         }
         self.access(block, value, false, state, emit);
         self.require_no_live_borrows(block, value, state, emit);
-        state[self.indices[&value]] = DEAD;
+        state.values[self.indices[&value]] = DEAD;
     }
 
     fn define(
@@ -223,10 +230,10 @@ impl<'a> Flow<'a> {
         let Some(&index) = self.indices.get(&value) else {
             return;
         };
-        if state[index] != DEAD {
+        if state.values[index] != DEAD {
             emit(Violation {
                 block,
-                value,
+                value: Some(value),
                 reason: if self.local_borrows.contains(&value) {
                     "previous dynamic borrow remains live at definition"
                 } else {
@@ -234,7 +241,7 @@ impl<'a> Flow<'a> {
                 },
             });
         }
-        state[index] = LIVE;
+        state.values[index] = LIVE;
     }
 
     fn edge(
@@ -281,12 +288,16 @@ impl<'a> Flow<'a> {
         match &block.terminator {
             SemTerminator::Call { normal, unwind, .. }
             | SemTerminator::RtCall { normal, unwind, .. } => {
+                Self::require_fault(id, DEAD, &state, emit);
                 let mut returned = state.clone();
                 block
                     .terminator
                     .visit_results(|result| self.define(id, result.id, &mut returned, emit));
                 successors.extend(self.edge(id, normal, returned, emit));
                 if let CallUnwind::Cleanup(edge) = unwind {
+                    if matches!(block.terminator, SemTerminator::Call { .. }) {
+                        state.fault = LIVE;
+                    }
                     successors.extend(self.edge(id, edge, state, emit));
                 }
             }
@@ -323,11 +334,17 @@ impl<'a> Flow<'a> {
             | SemTerminator::ResumeUnwind
             | SemTerminator::Trap { .. }
             | SemTerminator::Unreachable => {
+                let expected = if matches!(block.terminator, SemTerminator::ResumeUnwind) {
+                    LIVE
+                } else {
+                    DEAD
+                };
+                Self::require_fault(id, expected, &state, emit);
                 for (index, &value) in self.values.iter().enumerate() {
-                    if state[index] & LIVE != 0 {
+                    if state.values[index] & LIVE != 0 {
                         emit(Violation {
                             block: id,
-                            value,
+                            value: Some(value),
                             reason: if self.local_borrows.contains(&value) {
                                 "local borrow remains live at exit"
                             } else {
@@ -339,6 +356,25 @@ impl<'a> Flow<'a> {
             }
         }
         successors
+    }
+
+    fn require_fault(
+        block: BlockId,
+        expected: u8,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        if state.fault != expected {
+            emit(Violation {
+                block,
+                value: None,
+                reason: if expected == LIVE {
+                    "fault propagation requires an active fault on every incoming path"
+                } else {
+                    "active fault cannot be abandoned or overwritten"
+                },
+            });
+        }
     }
 
     fn variant_switch(
@@ -408,7 +444,7 @@ impl<'a> Flow<'a> {
                 if !scoped_call_borrow {
                     emit(Violation {
                         block: id,
-                        value,
+                        value: Some(value),
                         reason: "guaranteed input requires an explicit owned copy at this boundary",
                     });
                 }
@@ -620,7 +656,7 @@ mod tests {
                 },
             )]);
             assert!(verify(&f).iter().any(|violation| {
-                violation.value == ValueId(1)
+                violation.value == Some(ValueId(1))
                     && violation.reason
                         == "guaranteed input requires an explicit owned copy at this boundary"
             }));
@@ -645,7 +681,7 @@ mod tests {
     fn borrowed_parameter_cannot_be_consumed() {
         let mut f = function(vec![block(0, vec![destroy(0, 0)], done())]);
         f.params[0].own = OwnKind::Guaranteed;
-        assert!(verify(&f).iter().any(|v| v.value == ValueId(0)));
+        assert!(verify(&f).iter().any(|v| v.value == Some(ValueId(0))));
     }
 
     #[test]
@@ -667,7 +703,7 @@ mod tests {
             )]);
             f.params[0].own = OwnKind::Guaranteed;
             assert!(
-                verify(&f).iter().any(|v| v.value == ValueId(0)),
+                verify(&f).iter().any(|v| v.value == Some(ValueId(0))),
                 "{decision:?}"
             );
         }
@@ -729,7 +765,7 @@ mod tests {
             continuation,
         ]);
         f.params[0].own = OwnKind::Guaranteed;
-        assert!(verify(&f).iter().any(|v| v.value == ValueId(0)));
+        assert!(verify(&f).iter().any(|v| v.value == Some(ValueId(0))));
     }
 
     #[test]
@@ -780,7 +816,7 @@ mod tests {
             exit,
         ]));
         assert!(
-            errors.iter().any(|e| e.value == ValueId(0)
+            errors.iter().any(|e| e.value == Some(ValueId(0))
                 && e.reason == "owned value is not live on every incoming path"),
             "{errors:?}"
         );
@@ -792,7 +828,8 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.value == ValueId(0) && e.reason == "owned value remains live at exit"),
+                .any(|e| e.value == Some(ValueId(0))
+                    && e.reason == "owned value remains live at exit"),
             "{errors:?}"
         );
         let diagnostics = crate::verify_function(&function(vec![block(0, Vec::new(), done())]));
@@ -861,7 +898,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.block == BlockId(3) && e.value == ValueId(0)),
+                .any(|e| e.block == BlockId(3) && e.value == Some(ValueId(0))),
             "{errors:?}"
         );
     }
@@ -888,7 +925,7 @@ mod tests {
         f.blocks[1].ops.pop();
         let errors = verify(&f);
         assert!(
-            errors.iter().any(|e| e.value == ValueId(1)
+            errors.iter().any(|e| e.value == Some(ValueId(1))
                 && e.reason == "previous dynamic owner remains live at definition"),
             "{errors:?}"
         );
@@ -949,8 +986,66 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.block == BlockId(2) && e.value == ValueId(0)),
+                .any(|e| e.block == BlockId(2) && e.value == Some(ValueId(0))),
             "{errors:?}"
         );
+    }
+
+    fn scalar_call_fault_flow() -> SemFunction {
+        let mut f = function(vec![
+            block(
+                0,
+                Vec::new(),
+                SemTerminator::Call {
+                    id: OpId(0),
+                    callee: CallableId(1),
+                    args: Vec::new(),
+                    result: CallResult::Unit,
+                    normal: edge(1, &[]),
+                    unwind: CallUnwind::Cleanup(edge(2, &[])),
+                },
+            ),
+            block(1, Vec::new(), done()),
+            block(2, Vec::new(), SemTerminator::ResumeUnwind),
+        ]);
+        f.params.clear();
+        f
+    }
+
+    #[test]
+    fn scalar_call_fault_must_be_propagated_exactly_once() {
+        let f = scalar_call_fault_flow();
+        assert!(verify(&f).is_empty());
+
+        for terminal in [
+            done(),
+            SemTerminator::Unreachable,
+            SemTerminator::Trap {
+                kind: crate::TrapKind::IndexOutOfBounds,
+            },
+        ] {
+            let mut invalid = f.clone();
+            invalid.blocks[2].terminator = terminal;
+            assert!(verify(&invalid).iter().any(|v| v.value.is_none()
+                && v.reason == "active fault cannot be abandoned or overwritten"));
+        }
+
+        let mut invalid = f.clone();
+        invalid.blocks[1].terminator = SemTerminator::ResumeUnwind;
+        assert!(verify(&invalid).iter().any(|v| v.block == BlockId(1)
+            && v.reason == "fault propagation requires an active fault on every incoming path"));
+
+        let mut invalid = f.clone();
+        invalid.blocks[2].terminator = f.blocks[0].terminator.clone();
+        assert!(verify(&invalid).iter().any(|v| v.block == BlockId(2)
+            && v.reason == "active fault cannot be abandoned or overwritten"));
+    }
+
+    #[test]
+    fn joined_fault_state_requires_all_predecessors_to_own_a_fault() {
+        let mut f = scalar_call_fault_flow();
+        f.blocks[1].terminator = SemTerminator::Goto(edge(2, &[]));
+        assert!(verify(&f).iter().any(|v| v.block == BlockId(2)
+            && v.reason == "fault propagation requires an active fault on every incoming path"));
     }
 }

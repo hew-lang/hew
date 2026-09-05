@@ -1202,3 +1202,9 @@ The fault protocol, composite values, owned entries and string refcount cases
 also pass ASan/LSan without suppressions. CABI compiles for Windows x64, macOS
 arm64 and WASI; runtime execution and sanitizer validation were on Linux.
 Compiler consumers and ownership/census integration remain with their owner.
+
+### Collection fault lowering: semantic and callable checkpoint
+
+Integrated the callback-status runtime and C ABI changes. SIR now requires selected Hash and Eq methods at collection construction and tracks active faults in its existing path-sensitive ownership flow, including functions with no owned values. Added controls for absent, abandoned, overwritten and mixed-predecessor faults. Physical callables retain their checker declaration and concrete instance for capability identity verification.
+
+Validation: SIR and physical MIR unit suites pass. The full SIR run reaches four outstanding collection source-admission cases (generic key specialization, map emptiness, map projections and set projection), assigned to the parallel checker work. The key descriptor emitter and callback-failure compiler ABI remain pending integration; this checkpoint does not claim native Map execution.

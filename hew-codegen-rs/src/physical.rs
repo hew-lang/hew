@@ -1557,7 +1557,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(result()?, value)?;
             }
             PhysicalRuntimeAction::BytesIndex => {
-                return self.emit_bytes_index_runtime(
+                return self.emit_bytes_index(
                     source(0)?,
                     source(1)?,
                     result()?,
@@ -1596,7 +1596,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.emit_edge(normal)
     }
 
-    fn emit_bytes_index_runtime(
+    fn emit_bytes_index(
         &self,
         bytes: StorageId,
         index: StorageId,
@@ -1625,6 +1625,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .builder
             .build_int_z_extend(len, self.ctx.i64_type(), "bytes.index.length.i64")
             .llvm_ctx("widen bytes length")?;
+        let offset64 = self
+            .builder
+            .build_int_z_extend(offset, self.ctx.i64_type(), "bytes.index.offset.i64")
+            .llvm_ctx("widen bytes offset")?;
+        let byte_offset = self
+            .builder
+            .build_int_add(offset64, index, "bytes.index.byte.offset")
+            .llvm_ctx("calculate bytes index offset")?;
         let negative = self
             .builder
             .build_int_compare(
@@ -1642,10 +1650,23 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .builder
             .build_is_null(pointer, "bytes.index.null")
             .llvm_ctx("guard null bytes index pointer")?;
+        let offset_overflow = self
+            .builder
+            .build_int_compare(
+                IntPredicate::UGT,
+                byte_offset,
+                self.ctx.i64_type().const_int(u64::from(u32::MAX), false),
+                "bytes.index.offset.overflow",
+            )
+            .llvm_ctx("guard bytes index offset overflow")?;
         let out_of_bounds = self
             .builder
             .build_or(negative, past_end, "bytes.index.bounds")
             .and_then(|bounds| self.builder.build_or(bounds, null, "bytes.index.invalid"))
+            .and_then(|invalid| {
+                self.builder
+                    .build_or(invalid, offset_overflow, "bytes.index.failure.condition")
+            })
             .llvm_ctx("combine bytes index guards")?;
         let safe = self.ctx.append_basic_block(self.value, "bytes.index.safe");
         let failed = self
@@ -1653,31 +1674,29 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .append_basic_block(self.value, "bytes.index.failure");
         self.builder
             .build_conditional_branch(out_of_bounds, failed, safe)
-            .llvm_ctx("branch around fallible bytes index runtime call")?;
+            .llvm_ctx("branch around fallible bytes index load")?;
 
         self.builder.position_at_end(failed);
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
-        let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let function = get_or_declare_external(
-            self.llvm,
-            "hew_bytes_index",
-            self.ctx.i8_type().fn_type(
-                &[
-                    ptr.into(),
-                    self.ctx.i32_type().into(),
-                    self.ctx.i32_type().into(),
-                    self.ctx.i64_type().into(),
-                ],
-                false,
-            ),
-        )?;
-        let indexed = self.runtime_call_value(
-            function,
-            &[pointer.into(), offset.into(), len.into(), index.into()],
-            "bytes.index",
-        )?;
+        // SAFETY: the physical normal path proves a non-null pointer, an index
+        // within the active region, and an offset that is representable by the
+        // runtime Bytes layout. Verified owned Bytes storage supplies the
+        // allocation-validity invariant for that active region.
+        let read_at = unsafe {
+            self.builder.build_gep(
+                self.ctx.i8_type(),
+                pointer,
+                &[byte_offset],
+                "bytes.index.pointer",
+            )
+        }
+        .llvm_ctx("calculate bytes index pointer")?;
+        let indexed = self
+            .builder
+            .build_load(self.ctx.i8_type(), read_at, "bytes.index.load")
+            .llvm_ctx("load indexed byte")?;
         self.store(result, indexed)?;
         self.emit_edge(normal)
     }

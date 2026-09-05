@@ -216,3 +216,9 @@
   the libc allocation/free pair. The fixture now uses the LLVM `nobuiltin`
   declaration attribute so the test observes generated instrumentation rather
   than an optimizer-elided access.
+- The helper now consumes the exact target machine that built the physical
+  module and rejects a triple mismatch before marking anything. The linked
+  probe requires `ERROR: AddressSanitizer: heap-buffer-overflow` and `WRITE of
+size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
+  Removing the `asan` pass makes the invalid O0 probe exit successfully, so
+  linking the ASan runtime alone cannot satisfy the test.

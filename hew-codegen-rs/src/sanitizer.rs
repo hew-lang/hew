@@ -4,10 +4,8 @@ use inkwell::{
     attributes::{Attribute, AttributeLoc},
     module::Module,
     passes::PassBuilderOptions,
-    targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple},
-    OptimizationLevel,
+    targets::TargetMachine,
 };
-use std::sync::OnceLock;
 
 /// Mark each generated function for AddressSanitizer and run LLVM's ASan module
 /// pass. The caller invokes this after its normal optimization pipeline, then
@@ -16,8 +14,30 @@ use std::sync::OnceLock;
 /// Runtime declarations deliberately remain unmarked: the generated module
 /// owns only its defined bodies, while the linked ASan runtime provides the
 /// reporting hooks the pass introduces.
-pub(crate) fn instrument_address_sanitizer(module: &Module<'_>) -> Result<(), String> {
-    let machine = target_machine_for_module(module)?;
+pub(crate) fn instrument_address_sanitizer(
+    module: &Module<'_>,
+    machine: &TargetMachine,
+) -> Result<(), String> {
+    let module_target = module.get_triple();
+    let module_triple = module_target
+        .as_str()
+        .to_str()
+        .map_err(|error| format!("module target triple is not UTF-8: {error}"))?;
+    let machine_target = machine.get_triple();
+    let machine_triple = machine_target
+        .as_str()
+        .to_str()
+        .map_err(|error| format!("target machine triple is not UTF-8: {error}"))?;
+    if module_triple.is_empty() {
+        return Err(
+            "AddressSanitizer requires a target triple on the generated module".to_string(),
+        );
+    }
+    if module_triple != machine_triple {
+        return Err(format!(
+            "AddressSanitizer module target `{module_triple}` does not match target machine `{machine_triple}`"
+        ));
+    }
     let attribute_kind = Attribute::get_named_enum_kind_id("sanitize_address");
     if attribute_kind == 0 {
         return Err("LLVM does not expose the `sanitize_address` function attribute".to_string());
@@ -35,43 +55,11 @@ pub(crate) fn instrument_address_sanitizer(module: &Module<'_>) -> Result<(), St
     }
 
     module
-        .run_passes("asan", &machine, PassBuilderOptions::create())
+        .run_passes("asan", machine, PassBuilderOptions::create())
         .map_err(|error| format!("LLVM AddressSanitizer pass failed: {error}"))?;
     module
         .verify()
         .map_err(|error| format!("LLVM rejected the AddressSanitizer-instrumented module: {error}"))
-}
-
-fn target_machine_for_module(module: &Module<'_>) -> Result<TargetMachine, String> {
-    initialise_targets();
-    let triple = module.get_triple();
-    let triple = triple
-        .as_str()
-        .to_str()
-        .map_err(|error| format!("module target triple is not UTF-8: {error}"))?;
-    if triple.is_empty() {
-        return Err(
-            "AddressSanitizer requires a target triple on the generated module".to_string(),
-        );
-    }
-    let target_triple = TargetTriple::create(triple);
-    let target = Target::from_triple(&target_triple)
-        .map_err(|error| format!("AddressSanitizer target `{triple}` is unavailable: {error:?}"))?;
-    target
-        .create_target_machine(
-            &target_triple,
-            "generic",
-            "",
-            OptimizationLevel::None,
-            RelocMode::PIC,
-            CodeModel::Default,
-        )
-        .ok_or_else(|| format!("cannot create AddressSanitizer target machine for `{triple}`"))
-}
-
-fn initialise_targets() {
-    static INIT: OnceLock<()> = OnceLock::new();
-    INIT.get_or_init(|| Target::initialize_all(&InitializationConfig::default()));
 }
 
 #[cfg(test)]
@@ -84,19 +72,15 @@ mod tests {
         targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
         AddressSpace, OptimizationLevel,
     };
-    use std::{
-        path::{Path, PathBuf},
-        process::Command,
-        sync::OnceLock,
-    };
+    use std::{path::PathBuf, process::Command, sync::OnceLock};
 
-    fn initialise_targets() {
+    fn initialize_targets() {
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| Target::initialize_all(&InitializationConfig::default()));
     }
 
     fn host_machine() -> TargetMachine {
-        initialise_targets();
+        initialize_targets();
         let triple = TargetMachine::get_default_triple();
         let target = Target::from_triple(&triple).expect("host target");
         target
@@ -111,7 +95,10 @@ mod tests {
             .expect("host target machine")
     }
 
-    fn out_of_bounds_store_module<'ctx>(ctx: &'ctx Context) -> (Module<'ctx>, TargetMachine) {
+    fn allocation_access_module<'ctx>(
+        ctx: &'ctx Context,
+        out_of_bounds: bool,
+    ) -> (Module<'ctx>, TargetMachine) {
         let module = ctx.create_module("asan_sentinel");
         let machine = host_machine();
         module.set_triple(&machine.get_triple());
@@ -141,13 +128,14 @@ mod tests {
             .try_as_basic_value()
             .expect_basic("malloc pointer")
             .into_pointer_value();
-        let out_of_bounds = unsafe {
+        let offset = u64::from(out_of_bounds);
+        let access = unsafe {
             builder
                 .build_in_bounds_gep(
                     i8_ty,
                     allocation,
-                    &[i64_ty.const_int(1, false)],
-                    "out_of_bounds",
+                    &[i64_ty.const_int(offset, false)],
+                    "access",
                 )
                 .expect("out-of-bounds address")
         };
@@ -158,7 +146,7 @@ mod tests {
             .build_load(i8_ty, allocation, "loaded_byte")
             .expect("load from allocation");
         builder
-            .build_store(out_of_bounds, byte)
+            .build_store(access, byte)
             .expect("out-of-bounds store");
         builder
             .build_call(free, &[allocation.into()], "free")
@@ -172,9 +160,9 @@ mod tests {
     #[test]
     fn defined_memory_accesses_receive_address_sanitizer_checks() {
         let ctx = Context::create();
-        let (module, _) = out_of_bounds_store_module(&ctx);
+        let (module, machine) = allocation_access_module(&ctx, true);
 
-        instrument_address_sanitizer(&module).expect("ASan instrumentation");
+        instrument_address_sanitizer(&module, &machine).expect("ASan instrumentation");
         module.verify().expect("instrumented module verifies");
         let ir = module.print_to_string().to_string();
 
@@ -192,7 +180,7 @@ mod tests {
         );
         assert!(
             ir.contains("@asan.module_ctor"),
-            "the ASan module pass must install its runtime initialiser:\n{ir}"
+            "the ASan module pass must install its runtime initializer:\n{ir}"
         );
         assert!(
             module
@@ -229,7 +217,8 @@ mod tests {
         builder.position_at_end(block);
         builder.build_return(None).expect("return");
 
-        let error = instrument_address_sanitizer(&module)
+        let machine = host_machine();
+        let error = instrument_address_sanitizer(&module, &machine)
             .expect_err("ASan must not guess a target for an unconfigured module");
         assert!(
             error.contains("target triple"),
@@ -246,12 +235,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mismatched_target_machine_is_refused_before_instrumentation() {
+        let ctx = Context::create();
+        let module = ctx.create_module("mismatched_target");
+        module.set_triple(&inkwell::targets::TargetTriple::create(
+            "wasm32-unknown-unknown",
+        ));
+        let definition =
+            module.add_function("generated", ctx.void_type().fn_type(&[], false), None);
+        let block = ctx.append_basic_block(definition, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(block);
+        builder.build_return(None).expect("return");
+
+        let error = instrument_address_sanitizer(&module, &host_machine())
+            .expect_err("ASan must not pair a module with a different target machine");
+        assert!(
+            error.contains("does not match"),
+            "mismatched target must be a fatal configuration error: {error}"
+        );
+        assert!(
+            definition
+                .get_enum_attribute(
+                    AttributeLoc::Function,
+                    Attribute::get_named_enum_kind_id("sanitize_address")
+                )
+                .is_none(),
+            "a mismatched module must not be partially marked for ASan"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn instrumented_out_of_bounds_store_reports_address_sanitizer_at_o0_and_o2() {
-        for (name, pipeline) in [("o0", None), ("o2", Some("default<O2>"))] {
+        for (name, out_of_bounds, pipeline) in [
+            ("invalid-o0", true, None),
+            ("invalid-o2", true, Some("default<O2>")),
+            ("clean-o0", false, None),
+            ("clean-o2", false, Some("default<O2>")),
+        ] {
             let ctx = Context::create();
-            let (module, machine) = out_of_bounds_store_module(&ctx);
+            let (module, machine) = allocation_access_module(&ctx, out_of_bounds);
             if let Some(pipeline) = pipeline {
                 module
                     .run_passes(
@@ -259,9 +284,9 @@ mod tests {
                         &machine,
                         inkwell::passes::PassBuilderOptions::create(),
                     )
-                    .unwrap_or_else(|err| panic!("{name} optimisation pipeline failed: {err}"));
+                    .unwrap_or_else(|err| panic!("{name} optimization pipeline failed: {err}"));
             }
-            instrument_address_sanitizer(&module)
+            instrument_address_sanitizer(&module, &machine)
                 .unwrap_or_else(|err| panic!("{name} ASan instrumentation failed: {err}"));
             module
                 .verify()
@@ -290,21 +315,38 @@ mod tests {
                 .output()
                 .unwrap_or_else(|err| panic!("run {name} ASan sentinel: {err}"));
             let report = String::from_utf8_lossy(&run.stderr);
-            assert!(
-                !run.status.success() && report.contains("AddressSanitizer"),
-                "{name} sentinel must require an actual ASan diagnostic, not merely a non-zero exit; status={:?}, stderr:\n{report}",
-                run.status.code()
-            );
+            if out_of_bounds {
+                assert!(
+                    !run.status.success()
+                        && report.contains("ERROR: AddressSanitizer: heap-buffer-overflow")
+                        && report.contains("WRITE of size 1"),
+                    "{name} sentinel must require the expected ASan heap write diagnostic; status={:?}, stderr:\n{report}",
+                    run.status.code()
+                );
+            } else {
+                assert!(
+                    run.status.success() && !report.contains("AddressSanitizer"),
+                    "{name} in-bounds control must exit cleanly without an ASan report; status={:?}, stderr:\n{report}",
+                    run.status.code()
+                );
+            }
         }
     }
 
     #[cfg(target_os = "linux")]
     fn llvm_clang() -> PathBuf {
-        let path = Path::new("/usr/lib/llvm-22/bin/clang");
+        let prefix = std::env::var_os("LLVM_SYS_221_PREFIX").unwrap_or_else(|| {
+            panic!(
+                "LLVM_SYS_221_PREFIX is required to locate the clang paired with the LLVM 22 \\
+                 codegen library; set it to the LLVM 22 installation prefix"
+            )
+        });
+        let path = PathBuf::from(prefix).join("bin").join("clang");
         assert!(
             path.is_file(),
-            "LLVM 22 clang is required for the ASan execution proof"
+            "configured LLVM 22 clang is required for the ASan execution proof: {}",
+            path.display()
         );
-        path.to_path_buf()
+        path
     }
 }

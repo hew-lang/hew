@@ -6,7 +6,7 @@
 //! this table; nothing downstream re-asks.
 
 use crate::resolved_ty::ResolvedTy;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::check::TypeDef;
 use crate::traits::{MarkerTrait, TraitRegistry};
@@ -111,10 +111,16 @@ pub(crate) struct ImplMethodBinders {
     pub receiver: crate::Ty,
     pub impl_params: Vec<String>,
     pub method_params: Vec<String>,
+    pub obligations: Option<Vec<(String, MarkerTrait)>>,
 }
 
 impl ImplMethodBinders {
-    fn instantiate(&self, receiver: &ResolvedTy) -> Result<Vec<ResolvedTy>, ClassError> {
+    fn instantiate(
+        &self,
+        method: &crate::DefId,
+        receiver: &ResolvedTy,
+        registry: &TraitRegistry,
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
         if let Some(name) = self.method_params.first() {
             return Err(ClassError::TypeParam { name: name.clone() });
         }
@@ -135,7 +141,7 @@ impl ImplMethodBinders {
         let mut subst = crate::ty::Substitution::new();
         crate::unify::unify(&mut subst, &pattern, &receiver.to_ty()).map_err(|_| {
             ClassError::UnknownDeclaration {
-                name: receiver.user_facing().to_string(),
+                name: method.display_name().to_string(),
             }
         })?;
         let type_args: Vec<_> = self
@@ -151,16 +157,41 @@ impl ImplMethodBinders {
         // retain exact builtin and nominal identities after substitution.
         let instantiated = ResolvedTy::from_ty(&subst.resolve(&pattern)).map_err(|_| {
             ClassError::UnknownDeclaration {
-                name: receiver.user_facing().to_string(),
+                name: method.display_name().to_string(),
             }
         })?;
         if instantiated != *receiver {
             return Err(ClassError::UnknownDeclaration {
-                name: receiver.user_facing().to_string(),
+                name: method.display_name().to_string(),
             });
+        }
+        let refusal = || ClassError::UnknownDeclaration {
+            name: method.display_name().to_string(),
+        };
+        for (param, marker) in self.obligations.as_ref().ok_or_else(refusal)? {
+            let position = self
+                .impl_params
+                .iter()
+                .position(|name| name == param)
+                .ok_or_else(refusal)?;
+            if !registry.implements_marker(&type_args[position].to_ty(), *marker) {
+                return Err(refusal());
+            }
         }
         Ok(type_args)
     }
+}
+
+fn require_concrete_capability_type(ty: &ResolvedTy) -> Result<(), ClassError> {
+    if let ResolvedTy::TypeParam { name } = ty {
+        return Err(ClassError::TypeParam { name: name.clone() });
+    }
+    let mut components = Vec::new();
+    push_type_components(ty, &mut components);
+    for component in components {
+        require_concrete_capability_type(&component)?;
+    }
+    Ok(())
 }
 
 /// Shared exact-specialization-then-nominal lookup over checker registration.
@@ -363,39 +394,28 @@ impl TypeFactService {
         ty: &ResolvedTy,
         capability: ValueCapability,
     ) -> Result<Option<ValueMethodPlan>, ClassError> {
+        self.select_capability_inner(ty, capability, &mut HashSet::new())
+    }
+
+    fn select_capability_inner(
+        &self,
+        ty: &ResolvedTy,
+        capability: ValueCapability,
+        visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+    ) -> Result<Option<ValueMethodPlan>, ClassError> {
         crate::value_class::classify_ty(ty, &ClassContext::new(&self.context.declarations))?;
-        let mut components = Vec::new();
-        push_type_components(ty, &mut components);
-        if let ResolvedTy::TypeParam { name } = ty {
-            return Err(ClassError::TypeParam { name: name.clone() });
-        }
-        // Validate every binder-bearing component even when the class rule does
-        // not inspect it (for example a function's parameter types).
-        for component in components {
-            if ResolvedTy::from_ty(&component.to_ty()).is_err() {
-                return Err(ClassError::TypeParam {
-                    name: component.user_facing().to_string(),
-                });
-            }
-        }
+        require_concrete_capability_type(ty)?;
         let as_ty = ty.to_ty();
         let (trait_name, method_name) = match capability {
             ValueCapability::Hash => ("Hash", "hash"),
             ValueCapability::Eq => ("Eq", "eq"),
         };
+        let builtin_owner = crate::Checker::canonical_primitive_or_builtin_key(&as_ty);
         let (owner, args) = match ty {
-            ResolvedTy::Named {
-                name,
-                args,
-                builtin,
-                ..
-            } => (
-                builtin
-                    .as_ref()
-                    .map_or(name.as_str(), |builtin| builtin.canonical_name()),
-                args.as_slice(),
-            ),
-            _ => (as_ty.canonical_lowering_name().unwrap_or(""), &[][..]),
+            ResolvedTy::Named { name, args, .. } => {
+                (builtin_owner.as_deref().unwrap_or(name), args.as_slice())
+            }
+            _ => (builtin_owner.as_deref().unwrap_or(""), &[][..]),
         };
         if let Some((method, _)) = selected_impl_method(
             &self.context.method_ids,
@@ -404,28 +424,234 @@ impl TypeFactService {
             trait_name,
             method_name,
         ) {
+            if capability == ValueCapability::Hash {
+                let admitted_shape = match ty {
+                    ResolvedTy::Named {
+                        builtin: Some(builtin),
+                        ..
+                    } => matches!(
+                        builtin,
+                        crate::BuiltinType::NodeId
+                            | crate::BuiltinType::Location
+                            | crate::BuiltinType::RemotePid
+                    ),
+                    ResolvedTy::Named { name, .. } => {
+                        self.context.type_defs.get(name).is_some_and(|definition| {
+                            !definition.is_indirect
+                                && matches!(
+                                    definition.kind,
+                                    crate::check::TypeDefKind::Struct
+                                        | crate::check::TypeDefKind::Record
+                                )
+                        })
+                    }
+                    _ => true,
+                };
+                if !admitted_shape {
+                    return Ok(None);
+                }
+            }
             let binders = self.context.method_binders.get(&method).ok_or_else(|| {
                 ClassError::UnknownDeclaration {
                     name: method.display_name().to_string(),
                 }
             })?;
-            let type_args = binders.instantiate(ty)?;
+            let type_args = binders.instantiate(&method, ty, &self.context.registry)?;
             return Ok(Some(ValueMethodPlan::User { method, type_args }));
         }
         if !crate::check::declaration_walk_terminates(ty, &self.context.type_defs) {
             return Ok(None);
         }
+        let key = (ty.clone(), capability);
+        if !visiting.insert(key.clone()) {
+            // Recursive structural operations are outside the admitted surface.
+            // Canonical member identities may expose a cycle hidden by an
+            // import presentation in the source declaration walk.
+            return Ok(None);
+        }
         let derived = match capability {
-            ValueCapability::Hash => self.derived_hash(ty)?,
-            ValueCapability::Eq => matches!(
-                crate::eq_eligibility::ty_is_eq_eligible(&as_ty, &self.context.type_defs),
-                crate::eq_eligibility::EqEligibility::Eligible
-            ),
+            ValueCapability::Hash => self.derived_hash(ty, visiting),
+            ValueCapability::Eq => self.derived_eq(ty, visiting),
         };
-        Ok(derived.then_some(ValueMethodPlan::Derived))
+        visiting.remove(&key);
+        derived.map(|allowed| allowed.then_some(ValueMethodPlan::Derived))
     }
 
-    fn derived_hash(&self, ty: &ResolvedTy) -> Result<bool, ClassError> {
+    fn derived_eq(
+        &self,
+        ty: &ResolvedTy,
+        visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+    ) -> Result<bool, ClassError> {
+        use crate::BuiltinType;
+        match ty {
+            ResolvedTy::Tuple(members) => {
+                self.members_have_capability(members, ValueCapability::Eq, visiting)
+            }
+            ResolvedTy::Named {
+                builtin:
+                    Some(builtin @ (BuiltinType::Option | BuiltinType::Result | BuiltinType::Vec)),
+                args,
+                ..
+            } => {
+                let arity = if *builtin == BuiltinType::Result {
+                    2
+                } else {
+                    1
+                };
+                if args.len() != arity {
+                    return Err(ClassError::UnknownDeclaration {
+                        name: ty.user_facing().to_string(),
+                    });
+                }
+                self.members_have_capability(args, ValueCapability::Eq, visiting)
+            }
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid),
+                ..
+            } => Ok(true),
+            ResolvedTy::Named {
+                builtin:
+                    Some(
+                        BuiltinType::HashMap
+                        | BuiltinType::HashSet
+                        | BuiltinType::Rc
+                        | BuiltinType::Weak,
+                    ),
+                ..
+            } => Ok(false),
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                ..
+            } => {
+                let owner = ty.nominal_instance().map_or_else(
+                    || name.clone(),
+                    |instance| instance.nominal.full_path().to_string(),
+                );
+                let Some(definition) = self.context.type_defs.get(&owner) else {
+                    if builtin.is_some() {
+                        return Ok(false);
+                    }
+                    return Err(ClassError::UnknownDeclaration { name: owner });
+                };
+                if definition.is_indirect
+                    || (builtin.is_some() && definition.type_params.len() != args.len())
+                {
+                    return Ok(false);
+                }
+                self.members_have_capability(
+                    &self.declared_capability_members(ty)?,
+                    ValueCapability::Eq,
+                    visiting,
+                )
+            }
+            _ => Ok(matches!(
+                crate::eq_eligibility::ty_is_eq_eligible(&ty.to_ty(), &self.context.type_defs),
+                crate::eq_eligibility::EqEligibility::Eligible
+            )),
+        }
+    }
+
+    fn members_have_capability(
+        &self,
+        members: &[ResolvedTy],
+        capability: ValueCapability,
+        visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+    ) -> Result<bool, ClassError> {
+        for member in members {
+            if self
+                .select_capability_inner(member, capability, visiting)?
+                .is_none()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Instantiate declaration members, preserving the same source identities
+    /// and parallel parameter substitution as the class and record services.
+    fn declared_capability_members(&self, ty: &ResolvedTy) -> Result<Vec<ResolvedTy>, ClassError> {
+        let ResolvedTy::Named { name, args, .. } = ty else {
+            return Err(ClassError::UnknownDeclaration {
+                name: ty.user_facing().to_string(),
+            });
+        };
+        let nominal = ty.nominal_instance();
+        let name = nominal
+            .as_ref()
+            .map_or(name.as_str(), |instance| instance.nominal.full_path());
+        let declaration =
+            self.context
+                .declarations
+                .get(name)
+                .ok_or_else(|| ClassError::UnknownDeclaration {
+                    name: name.to_string(),
+                })?;
+        if declaration.type_params.len() != args.len() {
+            return Err(ClassError::UnknownDeclaration {
+                name: ty.user_facing().to_string(),
+            });
+        }
+        if declaration.marker == crate::DeclarationMarker::None {
+            return Ok(declaration
+                .members
+                .iter()
+                .map(|member| {
+                    crate::value_class::substitute(member, &declaration.type_params, args)
+                })
+                .collect());
+        }
+        // Marker class rows intentionally omit members because their ownership
+        // class is immediate. Equality and hashing still inspect their fields.
+        let definition =
+            self.context
+                .type_defs
+                .get(name)
+                .ok_or_else(|| ClassError::UnknownDeclaration {
+                    name: name.to_string(),
+                })?;
+        let mut members: Vec<_> = definition.fields.iter().collect();
+        members.sort_by_key(|(name, _)| *name);
+        let mut types: Vec<_> = members.into_iter().map(|(_, ty)| ty).collect();
+        let mut variants: Vec<_> = definition.variants.iter().collect();
+        variants.sort_by_key(|(name, _)| *name);
+        for (_, variant) in variants {
+            match variant {
+                crate::check::VariantDef::Unit => {}
+                crate::check::VariantDef::Tuple(payload) => types.extend(payload),
+                crate::check::VariantDef::Struct(fields) => {
+                    types.extend(fields.iter().map(|(_, ty)| ty));
+                }
+            }
+        }
+        types
+            .into_iter()
+            .map(|member| {
+                let member =
+                    ResolvedTy::from_ty(member).map_err(|_| ClassError::UnknownDeclaration {
+                        name: name.to_string(),
+                    })?;
+                let member = if let Some((prefix, _)) = name.rsplit_once('.') {
+                    crate::check::canonicalize_member_ty(member, prefix, &self.context.type_defs)
+                } else {
+                    member
+                };
+                Ok(crate::value_class::substitute(
+                    &member,
+                    &declaration.type_params,
+                    args,
+                ))
+            })
+            .collect()
+    }
+
+    fn derived_hash(
+        &self,
+        ty: &ResolvedTy,
+        visiting: &mut HashSet<(ResolvedTy, ValueCapability)>,
+    ) -> Result<bool, ClassError> {
         match ty {
             // Preserve the existing identity-aggregate exceptions exactly.
             ResolvedTy::Named {
@@ -448,7 +674,12 @@ impl TypeFactService {
                         name: ty.user_facing().to_string(),
                     });
                 }
-                if definition.is_indirect
+                if self
+                    .context
+                    .declarations
+                    .get(name)
+                    .is_some_and(|decl| decl.is_opaque)
+                    || definition.is_indirect
                     || !matches!(
                         definition.kind,
                         crate::check::TypeDefKind::Struct | crate::check::TypeDefKind::Record
@@ -457,18 +688,11 @@ impl TypeFactService {
                 {
                     return Ok(false);
                 }
-                let (_, fields) = self
-                    .record_fields(ty)
-                    .map_err(|_| ClassError::UnknownDeclaration { name: name.clone() })?;
-                for (_, field) in fields {
-                    if self
-                        .select_capability(&field, ValueCapability::Hash)?
-                        .is_none()
-                    {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
+                self.members_have_capability(
+                    &self.declared_capability_members(ty)?,
+                    ValueCapability::Hash,
+                    visiting,
+                )
             }
             _ => Ok(matches!(
                 crate::hash_eligibility::ty_is_hash_eligible_with_resources(
@@ -1654,6 +1878,34 @@ mod tests {
                 ),
                 &context
             )
+        );
+    }
+
+    #[test]
+    fn selected_capability_never_derives_after_losing_impl_metadata() {
+        let parsed = hew_parser::parse(
+            "type Key { id: i64 } impl Hash for Key { fn hash(self) -> i64 { 1 } }",
+        );
+        let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
+        let key = ResolvedTy::named_user("Key", vec![]);
+        assert!(matches!(
+            service
+                .capability_plan(&key, super::ValueCapability::Hash)
+                .unwrap(),
+            Some(super::ValueMethodPlan::User { .. })
+        ));
+        service.context.method_binders.clear();
+        assert!(service
+            .capability_plan(&key, super::ValueCapability::Hash)
+            .is_err());
+        assert_eq!(
+            service
+                .capability_plan(&key, super::ValueCapability::Eq)
+                .unwrap(),
+            Some(super::ValueMethodPlan::Derived)
         );
     }
 

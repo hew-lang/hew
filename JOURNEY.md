@@ -919,3 +919,32 @@ The native print case passes. Combined semantic testing still reports the
 known Map projection/emptiness/Set projection frontiers and newly exposed opaque
 class-totality regressions in the selected-capability checkpoint; those remain
 visible with their owners and are not print acceptance claims.
+
+### Capability composition and applicability follow-up
+
+Fixed the opaque declaration regression without weakening class publication or
+its totality assertion: unsupported structural Hash returns no plan while the
+ownership row remains available. Derived Eq and Hash now compose independently
+through each member's selected method. The existing Eq container surface is
+retained; Hash does not admit enums, tuples or Vec even when a user supplies a
+Hash method. Canonical imported cycles terminate with no structural plan.
+
+Concrete impl selection checks retained marker obligations through TraitRegistry.
+Inline bounds, impl where clauses and method where clauses on impl binders are
+retained. Custom traits, associated-type constraints and other predicates that
+the immutable marker registry cannot prove explicitly refuse; no general trait
+solver is duplicated. Concrete specializations keep an empty argument vector,
+and generic fallback no longer depends on specialization registration order.
+
+Expression comparisons now use exact specialization lookup. The remaining
+name-only compatibility helper shares that index but cannot specialize without
+receiver arguments. Its only consumers are the legacy HashSet and HashMap
+CollectionMethodDispatch producers in check/methods.rs. Final-core producers must
+replace those facts with capability_plan; that file belongs to the integration
+work and was not changed here.
+
+Validation: the complete hew-types nextest suite passes through Make, including
+the opaque and imported-recursion class tests, selected-member composition,
+marker-bound refusal, unprovable-bound refusal, and comparison/selector agreement.
+Rust formatting and scoped make lint-rust pass. This is Linux checker evidence;
+Windows/macOS and native callback execution were not run for this checker slice.

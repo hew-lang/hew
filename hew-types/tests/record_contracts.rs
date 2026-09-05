@@ -179,3 +179,309 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
             .is_err());
     }
 }
+
+#[test]
+fn value_capabilities_keep_generic_selection_when_specialization_is_registered_first() {
+    use hew_types::{ValueCapability::Hash, ValueMethodPlan::User};
+    let mut service = facts(
+        r"
+        type Key<A> { value: A }
+        impl Hash for Key<i64> { fn hash(self) -> i64 { 2 } }
+        impl<T> Hash for Key<T> { fn hash(self) -> i64 { 1 } }
+        fn main() -> i64 { 0 }
+    ",
+    );
+    let Some(User {
+        method: generic,
+        type_args,
+    }) = service
+        .capability_plan(&ResolvedTy::named_user("Key", vec![ResolvedTy::Bool]), Hash)
+        .unwrap()
+    else {
+        panic!("generic impl")
+    };
+    assert_eq!(type_args, vec![ResolvedTy::Bool]);
+    let Some(User {
+        method: exact,
+        type_args,
+    }) = service
+        .capability_plan(&ResolvedTy::named_user("Key", vec![ResolvedTy::I64]), Hash)
+        .unwrap()
+    else {
+        panic!("exact impl")
+    };
+    assert!(type_args.is_empty());
+    assert_ne!(generic, exact);
+}
+
+#[test]
+fn value_capabilities_refuse_unresolved_method_binders_independently() {
+    use hew_types::{
+        ClassError,
+        ValueCapability::{Eq, Hash},
+        ValueMethodPlan::Derived,
+    };
+    let mut service = facts(
+        r"
+        type Key { value: i64 }
+        impl Hash for Key { fn hash<T>(self) -> i64 { 1 } }
+        fn main() -> i64 { 0 }
+    ",
+    );
+    let key = ResolvedTy::named_user("Key", vec![]);
+    assert_eq!(
+        service.capability_plan(&key, Hash),
+        Err(ClassError::TypeParam { name: "T".into() })
+    );
+    assert_eq!(service.capability_plan(&key, Eq).unwrap(), Some(Derived));
+    assert!(service.require(&key).is_err());
+    let abstract_fn = ResolvedTy::Function {
+        params: vec![ResolvedTy::TypeParam { name: "U".into() }],
+        ret: Box::new(ResolvedTy::Unit),
+    };
+    assert_eq!(
+        service.capability_plan(&abstract_fn, Eq),
+        Err(ClassError::TypeParam { name: "U".into() })
+    );
+}
+
+#[test]
+fn value_capabilities_derive_substituted_records_without_authorizing_opaque_hashing() {
+    use hew_types::{ValueCapability::Hash, ValueMethodPlan::Derived};
+    let mut service = facts(
+        r"
+        type Key<T> { value: T }
+        #[opaque] type Handle {}
+        fn main() -> i64 { 0 }
+    ",
+    );
+    let key = ResolvedTy::named_user("Key", vec![ResolvedTy::I64]);
+    assert_eq!(service.capability_plan(&key, Hash).unwrap(), Some(Derived));
+    assert!(service.require(&key).unwrap().hash);
+    let opaque = ResolvedTy::named_opaque("Handle", vec![]);
+    assert_eq!(service.capability_plan(&opaque, Hash).unwrap(), None);
+    assert!(!service.require(&opaque).unwrap().hash);
+}
+
+#[test]
+fn value_capabilities_keep_trait_identity_when_a_lookalike_method_is_registered_later() {
+    use hew_types::{ValueCapability::Hash, ValueMethodPlan::User};
+    let parsed = hew_parser::parse(
+        r"
+        type Key { id: i64 }
+        impl Hash for Key { fn hash(self) -> i64 { 1 } }
+        trait Other { fn hash(self) -> i64; }
+        impl Other for Key { fn hash(self) -> i64 { 2 } }
+        fn main() -> i64 { 0 }
+    ",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let selected = output
+        .identity
+        .declaration_by_path("Key::<impl Hash for Key>::hash")
+        .unwrap()
+        .clone();
+    let lookalike = output
+        .identity
+        .declaration_by_path("Key::<impl Other for Key>::hash")
+        .unwrap();
+    assert_ne!(&selected, lookalike);
+    let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
+    assert_eq!(
+        service
+            .capability_plan(&ResolvedTy::named_user("Key", vec![]), Hash)
+            .unwrap(),
+        Some(User {
+            method: selected,
+            type_args: vec![]
+        })
+    );
+}
+
+#[test]
+fn value_capabilities_substitute_nested_impl_patterns_and_refuse_a_nonmatching_receiver() {
+    use hew_types::{ValueCapability::Hash, ValueMethodPlan::User};
+    let mut service = facts(
+        r"
+        type Key<T> { value: T }
+        impl<T> Hash for Key<Vec<T>> { fn hash(self) -> i64 { 1 } }
+        fn main() -> i64 { 0 }
+    ",
+    );
+    let nested = ResolvedTy::named_user(
+        "Key",
+        vec![ResolvedTy::named_builtin(
+            "Vec",
+            BuiltinType::Vec,
+            vec![ResolvedTy::I64],
+        )],
+    );
+    let Some(User { type_args, .. }) = service.capability_plan(&nested, Hash).unwrap() else {
+        panic!("nested binder")
+    };
+    assert_eq!(type_args, vec![ResolvedTy::I64]);
+    assert!(service
+        .capability_plan(&ResolvedTy::named_user("Key", vec![ResolvedTy::I64]), Hash)
+        .is_err());
+}
+
+#[test]
+fn derived_value_capabilities_compose_selected_member_methods_independently() {
+    use hew_types::{
+        ValueCapability::{Eq, Hash},
+        ValueMethodPlan::{Derived, User},
+    };
+    let mut service = facts(
+        r"
+        type Leaf { callback: fn() -> i64 }
+        impl Eq for Leaf { fn eq(self, other: Leaf) -> bool { true } }
+        impl Hash for Leaf { fn hash(self) -> i64 { 1 } }
+        type EqLeaf { callback: fn() -> i64 }
+        impl Eq for EqLeaf { fn eq(self, other: EqLeaf) -> bool { true } }
+        type Wrapper<T> { value: T }
+        enum Choice { SomeLeaf(Leaf), Empty }
+        type Unsupported { callback: fn() -> i64 }
+        fn main() -> i64 { 0 }
+    ",
+    );
+    let leaf = ResolvedTy::named_user("Leaf", vec![]);
+    for capability in [Hash, Eq] {
+        assert!(matches!(
+            service.capability_plan(&leaf, capability).unwrap(),
+            Some(User { .. })
+        ));
+        let wrapper = ResolvedTy::named_user("Wrapper", vec![leaf.clone()]);
+        assert_eq!(
+            service.capability_plan(&wrapper, capability).unwrap(),
+            Some(Derived)
+        );
+        let row = service.require(&wrapper).unwrap();
+        assert!(row.hash && row.eq);
+        assert_eq!(
+            service
+                .capability_plan(&ResolvedTy::named_user("Unsupported", vec![]), capability)
+                .unwrap(),
+            None
+        );
+    }
+    let eq_only = ResolvedTy::named_user("Wrapper", vec![ResolvedTy::named_user("EqLeaf", vec![])]);
+    assert_eq!(
+        service.capability_plan(&eq_only, Eq).unwrap(),
+        Some(Derived)
+    );
+    assert_eq!(service.capability_plan(&eq_only, Hash).unwrap(), None);
+    let row = service.require(&eq_only).unwrap();
+    assert!(row.eq && !row.hash);
+    for container in [
+        ResolvedTy::Tuple(vec![leaf.clone()]),
+        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![leaf]),
+        ResolvedTy::named_user("Choice", vec![]),
+    ] {
+        assert_eq!(
+            service.capability_plan(&container, Eq).unwrap(),
+            Some(Derived)
+        );
+        assert_eq!(service.capability_plan(&container, Hash).unwrap(), None);
+    }
+}
+
+#[test]
+fn selected_value_methods_require_impl_and_method_where_obligations() {
+    use hew_types::{
+        ValueCapability::{Eq, Hash},
+        ValueMethodPlan::User,
+    };
+    let mut service = facts(
+        r"
+        type Inline<T> { value: T }
+        impl<T: Hash> Hash for Inline<T> { fn hash(self) -> i64 { 1 } }
+        type Where<T> { value: T }
+        impl<T> Hash for Where<T> where T: Hash { fn hash(self) -> i64 { 1 } }
+        type Method<T> { value: T }
+        impl<T> Eq for Method<T> { fn eq(self, other: Method<T>) -> bool where T: Hash { true } }
+        type Custom<T> { value: T }
+        trait Other {}
+        impl Other for i64 {}
+        impl<T: Other> Hash for Custom<T> { fn hash(self) -> i64 { 1 } }
+        fn main() -> i64 { 0 }
+    ",
+    );
+    let non_hash = ResolvedTy::Function {
+        params: vec![],
+        ret: Box::new(ResolvedTy::I64),
+    };
+    for (name, capability) in [("Inline", Hash), ("Where", Hash), ("Method", Eq)] {
+        let good = ResolvedTy::named_user(name, vec![ResolvedTy::I64]);
+        let bad = ResolvedTy::named_user(name, vec![non_hash.clone()]);
+        assert!(matches!(
+            service.capability_plan(&good, capability).unwrap(),
+            Some(User { .. })
+        ));
+        assert!(service.capability_plan(&bad, capability).is_err());
+        assert!(service.require(&bad).is_err());
+    }
+    // The immutable context has no general trait solver: a custom bound needs
+    // an explicit refusal even when a live checker could establish it.
+    assert!(service
+        .capability_plan(
+            &ResolvedTy::named_user("Custom", vec![ResolvedTy::I64]),
+            Hash
+        )
+        .is_err());
+}
+
+#[test]
+fn a_user_hash_method_does_not_expand_the_admitted_collection_shapes() {
+    use hew_types::ValueCapability::Hash;
+    let mut service = facts(
+        r"
+        enum Choice { Empty }
+        impl Hash for Choice { fn hash(self) -> i64 { 1 } }
+        impl<T> Hash for Vec<T> { fn hash(self) -> i64 { 2 } }
+        fn main() -> i64 { 0 }
+    ",
+    );
+    for ty in [
+        ResolvedTy::named_user("Choice", vec![]),
+        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
+    ] {
+        assert_eq!(service.capability_plan(&ty, Hash).unwrap(), None);
+        assert!(!service.require(&ty).unwrap().hash);
+    }
+}
+
+#[test]
+fn concrete_comparisons_and_capability_queries_select_the_same_eq_specialization() {
+    use hew_types::{UserComparisonDispatch, ValueCapability::Eq, ValueMethodPlan::User};
+    let parsed = hew_parser::parse(
+        r"
+        type Key<T> { value: T }
+        impl<T> Eq for Key<T> { fn eq(self, other: Key<T>) -> bool { true } }
+        impl Eq for Key<i64> { fn eq(self, other: Key<i64>) -> bool { false } }
+        fn same(a: Key<i64>, b: Key<i64>) -> bool { a == b }
+    ",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let selected = output
+        .identity
+        .declaration_by_path("Key::<impl Eq for Key<i64>>::eq")
+        .unwrap()
+        .clone();
+    assert!(output.user_comparison_dispatch.values().any(
+        |dispatch| matches!(dispatch, UserComparisonDispatch::Eq { method } if *method == selected)
+    ));
+    let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
+    assert_eq!(
+        service
+            .capability_plan(&ResolvedTy::named_user("Key", vec![ResolvedTy::I64]), Eq)
+            .unwrap(),
+        Some(User {
+            method: selected,
+            type_args: vec![]
+        })
+    );
+}

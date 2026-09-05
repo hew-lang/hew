@@ -7753,6 +7753,56 @@ impl Checker {
         valid
     }
 
+    /// Retain only obligations that the immutable marker registry can prove.
+    /// Other trait/associated-type predicates require the live solver and are
+    /// explicitly refused by concrete value-method selection.
+    fn value_method_obligations(
+        &self,
+        impl_params: Option<&Vec<TypeParam>>,
+        impl_where: Option<&WhereClause>,
+        method: &FnDecl,
+    ) -> Option<Vec<(String, MarkerTrait)>> {
+        let params: Vec<_> = impl_params
+            .into_iter()
+            .flatten()
+            .chain(method.type_params.iter().flatten())
+            .collect();
+        let mut obligations = Vec::new();
+        let mut add_bounds = |name: &str, bounds: &[TraitBound]| -> Option<()> {
+            for bound in bounds {
+                if bound
+                    .type_args
+                    .as_ref()
+                    .is_some_and(|args| !args.is_empty())
+                    || !bound.assoc_type_bindings.is_empty()
+                {
+                    return None;
+                }
+                let identity = self.trait_defs_key_for_bound(&bound.name);
+                let marker = MarkerTrait::from_name(&identity)?;
+                obligations.push((name.to_string(), marker));
+            }
+            Some(())
+        };
+        for param in &params {
+            add_bounds(&param.name, &param.bounds)?;
+        }
+        for clause in impl_where.into_iter().chain(method.where_clause.as_ref()) {
+            for predicate in &clause.predicates {
+                let TypeExpr::Named { name, type_args } = &predicate.ty.0 else {
+                    return None;
+                };
+                if type_args.as_ref().is_some_and(|args| !args.is_empty())
+                    || !params.iter().any(|param| param.name == *name)
+                {
+                    return None;
+                }
+                add_bounds(name, &predicate.bounds)?;
+            }
+        }
+        Some(obligations)
+    }
+
     /// Register an impl method on a type's method table and `fn_sigs`.
     ///
     /// `impl_type_params` carries the enclosing `impl<T, U, …>` type
@@ -7805,14 +7855,17 @@ impl Checker {
             let receiver = Ty::from_name(&type_identity).unwrap_or_else(|| Ty::Named {
                 name: type_identity.clone(),
                 args: receiver_args,
-                builtin: self
-                    .canonical_primitive_or_builtin_key_for_impl_name(type_name)
-                    .and_then(|name| crate::lookup_builtin_type(&name)),
+                builtin: None,
             });
             self.trait_impl_method_binders.insert(
                 declaration_id.clone(),
                 crate::type_facts::ImplMethodBinders {
                     receiver: self.normalize_for_use(&receiver),
+                    obligations: self.value_method_obligations(
+                        impl_type_params,
+                        impl_where_clause,
+                        method,
+                    ),
                     impl_params: impl_type_params
                         .into_iter()
                         .flatten()
@@ -7854,9 +7907,17 @@ impl Checker {
                     declaration_id.clone(),
                 );
             }
-            self.trait_impl_method_declaration_ids
-                .entry((type_identity, trait_identity, method.name.clone()))
-                .or_insert_with(|| declaration_id.clone());
+            let nominal_key = (type_identity, trait_identity, method.name.clone());
+            if impl_type_params.is_some_and(|params| !params.is_empty()) {
+                // A concrete specialization must not occupy the generic fallback
+                // simply because it was registered before the generic impl.
+                self.trait_impl_method_declaration_ids
+                    .insert(nominal_key, declaration_id.clone());
+            } else {
+                self.trait_impl_method_declaration_ids
+                    .entry(nominal_key)
+                    .or_insert_with(|| declaration_id.clone());
+            }
             if let Some(ids) = self.trait_method_call_target_ids(&bound.name, &method.name) {
                 self.trait_method_ids_by_binding.insert(
                     (
@@ -9632,7 +9693,8 @@ impl Checker {
         let args = args
             .iter()
             .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
-            .collect::<Option<Vec<_>>>()?;
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
         crate::type_facts::selected_impl_method(
             &self.trait_impl_method_declaration_ids,
             &type_identity,
@@ -9685,7 +9747,7 @@ impl Checker {
     /// Returns `None` for receivers that already flow through `type_defs`
     /// (user structs, actors, opaque handle types).
     #[must_use]
-    pub(super) fn canonical_primitive_or_builtin_key(ty: &Ty) -> Option<String> {
+    pub(crate) fn canonical_primitive_or_builtin_key(ty: &Ty) -> Option<String> {
         if let Some(canonical) = ty.canonical_lowering_name() {
             return Some(canonical.to_string());
         }

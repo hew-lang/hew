@@ -339,7 +339,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
 /// `type_defs` — an unqualified reference to a type outside this module (a
 /// builtin, or a name `type_defs` never published under the prefix) is left
 /// exactly as resolved.
-fn canonicalize_member_ty(
+pub(crate) fn canonicalize_member_ty(
     ty: ResolvedTy,
     prefix: &str,
     type_defs: &HashMap<String, crate::check::types::TypeDef>,

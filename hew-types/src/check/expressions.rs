@@ -5225,13 +5225,10 @@ impl Checker {
         // caller's `expect_type` check above only reaches this function on
         // agreement), so checking `left_resolved` alone is sufficient.
         if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-            if let Ty::Named {
-                name,
-                builtin: None,
-                ..
-            } = left_resolved
-            {
-                if let Some(method) = self.user_trait_impl_method(name, "Eq", "eq") {
+            if let Ty::Named { builtin: None, .. } = left_resolved {
+                if let Some((method, _)) =
+                    self.trait_impl_method_declaration(left_resolved, "Eq", "eq")
+                {
                     self.record_user_comparison_dispatch(
                         expr_span,
                         UserComparisonDispatch::Eq { method },
@@ -5256,20 +5253,19 @@ impl Checker {
             op,
             BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
         ) {
-            if let Ty::Named {
-                name,
-                builtin: None,
-                ..
-            } = left_resolved
-            {
-                if let Some(method) = self.user_trait_impl_method(name, "Ord", "lt") {
+            if let Ty::Named { builtin: None, .. } = left_resolved {
+                if let Some((method, _)) =
+                    self.trait_impl_method_declaration(left_resolved, "Ord", "lt")
+                {
                     self.record_user_comparison_dispatch(
                         expr_span,
                         UserComparisonDispatch::Ord { method },
                     );
                     return;
                 }
-                if let Some(method) = self.user_trait_impl_method(name, "PartialOrd", "lt") {
+                if let Some((method, _)) =
+                    self.trait_impl_method_declaration(left_resolved, "PartialOrd", "lt")
+                {
                     self.record_user_comparison_dispatch(
                         expr_span,
                         UserComparisonDispatch::PartialOrd { method },
@@ -5484,13 +5480,14 @@ impl Checker {
         trait_name: &str,
         method_name: &str,
     ) -> Option<crate::DefId> {
-        self.trait_impl_method_declaration_ids
-            .get(&(
-                type_name.to_string(),
-                trait_name.to_string(),
-                method_name.to_string(),
-            ))
-            .cloned()
+        crate::type_facts::selected_impl_method(
+            &self.trait_impl_method_declaration_ids,
+            type_name,
+            &[],
+            trait_name,
+            method_name,
+        )
+        .map(|(method, _)| method)
     }
 
     /// Record that the binary expression at `span` must dispatch to a user

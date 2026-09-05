@@ -6,7 +6,11 @@
 //! this table; nothing downstream re-asks.
 
 use crate::resolved_ty::ResolvedTy;
-use crate::value_class::{ClassContext, ClassError, ValueClass};
+use std::collections::{BTreeMap, HashMap};
+
+use crate::check::TypeDef;
+use crate::traits::{MarkerTrait, TraitRegistry};
+use crate::value_class::{ClassContext, ClassError, DeclaredType, ValueClass};
 
 /// What a `copy_value` of this type costs, per §1.1's `clone` column.
 ///
@@ -80,6 +84,143 @@ pub struct TypeFacts {
     pub send: SendFact,
     pub hash: bool,
     pub eq: bool,
+}
+
+/// Checker-owned declaration context for concrete fact expansion.
+///
+/// This is an immutable snapshot of the declarations and capability authority
+/// the checker used. Keeping both here lets later concrete specialization ask
+/// the same service instead of reconstructing marker or collection eligibility
+/// rules in an IR crate.
+#[derive(Debug, Clone, Default)]
+pub struct TypeFactContext {
+    declarations: BTreeMap<String, DeclaredType>,
+    registry: TraitRegistry,
+    type_defs: HashMap<String, TypeDef>,
+}
+
+impl TypeFactContext {
+    #[must_use]
+    pub fn new(
+        declarations: BTreeMap<String, DeclaredType>,
+        registry: TraitRegistry,
+        type_defs: HashMap<String, TypeDef>,
+    ) -> Self {
+        Self {
+            declarations,
+            registry,
+            type_defs,
+        }
+    }
+
+    #[must_use]
+    pub fn declarations(&self) -> &BTreeMap<String, DeclaredType> {
+        &self.declarations
+    }
+}
+
+/// The one service that publishes and expands concrete type facts.
+///
+/// Checker-authored rows include independently decided capability columns.
+/// When monomorphization synthesizes a new concrete instance, this service
+/// computes the row from the retained checker authority. It never asks an IR
+/// crate to classify the type or maintain a parallel capability table.
+#[derive(Debug, Clone)]
+pub struct TypeFactService {
+    context: TypeFactContext,
+    rows: BTreeMap<TypeInstanceKey, TypeFacts>,
+}
+
+impl TypeFactService {
+    #[must_use]
+    pub fn new(context: TypeFactContext, rows: BTreeMap<TypeInstanceKey, TypeFacts>) -> Self {
+        Self { context, rows }
+    }
+
+    #[must_use]
+    pub fn rows(&self) -> &BTreeMap<TypeInstanceKey, TypeFacts> {
+        &self.rows
+    }
+
+    #[must_use]
+    pub fn into_rows(self) -> BTreeMap<TypeInstanceKey, TypeFacts> {
+        self.rows
+    }
+
+    /// Ensure one concrete type and its components have rows.
+    ///
+    /// # Errors
+    ///
+    /// Refuses abstract types, unknown declarations, and recursive
+    /// instantiations whose fact graph is not finite.
+    pub fn require(&mut self, ty: &ResolvedTy) -> Result<TypeFacts, ClassError> {
+        let key = TypeInstanceKey(ty.clone());
+        if let Some(row) = self.rows.get(&key) {
+            return Ok(*row);
+        }
+
+        let mut components = Vec::new();
+        push_type_components(ty, &mut components);
+        for component in &components {
+            self.require(component)?;
+        }
+
+        let row = self.contextual_facts(ty)?;
+        self.rows.insert(key, row);
+        Ok(row)
+    }
+
+    fn contextual_facts(&self, ty: &ResolvedTy) -> Result<TypeFacts, ClassError> {
+        let declarations = ClassContext::new(&self.context.declarations);
+        let as_ty = ty.to_ty();
+        let send = self.send_fact(ty, &as_ty);
+        let terminates = crate::check::declaration_walk_terminates(ty, &self.context.type_defs);
+        let hash = terminates
+            && matches!(
+                crate::hash_eligibility::ty_is_hash_eligible_with_resources(
+                    &as_ty,
+                    &self.context.type_defs,
+                    self.context.registry.resource_type_names(),
+                ),
+                crate::hash_eligibility::HashEligibility::Eligible
+            );
+        let eq = terminates
+            && matches!(
+                crate::eq_eligibility::ty_is_eq_eligible(&as_ty, &self.context.type_defs,),
+                crate::eq_eligibility::EqEligibility::Eligible
+            );
+        TypeFacts::of_type(ty, &declarations, send, hash, eq)
+    }
+
+    fn send_fact(&self, ty: &ResolvedTy, as_ty: &crate::Ty) -> SendFact {
+        if matches!(ty, ResolvedTy::Closure { .. }) {
+            return SendFact::DeferredToClosureFacts;
+        }
+        let component_deferred = matches!(
+            ty,
+            ResolvedTy::Tuple(_)
+                | ResolvedTy::Array(_, _)
+                | ResolvedTy::Slice(_)
+                | ResolvedTy::Task(_)
+        ) && {
+            let mut components = Vec::new();
+            push_type_components(ty, &mut components);
+            components.iter().any(|component| {
+                self.rows
+                    .get(&TypeInstanceKey(component.clone()))
+                    .is_some_and(|row| row.send == SendFact::DeferredToClosureFacts)
+            })
+        };
+        if component_deferred {
+            SendFact::DeferredToClosureFacts
+        } else {
+            SendFact::Known(
+                self.context
+                    .registry
+                    .implements_marker(as_ty, MarkerTrait::Send),
+            )
+        }
+    }
 }
 
 impl TypeFacts {
@@ -166,7 +307,9 @@ pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{CloneKind, SendFact, TypeFacts, TypeInstanceKey};
+    use super::{
+        CloneKind, SendFact, TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey,
+    };
     use crate::builtin_type::{builtin_types, BuiltinType};
     use crate::resolved_ty::{ResolvedTraitBound, ResolvedTy};
     use crate::value_class::{
@@ -749,6 +892,45 @@ mod tests {
         )
         .expect("a string has a class");
         assert_eq!(SendFact::Known(true), facts.send);
+    }
+
+    #[test]
+    fn authored_and_later_structural_rows_share_capability_construction() {
+        let closure = closure_over(vec![ResolvedTy::I64]);
+        let deferred_tuple = ResolvedTy::Tuple(vec![ResolvedTy::I64, closure.clone()]);
+        let clone_none_tuple =
+            ResolvedTy::Tuple(vec![ResolvedTy::CancellationToken, ResolvedTy::String]);
+
+        let mut authored = TypeFactService::new(TypeFactContext::default(), BTreeMap::new());
+        let authored_deferred = authored
+            .require(&deferred_tuple)
+            .expect("checker-order tuple facts");
+        let authored_clone_none = authored
+            .require(&clone_none_tuple)
+            .expect("checker-order tuple facts");
+
+        let mut specialized = TypeFactService::new(TypeFactContext::default(), BTreeMap::new());
+        for component in [
+            ResolvedTy::I64,
+            closure,
+            ResolvedTy::CancellationToken,
+            ResolvedTy::String,
+        ] {
+            specialized
+                .require(&component)
+                .expect("specialization component facts");
+        }
+        let specialized_deferred = specialized
+            .require(&deferred_tuple)
+            .expect("specialized tuple facts");
+        let specialized_clone_none = specialized
+            .require(&clone_none_tuple)
+            .expect("specialized tuple facts");
+
+        assert_eq!(authored_deferred, specialized_deferred);
+        assert_eq!(SendFact::DeferredToClosureFacts, authored_deferred.send);
+        assert_eq!(authored_clone_none, specialized_clone_none);
+        assert_eq!(CloneKind::None, authored_clone_none.clone);
     }
 
     /// A trait object's send fact is not the bound list yet: §6.3 makes that

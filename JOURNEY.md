@@ -155,3 +155,17 @@
 - Reporting regressions fail against an empty implementation; a false success
   for an absent fault is also detected. Generated-call propagation and cleanup
   still require the physical backend's executable acceptance.
+
+## Concrete type-fact authority
+
+- Replaced SIR's empty-context ownership fallback with a checker-created
+  `TypeFactService`. The service retains the declaration, trait-marker and
+  collection-eligibility context that produced accepted rows, so later
+  concrete specializations use the same authority and unknown types fail
+  closed.
+- A source-to-SIR generic tuple regression exercises a specialized tuple that
+  had no row. The service publishes its concrete facts before SIR creates
+  the value.
+- Hand-built SIR fixtures now publish explicit rows for the structural types
+  they model. This is fixture setup for the production boundary, not a restored
+  fallback or a source-text oracle.

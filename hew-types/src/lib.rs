@@ -108,7 +108,9 @@ pub use stdlib_authority::{
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
 pub use type_facts::push_type_components;
-pub use type_facts::{CloneKind, SendFact, TypeFacts, TypeInstanceKey};
+pub use type_facts::{
+    CloneKind, SendFact, TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey,
+};
 pub use value_class::{ClassContext, ClassError, DeclarationMarker, DeclaredType, ValueClass};
 pub use vec_authority::VecElementToken;
 pub use wasm_capabilities_generated::{

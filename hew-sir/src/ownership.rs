@@ -45,33 +45,17 @@ impl OwnKind {
     /// checker decided rather than deciding one of its own, so a value's kind
     /// cannot be settled by one rule and audited by another.
     ///
-    /// MARKED SHORTCUT — a type with no row falls back to the class rule over
-    /// an empty declaration context.
-    /// WHY: the checker publishes a row for every concrete accepted expression
-    /// type, closed under components, but the lowering also mints substituted
-    /// template types and synthesized unit types the checker never saw as an
-    /// expression type. Those are scalars and tuples of scalars in this domain,
-    /// which the class rule decides without declaration facts; a user `Named`
-    /// with no row classes `UnknownDeclaration` and this refuses, which is the
-    /// fail-closed answer.
-    /// WHEN: the substituted instance types the lowering mints are published on
-    /// `TypeCheckOutput` too, so every type SIR mentions has a row (L3).
-    /// WHAT: a missing row is `E_SIR_ICE structural MissingTypeFacts` (L2)
-    /// rather than a second computation of the class.
-    ///
     /// # Errors
     ///
-    /// Returns the class rule's refusal, rendered against the user-facing type
-    /// name, when neither the table nor §1.1 can decide the type's class.
+    /// Returns a fail-closed missing-facts error. Concrete fact expansion must
+    /// happen through `hew_types::TypeFactService` before a value is built.
     pub fn of_ty(ty: &ResolvedTy, facts: &TypeFactTable) -> Result<Self, String> {
-        if let Some(row) = facts.get(&TypeInstanceKey(ty.clone())) {
-            return Ok(Self::of_class(row.class));
-        }
-        hew_types::ValueClass::of_ty(ty, &hew_types::ClassContext::empty())
-            .map(Self::of_class)
-            .map_err(|error| {
+        facts
+            .get(&TypeInstanceKey(ty.clone()))
+            .map(|row| Self::of_class(row.class))
+            .ok_or_else(|| {
                 format!(
-                    "SIR cannot decide the ownership kind of `{}`: {error}",
+                    "SIR cannot decide the ownership kind of `{}`: concrete type facts are missing",
                     ty.user_facing()
                 )
             })

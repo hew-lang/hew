@@ -9,7 +9,7 @@ use hew_sir::{
     SemSignature, SemTerminator, SirDiagnosticKind, SirInstanceKey, SuspendKind, TrapKind, UseSite,
     ValueDef, ValueId,
 };
-use hew_types::{DefId, ResolvedTy};
+use hew_types::{DefId, ResolvedTy, TypeFactContext, TypeFactService};
 use std::collections::BTreeMap;
 
 fn definition(id: u32) -> ValueDef {
@@ -94,6 +94,24 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
             callables.push(callable_for(function));
         }
     }
+    let mut fact_service = TypeFactService::new(TypeFactContext::default(), BTreeMap::new());
+    for ty in functions.iter().flat_map(|function| {
+        function
+            .params
+            .iter()
+            .map(|value| &value.ty)
+            .chain(std::iter::once(&function.return_ty))
+            .chain(function.blocks.iter().flat_map(|block| {
+                block.args.iter().map(|value| &value.ty).chain(
+                    block
+                        .ops
+                        .iter()
+                        .flat_map(|op| op.results.iter().map(|value| &value.ty)),
+                )
+            }))
+    }) {
+        let _ = fact_service.require(ty);
+    }
     SemModule {
         callables,
         generic_templates: Vec::new(),
@@ -101,7 +119,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         entry_exit_plan: None,
         entry_callable: None,
         functions,
-        type_facts: BTreeMap::new(),
+        type_facts: fact_service.into_rows(),
         string_literals: BTreeMap::new(),
         bytes_literals: BTreeMap::new(),
     }

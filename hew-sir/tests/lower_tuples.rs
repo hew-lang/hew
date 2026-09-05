@@ -143,6 +143,15 @@ fn generic_scalar_instances_substitute_tuple_values_before_raw_mir() {
         ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
         "SIR must specialize semantic types before Raw MIR chooses a layout"
     );
+    assert!(
+        lowered
+            .module
+            .type_facts
+            .contains_key(&hew_types::TypeInstanceKey(
+                tuple_make.results[0].ty.clone()
+            )),
+        "the SIR-specialized tuple must have a checker-context-derived fact row"
+    );
 }
 
 #[test]

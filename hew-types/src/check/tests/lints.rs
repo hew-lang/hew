@@ -3063,7 +3063,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     let root_source = r"
         import std.string;
 
-        fn main() -> string {
+        fn describe_label() -> string {
             string.describe(string.make_label())
         }
     ";
@@ -3103,12 +3103,12 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(fd) if fd.name == "main" => {
+            Item::Function(fd) if fd.name == "describe_label" => {
                 fd.body.trailing_expr.as_ref().map(|expr| expr.1.clone())
             }
             _ => None,
         })
-        .expect("main trailing call should exist");
+        .expect("describe_label trailing call should exist");
     let module = hew_parser::parse(module_source);
     assert!(
         module.errors.is_empty(),

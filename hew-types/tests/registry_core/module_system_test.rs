@@ -261,7 +261,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
     let root_source = r#"
         import myapp.widgets.{Describable, Label, describe};
 
-        fn main() -> string {
+        fn describe_label() -> string {
             describe(Label { text: "hello" })
         }
     "#;
@@ -297,12 +297,12 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(fd) if fd.name == "main" => {
+            Item::Function(fd) if fd.name == "describe_label" => {
                 fd.body.trailing_expr.as_ref().map(|expr| expr.1.clone())
             }
             _ => None,
         })
-        .expect("main trailing call should exist");
+        .expect("describe_label trailing call should exist");
 
     let module = hew_parser::parse(module_source);
     assert!(

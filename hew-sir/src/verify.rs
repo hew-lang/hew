@@ -1947,7 +1947,7 @@ mod parameter_own_kind_tests {
         SemSignature, SemTerminator, ValueId,
     };
     use hew_hir::ItemId;
-    use hew_types::{DefId, ResolvedTy};
+    use hew_types::{DefId, ResolvedTy, TypeFactContext, TypeFactService};
 
     fn function(ty: ResolvedTy, own: OwnKind) -> SemFunction {
         SemFunction {
@@ -2047,8 +2047,9 @@ mod parameter_own_kind_tests {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
         let context = callable_context(&callables);
-        let diagnostics =
-            verify_function_with_context(&function, Some(&context), &TypeFactTable::new());
+        let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
+        facts.require(&ResolvedTy::String).unwrap();
+        let diagnostics = verify_function_with_context(&function, Some(&context), facts.rows());
         let reason =
             kind_finding(&diagnostics).expect("a ReadOnly slot refuses a Guaranteed parameter");
         assert!(reason.contains("Owned"), "{reason}");

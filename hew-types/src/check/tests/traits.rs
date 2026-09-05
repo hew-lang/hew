@@ -571,7 +571,7 @@ fn module_local_dyn_trait_method_records_vtable_call() {
     );
     let module_items = module.program.items;
     let mut root = hew_parser::parse(
-        "import shapes;\nfn main() -> string { let circle = shapes.make_circle(); shapes.render(circle) }\n",
+        "import shapes;\nfn render_circle() -> string { let circle = shapes.make_circle(); shapes.render(circle) }\n",
     );
     assert!(
         root.errors.is_empty(),

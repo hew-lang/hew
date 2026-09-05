@@ -428,10 +428,10 @@ pub fn replace_all_uses(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use hew_hir::ItemId;
-    use hew_types::{DefId, ResolvedTy};
+    use hew_types::{DefId, ResolvedTy, TypeFactContext, TypeFactService};
 
     use super::{build_cfg_index, compute_dominators, EdgeRef};
     use crate::{
@@ -489,6 +489,24 @@ mod tests {
     /// so a function that has parameters is verified against the callable table
     /// that names those slots rather than context-free.
     fn module(function: SemFunction) -> SemModule {
+        let mut fact_service =
+            TypeFactService::new(TypeFactContext::default(), BTreeMap::default());
+        for ty in function
+            .params
+            .iter()
+            .map(|value| &value.ty)
+            .chain(std::iter::once(&function.return_ty))
+            .chain(function.blocks.iter().flat_map(|block| {
+                block.args.iter().map(|value| &value.ty).chain(
+                    block
+                        .ops
+                        .iter()
+                        .flat_map(|op| op.results.iter().map(|value| &value.ty)),
+                )
+            }))
+        {
+            let _ = fact_service.require(ty);
+        }
         SemModule {
             callables: vec![SemCallable {
                 id: function.callable,
@@ -517,7 +535,7 @@ mod tests {
             entry_exit_plan: None,
             entry_callable: None,
             functions: vec![function],
-            type_facts: std::collections::BTreeMap::new(),
+            type_facts: fact_service.into_rows(),
             string_literals: std::collections::BTreeMap::new(),
             bytes_literals: std::collections::BTreeMap::new(),
         }

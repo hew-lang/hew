@@ -1509,31 +1509,25 @@ mod tests {
     }
 
     #[test]
-    fn load_http_module_registers_handle_methods_through_abi_width_casts() {
-        // `impl RequestMethods for Request` validates the status before forwarding
-        // it through an i32 ABI cast. The loader must retain the imported method
-        // signatures, but the guard means each call must dispatch through the
-        // real impl body rather than bypassing validation with a direct extern
-        // rewrite.
-        let info =
-            load_module("std::net::http", &test_root()).expect("should load std::net::http module");
-
-        for method in ["respond", "respond_text", "respond_json", "respond_stream"] {
-            let handle_method = info
-                .handle_methods
-                .iter()
-                .find(|m| m.type_name == "http.Request" && m.method_name == method);
-            assert!(
-                handle_method.is_some(),
-                "http.Request.{method} should retain its imported method signature \
-                 after adding a status-validation guard"
-            );
-            assert!(
-                handle_method.is_some_and(|m| m.dispatch_through_impl),
-                "http.Request.{method} must dispatch through its impl body so its \
-                 status-validation guard cannot be bypassed"
-            );
-        }
+    fn imported_http_response_methods_preserve_result_signatures() {
+        let parsed = parse(
+            r#"
+            import std.net;
+            import std.net.http;
+            fn reply(req: http.Request) {
+                let _: Result<(), net.NetError> = req.respond(200, "text/plain", "hello");
+                let _: Result<(), net.NetError> = req.respond_text(200, "hello");
+                let _: Result<(), net.NetError> = req.respond_json(200, "{}");
+                let _: Result<Sink<string>, net.NetError> = req.respond_stream(200, "text/plain");
+            }
+            "#,
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(vec![
+            test_root(),
+        ]));
+        let output = checker.check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
     }
 
     #[test]

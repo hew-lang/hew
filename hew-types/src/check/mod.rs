@@ -6,7 +6,7 @@ use crate::module_registry::ModuleError;
 use crate::resolved_ty::{BoundaryError, ResolvedTy};
 use crate::traits::{MarkerTrait, TraitRegistry};
 use crate::ty::{Ty, TypeVar};
-use crate::type_facts::{SendFact, TypeFacts, TypeInstanceKey};
+use crate::type_facts::{TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey};
 use crate::unify::unify;
 use crate::{WasmFeatureDisposition, WasmUnsupportedFeature};
 use hew_parser::ast::{
@@ -615,7 +615,7 @@ pub(crate) fn class_is_non_owning(
     clippy::too_many_lines,
     reason = "the walk enumerates every Ty and VariantDef shape it descends through"
 )]
-fn declaration_walk_terminates(
+pub(crate) fn declaration_walk_terminates(
     ty: &ResolvedTy,
     type_defs: &HashMap<String, crate::check::types::TypeDef>,
 ) -> bool {
@@ -757,10 +757,13 @@ impl Checker {
     fn build_type_facts(
         &self,
         resolved: &HashMap<SpanKey, ResolvedTy>,
-    ) -> (BTreeMap<TypeInstanceKey, TypeFacts>, Vec<TypeError>) {
-        let declarations = self.class_declarations();
-        let context = crate::value_class::ClassContext::new(&declarations);
-        let mut facts: BTreeMap<TypeInstanceKey, TypeFacts> = BTreeMap::new();
+    ) -> (
+        TypeFactContext,
+        BTreeMap<TypeInstanceKey, TypeFacts>,
+        Vec<TypeError>,
+    ) {
+        let fact_context = self.type_fact_context();
+        let mut service = TypeFactService::new(fact_context.clone(), BTreeMap::new());
         // Visited is tracked separately from the table: a type §1.1 refuses
         // gets no row, and keying the walk on the table alone would revisit it
         // for ever through a recursive declaration.
@@ -785,38 +788,7 @@ impl Checker {
             if !visited.insert(key.clone()) {
                 continue;
             }
-            let as_ty = ty.to_ty();
-            let send = SendFact::Known(self.registry.implements_marker(&as_ty, MarkerTrait::Send));
-            // MARKED SHORTCUT — the hash and eq columns are asked only of a
-            // type whose declaration graph terminates.
-            // WHY: `hash_ineligibility` and `eq_ineligibility` carry no visited
-            // set, so a legal self-recursive nominal
-            // (`enum RedisReply { Array(Vec<RedisReply>) }`) walks its own
-            // declaration for ever and overflows the stack. No P1 consumer
-            // reads these two columns; the class and clone columns, which do
-            // have consumers, are computed for every type either way.
-            // WHEN: the two eligibility walks carry a visited set, with the
-            // collection descriptors that read hash and eq (P2, §5.3).
-            // WHAT: ask them unconditionally, as class and clone already are.
-            let terminates = declaration_walk_terminates(&ty, &self.type_defs);
-            let hash = terminates
-                && matches!(
-                    crate::hash_eligibility::ty_is_hash_eligible_with_resources(
-                        &as_ty,
-                        &self.type_defs,
-                        self.registry.resource_type_names(),
-                    ),
-                    crate::hash_eligibility::HashEligibility::Eligible
-                );
-            let eq = terminates
-                && matches!(
-                    crate::eq_eligibility::ty_is_eq_eligible(&as_ty, &self.type_defs),
-                    crate::eq_eligibility::EqEligibility::Eligible
-                );
-            match TypeFacts::of_type(&ty, &context, send, hash, eq) {
-                Ok(row) => {
-                    facts.insert(key, row);
-                }
+            match service.require(&ty) {
                 Err(crate::value_class::ClassError::RecursiveInstantiation { name }) => {
                     refusals.entry(format!("recursion:{name}")).or_insert_with(|| {
                         TypeError::new(
@@ -854,7 +826,7 @@ impl Checker {
                 // substitutes first, a name genuinely outside `type_defs`
                 // (a checker-internal state), or a compiler-internal carrier
                 // that is never the type of a value.
-                Err(_) => {}
+                Ok(_) | Err(_) => {}
             }
             let mut components = Vec::new();
             crate::type_facts::push_type_components(&ty, &mut components);
@@ -864,7 +836,29 @@ impl Checker {
                     .map(|component| (component, span.clone())),
             );
         }
-        (facts, refusals.into_values().collect())
+        (
+            fact_context,
+            service.into_rows(),
+            refusals.into_values().collect(),
+        )
+    }
+
+    /// Snapshot the declaration authority used to classify accepted types.
+    fn type_fact_context(&self) -> TypeFactContext {
+        let declarations = self.class_declarations();
+        let mut names: std::collections::BTreeSet<String> =
+            self.type_defs.keys().cloned().collect();
+        names.extend(self.registry.resource_type_names().iter().cloned());
+        names.extend(self.user_opaque_type_names.iter().cloned());
+        names.extend(self.module_registry.all_handle_types());
+        let rendered = names
+            .into_iter()
+            .filter_map(|name| {
+                crate::value_class::ClassDeclarations::declared_type(&declarations, &name)
+                    .map(|declaration| (name, declaration))
+            })
+            .collect();
+        TypeFactContext::new(rendered, self.registry.clone(), self.type_defs.clone())
     }
 
     /// The §1.1 declaration lookup backed by this checker's tables.
@@ -2602,12 +2596,12 @@ impl Checker {
         // layout - so the hash and eq eligibility walks it would drive have no
         // bottom. Building nothing there is the same rule the typed
         // `resolved_expr_types` handoff above states for its own totality.
-        let type_facts = if self.errors.is_empty() {
-            let (facts, refusals) = self.build_type_facts(&resolved_expr_types_typed);
+        let (type_fact_context, type_facts) = if self.errors.is_empty() {
+            let (context, facts, refusals) = self.build_type_facts(&resolved_expr_types_typed);
             self.errors.extend(refusals);
-            facts
+            (context, facts)
         } else {
-            BTreeMap::new()
+            (TypeFactContext::default(), BTreeMap::new())
         };
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
@@ -2620,6 +2614,7 @@ impl Checker {
             ),
             actor_self_state_fields: std::mem::take(&mut self.actor_self_state_fields),
             type_facts,
+            type_fact_context,
             resolved_expr_types: resolved_expr_types_typed,
             is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),

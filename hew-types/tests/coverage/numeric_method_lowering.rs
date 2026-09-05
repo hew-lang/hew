@@ -37,7 +37,7 @@ fn numeric_method_side_table_records_checked_unsigned_width() {
     // `checked_add` returns the compiler's canonical `Option`; a local enum
     // with the same leaf name is intentionally a distinct nominal type.
     let (_program, output) = parse_and_typecheck_inline(
-        "fn main() -> Option<u8> { let a: u8 = 1; let b: u8 = 2; a.checked_add(b) }",
+        "fn add() -> Option<u8> { let a: u8 = 1; let b: u8 = 2; a.checked_add(b) }",
     );
 
     assert!(

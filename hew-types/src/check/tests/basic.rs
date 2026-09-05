@@ -689,7 +689,7 @@ fn record_inequality_typechecks_and_ordering_is_rejected() {
 /// structural-equality gate.
 #[test]
 fn enum_equality_not_gated_by_record_comparison_refusal() {
-    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() -> bool {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    a == b\n}";
+    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn compare() -> bool {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    a == b\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -1351,7 +1351,7 @@ fn for_range_step_by_negative_rejected() {
 #[test]
 fn for_range_literal_bounds_loop_var_resolves_before_method_lookup() {
     let source = r"
-        fn main() -> f64 {
+        fn sum_range() -> f64 {
             var acc: f64 = 0.0;
             for i in 0..8 {
                 let _: Option<f64> = i.try_to_f64();
@@ -1375,7 +1375,7 @@ fn for_range_literal_bounds_loop_var_resolves_before_method_lookup() {
 fn for_range_const_bound_loop_var_resolves_before_method_lookup() {
     let source = r"
         const N: i64 = 8;
-        fn main() -> f64 {
+        fn sum_range() -> f64 {
             var acc: f64 = 0.0;
             for i in 0..N {
                 let _: Option<f64> = i.try_to_f64();
@@ -1403,7 +1403,7 @@ fn for_range_literal_bounds_method_only_body_resolves_to_i64() {
     // function-call use-site narrows the width. The loop variable must default
     // to i64.
     let source = r"
-        fn main() -> f64 {
+        fn sum_range() -> f64 {
             var sum: f64 = 0.0;
             for i in 0..4 {
                 let _: Option<f64> = i.try_to_f64();

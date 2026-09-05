@@ -4,7 +4,7 @@ use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmtKind,
     IntentKind, ResolvedRef,
 };
-use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeInstanceKey};
+use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeFactService, TypeInstanceKey};
 
 use crate::ownership::{Binding, OwnKind, TypeFactTable};
 use crate::{
@@ -145,7 +145,7 @@ pub fn lower_module_with_demand(
     // SIR discovers concrete direct-user instances from each resolved call's
     // `SiteId -> call_site_type_args` fact, applies the enclosing semantic
     // substitution, and creates its own closed instance worklist.
-    let mut service = InstanceService::new(module, &facts.type_facts, demand);
+    let mut service = InstanceService::new(module, facts, demand);
     match demand {
         SirLoweringDemand::Entry => service.request_entry(),
         SirLoweringDemand::EveryCallable => service.request_every_callable(),
@@ -412,7 +412,7 @@ struct InstanceService<'a> {
     /// The checker's §6.2 rows. The lowering reads a decided class out of this
     /// rather than recomputing one, and projects the rows its own bodies
     /// mention onto the module it produces.
-    checked_facts: &'a TypeFactTable,
+    checked_facts: TypeFactService,
     demand: SirLoweringDemand,
     table: CallableTable<'a>,
     states: Vec<CallableState>,
@@ -428,16 +428,15 @@ struct InstanceService<'a> {
 }
 
 impl<'a> InstanceService<'a> {
-    fn new(
-        module: &'a HirModule,
-        checked_facts: &'a TypeFactTable,
-        demand: SirLoweringDemand,
-    ) -> Self {
+    fn new(module: &'a HirModule, facts: &TypeCheckOutput, demand: SirLoweringDemand) -> Self {
         let table = CallableTable::from_hir(module);
         let count = table.callables.len();
         Self {
             module,
-            checked_facts,
+            checked_facts: TypeFactService::new(
+                facts.type_fact_context.clone(),
+                facts.type_facts.clone(),
+            ),
             demand,
             table,
             states: vec![CallableState::Unreached; count],
@@ -451,6 +450,13 @@ impl<'a> InstanceService<'a> {
 
     fn callable(&self, id: CallableId) -> Option<&SemCallable> {
         self.table.callable(id)
+    }
+
+    fn require_type_facts(&mut self, ty: &ResolvedTy) -> Result<(), String> {
+        self.checked_facts
+            .require(ty)
+            .map(|_| ())
+            .map_err(|error| format!("type facts refused `{}`: {error}", ty.user_facing()))
     }
 
     /// Seed the worklist with the module's resolved entry callable.
@@ -801,7 +807,7 @@ impl<'a> InstanceService<'a> {
         // not of the traversal that discovered it.
         functions.sort_unstable_by_key(|function| function.callable);
         let type_facts = project_type_facts(
-            checked_facts,
+            checked_facts.rows(),
             &table.callables,
             &generic_templates,
             &functions,
@@ -1201,7 +1207,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 // rule 3's `E_OWN_CONSUME_BORROWED` wall and not rule 1's
                 // leak. No lowering emits that slot yet, so every parameter
                 // here takes the class table's answer.
-                let own = OwnKind::of_param(&ty, abi.passing, service.checked_facts)?;
+                let own = OwnKind::of_param(&ty, abi.passing, service.checked_facts.rows())?;
                 Ok((
                     BlockArg { value, ty, own },
                     Binding {
@@ -1720,7 +1726,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         } else {
             let result = self.fresh_value();
             let continuation = self.fresh_value();
-            let own = OwnKind::of_ty(&return_ty, self.service.checked_facts)?;
+            self.service.require_type_facts(&return_ty)?;
+            let own = OwnKind::of_ty(&return_ty, self.service.checked_facts.rows())?;
             let normal = self.new_block(vec![BlockArg {
                 value: continuation,
                 own,
@@ -1766,9 +1773,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let else_block = self.new_block(Vec::new());
         let join_value = self.fresh_value();
         let join_ty = self.ty(&whole.ty);
+        self.service.require_type_facts(&join_ty)?;
+        let join_own = OwnKind::of_ty(&join_ty, self.service.checked_facts.rows())?;
         let join_block = self.new_block(vec![BlockArg {
             value: join_value,
-            own: OwnKind::of_ty(&join_ty, self.service.checked_facts)?,
+            own: join_own,
             ty: join_ty,
         }]);
         self.set_terminator(SemTerminator::Branch {
@@ -1844,9 +1853,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let short_circuit = self.new_block(Vec::new());
         let result = self.fresh_value();
         let join_ty = self.ty(&whole.ty);
+        self.service.require_type_facts(&join_ty)?;
+        let join_own = OwnKind::of_ty(&join_ty, self.service.checked_facts.rows())?;
         let join = self.new_block(vec![BlockArg {
             value: result,
-            own: OwnKind::of_ty(&join_ty, self.service.checked_facts)?,
+            own: join_own,
             ty: join_ty,
         }]);
         let (then_target, else_target) = if short_circuit_value {
@@ -1892,11 +1903,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<ValueId, String> {
         let value = self.fresh_value();
         let result_ty = self.ty(&expr.ty);
+        self.service.require_type_facts(&result_ty)?;
         let op = SemOp {
             id: OpId(self.ops),
             results: vec![ValueDef {
                 id: value,
-                own: OwnKind::of_ty(&result_ty, self.service.checked_facts)?,
+                own: OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?,
                 ty: result_ty,
             }],
             kind,
@@ -1953,7 +1965,7 @@ mod tests {
     use crate::ownership::{OwnKind, TypeFactTable};
     use crate::{BlockId, OpId, Provenance, SemOp, SemOpKind, SemParamPassing, SemTerminator};
     use hew_hir::IntentKind;
-    use hew_types::ResolvedTy;
+    use hew_types::{ResolvedTy, TypeFactContext, TypeFactService};
 
     #[test]
     fn only_a_read_intent_reaches_an_initial_scalar_operand() {
@@ -2005,29 +2017,35 @@ mod tests {
         }
     }
 
-    /// The ownership kind of every value this lowering mints comes from the
-    /// §1.1 class table, and a type the table cannot class is refused rather
-    /// than defaulted.
+    /// The ownership kind of every value this lowering mints comes from a
+    /// published row. A missing row is never reclassified locally.
     #[test]
-    fn lowering_reads_the_ownership_kind_from_the_class_table() {
+    fn missing_rows_are_never_reclassified_by_lowering() {
         let none = TypeFactTable::new();
-        assert_eq!(Ok(OwnKind::None), OwnKind::of_ty(&ResolvedTy::I64, &none));
-        assert_eq!(
-            Ok(OwnKind::None),
-            OwnKind::of_ty(
-                &ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]),
-                &none
-            )
-        );
+        for ty in [
+            ResolvedTy::I64,
+            ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]),
+            ResolvedTy::String,
+            conn_ty(),
+        ] {
+            let refused =
+                OwnKind::of_ty(&ty, &none).expect_err("every missing concrete row must be refused");
+            assert!(
+                refused.contains("concrete type facts are missing"),
+                "{refused}"
+            );
+        }
+
+        let mut service = TypeFactService::new(TypeFactContext::default(), none);
+        service.require(&ResolvedTy::I64).unwrap();
+        service.require(&ResolvedTy::Bool).unwrap();
+        let tuple = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::Bool]);
+        service.require(&tuple).unwrap();
+        service.require(&ResolvedTy::String).unwrap();
+        assert_eq!(Ok(OwnKind::None), OwnKind::of_ty(&tuple, service.rows()));
         assert_eq!(
             Ok(OwnKind::Owned),
-            OwnKind::of_ty(&ResolvedTy::String, &none)
-        );
-        let refused = OwnKind::of_ty(&conn_ty(), &none)
-            .expect_err("a user declaration with no row and no context must be refused");
-        assert!(
-            refused.contains("no declaration facts"),
-            "the refusal must name the missing declaration: {refused}"
+            OwnKind::of_ty(&ResolvedTy::String, service.rows())
         );
     }
 
@@ -2064,9 +2082,16 @@ mod tests {
             Ok(OwnKind::Guaranteed),
             OwnKind::of_param(&ResolvedTy::String, SemParamPassing::Borrow, &none)
         );
+        assert!(OwnKind::of_param(&ResolvedTy::String, SemParamPassing::ReadOnly, &none).is_err());
+        let mut service = TypeFactService::new(TypeFactContext::default(), none.clone());
+        service.require(&ResolvedTy::String).unwrap();
         assert_eq!(
             Ok(OwnKind::Owned),
-            OwnKind::of_param(&ResolvedTy::String, SemParamPassing::ReadOnly, &none)
+            OwnKind::of_param(
+                &ResolvedTy::String,
+                SemParamPassing::ReadOnly,
+                service.rows()
+            )
         );
         // The slot decides before the class rule is consulted, so a type the
         // rule cannot decide is still `Guaranteed` in a borrow slot.

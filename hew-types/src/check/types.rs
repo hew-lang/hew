@@ -5,7 +5,7 @@ use crate::module_registry::ModuleRegistry;
 use crate::resolved_ty::ResolvedTy;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
-use crate::type_facts::{TypeFacts, TypeInstanceKey};
+use crate::type_facts::{TypeFactContext, TypeFacts, TypeInstanceKey};
 use crate::WasmUnsupportedFeature;
 use hew_parser::ast::{
     ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
@@ -348,6 +348,12 @@ pub struct TypeCheckOutput {
     /// collection's does. A type §1.1 refuses gets **no row**: absence is a
     /// refusal the consumer fails closed on, never a licence to guess.
     pub type_facts: BTreeMap<TypeInstanceKey, TypeFacts>,
+    /// Declaration context used by the shared concrete type-fact service.
+    ///
+    /// This is retained separately from the row projection because SIR may
+    /// synthesize a concrete structural instance that no source expression
+    /// spelled. It never carries an alternate `Send`, `Hash`, or `Eq` verdict.
+    pub type_fact_context: TypeFactContext,
     /// RHS spans of accepted `lhs is TypeName` type patterns.
     ///
     /// The parser still represents the RHS as an identifier expression; this
@@ -1388,6 +1394,7 @@ impl Default for TypeCheckOutput {
             actor_self_state_fields: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             type_facts: BTreeMap::new(),
+            type_fact_context: TypeFactContext::default(),
             is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),

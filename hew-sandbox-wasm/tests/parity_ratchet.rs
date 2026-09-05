@@ -1165,7 +1165,7 @@ mod ast_surface {
             Expr::Yield(_) => Some("scope / structured-concurrency block"),
             // `return` in expression position is reserved_runtime_feature in
             // the sandbox VM (see profile.rs); no parity corpus entry yet.
-            Expr::Return(_) => None,
+            Expr::Return(_) | Expr::Coalesce { .. } | Expr::Handle { .. } => None,
             Expr::This => None, // `self` — only meaningful inside actor/impl context.
             Expr::FieldAccess { .. } => Some("record StructInit + field access"),
             Expr::Index { .. } => Some("array literal + index + len"),
@@ -1751,6 +1751,15 @@ fn walk_expr(
     use hew_parser::ast::{Expr, StringPart};
     owners.push(ast_surface::classify_expr(&expr.0));
     match &expr.0 {
+        Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
+            walk_expr(left, owners);
+            walk_expr(right, owners);
+        }
         Expr::Binary { left, op, right } => {
             owners.push(ast_surface::classify_binary_op(*op));
             walk_expr(left, owners);

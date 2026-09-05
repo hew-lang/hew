@@ -417,6 +417,8 @@ pub enum Token<'src> {
     Greater,
     #[token("?")]
     Question,
+    #[token("??")]
+    QuestionQuestion,
     #[token("|")]
     Pipe,
     #[token("&")]
@@ -566,6 +568,7 @@ impl std::fmt::Display for Token<'_> {
             Token::Caret => f.write_str("`^`"),
             Token::Tilde => f.write_str("`~`"),
             Token::Question => f.write_str("`?`"),
+            Token::QuestionQuestion => f.write_str("`??`"),
             Token::FatArrow => f.write_str("`=>`"),
             Token::Arrow => f.write_str("`->`"),
 
@@ -773,6 +776,7 @@ impl Token<'_> {
                 | Token::Caret
                 | Token::Tilde
                 | Token::Question
+                | Token::QuestionQuestion
         )
     }
 

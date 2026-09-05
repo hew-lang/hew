@@ -2293,6 +2293,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Return(_)
+            | Expr::Coalesce { .. }
+            | Expr::Handle { .. }
             | Expr::This
             | Expr::QualifiedAssoc(_)
             | Expr::Range { .. }

@@ -333,6 +333,9 @@ impl<'ast> AstVisitor<'ast> for BindingStartsVisitor<'_> {
 
     fn visit_expr(&mut self, expr: &'ast Expr, _span: &'ast Span, _ctx: VisitContext<'ast>) {
         match expr {
+            Expr::Handle { error, .. } if error.0 == self.name => {
+                self.starts.push(error.1.start);
+            }
             Expr::IfLet { pattern, .. } if pattern_binds_name(&pattern.0, self.name) => {
                 self.starts.push(pattern.1.start);
             }
@@ -565,6 +568,9 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
 
     fn visit_expr(&mut self, expr: &'ast Expr, span: &'ast Span, _ctx: VisitContext<'ast>) {
         match expr {
+            Expr::Handle { error, .. } if error.0 == self.name => {
+                self.spans.push(error.1.clone());
+            }
             Expr::FieldAccess { field, .. } if field == self.name => {
                 self.spans
                     .push(field_access_name_span(self.source, span, field));
@@ -818,7 +824,13 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
         Expr::Identifier(ident) => {
             *counts.entry(ident.clone()).or_insert(0) += 1;
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             count_idents_in_expr(&left.0, counts);
             count_idents_in_expr(&right.0, counts);
         }

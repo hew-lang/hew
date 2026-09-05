@@ -290,3 +290,16 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   every field result as a separately tracked SSA value. Wildcard and nested
   fields therefore remain explicit cleanup obligations; a malformed result
   type is rejected by the verifier rather than reclassified downstream.
+
+### Local optional and error recovery
+
+- Added lazy Option defaults and expression-local Result handlers with a named
+  error binding. They normalize to ordinary typed variant matches; the semantic
+  backend remains responsible for payload transfer and cleanup.
+- Preserved lexical returns, loop control and closure captures in handler
+  bodies. Required optional let-else exposes only the success payload, while
+  postfix propagation now rejects Option/Result conflation.
+- Formatter round trips preserve grouping around recovery expressions. Editor
+  binding lookup now uses live lexical scopes, including handler-local errors.
+- Frontend and native compiler builds validate the surface; source execution
+  awaits composition with the semantic match continuation implementation.

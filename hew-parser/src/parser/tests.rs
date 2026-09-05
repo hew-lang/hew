@@ -350,6 +350,73 @@ fn parse_actor_decl() {
 }
 
 #[test]
+fn optional_control_flow_surface_accepts_lazy_default_and_local_handler() {
+    for source in [
+        "fn f(value: Option<i64>) -> i64 { value ?? 7 }",
+        "fn f(value: Result<i64, string>) -> i64 { value handle problem { return 0; } }",
+        "fn f(handle: i64) -> i64 { handle + 1 }",
+    ] {
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+    }
+}
+
+#[test]
+fn optional_default_associates_right_below_logical_operators() {
+    let parsed = parse("fn f() { a ?? b ?? c || d }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Function(function) = &parsed.program.items[0].0 else {
+        panic!("function");
+    };
+    let Expr::Coalesce { right, .. } = &function.body.trailing_expr.as_ref().expect("tail").0
+    else {
+        panic!("outer default");
+    };
+    let Expr::Coalesce { right, .. } = &right.0 else {
+        panic!("right-associated default");
+    };
+    assert!(matches!(
+        right.0,
+        Expr::Binary {
+            op: BinaryOp::Or,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn local_handler_requires_named_binding_and_block() {
+    for source in [
+        "fn f() { value handle { 7 } }",
+        "fn f() { value handle problem 7 }",
+        "fn f() { value handle _ { 7 } }",
+    ] {
+        assert!(!parse(source).errors.is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn local_recovery_formatting_preserves_nested_expression_meaning() {
+    for source in [
+        "fn f() { a handle first { b handle second { second } } }",
+        "fn f() { (a handle problem { 7 }) + 1 }",
+        "fn f() { a ?? (b handle problem { 7 }) }",
+        "fn f() { await (a ?? b) }",
+        "fn f() { (a ?? b)? }",
+    ] {
+        let before = parse(source);
+        assert!(before.errors.is_empty(), "{source}: {:?}", before.errors);
+        let formatted = crate::fmt::format_program(&before.program);
+        let after = parse(&formatted);
+        assert!(after.errors.is_empty(), "{formatted}: {:?}", after.errors);
+        assert!(
+            crate::ast_eq::program_eq_ignoring_spans(&before.program, &after.program),
+            "{source} -> {formatted}"
+        );
+    }
+}
+
+#[test]
 fn actor_keyword_still_starts_actor_item() {
     let source = "actor ActorPathRegression { receive fn ping() {} }";
     let result = parse(source);

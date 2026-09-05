@@ -169,6 +169,8 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::Index { .. } => {}
         Expr::Cast { .. } => {}
         Expr::PostfixTry(_) => {}
+        Expr::Coalesce { .. } => {}
+        Expr::Handle { .. } => {}
         Expr::Range { .. } => {}
         Expr::Await(_) => {}
         Expr::AwaitRestart(_) => {}

@@ -10055,7 +10055,13 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
                 scan_expr_for_private_refs(&arg.expr().0, pf, out);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             scan_expr_for_private_refs(&left.0, pf, out);
             scan_expr_for_private_refs(&right.0, pf, out);
         }
@@ -20092,6 +20098,12 @@ impl LowerCtx {
             }
             Expr::Match { scrutinee, arms } => self.lower_match_expr(scrutinee, arms, &span),
             Expr::PostfixTry(inner) => self.lower_postfix_try(inner, &span),
+            Expr::Coalesce { left, right } => self.lower_local_recovery(left, right, None, &span),
+            Expr::Handle {
+                operand,
+                error,
+                body,
+            } => self.lower_local_recovery(operand, body, Some(error), &span),
             Expr::InterpolatedString(parts) => self.lower_interpolated_string(parts, span.clone()),
             Expr::Tuple(elems) => self.lower_tuple_literal(elems, &span),
             Expr::Array(elems) => self.lower_array_literal(elems, &span),
@@ -29172,6 +29184,98 @@ impl LowerCtx {
         )
     }
 
+    /// Normalize source-local recovery into the same typed variant branch as
+    /// match. SIR decides payload transfers and cleanup; HIR supplies only
+    /// the resolved types, variant identity, bindings and lexical bodies.
+    fn lower_local_recovery(
+        &mut self,
+        operand: &Spanned<Expr>,
+        body: &Spanned<Expr>,
+        error: Option<&Spanned<String>>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let scrutinee = self.lower_expr(operand, IntentKind::Read);
+        self.try_register_enum_instantiation_ty(&scrutinee.ty, &operand.1);
+        let (builtin, success, failure, payload, error_ty) = if error.is_some() {
+            let Some((ok, err)) = Self::resolved_result_parts(&scrutinee.ty) else {
+                return self.unsupported_postfix_try(span, "handle operand without a Result type");
+            };
+            (
+                BuiltinType::Result,
+                "Ok",
+                "Err",
+                ok.clone(),
+                Some(err.clone()),
+            )
+        } else {
+            let Some(some) = Self::resolved_option_inner(&scrutinee.ty) else {
+                return self
+                    .unsupported_postfix_try(span, "default operand without an Option type");
+            };
+            (BuiltinType::Option, "Some", "None", some.clone(), None)
+        };
+        let Some((success_predicate, _)) = self.builtin_variant_predicate(builtin, success, span)
+        else {
+            return self.unsupported_postfix_try(span, "recovery success variant identity");
+        };
+        let Some((failure_predicate, _)) = self.builtin_variant_predicate(builtin, failure, span)
+        else {
+            return self.unsupported_postfix_try(span, "recovery failure variant identity");
+        };
+        let success_binding = self.ids.binding();
+        let success_body =
+            self.synthetic_binding_ref("__recovery_value", success_binding, payload.clone(), span);
+        self.push_scope();
+        let error_bindings = if let (Some((name, binding_span)), Some(error_ty)) = (error, error_ty)
+        {
+            let binding = self.bind(name.clone(), error_ty.clone(), false, binding_span.clone());
+            vec![HirMatchArmBinding {
+                binding: binding.id,
+                field_idx: 0,
+                name: name.clone(),
+                ty: error_ty,
+            }]
+        } else {
+            Vec::new()
+        };
+        let failure_body = self.lower_expr(body, IntentKind::Read);
+        self.pop_scope();
+        let arms = vec![
+            HirMatchArm {
+                scope: Some(self.ids.scope()),
+                predicate: success_predicate,
+                bindings: vec![HirMatchArmBinding {
+                    binding: success_binding,
+                    field_idx: 0,
+                    name: "__recovery_value".to_string(),
+                    ty: payload.clone(),
+                }],
+                payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
+                guard: None,
+                body: success_body,
+                span: span.clone(),
+            },
+            HirMatchArm {
+                scope: Some(self.ids.scope()),
+                predicate: failure_predicate,
+                bindings: error_bindings,
+                payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
+                guard: None,
+                body: failure_body,
+                span: body.1.clone(),
+            },
+        ];
+        (
+            HirExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            payload,
+        )
+    }
+
     fn lower_postfix_try(
         &mut self,
         inner: &Spanned<Expr>,
@@ -32115,7 +32219,13 @@ fn walk_expr_for_machine_allowlist(
             out.state_name_refs.push((span.clone(), name.clone()));
         }
         Expr::Block(block) => walk_block_for_machine_allowlist(block, state_names, out),
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             walk_expr_for_machine_allowlist(left, state_names, out);
             walk_expr_for_machine_allowlist(right, state_names, out);
         }
@@ -33055,7 +33165,13 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
                 scan_expr_for_blocking_recv(&arg.expr().0, diagnostics);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             scan_expr_for_blocking_recv(&left.0, diagnostics);
             scan_expr_for_blocking_recv(&right.0, diagnostics);
         }
@@ -33587,7 +33703,13 @@ fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, progra
                 scan_expr_for_task_gates(&arg.expr().0, &arg.expr().1, ctx, program);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             scan_expr_for_task_gates(&left.0, &left.1, ctx, program);
             scan_expr_for_task_gates(&right.0, &right.1, ctx, program);
         }
@@ -34131,6 +34253,15 @@ fn scan_expr_for_binop_gates(
 
     match expr {
         Expr::Binary { .. } => unreachable!("handled above"),
+        Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
+            scan_expr_for_binop_gates(&left.0, &left.1, false, ctx);
+            scan_expr_for_binop_gates(&right.0, &right.1, false, ctx);
+        }
         Expr::Unary { operand, .. } => {
             scan_expr_for_binop_gates(&operand.0, &operand.1, false, ctx);
         }
@@ -35383,7 +35514,13 @@ fn scan_expr_for_supervisor_spawn(
                 );
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             scan_expr_for_supervisor_spawn(&left.0, current_module, registry, diagnostics);
             scan_expr_for_supervisor_spawn(&right.0, current_module, registry, diagnostics);
         }
@@ -35755,7 +35892,13 @@ fn scan_expr_for_vec_index_gate(
                 scan_expr_for_vec_index_gate(arg.expr(), expr_types, diagnostics);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             scan_expr_for_vec_index_gate(left, expr_types, diagnostics);
             scan_expr_for_vec_index_gate(right, expr_types, diagnostics);
         }

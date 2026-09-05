@@ -243,6 +243,8 @@ fn eval_inner(
         // fails the build here rather than being silently treated as
         // NotConstant.
         Expr::Clone(_)
+        | Expr::Coalesce { .. }
+        | Expr::Handle { .. }
         | Expr::Literal(_)
         | Expr::ContextVariant(_)
         | Expr::GenericApplySuffix { .. }

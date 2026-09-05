@@ -291,7 +291,13 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
                 find_in_expr(ctx, levels, &value.0, out);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             find_in_expr(ctx, levels, &left.0, out);
             find_in_expr(ctx, levels, &right.0, out);
         }
@@ -365,6 +371,8 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         } => match &operand.0 {
             Expr::Identifier(name) => Some(Candidate::Guard(name.clone())),
             Expr::Binary { .. }
+            | Expr::Coalesce { .. }
+            | Expr::Handle { .. }
             | Expr::ContextVariant(_)
             | Expr::GenericApplySuffix { .. }
             | Expr::RecordInitSuffix { .. }
@@ -413,6 +421,8 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::GenBlock { .. } => None,
         },
         Expr::Binary { .. }
+        | Expr::Coalesce { .. }
+        | Expr::Handle { .. }
         | Expr::ContextVariant(_)
         | Expr::GenericApplySuffix { .. }
         | Expr::RecordInitSuffix { .. }
@@ -693,9 +703,13 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         Expr::MapLiteral { entries } => entries
             .iter()
             .any(|(key, value)| bounded_expr_has_sleep(&key.0) || bounded_expr_has_sleep(&value.0)),
-        Expr::Binary { left, right, .. } => {
-            bounded_expr_has_sleep(&left.0) || bounded_expr_has_sleep(&right.0)
-        }
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => bounded_expr_has_sleep(&left.0) || bounded_expr_has_sleep(&right.0),
         Expr::Unary { operand, .. }
         | Expr::Clone(operand)
         | Expr::Await(operand)
@@ -946,9 +960,13 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         Expr::MapLiteral { entries } => entries.iter().any(|(key, value)| {
             expr_assigns_identifier(&key.0, name) || expr_assigns_identifier(&value.0, name)
         }),
-        Expr::Binary { left, right, .. } => {
-            expr_assigns_identifier(&left.0, name) || expr_assigns_identifier(&right.0, name)
-        }
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => expr_assigns_identifier(&left.0, name) || expr_assigns_identifier(&right.0, name),
         Expr::Unary { operand, .. }
         | Expr::Clone(operand)
         | Expr::Await(operand)

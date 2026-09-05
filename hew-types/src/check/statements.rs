@@ -255,7 +255,13 @@ impl Checker {
     fn numeric_update_reads_binding(expr: &Expr, binding: &str) -> bool {
         match expr {
             Expr::Identifier(name) => name == binding,
-            Expr::Binary { left, right, .. } => {
+            Expr::Binary { left, right, .. }
+            | Expr::Coalesce { left, right }
+            | Expr::Handle {
+                operand: left,
+                body: right,
+                ..
+            } => {
                 Self::numeric_update_reads_binding(&left.0, binding)
                     || Self::numeric_update_reads_binding(&right.0, binding)
             }

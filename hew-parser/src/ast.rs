@@ -352,6 +352,18 @@ pub enum Expr {
         ty: Spanned<TypeExpr>,
     },
     PostfixTry(Box<Spanned<Expr>>),
+    /// Evaluate the right operand only when the left Option is absent.
+    Coalesce {
+        left: Box<Spanned<Expr>>,
+        right: Box<Spanned<Expr>>,
+    },
+    /// Recover one Result expression. The error binder exists only in the
+    /// ordinary lexical handler block, not in the operand or continuation.
+    Handle {
+        operand: Box<Spanned<Expr>>,
+        error: Spanned<String>,
+        body: Box<Spanned<Expr>>,
+    },
     Range {
         start: Option<Box<Spanned<Expr>>>,
         end: Option<Box<Spanned<Expr>>>,

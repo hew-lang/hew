@@ -534,6 +534,48 @@ impl Parser<'_> {
                 }
             }
 
+            // Optional recovery binds below logical/range operators. Defaults
+            // associate right: a ?? b ?? c means a ?? (b ?? c).
+            if self.peek() == Some(&Token::QuestionQuestion) && min_bp <= 2 {
+                self.advance();
+                let right = self.parse_expr_bp(2)?;
+                let end = right.1.end;
+                lhs = (
+                    Expr::Coalesce {
+                        left: Box::new(lhs),
+                        right: Box::new(right),
+                    },
+                    start..end,
+                );
+                continue;
+            }
+            // `handle` remains a contextual identifier: parameter and function
+            // names keep their ordinary meaning outside this infix position.
+            if matches!(self.peek(), Some(Token::Identifier("handle"))) && min_bp <= 1 {
+                self.advance();
+                let error_span = self.peek_span();
+                let error = self.expect_ident()?;
+                if error == "_" {
+                    self.error_at(
+                        "a handler requires a named error binding".to_string(),
+                        error_span,
+                    );
+                    return None;
+                }
+                let body_start = self.peek_span().start;
+                let body = self.parse_block()?;
+                let end = self.peek_span().start;
+                lhs = (
+                    Expr::Handle {
+                        operand: Box::new(lhs),
+                        error: (error, error_span),
+                        body: Box::new((Expr::Block(body), body_start..end)),
+                    },
+                    start..end,
+                );
+                continue;
+            }
+
             // Then try infix
             let Some((lbp, rbp)) = self.peek().and_then(infix_bp) else {
                 break;

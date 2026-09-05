@@ -4780,6 +4780,12 @@ impl Checker {
                 Self::collect_machine_transition_forbidden_exprs(&inner.0, &inner.1, hits);
             }
             Expr::Binary { left, right, .. }
+            | Expr::Coalesce { left, right }
+            | Expr::Handle {
+                operand: left,
+                body: right,
+                ..
+            }
             | Expr::Is {
                 lhs: left,
                 rhs: right,

@@ -570,6 +570,11 @@ pub fn runtime_variant_shape_refs(
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
+    /// Checker-selected operations demanded by concrete collection keys.
+    /// User methods retain their resolved declaration and specialization;
+    /// derived operations compose the separately selected component plans.
+    pub value_capabilities:
+        BTreeMap<(ResolvedTy, hew_types::ValueCapability), crate::SemValueMethodPlan>,
     /// Deterministic resolved direct-call authority.  IDs must equal their
     /// indexes in this vector; [`crate::verify_module`] checks that invariant.
     pub callables: Vec<SemCallable>,

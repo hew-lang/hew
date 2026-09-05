@@ -374,6 +374,11 @@ fn require_complete_semantics(
         }
     }
     let body_index = sir.module.function_index();
+    for plan in sir.module.value_capabilities.values() {
+        if let hew_sir::SemValueMethodPlan::User { callable, .. } = plan {
+            require_semantic_body(&sir.module, &body_index, *callable)?;
+        }
+    }
     if let Some(entry) = sir.module.entry_callable {
         require_semantic_body(&sir.module, &body_index, entry)?;
     }

@@ -4938,6 +4938,7 @@ mod tests {
             },
         );
         SemModule {
+            value_capabilities: BTreeMap::new(),
             callables: vec![callable],
             generic_templates: vec![],
             root_unit_callables: vec![CallableId(0)],

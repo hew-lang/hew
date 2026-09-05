@@ -36,6 +36,11 @@ pub enum SirDiagnosticKind {
         ty: ResolvedTy,
         reason: String,
     },
+    InvalidValueCapability {
+        ty: ResolvedTy,
+        capability: hew_types::ValueCapability,
+        reason: String,
+    },
     InvalidVariantShape {
         shape: VariantShapeId,
         reason: String,
@@ -378,6 +383,17 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     let callables = verify_callable_table(module, &mut diagnostics);
     verify_aggregate_shapes(module, &mut diagnostics);
     verify_variant_shapes(module, &mut diagnostics);
+    for ((ty, capability), plan) in &module.value_capabilities {
+        if let Err(reason) =
+            crate::capability::verify_value_capability(module, ty, *capability, plan)
+        {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidValueCapability {
+                ty: ty.clone(),
+                capability: *capability,
+                reason,
+            }));
+        }
+    }
     for key in module.type_facts.keys() {
         if hew_types::runtime_call::collection_type_arguments(&key.0).is_some() {
             if let Err(reason) = crate::model::collection_value_dependencies(

@@ -416,3 +416,117 @@ fn map_emptiness_uses_the_semantic_length_operation() {
     );
     assert!(operation_families(&module).contains(&RuntimeCallFamily::Map(MapValueOp::Len)));
 }
+
+#[test]
+fn collection_keys_demand_selected_methods_even_without_direct_source_calls() {
+    use hew_sir::SemValueMethodPlan;
+    use hew_types::ValueCapability;
+    let module = lower_source(
+        r#"
+        type Key { id: i64 }
+        impl Hash for Key { fn hash(self) -> i64 { self.id % 10 } }
+        impl Eq for Key { fn eq(self, other: Key) -> bool { self.id % 10 == other.id % 10 } }
+        type Outer { key: Key }
+        fn main() -> i64 {
+            var values: HashMap<Outer, string> = HashMap.new();
+            values.insert(Outer { key: Key { id: 7 } }, "kept");
+            values.len()
+        }
+    "#,
+    );
+    let mut selected = Vec::new();
+    for capability in [ValueCapability::Hash, ValueCapability::Eq] {
+        let (key, plan) = module
+            .value_capabilities
+            .iter()
+            .find(|((ty, op), _)| ty.user_facing().to_string() == "Key" && *op == capability)
+            .expect("derived outer operation must select the field override");
+        let SemValueMethodPlan::User {
+            declaration,
+            type_args,
+            callable,
+        } = plan
+        else {
+            panic!("must preserve the user implementation");
+        };
+        assert!(type_args.is_empty());
+        assert_eq!(
+            &module.callable(*callable).unwrap().declaration,
+            declaration
+        );
+        assert!(
+            module.function_index().function(*callable).is_some(),
+            "callback body must be demanded"
+        );
+        selected.push((key.clone(), *callable));
+    }
+    assert_ne!(selected[0].1, selected[1].1);
+
+    let mut missing = module.clone();
+    missing.value_capabilities.remove(&selected[0].0);
+    assert!(
+        verify_module(&missing).iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidValueCapability { .. }
+        )),
+        "a derived operation must not silently substitute for a missing field plan"
+    );
+
+    let mut mismatched = module.clone();
+    let SemValueMethodPlan::User { callable, .. } = mismatched
+        .value_capabilities
+        .get_mut(&selected[0].0)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    *callable = selected[1].1;
+    assert!(
+        verify_module(&mismatched).iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidValueCapability { .. }
+        )),
+        "a selected method must retain its exact callable identity"
+    );
+}
+
+#[test]
+fn collection_keys_demand_the_exact_generic_impl_specialization() {
+    use hew_sir::{CallableInstance, SemValueMethodPlan};
+    let module = lower_source(
+        r#"
+        type Key<T> { value: T }
+        impl<T> Hash for Key<T> { fn hash(self) -> i64 { 1 } }
+        fn main() -> i64 {
+            var values: HashMap<Key<i64>, string> = HashMap.new();
+            values.insert(Key { value: 7 }, "kept");
+            values.len()
+        }
+    "#,
+    );
+    let plan = module
+        .value_capabilities
+        .iter()
+        .find_map(|((_, capability), plan)| {
+            (*capability == hew_types::ValueCapability::Hash
+                && matches!(plan, SemValueMethodPlan::User { .. }))
+            .then_some(plan)
+        })
+        .expect("generic key hash implementation");
+    let SemValueMethodPlan::User {
+        declaration,
+        type_args,
+        callable,
+    } = plan
+    else {
+        unreachable!()
+    };
+    assert_eq!(type_args, &[hew_types::ResolvedTy::I64]);
+    let selected = module.callable(*callable).unwrap();
+    let CallableInstance::Generic(instance) = &selected.instance else {
+        panic!("concrete specialization")
+    };
+    assert_eq!(&instance.template.declaration, declaration);
+    assert_eq!(&instance.type_args, type_args);
+    assert!(module.function_index().function(*callable).is_some());
+}

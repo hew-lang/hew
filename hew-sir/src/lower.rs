@@ -535,6 +535,8 @@ struct InstanceService<'a> {
     variant_shapes_by_type: HashMap<ResolvedTy, VariantShapeId>,
     string_literals: BTreeMap<StringLiteralId, String>,
     bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
+    value_capabilities:
+        BTreeMap<(ResolvedTy, hew_types::ValueCapability), crate::SemValueMethodPlan>,
 }
 
 /// Resolve one concrete record through the canonical checker type service.
@@ -895,11 +897,108 @@ impl<'a> InstanceService<'a> {
             variant_shapes_by_type,
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),
+            value_capabilities: BTreeMap::new(),
         }
     }
 
     fn callable(&self, id: CallableId) -> Option<&SemCallable> {
         self.table.callable(id)
+    }
+
+    fn require_key_capabilities(&mut self, ty: &ResolvedTy) -> Result<(), String> {
+        for capability in [
+            hew_types::ValueCapability::Hash,
+            hew_types::ValueCapability::Eq,
+        ] {
+            self.require_value_capability(ty, capability)?;
+        }
+        Ok(())
+    }
+
+    fn require_value_capability(
+        &mut self,
+        ty: &ResolvedTy,
+        capability: hew_types::ValueCapability,
+    ) -> Result<(), String> {
+        let key = (ty.clone(), capability);
+        if self.value_capabilities.contains_key(&key) {
+            return Ok(());
+        }
+        self.require_type_facts(ty)?;
+        let selected = self
+            .checked_facts
+            .capability_plan(ty, capability)
+            .map_err(|error| {
+                format!(
+                    "cannot select {capability:?} for `{}`: {error}",
+                    ty.user_facing()
+                )
+            })?
+            .ok_or_else(|| {
+                format!(
+                    "`{}` has no selected {capability:?} implementation",
+                    ty.user_facing()
+                )
+            })?;
+        let plan = match selected {
+            hew_types::ValueMethodPlan::Derived => crate::SemValueMethodPlan::Derived,
+            hew_types::ValueMethodPlan::User { method, type_args } => {
+                let callable = if self.table.templates.contains_key(&method) {
+                    self.request_instance(&method, type_args.clone())?
+                } else {
+                    if !type_args.is_empty() {
+                        return Err("selected nongeneric capability has type arguments".to_string());
+                    }
+                    let id = self
+                        .table
+                        .monomorphic_by_declaration
+                        .get(&method)
+                        .copied()
+                        .ok_or_else(|| {
+                            format!(
+                                "selected capability `{}` has no admitted HIR callable",
+                                method.full_path()
+                            )
+                        })?;
+                    self.request_body(id);
+                    id
+                };
+                let metadata = self.callable(callable).ok_or_else(|| {
+                    "selected capability callable disappeared from its table".to_string()
+                })?;
+                let facts = self
+                    .checked_facts
+                    .rows()
+                    .get(&TypeInstanceKey(ty.clone()))
+                    .ok_or_else(|| "selected capability type facts disappeared".to_string())?;
+                crate::capability::verify_capability_signature(ty, capability, metadata, *facts)?;
+                crate::SemValueMethodPlan::User {
+                    declaration: method,
+                    type_args,
+                    callable,
+                }
+            }
+        };
+        let derived = matches!(plan, crate::SemValueMethodPlan::Derived);
+        self.value_capabilities.insert(key.clone(), plan);
+        if derived {
+            let result = crate::derived_capability_components(
+                ty,
+                &self.aggregate_shapes,
+                &self.variant_shapes,
+            )
+            .and_then(|components| {
+                for component in components {
+                    self.require_value_capability(&component, capability)?;
+                }
+                Ok(())
+            });
+            if let Err(reason) = result {
+                self.value_capabilities.remove(&key);
+                return Err(reason);
+            }
+        }
+        Ok(())
     }
 
     fn require_type_facts(&mut self, ty: &ResolvedTy) -> Result<(), String> {
@@ -1471,6 +1570,7 @@ impl<'a> InstanceService<'a> {
             variant_shapes,
             string_literals,
             bytes_literals,
+            value_capabilities,
             ..
         } = self;
         let generic_templates: Vec<SemGenericTemplate> = table
@@ -1503,6 +1603,7 @@ impl<'a> InstanceService<'a> {
             type_facts,
             string_literals,
             bytes_literals,
+            value_capabilities,
         }
     }
 
@@ -4868,6 +4969,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })?;
         let parameter_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
         let instantiated = contract.instantiate(&parameter_types, &self.ty(&expr.ty))?;
+        if matches!(
+            family,
+            hew_types::RuntimeCallFamily::Map(_) | hew_types::RuntimeCallFamily::Set(_)
+        ) {
+            let result_ty = self.ty(&expr.ty);
+            let collection_ty = parameter_types.first().unwrap_or(&result_ty);
+            let (_, arguments) = collection_type_arguments(collection_ty)
+                .ok_or_else(|| "collection operation has no canonical receiver type".to_string())?;
+            self.service.require_key_capabilities(&arguments[0])?;
+        }
         for ty in &instantiated.arguments {
             self.service.require_type_facts(ty)?;
         }

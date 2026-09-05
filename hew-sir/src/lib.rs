@@ -7,6 +7,7 @@
 //! SIR -> MIR and deletes its established HIR -> MIR body lowering.
 
 mod analysis;
+mod capability;
 mod dump;
 mod lifetime;
 mod lower;
@@ -19,6 +20,7 @@ pub use analysis::{
     build_cfg_index, build_def_use, compute_dominators, replace_all_uses, replace_use, CfgIndex,
     DefUseIndex, Dominators, EdgeRef, RewriteError,
 };
+pub use capability::{derived_capability_components, SemValueMethodPlan};
 pub use dump::{dump_lowering, dump_sir};
 pub use lower::{
     lower_module, lower_module_with_demand, lower_module_with_roots, LoweredModule,

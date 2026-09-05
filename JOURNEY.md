@@ -948,3 +948,20 @@ the opaque and imported-recursion class tests, selected-member composition,
 marker-bound refusal, unprovable-bound refusal, and comparison/selector agreement.
 Rust formatting and scoped make lint-rust pass. This is Linux checker evidence;
 Windows/macOS and native callback execution were not run for this checker slice.
+
+## Executable value capability demand
+
+Map and Set operations now retain checker-selected Hash and Eq implementations
+in ownership SIR. A user operation names its exact declaration, specialization
+arguments and callable; requesting it demands the method body through the same
+instance service as a source call. Derived operations recursively select each
+field's implementation, preserving field-level overrides. Shared verification
+rejects missing component plans and mismatched callable identities or signatures.
+The compilation session requires callback bodies before admitting an executable.
+
+The derived-record and user-override source tests pass. The generic-key positive
+exposes an older checker layout admission failure and remains enabled. Combined
+SIR/session testing also retains Map projection/emptiness/Set projection failures
+and two stale mutable-collection source fixtures; their repairs are in progress.
+This semantic checkpoint does not yet emit native key callbacks or change the
+runtime fault ABI, so it is not native Map/Set acceptance.

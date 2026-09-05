@@ -4672,6 +4672,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            value_capabilities: BTreeMap::new(),
             callables: vec![callable],
             generic_templates: vec![],
             root_unit_callables: vec![CallableId(0)],
@@ -4873,6 +4874,7 @@ mod tests {
             )]),
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::from([(hew_sir::BytesLiteralId(0), b"ok".to_vec())]),
+            value_capabilities: BTreeMap::new(),
         }
     }
 

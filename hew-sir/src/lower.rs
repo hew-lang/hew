@@ -1870,7 +1870,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     .to_string()
             }),
             HirExprKind::Block(block) => self
-                .lower_block(block, binding_use)?
+                .lower_scoped_block(block, binding_use)?
                 .map(|value| value.value)
                 .ok_or_else(|| "a divergent block cannot produce a SIR value".to_string()),
             HirExprKind::If {

@@ -272,6 +272,85 @@ fn discarded_owned_block_tails_copy_and_preserve_source() {
 }
 
 #[test]
+fn owned_block_expressions_destroy_inner_locals_at_scope_exit() {
+    let lowered = lower_source(
+        r#"
+        fn keep(value: string) {}
+
+        fn main() {
+            let result = {
+                let scratch = "scratch";
+                "result"
+            };
+            keep(result);
+
+            var selected = "initial";
+            if true {
+                selected = {
+                    let branch_scratch = "branch";
+                    "left"
+                };
+            } else {
+                selected = "right";
+            }
+            keep(selected);
+        }
+        "#,
+    );
+    assert!(
+        matches!(
+            lowered
+                .statuses
+                .iter()
+                .find(|status| status.name == "main")
+                .map(|status| &status.status),
+            Some(SirLoweringStatus::Lowered)
+        ),
+        "block-local owners must not escape into their enclosing expression state: {:#?}",
+        lowered.statuses
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "scoped owned block expressions must produce verified SIR: {:#?}",
+        verify_module(&lowered.module)
+    );
+
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main must lower");
+    for source in ["scratch", "branch"] {
+        let literal = lowered
+            .module
+            .string_literals
+            .iter()
+            .find_map(|(id, value)| (value == source).then_some(*id))
+            .expect("scratch literal must be interned");
+        assert!(
+            main.blocks.iter().any(|block| {
+                let Some(owner) = block.ops.iter().find_map(|op| match op.kind {
+                    SemOpKind::ConstStr(id) if id == literal => {
+                        op.results.first().map(|result| result.id)
+                    }
+                    _ => None,
+                }) else {
+                    return false;
+                };
+                block.ops.iter().any(|op| {
+                    matches!(
+                        op.kind,
+                        SemOpKind::DestroyValue { ref value } if value.value == owner
+                    )
+                })
+            }),
+            "`{source}` must be destroyed in its defining lexical block"
+        );
+    }
+}
+
+#[test]
 fn nested_owned_call_arguments_live_until_outer_call() {
     for main_body in ["pair(make(), make());", "pair(\"literal\", make());"] {
         let lowered = lower_source(&format!(

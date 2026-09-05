@@ -198,3 +198,6 @@
   only that new result; the source binding remains live. The same scoped
   distinction lets a block used by a return move its tail while a block used by
   an ordinary value expression copies it.
+- Every HIR block expression now enters the same scoped lowering path. Its
+  yielded value survives according to the surrounding copy or move context,
+  while owned locals are destroyed before control leaves the lexical block.

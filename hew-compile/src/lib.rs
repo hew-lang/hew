@@ -3887,6 +3887,84 @@ mod tests {
                 "every emitted imported impl body must carry its checker-owned declaration"
             );
         }
+
+        let roots = Session::source_roots(&state.program, tco).unwrap();
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_hir_module(&hir.module, tco, &roots)
+            .expect("imported generic impl calls must complete shared semantic lowering");
+        let module = &output.semantics().module;
+        for (_, declaration) in expected {
+            let key = hew_sir::SirInstanceKey {
+                template: hew_sir::GenericTemplateId { declaration },
+                type_args: vec![hew_types::ResolvedTy::String],
+            };
+            let callable = module
+                .callable_for_instance(&key)
+                .expect("each imported method must retain its exact string specialization");
+            assert!(
+                module.function_index().function(callable.id).is_some(),
+                "the requested imported specialization must have a semantic body"
+            );
+        }
+    }
+
+    #[test]
+    fn local_generic_impl_calls_reuse_exact_semantic_specializations() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            r#"
+            type Holder<T> { value: T }
+            impl<T> Holder<T> { fn get(self) -> T { self.value } }
+            fn main() -> i64 {
+                let numbers = Holder { value: 7 };
+                let words = Holder { value: "kept" };
+                numbers.get() + numbers.get() + words.get().len() + words.get().len()
+            }
+        "#,
+        );
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default()).unwrap();
+        let tco = state.typecheck_result.tco.as_ref().unwrap();
+        let declaration = tco.impl_method_declaration_ids["Holder::get"].clone();
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, tco)
+            .expect("local generic impl calls must complete shared semantic lowering");
+        let module = &output.semantics().module;
+        let index = module.function_index();
+        let entry = index.function(module.entry_callable.unwrap()).unwrap();
+        assert_eq!(
+            module
+                .callables
+                .iter()
+                .filter(|callable| callable.declaration == declaration)
+                .count(),
+            2,
+            "one method declaration must have exactly its two demanded specializations"
+        );
+        for argument in [hew_types::ResolvedTy::I64, hew_types::ResolvedTy::String] {
+            let key = hew_sir::SirInstanceKey {
+                template: hew_sir::GenericTemplateId {
+                    declaration: declaration.clone(),
+                },
+                type_args: vec![argument.clone()],
+            };
+            let callable = module.callable_for_instance(&key).expect(
+                "the instance key must retain the checker declaration and concrete argument",
+            );
+            assert_eq!(callable.signature.return_ty, argument);
+            assert!(
+                index.function(callable.id).is_some(),
+                "the exact specialization must have a body"
+            );
+            let calls = entry.blocks.iter().filter(|block| matches!(
+                block.terminator, hew_sir::SemTerminator::Call { callee, .. } if callee == callable.id
+            )).count();
+            assert_eq!(
+                calls, 2,
+                "repeated source calls must reuse the same semantic callable"
+            );
+        }
     }
 
     #[test]

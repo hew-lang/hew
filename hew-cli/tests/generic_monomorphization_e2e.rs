@@ -329,3 +329,57 @@ fn return_type_polymorphic_ctor_lowers_and_runs() {
         "return-type-polymorphic ctor output mismatch; stdout: {stdout}"
     );
 }
+
+/// The package keeps Slot<T> private while Store<string> crosses its public
+/// boundary. Both optimization levels must execute the two additions and read
+/// back their generation stamps through the imported generic methods.
+#[test]
+fn imported_private_generic_record_executes_at_both_optimization_levels() {
+    require_codegen();
+    let packages = repo_root().join("tests/pkg-import");
+    let source = packages.join("private_generic_record_vec_element.hew");
+    for level in ["0", "2"] {
+        let output_dir = support::tempdir();
+        let binary = hew_testutil::compiled_binary_path(
+            output_dir.path(),
+            "private_generic_record_vec_element",
+        );
+        let mut command = std::process::Command::new(hew_binary());
+        command
+            .arg("build")
+            .arg(&source)
+            .arg("--pkg-path")
+            .arg(packages.join("pkgs"))
+            .arg("--output")
+            .arg(&binary)
+            .args(["--opt-level", level])
+            .current_dir(repo_root());
+        let compiled = support::run_bounded_command(
+            command,
+            format!("compile private generic package at O{level}"),
+        );
+        assert!(
+            compiled.status.success(),
+            "package compilation at O{level} failed: {}",
+            support::describe_output(&compiled)
+        );
+        let run = support::run_bounded_command(
+            std::process::Command::new(binary),
+            format!("run private generic package at O{level}"),
+        );
+        assert!(
+            run.status.success(),
+            "package execution at O{level} failed: {}",
+            support::describe_output(&run)
+        );
+        assert_eq!(
+            run.stdout, b"0\n1\n",
+            "incorrect generation stamps at O{level}"
+        );
+        assert!(
+            run.stderr.is_empty(),
+            "unexpected runtime diagnostics at O{level}: {}",
+            support::describe_output(&run)
+        );
+    }
+}

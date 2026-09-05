@@ -1286,3 +1286,33 @@ projections after clear, a zero-sized entry pair and set snapshots. The source
 passes semantic checking; native and sanitizer execution are in progress after
 the runtime layout fix. The SIR regression requires the normal collection
 operation contracts for the same source.
+
+## Generic impl dispatch regression coverage
+
+Start from the compiled integration checkpoint and preserve the package API.
+The private generic record test now enters the shared Session and demands the
+exact string specializations of both imported Store methods. A local control
+requires distinct i64/string instances of one impl declaration and verifies
+that repeated calls reuse their semantic callable IDs.
+
+Add the private generic package to the existing native monomorphisation test
+suite using its shared bounded command helpers. Compilation and execution must
+succeed at O0 and O2, independently asserting the generation output `0\n1\n`.
+The test creates no replacement package source or alternate compiler harness.
+
+Both focused Session regressions compile and fail at the known SIR generic
+resolver guard: an ImplMethod target is rejected as not an ordinary User call.
+This is an intentional red checkpoint pending the separately owned resolver
+fix. Existing malformed type-argument/signature tests are retained. Native
+package execution remains required after composition; HIR identity alone is
+not acceptance, and later compilation stages are not yet proven here.
+
+Validation uses `make hew-native` (pass), focused `make test-strict
+-o test-artifacts` selections for the two Session tests (both fail at that
+guard) and the new CLI test (fails with E_SIR_UNSUPPORTED for Store::add at
+O0). The CLI test uses the package-aware `hew build --pkg-path` command.
+O2 and native execution have not been reached on this base. No SIR producer
+or package fixture API was changed.
+`cargo fmt --all`, `git diff --check`, and `make lint-rust
+CLIPPY_ARGS='-p hew-compile -p hew-cli'` pass. The test checkpoint is ready to
+compose with the resolver fix, but does not claim runtime acceptance.

@@ -1567,7 +1567,7 @@ miri:
 .SECONDEXPANSION:
 lint: $$(LINT_GATES) ## Check: run the complete local lint graph and Clippy
 	cargo fmt --all -- --check
-	cargo clippy --workspace --tests -- -D warnings
+	cargo clippy --workspace --tests --message-format=json -- -D warnings
 
 LINT_GATES += legacy-path-syntax-lint
 legacy-path-syntax-lint:

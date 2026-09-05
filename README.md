@@ -201,10 +201,10 @@ Actors communicate across nodes with a wire-tagged message enum and `.send()`, t
 ```hew
 // shared by both nodes: the wire-tagged message enum, bound to the actor
 #[wire]
-enum CounterMsg { Increment(i64); }
+enum CounterMsg { Increment(i64), }
 
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn handle(msg: CounterMsg) {
         match msg { CounterMsg::Increment(n) => { count = count + n; }, }
     }

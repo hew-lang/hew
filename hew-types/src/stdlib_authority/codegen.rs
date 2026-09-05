@@ -317,8 +317,8 @@ mod tests {
     #[test]
     fn reordered_abi_enum_is_rejected() {
         let reordered_failure = include_str!("../../../std/failure.hew").replacen(
-            "    Restart;\n    Escalate;",
-            "    Escalate;\n    Restart;",
+            "    Restart,\n    Escalate,",
+            "    Escalate,\n    Restart,",
             1,
         );
         let sources = [

@@ -279,7 +279,7 @@ fn local_pid_remote_conversion_is_not_public() {
     let removed_method = ["to_remote", "_via"].concat();
     let source = r#"
         actor Bot {
-            let n: i32;
+            let n: i32,
             init() {}
         }
         fn main() {

@@ -43,17 +43,12 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Lint — code quality plus 1,778-file formatter preservation
-  # (always runs; cold runners can take 15–25 min)
+  # Source lint and formatting. Keep the established required-check name.
+  # Behaviour tests and compiler measurements have separate results below.
   # ─────────────────────────────────────────────────────────────────────────
   lint:
     name: Clippy & format
     runs-on: ubuntu-24.04
-    # Job 93290474020 reached the final authority-graph step at 25m17s after
-    # 308s of toolchain setup, 252s of structural lint, 131s of .hew format,
-    # 492s of formatter preservation, 167s of Clippy, and about 90s elsewhere.
-    # The graph did not complete, so 45 min leaves cold-runner headroom while
-    # retaining a finite ceiling for a stuck job.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -75,12 +70,42 @@ jobs:
           version: ${{ env.LLVM_VERSION }}
 
       - name: Provision pinned ast-grep toolchain
+        id: lint-tools
         uses: ./.github/actions/setup-ast-grep
 
-      # The Makefile is the repository gate authority. CI provisions external
-      # tools, then runs the same aggregate developers run locally.
-      - name: Run lint and build-system checks
-        run: make lint
+      # Run each category even if another fails, once provisioning succeeds.
+      # make lint combines these same targets for local use.
+      - name: Rust lint and formatting
+        if: ${{ !cancelled() && steps.lint-tools.outcome == 'success' }}
+        run: make lint-rust
+
+      - name: Source and ABI contracts
+        if: ${{ !cancelled() && steps.lint-tools.outcome == 'success' }}
+        run: make -k lint-source
+
+      - name: Hew source formatting
+        if: ${{ !cancelled() && steps.lint-tools.outcome == 'success' }}
+        run: make hew-fmt-check
+
+  tooling:
+    name: Build tooling and checker tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install shell and C header checks
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck clang-format gcc
+
+      - name: Verify build tooling and checker behaviour
+        run: make -k test-tooling
 
   # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.
@@ -225,9 +250,10 @@ jobs:
     # This aggregate retains the established required-check name while the
     # Rust and compiled-Hew suites execute in parallel. GitHub reports a matrix
     # dependency as successful only when every leg succeeds, so one assertion
-    # here covers all three Rust shards without starting a watcher-only job.
+    # here covers all Rust shards and tooling tests. Compiled-Hew reporting
+    # remains independent of failures in those other gate groups.
     name: Build & test (Linux)
-    needs: [compiled-hew-linux, compiled-hew-shards, build-and-test]
+    needs: [compiled-hew-linux, compiled-hew-shards, build-and-test, tooling]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -279,10 +305,9 @@ jobs:
         env:
           BUILD_RESULT: ${{ needs.compiled-hew-linux.result }}
           SHARD_RESULT: ${{ needs.compiled-hew-shards.result }}
-          RUST_GATES_RESULT: ${{ needs.build-and-test.result }}
         run: |
           set -euo pipefail
-          for leg in BUILD_RESULT SHARD_RESULT RUST_GATES_RESULT; do
+          for leg in BUILD_RESULT SHARD_RESULT; do
             result="${!leg}"
             if [ "$result" = success ]; then
               continue
@@ -337,13 +362,26 @@ jobs:
           report_paths: "${{ runner.temp }}/compiled-hew-published/*.xml"
           check_name: Compiled Hew Test Results
 
+      # Unrelated gate failures must block the required result without hiding
+      # the compiled-Hew inventory, ratchet or differential diagnostics above.
+      - name: Require Linux gates and tooling checks
+        if: always()
+        env:
+          LINUX_RESULT: ${{ needs.build-and-test.result }}
+          TOOLING_RESULT: ${{ needs.tooling.result }}
+        run: |
+          status=0
+          for leg in LINUX_RESULT TOOLING_RESULT; do
+            result="${!leg}"
+            if [ "$result" != success ]; then
+              echo "::error::$leg is '$result' (expected success)"
+              status=1
+            fi
+          done
+          exit "$status"
+
   # ─────────────────────────────────────────────────────────────────────────
-  # Size ratchet — per-crate wc -l against scripts/size-ratchet.tsv
-  # ceilings (#3296). Informational, not a branch-protection job: unlike
-  # `lint`, a red crate here (hew-pkg is, pending V060-FD-5's index.rs
-  # deletion) must stay visible without blocking every PR on main. wc -l
-  # over tracked source needs no build, so this runs standalone rather
-  # than depending on compiled-hew-linux like the journeys jobs above.
+  # Linux compiler, runtime and integration gates.
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Linux gates (shard ${{ matrix.shard }}/3)
@@ -453,9 +491,14 @@ jobs:
         uses: ./.github/actions/setup-ast-grep
 
       - name: Run unconditional gate shard
+        id: gates
         env:
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
         run: make ci-shard-${{ matrix.shard }}
+
+      - name: Compiler IR size and MIR lowering cost
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.gates.outcome != 'skipped' }}
+        run: make -k compiler-measurements
 
       - name: Upload test reports
         if: ${{ always() && matrix.shard != 3 }}

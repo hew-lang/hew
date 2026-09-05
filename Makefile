@@ -69,7 +69,7 @@
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make tsan         — run the nightly rust-runtime TSan test command locally
 #   make miri         — run the curated rust-runtime Miri allowlist locally
-#   make lint         — cargo clippy (workspace + tests, warnings are errors) + hew fmt gate
+#   make lint         — Rust lint, source contracts and Hew formatting
 #   make structural-lint — pinned ast-grep scan + compiler authority ratchets
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
 #   make fuzz-corpus    — regenerate ignored cargo-fuzz corpora from current fixtures/examples
@@ -643,19 +643,19 @@ playground-verify: hew-native
 	$(DEBUG_HEW) tool playground-verify
 
 # Standard per-branch gate: validate workflow syntax locally, then run the lint
-# graph and the same three Make-owned test groups used by hosted Linux CI. One
-# Make graph lets shared prerequisites build once instead of being replanned by
-# four recursive invocations. Hosted CI invokes lint and the shards directly:
+# graph, tooling tests, compiler measurements and the three Make-owned Linux
+# test groups used by hosted CI. One Make graph lets shared prerequisites
+# build once instead of being replanned by recursive invocations. Hosted CI invokes the named groups directly:
 # actionlint cannot rescue a workflow that is too malformed to start.
 .NOTPARALLEL: preflight
-preflight: actionlint lint ci-shard-1 ci-shard-2 ci-shard-3 ## Develop: run unconditional local branch gates
+preflight: actionlint lint test-tooling compiler-measurements ci-shard-1 ci-shard-2 ci-shard-3 ## Develop: run unconditional local branch gates
 	@:
 
 # Compatibility alias for automation that used the older name.
 ci-preflight: preflight
 	@:
 
-.PHONY: ci-shard-1 ci-shard-2 ci-shard-3
+.PHONY: ci-shard-1 ci-shard-2 ci-shard-3 test-tooling compiler-measurements lint-rust lint-source
 ci-shard-1: observe-functional-test test-cabi test-compiler-lifecycle \
 	test-vertical-slice test-pkg-import test-runtime-unit test-ux-examples \
 	test-doc-examples doc-ratchet-selftest test-migrate-corpus \
@@ -1195,22 +1195,23 @@ sir-coverage: hew-native ## Test: fail when the SIR admission count drops below 
 sir-parity: hew-native ## Test: run SIR-route and legacy-route binaries and compare their output
 	HEW_BIN="$(DEBUG_HEW)" bash scripts/sir-parity.sh --ratchet scripts/sir-parity-ratchet.txt hew-cli/tests/fixtures/sir-parity $(SIR_COVERAGE_CORPORA)
 
-# Dogfood-shaped compile measurement. IR size and timings remain observational.
-# Lint already builds the same release-lib compiler for hew-fmt-check, so this
-# adds only the focused compile.
+# Compiler measurements run with the Linux tests, separately from source lint.
+# Both probes share the release-lib compiler prerequisite. IR size and dogfood
+# timings remain observational; bench-mir enforces time and analysis budgets.
+compiler-measurements: dogfood-compile-measure bench-mir ## Test: report compile size and enforce MIR lowering budgets
+
+# Dogfood-shaped compile measurement.
 #
 #         tests/compile-measure/** scripts/dogfood-compile-measure.sh
 # The measurement reports define blocks, excluding host-specific module headers.
 # It uses Cargo's resolved release-lib binary by default, and honours HEW_BIN
 # when a caller supplies a staged compiler explicitly.
 HEW_BIN ?= $(RELEASE_LIB_HEW)
-LINT_GATES += dogfood-compile-measure
 dogfood-compile-measure: hew
 	HEW_BIN="$(HEW_BIN)" bash scripts/dogfood-compile-measure.sh
 
 # MIR lowering time budget. The IR measurement above reports what lowering
 # produces; this one measures what lowering costs.
-LINT_GATES += bench-mir
 bench-mir: hew ## Test: fail when MIR lowering time exceeds its budget
 	HEW_BIN="$(HEW_BIN)" bash scripts/bench-mir.sh
 
@@ -1571,7 +1572,11 @@ miri:
 # ── Lint ────────────────────────────────────────────────────────────────────
 
 .SECONDEXPANSION:
-lint: $$(LINT_GATES) ## Check: run the complete local lint graph and Clippy
+lint: lint-rust lint-source hew-fmt-check ## Check: run Rust lint, source contracts and Hew formatting
+
+lint-source: $$(LINT_GATES) ## Check: validate source and ABI contracts
+
+lint-rust: ## Check: check Rust formatting and run Clippy
 	cargo fmt --all -- --check
 	cargo clippy --workspace --tests --message-format=json -- -D warnings
 
@@ -1603,7 +1608,10 @@ structural-lint-bootstrap-install:
 test-ast-grep-contract:
 	bash scripts/tests/test_ast_grep_contract.sh
 
-LINT_GATES += test-build-harness
+# These Hew-compiler-free behaviour tests have their own CI result. Source lint
+# still validates the real ABI/symbol inputs; these prove checker failures.
+test-tooling: test-build-harness test-verify-ffi test-cabi-surface test-sys-lane-closure ## Test: verify build tooling and ABI checker behaviour
+
 # Focused behaviour tests for the Hew JUnit transaction, shell discovery,
 # and compiled-Hew report aggregation. None needs a built compiler.
 test-build-harness:
@@ -1615,7 +1623,6 @@ test-build-harness:
 
 # Python and shell only; no artifacts.
 
-LINT_GATES += hew-fmt-check
 # Check that std/ and examples/ .hew sources are formatted.
 # Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
 hew-fmt-check: hew
@@ -1819,7 +1826,6 @@ ffi-ownership-ratchet-record:
 
 # Python only; no artifacts.
 
-LINT_GATES += test-verify-ffi
 test-verify-ffi:
 	$(PYTHON) scripts/tests/test_verify_ffi_symbols.py
 
@@ -1834,7 +1840,6 @@ cabi-surface-check:
 
 # Python only; no artifacts.
 
-LINT_GATES += test-cabi-surface
 test-cabi-surface:
 	$(PYTHON) scripts/tests/test_cabi_surface.py
 
@@ -1849,7 +1854,7 @@ LINT_GATES += verify-sys-lane-closure
 # read the symbols one at a time and none of them followed the calls. This
 # recomputes the closure from the lane operations outward and fails if a stable
 # symbol can reach one. Run it with --list-roots or --explain SYM to see why.
-verify-sys-lane-closure: test-sys-lane-closure
+verify-sys-lane-closure:
 	$(PYTHON) scripts/sys-lane-closure.py
 
 # Python only; no artifacts.

@@ -799,3 +799,20 @@ Native evidence is Linux only. Owned extraction and captures across later effect
 remain copies by contract; this is a bounded call-argument borrowing change.
 Map/Set source admission and the other owner's physical hash/equality work remain
 outside this checkpoint. Native sources and runner logs are preserved for intake.
+
+## Typed Map and Set operations
+
+Physical collection calls now retain their exact map/set identity and optional,
+pair or vector result descriptors. LLVM uses the shared value descriptor and
+copy/drop callback emitter for vector elements and map values. Copy-in updates
+preserve borrowed inputs; lookup and removal initialize owned outputs only on
+their present paths. Entry projections use the target's tuple field offset.
+
+The physical/LLVM boundary tests cover caller-supplied collections, including
+optional extraction, receiver/presence pairs, projections and checked indexing.
+Affected Make tests and scoped JSON Clippy pass. Native source construction is
+still pending key-capability demand and descriptor emission. User-defined Hash
+and Eq also need fault-aware callbacks through the existing logical-fault
+transport; the direct-result callback ABI cannot silently turn those failures
+into process aborts. This remains an implementation boundary, not an accepted
+native-map milestone.

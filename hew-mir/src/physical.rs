@@ -13,7 +13,7 @@ use hew_sir::{
     SemOp, SemOpKind, SemTerminator, SnapshotDecision, ValueId,
 };
 pub use hew_sir::{BlockId, CallableId, OwnKind, TrapKind};
-use hew_types::runtime_call::collection_type_arguments;
+use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp};
 use hew_types::{
     vector_element_type, BuiltinType, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect,
     RuntimeCallFamily, RuntimeResultEffect, TypeInstanceKey, VecValueOp,
@@ -370,6 +370,72 @@ impl PhysicalVectorOp {
     }
 }
 
+/// Map operations retain exact result-shape identities selected by physical lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PhysicalMapOp {
+    New,
+    Len,
+    Index,
+    Get {
+        result: PhysicalVariantId,
+    },
+    ContainsKey,
+    Insert,
+    Remove {
+        result: PhysicalAggregateId,
+        value: PhysicalVariantId,
+    },
+    Clear,
+    Keys,
+    Values,
+    Entries {
+        result: PhysicalVectorId,
+    },
+}
+
+impl PhysicalMapOp {
+    const fn semantic_op(self) -> MapValueOp {
+        match self {
+            Self::New => MapValueOp::New,
+            Self::Len => MapValueOp::Len,
+            Self::Index => MapValueOp::Index,
+            Self::Get { .. } => MapValueOp::Get,
+            Self::ContainsKey => MapValueOp::ContainsKey,
+            Self::Insert => MapValueOp::Insert,
+            Self::Remove { .. } => MapValueOp::Remove,
+            Self::Clear => MapValueOp::Clear,
+            Self::Keys => MapValueOp::Keys,
+            Self::Values => MapValueOp::Values,
+            Self::Entries { .. } => MapValueOp::Entries,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PhysicalSetOp {
+    New,
+    Len,
+    Contains,
+    Insert { result: PhysicalAggregateId },
+    Remove { result: PhysicalAggregateId },
+    Clear,
+    Elements,
+}
+
+impl PhysicalSetOp {
+    const fn semantic_op(self) -> SetValueOp {
+        match self {
+            Self::New => SetValueOp::New,
+            Self::Len => SetValueOp::Len,
+            Self::Contains => SetValueOp::Contains,
+            Self::Insert { .. } => SetValueOp::Insert,
+            Self::Remove { .. } => SetValueOp::Remove,
+            Self::Clear => SetValueOp::Clear,
+            Self::Elements => SetValueOp::Elements,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
     Const {
@@ -534,6 +600,14 @@ pub enum PhysicalRuntimeAction {
         operation: PhysicalVectorOp,
         glue: PhysicalVectorId,
     },
+    Map {
+        operation: PhysicalMapOp,
+        glue: PhysicalMapId,
+    },
+    Set {
+        operation: PhysicalSetOp,
+        glue: PhysicalSetId,
+    },
 }
 
 impl PhysicalRuntimeAction {
@@ -555,6 +629,8 @@ impl PhysicalRuntimeAction {
             Self::BytesIndex => RuntimeCallFamily::BytesIndex,
             Self::BytesPushOwned => RuntimeCallFamily::BytesPush,
             Self::Vector { operation, .. } => RuntimeCallFamily::Vector(operation.semantic_op()),
+            Self::Map { operation, .. } => RuntimeCallFamily::Map(operation.semantic_op()),
+            Self::Set { operation, .. } => RuntimeCallFamily::Set(operation.semantic_op()),
         }
     }
 }
@@ -1977,12 +2053,118 @@ impl FunctionLowerer<'_> {
         })
     }
 
+    fn collection_receiver_type<'a>(
+        &'a self,
+        args: &[hew_sir::BoundaryOperand],
+        result: &'a hew_sir::ValueDef,
+        constructor: bool,
+    ) -> Result<&'a ResolvedTy, PhysicalError> {
+        if constructor {
+            return Ok(&result.ty);
+        }
+        let receiver = args
+            .first()
+            .ok_or_else(|| PhysicalError::new("collection operation lacks its receiver"))?;
+        Ok(&self.storage[self.value(receiver.operand.value)?.0 as usize].ty)
+    }
+
+    fn map_action(
+        &self,
+        op: MapValueOp,
+        args: &[hew_sir::BoundaryOperand],
+        result: &CallResult,
+    ) -> Result<PhysicalRuntimeAction, PhysicalError> {
+        let CallResult::Value(value) = result else {
+            return Err(PhysicalError::new("map operation has no result value"));
+        };
+        let receiver = self.collection_receiver_type(args, value, op == MapValueOp::New)?;
+        let glue = self
+            .glue_ids
+            .maps
+            .get(receiver)
+            .copied()
+            .ok_or_else(|| PhysicalError::new("map receiver has no physical glue identity"))?;
+        let operation = match op {
+            MapValueOp::New => PhysicalMapOp::New,
+            MapValueOp::Len => PhysicalMapOp::Len,
+            MapValueOp::Index => PhysicalMapOp::Index,
+            MapValueOp::Get => PhysicalMapOp::Get {
+                result: self.variant_id(&value.ty)?,
+            },
+            MapValueOp::ContainsKey => PhysicalMapOp::ContainsKey,
+            MapValueOp::Insert => PhysicalMapOp::Insert,
+            MapValueOp::Remove => {
+                let ResolvedTy::Tuple(fields) = &value.ty else {
+                    return Err(PhysicalError::new(
+                        "map removal lacks its receiver/value pair",
+                    ));
+                };
+                let optional = fields
+                    .get(1)
+                    .ok_or_else(|| PhysicalError::new("map removal lacks its optional value"))?;
+                PhysicalMapOp::Remove {
+                    result: self.aggregate_id(&value.ty)?,
+                    value: self.variant_id(optional)?,
+                }
+            }
+            MapValueOp::Clear => PhysicalMapOp::Clear,
+            MapValueOp::Keys => PhysicalMapOp::Keys,
+            MapValueOp::Values => PhysicalMapOp::Values,
+            MapValueOp::Entries => PhysicalMapOp::Entries {
+                result: self
+                    .glue_ids
+                    .vectors
+                    .get(&value.ty)
+                    .copied()
+                    .ok_or_else(|| PhysicalError::new("map entries lack their vector recipe"))?,
+            },
+        };
+        Ok(PhysicalRuntimeAction::Map { operation, glue })
+    }
+
+    fn set_action(
+        &self,
+        op: SetValueOp,
+        args: &[hew_sir::BoundaryOperand],
+        result: &CallResult,
+    ) -> Result<PhysicalRuntimeAction, PhysicalError> {
+        let CallResult::Value(value) = result else {
+            return Err(PhysicalError::new("set operation has no result value"));
+        };
+        let receiver = self.collection_receiver_type(args, value, op == SetValueOp::New)?;
+        let glue = self
+            .glue_ids
+            .sets
+            .get(receiver)
+            .copied()
+            .ok_or_else(|| PhysicalError::new("set receiver has no physical glue identity"))?;
+        let operation = match op {
+            SetValueOp::New => PhysicalSetOp::New,
+            SetValueOp::Len => PhysicalSetOp::Len,
+            SetValueOp::Contains => PhysicalSetOp::Contains,
+            SetValueOp::Insert => PhysicalSetOp::Insert {
+                result: self.aggregate_id(&value.ty)?,
+            },
+            SetValueOp::Remove => PhysicalSetOp::Remove {
+                result: self.aggregate_id(&value.ty)?,
+            },
+            SetValueOp::Clear => PhysicalSetOp::Clear,
+            SetValueOp::Elements => PhysicalSetOp::Elements,
+        };
+        Ok(PhysicalRuntimeAction::Set { operation, glue })
+    }
+
     fn runtime_action(
         &self,
         family: RuntimeCallFamily,
         args: &[hew_sir::BoundaryOperand],
         result: &CallResult,
     ) -> Result<PhysicalRuntimeAction, PhysicalError> {
+        match family {
+            RuntimeCallFamily::Map(op) => return self.map_action(op, args, result),
+            RuntimeCallFamily::Set(op) => return self.set_action(op, args, result),
+            _ => {}
+        }
         if let RuntimeCallFamily::Vector(op) = family {
             let CallResult::Value(value) = result else {
                 return Err(PhysicalError::new("vector operation has no result value"));
@@ -4120,8 +4302,17 @@ fn verify_terminator(
                     }
                 }
             }
-            if let PhysicalRuntimeAction::Vector { operation, glue } = *action {
-                verify_vector_call(module, operation, glue, &parameter_types, result_type)?;
+            match *action {
+                PhysicalRuntimeAction::Vector { operation, glue } => {
+                    verify_vector_call(module, operation, glue, &parameter_types, result_type)?;
+                }
+                PhysicalRuntimeAction::Map { operation, glue } => {
+                    verify_map_call(module, operation, glue, &parameter_types, result_type)?;
+                }
+                PhysicalRuntimeAction::Set { operation, glue } => {
+                    verify_set_call(module, operation, glue, &parameter_types, result_type)?;
+                }
+                _ => {}
             }
             match (contract.failures.is_empty(), failure) {
                 (true, None) | (false, Some(_)) => {}
@@ -4196,6 +4387,122 @@ fn verify_vector_call(
         | PhysicalVectorOp::Push
         | PhysicalVectorOp::Set
         | PhysicalVectorOp::Clear => {}
+    }
+    Ok(())
+}
+
+fn verify_optional_value(
+    module: &PhysicalModule,
+    id: PhysicalVariantId,
+    result: &ResolvedTy,
+    value: &PhysicalValueRecipe,
+) -> Result<(), PhysicalError> {
+    let option = variant_glue(module, id)?;
+    if &option.ty != result
+        || option.is_indirect
+        || option.variants.len() != 2
+        || option.variants[0].fields.as_slice() != [value.clone()]
+        || !option.variants[1].fields.is_empty()
+    {
+        return Err(PhysicalError::new(
+            "physical optional descriptor is not its exact Some(T)/None value",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_map_call(
+    module: &PhysicalModule,
+    operation: PhysicalMapOp,
+    id: PhysicalMapId,
+    arguments: &[ResolvedTy],
+    result: &ResolvedTy,
+) -> Result<(), PhysicalError> {
+    let glue = map_glue(module, id)?;
+    let receiver = if operation == PhysicalMapOp::New {
+        result
+    } else {
+        arguments
+            .first()
+            .ok_or_else(|| PhysicalError::new("map operation lacks its receiver"))?
+    };
+    if receiver != &glue.ty {
+        return Err(PhysicalError::new(
+            "physical map operation uses a foreign map descriptor",
+        ));
+    }
+    match operation {
+        PhysicalMapOp::Get { result: option } => {
+            verify_optional_value(module, option, result, &glue.value)?;
+        }
+        PhysicalMapOp::Remove {
+            result: pair,
+            value: option,
+        } => {
+            let pair = aggregate_glue(module, pair)?;
+            if &pair.ty != result || pair.fields.len() != 2 || pair.fields[0].ty != glue.ty {
+                return Err(PhysicalError::new(
+                    "map removal result is not its receiver/value pair",
+                ));
+            }
+            verify_optional_value(module, option, &pair.fields[1].ty, &glue.value)?;
+        }
+        PhysicalMapOp::Entries { result: vector } => {
+            let vector = vector_glue(module, vector)?;
+            if &vector.ty != result
+                || vector.element.ty
+                    != ResolvedTy::Tuple(vec![glue.key.ty.clone(), glue.value.ty.clone()])
+            {
+                return Err(PhysicalError::new(
+                    "map entries descriptor has the wrong key/value pair",
+                ));
+            }
+        }
+        PhysicalMapOp::New
+        | PhysicalMapOp::Len
+        | PhysicalMapOp::Index
+        | PhysicalMapOp::ContainsKey
+        | PhysicalMapOp::Insert
+        | PhysicalMapOp::Clear
+        | PhysicalMapOp::Keys
+        | PhysicalMapOp::Values => {}
+    }
+    Ok(())
+}
+
+fn verify_set_call(
+    module: &PhysicalModule,
+    operation: PhysicalSetOp,
+    id: PhysicalSetId,
+    arguments: &[ResolvedTy],
+    result: &ResolvedTy,
+) -> Result<(), PhysicalError> {
+    let glue = set_glue(module, id)?;
+    let receiver = if operation == PhysicalSetOp::New {
+        result
+    } else {
+        arguments
+            .first()
+            .ok_or_else(|| PhysicalError::new("set operation lacks its receiver"))?
+    };
+    if receiver != &glue.ty {
+        return Err(PhysicalError::new(
+            "physical set operation uses a foreign set descriptor",
+        ));
+    }
+    if let PhysicalSetOp::Insert { result: pair } | PhysicalSetOp::Remove { result: pair } =
+        operation
+    {
+        let pair = aggregate_glue(module, pair)?;
+        if &pair.ty != result
+            || pair.fields.len() != 2
+            || pair.fields[0].ty != glue.ty
+            || pair.fields[1].ty != ResolvedTy::Bool
+        {
+            return Err(PhysicalError::new(
+                "set update result is not its receiver/presence pair",
+            ));
+        }
     }
     Ok(())
 }

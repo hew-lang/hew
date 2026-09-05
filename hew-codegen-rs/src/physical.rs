@@ -10,7 +10,8 @@ use std::path::Path;
 
 use hew_mir::physical::{
     BlockId, CallableId, OwnKind, PhysicalAggregateDescriptor, PhysicalAggregateGlue,
-    PhysicalAggregateId, PhysicalTypeInventory, PhysicalVariantArm, PhysicalVariantDescriptor,
+    PhysicalAggregateId, PhysicalMapId, PhysicalMapOp, PhysicalSetId, PhysicalSetOp,
+    PhysicalTypeInventory, PhysicalValueRecipe, PhysicalVariantArm, PhysicalVariantDescriptor,
     PhysicalVariantGlue, PhysicalVariantId, PhysicalVariantLayout, PhysicalVectorGlue,
     PhysicalVectorId, PhysicalVectorOp, TrapKind,
 };
@@ -1077,7 +1078,19 @@ fn vector_descriptor_symbol(id: PhysicalVectorId) -> String {
     format!("__hew_vector_element_layout_{}", id.0)
 }
 
-fn vector_descriptor_type<'ctx>(
+fn map_key_descriptor_symbol(id: PhysicalMapId) -> String {
+    format!("__hew_map_key_{}", id.0)
+}
+
+fn map_value_descriptor_symbol(id: PhysicalMapId) -> String {
+    format!("__hew_map_value_{}", id.0)
+}
+
+fn set_key_descriptor_symbol(id: PhysicalSetId) -> String {
+    format!("__hew_set_key_{}", id.0)
+}
+
+fn value_descriptor_type<'ctx>(
     ctx: &'ctx Context,
     target: &TargetData,
 ) -> inkwell::types::StructType<'ctx> {
@@ -1129,7 +1142,7 @@ fn build_module<'ctx>(
         functions: BTreeMap::new(),
     };
     emitter.declare_functions()?;
-    emitter.emit_vector_descriptors()?;
+    emitter.emit_collection_value_descriptors()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;
     emitter
@@ -1140,54 +1153,74 @@ fn build_module<'ctx>(
 }
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
-    fn emit_vector_descriptors(&self) -> CodegenResult<()> {
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
-        let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let descriptor_ty = vector_descriptor_type(self.ctx, &target);
+    fn emit_collection_value_descriptors(&self) -> CodegenResult<()> {
         for glue in &self.module.vector_glue {
-            let layout = self.module.target.layout(&glue.element.ty).ok_or_else(|| {
-                CodegenError::FailClosed("vector element has no target layout".into())
-            })?;
-            let clone = match glue.element.clone {
-                Some(CloneAction::Bitwise) | None => pointer.const_null(),
-                Some(action) => self.emit_vector_clone_callback(glue, layout, action)?,
-            };
-            let drop = match glue.element.destroy {
-                None => pointer.const_null(),
-                Some(action) => self.emit_vector_drop_callback(glue, layout, action)?,
-            };
-            let ownership = if glue.element.own == OwnKind::None {
-                HewTypeOwnershipKind::Plain
-            } else {
-                HewTypeOwnershipKind::LayoutManaged
-            };
-            let value = descriptor_ty.const_named_struct(&[
-                size_ty.const_int(layout.size, false).into(),
-                size_ty.const_int(u64::from(layout.align), false).into(),
-                self.ctx.i8_type().const_int(ownership as u64, false).into(),
-                clone.into(),
-                drop.into(),
-            ]);
-            let global =
-                self.llvm
-                    .add_global(descriptor_ty, None, &vector_descriptor_symbol(glue.id));
-            global.set_linkage(Linkage::Internal);
-            global.set_constant(true);
-            global.set_initializer(&value);
+            self.emit_value_descriptor(&vector_descriptor_symbol(glue.id), &glue.element)?;
+        }
+        for glue in &self.module.map_glue {
+            self.emit_value_descriptor(&map_value_descriptor_symbol(glue.id), &glue.value)?;
         }
         Ok(())
     }
 
-    fn emit_vector_clone_callback(
+    fn emit_value_descriptor(&self, name: &str, recipe: &PhysicalValueRecipe) -> CodegenResult<()> {
+        let value = self.value_descriptor(name, recipe)?;
+        let global = self.llvm.add_global(value.get_type(), None, name);
+        global.set_linkage(Linkage::Internal);
+        global.set_constant(true);
+        global.set_initializer(&value);
+        Ok(())
+    }
+
+    /// All container slots use the same copy/drop ABI and value emitter.
+    fn value_descriptor(
         &self,
-        glue: &PhysicalVectorGlue,
+        name: &str,
+        recipe: &PhysicalValueRecipe,
+    ) -> CodegenResult<inkwell::values::StructValue<'ctx>> {
+        let target = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let descriptor_ty = value_descriptor_type(self.ctx, &target);
+        let layout =
+            self.module.target.layout(&recipe.ty).ok_or_else(|| {
+                CodegenError::FailClosed("value recipe has no target layout".into())
+            })?;
+        let clone = match recipe.clone {
+            Some(CloneAction::Bitwise) | None => pointer.const_null(),
+            Some(action) => {
+                self.emit_value_clone_callback(&format!("{name}_clone"), layout, action)?
+            }
+        };
+        let drop = match recipe.destroy {
+            None => pointer.const_null(),
+            Some(action) => {
+                self.emit_value_drop_callback(&format!("{name}_drop"), layout, action)?
+            }
+        };
+        let ownership = if recipe.own == OwnKind::None {
+            HewTypeOwnershipKind::Plain
+        } else {
+            HewTypeOwnershipKind::LayoutManaged
+        };
+        Ok(descriptor_ty.const_named_struct(&[
+            size_ty.const_int(layout.size, false).into(),
+            size_ty.const_int(u64::from(layout.align), false).into(),
+            self.ctx.i8_type().const_int(ownership as u64, false).into(),
+            clone.into(),
+            drop.into(),
+        ]))
+    }
+
+    fn emit_value_clone_callback(
+        &self,
+        name: &str,
         layout: &PhysicalLayout,
         action: CloneAction,
     ) -> CodegenResult<PointerValue<'ctx>> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let function = self.llvm.add_function(
-            &format!("__hew_vector_element_clone_{}", glue.id.0),
+            name,
             self.ctx
                 .i32_type()
                 .fn_type(&[pointer.into(), pointer.into()], false),
@@ -1220,26 +1253,26 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .into_pointer_value();
         let original = builder
             .build_load(llvm_type(self.ctx, &layout.repr)?, source, "element.source")
-            .llvm_ctx("load borrowed vector element")?;
+            .llvm_ctx("load borrowed value")?;
         let cloned = emitter.clone_loaded_value(original, layout, action)?;
         builder
             .build_store(destination, cloned)
-            .llvm_ctx("initialize copied vector element")?;
+            .llvm_ctx("initialize copied value")?;
         builder
             .build_return(Some(&self.ctx.i32_type().const_zero()))
             .llvm_ctx("finish element clone")?;
         Ok(function.as_global_value().as_pointer_value())
     }
 
-    fn emit_vector_drop_callback(
+    fn emit_value_drop_callback(
         &self,
-        glue: &PhysicalVectorGlue,
+        name: &str,
         layout: &PhysicalLayout,
         action: DestroyAction,
     ) -> CodegenResult<PointerValue<'ctx>> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let function = self.llvm.add_function(
-            &format!("__hew_vector_element_drop_{}", glue.id.0),
+            name,
             self.ctx.void_type().fn_type(&[pointer.into()], false),
             Some(Linkage::Internal),
         );
@@ -1264,7 +1297,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .into_pointer_value();
         let value = builder
             .build_load(llvm_type(self.ctx, &layout.repr)?, source, "element.owner")
-            .llvm_ctx("load owned vector element")?;
+            .llvm_ctx("load owned value")?;
         emitter.destroy_loaded_value(value, layout, action)?;
         // Destruction releases the value's children. The caller owns the slot.
         builder
@@ -2609,6 +2642,18 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         match action {
+            PhysicalRuntimeAction::Map { operation, glue } => {
+                return self.emit_map_call(
+                    (operation, glue),
+                    transfers,
+                    result()?,
+                    normal,
+                    failure,
+                );
+            }
+            PhysicalRuntimeAction::Set { operation, glue } => {
+                return self.emit_set_call((operation, glue), transfers, result()?, normal);
+            }
             PhysicalRuntimeAction::Vector { operation, glue } => {
                 return self.emit_vector_call(
                     (operation, glue),
@@ -3082,6 +3127,395 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .into_struct_value();
                 self.clear_owned(receiver)?;
                 self.store(result, pair.into())?;
+            }
+        }
+        self.emit_edge(normal)
+    }
+
+    fn descriptor_pointer(&self, symbol: &str) -> CodegenResult<PointerValue<'ctx>> {
+        self.llvm
+            .get_global(symbol)
+            .map(|global| global.as_pointer_value())
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "collection descriptor `{symbol}` was not emitted"
+                ))
+            })
+    }
+
+    fn store_receiver_pair(
+        &self,
+        result: StorageId,
+        receiver: StorageId,
+        value: BasicValueEnum<'ctx>,
+    ) -> CodegenResult<()> {
+        let pair_ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?.into_struct_type();
+        let pair = self
+            .builder
+            .build_insert_value(
+                pair_ty.const_zero(),
+                self.load(receiver, "collection.updated")?,
+                0,
+                "collection.pair.receiver",
+            )
+            .llvm_ctx("construct updated collection result")?
+            .into_struct_value();
+        let pair = self
+            .builder
+            .build_insert_value(pair, value, 1, "collection.pair.value")
+            .llvm_ctx("construct collection value result")?
+            .into_struct_value();
+        self.clear_owned(receiver)?;
+        self.store(result, pair.into())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "map actions execute their exact runtime and storage contracts"
+    )]
+    fn emit_map_call(
+        &self,
+        action: (PhysicalMapOp, PhysicalMapId),
+        transfers: &[ArgumentTransfer],
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        let (operation, glue) = action;
+        let source = |index: usize| {
+            transfers.get(index).map(argument_source).ok_or_else(|| {
+                CodegenError::FailClosed(format!("map action lacks argument {index}"))
+            })
+        };
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        if operation == PhysicalMapOp::New {
+            let key = self.descriptor_pointer(&map_key_descriptor_symbol(glue))?;
+            let value = self.descriptor_pointer(&map_value_descriptor_symbol(glue))?;
+            let function = get_or_declare_external(
+                self.llvm,
+                "hew_hashmap_new_with_layout",
+                pointer.fn_type(&[pointer.into(), pointer.into()], false),
+            )?;
+            let map = self.runtime_call_value(function, &[key.into(), value.into()], "map.new")?;
+            self.store(result, map)?;
+            return self.emit_edge(normal);
+        }
+        let receiver = source(0)?;
+        let map = self.load(receiver, "map.receiver")?;
+        match operation {
+            PhysicalMapOp::New => unreachable!("constructor already emitted"),
+            PhysicalMapOp::Get { .. } | PhysicalMapOp::Index | PhysicalMapOp::Remove { .. } => {
+                return self.emit_map_lookup(
+                    action,
+                    (receiver, source(1)?),
+                    result,
+                    normal,
+                    failure,
+                );
+            }
+            PhysicalMapOp::Len => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_hashmap_len_layout",
+                    self.ctx.i64_type().fn_type(&[pointer.into()], false),
+                )?;
+                let len = self.runtime_call_value(function, &[map.into()], "map.length")?;
+                self.store(result, len)?;
+            }
+            PhysicalMapOp::ContainsKey => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_hashmap_contains_key_layout",
+                    self.ctx
+                        .bool_type()
+                        .fn_type(&[pointer.into(), pointer.into()], false),
+                )?;
+                let contains = self
+                    .runtime_call_value(
+                        function,
+                        &[map.into(), self.slots[source(1)?.0 as usize].into()],
+                        "map.contains",
+                    )?
+                    .into_int_value();
+                let contains = self
+                    .builder
+                    .build_int_z_extend(contains, self.ctx.i8_type(), "map.contains.value")
+                    .llvm_ctx("normalize map presence")?;
+                self.store(result, contains.into())?;
+            }
+            PhysicalMapOp::Insert | PhysicalMapOp::Clear => {
+                if operation == PhysicalMapOp::Insert {
+                    let function = get_or_declare_external(
+                        self.llvm,
+                        "hew_hashmap_insert_clone_layout",
+                        self.ctx
+                            .bool_type()
+                            .fn_type(&[pointer.into(), pointer.into(), pointer.into()], false),
+                    )?;
+                    self.runtime_call_value(
+                        function,
+                        &[
+                            map.into(),
+                            self.slots[source(1)?.0 as usize].into(),
+                            self.slots[source(2)?.0 as usize].into(),
+                        ],
+                        "map.insert",
+                    )?;
+                } else {
+                    let function = external_drop(self.ctx, self.llvm, "hew_hashmap_clear_layout")?;
+                    self.runtime_call_void(function, &[map.into()], "map.clear")?;
+                }
+                self.clear_owned(receiver)?;
+                self.store(result, map)?;
+            }
+            PhysicalMapOp::Keys | PhysicalMapOp::Values => {
+                let symbol = if operation == PhysicalMapOp::Keys {
+                    "hew_hashmap_keys_layout"
+                } else {
+                    "hew_hashmap_values_layout"
+                };
+                let function = external_unary_ptr(self.ctx, self.llvm, symbol)?;
+                let vector = self.runtime_call_value(function, &[map.into()], "map.projection")?;
+                self.store(result, vector)?;
+            }
+            PhysicalMapOp::Entries { result: vector } => {
+                let values = self.value_emitter();
+                let recipe = &values.vector_glue(vector)?.element;
+                let layout = self.module.target.layout(&recipe.ty).ok_or_else(|| {
+                    CodegenError::FailClosed("map entry has no target layout".into())
+                })?;
+                let pair_ty = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+                let target = TargetData::create(&self.module.target.data_layout);
+                let offset = target.offset_of_element(&pair_ty, 1).ok_or_else(|| {
+                    CodegenError::FailClosed("map entry has no value offset".into())
+                })?;
+                let descriptor = self.descriptor_pointer(&vector_descriptor_symbol(vector))?;
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_hashmap_entries_layout",
+                    pointer.fn_type(
+                        &[pointer.into(), pointer.into(), self.ctx.i64_type().into()],
+                        false,
+                    ),
+                )?;
+                let entries = self.runtime_call_value(
+                    function,
+                    &[
+                        map.into(),
+                        descriptor.into(),
+                        self.ctx.i64_type().const_int(offset, false).into(),
+                    ],
+                    "map.entries",
+                )?;
+                self.store(result, entries)?;
+            }
+        }
+        self.emit_edge(normal)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lookup and removal share presence-sensitive output initialization"
+    )]
+    fn emit_map_lookup(
+        &self,
+        action: (PhysicalMapOp, PhysicalMapId),
+        inputs: (StorageId, StorageId),
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        let (operation, id) = action;
+        let (receiver, key) = inputs;
+        let glue = self
+            .module
+            .map_glue
+            .get(id.0 as usize)
+            .filter(|glue| glue.id == id)
+            .ok_or_else(|| CodegenError::FailClosed("unknown map descriptor".into()))?;
+        let layout = self
+            .module
+            .target
+            .layout(&glue.value.ty)
+            .ok_or_else(|| CodegenError::FailClosed("map value has no target layout".into()))?;
+        let value_ty = llvm_type(self.ctx, &layout.repr)?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let values = self.value_emitter();
+        let output = if operation == PhysicalMapOp::Index {
+            self.slots[result.0 as usize]
+        } else {
+            values.entry_scratch(value_ty, "map.lookup.value")?
+        };
+        let option = match operation {
+            PhysicalMapOp::Get { result: option } | PhysicalMapOp::Remove { value: option, .. } => {
+                Some(option)
+            }
+            PhysicalMapOp::Index => None,
+            _ => return Err(CodegenError::FailClosed("non-lookup map action".into())),
+        };
+        let option_slot = if let Some(option) = option {
+            let layout = &values
+                .variant_layout(&values.variant_glue(option)?.ty)?
+                .object;
+            Some(values.entry_scratch(llvm_type(self.ctx, &layout.repr)?, "map.optional.value")?)
+        } else {
+            None
+        };
+        let symbol = if matches!(operation, PhysicalMapOp::Remove { .. }) {
+            "hew_hashmap_remove_take_layout"
+        } else {
+            "hew_hashmap_get_clone_layout"
+        };
+        let function = get_or_declare_external(
+            self.llvm,
+            symbol,
+            self.ctx
+                .bool_type()
+                .fn_type(&[pointer.into(), pointer.into(), pointer.into()], false),
+        )?;
+        let found = self
+            .runtime_call_value(
+                function,
+                &[
+                    self.load(receiver, "map.lookup.receiver")?.into(),
+                    self.slots[key.0 as usize].into(),
+                    output.into(),
+                ],
+                "map.lookup.found",
+            )?
+            .into_int_value();
+        let present = self
+            .ctx
+            .append_basic_block(self.value, "map.lookup.present");
+        let absent = self.ctx.append_basic_block(self.value, "map.lookup.absent");
+        let complete = self
+            .ctx
+            .append_basic_block(self.value, "map.lookup.complete");
+        self.builder
+            .build_conditional_branch(found, present, absent)
+            .llvm_ctx("select map lookup outcome")?;
+        self.builder.position_at_end(absent);
+        if let (Some(option), Some(slot)) = (option, option_slot) {
+            self.write_variant_value(slot, 1, &[], option)?;
+            self.builder
+                .build_unconditional_branch(complete)
+                .llvm_ctx("finish absent map value")?;
+        } else {
+            self.emit_edge(failure.ok_or_else(|| {
+                CodegenError::FailClosed("map index lacks its failure cleanup".into())
+            })?)?;
+        }
+        self.builder.position_at_end(present);
+        if let (Some(option), Some(slot)) = (option, option_slot) {
+            let value = self
+                .builder
+                .build_load(value_ty, output, "map.lookup.owner")
+                .llvm_ctx("load independent map value")?;
+            self.write_variant_value(slot, 0, &[value], option)?;
+        }
+        self.builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("finish present map value")?;
+        self.builder.position_at_end(complete);
+        if let (Some(option), Some(slot)) = (option, option_slot) {
+            let layout = &values
+                .variant_layout(&values.variant_glue(option)?.ty)?
+                .object;
+            let value = self
+                .builder
+                .build_load(
+                    llvm_type(self.ctx, &layout.repr)?,
+                    slot,
+                    "map.optional.owner",
+                )
+                .llvm_ctx("load initialized optional map value")?;
+            if matches!(operation, PhysicalMapOp::Remove { .. }) {
+                self.store_receiver_pair(result, receiver, value)?;
+            } else {
+                self.store(result, value)?;
+            }
+        }
+        self.emit_edge(normal)
+    }
+
+    fn emit_set_call(
+        &self,
+        action: (PhysicalSetOp, PhysicalSetId),
+        transfers: &[ArgumentTransfer],
+        result: StorageId,
+        normal: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let (operation, glue) = action;
+        let source = |index: usize| {
+            transfers.get(index).map(argument_source).ok_or_else(|| {
+                CodegenError::FailClosed(format!("set action lacks argument {index}"))
+            })
+        };
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        if operation == PhysicalSetOp::New {
+            let descriptor = self.descriptor_pointer(&set_key_descriptor_symbol(glue))?;
+            let function = external_unary_ptr(self.ctx, self.llvm, "hew_hashset_new_with_layout")?;
+            let set = self.runtime_call_value(function, &[descriptor.into()], "set.new")?;
+            self.store(result, set)?;
+            return self.emit_edge(normal);
+        }
+        let receiver = source(0)?;
+        let set = self.load(receiver, "set.receiver")?;
+        match operation {
+            PhysicalSetOp::New => unreachable!("constructor already emitted"),
+            PhysicalSetOp::Len => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_hashset_len_layout",
+                    self.ctx.i64_type().fn_type(&[pointer.into()], false),
+                )?;
+                let len = self.runtime_call_value(function, &[set.into()], "set.length")?;
+                self.store(result, len)?;
+            }
+            PhysicalSetOp::Contains
+            | PhysicalSetOp::Insert { .. }
+            | PhysicalSetOp::Remove { .. } => {
+                let symbol = match operation {
+                    PhysicalSetOp::Contains => "hew_hashset_contains_layout",
+                    PhysicalSetOp::Insert { .. } => "hew_hashset_insert_clone_layout",
+                    PhysicalSetOp::Remove { .. } => "hew_hashset_remove_layout",
+                    _ => unreachable!("matched membership operation"),
+                };
+                let function = get_or_declare_external(
+                    self.llvm,
+                    symbol,
+                    self.ctx
+                        .bool_type()
+                        .fn_type(&[pointer.into(), pointer.into()], false),
+                )?;
+                let present = self
+                    .runtime_call_value(
+                        function,
+                        &[set.into(), self.slots[source(1)?.0 as usize].into()],
+                        "set.presence",
+                    )?
+                    .into_int_value();
+                let present = self
+                    .builder
+                    .build_int_z_extend(present, self.ctx.i8_type(), "set.presence.value")
+                    .llvm_ctx("normalize set presence")?;
+                if operation == PhysicalSetOp::Contains {
+                    self.store(result, present.into())?;
+                } else {
+                    self.store_receiver_pair(result, receiver, present.into())?;
+                }
+            }
+            PhysicalSetOp::Clear => {
+                let function = external_drop(self.ctx, self.llvm, "hew_hashset_clear_layout")?;
+                self.runtime_call_void(function, &[set.into()], "set.clear")?;
+                self.clear_owned(receiver)?;
+                self.store(result, set)?;
+            }
+            PhysicalSetOp::Elements => {
+                let function =
+                    external_unary_ptr(self.ctx, self.llvm, "hew_hashset_to_vec_layout")?;
+                let vector = self.runtime_call_value(function, &[set.into()], "set.elements")?;
+                self.store(result, vector)?;
             }
         }
         self.emit_edge(normal)
@@ -3814,7 +4248,7 @@ mod tests {
         let physical = physical_target_for_triple(&triple).unwrap();
         let target = TargetData::create(&physical.data_layout);
         let ctx = Context::create();
-        let descriptor = vector_descriptor_type(&ctx, &target);
+        let descriptor = value_descriptor_type(&ctx, &target);
         assert_eq!(
             target.get_abi_size(&descriptor),
             size_of::<HewValueLayout>() as u64
@@ -3877,6 +4311,221 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Exercise the physical runtime boundary with a collection supplied by a
+    /// caller. Construction's key-capability demand is tested at its producer.
+    fn collection_operation_module(family: hew_types::RuntimeCallFamily) -> SemModule {
+        use hew_types::{BuiltinType, RuntimeArgumentEffect, TypeFactContext, TypeFactService};
+        let kind = match family {
+            hew_types::RuntimeCallFamily::Map(_) => BuiltinType::HashMap,
+            hew_types::RuntimeCallFamily::Set(_) => BuiltinType::HashSet,
+            _ => panic!("fixture requires a map or set operation"),
+        };
+        let mut arguments = vec![ResolvedTy::String];
+        if kind == BuiltinType::HashMap {
+            arguments.push(ResolvedTy::named_builtin(
+                "Vec",
+                BuiltinType::Vec,
+                vec![ResolvedTy::String],
+            ));
+        }
+        let receiver = ResolvedTy::named_builtin(kind.canonical_name(), kind, arguments);
+        let contract = family.semantic_contract().unwrap();
+        let params = contract
+            .arguments
+            .iter()
+            .map(|argument| argument.ty.resolve(Some(&receiver)).unwrap())
+            .collect::<Vec<_>>();
+        let result_ty = contract
+            .instantiate(&params, &ResolvedTy::Unit)
+            .unwrap()
+            .result_ty;
+        let mut module = scalar_entry_module();
+        module.entry_callable = None;
+        module.entry_exit_plan = None;
+        if matches!(
+            family,
+            hew_types::RuntimeCallFamily::Map(
+                hew_types::runtime_call::MapValueOp::Get
+                    | hew_types::runtime_call::MapValueOp::Remove
+            )
+        ) {
+            let seed = lower_source(
+                r#"fn main() -> i64 {
+                let nested = [["value"]];
+                let optional = nested.get(0);
+                return 0;
+            }"#,
+            );
+            module.variant_shapes = seed.variant_shapes;
+        }
+        let mut facts = TypeFactService::new(TypeFactContext::default(), module.type_facts);
+        facts.require(&result_ty).unwrap();
+        let mut copies = Vec::new();
+        let mut operands = Vec::new();
+        let count = u32::try_from(params.len()).unwrap();
+        let signature = &mut module.callables[0].signature;
+        signature.params.clear();
+        signature.return_ty = result_ty.clone();
+        let function = &mut module.functions[0];
+        function.params.clear();
+        function.return_ty = result_ty.clone();
+        for (index, (ty, contract)) in params.iter().zip(contract.arguments).enumerate() {
+            let index = u32::try_from(index).unwrap();
+            let own = OwnKind::of_class(facts.require(ty).unwrap().class);
+            let borrowed = own == OwnKind::Owned;
+            signature.params.push(hew_sir::SemAbiParam {
+                ty: ty.clone(),
+                passing: if borrowed {
+                    hew_sir::SemParamPassing::Borrow
+                } else {
+                    hew_sir::SemParamPassing::ReadOnly
+                },
+                caller_visible_projection: false,
+            });
+            function.params.push(BlockArg {
+                value: ValueId(index),
+                ty: ty.clone(),
+                own: if borrowed { OwnKind::Guaranteed } else { own },
+            });
+            let (value, decision) = match contract.effect {
+                RuntimeArgumentEffect::Borrow => (ValueId(index), BoundaryDecision::Borrow),
+                RuntimeArgumentEffect::Copy => (ValueId(index), BoundaryDecision::Copy),
+                RuntimeArgumentEffect::Move => {
+                    let value = ValueId(count + index);
+                    copies.push(SemOp {
+                        id: hew_sir::OpId(index),
+                        results: vec![ValueDef {
+                            id: value,
+                            ty: ty.clone(),
+                            own,
+                        }],
+                        kind: SemOpKind::CopyValue {
+                            source: Operand {
+                                value: ValueId(index),
+                            },
+                        },
+                        provenance: Provenance::Synthesized,
+                    });
+                    (value, BoundaryDecision::Move)
+                }
+            };
+            operands.push(BoundaryOperand {
+                operand: Operand { value },
+                decision,
+            });
+        }
+        let own = OwnKind::of_class(facts.require(&result_ty).unwrap().class);
+        let raw = ValueId(2 * count);
+        let value = ValueId(2 * count + 1);
+        let unwind = if contract.failures.is_empty() {
+            hew_sir::CallUnwind::NotApplicable
+        } else {
+            hew_sir::CallUnwind::Cleanup(Edge {
+                target: BlockId(2),
+                args: vec![],
+            })
+        };
+        function.blocks = vec![
+            SemBlock {
+                id: BlockId(0),
+                args: vec![],
+                ops: copies,
+                terminator: SemTerminator::RtCall {
+                    id: hew_sir::OpId(count),
+                    family,
+                    args: operands,
+                    result: hew_sir::CallResult::Value(ValueDef {
+                        id: raw,
+                        ty: result_ty.clone(),
+                        own,
+                    }),
+                    normal: Edge {
+                        target: BlockId(1),
+                        args: vec![Operand { value: raw }],
+                    },
+                    unwind,
+                },
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: vec![BlockArg {
+                    value,
+                    ty: result_ty,
+                    own,
+                }],
+                ops: vec![],
+                terminator: SemTerminator::Return {
+                    value: Some(BoundaryOperand {
+                        operand: Operand { value },
+                        decision: BoundaryDecision::Move,
+                    }),
+                },
+            },
+        ];
+        if let Some(failure) = contract.failures.first() {
+            function.blocks.push(SemBlock {
+                id: BlockId(2),
+                args: vec![],
+                ops: vec![],
+                terminator: SemTerminator::Trap {
+                    kind: hew_sir::runtime_failure_trap_kind(*failure),
+                },
+            });
+        }
+        module.type_facts = facts.into_rows();
+        module
+    }
+
+    #[test]
+    fn collection_operations_emit_verified_runtime_abi_and_owner_transfers() {
+        use hew_types::runtime_call::{MapValueOp as Map, SetValueOp as Set};
+        use hew_types::RuntimeCallFamily;
+        let families = [
+            Map::Len,
+            Map::Index,
+            Map::Get,
+            Map::Remove,
+            Map::ContainsKey,
+            Map::Insert,
+            Map::Clear,
+            Map::Keys,
+            Map::Values,
+            Map::Entries,
+        ]
+        .into_iter()
+        .map(RuntimeCallFamily::Map)
+        .chain(
+            [
+                Set::Len,
+                Set::Contains,
+                Set::Insert,
+                Set::Remove,
+                Set::Clear,
+                Set::Elements,
+            ]
+            .into_iter()
+            .map(RuntimeCallFamily::Set),
+        );
+        for family in families {
+            let semantic = collection_operation_module(family);
+            let triple = native_emission_triple();
+            let target = physical_target_for_inventory(
+                &triple,
+                &hew_mir::physical::physical_type_inventory(&semantic),
+            )
+            .unwrap();
+            let physical = hew_mir::lower_physical_module(&semantic, target)
+                .unwrap_or_else(|error| panic!("{family:?}: {error}"));
+            let context = Context::create();
+            let machine =
+                crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0)
+                    .unwrap();
+            let module = build_module(&context, physical.module(), "collection_boundary", &machine)
+                .unwrap_or_else(|error| panic!("{family:?}: {error}"));
+            module.verify().unwrap();
         }
     }
 

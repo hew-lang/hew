@@ -749,3 +749,39 @@ timeout_seconds = 15
 stdout = ""
 stderr = "hew: failure: DivideByZero (202)\n"
 exit = 202
+
+[[case]]
+id = "collection-field-mutations"
+intent = "Generic methods and nested collection fields preserve sibling ownership, receiver-reading arguments and independent copies across mutations."
+source = "cases/collection-field-mutations.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nSECOND\ntrue\ntrue\nSIBLING\nORIGINAL\nSIBLING\n1\n0\n0\n0\n"
+stderr = ""
+exit = 0
+
+[[case]]
+id = "collection-field-callback-fault"
+intent = "A callback fault during nested field mutation releases retained siblings, the consumed collection and caller-owned copies."
+source = "cases/collection-field-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "map-zero-sized-keys"
+intent = "Empty record keys preserve map replacement, copy independence and owning projections, including empty entry pairs and set snapshots."
+source = "cases/map-zero-sized-keys.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nREPLACEMENT\nFIRST\n1\ntrue\nfalse\ntrue\ntrue\n1\n"
+stderr = ""
+exit = 0

@@ -723,3 +723,13 @@ fn borrowed_collection_reads_do_not_demand_key_callbacks() {
     assert!(lowered.module.value_capabilities.is_empty());
     assert!(verify_module(&lowered.module).is_empty());
 }
+
+#[test]
+fn zero_sized_keys_and_empty_entry_pairs_share_collection_contracts() {
+    let module = lower_source(include_str!(
+        "../../tests/core-acceptance/cases/map-zero-sized-keys.hew"
+    ));
+    let families = operation_families(&module);
+    assert!(families.contains(&RuntimeCallFamily::Map(MapValueOp::Entries)));
+    assert!(families.contains(&RuntimeCallFamily::Set(SetValueOp::Elements)));
+}

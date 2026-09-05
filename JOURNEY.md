@@ -1272,3 +1272,17 @@ with integration.
 Scoped runtime/CABI JSON Clippy and Rust formatting pass after using explicit
 raw descriptor pointers in the new fixtures. The final focused unit and FFI
 boundary tests pass on the formatted source.
+
+## Collection place and empty-key acceptance
+
+Added permanent native and sanitizer cases for generic method mutation through a
+record field, nested Vec/Map/Set updates with retained owning siblings and copied
+parents, and a nested map callback failure. The checker accepts these programs;
+SIR currently rejects field receivers at its local-binding-only move requirement.
+These cases remain pending the shared receiver-place lowering implementation.
+
+Added an empty-record-key case covering map replacement, copy independence,
+projections after clear, a zero-sized entry pair and set snapshots. The source
+passes semantic checking; native and sanitizer execution are in progress after
+the runtime layout fix. The SIR regression requires the normal collection
+operation contracts for the same source.

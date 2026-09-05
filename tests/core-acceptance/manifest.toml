@@ -3,6 +3,79 @@
 # failures are failures, not a differential pass.
 
 [[case]]
+id = "owned-enum-loop"
+intent = "Repeated enum copies and matches release each iteration's owners without accumulating dynamic stack scratch space."
+source = "cases/owned-enum-loop.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "500000\n"
+exit = 0
+
+[[case]]
+id = "variant-payload-layout"
+intent = "Variant payloads with different sizes and alignment preserve full-width integers and owned fields across copies."
+source = "cases/variant-payload-layout.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "4294967297:WIDE/4294967297:WIDE/small:1/empty\n"
+exit = 0
+
+[[case]]
+id = "scalar-option-call"
+intent = "Scalar records and optional payloads retain values across repeated calls without owning-value glue."
+source = "cases/scalar-option-call.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "5:5:0:5\n"
+exit = 0
+
+[[case]]
+id = "owned-enum-fault"
+intent = "A callee fault releases extracted enum data and the caller's retained enum without continuing."
+source = "cases/owned-enum-fault.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "owned-enum-call"
+intent = "Returning and repeatedly matching an owning enum preserves the caller payload and selects its empty variant correctly."
+source = "cases/owned-enum-call.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "PAYLOAD:PAYLOAD:empty\n"
+exit = 0
+
+[[case]]
+id = "owned-result-call"
+intent = "Both Result variants return their owning payload while repeated ordinary calls preserve the original value."
+source = "cases/owned-result-call.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "ACCEPTED:ACCEPTED:REJECTED\n"
+exit = 0
+
+[[case]]
 id = "owned-call-return"
 intent = "A by-value ordinary call preserves the caller value and returns an independent logical value."
 source = "cases/owned-call-return.hew"

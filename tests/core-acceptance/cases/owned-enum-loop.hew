@@ -1,0 +1,17 @@
+enum Choice { Text(string); Empty }
+
+fn main() -> i64 {
+    let original = Choice.Text("payload".to_upper());
+    var count = 0;
+    while count < 500000 {
+        let copied = original;
+        let text = match copied {
+            .Text(value) => value,
+            .Empty => "empty",
+        };
+        if text.len() != 7 { return 1; }
+        count += 1;
+    }
+    println(f"{count}");
+    0
+}

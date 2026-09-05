@@ -313,3 +313,13 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   enums such as `Point` and `Option<i64>`. Their operations have no owner glue,
   but retain exact shapes and field recipes instead of bypassing the semantic
   contract based on a scalar-only representation.
+- Native enum storage now uses a target-measured tag and aligned payload area.
+  Construction, consuming switches and recursive copy/drop execute the exact
+  active variant's recipes; invalid tags terminate without touching payloads.
+- Fixed-size scratch storage belongs in the callable prologue. Keeping it at
+  a clone or drop site would accumulate stack space when that site runs in a
+  loop, even with balanced heap ownership. The LLVM regression rejects that
+  placement, and repeated native enum copies exercise the bounded lifetime.
+- Native and paired generated/runtime sanitizer cases cover owned and scalar
+  payloads, variant-size differences, repeated calls, and callee faults while
+  the caller retains an enum owner.

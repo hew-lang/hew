@@ -1,0 +1,19 @@
+enum Choice { Text(string); Empty }
+
+fn choose(value: Choice) -> string {
+    match value {
+        .Text(text) => text,
+        .Empty => "empty",
+    }
+}
+
+fn make() -> Choice { Choice.Text("payload".to_upper()) }
+
+fn main() -> i64 {
+    let original = make();
+    let first = choose(original);
+    let second = choose(original);
+    let empty = choose(Choice.Empty);
+    println(f"{first}:{second}:{empty}");
+    0
+}

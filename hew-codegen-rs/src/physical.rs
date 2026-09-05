@@ -10,7 +10,8 @@ use std::path::Path;
 
 use hew_mir::physical::{
     BlockId, CallableId, OwnKind, PhysicalAggregateDescriptor, PhysicalAggregateGlue,
-    PhysicalAggregateId, PhysicalTypeInventory, TrapKind,
+    PhysicalAggregateId, PhysicalTypeInventory, PhysicalVariantArm, PhysicalVariantDescriptor,
+    PhysicalVariantGlue, PhysicalVariantId, PhysicalVariantLayout, TrapKind,
 };
 use hew_mir::{
     ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier, PhysicalBlock, PhysicalCallable,
@@ -30,7 +31,7 @@ use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::{FileType, TargetData, TargetMachine};
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, FunctionType};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
 };
@@ -77,7 +78,7 @@ pub fn physical_target_for_types<'a>(
     triple: &str,
     types: impl IntoIterator<Item = &'a ResolvedTy>,
 ) -> Result<PhysicalTarget, CodegenError> {
-    physical_target_for_parts(triple, types, std::iter::empty())
+    physical_target_for_parts(triple, types, std::iter::empty(), std::iter::empty())
 }
 
 /// Resolve the exact target layouts for one demanded physical type inventory.
@@ -90,13 +91,19 @@ pub fn physical_target_for_inventory(
     triple: &str,
     inventory: &PhysicalTypeInventory,
 ) -> Result<PhysicalTarget, CodegenError> {
-    physical_target_for_parts(triple, inventory.types(), inventory.aggregates())
+    physical_target_for_parts(
+        triple,
+        inventory.types(),
+        inventory.aggregates(),
+        inventory.variants(),
+    )
 }
 
 fn physical_target_for_parts<'a>(
     triple: &str,
     types: impl IntoIterator<Item = &'a ResolvedTy>,
     aggregates: impl IntoIterator<Item = &'a PhysicalAggregateDescriptor>,
+    variants: impl IntoIterator<Item = &'a PhysicalVariantDescriptor>,
 ) -> Result<PhysicalTarget, CodegenError> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, OptLevel::O0)?;
     let data = machine.get_target_data();
@@ -111,6 +118,10 @@ fn physical_target_for_parts<'a>(
         .into_iter()
         .map(|aggregate| (aggregate.ty.clone(), aggregate.fields.clone()))
         .collect::<BTreeMap<_, _>>();
+    let variant_shapes = variants
+        .into_iter()
+        .map(|variant| (variant.ty.clone(), variant.clone()))
+        .collect::<BTreeMap<_, _>>();
     let mut visiting = BTreeSet::new();
     for ty in primitive_types() {
         realize_layout(
@@ -119,6 +130,7 @@ fn physical_target_for_parts<'a>(
             &mut target,
             &ty,
             &aggregate_fields,
+            &variant_shapes,
             &mut visiting,
         )?;
     }
@@ -129,6 +141,7 @@ fn physical_target_for_parts<'a>(
             &mut target,
             ty,
             &aggregate_fields,
+            &variant_shapes,
             &mut visiting,
         )?;
     }
@@ -141,6 +154,7 @@ fn realize_layout(
     target: &mut PhysicalTarget,
     ty: &ResolvedTy,
     aggregate_fields: &BTreeMap<ResolvedTy, Vec<ResolvedTy>>,
+    variant_shapes: &BTreeMap<ResolvedTy, PhysicalVariantDescriptor>,
     visiting: &mut BTreeSet<ResolvedTy>,
 ) -> CodegenResult<()> {
     if target.layout(ty).is_some() {
@@ -152,6 +166,114 @@ fn realize_layout(
             ty.user_facing()
         )));
     }
+    if let Some(shape) = variant_shapes.get(ty) {
+        if shape.is_indirect {
+            return Err(CodegenError::FailClosed(format!(
+                "physical indirect enum `{}` is not yet admitted",
+                ty.user_facing()
+            )));
+        }
+        if shape.variants.is_empty() {
+            return Err(CodegenError::FailClosed(format!(
+                "physical variant `{}` has no declaration-order cases",
+                ty.user_facing()
+            )));
+        }
+        let mut variant_layouts = Vec::with_capacity(shape.variants.len());
+        for fields in &shape.variants {
+            let mut layouts = Vec::with_capacity(fields.len());
+            for field in fields {
+                realize_layout(
+                    ctx,
+                    data,
+                    target,
+                    field,
+                    aggregate_fields,
+                    variant_shapes,
+                    visiting,
+                )?;
+                layouts.push(target.layout(field).cloned().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "physical target did not realize variant field `{}`",
+                        field.user_facing()
+                    ))
+                })?);
+            }
+            let repr = PhysicalRepr::Struct(layouts);
+            let (size, align) = measure_layout(data, llvm_type(ctx, &repr)?);
+            variant_layouts.push(PhysicalLayout { size, align, repr });
+        }
+        let payload_size = variant_layouts
+            .iter()
+            .map(|layout| layout.size)
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        let payload_align = variant_layouts
+            .iter()
+            .map(|layout| layout.align)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let payload_bits = u16::try_from(payload_align.checked_mul(8).ok_or_else(|| {
+            CodegenError::FailClosed("physical variant payload alignment overflow".into())
+        })?)
+        .map_err(|_| {
+            CodegenError::FailClosed("physical variant payload alignment exceeds u16".into())
+        })?;
+        let payload_element = integer_layout(ctx, data, payload_bits)?;
+        if payload_element.size != u64::from(payload_align)
+            || payload_element.align != payload_align
+        {
+            return Err(CodegenError::FailClosed(format!(
+                "target cannot realize variant payload alignment {payload_align} with an exact integer carrier"
+            )));
+        }
+        let payload_len =
+            u32::try_from(payload_size.div_ceil(u64::from(payload_align))).map_err(|_| {
+                CodegenError::FailClosed("physical variant payload exceeds u32 elements".into())
+            })?;
+        let payload_repr = PhysicalRepr::Array {
+            element: Box::new(payload_element),
+            len: payload_len,
+        };
+        let (realized_payload_size, realized_payload_align) =
+            measure_layout(data, llvm_type(ctx, &payload_repr)?);
+        if realized_payload_size < payload_size || realized_payload_align != payload_align {
+            return Err(CodegenError::FailClosed(
+                "target variant payload carrier disagrees with its required size or alignment"
+                    .into(),
+            ));
+        }
+        let payload_layout = PhysicalLayout {
+            size: realized_payload_size,
+            align: realized_payload_align,
+            repr: payload_repr,
+        };
+        let tag_bits = match shape.variants.len() {
+            1..=256 => 8,
+            257..=65_536 => 16,
+            count => {
+                return Err(CodegenError::FailClosed(format!(
+                    "physical variant `{}` has unsupported case count {count}",
+                    ty.user_facing()
+                )));
+            }
+        };
+        let tag_layout = integer_layout(ctx, data, tag_bits)?;
+        let repr = PhysicalRepr::Struct(vec![tag_layout, payload_layout]);
+        let (size, align) = measure_layout(data, llvm_type(ctx, &repr)?);
+        let object = PhysicalLayout { size, align, repr };
+        target.insert_layout(ty.clone(), object.clone());
+        target.insert_variant_layout(PhysicalVariantLayout {
+            ty: ty.clone(),
+            is_indirect: false,
+            object,
+            variants: variant_layouts,
+        });
+        visiting.remove(ty);
+        return Ok(());
+    }
     let fields = match ty {
         ResolvedTy::Tuple(fields) => Some(fields.as_slice()),
         _ => aggregate_fields.get(ty).map(Vec::as_slice),
@@ -159,7 +281,15 @@ fn realize_layout(
     let repr = if let Some(fields) = fields {
         let mut layouts = Vec::with_capacity(fields.len());
         for field in fields {
-            realize_layout(ctx, data, target, field, aggregate_fields, visiting)?;
+            realize_layout(
+                ctx,
+                data,
+                target,
+                field,
+                aggregate_fields,
+                variant_shapes,
+                visiting,
+            )?;
             layouts.push(target.layout(field).cloned().ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "physical target did not realize aggregate field `{}`",
@@ -383,6 +513,9 @@ fn llvm_type<'ctx>(ctx: &'ctx Context, repr: &PhysicalRepr) -> CodegenResult<Bas
             )));
         }
         PhysicalRepr::Pointer => ctx.ptr_type(AddressSpace::default()).into(),
+        PhysicalRepr::Array { element, len } => {
+            llvm_type(ctx, &element.repr)?.array_type(*len).into()
+        }
         PhysicalRepr::Struct(fields) => {
             let fields = fields
                 .iter()
@@ -719,6 +852,25 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("load physical storage")
     }
 
+    fn entry_scratch(
+        &self,
+        ty: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let prologue = self.value.get_first_basic_block().ok_or_else(|| {
+            CodegenError::FailClosed("physical function has no allocation prologue".into())
+        })?;
+        let builder = self.ctx.create_builder();
+        if let Some(terminator) = prologue.get_terminator() {
+            builder.position_before(&terminator);
+        } else {
+            builder.position_at_end(prologue);
+        }
+        builder
+            .build_alloca(ty, name)
+            .llvm_ctx("allocate reusable physical scratch storage")
+    }
+
     fn storage(&self, id: StorageId) -> CodegenResult<&PhysicalStorage> {
         self.function
             .storage
@@ -895,6 +1047,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 }
                 self.clear_owned(*aggregate)
             }
+            PhysicalOp::VariantMake {
+                dest,
+                variant,
+                fields,
+                glue,
+            } => self.emit_variant_make(*dest, *variant, fields, *glue),
             PhysicalOp::Transfer { dest, source } => {
                 let value = self.load(*source, "transfer")?;
                 self.store(*dest, value)?;
@@ -929,6 +1087,159 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalOp::StorageDead { storage, destroy } => self.destroy_value(*storage, *destroy),
         }
+    }
+
+    fn emit_variant_make(
+        &self,
+        dest: StorageId,
+        variant: u32,
+        fields: &[StorageId],
+        glue_id: PhysicalVariantId,
+    ) -> CodegenResult<()> {
+        let glue = self.variant_glue(glue_id)?;
+        let layout = self.variant_layout(&glue.ty)?;
+        if layout.is_indirect {
+            return Err(CodegenError::FailClosed(
+                "physical indirect variant construction is not yet admitted".into(),
+            ));
+        }
+        let object_ty = llvm_type(self.ctx, &layout.object.repr)?.into_struct_type();
+        let tag_ty = object_ty
+            .get_field_type_at_index(0)
+            .ok_or_else(|| CodegenError::FailClosed("variant object has no tag field".into()))?
+            .into_int_type();
+        let tag = tag_ty.const_int(u64::from(variant), false);
+        let object = self
+            .builder
+            .build_insert_value(object_ty.const_zero(), tag, 0, "variant.make.tag")
+            .llvm_ctx("write physical variant tag")?
+            .into_struct_value();
+        self.store(dest, object.into())?;
+        let case = glue.variants.get(variant as usize).ok_or_else(|| {
+            CodegenError::FailClosed("variant construction tag is invalid".into())
+        })?;
+        let payload_layout = layout
+            .variants
+            .get(variant as usize)
+            .ok_or_else(|| CodegenError::FailClosed("variant payload layout is absent".into()))?;
+        if case.fields.len() != fields.len() {
+            return Err(CodegenError::FailClosed(
+                "variant construction field count changed after verification".into(),
+            ));
+        }
+        if !fields.is_empty() {
+            let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
+            let mut payload = payload_ty.get_undef();
+            for (index, field) in fields.iter().enumerate() {
+                let value = self.load(*field, "variant.make.field")?;
+                let index = u32::try_from(index).map_err(|_| {
+                    CodegenError::FailClosed("variant field index exceeds u32".into())
+                })?;
+                payload = self
+                    .builder
+                    .build_insert_value(payload, value, index, "variant.make.payload")
+                    .llvm_ctx("write physical variant payload field")?
+                    .into_struct_value();
+            }
+            let payload_ptr = self.variant_payload_ptr(self.slots[dest.0 as usize], layout)?;
+            self.builder
+                .build_store(payload_ptr, payload)
+                .llvm_ctx("store physical variant payload")?;
+        }
+        for field in fields {
+            self.clear_owned(*field)?;
+        }
+        Ok(())
+    }
+
+    fn emit_variant_switch(
+        &self,
+        scrutinee: StorageId,
+        glue_id: PhysicalVariantId,
+        arms: &[PhysicalVariantArm],
+    ) -> CodegenResult<()> {
+        let glue = self.variant_glue(glue_id)?;
+        let layout = self.variant_layout(&glue.ty)?;
+        if layout.is_indirect {
+            return Err(CodegenError::FailClosed(
+                "physical indirect variant switch is not yet admitted".into(),
+            ));
+        }
+        let object = self
+            .load(scrutinee, "variant.switch.source")?
+            .into_struct_value();
+        let tag = self
+            .builder
+            .build_extract_value(object, 0, "variant.switch.tag")
+            .llvm_ctx("read physical variant tag")?
+            .into_int_value();
+        let invalid = self.ctx.append_basic_block(self.value, "variant.invalid");
+        let arm_blocks = arms
+            .iter()
+            .map(|arm| {
+                (
+                    tag.get_type().const_int(u64::from(arm.variant), false),
+                    self.ctx
+                        .append_basic_block(self.value, &format!("variant.case.{}", arm.variant)),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.builder
+            .build_switch(tag, invalid, &arm_blocks)
+            .llvm_ctx("emit physical variant switch")?;
+        for (arm, (_, arm_block)) in arms.iter().zip(&arm_blocks) {
+            self.builder.position_at_end(*arm_block);
+            let payload_layout = &layout.variants[arm.variant as usize];
+            if !arm.fields.is_empty() {
+                let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
+                let payload_ptr =
+                    self.variant_payload_ptr(self.slots[scrutinee.0 as usize], layout)?;
+                let payload = self
+                    .builder
+                    .build_load(payload_ty, payload_ptr, "variant.switch.payload")
+                    .llvm_ctx("load physical variant payload")?
+                    .into_struct_value();
+                for (index, field) in arm.fields.iter().enumerate() {
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::FailClosed("variant field index exceeds u32".into())
+                    })?;
+                    let value = self
+                        .builder
+                        .build_extract_value(payload, index, "variant.switch.field")
+                        .llvm_ctx("extract physical variant payload field")?;
+                    self.store(*field, value)?;
+                }
+            }
+            self.clear_owned(scrutinee)?;
+            self.emit_edge(&arm.target)?;
+        }
+        self.builder.position_at_end(invalid);
+        self.emit_invalid_variant_tag()
+    }
+
+    fn variant_payload_ptr(
+        &self,
+        object: PointerValue<'ctx>,
+        layout: &PhysicalVariantLayout,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let object_ty = llvm_type(self.ctx, &layout.object.repr)?.into_struct_type();
+        self.builder
+            .build_struct_gep(object_ty, object, 1, "variant.payload.ptr")
+            .llvm_ctx("address physical variant payload")
+    }
+
+    fn emit_invalid_variant_tag(&self) -> CodegenResult<()> {
+        let trap = Intrinsic::find("llvm.trap")
+            .ok_or_else(|| CodegenError::FailClosed("LLVM trap intrinsic is unavailable".into()))?
+            .get_declaration(self.llvm, &[])
+            .ok_or_else(|| CodegenError::FailClosed("LLVM trap declaration failed".into()))?;
+        self.builder
+            .build_call(trap, &[], "variant.invalid.trap")
+            .llvm_ctx("emit invalid variant tag trap")?;
+        self.builder
+            .build_unreachable()
+            .llvm_ctx("terminate invalid variant tag")?;
+        Ok(())
     }
 
     fn emit_const(&self, dest: StorageId, value: &PhysicalConst) -> CodegenResult<()> {
@@ -1186,6 +1497,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 }
                 Ok(clone.into())
             }
+            CloneAction::Variant(id) => self.clone_variant_value(value, layout, id),
         }
     }
 
@@ -1212,11 +1524,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .llvm_ctx("extract bytes release pointer")?
                         .into_pointer_value(),
                     DestroyAction::Aggregate(_) => unreachable!("matched primitive release"),
+                    DestroyAction::Variant(_) => unreachable!("matched primitive release"),
                 };
                 let symbol = match action {
                     DestroyAction::StringRelease => "hew_string_drop",
                     DestroyAction::BytesRelease => "hew_bytes_drop",
                     DestroyAction::Aggregate(_) => unreachable!("matched primitive release"),
+                    DestroyAction::Variant(_) => unreachable!("matched primitive release"),
                 };
                 let function = external_drop(self.ctx, self.llvm, symbol)?;
                 self.builder
@@ -1250,7 +1564,207 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 }
                 Ok(())
             }
+            DestroyAction::Variant(id) => self.destroy_variant_value(value, layout, id),
         }
+    }
+
+    fn clone_variant_value(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        _layout: &PhysicalLayout,
+        id: PhysicalVariantId,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let glue = self.variant_glue(id)?;
+        let variant_layout = self.variant_layout(&glue.ty)?;
+        if variant_layout.is_indirect {
+            return Err(CodegenError::FailClosed(
+                "physical indirect variant cloning is not yet admitted".into(),
+            ));
+        }
+        let object_ty = llvm_type(self.ctx, &variant_layout.object.repr)?.into_struct_type();
+        let source = self.entry_scratch(object_ty.into(), "variant.clone.source")?;
+        let destination = self.entry_scratch(object_ty.into(), "variant.clone.destination")?;
+        self.builder
+            .build_store(source, value)
+            .llvm_ctx("store physical variant clone source")?;
+        let tag = self
+            .builder
+            .build_extract_value(value.into_struct_value(), 0, "variant.clone.tag")
+            .llvm_ctx("read physical variant clone tag")?
+            .into_int_value();
+        let invalid = self
+            .ctx
+            .append_basic_block(self.value, "variant.clone.invalid");
+        let complete = self
+            .ctx
+            .append_basic_block(self.value, "variant.clone.complete");
+        let cases = glue
+            .variants
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                (
+                    tag.get_type().const_int(index as u64, false),
+                    self.ctx
+                        .append_basic_block(self.value, &format!("variant.clone.case.{index}")),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.builder
+            .build_switch(tag, invalid, &cases)
+            .llvm_ctx("dispatch physical variant clone")?;
+        for (index, (_, case_block)) in cases.iter().enumerate() {
+            self.builder.position_at_end(*case_block);
+            let tag_value = tag.get_type().const_int(index as u64, false);
+            let object = self
+                .builder
+                .build_insert_value(object_ty.const_zero(), tag_value, 0, "variant.clone.object")
+                .llvm_ctx("write cloned physical variant tag")?
+                .into_struct_value();
+            self.builder
+                .build_store(destination, object)
+                .llvm_ctx("initialize cloned physical variant")?;
+            let recipe = &glue.variants[index];
+            if !recipe.fields.is_empty() {
+                let payload_layout = &variant_layout.variants[index];
+                let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
+                let source_ptr = self.variant_payload_ptr(source, variant_layout)?;
+                let source_payload = self
+                    .builder
+                    .build_load(payload_ty, source_ptr, "variant.clone.payload")
+                    .llvm_ctx("load physical variant clone payload")?
+                    .into_struct_value();
+                let mut destination_payload = payload_ty.get_undef();
+                for (field_index, field) in recipe.fields.iter().enumerate() {
+                    let field_index = u32::try_from(field_index).map_err(|_| {
+                        CodegenError::FailClosed("variant clone field index exceeds u32".into())
+                    })?;
+                    let field_value = self
+                        .builder
+                        .build_extract_value(source_payload, field_index, "variant.clone.field")
+                        .llvm_ctx("extract physical variant clone field")?;
+                    let action = field.clone.ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "physical variant glue {} case {index} field {field_index} has no clone action",
+                            id.0
+                        ))
+                    })?;
+                    let field_layout = self.module.target.layout(&field.ty).ok_or_else(|| {
+                        CodegenError::FailClosed("variant clone field has no target layout".into())
+                    })?;
+                    let cloned = self.clone_loaded_value(field_value, field_layout, action)?;
+                    destination_payload = self
+                        .builder
+                        .build_insert_value(
+                            destination_payload,
+                            cloned,
+                            field_index,
+                            "variant.clone.payload.result",
+                        )
+                        .llvm_ctx("insert physical variant clone field")?
+                        .into_struct_value();
+                }
+                let destination_ptr = self.variant_payload_ptr(destination, variant_layout)?;
+                self.builder
+                    .build_store(destination_ptr, destination_payload)
+                    .llvm_ctx("store cloned physical variant payload")?;
+            }
+            self.builder
+                .build_unconditional_branch(complete)
+                .llvm_ctx("finish physical variant clone case")?;
+        }
+        self.builder.position_at_end(invalid);
+        self.emit_invalid_variant_tag()?;
+        self.builder.position_at_end(complete);
+        self.builder
+            .build_load(object_ty, destination, "variant.clone.result")
+            .llvm_ctx("load cloned physical variant")
+    }
+
+    fn destroy_variant_value(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        _layout: &PhysicalLayout,
+        id: PhysicalVariantId,
+    ) -> CodegenResult<()> {
+        let glue = self.variant_glue(id)?;
+        let variant_layout = self.variant_layout(&glue.ty)?;
+        if variant_layout.is_indirect {
+            return Err(CodegenError::FailClosed(
+                "physical indirect variant destruction is not yet admitted".into(),
+            ));
+        }
+        let object_ty = llvm_type(self.ctx, &variant_layout.object.repr)?.into_struct_type();
+        let source = self.entry_scratch(object_ty.into(), "variant.destroy.source")?;
+        self.builder
+            .build_store(source, value)
+            .llvm_ctx("store physical variant destroy source")?;
+        let tag = self
+            .builder
+            .build_extract_value(value.into_struct_value(), 0, "variant.destroy.tag")
+            .llvm_ctx("read physical variant destroy tag")?
+            .into_int_value();
+        let invalid = self
+            .ctx
+            .append_basic_block(self.value, "variant.destroy.invalid");
+        let complete = self
+            .ctx
+            .append_basic_block(self.value, "variant.destroy.complete");
+        let cases = glue
+            .variants
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                (
+                    tag.get_type().const_int(index as u64, false),
+                    self.ctx
+                        .append_basic_block(self.value, &format!("variant.destroy.case.{index}")),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.builder
+            .build_switch(tag, invalid, &cases)
+            .llvm_ctx("dispatch physical variant destroy")?;
+        for (index, (_, case_block)) in cases.iter().enumerate() {
+            self.builder.position_at_end(*case_block);
+            let recipe = &glue.variants[index];
+            if !recipe.fields.is_empty() {
+                let payload_layout = &variant_layout.variants[index];
+                let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
+                let source_ptr = self.variant_payload_ptr(source, variant_layout)?;
+                let payload = self
+                    .builder
+                    .build_load(payload_ty, source_ptr, "variant.destroy.payload")
+                    .llvm_ctx("load physical variant destroy payload")?
+                    .into_struct_value();
+                for field_index in (0..recipe.fields.len()).rev() {
+                    let field = &recipe.fields[field_index];
+                    let Some(action) = field.destroy else {
+                        continue;
+                    };
+                    let field_index = u32::try_from(field_index).map_err(|_| {
+                        CodegenError::FailClosed("variant destroy field index exceeds u32".into())
+                    })?;
+                    let field_value = self
+                        .builder
+                        .build_extract_value(payload, field_index, "variant.destroy.field")
+                        .llvm_ctx("extract physical variant destroy field")?;
+                    let field_layout = self.module.target.layout(&field.ty).ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "variant destroy field has no target layout".into(),
+                        )
+                    })?;
+                    self.destroy_loaded_value(field_value, field_layout, action)?;
+                }
+            }
+            self.builder
+                .build_unconditional_branch(complete)
+                .llvm_ctx("finish physical variant destroy case")?;
+        }
+        self.builder.position_at_end(invalid);
+        self.emit_invalid_variant_tag()?;
+        self.builder.position_at_end(complete);
+        Ok(())
     }
 
     fn aggregate_glue(&self, id: PhysicalAggregateId) -> CodegenResult<&PhysicalAggregateGlue> {
@@ -1261,6 +1775,25 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed(format!("unknown physical aggregate glue {}", id.0))
             })
+    }
+
+    fn variant_glue(&self, id: PhysicalVariantId) -> CodegenResult<&PhysicalVariantGlue> {
+        self.module
+            .variant_glue
+            .get(id.0 as usize)
+            .filter(|glue| glue.id == id)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!("unknown physical variant glue {}", id.0))
+            })
+    }
+
+    fn variant_layout(&self, ty: &ResolvedTy) -> CodegenResult<&PhysicalVariantLayout> {
+        self.module.target.variant_layout(ty).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "physical variant `{}` has no target layout",
+                ty.user_facing()
+            ))
+        })
     }
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
@@ -1292,6 +1825,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.builder.position_at_end(else_block);
                 self.emit_edge(else_target)
             }
+            PhysicalTerminator::SwitchVariant {
+                scrutinee,
+                glue,
+                arms,
+            } => self.emit_variant_switch(*scrutinee, *glue, arms),
             PhysicalTerminator::CheckedBinary {
                 op,
                 lhs,
@@ -1675,13 +2213,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 ),
                 ParamCarrier::Indirect => {
                     if let Some(value) = value {
-                        let temp = self
-                            .builder
-                            .build_alloca(
-                                llvm_type(self.ctx, &parameter.layout.repr)?,
-                                "call.clone.argument",
-                            )
-                            .llvm_ctx("allocate cloned indirect argument")?;
+                        let temp = self.entry_scratch(
+                            llvm_type(self.ctx, &parameter.layout.repr)?,
+                            "call.clone.argument",
+                        )?;
                         self.builder
                             .build_store(temp, value)
                             .llvm_ctx("store cloned indirect argument")?;
@@ -2849,6 +3384,92 @@ mod tests {
         assert!(module.get_function("hew_bytes_clone_ref").is_some());
         assert!(module.get_function("hew_string_drop").is_some());
         assert!(module.get_function("hew_bytes_drop").is_some());
+    }
+
+    #[test]
+    fn owned_variant_layout_and_active_case_glue_emit_verified_llvm() {
+        use inkwell::values::InstructionOpcode;
+
+        let semantic = lower_source(
+            r#"
+            enum Choice { Text(string); Empty }
+
+            fn inspect(value: Choice) -> i64 {
+                match value {
+                    .Text(text) => { let copy = text; 1 },
+                    .Empty => 0,
+                }
+            }
+
+            fn main() -> i64 {
+                let original = Choice.Text("hello");
+                let first = inspect(original);
+                let second = inspect(original);
+                if first == 1 && second == 1 { 0 } else { 1 }
+            }
+            "#,
+        );
+        let triple = native_emission_triple();
+        let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+        let target = physical_target_for_inventory(&triple, &inventory)
+            .expect("exact variant target layout");
+        let [shape] = semantic.variant_shapes.as_slice() else {
+            panic!("source must demand one exact variant shape")
+        };
+        let layout = target
+            .variant_layout(&shape.enum_ty)
+            .expect("target must realize the demanded variant");
+        assert!(!layout.is_indirect);
+        assert_eq!(layout.variants.len(), 2);
+
+        let verified = hew_mir::lower_physical_module(&semantic, target)
+            .expect("owned variant physical lowering");
+        assert!(verified.module().functions.iter().any(|function| {
+            function.blocks.iter().any(|block| {
+                matches!(
+                    block.terminator,
+                    PhysicalTerminator::SwitchVariant { ref arms, .. }
+                        if arms.len() == 2
+                            && arms[0].fields.len() == 1
+                            && arms[1].fields.is_empty()
+                )
+            })
+        }));
+
+        for level in [OptLevel::O0, OptLevel::O2] {
+            let ctx = Context::create();
+            let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, level)
+                .expect("target machine");
+            let module = build_module(&ctx, verified.module(), "owned_variant", &machine)
+                .expect("owned variant LLVM module");
+            module.verify().expect("owned variant LLVM verification");
+            let ir = module.print_to_string().to_string();
+            assert!(ir.contains("variant.clone.case.0"));
+            assert!(ir.contains("variant.destroy.case.0"));
+            assert!(ir.contains("call void @llvm.trap"));
+            assert!(module.get_function("llvm.trap").is_some());
+            assert!(module.get_function("hew_string_clone").is_some());
+            assert!(module.get_function("hew_string_drop").is_some());
+            for callable in &verified.module().callables {
+                let function = module
+                    .get_function(&emitted_symbol(verified.module(), callable))
+                    .expect("physical callable definition");
+                for block in function.get_basic_blocks() {
+                    if block.get_name().to_bytes() == b"physical.prologue" {
+                        continue;
+                    }
+                    let mut instruction = block.get_first_instruction();
+                    while let Some(current) = instruction {
+                        assert_ne!(
+                            current.get_opcode(),
+                            InstructionOpcode::Alloca,
+                            "dynamic CFG blocks must not grow scratch storage at runtime"
+                        );
+                        instruction = current.get_next_instruction();
+                    }
+                }
+            }
+        }
     }
 
     #[test]

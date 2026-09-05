@@ -1,0 +1,22 @@
+enum Payload { Small(bool); Wide(i64, string); Empty }
+
+fn describe(value: Payload) -> string {
+    match value {
+        .Small(enabled) => {
+            let number = if enabled { 1 } else { 0 };
+            f"small:{number}"
+        },
+        .Wide(number, text) => f"{number}:{text}",
+        .Empty => "empty",
+    }
+}
+
+fn main() -> i64 {
+    let wide = Payload.Wide(4294967297, "wide".to_upper());
+    let first = describe(wide);
+    let second = describe(wide);
+    let small = describe(Payload.Small(true));
+    let empty = describe(Payload.Empty);
+    println(f"{first}/{second}/{small}/{empty}");
+    0
+}

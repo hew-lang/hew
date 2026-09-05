@@ -1,0 +1,19 @@
+enum Choice { Text(string); Empty }
+
+fn divide(value: Choice, divisor: i64) -> i64 {
+    let local = match value {
+        .Text(text) => text,
+        .Empty => "empty",
+    };
+    let data = local.to_bytes();
+    let result = data.len() / divisor;
+    println(local);
+    result
+}
+
+fn main() -> i64 {
+    let original = Choice.Text("payload".to_upper());
+    let result = divide(original, 0);
+    println("must not continue");
+    result
+}

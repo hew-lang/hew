@@ -1,0 +1,20 @@
+type Point { x: i64, y: i64 }
+
+fn sum(point: Point) -> i64 { point.x + point.y }
+
+fn value_or_zero(value: Option<i64>) -> i64 {
+    match value {
+        .Some(number) => number,
+        .None => 0,
+    }
+}
+
+fn main() -> i64 {
+    let point = Point { x: 2, y: 3 };
+    let optional = Some(sum(point));
+    let first = value_or_zero(optional);
+    let second = value_or_zero(optional);
+    let absent = value_or_zero(None);
+    println(f"{first}:{second}:{absent}:{sum(point)}");
+    0
+}

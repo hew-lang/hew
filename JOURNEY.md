@@ -772,3 +772,12 @@ that restart. No type-fact or TypeContext changes are needed.
 
 Focused and full checker tests and scoped JSON Clippy pass. Native carrier
 retry follows this checker checkpoint; fixture intake remains with integration.
+
+The unchanged recursive carrier now executes at O0 and O2, including paired
+compiler/runtime ASan with leak detection. Copies, replacement mutations and
+children retained after parent destruction pass the embedded checks. The first
+stdout comparison exposed a fixture oracle error: `.len()` counts Unicode
+scalars, so the Unicode/NUL leaf length is seven, not its nine UTF-8 bytes.
+The handoff preserves that first result and supplies the corrected expectation.
+No further compiler boundary was encountered by this carrier; JSON/YAML
+conversion and fallible Hash/Eq callback contracts remain separate work.

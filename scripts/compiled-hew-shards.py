@@ -179,7 +179,14 @@ def finalize_reports(
     strict_recoveries: bool,
 ) -> int:
     """Prepare the JUnit input for GitHub after raw aggregate gates finish."""
+    if reports_dir.resolve() == output_dir.resolve():
+        die("finalization output must be separate from raw reports")
     output_dir.mkdir(parents=True, exist_ok=True)
+    # A retry publishes only this invocation's reports. Keep unrelated files,
+    # but retire our prior failure verdict and any no-longer-produced shards.
+    (output_dir / "compiled-hew-finalization.xml").unlink(missing_ok=True)
+    for previous in output_dir.glob("hew-*-shard-*.xml"):
+        previous.unlink()
     reports = sorted(reports_dir.glob("hew-*-shard-*.xml"))
     for report in reports:
         shutil.copy2(report, output_dir / report.name)

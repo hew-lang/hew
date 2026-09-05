@@ -324,7 +324,7 @@ fn ordinary_decode_lookalike_remains_a_user_call() {
 fn malformed_canonical_utf8_decode_signature_is_not_admitted() {
     let output = check_source_in_canonical_std_module(
         r#"
-        pub type Utf8Error { valid_up_to: i64; error_len: Option<i64>; }
+        pub type Utf8Error { valid_up_to: i64, error_len: Option<i64> }
         #[intrinsic("utf8.decode")]
         pub fn decode(data: string) -> string;
         "#,
@@ -345,4 +345,240 @@ fn malformed_canonical_utf8_decode_signature_is_not_admitted() {
             .contains_key("std.encoding.utf8.decode"),
         "malformed canonical declaration must not become a runtime target"
     );
+}
+
+#[test]
+fn utf8_import_aliases_preserve_runtime_targets_and_nominal_result() {
+    for (imports, validating, lossy) in [
+        (
+            "import std.encoding.utf8 as text;",
+            "text.decode",
+            "text.decode_lossy",
+        ),
+        (
+            "import std.encoding.utf8.{decode as read, decode_lossy as repair};",
+            "read",
+            "repair",
+        ),
+        (
+            "import std.encoding.utf8.{decode, decode_lossy};",
+            "decode",
+            "decode_lossy",
+        ),
+    ] {
+        let parsed = hew_parser::parse(&format!(
+            "{imports}\nfn exercise(data: bytes) {{ let valid = {validating}(data); let lossy = {lossy}(data); }}"
+        ));
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let output = Checker::new(test_registry()).check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{imports}: {:?}", output.errors);
+        for family in [
+            crate::runtime_call::RuntimeCallFamily::BytesDecodeUtf8,
+            crate::runtime_call::RuntimeCallFamily::BytesDecodeUtf8Lossy,
+        ] {
+            assert!(
+                output.direct_call_targets.values().any(|target| matches!(
+                    target, crate::check::dispatch::CallTarget::Runtime(actual) if *actual == family
+                )) || output.method_call_rewrites.values().any(|rewrite| matches!(
+                    rewrite, MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                        target: crate::check::dispatch::CallTarget::Runtime(actual), ..
+                    } if *actual == family
+                )),
+                "{imports}: {:?}",
+                output.direct_call_targets
+            );
+        }
+        assert!(
+            output
+                .expr_types
+                .values()
+                .filter_map(|ty| crate::ResolvedTy::from_ty(ty).ok())
+                .any(|ty| crate::runtime_call::RuntimeVariantResultKind::Utf8Decode.matches(&ty)),
+            "the validating result must retain the canonical nominal error through an alias"
+        );
+    }
+}
+
+#[test]
+fn utf8_floor_rejects_wrong_signatures_and_declaration_identities() {
+    for (module, declaration) in [
+        (
+            "utf8",
+            "pub fn decode(data: string) -> string fails Utf8Error;",
+        ),
+        ("utf8", "pub fn decode() -> string fails Utf8Error;"),
+        (
+            "utf8",
+            "pub fn decode(data: bytes, extra: i64) -> string fails Utf8Error;",
+        ),
+        (
+            "utf8",
+            "pub fn decode(data: bytes) -> bytes fails Utf8Error;",
+        ),
+        ("utf8", "pub fn decode(data: bytes) -> string;"),
+        (
+            "utf8",
+            "pub fn decode<T>(data: bytes) -> string fails Utf8Error;",
+        ),
+        ("utf8", "pub async gen fn decode(data: bytes) -> string;"),
+        (
+            "utf8",
+            "pub fn decode(consume data: bytes) -> string fails Utf8Error;",
+        ),
+        (
+            "utf8",
+            "pub fn renamed(data: bytes) -> string fails Utf8Error;",
+        ),
+        (
+            "math",
+            "pub fn decode(data: bytes) -> string fails Utf8Error;",
+        ),
+    ] {
+        let path = if module == "utf8" {
+            vec!["std", "encoding", "utf8"]
+        } else {
+            vec!["std", "math"]
+        };
+        let source =
+            format!("pub type Utf8Error {{}}\n#[intrinsic(\"utf8.decode\")] {declaration}");
+        let output = check_source_in_canonical_std_module(
+            &source,
+            &path.into_iter().map(str::to_string).collect::<Vec<_>>(),
+        );
+        assert!(
+            output.errors.iter().any(|error| matches!(
+                error.kind,
+                TypeErrorKind::IntrinsicSignatureMismatch { .. }
+            )),
+            "{source}: {:?}",
+            output.errors
+        );
+        assert!(
+            !output
+                .intrinsic_declarations
+                .values()
+                .any(|key| key == "utf8.decode"),
+            "invalid declaration acquired runtime authority: {source}"
+        );
+    }
+    for declaration in [
+        "pub fn decode_lossy(data: string) -> string;",
+        "pub fn decode_lossy(data: bytes) -> bytes;",
+        "pub fn decode_lossy(data: bytes) -> string fails Utf8Error;",
+    ] {
+        let source =
+            format!("pub type Utf8Error {{}}\n#[intrinsic(\"utf8.decode_lossy\")] {declaration}");
+        let output = check_source_in_canonical_std_module(
+            &source,
+            &[
+                "std".to_string(),
+                "encoding".to_string(),
+                "utf8".to_string(),
+            ],
+        );
+        assert!(
+            output.errors.iter().any(|error| matches!(
+                error.kind,
+                TypeErrorKind::IntrinsicSignatureMismatch { .. }
+            )),
+            "{source}: {:?}",
+            output.errors
+        );
+        assert!(output.intrinsic_declarations.is_empty());
+    }
+}
+
+#[test]
+fn utf8_spelling_without_canonical_source_is_rejected() {
+    for module in [
+        vec![],
+        vec![
+            "std".to_string(),
+            "encoding".to_string(),
+            "utf8".to_string(),
+        ],
+    ] {
+        let source =
+            r#"#[intrinsic("utf8.decode_lossy")] pub fn decode_lossy(data: bytes) -> string;"#;
+        let output = if module.is_empty() {
+            check_source(source)
+        } else {
+            check_source_in_module(source, module)
+        };
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::IntrinsicOutsideFloor { .. })),
+            "{:?}",
+            output.errors
+        );
+        assert!(output.intrinsic_declarations.is_empty());
+    }
+}
+
+#[test]
+fn utf8_decode_result_does_not_unify_with_a_foreign_same_leaf_error() {
+    let parsed = hew_parser::parse(
+        r"
+        import std.encoding.utf8;
+        type Utf8Error {}
+        fn sample(data: bytes) -> Result<string, Utf8Error> { utf8.decode(data) }
+    ",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = Checker::new(test_registry()).check_program(&parsed.program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn utf8_module_with_another_floors_source_path_is_rejected() {
+    let parsed = hew_parser::parse(
+        r#"
+        #[intrinsic("utf8.decode_lossy")] pub fn decode_lossy(data: bytes) -> string;
+    "#,
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let root = ModuleId::root();
+    let utf8 = ModuleId::new(vec![
+        "std".to_string(),
+        "encoding".to_string(),
+        "utf8".to_string(),
+    ]);
+    let mut graph = ModuleGraph::new(root.clone());
+    graph
+        .add_module(Module {
+            id: utf8.clone(),
+            items: parsed.program.items,
+            imports: vec![],
+            doc: None,
+            source_paths: vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("std/math/math.hew")],
+        })
+        .unwrap();
+    graph.topo_order = vec![utf8, root];
+    let program = Program {
+        module_graph: Some(graph),
+        items: vec![],
+        module_doc: None,
+    };
+    let output = Checker::new(test_registry()).check_program(&program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::IntrinsicOutsideFloor { .. })),
+        "{:?}",
+        output.errors
+    );
+    assert!(output.intrinsic_declarations.is_empty());
 }

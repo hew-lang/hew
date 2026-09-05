@@ -1,4 +1,4 @@
-//! UTF-8 decoding errors with explicit byte positions.
+//! Validating and lossy UTF-8 decoding with explicit byte-position errors.
 
 /// Details of invalid UTF-8 in an encoded byte sequence.
 pub type Utf8Error {
@@ -18,7 +18,7 @@ impl Display for Utf8Error {
 }
 
 /// Decode UTF-8 bytes, returning the first byte-position error as ordinary
-/// `Result` data.
+/// `Result` data. Valid input preserves every Unicode scalar, including NUL.
 #[intrinsic("utf8.decode")]
 pub fn decode(data: bytes) -> string fails Utf8Error;
 

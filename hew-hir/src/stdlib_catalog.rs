@@ -2939,3 +2939,222 @@ fn len_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod utf8_floor_tests {
+    use crate::{lower_program_host_target, HirDiagnosticKind, HirItem, ResolutionCtx};
+    use hew_parser::{
+        ast::Program,
+        module::{Module, ModuleGraph, ModuleId},
+    };
+    use hew_types::{module_registry::ModuleRegistry, Checker};
+
+    fn floor_program(source: &str, canonical: bool) -> Program {
+        let floor = hew_parser::parse(source);
+        let root = hew_parser::parse("fn main() {}");
+        assert!(floor.errors.is_empty(), "{:?}", floor.errors);
+        let floor_id = ModuleId::new(vec![
+            "std".to_string(),
+            "encoding".to_string(),
+            "utf8".to_string(),
+        ]);
+        let root_id = ModuleId::root();
+        let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("std/encoding/utf8/utf8.hew");
+        let mut graph = ModuleGraph::new(root_id.clone());
+        graph
+            .add_module(Module {
+                id: floor_id.clone(),
+                items: floor.program.items,
+                imports: vec![],
+                source_paths: if canonical { vec![source_path] } else { vec![] },
+                doc: None,
+            })
+            .unwrap();
+        graph
+            .add_module(Module {
+                id: root_id.clone(),
+                items: root.program.items.clone(),
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .unwrap();
+        graph.topo_order = vec![floor_id, root_id];
+        Program {
+            module_graph: Some(graph),
+            ..root.program
+        }
+    }
+
+    #[test]
+    fn utf8_floor_suppresses_only_admitted_runtime_bodies() {
+        let program = floor_program(
+            r#"
+            pub type Utf8Error {}
+            #[intrinsic("utf8.decode")]
+            pub fn decode(data: bytes) -> string fails Utf8Error;
+            #[intrinsic("utf8.decode_lossy")]
+            pub fn decode_lossy(data: bytes) -> string;
+            pub fn ordinary(data: bytes) -> string { "ordinary" }
+            "#,
+            true,
+        );
+        let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&program);
+        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        let lowered = lower_program_host_target(&program, &checked, &ResolutionCtx);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let functions: Vec<_> = lowered
+            .module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(f) => Some(f.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            functions.contains(&"std$encoding$utf8$ordinary"),
+            "{functions:?}"
+        );
+        assert!(
+            !functions.contains(&"std$encoding$utf8$decode"),
+            "{functions:?}"
+        );
+        assert!(
+            !functions.contains(&"std$encoding$utf8$decode_lossy"),
+            "{functions:?}"
+        );
+    }
+
+    #[test]
+    fn utf8_named_user_function_retains_its_body() {
+        let program = floor_program(
+            r#"pub fn decode_lossy(data: bytes) -> string { "user" }"#,
+            false,
+        );
+        let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&program);
+        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        assert!(checked.intrinsic_declarations.is_empty());
+        let lowered = lower_program_host_target(&program, &checked, &ResolutionCtx);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        assert!(lowered.module.items.iter().any(|item| matches!(item,
+            HirItem::Function(f) if f.name == "std$encoding$utf8$decode_lossy"
+                && f.intrinsic_id.is_none() && f.body.tail.is_some()
+        )));
+    }
+
+    #[test]
+    fn utf8_floor_inconsistent_signature_is_a_boundary_diagnostic() {
+        let program = floor_program("pub fn decode_lossy(data: bytes) -> i64 { 7 }", true);
+        let mut checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&program);
+        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        // Model a broken checker producer: a well-typed ordinary body cannot
+        // disappear silently when an inconsistent intrinsic fact is attached.
+        checked.intrinsic_declarations.insert(
+            "std.encoding.utf8.decode_lossy".to_string(),
+            "utf8.decode_lossy".to_string(),
+        );
+        let lowered = lower_program_host_target(&program, &checked, &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind, HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
+                    if name == "std.encoding.utf8.decode_lossy"
+            )),
+            "{:?}",
+            lowered.diagnostics
+        );
+        assert!(lowered.into_result().is_err());
+    }
+
+    #[test]
+    fn utf8_real_imports_lower_without_floor_stubs() {
+        for (imports, decode, lossy) in [
+            (
+                "import std.encoding.utf8;",
+                "utf8.decode",
+                "utf8.decode_lossy",
+            ),
+            (
+                "import std.encoding.utf8 as text;",
+                "text.decode",
+                "text.decode_lossy",
+            ),
+            (
+                "import std.encoding.utf8.{decode as read, decode_lossy as repair};",
+                "read",
+                "repair",
+            ),
+        ] {
+            let parsed = hew_parser::parse(&format!(
+                "{imports}\nfn sample(data: bytes) {{ let valid = {decode}(data); let repaired = {lossy}(data); }}"
+            ));
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            let checked =
+                Checker::new(ModuleRegistry::new(vec![repo])).check_program(&parsed.program);
+            assert!(checked.errors.is_empty(), "{imports}: {:?}", checked.errors);
+            let lowered = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
+            assert!(
+                lowered.diagnostics.is_empty(),
+                "{imports}: {:?}",
+                lowered.diagnostics
+            );
+            let sample = lowered
+                .module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    HirItem::Function(f) if f.name == "sample" => Some(f),
+                    _ => None,
+                })
+                .expect("sample function");
+            let calls: Vec<_> = sample
+                .body
+                .statements
+                .iter()
+                .filter_map(|statement| {
+                    let crate::HirStmtKind::Let(_, Some(value)) = &statement.kind else {
+                        return None;
+                    };
+                    let crate::HirExprKind::Call {
+                        target: hew_types::CallTarget::Runtime(family),
+                        callee,
+                        ..
+                    } = &value.kind
+                    else {
+                        return None;
+                    };
+                    assert!(matches!(callee.kind, crate::HirExprKind::BindingRef {
+                    resolved: crate::ResolvedRef::Builtin(actual), ..
+                } if actual == *family));
+                    Some((*family, &value.ty))
+                })
+                .collect();
+            assert_eq!(calls.len(), 2, "{imports}: {calls:?}");
+            assert_eq!(
+                calls[0].0,
+                hew_types::runtime_call::RuntimeCallFamily::BytesDecodeUtf8
+            );
+            assert!(
+                hew_types::runtime_call::RuntimeVariantResultKind::Utf8Decode.matches(calls[0].1)
+            );
+            assert_eq!(
+                calls[1],
+                (
+                    hew_types::runtime_call::RuntimeCallFamily::BytesDecodeUtf8Lossy,
+                    &hew_types::ResolvedTy::String
+                )
+            );
+            assert!(!lowered.module.items.iter().any(|item| matches!(item,
+                HirItem::Function(f) if f.name == "std$encoding$utf8$decode"
+                    || f.name == "std$encoding$utf8$decode_lossy"
+            )));
+        }
+    }
+}

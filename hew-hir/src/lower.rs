@@ -12453,6 +12453,18 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
+        // Named imports may bind a canonical runtime declaration under an
+        // arbitrary alias. Its checked target is sufficient; resolving the
+        // alias as a source body would invent an unnecessary callable stub.
+        if let CallTarget::Runtime(family) = target {
+            return self.lower_module_qualified_direct_call_lowered(
+                target,
+                family.c_symbol(),
+                args,
+                span,
+                site,
+            );
+        }
         let callee = self.lower_expr(function, IntentKind::Read);
         // Record the per-instantiation monomorphisation if the callee is a
         // generic top-level user fn. Direct-name callees only;
@@ -13512,31 +13524,11 @@ impl LowerCtx {
         }
     }
 
-    /// Lower an imported free function while applying the `#[intrinsic]` floor
-    /// policy (W5.005 / F1b, D343).
-    ///
-    /// `source_module` is the dotted module path (e.g. `std.mem`) used to
-    /// reconstruct the checker's qualified intrinsic key
-    /// (`scoped_module_item_name`, e.g. `std.mem.alloc`). The bare-name
-    /// root-item path (`Item::Function` third pass) cannot reach floor
-    /// modules — they are always imported — so the keying happens only here.
-    ///
-    /// Returns:
-    /// - `Some(HirFn)` for ordinary functions (unchanged behaviour);
-    /// - `Some(HirFn)` tagged with `intrinsic_id` for a **callable** floor
-    ///   intrinsic (`mem.*`, catalog linkage `CalleeNameDispatchOnly`): the
-    ///   function is kept so its mangled symbol stays in MIR's
-    ///   `module_fn_names` and calls dispatch to it, while codegen synthesizes
-    ///   the trampoline body from the tagged id (the bodyless placeholder MIR
-    ///   is discarded by `lower_fn`);
-    /// - `None` for a numeric intrinsic (`math.*`, linkage `CompilerIntrinsic`)
-    ///   or an unknown key: these must NOT be emitted as a `HirItem::Function`.
-    ///   Numeric intrinsics route through builtin method-rewrites; emitting a
-    ///   dead empty-body shell would waste a symbol and (post-Slice-3b) trip
-    ///   the codegen fail-closed authority on an id it cannot synthesize.
-    ///
-    /// Fail-closed: an intrinsic key absent from the stdlib catalog emits
-    /// `UnknownIntrinsic` and is dropped, never lowered to a silent no-op.
+    /// Lower ordinary imported bodies and retain callable memory-floor stubs.
+    /// Checker-admitted semantic runtime operations have no source body: their
+    /// calls already carry a typed runtime family. Verify the same signature
+    /// contract before suppressing them, so inconsistent checker/HIR facts
+    /// cannot silently discard an ordinary function.
     fn lower_imported_fn_floor_aware(
         &mut self,
         func: &FnDecl,
@@ -13545,14 +13537,9 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
         rewrites: &HashMap<String, String>,
     ) -> Option<HirFn> {
-        let intrinsic_key = self
-            .intrinsic_declarations
-            .get(&format!("{source_module}.{}", func.name))
-            .cloned();
-        let mut lowered =
-            self.lower_imported_fn_with_name(func, qualified, span.clone(), rewrites)?;
-        let Some(intrinsic_key) = intrinsic_key else {
-            return Some(lowered);
+        let source_key = format!("{source_module}.{}", func.name);
+        let Some(intrinsic_key) = self.intrinsic_declarations.get(&source_key).cloned() else {
+            return self.lower_imported_fn_with_name(func, qualified, span, rewrites);
         };
         let Some(entry) = crate::stdlib_catalog::entries()
             .iter()
@@ -13564,13 +13551,45 @@ impl LowerCtx {
                     intrinsic_key,
                 },
                 span,
-                "intrinsic key not found in stdlib catalog; \
-                 check the #[intrinsic(\"..\")] argument matches a catalog entry name",
+                "intrinsic key not found in stdlib catalogue; \
+                 check the #[intrinsic(\"..\")] argument matches a catalogue entry name",
             ));
             return None;
         };
+        if let Some(family) =
+            hew_types::runtime_call::RuntimeCallFamily::from_catalog_endpoint(&intrinsic_key)
+        {
+            if let Some(contract) = family.semantic_contract() {
+                let matches = self.fn_registry.get(qualified).is_some_and(|signature| {
+                    signature.type_params.is_empty()
+                        && !func.is_async
+                        && !func.is_generator
+                        && !func
+                            .params
+                            .iter()
+                            .any(|param| param.is_consume || param.is_mutable)
+                        && family
+                            .source_intrinsic_declaration()
+                            .is_none_or(|expected| expected == source_key)
+                        && contract.matches_signature(&signature.param_tys, &signature.return_ty)
+                });
+                if !matches {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: source_key,
+                            reason: format!("intrinsic `{intrinsic_key}` signature differs from its semantic runtime contract"),
+                        },
+                        span,
+                        "cannot suppress an imported floor body with inconsistent signature facts",
+                    ));
+                }
+                return None;
+            }
+        }
         match entry.linkage {
             crate::stdlib_catalog::BuiltinLinkage::CalleeNameDispatchOnly => {
+                let mut lowered =
+                    self.lower_imported_fn_with_name(func, qualified, span, rewrites)?;
                 lowered.intrinsic_id = Some(intrinsic_key);
                 Some(lowered)
             }

@@ -374,3 +374,14 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
 - The retained native suite and paired generated/runtime address-sanitizer suite
   exercise these behaviours at O0 and O2. Broader foreign API conversion and the
   source decoding functions remain separate unfinished work.
+
+### Typed UTF-8 source operations
+
+- Validating and lossy decoding are canonical source declarations with ordinary
+  string and nominal Result types. A shared runtime contract checks signatures;
+  module spelling alone cannot grant intrinsic authority.
+- Module and named import aliases retain the checked runtime target. HIR uses
+  that target directly and suppresses admitted floor bodies before attempting
+  to lower a placeholder, while inconsistent signature facts report an error.
+- Checker and HIR tests exercise canonical imports, user lookalikes, altered
+  signatures, foreign error types and inconsistent compiler boundary facts.

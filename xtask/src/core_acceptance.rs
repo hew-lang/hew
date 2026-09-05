@@ -20,7 +20,6 @@ struct Case {
     intent: String,
     source: PathBuf,
     suites: Vec<String>,
-    host_capabilities: Vec<String>,
     timeout_seconds: u64,
     expected: ExpectedOutcome,
 }
@@ -168,9 +167,9 @@ fn parse_options(args: &[String]) -> Result<Options> {
         index += 1;
     }
 
-    if !matches!(suite.as_str(), "acceptance" | "safety" | "native-smoke") {
+    if !matches!(suite.as_str(), "acceptance" | "safety") {
         return Err(format!(
-            "unknown core-acceptance suite {suite:?}; expected acceptance, safety, or native-smoke"
+            "unknown core-acceptance suite {suite:?}; expected acceptance or safety"
         ));
     }
     if timeout_seconds == Some(0) {
@@ -196,7 +195,7 @@ fn usage() -> String {
         "usage: cargo run -p xtask -- core-acceptance [options]",
         "",
         "options:",
-        "  --suite acceptance|safety|native-smoke  select a manifest suite (default: acceptance)",
+        "  --suite acceptance|safety              select a manifest suite (default: acceptance)",
         "  --case ID                             run one named manifest case",
         "  --hew-bin PATH                        use a prebuilt compiler binary",
         "  --timeout-seconds N                   override each case timeout",
@@ -240,19 +239,9 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
             || case
                 .suites
                 .iter()
-                .any(|suite| !matches!(suite.as_str(), "acceptance" | "safety" | "native-smoke"))
+                .any(|suite| !matches!(suite.as_str(), "acceptance" | "safety"))
         {
             return Err(format!("{} has invalid suite membership", case.id));
-        }
-        if !case
-            .host_capabilities
-            .iter()
-            .any(|capability| capability == "native")
-        {
-            return Err(format!(
-                "{} does not declare the native host capability",
-                case.id
-            ));
         }
         let source = root.join("tests/core-acceptance").join(&case.source);
         if !source.is_file() {
@@ -662,7 +651,6 @@ mod tests {
             intent = "selection test"
             source = "cases/acceptance-case.hew"
             suites = ["acceptance"]
-            host_capabilities = ["native"]
             timeout_seconds = 1
             [case.expected]
             stdout = ""
@@ -672,7 +660,6 @@ mod tests {
             intent = "selection test"
             source = "cases/safety-case.hew"
             suites = ["safety"]
-            host_capabilities = ["native"]
             timeout_seconds = 1
             [case.expected]
             stdout = ""
@@ -743,7 +730,6 @@ mod tests {
             intent = "independent value copy"
             source = "owned.hew"
             suites = ["acceptance", "safety"]
-            host_capabilities = ["native"]
             timeout_seconds = 1
             [case.expected]
             stdout = ""

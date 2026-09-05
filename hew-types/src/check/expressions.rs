@@ -8287,7 +8287,57 @@ impl Checker {
                 _ => None,
             }
         };
-        let name = dotted_struct_variant.as_deref().unwrap_or(name);
+        // A plain record constructor uses the two-segment `module.Type`
+        // surface, which overlaps syntactically with a local
+        // `Type.StructVariant`. Give the proven local variant above first
+        // refusal, then resolve a lexical module binding through the same
+        // export table as annotation-position qualified types. The lexical
+        // alias is never a nominal identity: carry the declaration's full
+        // source owner into the shared record-initialiser path.
+        let module_record_name = if dotted_struct_variant.is_none() && !name.contains("::") {
+            let segments = name.split('.').collect::<Vec<_>>();
+            match segments.as_slice() {
+                [module_short, type_name]
+                    if self.env.lookup_ref(module_short).is_none()
+                        && self.module_binding_in_current_file(module_short) =>
+                {
+                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        (*module_short).to_string(),
+                    ));
+                    let Some(_) = self.resolve_module_type(module_short, type_name) else {
+                        let similar = self
+                            .module_type_exports_for_binding(module_short)
+                            .map(|set| {
+                                crate::error::find_similar(
+                                    type_name,
+                                    set.iter().map(String::as_str),
+                                )
+                            })
+                            .unwrap_or_default();
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            span,
+                            format!("module `{module_short}` has no exported type `{type_name}`"),
+                            similar,
+                        );
+                        return Ty::Error;
+                    };
+                    Some(format!(
+                        "{}.{type_name}",
+                        self.canonical_module_import_owner(module_short)
+                    ))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let name = dotted_struct_variant
+            .as_deref()
+            .or(module_record_name.as_deref())
+            .unwrap_or(name);
         let Ok(canonical_lifecycle_name) =
             self.canonicalize_source_lifecycle_value_path(name, span)
         else {

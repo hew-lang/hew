@@ -1096,6 +1096,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         fields: &[StorageId],
         glue_id: PhysicalVariantId,
     ) -> CodegenResult<()> {
+        let values = fields
+            .iter()
+            .map(|field| self.load(*field, "variant.make.field"))
+            .collect::<CodegenResult<Vec<_>>>()?;
+        self.write_variant_value(self.slots[dest.0 as usize], variant, &values, glue_id)?;
+        for field in fields {
+            self.clear_owned(*field)?;
+        }
+        Ok(())
+    }
+
+    fn write_variant_value(
+        &self,
+        destination: PointerValue<'ctx>,
+        variant: u32,
+        fields: &[BasicValueEnum<'ctx>],
+        glue_id: PhysicalVariantId,
+    ) -> CodegenResult<()> {
         let glue = self.variant_glue(glue_id)?;
         let layout = self.variant_layout(&glue.ty)?;
         if layout.is_indirect {
@@ -1114,7 +1132,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_insert_value(object_ty.const_zero(), tag, 0, "variant.make.tag")
             .llvm_ctx("write physical variant tag")?
             .into_struct_value();
-        self.store(dest, object.into())?;
+        self.builder
+            .build_store(destination, object)
+            .llvm_ctx("initialize physical variant storage")?;
         let case = glue.variants.get(variant as usize).ok_or_else(|| {
             CodegenError::FailClosed("variant construction tag is invalid".into())
         })?;
@@ -1131,7 +1151,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?.into_struct_type();
             let mut payload = payload_ty.get_undef();
             for (index, field) in fields.iter().enumerate() {
-                let value = self.load(*field, "variant.make.field")?;
+                let value = *field;
                 let index = u32::try_from(index).map_err(|_| {
                     CodegenError::FailClosed("variant field index exceeds u32".into())
                 })?;
@@ -1141,13 +1161,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("write physical variant payload field")?
                     .into_struct_value();
             }
-            let payload_ptr = self.variant_payload_ptr(self.slots[dest.0 as usize], layout)?;
+            let payload_ptr = self.variant_payload_ptr(destination, layout)?;
             self.builder
                 .build_store(payload_ptr, payload)
                 .llvm_ctx("store physical variant payload")?;
-        }
-        for field in fields {
-            self.clear_owned(*field)?;
         }
         Ok(())
     }
@@ -2297,6 +2314,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         match action {
+            PhysicalRuntimeAction::BytesDecodeUtf8 {
+                result: result_glue,
+                error,
+                error_len,
+            } => {
+                self.emit_utf8_decode(source(0)?, result()?, result_glue, error, error_len)?;
+            }
             PhysicalRuntimeAction::StringConcat => {
                 let function = get_or_declare_external(
                     self.llvm,
@@ -2508,6 +2532,154 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             )));
         }
         self.emit_edge(normal)
+    }
+
+    fn emit_utf8_decode(
+        &self,
+        bytes: StorageId,
+        result: StorageId,
+        result_glue: PhysicalVariantId,
+        error_glue: PhysicalAggregateId,
+        option_glue: PhysicalVariantId,
+    ) -> CodegenResult<()> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let target = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let value_out = self.entry_scratch(ptr.into(), "utf8.value")?;
+        let valid_out = self.entry_scratch(size_ty.into(), "utf8.valid.up.to")?;
+        let length_out = self.entry_scratch(size_ty.into(), "utf8.error.length")?;
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_bytes_decode_utf8",
+            self.ctx
+                .i8_type()
+                .fn_type(&[ptr.into(), ptr.into(), ptr.into(), ptr.into()], false),
+        )?;
+        let status = self
+            .runtime_call_value(
+                function,
+                &[
+                    self.slots[bytes.0 as usize].into(),
+                    value_out.into(),
+                    valid_out.into(),
+                    length_out.into(),
+                ],
+                "utf8.status",
+            )?
+            .into_int_value();
+        let success = self.ctx.append_basic_block(self.value, "utf8.success");
+        let failure = self.ctx.append_basic_block(self.value, "utf8.error");
+        let invalid = self
+            .ctx
+            .append_basic_block(self.value, "utf8.invalid.status");
+        let complete = self.ctx.append_basic_block(self.value, "utf8.complete");
+        self.builder
+            .build_switch(
+                status,
+                invalid,
+                &[
+                    (self.ctx.i8_type().const_zero(), success),
+                    (self.ctx.i8_type().const_int(1, false), failure),
+                ],
+            )
+            .llvm_ctx("select UTF-8 value outcome")?;
+
+        self.builder.position_at_end(success);
+        let value = self
+            .builder
+            .build_load(ptr, value_out, "utf8.string")
+            .llvm_ctx("load successful UTF-8 string")?;
+        self.write_variant_value(self.slots[result.0 as usize], 0, &[value], result_glue)?;
+        self.builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("finish UTF-8 success")?;
+
+        self.builder.position_at_end(failure);
+        let valid = self
+            .builder
+            .build_load(size_ty, valid_out, "utf8.valid")
+            .llvm_ctx("load UTF-8 valid prefix")?
+            .into_int_value();
+        let length = self
+            .builder
+            .build_load(size_ty, length_out, "utf8.length")
+            .llvm_ctx("load UTF-8 invalid sequence length")?
+            .into_int_value();
+        let valid = self
+            .builder
+            .build_int_z_extend_or_bit_cast(valid, self.ctx.i64_type(), "utf8.valid.i64")
+            .llvm_ctx("widen UTF-8 byte position")?;
+        let length = self
+            .builder
+            .build_int_z_extend_or_bit_cast(length, self.ctx.i64_type(), "utf8.length.i64")
+            .llvm_ctx("widen UTF-8 error length")?;
+        let option_ty = llvm_type(
+            self.ctx,
+            &self
+                .variant_layout(&self.variant_glue(option_glue)?.ty)?
+                .object
+                .repr,
+        )?;
+        let option = self.entry_scratch(option_ty, "utf8.optional.length")?;
+        let some = self.ctx.append_basic_block(self.value, "utf8.length.some");
+        let none = self.ctx.append_basic_block(self.value, "utf8.length.none");
+        let error_ready = self.ctx.append_basic_block(self.value, "utf8.error.ready");
+        let incomplete = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                length,
+                self.ctx.i64_type().const_zero(),
+                "utf8.incomplete",
+            )
+            .llvm_ctx("classify incomplete UTF-8")?;
+        self.builder
+            .build_conditional_branch(incomplete, none, some)
+            .llvm_ctx("select UTF-8 error length")?;
+        self.builder.position_at_end(some);
+        self.write_variant_value(option, 0, &[length.into()], option_glue)?;
+        self.builder
+            .build_unconditional_branch(error_ready)
+            .llvm_ctx("finish known error length")?;
+        self.builder.position_at_end(none);
+        self.write_variant_value(option, 1, &[], option_glue)?;
+        self.builder
+            .build_unconditional_branch(error_ready)
+            .llvm_ctx("finish incomplete error length")?;
+        self.builder.position_at_end(error_ready);
+        let option = self
+            .builder
+            .build_load(option_ty, option, "utf8.error.option")
+            .llvm_ctx("load initialized UTF-8 error length")?;
+        let error_ty = &self.aggregate_glue(error_glue)?.ty;
+        let error_layout =
+            self.module.target.layout(error_ty).ok_or_else(|| {
+                CodegenError::FailClosed("UTF-8 error has no physical layout".into())
+            })?;
+        let record_ty = llvm_type(self.ctx, &error_layout.repr)?.into_struct_type();
+        let record = self
+            .builder
+            .build_insert_value(record_ty.get_undef(), valid, 0, "utf8.error.position")
+            .llvm_ctx("construct UTF-8 error position")?
+            .into_struct_value();
+        let record = self
+            .builder
+            .build_insert_value(record, option, 1, "utf8.error.record")
+            .llvm_ctx("construct UTF-8 error length")?
+            .into_struct_value();
+        self.write_variant_value(
+            self.slots[result.0 as usize],
+            1,
+            &[record.into()],
+            result_glue,
+        )?;
+        self.builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("finish UTF-8 error")?;
+        self.builder.position_at_end(invalid);
+        self.emit_invalid_variant_tag()?;
+        self.builder.position_at_end(complete);
+        Ok(())
     }
 
     fn emit_bytes_index(
@@ -2967,6 +3139,13 @@ fn get_or_declare_external<'ctx>(
 
 #[cfg(test)]
 mod tests {
+    mod utf8_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../hew-sir/tests/support/runtime_utf8.rs"
+        ));
+    }
+
     use std::collections::BTreeMap;
 
     use hew_hir::{lower_program_host_target, ItemId, ResolutionCtx};
@@ -2982,6 +3161,46 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn utf8_decode_emits_typed_outcomes_with_reusable_scratch() {
+        let semantic = utf8_fixture::decode_module();
+        assert!(hew_sir::verify_module(&semantic).is_empty());
+        let triple = native_emission_triple();
+        let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+        let target = physical_target_for_inventory(&triple, &inventory).unwrap();
+        let physical = hew_mir::lower_physical_module(&semantic, target).unwrap();
+        let ctx = Context::create();
+        let machine =
+            crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0).unwrap();
+        let module = build_module(&ctx, physical.module(), "utf8_decode", &machine).unwrap();
+        module.verify().unwrap();
+        let decoder = module
+            .get_function("hew_bytes_decode_utf8")
+            .expect("decoder ABI call");
+        assert_eq!(
+            decoder.get_type().get_return_type(),
+            Some(ctx.i8_type().into())
+        );
+        assert_eq!(
+            decoder.get_type().get_param_types(),
+            vec![ctx.ptr_type(AddressSpace::default()).into(); 4]
+        );
+        for function in module.get_functions() {
+            for block in function.get_basic_blocks() {
+                if block.get_name().to_bytes() == b"physical.prologue" {
+                    continue;
+                }
+                for instruction in block.get_instructions() {
+                    assert_ne!(
+                        instruction.get_opcode(),
+                        inkwell::values::InstructionOpcode::Alloca,
+                        "decoder scratch must not grow per loop iteration"
+                    );
+                }
+            }
+        }
+    }
 
     fn lower_source(source: &str) -> SemModule {
         lower_source_with_registry(source, ModuleRegistry::new(Vec::new()))

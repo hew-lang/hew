@@ -400,6 +400,11 @@ pub enum PhysicalRuntimeAction {
     StringToUppercase,
     StringLen,
     StringByteLen,
+    BytesDecodeUtf8 {
+        result: PhysicalVariantId,
+        error: PhysicalAggregateId,
+        error_len: PhysicalVariantId,
+    },
     U8ToString,
     I64ToString,
     PrintlnI64,
@@ -418,6 +423,7 @@ impl PhysicalRuntimeAction {
             Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
             Self::StringLen => RuntimeCallFamily::StringLen,
             Self::StringByteLen => RuntimeCallFamily::StringByteLen,
+            Self::BytesDecodeUtf8 { .. } => RuntimeCallFamily::BytesDecodeUtf8,
             Self::U8ToString => RuntimeCallFamily::U8ToString,
             Self::I64ToString => RuntimeCallFamily::I64ToString,
             Self::PrintlnI64 => RuntimeCallFamily::PrintlnI64,
@@ -1511,7 +1517,7 @@ impl FunctionLowerer<'_> {
                 unwind,
                 ..
             } => Ok(PhysicalTerminator::RuntimeCall {
-                action: physical_runtime_action(*family)?,
+                action: self.runtime_action(*family, result)?,
                 args: args
                     .iter()
                     .map(|argument| {
@@ -1683,6 +1689,33 @@ impl FunctionLowerer<'_> {
                 "physical destroy action for `{}` is not implemented",
                 ty.user_facing()
             ))
+        })
+    }
+
+    fn runtime_action(
+        &self,
+        family: RuntimeCallFamily,
+        result: &CallResult,
+    ) -> Result<PhysicalRuntimeAction, PhysicalError> {
+        if family != RuntimeCallFamily::BytesDecodeUtf8 {
+            return physical_runtime_action(family);
+        }
+        let CallResult::Value(value) = result else {
+            return Err(PhysicalError::new("UTF-8 decode has no result value"));
+        };
+        let refs = hew_sir::runtime_variant_shape_refs(
+            hew_types::RuntimeVariantResultKind::Utf8Decode,
+            &value.ty,
+            &self.module.aggregate_shapes,
+            &self.module.variant_shapes,
+        )
+        .map_err(PhysicalError::new)?;
+        Ok(PhysicalRuntimeAction::BytesDecodeUtf8 {
+            result: self.variant_id(&value.ty)?,
+            error: self
+                .aggregate_id(&self.module.aggregate_shapes[refs.error.0 as usize].aggregate_ty)?,
+            error_len: self
+                .variant_id(&self.module.variant_shapes[refs.error_len.0 as usize].enum_ty)?,
         })
     }
 
@@ -3243,6 +3276,55 @@ fn verify_terminator(
                 }
             }
             match (contract.result, result) {
+                (RuntimeResultEffect::FreshOwnedVariant(kind), Some(id)) => {
+                    let result_slot = slot(*id)?;
+                    let PhysicalRuntimeAction::BytesDecodeUtf8 {
+                        result: result_glue,
+                        error,
+                        error_len,
+                    } = *action
+                    else {
+                        return Err(PhysicalError::new(
+                            "variant runtime result has no physical contract",
+                        ));
+                    };
+                    let Some((ok_ty, error_ty)) = kind.payload_types(&result_slot.ty) else {
+                        return Err(PhysicalError::new(
+                            "UTF-8 decode result has the wrong nominal type",
+                        ));
+                    };
+                    let result_glue = variant_glue(module, result_glue)?;
+                    let error_glue = aggregate_glue(module, error)?;
+                    let option_glue = variant_glue(module, error_len)?;
+                    let option_is_i64 = matches!(
+                        &option_glue.ty,
+                        ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Option), args, .. }
+                            if args.as_slice() == [ResolvedTy::I64]
+                    );
+                    let field_is = |fields: &[PhysicalAggregateField], ty: &ResolvedTy| {
+                        fields.len() == 1 && &fields[0].ty == ty
+                    };
+                    if result_slot.own != OwnKind::Owned
+                        || result_glue.ty != result_slot.ty
+                        || result_glue.is_indirect
+                        || result_glue.variants.len() != 2
+                        || !field_is(&result_glue.variants[0].fields, ok_ty)
+                        || !field_is(&result_glue.variants[1].fields, error_ty)
+                        || &error_glue.ty != error_ty
+                        || error_glue.fields.len() != 2
+                        || error_glue.fields[0].ty != ResolvedTy::I64
+                        || error_glue.fields[1].ty != option_glue.ty
+                        || !option_is_i64
+                        || option_glue.is_indirect
+                        || option_glue.variants.len() != 2
+                        || !field_is(&option_glue.variants[0].fields, &ResolvedTy::I64)
+                        || !option_glue.variants[1].fields.is_empty()
+                    {
+                        return Err(PhysicalError::new(
+                            "UTF-8 decode physical descriptors disagree with its result contract",
+                        ));
+                    }
+                }
                 (RuntimeResultEffect::Unit, None) => {}
                 (RuntimeResultEffect::Unit, Some(_)) | (_, None) => {
                     return Err(PhysicalError::new(format!(
@@ -3308,6 +3390,13 @@ fn callable_for(
 
 #[cfg(test)]
 mod tests {
+    mod utf8_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../hew-sir/tests/support/runtime_utf8.rs"
+        ));
+    }
+
     use hew_hir::{lower_program_host_target, ItemId, ResolutionCtx};
     use hew_sir::{
         BoundaryOperand, CallableInstance, CheckedFailure, FunctionSourceOrigin, Operand,
@@ -3400,6 +3489,117 @@ mod tests {
             },
         );
         target
+    }
+
+    fn utf8_target(module: &SemModule) -> PhysicalTarget {
+        // This fixture uses the existing fixed 64-bit test target. Its two
+        // variants have an eight-byte-aligned payload following a one-byte tag.
+        fn variant(target: &mut PhysicalTarget, ty: ResolvedTy, cases: Vec<PhysicalLayout>) {
+            let payload_size = cases.iter().map(|case| case.size).max().unwrap();
+            let payload = PhysicalLayout {
+                size: payload_size,
+                align: 8,
+                repr: PhysicalRepr::Array {
+                    element: Box::new(i64_layout()),
+                    len: u32::try_from(payload_size / 8).unwrap(),
+                },
+            };
+            let object = PhysicalLayout {
+                size: 8 + payload.size,
+                align: 8,
+                repr: PhysicalRepr::Struct(vec![
+                    PhysicalLayout {
+                        size: 1,
+                        align: 1,
+                        repr: PhysicalRepr::Integer { bits: 8 },
+                    },
+                    payload,
+                ]),
+            };
+            target.insert_layout(ty.clone(), object.clone());
+            target.insert_variant_layout(PhysicalVariantLayout {
+                ty,
+                is_indirect: false,
+                object,
+                variants: cases,
+            });
+        }
+        let mut target = target();
+        let option_ty = module.variant_shapes[1].enum_ty.clone();
+        variant(
+            &mut target,
+            option_ty.clone(),
+            vec![
+                PhysicalLayout {
+                    size: 8,
+                    align: 8,
+                    repr: PhysicalRepr::Struct(vec![i64_layout()]),
+                },
+                PhysicalLayout {
+                    size: 0,
+                    align: 1,
+                    repr: PhysicalRepr::Struct(vec![]),
+                },
+            ],
+        );
+        let error_ty = module.aggregate_shapes[0].aggregate_ty.clone();
+        let error_layout = PhysicalLayout {
+            size: 24,
+            align: 8,
+            repr: PhysicalRepr::Struct(vec![
+                i64_layout(),
+                target.layout(&option_ty).unwrap().clone(),
+            ]),
+        };
+        target.insert_layout(error_ty, error_layout.clone());
+        let string = target.layout(&ResolvedTy::String).unwrap().clone();
+        variant(
+            &mut target,
+            module.variant_shapes[0].enum_ty.clone(),
+            vec![
+                PhysicalLayout {
+                    size: 8,
+                    align: 8,
+                    repr: PhysicalRepr::Struct(vec![string]),
+                },
+                PhysicalLayout {
+                    size: 24,
+                    align: 8,
+                    repr: PhysicalRepr::Struct(vec![error_layout]),
+                },
+            ],
+        );
+        target
+    }
+
+    #[test]
+    fn utf8_decode_rejects_a_foreign_optional_payload_descriptor() {
+        let semantic = utf8_fixture::decode_module();
+        let mut physical = lower_physical_module(&semantic, utf8_target(&semantic))
+            .expect("valid UTF-8 runtime result must lower")
+            .into_unverified();
+        let PhysicalTerminator::RuntimeCall {
+            action:
+                PhysicalRuntimeAction::BytesDecodeUtf8 {
+                    result, error_len, ..
+                },
+            failure,
+            ..
+        } = &mut physical.functions[0].blocks[0].terminator
+        else {
+            panic!("expected the typed decoder runtime action");
+        };
+        assert!(
+            failure.is_none(),
+            "invalid UTF-8 is not a native fault edge"
+        );
+        *error_len = *result;
+        let error = verify_physical_module(&physical)
+            .expect_err("Result storage cannot stand in for Option<i64>");
+        assert!(
+            error.message.contains("UTF-8 decode physical descriptors"),
+            "{error:?}"
+        );
     }
 
     fn target_for_inventory(module: &SemModule) -> PhysicalTarget {

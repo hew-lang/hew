@@ -49,6 +49,50 @@ fn typecheck_with_module(root_source: &str, module_source: &str) -> hew_types::T
     checker.check_program(&root.program)
 }
 
+fn typecheck_with_modules(
+    root_source: &str,
+    modules: &[(&[&str], &str)],
+) -> hew_types::TypeCheckOutput {
+    let mut root = hew_parser::parse(root_source);
+    assert!(
+        root.errors.is_empty(),
+        "root parse errors: {:?}",
+        root.errors
+    );
+    let parsed_modules = modules
+        .iter()
+        .map(|(path, source)| {
+            let parsed = hew_parser::parse(source);
+            assert!(
+                parsed.errors.is_empty(),
+                "module parse errors for {path:?}: {:?}",
+                parsed.errors
+            );
+            (path, parsed.program.items)
+        })
+        .collect::<Vec<_>>();
+
+    for (item, _) in &mut root.program.items {
+        let Item::Import(import) = item else {
+            continue;
+        };
+        let (_, items) = parsed_modules
+            .iter()
+            .find(|(path, _)| {
+                import
+                    .path
+                    .iter()
+                    .map(String::as_str)
+                    .eq(path.iter().copied())
+            })
+            .expect("every fixture import should have module source");
+        import.resolved_items = Some(items.clone());
+    }
+
+    let mut checker = isolated_checker();
+    checker.check_program(&root.program)
+}
+
 const MODULE_WITH_LIFECYCLE: &str = r"
     pub enum Lifecycle {
         Started { handle: i64 };
@@ -56,6 +100,94 @@ const MODULE_WITH_LIFECYCLE: &str = r"
         Failed(i64)
     }
 ";
+
+const MODULE_WITH_RECORD: &str = r"
+    pub type Packet { code: i64; }
+";
+
+#[test]
+fn module_qualified_record_initialiser_resolves_the_exported_type() {
+    let root_source = r"
+        import myapp.m;
+
+        fn main() {
+            let packet: m.Packet = m.Packet { code: 42 };
+        }
+    ";
+    let output = typecheck_with_module(root_source, MODULE_WITH_RECORD);
+    assert!(
+        output.errors.is_empty(),
+        "expected the qualified record constructor to resolve; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn aliased_module_record_initialiser_keeps_the_source_identity() {
+    let root_source = r"
+        import myapp.m as records;
+
+        fn main() {
+            let packet: records.Packet = records.Packet { code: 42 };
+        }
+    ";
+    let output = typecheck_with_module(root_source, MODULE_WITH_RECORD);
+    assert!(
+        output.errors.is_empty(),
+        "expected the alias to resolve to its source record; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn module_qualified_record_initialiser_refuses_a_private_type() {
+    let root_source = r"
+        import myapp.m;
+
+        fn main() {
+            let packet = m.Packet { code: 42 };
+        }
+    ";
+    let output = typecheck_with_module(root_source, "type Packet { code: i64; }");
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType
+                && error
+                    .message
+                    .contains("module `m` has no exported type `Packet`")
+        }),
+        "expected the private record to stay outside the module export surface; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn qualified_record_initialiser_does_not_use_a_same_leaf_foreign_type() {
+    let root_source = r#"
+        import myapp.left as left;
+        import myapp.right as right;
+
+        fn main() {
+            let packet = left.Packet { label: "wrong owner" };
+        }
+    "#;
+    let output = typecheck_with_modules(
+        root_source,
+        &[
+            (&["myapp", "left"], MODULE_WITH_RECORD),
+            (&["myapp", "right"], r"pub type Packet { label: string; }"),
+        ],
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedField
+                && error.message.contains("label")
+                && error.message.contains("myapp.left.Packet")
+        }),
+        "expected the left record's field diagnostic; got: {:?}",
+        output.errors
+    );
+}
 
 // ── positive: struct-variant initialiser ─────────────────────────────────────
 

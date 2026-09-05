@@ -7,7 +7,6 @@ id = "utf8-error-value"
 intent = "The canonical UTF-8 error is an ordinary reusable record whose Display distinguishes invalid from incomplete byte sequences."
 source = "cases/utf8-error-value.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -19,7 +18,6 @@ id = "fallible-tuple-return"
 intent = "Fallible declarations return ordinary tuples on success and typed owning errors through local recovery."
 source = "cases/fallible-tuple-return.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -31,7 +29,6 @@ id = "fallible-result-success"
 intent = "A Result declared as the success type remains an inner value, including Err, and is never implicitly forwarded as the outer failure."
 source = "cases/fallible-result-success.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -43,7 +40,6 @@ id = "propagation-handler-boundary"
 intent = "Propagation while evaluating a handler operand bypasses that handler; only the resulting inner error is recovered locally."
 source = "cases/propagation-handler-boundary.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -55,7 +51,6 @@ id = "scalar-variant-patterns"
 intent = "Float and character payloads survive repeated calls and select ordered exact or wildcard patterns independently."
 source = "cases/scalar-variant-patterns.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -67,7 +62,6 @@ id = "lazy-optional-default"
 intent = "Present owning options skip fallback side effects and survive repeated calls; absence evaluates the fallback once."
 source = "cases/lazy-optional-default.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -79,7 +73,6 @@ id = "local-error-recovery"
 intent = "Local recovery binds only errors, preserves caller values and supports a divergent return from the handler."
 source = "cases/local-error-recovery.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -91,7 +84,6 @@ id = "ordered-match-guards"
 intent = "Failed guards preserve ordered side effects for subsequent arms and the final mutable-value join."
 source = "cases/ordered-match-guards.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -103,7 +95,6 @@ id = "nested-match-payload"
 intent = "Nested variant mismatches and failed string guards preserve owning payloads for later arms and repeated calls."
 source = "cases/nested-match-payload.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -115,7 +106,6 @@ id = "required-optional-value"
 intent = "Required optional binding and owning if-value joins preserve the source and clean up both presence and absence paths."
 source = "cases/required-optional-value.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -127,7 +117,6 @@ id = "owned-enum-loop"
 intent = "Repeated enum copies and matches release each iteration's owners without accumulating dynamic stack scratch space."
 source = "cases/owned-enum-loop.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 60
 
 [case.expected]
@@ -139,7 +128,6 @@ id = "variant-payload-layout"
 intent = "Variant payloads with different sizes and alignment preserve full-width integers and owned fields across copies."
 source = "cases/variant-payload-layout.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -151,7 +139,6 @@ id = "scalar-option-call"
 intent = "Scalar records and optional payloads retain values across repeated calls without owning-value glue."
 source = "cases/scalar-option-call.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -163,7 +150,6 @@ id = "owned-enum-fault"
 intent = "A callee fault releases extracted enum data and the caller's retained enum without continuing."
 source = "cases/owned-enum-fault.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -176,7 +162,6 @@ id = "owned-enum-call"
 intent = "Returning and repeatedly matching an owning enum preserves the caller payload and selects its empty variant correctly."
 source = "cases/owned-enum-call.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -188,7 +173,6 @@ id = "owned-result-call"
 intent = "Both Result variants return their owning payload while repeated ordinary calls preserve the original value."
 source = "cases/owned-result-call.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -200,7 +184,6 @@ id = "owned-call-return"
 intent = "A by-value ordinary call preserves the caller value and returns an independent logical value."
 source = "cases/owned-call-return.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -212,7 +195,6 @@ id = "bytes-copy-mutate"
 intent = "Assignment copies bytes values, so mutating the copy does not change the source."
 source = "cases/bytes-copy-mutate.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -224,7 +206,6 @@ id = "owned-branch-reassign"
 intent = "A mutable owned binding remains valid after taken and untaken reassignment branches join."
 source = "cases/owned-branch-reassign.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -236,7 +217,6 @@ id = "owned-loop"
 intent = "Loop-carried reassignment of an owned string preserves every iteration's result."
 source = "cases/owned-loop.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -248,7 +228,6 @@ id = "owned-early-return"
 intent = "An early owned return and a fallback return produce valid independent values."
 source = "cases/owned-early-return.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -260,7 +239,6 @@ id = "entry-return"
 intent = "The native entry function's i64 result becomes the process exit status."
 source = "cases/entry-return.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -272,7 +250,6 @@ id = "owned-negative-index"
 intent = "A negative bytes index reports a logical fault and releases live string and bytes owners without continuing."
 source = "cases/owned-negative-index.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -285,7 +262,6 @@ id = "owned-past-end-index"
 intent = "An index equal to the bytes length reports a logical fault and releases live owners without continuing."
 source = "cases/owned-past-end-index.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -298,7 +274,6 @@ id = "owned-nested-failure"
 intent = "A divide-by-zero fault releases callee string/bytes owners and propagates through caller cleanup before one report."
 source = "cases/owned-nested-failure.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -311,7 +286,6 @@ id = "owned-record-call"
 intent = "An ordinary record argument survives the call and an owned returned record provides independently mutable field copies."
 source = "cases/owned-record-call.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -323,7 +297,6 @@ id = "owned-tuple-parent-exit"
 intent = "A copied owning nested tuple survives its parent's scope and retains independent string and bytes fields."
 source = "cases/owned-tuple-parent-exit.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -335,7 +308,6 @@ id = "string-byte-length"
 intent = "The imported string length operation borrows its value, reports UTF-8 byte length as i64 and handles an empty string."
 source = "cases/string-byte-length.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -347,7 +319,6 @@ id = "integer-format-width"
 intent = "Integer interpolation preserves signed i64 values beyond the 32-bit range and cleans its temporary strings."
 source = "cases/integer-format-width.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]
@@ -359,7 +330,6 @@ id = "owned-destructure"
 intent = "Record and nested tuple patterns preserve ordinary source values, clean wildcard fields and produce independently mutable bytes."
 source = "cases/owned-destructure.hew"
 suites = ["acceptance", "safety"]
-host_capabilities = ["native"]
 timeout_seconds = 15
 
 [case.expected]

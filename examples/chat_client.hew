@@ -10,6 +10,8 @@
 //! actor-owned stream half. The distributed Node API is a separate roadmap
 //! surface; this example uses the stable local TCP API.
 
+import std.encoding.utf8;
+
 import std.channel.channel;
 
 import std.io;
@@ -31,7 +33,10 @@ actor ChatReader {
         while reading {
             match await input.recv() {
                 .Some(chunk) => {
-                    let msg = chunk.to_string();
+                    let msg = utf8.decode(chunk) handle error {
+                        done.send(f"[client] invalid UTF-8: {error}");
+                        return;
+                    };
                     if msg.contains("__HEW_TCP_DISCONNECT__") {
                         done.send("[client] server acknowledged disconnect");
                         reading = false;

@@ -7,7 +7,10 @@ actor ServerReader {
     let conn: Connection,
 
     receive fn start(unused: i32) {
-        let msg = conn.read_string();
+        let msg = conn.read_string() handle error {
+            println(f"invalid UTF-8: {error}");
+            return;
+        };
         println(msg);
     }
 }

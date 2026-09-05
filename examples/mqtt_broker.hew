@@ -16,6 +16,8 @@
 // Router state uses only clonable types (strings, i32, LocalPid handles) so the
 // actor is supervisor-restartable. Runtime stream/sink halves have one owner
 // each and close automatically with their actors.
+import std.encoding.utf8;
+
 import std.net;
 
 import std.stream.{Sink, Stream};
@@ -125,14 +127,14 @@ fn mqtt_str_wire_len(data: bytes, offset: i64, limit: i64) -> i64 {
 }
 
 // Read a length-prefixed MQTT string whose wire width was already validated.
-fn read_mqtt_str(data: bytes, offset: i64) -> string {
+fn read_mqtt_str(data: bytes, offset: i64) -> string fails utf8.Utf8Error {
     let len: i64 = read_u16(data, offset) as i64;
     let s = bytes.new();
     let start: i64 = offset + 2;
     for i in start .. start + len {
         s.push(data[i]);
     }
-    s.to_string()
+    utf8.decode(s)?
 }
 
 // ── Packet builders ───────────────────────────────────────────────────────────
@@ -270,7 +272,11 @@ actor ClientHandler {
                     if pflags != 0 || proto_wire_len < 0 {
                         connected = false;
                     } else {
-                        let protocol_name = read_mqtt_str(buf, var_off);
+                        let protocol_name = read_mqtt_str(buf, var_off) handle error {
+                            println(f"[mqtt] invalid UTF-8: {error}");
+                            connected = false;
+                            break;
+                        };
                         let header_off: i64 = var_off + proto_wire_len;
                         if protocol_name != "MQTT" || !has_bytes(packet_end, header_off, 4) {
                             connected = false;
@@ -281,7 +287,11 @@ actor ClientHandler {
                             if protocol_level != 4 || client_id_wire_len < 0 {
                                 connected = false;
                             } else {
-                                let new_client_id = read_mqtt_str(buf, payload_off);
+                                let new_client_id = read_mqtt_str(buf, payload_off) handle error {
+                                    println(f"[mqtt] invalid UTF-8: {error}");
+                                    connected = false;
+                                    break;
+                                };
                                 let claim_status = match await router.claim_client_id(session_id.clone(), new_client_id.clone()) {
                                     .Ok(value) => {
                                         if value {
@@ -323,7 +333,11 @@ actor ClientHandler {
                     if qos == 3 || topic_wire_len <= 2 {
                         connected = false;
                     } else {
-                        let topic = read_mqtt_str(buf, var_off);
+                        let topic = read_mqtt_str(buf, var_off) handle error {
+                            println(f"[mqtt] invalid UTF-8: {error}");
+                            connected = false;
+                            break;
+                        };
                         var payload_off: i64 = var_off + topic_wire_len;
                         var packet_id: i32 = 0;
                         if qos > 0 {
@@ -359,7 +373,11 @@ actor ClientHandler {
                                 connected = false;
                                 break;
                             }
-                            let stopic = read_mqtt_str(buf, topic_off);
+                            let stopic = read_mqtt_str(buf, topic_off) handle error {
+                                println(f"[mqtt] invalid UTF-8: {error}");
+                                connected = false;
+                                break;
+                            };
                             let req_qos: i32 = buf[topic_off + tw] as i32;
                             if req_qos > 1 || stopic.contains("#") || stopic.contains("+") {
                                 // This compact broker implements exact-topic
@@ -393,7 +411,11 @@ actor ClientHandler {
                                 connected = false;
                                 break;
                             }
-                            let utopic = read_mqtt_str(buf, topic_off);
+                            let utopic = read_mqtt_str(buf, topic_off) handle error {
+                                println(f"[mqtt] invalid UTF-8: {error}");
+                                connected = false;
+                                break;
+                            };
                             router.unsubscribe(utopic, session_id.clone());
                             topic_off = topic_off + tw;
                         }

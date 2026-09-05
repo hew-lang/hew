@@ -20,6 +20,8 @@
 //! Frames are built from text with the public `string.to_bytes()` surface — no
 //! raw extern, no `unsafe`.
 
+import std.encoding.utf8;
+
 import std.stream;
 
 actor Drainer {
@@ -32,7 +34,11 @@ actor Drainer {
         while !done {
             match await input.recv() {
                 .Some(frame) => {
-                    println(f"recv {frame.to_string()}");
+                    let decoded_frame = utf8.decode(frame) handle error {
+                        println(f"invalid UTF-8: {error}");
+                        return;
+                    };
+                    println(f"recv {decoded_frame}");
                     received = received + 1;
                 },
                 .None => {

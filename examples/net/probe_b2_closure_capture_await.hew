@@ -1,3 +1,5 @@
+import std.encoding.utf8;
+
 import std.net.{Listener};
 
 extern "C" {
@@ -14,9 +16,12 @@ actor Reader {
             .Err(_) => panic(f"network setup failed"),
         };
         let read_once = || {
-            await conn.read_string()
+            utf8.decode(await conn.read())
         };
-        let body = read_once();
+        let body = read_once() handle error {
+            println(f"invalid UTF-8: {error}");
+            return;
+        };
         println(f"reader-received: {body}");
         let _ = conn.close();
     }

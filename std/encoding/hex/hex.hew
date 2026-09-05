@@ -57,7 +57,11 @@ pub fn decode(s: string) -> bytes {
 
 /// Encode binary data to a hex string, optionally uppercase.
 fn encode_impl(data: bytes, upper: bool) -> string {
-    let alphabet = if upper { "0123456789ABCDEF" } else { "0123456789abcdef" };
+    let alphabet = if upper {
+        "0123456789ABCDEF"
+    } else {
+        "0123456789abcdef"
+    };
     var out = "";
     for i in 0 .. data.len() {
         let b = data[i] as i64;

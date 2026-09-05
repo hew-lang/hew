@@ -1,4 +1,4 @@
-// Accept fixture (NEW-6c): `await conn.read_string() | after d` — deadline
+// Accept fixture (NEW-6c): `await conn.read() | after d` — deadline
 // elapses before the peer writes, so the suspending read resolves to
 // `Err(NetError::TimedOut(_))`.
 //
@@ -8,7 +8,9 @@
 // and hang.
 //
 // Exit-code contract: timeout Err(TimedOut) -> 7; unexpected Ok -> 42;
-// wrong NetError variant -> 8; no actor exit -> main fallback 99.
+// wrong NetError variant or invalid UTF-8 -> 8; no actor exit -> fallback 99.
+import std.encoding.utf8;
+
 import std.net;
 
 actor Reader {
@@ -19,8 +21,11 @@ actor Reader {
             .Ok(conn) => conn,
             .Err(_) => return,
         };
-        let code = match await conn.read_string() | after 60ms {
-            .Ok(_body) => 42,
+        let code = match await conn.read() | after 60ms {
+            .Ok(data) => match utf8.decode(data) {
+                .Ok(_text) => 42,
+                .Err(_error) => 8,
+            },
             .Err(e) => {
                 match e {
                     NetError.TimedOut(_code) => 7,

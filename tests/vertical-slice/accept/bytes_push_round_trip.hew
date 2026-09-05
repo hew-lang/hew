@@ -1,6 +1,6 @@
 //! Behavioural proof that `bytes.push(...)` mutation propagates back to the
 //! caller's `BytesTriple` local and a subsequent value-position
-//! `bytes.to_string()` reads the updated buffer.
+//! `utf8.decode()` validates and reads the updated buffer.
 //!
 //! Pushes the ASCII bytes for `Hi` onto a fresh buffer, then converts to a
 //! `string` and prints it. A successful run prints `Hi` exactly and exits 0,
@@ -9,11 +9,17 @@
 //! the codegen FFI seam all agree that `bytes` is a `BytesTriple` value
 //! (LLVM `{ptr, i32, i32}`).
 
+import std.encoding.utf8;
+
 fn main() -> i64 {
     let b: bytes = bytes.new();
     b.push(72); // 'H'
     b.push(105); // 'i'
-    let s: string = b.to_string();
+    let decoded_b = utf8.decode(b) handle error {
+        println(f"invalid UTF-8: {error}");
+        return 1;
+    };
+    let s: string = decoded_b;
     println(s);
     0
 }

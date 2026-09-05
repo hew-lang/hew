@@ -65,7 +65,10 @@ fn main() {
     assert_ok(stream.finish());
 
     // Receive response from server, then drain to EOF before close.
-    let resp_msg = stream.recv_string();
+    let resp_msg = stream.recv_string() handle error {
+        println(f"invalid UTF-8: {error}");
+        return;
+    };
     println(f"[client] received: {resp_msg}");
     let eof = stream.recv();
     assert_eq(eof.len(), 0);

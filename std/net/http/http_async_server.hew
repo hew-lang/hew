@@ -21,6 +21,7 @@
 //! import std.net;
 //! import std.net.http.http_async_server;
 //! import std.string;
+//! import std.encoding.utf8;
 //!
 //! actor Server {
 //!     let addr: string;   // "127.0.0.1:8080"
@@ -31,7 +32,10 @@
 //!         var reads = 0;
 //!         var done = false;
 //!         while !done {
-//!             let chunk = await conn.read_string();    // suspends the worker
+//!             let chunk = utf8.decode(await conn.read()) handle error {
+//!                 println(f"invalid UTF-8: {error}");
+//!                 return;
+//!             };    // suspends the worker
 //!             reads = reads + 1;
 //!             if string.is_empty(chunk) {
 //!                 done = true;

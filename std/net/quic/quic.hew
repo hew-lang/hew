@@ -92,6 +92,7 @@
 //! ```
 
 import std.net;
+
 import std.encoding.utf8;
 
 /// A QUIC endpoint bound to a local UDP address.

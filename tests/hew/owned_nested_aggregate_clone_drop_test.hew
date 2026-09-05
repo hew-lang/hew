@@ -1,3 +1,5 @@
+import std.encoding.utf8;
+
 import std.testing;
 
 extern "C" {
@@ -75,10 +77,20 @@ fn test_vec_clone_drops_nested_bytes_leaf_cleanly() {
     let (s_inner, s_flag) = second;
     let (s_b, s_n) = s_inner;
     testing.assert_eq(ys.len(), 2);
-    testing.assert_eq_str(f_b.to_string(), "ab");
+    let decoded_f_b = utf8.decode(f_b) handle error {
+        println(f"invalid UTF-8: {error}");
+        assert(false);
+        return;
+    };
+    testing.assert_eq_str(decoded_f_b, "ab");
     testing.assert_eq(f_n, 11);
     testing.assert_true(f_flag);
-    testing.assert_eq_str(s_b.to_string(), "cd");
+    let decoded_s_b = utf8.decode(s_b) handle error {
+        println(f"invalid UTF-8: {error}");
+        assert(false);
+        return;
+    };
+    testing.assert_eq_str(decoded_s_b, "cd");
     testing.assert_eq(s_n, 12);
     testing.assert_true(!s_flag);
 }

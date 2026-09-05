@@ -11,6 +11,8 @@
 //! The `Connection` is a handler LOCAL (from `net.connect`), not actor state: an
 //! opaque handle in actor state is rejected by the supervisor-restart clone gate.
 
+import std.encoding.utf8;
+
 import std.net;
 
 actor Reader {
@@ -23,7 +25,10 @@ actor Reader {
             .Ok(conn) => conn,
             .Err(_) => panic(f"network setup failed"),
         };
-        let body = await conn.read_string();
+        let body = utf8.decode(await conn.read()) handle error {
+            println(f"invalid UTF-8: {error}");
+            return;
+        };
         println(f"reader-received: {body}");
         let _ = conn.close();
     }

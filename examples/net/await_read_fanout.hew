@@ -10,6 +10,8 @@
 //! deposit each socket's bytes into the right parked continuation, not cross
 //! them. A correct run prints `reader-i-got: payload-i` for every i.
 
+import std.encoding.utf8;
+
 import std.net;
 
 const READER_COUNT: i64 = 4;
@@ -24,7 +26,10 @@ actor Reader {
             .Ok(conn) => conn,
             .Err(_) => panic(f"network setup failed"),
         };
-        let body = await conn.read_string();
+        let body = utf8.decode(await conn.read()) handle error {
+            println(f"invalid UTF-8: {error}");
+            return;
+        };
         println(f"reader-{id}-got: {body}");
         let _ = conn.close();
     }

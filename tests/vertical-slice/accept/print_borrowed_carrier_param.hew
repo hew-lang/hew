@@ -1,3 +1,4 @@
+import std.encoding.utf8;
 // A by-value `string` parameter is BORROWED: the caller keeps the drop and the
 // callee gets no owner of its own. Printing such a parameter is the first
 // program a new user writes, and it was rejected at direct-call codegen with
@@ -101,7 +102,11 @@ fn print_twice_then_length(k: string) {
 
 fn print_bytes_param(b: bytes) {
     println(b.len());
-    println(b.to_string());
+    let decoded_b = utf8.decode(b) handle error {
+        println(f"invalid UTF-8: {error}");
+        return;
+    };
+    println(decoded_b);
 }
 
 fn print_vec_param(v: Vec<string>) {

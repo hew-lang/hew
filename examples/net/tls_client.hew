@@ -6,9 +6,11 @@
 //! surface (`tls.connect` / `tls.write` / `tls.read` / `tls.close`). The method
 //! form (`stream.read(n)`) is intentionally NOT used — it is not supported yet.
 //! Request/response bodies are `bytes`; build a request payload with the public
-//! `string.to_bytes()` surface and decode a response with `bytes.to_string()`.
+//! `string.to_bytes()` surface and decode a response with `utf8.decode()`.
 //! The short write is detected with a fail-closed guard so the program
 //! terminates cleanly instead of blocking on a read that will never arrive.
+
+import std.encoding.utf8;
 
 import std.net.tls;
 
@@ -28,7 +30,11 @@ fn main() {
     if sent == want {
         match tls.read(stream, 256) {
             .Ok(data) => {
-                let text = data.to_string();
+                let text = utf8.decode(data) handle error {
+                    println(f"invalid UTF-8: {error}");
+                    tls.close(stream);
+                    return;
+                };
                 let crlf = "\r\n";
                 let status_line = match text.find(crlf) {
                     .Some(cut) => text.slice(0, cut),

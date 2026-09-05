@@ -1,10 +1,18 @@
+import std.encoding.utf8;
+
 extern "C" {
     fn hew_bytes_from_str(s: string) -> bytes;
 }
 
 fn main() -> i64 {
-    let b: bytes = unsafe { hew_bytes_from_str("abcdef") };
+    let b: bytes = unsafe {
+        hew_bytes_from_str("abcdef")
+    };
     let slice: bytes = b[..3];
-    println(slice.to_string());
+    let decoded_slice = utf8.decode(slice) handle error {
+        println(f"invalid UTF-8: {error}");
+        return 1;
+    };
+    println(decoded_slice);
     slice.len()
 }

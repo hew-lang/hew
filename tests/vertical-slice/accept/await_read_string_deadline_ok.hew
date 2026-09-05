@@ -1,9 +1,11 @@
-// Accept fixture (NEW-6c): `await conn.read_string() | after d` — peer writes
+// Accept fixture (NEW-6c): `await conn.read() | after d` — peer writes
 // before the long deadline, so the suspending read resolves to
-// `Ok(string)` and the deadline timer is cancelled without a spurious timeout.
+// `Ok(bytes)` and the deadline timer is cancelled without a spurious timeout.
 //
-// Exit-code contract: read-before-deadline Ok(string) -> 42; timeout Err -> 7;
-// no actor exit -> main fallback 99.
+// Exit-code contract: read-before-deadline valid UTF-8 -> 42; timeout Err -> 7;
+// invalid UTF-8 -> 8; no actor exit -> main fallback 99.
+import std.encoding.utf8;
+
 import std.net.{Listener};
 
 actor Reader {
@@ -14,8 +16,11 @@ actor Reader {
             .Ok(conn) => conn,
             .Err(_) => return,
         };
-        let code = match await conn.read_string() | after 5s {
-            .Ok(_body) => 42,
+        let code = match await conn.read() | after 5s {
+            .Ok(data) => match utf8.decode(data) {
+                .Ok(_text) => 42,
+                .Err(_error) => 8,
+            },
             .Err(_e) => 7,
         };
         exit(code);

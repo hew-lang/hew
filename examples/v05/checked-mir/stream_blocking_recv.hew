@@ -1,3 +1,4 @@
+import std.encoding.utf8;
 // MIR-corpus fixture: blocking stream recv/try_recv from a
 // context-free caller.
 //
@@ -14,11 +15,23 @@ fn main() {
     };
     sink.close();
     match input.recv() {
-        .Some(b) => println(b.to_string()),
+        .Some(b) => {
+            let text = utf8.decode(b) handle error {
+                println(f"invalid UTF-8: {error}");
+                return;
+            };
+            println(text);
+        },
         .None => println("eof"),
     }
     match input.try_recv() {
-        .Some(b) => println(b.to_string()),
+        .Some(b) => {
+            let text = utf8.decode(b) handle error {
+                println(f"invalid UTF-8: {error}");
+                return;
+            };
+            println(text);
+        },
         .None => println("empty"),
     }
     input.close();

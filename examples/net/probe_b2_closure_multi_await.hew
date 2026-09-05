@@ -6,6 +6,8 @@
 //! MIR deliberately rejects this fixture with `suspension inside a closure`
 //! before code generation.
 
+import std.encoding.utf8;
+
 import std.net.{Listener};
 
 extern "C" {
@@ -22,11 +24,20 @@ actor Reader {
             .Err(_) => panic(f"network setup failed"),
         };
         let read_twice = || {
-            let first = await conn.read_string();
-            let second = await conn.read_string();
-            f"{first}|{second}"
+            let first = utf8.decode(await conn.read());
+            let second = utf8.decode(await conn.read());
+            (first, second)
         };
-        let body = read_twice();
+        let (first_result, second_result) = read_twice();
+        let first = first_result handle error {
+            println(f"invalid UTF-8: {error}");
+            return;
+        };
+        let second = second_result handle error {
+            println(f"invalid UTF-8: {error}");
+            return;
+        };
+        let body = f"{first}|{second}";
         println(f"reader-received: {body}");
         let _ = conn.close();
     }

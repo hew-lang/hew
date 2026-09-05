@@ -1,3 +1,4 @@
+import std.encoding.utf8;
 // MIR-corpus fixture: typed byte stream pipe — awaited send/recv + close.
 //
 // Pins the suspending sink write (lowered as a Suspend carrier; the
@@ -21,7 +22,13 @@ actor Echo {
         while !done {
             let item = await input.recv();
             match item {
-                .Some(b) => println(b.to_string()),
+                .Some(b) => {
+                    let text = utf8.decode(b) handle error {
+                        println(f"invalid UTF-8: {error}");
+                        return;
+                    };
+                    println(text);
+                },
                 .None => {
                     done = true;
                 },

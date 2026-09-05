@@ -6,6 +6,8 @@
 // Today invocation sites cannot select a matching driver safely, so MIR
 // deliberately rejects this fixture with `suspension inside a closure` before
 // code generation; none of the runtime crash/reply behavior below is executed.
+import std.encoding.utf8;
+
 import std.net.{Listener};
 
 extern "C" {
@@ -24,9 +26,12 @@ actor Reader {
             if trigger >= 0 {
                 panic("reader crashed mid suspending-closure await");
             }
-            await conn.read_string()
+            utf8.decode(await conn.read())
         };
-        let body = read_once();
+        let body = read_once() handle error {
+            println(f"invalid UTF-8: {error}");
+            return -1;
+        };
         println(f"reader-received: {body}");
         let _ = conn.close();
         7

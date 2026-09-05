@@ -20,6 +20,7 @@
 //! ```
 
 import std.string;
+
 import std.encoding.utf8;
 
 /// A parsed URL.
@@ -232,7 +233,9 @@ fn decode_impl(s: string) -> string {
         out.push(b);
         i = i + 1;
     }
-    utf8.decode(out) handle error { "" }
+    utf8.decode(out) handle error {
+        ""
+    }
 }
 
 /// Decode an `application/x-www-form-urlencoded` query string into
@@ -299,7 +302,9 @@ fn decode_form_component(s: string) -> string {
         out.push(b);
         i = i + 1;
     }
-    utf8.decode(out) handle error { "" }
+    utf8.decode(out) handle error {
+        ""
+    }
 }
 
 /// Build a percent-encoded query string from a newline-separated list of

@@ -14,6 +14,8 @@
 //! The `Listener` / `Connection` handles are handler LOCALS — an opaque handle
 //! in actor state is rejected by the supervisor-restart clone gate.
 
+import std.encoding.utf8;
+
 import std.net;
 
 import std.net.http.http_async_server;
@@ -37,7 +39,10 @@ actor Server {
             var reads = 0;
             var done = false;
             while !done {
-                let chunk = await conn.read_string();
+                let chunk = utf8.decode(await conn.read()) handle error {
+                    println(f"invalid UTF-8: {error}");
+                    return;
+                };
                 reads = reads + 1;
                 if string.is_empty(chunk) {
                     done = true;
@@ -83,7 +88,10 @@ actor Client {
         var reads = 0;
         var done = false;
         while !done {
-            let chunk = await conn.read_string();
+            let chunk = utf8.decode(await conn.read()) handle error {
+                println(f"invalid UTF-8: {error}");
+                return;
+            };
             reads = reads + 1;
             if string.is_empty(chunk) {
                 done = true;

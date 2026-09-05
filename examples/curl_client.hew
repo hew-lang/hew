@@ -17,9 +17,7 @@ import std.fs;
 
 import std.os;
 
-extern "C" {
-    fn hew_bytes_to_string(data: bytes) -> string;
-}
+import std.encoding.utf8;
 
 // Parse host and path from an http:// URL.
 // Returns "host" via the first call, "path" via the second.
@@ -137,7 +135,7 @@ fn main() {
 
     // Read response in chunks
     var total_bytes: i64 = 0;
-    var full_response: string = "";
+    var response_bytes = bytes.new();
     var reading = true;
     while reading {
         let chunk_bytes = conn.read();
@@ -146,16 +144,19 @@ fn main() {
             reading = false;
         } else {
             total_bytes = total_bytes + chunk_len;
-            let chunk = unsafe {
-                hew_bytes_to_string(chunk_bytes)
-            };
-            full_response = full_response + chunk;
+            response_bytes.append(chunk_bytes);
             print(f"  Progress: {total_bytes} bytes received");
         }
     }
     println("");
     println(f"  Total: {total_bytes} bytes received");
 
+    // Validate after collecting the response so UTF-8 scalars may span reads.
+    let full_response = utf8.decode(response_bytes) handle error {
+        println(f"invalid UTF-8 response: {error}");
+        conn.close();
+        return;
+    };
     // Separate headers from body
     let header_end = full_response.find("\r\n\r\n").unwrap_or(-1);
     let response_len = full_response.len();

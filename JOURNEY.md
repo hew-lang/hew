@@ -396,3 +396,16 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
   Both statement and expression returns preserve member access, calls, indexing,
   propagation and operators; ambiguous explicit failure payloads use a named
   local or a block. This lets a handler return its error's formatted description.
+
+### Explicit byte decoding
+
+- Retired the implicit bytes-to-string method and its obsolete runtime symbol.
+  TCP and QUIC text reads now validate UTF-8, with transport and decoding errors
+  remaining distinct ordinary values.
+- Hex and Base64 encoders construct their guaranteed-ASCII strings directly.
+  URL decoding uses the shared UTF-8 validator, preserves decoded NUL and keeps
+  its documented empty-string recovery. URL encoding no longer mistakes byte
+  offsets after a multi-byte scalar for string positions.
+- Byte-oriented examples and retained fixtures now decode explicitly and handle
+  errors. The downloader collects bytes before decoding so a scalar can span
+  network reads. Existing SIR resource/collection gaps still limit execution.

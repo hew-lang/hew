@@ -2,10 +2,12 @@
 
 import std.net.url;
 
+import std.string;
+
 import std.testing;
 
 #[test]
-fn test_encode_preserves_existing_ascii_behavior() {
+fn test_encode_preserves_existing_ascii_behaviour() {
     testing.assert_eq_str(url.encode(""), "");
     testing.assert_eq_str(url.encode("hello world"), "hello%20world");
     testing.assert_eq_str(url.encode("a=1&b=2"), "a%3D1%26b%3D2");
@@ -14,10 +16,11 @@ fn test_encode_preserves_existing_ascii_behavior() {
 #[test]
 fn test_encode_utf8_bytes_as_uppercase_hex() {
     testing.assert_eq_str(url.encode("café"), "caf%C3%A9");
+    testing.assert_eq_str(url.encode("éx🙂z"), "%C3%A9x%F0%9F%99%82z");
 }
 
 #[test]
-fn test_decode_preserves_existing_behavior() {
+fn test_decode_preserves_existing_behaviour() {
     testing.assert_eq_str(url.decode("hello%20world"), "hello world");
     testing.assert_eq_str(url.decode("bad%2Zseq"), "bad%2Zseq");
     testing.assert_eq_str(url.decode("plus+sign"), "plus+sign");
@@ -29,9 +32,13 @@ fn test_decode_invalid_utf8_returns_empty_string() {
 }
 
 #[test]
-fn test_decode_truncates_at_decoded_nul() {
-    testing.assert_eq_str(url.decode("%00"), "");
-    testing.assert_eq_str(url.decode("a%00b"), "a");
+fn test_decode_preserves_decoded_nul_and_unicode() {
+    let nul = string.from_char(0);
+    testing.assert_eq_str(url.decode("%00"), nul);
+    testing.assert_eq_str(url.decode("a%00b"), "a" + nul + "b");
+    testing.assert_eq_str(url.decode("%C3%A9x%F0%9F%99%82z"), "éx🙂z");
+    testing.assert_eq_str(url.decode("%E2%82"), "");
+    testing.assert_eq_str(url.decode("%ED%A0%80"), "");
 }
 
 #[test]
@@ -52,6 +59,14 @@ fn test_decode_query_decodes_form_pairs_in_order() {
     testing.assert_eq_str(pairs[2].1, "");
     testing.assert_eq_str(pairs[3].0, "a");
     testing.assert_eq_str(pairs[3].1, "b=c");
+}
+
+#[test]
+fn test_decode_query_preserves_nul_and_rejects_invalid_utf8() {
+    let pairs = url.decode_query("value=a%00b&invalid=%FF&incomplete=%E2%82");
+    testing.assert_eq_str(pairs[0].1, "a" + string.from_char(0) + "b");
+    testing.assert_eq_str(pairs[1].1, "");
+    testing.assert_eq_str(pairs[2].1, "");
 }
 
 #[test]
@@ -86,9 +101,6 @@ fn test_port_returns_some_when_explicit() {
     }
 }
 
-// `#[ignore]`-tracked: `encode_query` calls `encode` internally and hits the
-// same pre-existing char-vs-byte `byte_char` abort. See the note above the
-// `encode` tests. Tracked: std::net::url encoder byte-model redesign.
 #[test]
 fn test_encode_query_skips_invalid_lines_and_uses_first_equals() {
     testing.assert_eq_str(url.encode_query("name=hello world\nskip-me\na=b=c"), "name=hello%20world&a=b%3Dc");

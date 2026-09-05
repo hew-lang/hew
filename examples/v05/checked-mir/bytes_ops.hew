@@ -1,3 +1,4 @@
+import std.encoding.utf8;
 // MIR-corpus fixture: bytes value runtime surface.
 //
 // Pins the dedicated BytesTriple ABI: `hew_bytes_len`, `hew_bytes_index`
@@ -13,7 +14,11 @@ fn main() -> i64 {
     b.push(33);
     let slice: bytes = b[1..3];
     println(slice.len());
-    println(slice.to_string());
+    let decoded_slice = utf8.decode(slice) handle error {
+        println(f"invalid UTF-8: {error}");
+        return 1;
+    };
+    println(decoded_slice);
     let popped: u8 = b.pop();
     println(popped as i64);
     b.set(0, 65);

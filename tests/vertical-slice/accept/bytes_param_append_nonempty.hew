@@ -6,6 +6,8 @@
 //! at scope exit — the callee borrows the parameter and never frees it
 //! (`by-value-heap-params-are-borrows`). A successful run prints `hello world`.
 
+import std.encoding.utf8;
+
 fn append_world(b: bytes) {
     b.push(32); // ' '
     b.push(119); // 'w'
@@ -18,6 +20,10 @@ fn append_world(b: bytes) {
 fn main() -> i64 {
     let b: bytes = "hello".to_bytes();
     append_world(b);
-    println(b.to_string());
+    let decoded_b = utf8.decode(b) handle error {
+        println(f"invalid UTF-8: {error}");
+        return 1;
+    };
+    println(decoded_b);
     0
 }

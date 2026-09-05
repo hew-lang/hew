@@ -1597,6 +1597,7 @@ internal = [
   "hew_bytes_literal_new",
   "hew_bytes_push_owned",
   "hew_string_literal_new",
+  "hew_string_to_bytes_owned",
   "hew_is_shutting_down",
   # SYSTEM-LANE PROVENANCE BOUNDARY (both entries). These are the stable-pid
   # forwarders to `hew_actor_link` / `hew_actor_monitor`: they resolve two
@@ -6800,5 +6801,14 @@ discharge-depth = "none"
 symbol = "hew_bytes_push_owned"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# Storage pointers are borrowed; the semantic runtime-operation descriptor
+# records the fresh owner initialized through the output pointer.
+[[ownership.contracts]]
+symbol = "hew_string_to_bytes_owned"
+result = "none"
+params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"

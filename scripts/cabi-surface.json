@@ -14821,6 +14821,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "internal",
+      "extent": "no-in-signature-extent",
+      "nul": "nul-terminated",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_to_bytes_owned( *const c_char, *mut BytesTriple, )",
+        "wasm32-wasip1": "fn hew_string_to_bytes_owned( *const c_char, *mut BytesTriple, )"
+      },
+      "symbol": "hew_string_to_bytes_owned"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",

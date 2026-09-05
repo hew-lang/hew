@@ -1466,6 +1466,26 @@ pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> crate::bytes::
     unsafe { crate::bytes::hew_bytes_from_str(s.cast::<u8>()) }
 }
 
+/// Initialize an owned bytes result through the private physical calling ABI.
+///
+/// The input remains borrowed. The output owns a fresh copy of its UTF-8 bytes,
+/// excluding the NUL terminator, and must be released with `hew_bytes_drop`.
+/// Using output storage avoids target-specific C aggregate return conventions.
+///
+/// # Safety
+///
+/// `value` must be a valid NUL-terminated string. `out` must point to aligned,
+/// writable, uninitialized storage distinct from the input allocation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_to_bytes_owned(
+    value: *const c_char,
+    out: *mut crate::bytes::BytesTriple,
+) {
+    // SAFETY: the caller supplies a valid borrowed string and unique output
+    // storage. The conversion transfers its sole result owner into that storage.
+    unsafe { out.write(hew_string_to_bytes(value)) };
+}
+
 /// Join a `Vec<String>` into a single string with `sep` between elements.
 ///
 /// Convenience alias for [`hew_vec_join_str`] used by the `string_join` builtin.
@@ -1851,6 +1871,39 @@ mod tests {
     #[cfg(target_os = "macos")]
     use crate::cabi::alloc_cstring_from_str;
     use std::ffi::CString;
+
+    #[test]
+    fn to_bytes_owned_output_survives_source_release() {
+        let mut source = std::ptr::null_mut();
+        let mut output = std::mem::MaybeUninit::<crate::bytes::BytesTriple>::uninit();
+        // SAFETY: literal input is readable and both outputs are writable.
+        unsafe {
+            hew_string_literal_new(b"A\xc3\xa9".as_ptr(), 3, &raw mut source);
+            hew_string_to_bytes_owned(source, output.as_mut_ptr());
+            assert_eq!(CStr::from_ptr(source).to_bytes(), b"A\xc3\xa9");
+            hew_string_drop(source);
+            let bytes = output.assume_init();
+            assert_eq!(bytes.len, 3);
+            assert_eq!(
+                std::slice::from_raw_parts(bytes.ptr.add(bytes.offset as usize), 3),
+                b"A\xc3\xa9"
+            );
+            crate::bytes::hew_bytes_drop(bytes.ptr);
+        }
+    }
+
+    #[test]
+    fn to_bytes_owned_empty_input_initializes_empty_output() {
+        let mut output = std::mem::MaybeUninit::<crate::bytes::BytesTriple>::uninit();
+        // SAFETY: input is a valid empty C string and output is writable.
+        unsafe {
+            hew_string_to_bytes_owned(c"".as_ptr(), output.as_mut_ptr());
+            let bytes = output.assume_init();
+            assert_eq!(bytes.len, 0);
+            assert_eq!(bytes.offset, 0);
+            crate::bytes::hew_bytes_drop(bytes.ptr);
+        }
+    }
 
     #[test]
     fn literal_new_copies_exact_bytes_into_managed_owner() {

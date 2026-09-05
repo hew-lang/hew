@@ -328,3 +328,15 @@ fn collection_field_insertion_snapshots_its_own_parent_argument() {
     );
     assert!(verify_module(&module).is_empty());
 }
+
+#[test]
+fn permanent_selected_equality_sources_verify() {
+    for source in [
+        include_str!("../../tests/core-acceptance/cases/selected-composite-equality.hew"),
+        include_str!("../../tests/core-acceptance/cases/selected-equality-callback-fault.hew"),
+        include_str!("../../tests/core-acceptance/cases/selected-equality-read-order.hew"),
+        include_str!("../../tests/core-acceptance/cases/collection-parent-argument.hew"),
+    ] {
+        lower_source(source);
+    }
+}

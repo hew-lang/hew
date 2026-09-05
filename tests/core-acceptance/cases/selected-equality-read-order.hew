@@ -1,0 +1,16 @@
+fn same(left: Vec<string>, right: Vec<string>) -> bool { left == right }
+fn main() -> i64 {
+    var left = ["kept".to_upper()];
+    let right = left;
+    println(left == { left.clear(); right });
+    println(left.len());
+    var argument = ["argument".to_upper()];
+    let expected = argument;
+    println(same(argument, { argument.clear(); expected }));
+    println(argument.len());
+    var text = "old".to_upper();
+    let combined = text + { text = "new".to_upper(); ":tail" };
+    println(combined);
+    println(text);
+    0
+}

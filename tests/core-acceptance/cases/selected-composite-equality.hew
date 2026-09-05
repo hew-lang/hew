@@ -1,0 +1,34 @@
+type Label<T> { value: T, text: string }
+type Wrapped<T> { value: T }
+impl<T> Eq for Label<T> {
+    fn eq(self, other: Label<T>) -> bool { self.text.len() == other.text.len() }
+}
+fn main() -> i64 {
+    let left = ["one".to_upper(), "two".to_upper()];
+    var right = ["one".to_upper(), "two".to_upper()];
+    println(left == right);
+    right.push("tail".to_upper());
+    println(left != right);
+    println((left, "owned".to_upper()) == (["one".to_upper(), "two".to_upper()], "owned".to_upper()));
+    let first = Wrapped { value: Label { value: "first".to_upper(), text: "one".to_upper() } };
+    let second = Wrapped { value: Label { value: "second".to_upper(), text: "two".to_upper() } };
+    println(first == second);
+    let some_left: Option<Vec<string>> = Some(left);
+    let some_right: Option<Vec<string>> = Some(["one".to_upper(), "two".to_upper()]);
+    let absent: Option<Vec<string>> = None;
+    println(some_left == some_right);
+    println(some_left != absent);
+    let success: Result<Vec<string>, string> = Ok(left);
+    let success_copy: Result<Vec<string>, string> = Ok(["one".to_upper(), "two".to_upper()]);
+    let failure: Result<Vec<string>, string> = Err("fault".to_upper());
+    let failure_copy: Result<Vec<string>, string> = Err("fault".to_upper());
+    println(success == success_copy);
+    println(success != failure);
+    println(failure == failure_copy);
+    let nan = 0.0 / 0.0;
+    println(nan == nan);
+    println(Wrapped { value: nan } == Wrapped { value: nan });
+    println(0.0 == -0.0);
+    println(Wrapped { value: 0.0 } != Wrapped { value: -0.0 });
+    0
+}

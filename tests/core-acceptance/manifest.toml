@@ -785,3 +785,51 @@ timeout_seconds = 15
 stdout = "1\nREPLACEMENT\nFIRST\n1\ntrue\nfalse\ntrue\ntrue\n1\n"
 stderr = ""
 exit = 0
+
+[[case]]
+id = "selected-composite-equality"
+intent = "Ordinary equality composes through owning values and exact generic user methods while preserving the documented scalar and structural float distinction."
+source = "cases/selected-composite-equality.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\ntrue\ntrue\ntrue\n"
+stderr = ""
+exit = 0
+
+[[case]]
+id = "selected-equality-callback-fault"
+intent = "Selected equality propagates callback faults while ending borrowed field loans and releasing callback locals, retained siblings and operands."
+source = "cases/selected-equality-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "selected-equality-read-order"
+intent = "Equality, direct calls and runtime operations capture earlier operands before later arguments mutate their owners."
+source = "cases/selected-equality-read-order.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\n0\ntrue\n0\nOLD:tail\nNEW\n"
+stderr = ""
+exit = 0
+
+[[case]]
+id = "collection-parent-argument"
+intent = "Inserting an owning parent into its own collection field snapshots the input before reconstructing the parent and preserves independent copies."
+source = "cases/collection-parent-argument.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nROOT\n0\nROOT\n0\n"
+stderr = ""
+exit = 0

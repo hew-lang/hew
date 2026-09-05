@@ -1377,3 +1377,13 @@ by the regression; the corrected source passes verification.
 All SIR library and integration tests and scoped Rust lint pass. LLVM emission
 for ValueCall remains in the separately owned physical implementation; no new
 native equality acceptance is claimed at this checkpoint.
+
+## Selected equality acceptance sources
+
+Added permanent native and sanitizer oracles for composite equality with generic
+user Eq, Option/Result tag and payload distinctions, scalar versus wrapped float
+semantics, callback cleanup through a borrowed field, argument evaluation order
+across equality/direct/runtime calls and insertion of a parent into its own
+collection field. Every source passes the shared SIR verifier. Native execution
+is pending physical selected-call emission; these expected results are not yet
+accepted as executable evidence.

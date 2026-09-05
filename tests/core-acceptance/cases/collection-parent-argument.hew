@@ -1,0 +1,13 @@
+type Tree { label: string, children: Vec<Tree> }
+fn main() -> i64 {
+    var tree = Tree { label: "root".to_upper(), children: Vec.new() };
+    tree.children.push(tree);
+    println(tree.children.len());
+    println(tree.children[0].label);
+    println(tree.children[0].children.len());
+    let copy = tree;
+    tree.children.clear();
+    println(copy.children[0].label);
+    println(tree.children.len());
+    0
+}

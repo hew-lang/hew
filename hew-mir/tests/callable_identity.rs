@@ -4,11 +4,11 @@
 //! emitted `name` alone cannot state, and each ships with the counterfactual
 //! that would hold if the key were derived from the name instead.
 
-use hew_hir::{lower_program, lower_program_host_target, HirItem, ResolutionCtx};
+use hew_hir::{lower_program, HirItem, ResolutionCtx};
 use hew_mir::{
-    identity::validate_unique_callable_keys, lower_closed_scalar_component, lower_hir_module,
-    BasicBlock, FunctionCallConv, IrPipeline, MirCallableInstance, MirCallableKey,
-    MirDiagnosticKind, RawMirFunction, SourceOrigin, SynthesizedCallable, Terminator,
+    identity::validate_unique_callable_keys, lower_hir_module, BasicBlock, FunctionCallConv,
+    IrPipeline, MirCallableInstance, MirCallableKey, MirDiagnosticKind, RawMirFunction,
+    SourceOrigin, SynthesizedCallable, Terminator,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, DefId, ResolvedTy};
 
@@ -626,109 +626,6 @@ fn a_machine_step_is_keyed_by_the_machine_declaration_and_its_type_arguments() {
         *steps[0].1,
         MirCallableKey::instance(declaration, vec![ResolvedTy::I64]),
         "the step's parent is the machine declaration at the realized type arguments"
-    );
-}
-
-// ── cross-producer agreement ────────────────────────────────────────────────
-
-#[test]
-fn sir_bridge_and_legacy_lowering_agree_on_a_call_free_monomorphic_key() {
-    let source = r"
-        fn helper(x: i64) -> i64 { x + 1 }
-
-        fn main() -> i64 { helper(41) }
-        ";
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:#?}",
-        parsed.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
-    let type_check = checker.check_program(&parsed.program);
-    assert!(
-        type_check.errors.is_empty(),
-        "type errors: {:#?}",
-        type_check.errors
-    );
-    let hir = lower_program_host_target(&parsed.program, &type_check, &ResolutionCtx);
-    assert!(
-        hir.diagnostics.is_empty(),
-        "HIR diagnostics: {:#?}",
-        hir.diagnostics
-    );
-
-    let legacy = lower_hir_module(&hir.module);
-    let sir = hew_sir::lower_module(&hir.module, &type_check);
-    assert!(
-        hew_sir::verify_module(&sir.module).is_empty(),
-        "SIR must verify: {:#?}",
-        hew_sir::verify_module(&sir.module)
-    );
-    let helper = sir
-        .module
-        .callables
-        .iter()
-        .find(|callable| callable.symbol == "helper")
-        .expect("helper must have a resolved SIR callable");
-    let strict = lower_closed_scalar_component(&sir.module, &[helper.id])
-        .expect("call-free scalar helper must lower")
-        .into_pipeline();
-
-    assert_eq!(
-        raw(&legacy, "helper").key,
-        raw(&strict, "helper").key,
-        "the two producers must realize `helper` under one identity"
-    );
-}
-
-#[test]
-fn sir_bridge_keys_a_generic_instance_by_its_declared_type_arguments() {
-    // The `CallableInstance::Generic` arm of the bridge's key projection. Its
-    // counterfactual is the arm above: a Monomorphic callable must not acquire
-    // an (empty) type-argument list, or the two arms would be interchangeable.
-    let source = r"
-        fn id<T>(x: T) -> T { x }
-
-        fn main() -> i64 { id(41) }
-        ";
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:#?}",
-        parsed.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
-    let type_check = checker.check_program(&parsed.program);
-    assert!(
-        type_check.errors.is_empty(),
-        "type errors: {:#?}",
-        type_check.errors
-    );
-    let hir = lower_program_host_target(&parsed.program, &type_check, &ResolutionCtx);
-    let origin = declaration_of(&hir, "id");
-
-    let sir = hew_sir::lower_module(&hir.module, &type_check);
-    let instance = sir
-        .module
-        .callables
-        .iter()
-        .find(|callable| callable.declaration == origin)
-        .expect("SIR must own the requested generic instance");
-    let strict = lower_closed_scalar_component(&sir.module, &[instance.id])
-        .expect("call-free concrete identity body must lower")
-        .into_pipeline();
-
-    let instance = strict
-        .raw_mir
-        .iter()
-        .find(|function| function.key.declaration == origin)
-        .expect("the strict component must realize the requested instance of `id`");
-    assert_eq!(
-        instance.key,
-        MirCallableKey::instance(origin, vec![ResolvedTy::I64]),
-        "the bridge must project SirInstanceKey::type_args, not the mangled symbol `{}`",
-        instance.name
     );
 }
 

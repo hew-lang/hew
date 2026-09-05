@@ -1,0 +1,25 @@
+fn source(mode: i64) -> Result<Result<string, string>, string> {
+    if mode == 0 { return Err("outer".to_upper()); }
+    if mode == 1 { return Ok(Err("inner".to_upper())); }
+    Ok(Ok("value".to_upper()))
+}
+
+fn route(mode: i64) -> Result<string, string> {
+    let text = source(mode)? handle error {
+        println(error);
+        "recovered".to_upper()
+    };
+    Ok(text)
+}
+
+fn report(mode: i64) {
+    let text = route(mode) handle error { return println(error); };
+    println(text);
+}
+
+fn main() -> i64 {
+    report(0);
+    report(1);
+    report(2);
+    0
+}

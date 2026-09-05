@@ -3,6 +3,18 @@
 # failures are failures, not a differential pass.
 
 [[case]]
+id = "propagation-handler-boundary"
+intent = "Propagation while evaluating a handler operand bypasses that handler; only the resulting inner error is recovered locally."
+source = "cases/propagation-handler-boundary.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "OUTER\nINNER\nRECOVERED\nVALUE\n"
+exit = 0
+
+[[case]]
 id = "scalar-variant-patterns"
 intent = "Float and character payloads survive repeated calls and select ordered exact or wildcard patterns independently."
 source = "cases/scalar-variant-patterns.hew"

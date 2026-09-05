@@ -839,3 +839,29 @@ No shared IR, verifier or physical producer changes belong to this checkpoint.
 Map index, clone/emptiness composition and the complete permanent source intake
 remain follow-up work. Native Map/Set operation emission and Hash/Eq capability
 selection are still being implemented by their named owners.
+
+## Recursive collection admission
+
+Start from `6086afcf7`. Extend the existing constructor and iterator clone
+walks with the container depth at each active declaration. A cycle may close
+through an entry record after its Vec edge, while an unrelated outer buffer
+cannot admit a later inline cycle. Keep leaf ownership and key capabilities.
+
+Focused tests reproduce the original carrier rejection and cover generic entry
+records, inline cycles below outer buffers, mixed/growing generic paths,
+resource clone refusal and finite nested generic Copy values. The mixed-path
+negative also exposed a stack overflow when Copy-layout parameter expansion
+restarted its walk; reuse the existing declaration-termination authority before
+that restart. No type-fact or TypeContext changes are needed.
+
+Focused and full checker tests and scoped JSON Clippy pass. Native carrier
+retry follows this checker checkpoint; fixture intake remains with integration.
+
+The unchanged recursive carrier now executes at O0 and O2, including paired
+compiler/runtime ASan with leak detection. Copies, replacement mutations and
+children retained after parent destruction pass the embedded checks. The first
+stdout comparison exposed a fixture oracle error: `.len()` counts Unicode
+scalars, so the Unicode/NUL leaf length is seven, not its nine UTF-8 bytes.
+The handoff preserves that first result and supplies the corrected expectation.
+No further compiler boundary was encountered by this carrier; JSON/YAML
+conversion and fallible Hash/Eq callback contracts remain separate work.

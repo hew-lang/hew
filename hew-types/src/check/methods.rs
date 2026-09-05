@@ -6,6 +6,7 @@ use super::*;
 use crate::builtin_names::BuiltinNamedType;
 use crate::check::admissibility::{
     compute_copy_record_layout, hash_key_record_layout, identity_aggregate_layout,
+    CollectionClonePath,
 };
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
@@ -6450,8 +6451,10 @@ impl Checker {
                         TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
                     );
                     if is_record_or_enum
-                        && !self
-                            .record_enum_collection_fields_clonable(elem_ty, &mut HashSet::new())
+                        && !self.record_enum_collection_fields_clonable(
+                            elem_ty,
+                            &mut CollectionClonePath::default(),
+                        )
                     {
                         return "it contains a `Vec`/`HashMap`/`HashSet` field whose \
                                 element type has no clone/drop thunk path for the \
@@ -6632,7 +6635,7 @@ impl Checker {
     }
 
     pub(super) fn vec_owned_element_admissible(&self, elem_ty: &Ty) -> bool {
-        self.vec_owned_element_admissible_on_path(elem_ty, &mut HashSet::new())
+        self.vec_owned_element_admissible_on_path(elem_ty, &mut CollectionClonePath::default())
     }
 
     /// [`Self::vec_owned_element_admissible`] carrying the record/enum names
@@ -6643,7 +6646,7 @@ impl Checker {
     fn vec_owned_element_admissible_on_path(
         &self,
         elem_ty: &Ty,
-        visiting: &mut HashSet<String>,
+        visiting: &mut CollectionClonePath,
     ) -> bool {
         match elem_ty {
             // A trait-object slot owns its heap-promoted concrete box. The
@@ -6747,31 +6750,23 @@ impl Checker {
                 // are proven by the owned-element leak oracles. A field holding
                 // an UNCLONABLE collection element (function/closure, machine,
                 // opaque, `Rc`) fails the per-arg clonability check and keeps the
-                // record fail-closed. The recursion escape is keyed on the
-                // CONTAINER edge only; a directly self-referential record with no
-                // container indirection still reaches `RecordCycle` in MIR
-                // (LESSONS `recursive-admission-needs-indirection-witness`).
+                // record fail-closed. Re-entry is permitted only when that
+                // repeated declaration's own cycle crossed a container value
+                // buffer; inline cycles are rejected here before lowering.
                 self.record_enum_collection_fields_clonable(elem_ty, visiting)
             }
             _ => false,
         }
     }
 
-    /// True when every builtin-collection field transitively reachable from a
-    /// record/enum owned element `ty` is CLONABLE by the synthesized in-place
-    /// thunk (see [`Self::vec_owned_element_admissible`]). `visiting` carries the
-    /// record/enum names on the active walk. It is the single authority for
-    /// termination, while the container-argument helpers below are the only
-    /// places allowed to treat a re-entry as an indirection witness: a
-    /// `Vec<R>` element or `HashMap<_, R>` value can close through the heap
-    /// buffer. A direct member, a `HashMap<R, _>` key, and a `HashSet<R>`
-    /// element remain inline and therefore reject on re-entry.
-    /// Non-collection fields (`string`/`bytes`/primitives) carry no container
-    /// and are trivially clonable; nested record/enum/tuple fields recurse.
+    /// Prove collection fields with the active declaration path. Each repeated
+    /// type cycle needs an intervening Vec/map-value buffer; an unrelated
+    /// outer buffer cannot make an inner inline cycle finite. Key capability
+    /// checks are unchanged and never introduce an indirection witness here.
     fn record_enum_collection_fields_clonable(
         &self,
         ty: &Ty,
-        visiting: &mut HashSet<String>,
+        visiting: &mut CollectionClonePath,
     ) -> bool {
         match ty {
             Ty::Named {
@@ -6810,12 +6805,8 @@ impl Checker {
                     return false;
                 };
                 let visit_key = type_def.name.clone();
-                if !visiting.insert(visit_key.clone()) {
-                    // We reached this nominal through an inline member. A
-                    // descriptor-backed container must witness the re-entry
-                    // before this point; otherwise the layout is infinitely
-                    // sized and its clone/drop recursion is not admissible.
-                    return false;
+                if let Some(indirected) = visiting.enter(&visit_key) {
+                    return indirected;
                 }
                 let ok = type_def.fields.values().all(|field_ty| {
                     let field_ty =
@@ -6837,7 +6828,7 @@ impl Checker {
                         self.record_enum_collection_fields_clonable(&field_ty, visiting)
                     }),
                 });
-                visiting.remove(&visit_key);
+                visiting.leave(&visit_key);
                 ok
             }
             Ty::Tuple(elems) => elems
@@ -6854,39 +6845,17 @@ impl Checker {
         }
     }
 
-    /// True when a builtin-collection field's type argument `a` is a value the
-    /// owned-collection clone/free ABI can deep-clone and release: a record/enum
-    /// already on the active walk (its own thunk recurses through the inner
-    /// collection), a copy primitive / `BitCopy` record, `string`/`bytes`, or a
-    /// nested admissible owned element (record/enum/tuple/nested collection). An
-    /// unclonable arg (function/closure, machine, opaque, `Rc`-bearing) makes the
-    /// enclosing collection field — and thus the record/enum element — fail
-    /// closed.
-    ///
-    /// This is the container edge, so `visiting` is a per-nominal
-    /// container-indirection witness: only a cycle that closes ACROSS this heap
-    /// container is admitted. Nested elements continue the same walk, so a
-    /// mutually recursive group terminates instead of restarting the name set
-    /// on every hop.
-    fn vec_collection_arg_clonable(&self, a: &Ty, visiting: &mut HashSet<String>) -> bool {
+    /// A container value slot adds one indirection to the current path. Keep
+    /// that witness through entry records and other inline members until the
+    /// repeated declaration is reached; capability checks still visit leaves.
+    fn vec_collection_arg_clonable(&self, a: &Ty, visiting: &mut CollectionClonePath) -> bool {
         let resolved = self.subst.resolve(a).materialize_literal_defaults();
-        if let Ty::Named {
-            name,
-            builtin: None,
-            ..
-        } = &resolved
-        {
-            let visit_key = self
-                .lookup_type_def(name)
-                .map_or_else(|| name.clone(), |type_def| type_def.name);
-            if visiting.contains(&visit_key) {
-                return true;
-            }
-        }
-        matches!(&resolved, Ty::String | Ty::Bytes)
-            || crate::check::admissibility::primitive_copy_layout(&resolved, &self.type_defs)
-                .is_some()
-            || self.vec_owned_element_admissible_on_path(&resolved, visiting)
+        visiting.through_container(|visiting| {
+            matches!(&resolved, Ty::String | Ty::Bytes)
+                || crate::check::admissibility::primitive_copy_layout(&resolved, &self.type_defs)
+                    .is_some()
+                || self.vec_owned_element_admissible_on_path(&resolved, visiting)
+        })
     }
 
     fn vec_tuple_owned_field_admissible(&self, ty: &Ty) -> bool {

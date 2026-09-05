@@ -55,7 +55,7 @@ env:
 
 jobs:
   validate-release-version:
-    name: Validate release tag version
+    name: Validate release version and dependencies
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout release source
@@ -89,12 +89,19 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           cache-shared-key: release-license
+          tools: cargo-deny@0.19.6
 
-      - name: Install cargo-about
-        run: cargo install cargo-about --locked --features cli --version 0.9.0
+      - name: Install cargo-about 0.9.0
+        shell: bash
+        run: |
+          archive="cargo-about-0.9.0-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL "https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.0/${archive}" -o "$RUNNER_TEMP/$archive"
+          echo "7a1a1bfb3ae3b6feabe9e1d6147a6b34b85bd0339bfd8b0ec11b312dee10d99a  $RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          install -m 755 "$RUNNER_TEMP/cargo-about-0.9.0-x86_64-unknown-linux-musl/cargo-about" "$HOME/.cargo/bin/cargo-about"
 
-      - name: Verify THIRD-PARTY-LICENSES is current
-        run: make licenses-check
+      - name: Validate release dependencies, notices and installer
+        run: make release-checks
 
   # WASI libraries are platform-independent. Build them once and place the
   # same proved artifacts in every published toolchain archive.

@@ -1,11 +1,11 @@
 # cargo-deny license and dependency policy for Hew.
 #
-# Enforced in CI via `cargo deny check licenses bans advisories sources`.
-# Run locally with `cargo deny check` from the workspace root.
+# Enforced before publication by `make release-checks`; also available as
+# `make dependency-policy` during development. This checks licences, security
+# advisories and permitted sources. Every warning fails the check.
+# Multiple versions of a dependency are allowed and are not scanned as a ban.
 #
-# Policy: only licenses on the allow list below may appear in the shipping
-# dependency graph. Any new dep with an unlisted license will fail CI
-# immediately, preventing silent copyleft introduction.
+# Only licences on the allow list may appear in the release dependency graph.
 #
 # License allow-list derived from:
 #   cargo about generate --workspace --format json (2026-06-17 audit).
@@ -54,19 +54,14 @@ confidence-threshold = 0.8
 [licenses.private]
 ignore = true
 
-# ─── Bans ────────────────────────────────────────────────────────────────────
-[bans]
-multiple-versions = "warn"
-wildcards = "allow"
-
 # ─── Advisories ──────────────────────────────────────────────────────────────
 [advisories]
 version = 2
-# Report unmaintained crates in the workspace rather than making them errors,
-# to avoid blocking on upstream churn.
+# Check unmaintained direct workspace dependencies; warning escalation makes
+# each finding require a dependency update or an explicit advisory exception.
 unmaintained = "workspace"
-# Yanked crates warrant a warning so they show up in CI output.
-yanked = "warn"
+# Do not publish a newly assembled release with a yanked locked dependency.
+yanked = "deny"
 ignore = []
 
 # ─── Sources ─────────────────────────────────────────────────────────────────

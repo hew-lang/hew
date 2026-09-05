@@ -4,6 +4,9 @@
 //! storage, layout, and private ABI choices are already explicit in the
 //! verified physical module.
 
+#[path = "physical_key.rs"]
+mod key;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -1143,6 +1146,7 @@ fn build_module<'ctx>(
     };
     emitter.declare_functions()?;
     emitter.emit_collection_value_descriptors()?;
+    emitter.emit_collection_key_descriptors()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;
     emitter

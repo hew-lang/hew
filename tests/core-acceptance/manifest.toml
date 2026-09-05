@@ -6,7 +6,7 @@
 id = "owned-call-return"
 intent = "A by-value ordinary call preserves the caller value and returns an independent logical value."
 source = "cases/owned-call-return.hew"
-suite = "acceptance"
+suites = ["acceptance", "safety"]
 host_capabilities = ["native"]
 timeout_seconds = 15
 
@@ -18,7 +18,7 @@ exit = 0
 id = "bytes-copy-mutate"
 intent = "Assignment copies bytes values, so mutating the copy does not change the source."
 source = "cases/bytes-copy-mutate.hew"
-suite = "acceptance"
+suites = ["acceptance", "safety"]
 host_capabilities = ["native"]
 timeout_seconds = 15
 
@@ -30,7 +30,7 @@ exit = 0
 id = "owned-branch-reassign"
 intent = "A mutable owned binding remains valid after taken and untaken reassignment branches join."
 source = "cases/owned-branch-reassign.hew"
-suite = "acceptance"
+suites = ["acceptance", "safety"]
 host_capabilities = ["native"]
 timeout_seconds = 15
 
@@ -42,7 +42,7 @@ exit = 0
 id = "owned-loop"
 intent = "Loop-carried reassignment of an owned string preserves every iteration's result."
 source = "cases/owned-loop.hew"
-suite = "acceptance"
+suites = ["acceptance", "safety"]
 host_capabilities = ["native"]
 timeout_seconds = 15
 
@@ -54,7 +54,7 @@ exit = 0
 id = "owned-early-return"
 intent = "An early owned return and a fallback return produce valid independent values."
 source = "cases/owned-early-return.hew"
-suite = "acceptance"
+suites = ["acceptance", "safety"]
 host_capabilities = ["native"]
 timeout_seconds = 15
 
@@ -66,7 +66,7 @@ exit = 0
 id = "entry-return"
 intent = "The native entry function's i64 result becomes the process exit status."
 source = "cases/entry-return.hew"
-suite = "acceptance"
+suites = ["acceptance", "safety"]
 host_capabilities = ["native"]
 timeout_seconds = 15
 

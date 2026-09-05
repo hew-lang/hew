@@ -19,7 +19,7 @@ struct Case {
     id: String,
     intent: String,
     source: PathBuf,
-    suite: String,
+    suites: Vec<String>,
     host_capabilities: Vec<String>,
     timeout_seconds: u64,
     expected: ExpectedOutcome,
@@ -28,6 +28,8 @@ struct Case {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ExpectedOutcome {
     stdout: String,
+    #[serde(default)]
+    stderr: String,
     exit: i32,
 }
 
@@ -85,7 +87,14 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     validate_manifest(&manifest, &root)?;
     let selected = select_cases(&manifest, &options.suite, options.case.as_deref())?;
     let fingerprint = compiler_fingerprint(&options.hew_bin)?;
-    let instrumentation_request = "none";
+    let instrumentation_request = if options.suite == "safety" {
+        if !cfg!(target_os = "linux") {
+            return Err("environment failure: paired ASan/LSan safety requires Linux".to_string());
+        }
+        "address"
+    } else {
+        "none"
+    };
 
     println!(
         "core-acceptance compiler={} version={fingerprint:?} host={}-{} instrumentation-requested={instrumentation_request}",
@@ -227,6 +236,14 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
         if case.timeout_seconds == 0 {
             return Err(format!("{} has a zero timeout", case.id));
         }
+        if case.suites.is_empty()
+            || case
+                .suites
+                .iter()
+                .any(|suite| !matches!(suite.as_str(), "acceptance" | "safety" | "native-smoke"))
+        {
+            return Err(format!("{} has invalid suite membership", case.id));
+        }
         if !case
             .host_capabilities
             .iter()
@@ -260,7 +277,7 @@ fn select_cases<'a>(
             .iter()
             .find(|case| case.id == selected_id)
             .ok_or_else(|| format!("unknown core acceptance case: {selected_id}"))?;
-        if case.suite != suite {
+        if !case.suites.iter().any(|member| member == suite) {
             return Err(format!(
                 "core acceptance case {selected_id:?} does not belong to suite {suite:?}"
             ));
@@ -270,7 +287,7 @@ fn select_cases<'a>(
     let selected = manifest
         .cases
         .iter()
-        .filter(|case| case.suite == suite)
+        .filter(|case| case.suites.iter().any(|member| member == suite))
         .collect::<Vec<_>>();
     if selected.is_empty() {
         return Err(format!("core acceptance suite {suite:?} has no cases"));
@@ -367,6 +384,12 @@ impl Runner<'_> {
             .arg(profile.cli_level())
             .arg(source)
             .current_dir(self.root);
+        if self.instrumentation_request == "address" {
+            command.arg("--emit-llvm").env("HEW_SANITIZE_ADDRESS", "1");
+            configure_safety_environment(&mut command);
+        } else {
+            command.env_remove("HEW_SANITIZE_ADDRESS");
+        }
         let result = match run_command(&mut command, self.timeout(case)) {
             Ok(result) => result,
             Err(err) => {
@@ -413,6 +436,17 @@ impl Runner<'_> {
             }
             CommandResult::Completed { .. } => {
                 let binary = executable_path(emit_dir, source);
+                if self.instrumentation_request == "address" {
+                    if let Err(error) = verify_address_instrumentation(&binary.with_extension("ll"))
+                    {
+                        println!(
+                            "FAIL {} profile={} class=environment-failure detail={error}",
+                            case.id,
+                            profile.label()
+                        );
+                        return None;
+                    }
+                }
                 if binary.is_file() {
                     Some(binary)
                 } else {
@@ -431,6 +465,9 @@ impl Runner<'_> {
     fn execute(&self, case: &Case, profile: Profile, binary: &Path) -> bool {
         let mut command = Command::new(binary);
         command.current_dir(self.root);
+        if self.instrumentation_request == "address" {
+            configure_safety_environment(&mut command);
+        }
         let executed = match run_command(&mut command, self.timeout(case)) {
             Ok(result) => result,
             Err(err) => {
@@ -486,7 +523,7 @@ impl Runner<'_> {
                     );
                     return false;
                 }
-                if stdout != case.expected.stdout {
+                if stdout != case.expected.stdout || stderr != case.expected.stderr {
                     println!(
                         "FAIL {} profile={} class=wrong-output expected={:?} actual={:?}{}",
                         case.id,
@@ -521,6 +558,31 @@ fn executable_path(emit_dir: &Path, source: &Path) -> PathBuf {
         stem.into_owned()
     };
     emit_dir.join(name)
+}
+
+fn verify_address_instrumentation(path: &Path) -> Result<()> {
+    let ir = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "environment failure: cannot read generated safety IR {}: {error}",
+            path.display()
+        )
+    })?;
+    if !ir.contains("sanitize_address") || !ir.contains("call void @__asan_init()") {
+        return Err(format!(
+            "environment failure: generated IR has no AddressSanitizer instrumentation: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn configure_safety_environment(command: &mut Command) {
+    command
+        .env(
+            "ASAN_OPTIONS",
+            "detect_leaks=1:use_sigaltstack=0:halt_on_error=1:exitcode=99",
+        )
+        .env("LSAN_OPTIONS", "exitcode=99");
 }
 
 fn run_command(command: &mut Command, timeout: Duration) -> Result<CommandResult> {
@@ -599,7 +661,7 @@ mod tests {
             id = "acceptance-case"
             intent = "selection test"
             source = "cases/acceptance-case.hew"
-            suite = "acceptance"
+            suites = ["acceptance"]
             host_capabilities = ["native"]
             timeout_seconds = 1
             [case.expected]
@@ -609,7 +671,7 @@ mod tests {
             id = "safety-case"
             intent = "selection test"
             source = "cases/safety-case.hew"
-            suite = "safety"
+            suites = ["safety"]
             host_capabilities = ["native"]
             timeout_seconds = 1
             [case.expected]
@@ -625,6 +687,73 @@ mod tests {
         let error = select_cases(&manifest(), "acceptance", Some("missing"))
             .expect_err("unknown focused case must fail rather than silently running a suite");
         assert!(error.contains("unknown core acceptance case"));
+    }
+
+    #[test]
+    fn safety_requires_instrumented_ir_not_just_an_executable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("program.ll");
+        assert!(verify_address_instrumentation(&path).is_err());
+        fs::write(&path, "define i32 @main() { ret i32 0 }").unwrap();
+        assert!(verify_address_instrumentation(&path).is_err());
+        fs::write(
+            &path,
+            "define void @body() sanitize_address { ret void }\n\
+             declare void @__asan_init()\n\
+             define void @asan.module_ctor() { call void @__asan_init()\nret void }",
+        )
+        .unwrap();
+        verify_address_instrumentation(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sanitizer_report_fails_even_when_exit_matches_the_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("report");
+        fs::write(
+            &binary,
+            "#!/bin/sh\nprintf 'ERROR: LeakSanitizer: detected memory leaks\\n' >&2\nexit 23\n",
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut case = manifest().cases.remove(0);
+        case.expected.exit = 23;
+        let options = Options {
+            suite: "safety".to_string(),
+            case: None,
+            hew_bin: binary.clone(),
+            timeout_seconds: None,
+        };
+        let runner = Runner {
+            options: &options,
+            root: directory.path(),
+            run_dir: directory.path(),
+            instrumentation_request: "address",
+        };
+        assert!(!runner.execute(&case, Profile::O0, &binary));
+    }
+
+    #[test]
+    fn a_case_can_require_both_native_acceptance_and_safety() {
+        let manifest: Manifest = toml::from_str(
+            r#"[[case]]
+            id = "owned"
+            intent = "independent value copy"
+            source = "owned.hew"
+            suites = ["acceptance", "safety"]
+            host_capabilities = ["native"]
+            timeout_seconds = 1
+            [case.expected]
+            stdout = ""
+            exit = 0
+            "#,
+        )
+        .unwrap();
+        for suite in ["acceptance", "safety"] {
+            assert_eq!(select_cases(&manifest, suite, None).unwrap()[0].id, "owned");
+        }
     }
 
     #[test]

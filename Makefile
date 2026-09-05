@@ -1102,6 +1102,21 @@ CORE_ACCEPTANCE_ARGS ?=
 core-acceptance: hew-native ## Test: run audited native core acceptance cases
 	cargo run -p xtask -- core-acceptance --suite acceptance --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
 
+# Build the compiler and runtime together so the selected compiler resolves the
+# sanitizer archive from its own Cargo profile directory. The safety runner also
+# requires generated LLVM instrumentation and rejects unexpected stderr.
+CORE_SAFETY_TARGET_DIR ?= target/core-safety
+.PHONY: core-safety core-safety-build
+core-safety-build:
+	@test "$$(uname -s)" = Linux || { echo "core-safety requires Linux ASan/LSan" >&2; exit 1; }
+	$(MAKE) hew-native TARGET_TRIPLE="$(SANITIZER_RUST_TARGET)" \
+		RUSTUP_TOOLCHAIN=nightly CARGO_TARGET_DIR="$(abspath $(CORE_SAFETY_TARGET_DIR))" \
+		RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer"
+
+core-safety: core-safety-build ## Test: run native ownership cases with generated and runtime ASan/LSan
+	cargo run -p xtask -- core-acceptance --suite safety \
+		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" $(CORE_ACCEPTANCE_ARGS)
+
 # The runner has consequential case-selection and error behaviour, but it is
 # separate from the compiler acceptance command and runs only when changed.
 test-core-acceptance-runner:

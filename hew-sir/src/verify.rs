@@ -180,6 +180,9 @@ pub enum CfgDiscardSafetyReason {
     /// An operation in the discarded region may transfer control to a
     /// language-visible trap.
     MayTrap { op: OpId },
+    /// A discarded terminator can directly trap or select a checked-arithmetic
+    /// failure edge.
+    MayTrapTerminator,
     /// A block argument or operation result is not proven to be a no-drop
     /// value in the currently admitted SIR value domain.
     DropObligationValue { value: ValueId },
@@ -256,6 +259,23 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
                     function.declaration
                 )),
             ));
+        }
+        for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+            let missing = match operation.kind {
+                SemOpKind::ConstStr(id) => !module.string_literals.contains_key(&id),
+                SemOpKind::ConstBytes(id) => !module.bytes_literals.contains_key(&id),
+                _ => false,
+            };
+            if missing {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidOperation {
+                        op: operation.id,
+                        reason: "literal operation references a missing module pool entry"
+                            .to_string(),
+                    },
+                ));
+            }
         }
         diagnostics.extend(verify_function_with_context(
             function,
@@ -389,6 +409,16 @@ pub(crate) fn verify_cfg_discard_safety(
                 });
             }
         }
+        if matches!(
+            block.terminator,
+            SemTerminator::CheckedBinary { .. } | SemTerminator::Trap { .. }
+        ) {
+            diagnostics.push(cfg_discard_diag(
+                original,
+                block.id,
+                CfgDiscardSafetyReason::MayTrapTerminator,
+            ));
+        }
     }
 
     diagnostics
@@ -513,7 +543,9 @@ pub(crate) fn verify_function_with_context(
                 definitions.insert(result.id, (block.id, DefinitionPoint::Operation(op_index)));
             }
         }
-        if let SemTerminator::Call { id, .. } | SemTerminator::RtCall { id, .. } = &block.terminator
+        if let SemTerminator::Call { id, .. }
+        | SemTerminator::RtCall { id, .. }
+        | SemTerminator::CheckedBinary { id, .. } = &block.terminator
         {
             if !operations.insert(*id) {
                 diagnostics.push(diag(function, SirDiagnosticKind::DuplicateOp(*id)));
@@ -530,7 +562,7 @@ pub(crate) fn verify_function_with_context(
                 &mut diagnostics,
             );
             types.insert(result.id, result.ty.clone());
-            definitions.insert(result.id, (block.id, DefinitionPoint::CallNormalEdge));
+            definitions.insert(result.id, (block.id, DefinitionPoint::NormalEdge));
         });
     }
     // §1.6's binding table is read by every user-facing wall, so a row naming
@@ -556,7 +588,7 @@ pub(crate) fn verify_function_with_context(
     // defined in a later block rather than silently skipping its type check.
     for block in &function.blocks {
         for op in &block.ops {
-            verify_operation_shape(function, op, &types, &mut diagnostics);
+            verify_operation_shape(function, op, &types, facts, &mut diagnostics);
         }
         block.terminator.visit_successors(|edge| {
             let Some(target) = blocks.get(&edge.target) else {
@@ -596,6 +628,7 @@ pub(crate) fn verify_function_with_context(
             function,
             &block.terminator,
             &types,
+            &blocks,
             callable_context,
             &mut diagnostics,
         );
@@ -739,19 +772,27 @@ fn verify_callable_table<'a>(
             }));
         }
         for (parameter, abi) in callable.signature.params.iter().enumerate() {
-            if !is_initial_scalar(&abi.ty) {
+            if !is_initial_call_value(&abi.ty) {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                     callable: callable.id,
                     reason: format!(
-                        "parameter {parameter} has non-scalar type `{}`",
+                        "parameter {parameter} has type `{}` outside the owned-call SIR surface",
                         abi.ty.user_facing()
                     ),
                 }));
             }
-            if abi.passing != SemParamPassing::ReadOnly {
+            let expected_passing = if matches!(abi.ty, ResolvedTy::String | ResolvedTy::Bytes) {
+                SemParamPassing::Borrow
+            } else {
+                SemParamPassing::ReadOnly
+            };
+            if abi.passing != expected_passing {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                     callable: callable.id,
-                    reason: format!("parameter {parameter} has non-ReadOnly ABI passing"),
+                    reason: format!(
+                        "parameter {parameter} has {:?} passing, expected {expected_passing:?}",
+                        abi.passing
+                    ),
                 }));
             }
             if abi.caller_visible_projection {
@@ -763,7 +804,7 @@ fn verify_callable_table<'a>(
                 }));
             }
         }
-        if !is_initial_scalar_return(&callable.signature.return_ty) {
+        if !is_initial_call_return(&callable.signature.return_ty) {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                 callable: callable.id,
                 reason: format!(
@@ -1069,6 +1110,10 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
     ty.is_integer() || matches!(ty, ResolvedTy::Bool)
 }
 
+fn is_initial_call_value(ty: &ResolvedTy) -> bool {
+    is_initial_scalar(ty) || matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
+}
+
 /// Value types the initial Raw-MIR virtual-value bridge can realize without
 /// borrowing, drops, allocation, or layout-dependent semantics.
 ///
@@ -1081,8 +1126,8 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
             if !elements.is_empty() && elements.iter().all(is_initial_value_type))
 }
 
-fn is_initial_scalar_return(ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Unit) || is_initial_scalar(ty)
+fn is_initial_call_return(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Unit) || is_initial_call_value(ty)
 }
 
 #[allow(
@@ -1093,9 +1138,18 @@ fn verify_operation_shape(
     function: &SemFunction,
     operation: &SemOp,
     types: &HashMap<ValueId, ResolvedTy>,
+    facts: &TypeFactTable,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    if operation.results.len() != 1 {
+    let expected_results = usize::from(!matches!(
+        operation.kind,
+        SemOpKind::DestroyValue { .. }
+            | SemOpKind::EndBorrow { .. }
+            | SemOpKind::StoreInit { .. }
+            | SemOpKind::StoreAssign { .. }
+            | SemOpKind::EndLifetime { .. }
+    ));
+    if operation.results.len() != expected_results {
         diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidResultArity {
@@ -1103,6 +1157,28 @@ fn verify_operation_shape(
                 actual: operation.results.len(),
             },
         ));
+        return;
+    }
+    if let SemOpKind::DestroyValue { value } = &operation.kind {
+        if let Some(ty) = types.get(&value.value) {
+            if crate::OwnKind::of_ty(ty, facts) != Ok(crate::OwnKind::Owned) {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!("destroy_value operand `{}` is not owned", ty.user_facing()),
+                    diagnostics,
+                );
+            }
+        }
+        return;
+    }
+    if expected_results == 0 {
+        invalid_operation(
+            function,
+            operation.id,
+            "operation is outside the verified SIR relation table".to_string(),
+            diagnostics,
+        );
         return;
     }
     let result = &operation.results[0];
@@ -1269,7 +1345,7 @@ fn verify_operation_shape(
                     operand_ty == &ResolvedTy::Bool && result.ty == ResolvedTy::Bool
                 }
                 hew_parser::ast::UnaryOp::Negate => {
-                    operand_ty == &result.ty && (operand_ty.is_integer() || operand_ty.is_float())
+                    operand_ty == &result.ty && operand_ty.is_float()
                 }
                 hew_parser::ast::UnaryOp::BitNot => {
                     operand_ty == &result.ty && operand_ty.is_integer()
@@ -1314,11 +1390,13 @@ fn verify_operation_shape(
                 | hew_parser::ast::BinaryOp::Multiply
                 | hew_parser::ast::BinaryOp::Divide
                 | hew_parser::ast::BinaryOp::Modulo
-                | hew_parser::ast::BinaryOp::BitAnd
+                | hew_parser::ast::BinaryOp::Shl
+                | hew_parser::ast::BinaryOp::Shr => {
+                    lhs_ty == rhs_ty && lhs_ty == &result.ty && !lhs_ty.is_integer()
+                }
+                hew_parser::ast::BinaryOp::BitAnd
                 | hew_parser::ast::BinaryOp::BitOr
                 | hew_parser::ast::BinaryOp::BitXor
-                | hew_parser::ast::BinaryOp::Shl
-                | hew_parser::ast::BinaryOp::Shr
                 | hew_parser::ast::BinaryOp::WrappingAdd
                 | hew_parser::ast::BinaryOp::WrappingSub
                 | hew_parser::ast::BinaryOp::WrappingMul => {
@@ -1331,6 +1409,17 @@ fn verify_operation_shape(
                         "logical `&&` / `||` must be represented as SIR branch CFG, not Binary"
                             .to_string()
                     }
+                    hew_parser::ast::BinaryOp::Add
+                    | hew_parser::ast::BinaryOp::Subtract
+                    | hew_parser::ast::BinaryOp::Multiply
+                    | hew_parser::ast::BinaryOp::Divide
+                    | hew_parser::ast::BinaryOp::Modulo
+                    | hew_parser::ast::BinaryOp::Shl
+                    | hew_parser::ast::BinaryOp::Shr
+                        if lhs_ty.is_integer() =>
+                    {
+                        format!("checked integer `{op}` must use a CheckedBinary terminator")
+                    }
                     _ => format!(
                         "binary `{op}` has incompatible `{}`, `{}` -> `{}` types",
                         lhs_ty.user_facing(),
@@ -1341,7 +1430,65 @@ fn verify_operation_shape(
                 invalid_operation(function, operation.id, reason, diagnostics);
             }
         }
-        SemOpKind::ConstI64(_) | SemOpKind::ConstBool(_) => {}
+        SemOpKind::ConstStr(_) if result.ty != ResolvedTy::String => diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidConstType {
+                op: operation.id,
+                expected: "string",
+                actual: result.ty.user_facing().to_string(),
+            },
+        )),
+        SemOpKind::ConstBytes(_) if result.ty != ResolvedTy::Bytes => diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidConstType {
+                op: operation.id,
+                expected: "bytes",
+                actual: result.ty.user_facing().to_string(),
+            },
+        )),
+        SemOpKind::CopyValue { source } | SemOpKind::Move { source } => {
+            if let Some(source_ty) = types.get(&source.value) {
+                if source_ty != &result.ty {
+                    invalid_operation(
+                        function,
+                        operation.id,
+                        format!(
+                            "ownership operation has `{}` input and `{}` result",
+                            source_ty.user_facing(),
+                            result.ty.user_facing()
+                        ),
+                        diagnostics,
+                    );
+                }
+            }
+            if crate::OwnKind::of_ty(&result.ty, facts) != Ok(crate::OwnKind::Owned) {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!(
+                        "ownership operation result `{}` is not an owned value",
+                        result.ty.user_facing()
+                    ),
+                    diagnostics,
+                );
+            }
+            if matches!(operation.kind, SemOpKind::CopyValue { .. })
+                && facts
+                    .get(&hew_types::TypeInstanceKey(result.ty.clone()))
+                    .is_none_or(|row| row.clone == hew_types::CloneKind::None)
+            {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    format!("`{}` has no copy operation", result.ty.user_facing()),
+                    diagnostics,
+                );
+            }
+        }
+        SemOpKind::ConstI64(_)
+        | SemOpKind::ConstBool(_)
+        | SemOpKind::ConstStr(_)
+        | SemOpKind::ConstBytes(_) => {}
         // The §1.3 ownership operations, the P1 literal producers, the
         // structural-equality ops and `rt.call` have no producer on this route
         // yet, and the rules that admit them are rules 1-6, which are the
@@ -1351,15 +1498,11 @@ fn verify_operation_shape(
         | SemOpKind::ConstChar(_)
         | SemOpKind::ConstUnit
         | SemOpKind::ConstDuration(_)
-        | SemOpKind::ConstStr(_)
-        | SemOpKind::ConstBytes(_)
         | SemOpKind::StrEq { .. }
         | SemOpKind::BytesEq { .. }
-        | SemOpKind::CopyValue { .. }
-        | SemOpKind::DestroyValue { .. }
         | SemOpKind::BeginBorrow { .. }
         | SemOpKind::EndBorrow { .. }
-        | SemOpKind::Move { .. }
+        | SemOpKind::DestroyValue { .. }
         | SemOpKind::Fork { .. }
         | SemOpKind::Destructure { .. }
         | SemOpKind::AllocPlace { .. }
@@ -1453,13 +1596,20 @@ fn verify_direct_call_terminator(
         );
     }
     for (index, (argument, parameter)) in args.iter().zip(&target.signature.params).enumerate() {
-        if parameter.passing != SemParamPassing::ReadOnly {
+        let expected_decision = match parameter.passing {
+            SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
+            SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
+        };
+        if argument.decision != expected_decision {
             invalid_operation(
                 function,
                 id,
                 format!(
-                    "direct call target `{}` parameter {index} has non-ReadOnly ABI passing",
-                    target.declaration.full_path()
+                    "direct call argument {index} to `{}` is {:?}, expected {:?} for {:?} parameter passing",
+                    target.declaration.full_path(),
+                    argument.decision,
+                    expected_decision,
+                    parameter.passing
                 ),
                 diagnostics,
             );
@@ -1494,10 +1644,167 @@ fn invalid_operation(
     ));
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "checked arithmetic keeps its type, result visibility and exact failure CFG contract together"
+)]
+fn verify_checked_binary_terminator(
+    function: &SemFunction,
+    id: OpId,
+    op: hew_parser::ast::BinaryOp,
+    lhs: &crate::Operand,
+    rhs: &crate::Operand,
+    result: &crate::ValueDef,
+    normal: &crate::Edge,
+    failures: &[crate::CheckedFailure],
+    types: &HashMap<ValueId, ResolvedTy>,
+    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    let (Some(lhs_ty), Some(rhs_ty)) = (types.get(&lhs.value), types.get(&rhs.value)) else {
+        return;
+    };
+    if lhs_ty != rhs_ty || lhs_ty != &result.ty {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: format!(
+                    "checked binary `{op}` has incompatible `{}`, `{}` -> `{}` types",
+                    lhs_ty.user_facing(),
+                    rhs_ty.user_facing(),
+                    result.ty.user_facing()
+                ),
+            },
+        ));
+        return;
+    }
+    let Some(required) = crate::checked_binary_failure_kinds(op, lhs_ty) else {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: format!(
+                    "binary `{op}` over `{}` is not checked integer arithmetic",
+                    lhs_ty.user_facing()
+                ),
+            },
+        ));
+        return;
+    };
+    let actual: Vec<_> = failures.iter().map(|failure| failure.kind).collect();
+    if actual != required {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidTerminator {
+                reason: format!(
+                    "checked binary `{op}` has failure kinds {actual:?}, expected {required:?}"
+                ),
+            },
+        ));
+    }
+    let forwarded = normal
+        .args
+        .iter()
+        .filter(|operand| operand.value == result.id)
+        .count();
+    if forwarded != 1 {
+        invalid_operation(
+            function,
+            id,
+            format!(
+                "checked binary result must be forwarded exactly once on its normal edge, found {forwarded}"
+            ),
+            diagnostics,
+        );
+    }
+    for failure in failures {
+        if !failure_cfg_matches_trap(&failure.edge, failure.kind, blocks) {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidTerminator {
+                    reason: format!(
+                        "checked binary `{op}` failure {:?} does not end only in a matching trap",
+                        failure.kind
+                    ),
+                },
+            ));
+        }
+    }
+}
+
+fn failure_cfg_matches_trap(
+    edge: &crate::Edge,
+    expected: crate::TrapKind,
+    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+) -> bool {
+    fn reaches_only_matching_traps(
+        block_id: BlockId,
+        expected: crate::TrapKind,
+        blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+        visiting: &mut std::collections::HashSet<BlockId>,
+        complete: &mut std::collections::HashSet<BlockId>,
+    ) -> bool {
+        if complete.contains(&block_id) {
+            return true;
+        }
+        if !visiting.insert(block_id) {
+            return false;
+        }
+        let Some(block) = blocks.get(&block_id) else {
+            return false;
+        };
+        let valid = match &block.terminator {
+            SemTerminator::Trap { kind } => *kind == expected,
+            SemTerminator::Goto(next) => {
+                reaches_only_matching_traps(next.target, expected, blocks, visiting, complete)
+            }
+            SemTerminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } => {
+                reaches_only_matching_traps(
+                    then_target.target,
+                    expected,
+                    blocks,
+                    visiting,
+                    complete,
+                ) && reaches_only_matching_traps(
+                    else_target.target,
+                    expected,
+                    blocks,
+                    visiting,
+                    complete,
+                )
+            }
+            SemTerminator::Return { .. }
+            | SemTerminator::CheckedBinary { .. }
+            | SemTerminator::Call { .. }
+            | SemTerminator::RtCall { .. }
+            | SemTerminator::Suspend { .. }
+            | SemTerminator::ResumeUnwind
+            | SemTerminator::Unreachable => false,
+        };
+        visiting.remove(&block_id);
+        if valid {
+            complete.insert(block_id);
+        }
+        valid
+    }
+
+    reaches_only_matching_traps(
+        edge.target,
+        expected,
+        blocks,
+        &mut std::collections::HashSet::new(),
+        &mut std::collections::HashSet::new(),
+    )
+}
+
 fn verify_terminator_shape(
     function: &SemFunction,
     terminator: &SemTerminator,
     types: &HashMap<ValueId, ResolvedTy>,
+    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
     callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
@@ -1561,8 +1868,30 @@ fn verify_terminator_shape(
             callable_context,
             diagnostics,
         ),
+        SemTerminator::CheckedBinary {
+            id,
+            op,
+            lhs,
+            rhs,
+            result,
+            normal,
+            failures,
+        } => verify_checked_binary_terminator(
+            function,
+            *id,
+            *op,
+            lhs,
+            rhs,
+            result,
+            normal,
+            failures,
+            types,
+            blocks,
+            diagnostics,
+        ),
         SemTerminator::Return { .. }
         | SemTerminator::Goto(_)
+        | SemTerminator::Trap { .. }
         | SemTerminator::ResumeUnwind
         | SemTerminator::Unreachable => {}
         // `Trap`'s kind table and `Suspend`'s shape rules - §1.5's kind/arity/
@@ -1572,9 +1901,7 @@ fn verify_terminator_shape(
         // an unverified operation is: admitting it would let a shape nothing
         // checks reach MIR. This is the operation arm's refusal, not a new
         // ownership rule.
-        SemTerminator::RtCall { .. }
-        | SemTerminator::Trap { .. }
-        | SemTerminator::Suspend { .. } => {
+        SemTerminator::RtCall { .. } | SemTerminator::Suspend { .. } => {
             diagnostics.push(diag(
                 function,
                 SirDiagnosticKind::InvalidTerminator {
@@ -1589,7 +1916,7 @@ fn verify_terminator_shape(
 enum DefinitionPoint {
     BlockEntry,
     Operation(usize),
-    CallNormalEdge,
+    NormalEdge,
 }
 
 #[allow(clippy::too_many_arguments, reason = "small verifier transfer helper")]
@@ -1607,7 +1934,7 @@ fn verify_uses(
             diagnostics.push(diag(function, SirDiagnosticKind::UndefinedValue(value)));
             continue;
         };
-        if matches!(definition_index, DefinitionPoint::CallNormalEdge) {
+        if matches!(definition_index, DefinitionPoint::NormalEdge) {
             if definition != &use_block || !on_call_normal_edge {
                 diagnostics.push(diag(
                     function,
@@ -1738,12 +2065,13 @@ fn uses_in_op(op: &crate::SemOp) -> Vec<(ValueId, bool)> {
 
 fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
     let mut uses = Vec::new();
-    // The canonical visitor orders call inputs, normal-edge arguments, then
-    // unwind arguments. Only the middle interval can see the call result.
+    // The canonical visitor orders control inputs before normal-edge
+    // arguments. Only that interval can see the terminator result.
     let normal_slots = match term {
         SemTerminator::Call { args, normal, .. } | SemTerminator::RtCall { args, normal, .. } => {
             args.len()..args.len() + normal.args.len()
         }
+        SemTerminator::CheckedBinary { normal, .. } => 2..2 + normal.args.len(),
         _ => 0..0,
     };
     term.visit_operands(|slot, operand| {

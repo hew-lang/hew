@@ -250,6 +250,15 @@ impl<'a> Flow<'a> {
                     successors.extend(self.edge(id, edge, state, emit));
                 }
             }
+            SemTerminator::CheckedBinary {
+                lhs,
+                rhs,
+                result,
+                normal,
+                failures,
+                ..
+            } => successors
+                .extend(self.checked_binary(id, lhs, rhs, result, normal, failures, state, emit)),
             SemTerminator::Goto(edge) => successors.extend(self.edge(id, edge, state, emit)),
             SemTerminator::Branch {
                 condition,
@@ -281,6 +290,33 @@ impl<'a> Flow<'a> {
                     }
                 }
             }
+        }
+        successors
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the transfer receives one closed checked-binary terminator shape"
+    )]
+    fn checked_binary(
+        &self,
+        id: BlockId,
+        lhs: &crate::Operand,
+        rhs: &crate::Operand,
+        result: &crate::ValueDef,
+        normal: &Edge,
+        failures: &[crate::CheckedFailure],
+        mut state: State,
+        emit: &mut impl FnMut(Violation),
+    ) -> Vec<(BlockId, State)> {
+        self.access(id, lhs.value, false, &mut state, emit);
+        self.access(id, rhs.value, false, &mut state, emit);
+        let mut succeeded = state.clone();
+        self.define(id, result.id, &mut succeeded, emit);
+        let mut successors = Vec::new();
+        successors.extend(self.edge(id, normal, succeeded, emit));
+        for failure in failures {
+            successors.extend(self.edge(id, &failure.edge, state.clone(), emit));
         }
         successors
     }

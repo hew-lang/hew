@@ -1548,6 +1548,9 @@ impl<'a> VirtualRawLowerer<'a> {
             SemTerminator::Return { value: None } => Err(SirMirLoweringError::unsupported(
                 "non-unit SIR function has a value-less virtual return",
             )),
+            SemTerminator::CheckedBinary { .. } => Err(SirMirLoweringError::unsupported(
+                "checked SIR arithmetic requires the physical ownership-aware lowering path",
+            )),
             SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
             | SemTerminator::Trap { .. }
@@ -2052,6 +2055,9 @@ impl<'a> RawLowerer<'a> {
                 })
             }
             SemTerminator::Unreachable => self.terminate(Terminator::Unreachable),
+            SemTerminator::CheckedBinary { .. } => Err(SirMirLoweringError::unsupported(
+                "checked SIR arithmetic requires the physical ownership-aware lowering path",
+            )),
             SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
             | SemTerminator::Trap { .. }

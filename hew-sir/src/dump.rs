@@ -247,6 +247,15 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
             edge_args(else_target)
         )
         .expect("write to String"),
+        SemTerminator::CheckedBinary {
+            op,
+            lhs,
+            rhs,
+            result,
+            normal,
+            failures,
+            ..
+        } => dump_checked_binary(out, *op, lhs, rhs, result, normal, failures),
         SemTerminator::Call {
             callee,
             args,
@@ -309,11 +318,45 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
             writeln!(out, "] cancel bb{}{}", cancel.target.0, edge_args(cancel))
                 .expect("write to String");
         }
-        SemTerminator::ResumeUnwind => {
-            writeln!(out, "    resume_unwind").expect("write to String");
-        }
+        SemTerminator::ResumeUnwind => writeln!(out, "    resume_unwind").expect("write to String"),
         SemTerminator::Unreachable => writeln!(out, "    unreachable").expect("write to String"),
     }
+}
+
+fn dump_checked_binary(
+    out: &mut String,
+    op: hew_parser::ast::BinaryOp,
+    lhs: &crate::Operand,
+    rhs: &crate::Operand,
+    result: &crate::ValueDef,
+    normal: &crate::Edge,
+    failures: &[crate::CheckedFailure],
+) {
+    write!(
+        out,
+        "    %{}{} = checked.binary{{{op}}} {}, {} normal bb{}{} failures [",
+        result.id.0,
+        own_suffix(result.own),
+        operand(lhs),
+        operand(rhs),
+        normal.target.0,
+        edge_args(normal)
+    )
+    .expect("write to String");
+    for (index, failure) in failures.iter().enumerate() {
+        if index != 0 {
+            write!(out, ", ").expect("write to String");
+        }
+        write!(
+            out,
+            "{:?}: bb{}{}",
+            failure.kind,
+            failure.edge.target.0,
+            edge_args(&failure.edge)
+        )
+        .expect("write to String");
+    }
+    writeln!(out, "]").expect("write to String");
 }
 
 fn dump_call(

@@ -6,9 +6,9 @@ use hew_hir::{
 };
 use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeFactService, TypeInstanceKey};
 
-use crate::ownership::{Binding, OwnKind, TypeFactTable};
+use crate::ownership::{Binding, BytesLiteralId, OwnKind, StringLiteralId, TypeFactTable};
 use crate::{
-    BlockArg, BlockId, CallResult, CallUnwind, CallableId, CallableInstance, Edge,
+    BlockArg, BlockId, CallResult, CallUnwind, CallableId, CallableInstance, CheckedFailure, Edge,
     FunctionSourceOrigin, GenericTemplateId, OpId, Operand, Provenance, SemAbiParam, SemBlock,
     SemCallConv, SemCallable, SemCallableKind, SemFunction, SemGenericTemplate, SemModule, SemOp,
     SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirInstanceKey, ValueDef, ValueId,
@@ -244,7 +244,7 @@ impl<'a> CallableTable<'a> {
         clippy::too_many_lines,
         reason = "one deterministic HIR collection pass keeps monomorphic and generic callable admission auditable together"
     )]
-    fn from_hir(module: &'a HirModule) -> Self {
+    fn from_hir(module: &'a HirModule, facts: &mut TypeFactService) -> Self {
         let direct_symbols = hew_hir::dispatch::build_direct_call_symbol_index(&module.items);
         let mut pending = Vec::new();
         let mut ineligible = HashMap::new();
@@ -307,7 +307,7 @@ impl<'a> CallableTable<'a> {
                 });
                 continue;
             }
-            let signature = match scalar_callable_signature(function) {
+            let signature = match scalar_callable_signature(function, facts) {
                 Ok(signature) => signature,
                 Err(reason) => {
                     ineligible.insert(function.declaration.clone(), reason);
@@ -425,18 +425,19 @@ struct InstanceService<'a> {
     used_templates: std::collections::HashSet<GenericTemplateId>,
     pending: VecDeque<CallableId>,
     functions: Vec<SemFunction>,
+    string_literals: BTreeMap<StringLiteralId, String>,
+    bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
 }
 
 impl<'a> InstanceService<'a> {
     fn new(module: &'a HirModule, facts: &TypeCheckOutput, demand: SirLoweringDemand) -> Self {
-        let table = CallableTable::from_hir(module);
+        let mut checked_facts =
+            TypeFactService::new(facts.type_fact_context.clone(), facts.type_facts.clone());
+        let table = CallableTable::from_hir(module, &mut checked_facts);
         let count = table.callables.len();
         Self {
             module,
-            checked_facts: TypeFactService::new(
-                facts.type_fact_context.clone(),
-                facts.type_facts.clone(),
-            ),
+            checked_facts,
             demand,
             table,
             states: vec![CallableState::Unreached; count],
@@ -445,6 +446,8 @@ impl<'a> InstanceService<'a> {
             used_templates: std::collections::HashSet::new(),
             pending: VecDeque::new(),
             functions: Vec::new(),
+            string_literals: BTreeMap::new(),
+            bytes_literals: BTreeMap::new(),
         }
     }
 
@@ -457,6 +460,37 @@ impl<'a> InstanceService<'a> {
             .require(ty)
             .map(|_| ())
             .map_err(|error| format!("type facts refused `{}`: {error}", ty.user_facing()))
+    }
+
+    fn intern_string(&mut self, value: &str) -> StringLiteralId {
+        if let Some((id, _)) = self
+            .string_literals
+            .iter()
+            .find(|(_, existing)| existing.as_str() == value)
+        {
+            return *id;
+        }
+        let id = StringLiteralId(
+            u32::try_from(self.string_literals.len())
+                .expect("SIR string literal count exceeds u32"),
+        );
+        self.string_literals.insert(id, value.to_string());
+        id
+    }
+
+    fn intern_bytes(&mut self, value: &[u8]) -> BytesLiteralId {
+        if let Some((id, _)) = self
+            .bytes_literals
+            .iter()
+            .find(|(_, existing)| existing.as_slice() == value)
+        {
+            return *id;
+        }
+        let id = BytesLiteralId(
+            u32::try_from(self.bytes_literals.len()).expect("SIR bytes literal count exceeds u32"),
+        );
+        self.bytes_literals.insert(id, value.to_vec());
+        id
     }
 
     /// Seed the worklist with the module's resolved entry callable.
@@ -681,8 +715,11 @@ impl<'a> InstanceService<'a> {
             ));
         }
         let substitution = TypeSubstitution::for_instance(template.function, &key.type_args)?;
-        let signature =
-            scalar_callable_signature_with_substitution(template.function, &substitution)?;
+        let signature = scalar_callable_signature_with_substitution(
+            template.function,
+            &substitution,
+            &mut self.checked_facts,
+        )?;
         let symbol =
             hew_hir::monomorph::function_monomorph_symbol(&template.symbol, &key.type_args);
         if let Some(existing) = self
@@ -794,6 +831,8 @@ impl<'a> InstanceService<'a> {
             checked_facts,
             used_templates,
             mut functions,
+            string_literals,
+            bytes_literals,
             ..
         } = self;
         let generic_templates: Vec<SemGenericTemplate> = table
@@ -820,14 +859,8 @@ impl<'a> InstanceService<'a> {
             entry_callable: table.entry_callable,
             functions,
             type_facts,
-            // MARKED SHORTCUT — the two literal pools ship empty.
-            // WHY: §1.3.1's `const.str` and `const.bytes` producers are the
-            // phase that interns into them, and this domain emits neither, so
-            // there is nothing to pool.
-            // WHEN: the string and bytes literal producers land (L3).
-            // WHAT: the interning table the producers fill is carried here.
-            string_literals: BTreeMap::new(),
-            bytes_literals: BTreeMap::new(),
+            string_literals,
+            bytes_literals,
         }
     }
 
@@ -950,38 +983,49 @@ fn generic_template_signature(function: &HirFn) -> Result<SemSignature, String> 
     })
 }
 
-fn scalar_callable_signature(function: &HirFn) -> Result<SemSignature, String> {
+fn scalar_callable_signature(
+    function: &HirFn,
+    facts: &mut TypeFactService,
+) -> Result<SemSignature, String> {
     if !function.type_params.is_empty() {
         return Err(
             "generic origin functions are instantiated by the SIR instance service, not admitted as abstract callable bodies"
                 .to_string(),
         );
     }
-    scalar_callable_signature_with_substitution(function, &TypeSubstitution::empty())
+    scalar_callable_signature_with_substitution(function, &TypeSubstitution::empty(), facts)
 }
 
 fn scalar_callable_signature_with_substitution(
     function: &HirFn,
     substitution: &TypeSubstitution,
+    facts: &mut TypeFactService,
 ) -> Result<SemSignature, String> {
     generic_template_admission(function)?;
     let mut params = Vec::with_capacity(function.params.len());
     for (index, parameter) in function.params.iter().enumerate() {
         let ty = substitution.apply(&parameter.ty);
-        if !is_initial_scalar(&ty) {
+        if !is_initial_call_value(&ty) {
             return Err(format!(
                 "parameter {index} has non-scalar type `{}` after semantic substitution; aggregate/reference ABI lowering is deferred",
                 ty.user_facing()
             ));
         }
+        let row = facts
+            .require(&ty)
+            .map_err(|error| format!("type facts refused `{}`: {error}", ty.user_facing()))?;
         params.push(SemAbiParam {
             ty,
-            passing: SemParamPassing::ReadOnly,
+            passing: if OwnKind::of_class(row.class) == OwnKind::Owned {
+                SemParamPassing::Borrow
+            } else {
+                SemParamPassing::ReadOnly
+            },
             caller_visible_projection: false,
         });
     }
     let return_ty = substitution.apply(&function.return_ty);
-    if !is_initial_scalar_return(&return_ty) {
+    if !is_initial_call_return(&return_ty) {
         return Err(format!(
             "return type `{}` is outside SIR's initial scalar call-result domain after semantic substitution",
             return_ty.user_facing()
@@ -994,6 +1038,14 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
     ty.is_integer() || matches!(ty, hew_types::ResolvedTy::Bool)
 }
 
+fn is_initial_call_value(ty: &ResolvedTy) -> bool {
+    is_initial_scalar(ty) || matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
+}
+
+fn is_initial_call_return(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Unit) || is_initial_call_value(ty)
+}
+
 /// The first aggregate value family admitted into SIR.
 ///
 /// These values remain purely semantic until Raw MIR decides whether a
@@ -1004,10 +1056,6 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
         || matches!(ty, ResolvedTy::Tuple(elements)
             if !elements.is_empty() && elements.iter().all(is_initial_value_type))
-}
-
-fn is_initial_scalar_return(ty: &ResolvedTy) -> bool {
-    matches!(ty, hew_types::ResolvedTy::Unit) || is_initial_scalar(ty)
 }
 
 fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
@@ -1067,8 +1115,21 @@ fn lower_initial_value_transfer(
     expr: &HirExpr,
     context: &str,
 ) -> Result<ValueId, String> {
-    require_initial_value_transfer(expr.intent, &builder.ty(&expr.ty), context)?;
-    builder.lower_expr(expr)
+    let ty = builder.ty(&expr.ty);
+    if is_initial_value_type(&ty) {
+        require_initial_value_transfer(expr.intent, &ty, context)?;
+        return builder.lower_expr(expr);
+    }
+    if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
+        || !matches!(expr.intent, IntentKind::Read | IntentKind::Consume)
+    {
+        return Err(format!(
+            "{context}: HIR {:?} intent cannot transfer `{}` in the owned SIR slice",
+            expr.intent,
+            ty.user_facing()
+        ));
+    }
+    builder.lower_owned_transfer(expr)
 }
 
 /// Lower a unit expression transferred by an explicit `return`.
@@ -1159,6 +1220,8 @@ struct Builder<'hir, 'service> {
     values: u32,
     ops: u32,
     bindings: HashMap<BindingId, ValueId>,
+    binding_declarations: HashMap<BindingId, usize>,
+    owned_live: BTreeMap<ValueId, ResolvedTy>,
     /// Every source binding this body declares, parameters first and then
     /// statement bindings in source order (§1.6).
     source_bindings: Vec<Binding>,
@@ -1223,6 +1286,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             })
             .collect::<Result<Vec<(BlockArg, Binding)>, String>>()?;
         let (params, source_bindings): (Vec<BlockArg>, Vec<Binding>) = params.into_iter().unzip();
+        let binding_declarations = function
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| (param.id, index))
+            .collect();
         Ok(Self {
             function,
             service,
@@ -1233,6 +1302,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             values,
             ops: 0,
             bindings,
+            binding_declarations,
+            owned_live: BTreeMap::new(),
             source_bindings,
             params,
         })
@@ -1275,6 +1346,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         let result = self.lower_block(&self.function.body)?;
         if self.is_open() {
+            if let Some(result) = &result {
+                self.owned_live.remove(&result.value);
+            }
+            self.destroy_all_live()?;
             self.set_terminator(SemTerminator::Return {
                 value: result.map(|operand| crate::BoundaryOperand {
                     operand,
@@ -1319,6 +1394,144 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })
     }
 
+    fn lower_owned_transfer(&mut self, expr: &HirExpr) -> Result<ValueId, String> {
+        let source = self.lower_expr(expr)?;
+        let ty = self.ty(&expr.ty);
+        let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+        if own != OwnKind::Owned {
+            return Ok(source);
+        }
+        let source_kind = self.value_own_kind(source);
+        match source_kind {
+            Some(OwnKind::Guaranteed) => self.emit(
+                expr,
+                SemOpKind::CopyValue {
+                    source: Operand { value: source },
+                },
+            ),
+            Some(OwnKind::Owned) if matches!(expr.kind, HirExprKind::BindingRef { .. }) => {
+                self.owned_live.remove(&source);
+                self.emit(
+                    expr,
+                    SemOpKind::Move {
+                        source: Operand { value: source },
+                    },
+                )
+            }
+            Some(OwnKind::Owned) => Ok(source),
+            _ => Err(format!(
+                "owned transfer of `{}` has no owning or guaranteed source",
+                ty.user_facing()
+            )),
+        }
+    }
+
+    fn value_own_kind(&self, value: ValueId) -> Option<OwnKind> {
+        self.params
+            .iter()
+            .find(|param| param.value == value)
+            .map(|param| param.own)
+            .or_else(|| {
+                self.blocks
+                    .iter()
+                    .flat_map(|block| block.args.iter())
+                    .find(|arg| arg.value == value)
+                    .map(|arg| arg.own)
+            })
+            .or_else(|| {
+                self.blocks
+                    .iter()
+                    .flat_map(|block| block.ops.iter())
+                    .flat_map(|op| op.results.iter())
+                    .find(|result| result.id == value)
+                    .map(|result| result.own)
+            })
+    }
+
+    fn value_ty(&self, value: ValueId) -> Option<ResolvedTy> {
+        self.params
+            .iter()
+            .find(|param| param.value == value)
+            .map(|param| param.ty.clone())
+            .or_else(|| {
+                self.blocks
+                    .iter()
+                    .flat_map(|block| block.args.iter())
+                    .find(|arg| arg.value == value)
+                    .map(|arg| arg.ty.clone())
+            })
+            .or_else(|| {
+                self.blocks
+                    .iter()
+                    .flat_map(|block| block.ops.iter())
+                    .flat_map(|op| op.results.iter())
+                    .find(|result| result.id == value)
+                    .map(|result| result.ty.clone())
+            })
+            .or_else(|| {
+                self.blocks.iter().find_map(|block| {
+                    let mut found = None;
+                    block.terminator.as_ref()?.visit_results(|result| {
+                        if result.id == value {
+                            found = Some(result.ty.clone());
+                        }
+                    });
+                    found
+                })
+            })
+    }
+
+    fn record_binding_version(&mut self, binding: BindingId, value: ValueId) -> Result<(), String> {
+        let declaration = *self.binding_declarations.get(&binding).ok_or_else(|| {
+            format!("binding `{binding}` has no source declaration in SIR lowering")
+        })?;
+        let source = self.source_bindings[declaration].clone();
+        self.source_bindings.push(Binding {
+            id: crate::BindingId(
+                u32::try_from(self.source_bindings.len())
+                    .map_err(|_| "SIR source binding count exceeds u32".to_string())?,
+            ),
+            name: source.name,
+            span: source.span,
+            mutable: source.mutable,
+            target: crate::BindingTarget::Value(value),
+        });
+        Ok(())
+    }
+
+    fn mutable_bindings(&self) -> Vec<BindingId> {
+        let mut bindings: Vec<_> = self
+            .binding_declarations
+            .iter()
+            .filter_map(|(binding, &index)| self.source_bindings[index].mutable.then_some(*binding))
+            .collect();
+        bindings.sort_unstable();
+        bindings
+    }
+
+    fn emit_destroy(&mut self, value: ValueId) -> Result<(), String> {
+        let id = OpId(self.ops);
+        self.current_block_mut().append_op(SemOp {
+            id,
+            results: Vec::new(),
+            kind: SemOpKind::DestroyValue {
+                value: Operand { value },
+            },
+            provenance: Provenance::Synthesized,
+        })?;
+        self.ops += 1;
+        self.owned_live.remove(&value);
+        Ok(())
+    }
+
+    fn destroy_all_live(&mut self) -> Result<(), String> {
+        let values: Vec<_> = self.owned_live.keys().copied().collect();
+        for value in values.into_iter().rev() {
+            self.emit_destroy(value)?;
+        }
+        Ok(())
+    }
+
     fn lower_block(&mut self, block: &HirBlock) -> Result<Option<Operand>, String> {
         for statement in &block.statements {
             if !self.is_open() {
@@ -1326,9 +1539,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             match &statement.kind {
                 HirStmtKind::Let(binding, value) => {
-                    if binding.mutable {
-                        return Err("mutable bindings are deferred until a dedicated SIR feature requires them".to_string());
-                    }
                     let value = value
                         .as_ref()
                         .map(|expr| lower_initial_value_transfer(self, expr, "binding initializer"))
@@ -1345,6 +1555,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     // provenance lands on that definition — and only when it
                     // has none, because `let y = x` must not rename the
                     // parameter `x` already named.
+                    let declaration = self.source_bindings.len();
                     self.source_bindings.push(Binding {
                         id: crate::BindingId(
                             u32::try_from(self.source_bindings.len())
@@ -1355,6 +1566,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         mutable: binding.mutable,
                         target: crate::BindingTarget::Value(value),
                     });
+                    self.binding_declarations.insert(binding.id, declaration);
                     self.bindings.insert(binding.id, value);
                 }
                 HirStmtKind::Expr(expr) => {
@@ -1374,13 +1586,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         }),
                         None => None,
                     };
+                    if let Some(value) = &value {
+                        self.owned_live.remove(&value.operand.value);
+                    }
+                    self.destroy_all_live()?;
                     self.set_terminator(SemTerminator::Return { value })?;
                 }
-                HirStmtKind::Assign { .. } => {
-                    return Err(
-                        "assignment is deferred until SIR has an explicit mutable-location design"
-                            .to_string(),
-                    )
+                HirStmtKind::Assign { target, value } => {
+                    self.lower_assignment(target, value)?;
                 }
                 HirStmtKind::LetElse { .. } | HirStmtKind::Defer { .. } => {
                     return Err(
@@ -1396,12 +1609,77 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     self.lower_discarded_expr(expr)?;
                     Ok(None)
                 }
-                Some(expr) => Ok(Some(self.lower_read_operand(expr, "block tail value")?)),
+                Some(expr) => Ok(Some(Operand {
+                    value: lower_initial_value_transfer(self, expr, "block tail value")?,
+                })),
                 None => Ok(None),
             }
         } else {
             Ok(None)
         }
+    }
+
+    fn lower_scoped_block(&mut self, block: &HirBlock) -> Result<Option<Operand>, String> {
+        let outer: std::collections::HashSet<_> = self.bindings.keys().copied().collect();
+        let result = self.lower_block(block)?;
+        if self.is_open() {
+            let locals: Vec<_> = self
+                .bindings
+                .keys()
+                .filter(|binding| !outer.contains(binding))
+                .copied()
+                .collect();
+            for binding in locals.into_iter().rev() {
+                if let Some(value) = self.bindings.remove(&binding) {
+                    if self.owned_live.contains_key(&value) {
+                        self.emit_destroy(value)?;
+                    }
+                }
+                self.binding_declarations.remove(&binding);
+            }
+        }
+        Ok(result)
+    }
+
+    fn lower_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &target.kind
+        else {
+            return Err(
+                "owned SIR assignment currently requires a resolved local binding target"
+                    .to_string(),
+            );
+        };
+        let binding = *binding;
+        let declaration = *self
+            .binding_declarations
+            .get(&binding)
+            .ok_or_else(|| format!("assignment target `{binding}` has no source declaration"))?;
+        if !self.source_bindings[declaration].mutable {
+            return Err(format!("assignment target `{binding}` is not mutable"));
+        }
+        let old = *self.bindings.get(&binding).ok_or_else(|| {
+            format!("assignment target `{binding}` is not available in the SIR environment")
+        })?;
+        let old_ty = self
+            .value_ty(old)
+            .ok_or_else(|| format!("assignment target `{binding}` has no concrete SIR type"))?;
+        let new_ty = self.ty(&value.ty);
+        if old_ty != new_ty {
+            return Err(format!(
+                "assignment target `{binding}` has `{}`, but its value has `{}`",
+                old_ty.user_facing(),
+                new_ty.user_facing()
+            ));
+        }
+        let new = lower_initial_value_transfer(self, value, "assignment value")?;
+        if self.owned_live.contains_key(&old) {
+            self.emit_destroy(old)?;
+        }
+        self.bindings.insert(binding, new);
+        self.record_binding_version(binding, new)
     }
 
     /// Lower an expression whose value is intentionally discarded.
@@ -1413,11 +1691,45 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         require_initial_scalar_read(expr.intent)
             .map_err(|reason| format!("discarded expression: {reason}"))?;
+        match &expr.kind {
+            HirExprKind::Block(block) => {
+                if let Some(value) = self.lower_scoped_block(block)? {
+                    if self.owned_live.contains_key(&value.value) {
+                        self.emit_destroy(value.value)?;
+                    }
+                }
+                return Ok(());
+            }
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+                return self.lower_unit_if(condition, then_expr, else_expr.as_deref());
+            }
+            HirExprKind::While {
+                label,
+                condition,
+                body,
+            } => {
+                if label.is_some() {
+                    return Err(
+                        "labelled while loops are not yet in the owned SIR slice".to_string()
+                    );
+                }
+                return self.lower_while(condition, body);
+            }
+            _ => {}
+        }
         if matches!(expr.kind, HirExprKind::Call { .. }) {
             self.lower_direct_call(expr, false)?;
             return Ok(());
         }
-        self.lower_expr(expr).map(|_| ())
+        let value = self.lower_expr(expr)?;
+        if self.owned_live.contains_key(&value) {
+            self.emit_destroy(value)?;
+        }
+        Ok(())
     }
 
     #[allow(
@@ -1444,17 +1756,46 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 self.emit(expr, SemOpKind::ConstBool(*value))
             }
+            HirExprKind::Literal(HirLiteral::String(value)) => {
+                let literal = self.service.intern_string(value);
+                self.emit(expr, SemOpKind::ConstStr(literal))
+            }
+            HirExprKind::Literal(HirLiteral::Bytes(value)) => {
+                let literal = self.service.intern_bytes(value);
+                self.emit(expr, SemOpKind::ConstBytes(literal))
+            }
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(binding),
                 ..
-            } => self.bindings.get(binding).copied().ok_or_else(|| {
-                format!("binding `{binding}` is not available in the SIR environment")
-            }),
+            } => {
+                let value = self.bindings.get(binding).copied().ok_or_else(|| {
+                    format!("binding `{binding}` is not available in the SIR environment")
+                })?;
+                if self.value_own_kind(value) == Some(OwnKind::Owned)
+                    && !self.owned_live.contains_key(&value)
+                {
+                    return Err(format!(
+                        "binding `{binding}` names a consumed owned SIR value"
+                    ));
+                }
+                Ok(value)
+            }
             HirExprKind::Unary { op, operand, .. } => {
                 let value = self.lower_read_operand(operand, "unary operand")?;
-                self.emit(expr, SemOpKind::Unary { op: *op, value })
+                if *op == hew_parser::ast::UnaryOp::Negate && self.ty(&expr.ty).is_signed_integer()
+                {
+                    let zero = self.emit(expr, SemOpKind::ConstI64(0))?;
+                    self.lower_checked_binary(
+                        expr,
+                        hew_parser::ast::BinaryOp::Subtract,
+                        Operand { value: zero },
+                        value,
+                    )
+                } else {
+                    self.emit(expr, SemOpKind::Unary { op: *op, value })
+                }
             }
             HirExprKind::Binary {
                 op: hew_parser::ast::BinaryOp::And,
@@ -1469,7 +1810,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::Binary { op, left, right } => {
                 let lhs = self.lower_read_operand(left, "binary left operand")?;
                 let rhs = self.lower_read_operand(right, "binary right operand")?;
-                self.emit(expr, SemOpKind::Binary { op: *op, lhs, rhs })
+                if crate::checked_binary_failure_kinds(*op, &self.ty(&expr.ty)).is_some() {
+                    self.lower_checked_binary(expr, *op, lhs, rhs)
+                } else {
+                    self.emit(expr, SemOpKind::Binary { op: *op, lhs, rhs })
+                }
             }
             HirExprKind::NumericCast { value, to_ty, .. } => {
                 let value = self.lower_read_operand(value, "cast operand")?;
@@ -1668,12 +2013,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         let mut lowered_args = Vec::with_capacity(args.len());
         for (index, (arg, expected)) in args.iter().zip(&params).enumerate() {
-            if expected.passing != SemParamPassing::ReadOnly {
-                return Err(format!(
-                    "direct callee `{}` has a non-ReadOnly SIR ABI parameter {index}",
-                    callee_declaration.full_path()
-                ));
-            }
             let argument_ty = self.ty(&arg.ty);
             if argument_ty != expected.ty {
                 return Err(format!(
@@ -1691,9 +2030,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         callee_declaration.full_path()
                     ),
                 )?,
-                decision: crate::BoundaryDecision::Copy,
+                decision: match expected.passing {
+                    SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
+                    SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
+                },
             });
         }
+        let live_at_call = self.owned_live.clone();
+        let bound_values: std::collections::HashSet<_> = self.bindings.values().copied().collect();
+        let argument_temporaries: Vec<_> = live_at_call
+            .keys()
+            .filter(|value| !bound_values.contains(value))
+            .copied()
+            .collect();
         if return_ty == ResolvedTy::Unit {
             if value_required {
                 return Err(format!(
@@ -1720,8 +2069,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }),
             })?;
             self.current = unwind;
+            self.owned_live = live_at_call.clone();
+            self.destroy_all_live()?;
             self.set_terminator(SemTerminator::ResumeUnwind)?;
             self.current = normal;
+            self.owned_live = live_at_call;
+            for value in argument_temporaries.into_iter().rev() {
+                self.emit_destroy(value)?;
+            }
             Ok(None)
         } else {
             let result = self.fresh_value();
@@ -1755,10 +2110,256 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }),
             })?;
             self.current = unwind;
+            self.owned_live = live_at_call.clone();
+            self.destroy_all_live()?;
             self.set_terminator(SemTerminator::ResumeUnwind)?;
             self.current = normal;
+            self.owned_live = live_at_call;
+            for value in argument_temporaries.into_iter().rev() {
+                self.emit_destroy(value)?;
+            }
+            if own == OwnKind::Owned {
+                self.owned_live.insert(continuation, self.ty(&expr.ty));
+            }
             Ok(Some(continuation))
         }
+    }
+
+    fn lower_unit_if(
+        &mut self,
+        condition: &HirExpr,
+        then_expr: &HirExpr,
+        else_expr: Option<&HirExpr>,
+    ) -> Result<(), String> {
+        let condition = self.lower_read_operand(condition, "if condition")?;
+        let then_block = self.new_block(Vec::new());
+        let else_block = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Branch {
+            condition,
+            then_target: Edge {
+                target: then_block,
+                args: Vec::new(),
+            },
+            else_target: Edge {
+                target: else_block,
+                args: Vec::new(),
+            },
+        })?;
+
+        let before_bindings = self.bindings.clone();
+        let before_live = self.owned_live.clone();
+        self.current = then_block;
+        self.bindings = before_bindings.clone();
+        self.owned_live = before_live.clone();
+        self.lower_discarded_expr(then_expr)?;
+        let then_state = self
+            .is_open()
+            .then(|| (self.current, self.bindings.clone(), self.owned_live.clone()));
+
+        self.current = else_block;
+        self.bindings = before_bindings;
+        self.owned_live = before_live;
+        if let Some(else_expr) = else_expr {
+            self.lower_discarded_expr(else_expr)?;
+        }
+        let else_state = self
+            .is_open()
+            .then(|| (self.current, self.bindings.clone(), self.owned_live.clone()));
+
+        match (then_state, else_state) {
+            (Some(then_state), Some(else_state)) => {
+                self.merge_unit_branches(then_state, else_state)
+            }
+            (Some((block, bindings, live)), None) | (None, Some((block, bindings, live))) => {
+                self.current = block;
+                self.bindings = bindings;
+                self.owned_live = live;
+                Ok(())
+            }
+            (None, None) => {
+                self.current = then_block;
+                Ok(())
+            }
+        }
+    }
+
+    fn merge_unit_branches(
+        &mut self,
+        then_state: (
+            BlockId,
+            HashMap<BindingId, ValueId>,
+            BTreeMap<ValueId, ResolvedTy>,
+        ),
+        else_state: (
+            BlockId,
+            HashMap<BindingId, ValueId>,
+            BTreeMap<ValueId, ResolvedTy>,
+        ),
+    ) -> Result<(), String> {
+        let (then_block, then_bindings, mut then_live) = then_state;
+        let (else_block, else_bindings, mut else_live) = else_state;
+        let then_keys: std::collections::HashSet<_> = then_bindings.keys().copied().collect();
+        let else_keys: std::collections::HashSet<_> = else_bindings.keys().copied().collect();
+        if then_keys != else_keys {
+            return Err("if branches expose different source bindings at their join".to_string());
+        }
+        let mut args = Vec::new();
+        let mut then_args = Vec::new();
+        let mut else_args = Vec::new();
+        let mut joined_bindings = then_bindings.clone();
+        let mut joined_owners = Vec::new();
+
+        for binding in self.mutable_bindings() {
+            let Some(&then_value) = then_bindings.get(&binding) else {
+                continue;
+            };
+            let else_value = *else_bindings.get(&binding).ok_or_else(|| {
+                format!("mutable binding `{binding}` is missing from one if branch")
+            })?;
+            let ty = self.value_ty(then_value).ok_or_else(|| {
+                format!("mutable binding `{binding}` has no concrete type at its if join")
+            })?;
+            if self.value_ty(else_value).as_ref() != Some(&ty) {
+                return Err(format!(
+                    "mutable binding `{binding}` has mismatched types at its if join"
+                ));
+            }
+            self.service.require_type_facts(&ty)?;
+            let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+            let joined = self.fresh_value();
+            args.push(BlockArg {
+                value: joined,
+                own,
+                ty: ty.clone(),
+            });
+            then_args.push(Operand { value: then_value });
+            else_args.push(Operand { value: else_value });
+            joined_bindings.insert(binding, joined);
+            then_live.remove(&then_value);
+            else_live.remove(&else_value);
+            if own == OwnKind::Owned {
+                joined_owners.push((joined, ty));
+            }
+            self.record_binding_version(binding, joined)?;
+        }
+        if then_live != else_live {
+            return Err(
+                "if branches leave different non-binding owned values live at their join"
+                    .to_string(),
+            );
+        }
+        let join = self.new_block(args);
+        self.current = then_block;
+        self.set_terminator(SemTerminator::Goto(Edge {
+            target: join,
+            args: then_args,
+        }))?;
+        self.current = else_block;
+        self.set_terminator(SemTerminator::Goto(Edge {
+            target: join,
+            args: else_args,
+        }))?;
+        self.current = join;
+        self.bindings = joined_bindings;
+        self.owned_live = then_live;
+        self.owned_live.extend(joined_owners);
+        Ok(())
+    }
+
+    fn lower_while(&mut self, condition: &HirExpr, body: &HirBlock) -> Result<(), String> {
+        let preheader = self.current;
+        let before_bindings = self.bindings.clone();
+        let mut header_bindings = before_bindings.clone();
+        let mut header_live = self.owned_live.clone();
+        let mut header_args = Vec::new();
+        let mut entry_args = Vec::new();
+        let mut carried = Vec::new();
+        for binding in self.mutable_bindings() {
+            let Some(&source) = before_bindings.get(&binding) else {
+                continue;
+            };
+            let ty = self.value_ty(source).ok_or_else(|| {
+                format!("mutable binding `{binding}` has no concrete type at its loop header")
+            })?;
+            self.service.require_type_facts(&ty)?;
+            let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+            if own == OwnKind::Guaranteed {
+                return Err(format!(
+                    "borrowed parameter `{binding}` cannot be a loop-carried mutable owner"
+                ));
+            }
+            let header_value = self.fresh_value();
+            header_args.push(BlockArg {
+                value: header_value,
+                own,
+                ty: ty.clone(),
+            });
+            entry_args.push(Operand { value: source });
+            header_bindings.insert(binding, header_value);
+            header_live.remove(&source);
+            if own == OwnKind::Owned {
+                header_live.insert(header_value, ty);
+            }
+            carried.push(binding);
+            self.record_binding_version(binding, header_value)?;
+        }
+
+        let header = self.new_block(header_args);
+        self.current = preheader;
+        self.set_terminator(SemTerminator::Goto(Edge {
+            target: header,
+            args: entry_args,
+        }))?;
+        self.current = header;
+        self.bindings = header_bindings.clone();
+        self.owned_live = header_live.clone();
+        let condition = self.lower_read_operand(condition, "while condition")?;
+        let body_block = self.new_block(Vec::new());
+        let exit = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Branch {
+            condition,
+            then_target: Edge {
+                target: body_block,
+                args: Vec::new(),
+            },
+            else_target: Edge {
+                target: exit,
+                args: Vec::new(),
+            },
+        })?;
+
+        self.current = body_block;
+        self.bindings = header_bindings.clone();
+        self.owned_live = header_live.clone();
+        let tail = self.lower_scoped_block(body)?;
+        if let Some(tail) = tail {
+            if self.owned_live.contains_key(&tail.value) {
+                self.emit_destroy(tail.value)?;
+            }
+        }
+        if self.is_open() {
+            let back_args = carried
+                .iter()
+                .map(|binding| {
+                    self.bindings
+                        .get(binding)
+                        .copied()
+                        .map(|value| Operand { value })
+                        .ok_or_else(|| {
+                            format!("loop-carried binding `{binding}` is missing on its back edge")
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.set_terminator(SemTerminator::Goto(Edge {
+                target: header,
+                args: back_args,
+            }))?;
+        }
+
+        self.current = exit;
+        self.bindings = header_bindings;
+        self.owned_live = header_live;
+        Ok(())
     }
 
     fn lower_if(
@@ -1773,6 +2374,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let else_block = self.new_block(Vec::new());
         let join_value = self.fresh_value();
         let join_ty = self.ty(&whole.ty);
+        if !is_initial_value_type(&join_ty) {
+            return Err(format!(
+                "value-producing if over `{}` is outside the current SIR value domain",
+                join_ty.user_facing()
+            ));
+        }
         self.service.require_type_facts(&join_ty)?;
         let join_own = OwnKind::of_ty(&join_ty, self.service.checked_facts.rows())?;
         let join_block = self.new_block(vec![BlockArg {
@@ -1909,14 +2516,87 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             results: vec![ValueDef {
                 id: value,
                 own: OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?,
-                ty: result_ty,
+                ty: result_ty.clone(),
             }],
             kind,
             provenance: Provenance::Site(expr.site),
         };
+        if op.results[0].own == OwnKind::Owned {
+            self.owned_live.insert(value, result_ty.clone());
+        }
         self.current_block_mut().append_op(op)?;
         self.ops += 1;
         Ok(value)
+    }
+
+    fn lower_checked_binary(
+        &mut self,
+        expr: &HirExpr,
+        op: hew_parser::ast::BinaryOp,
+        lhs: Operand,
+        rhs: Operand,
+    ) -> Result<ValueId, String> {
+        let result_ty = self.ty(&expr.ty);
+        let required = crate::checked_binary_failure_kinds(op, &result_ty).ok_or_else(|| {
+            format!(
+                "`{op}` over `{}` is not a checked integer operation",
+                result_ty.user_facing()
+            )
+        })?;
+        self.service.require_type_facts(&result_ty)?;
+        let own = OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?;
+        let raw_result = self.fresh_value();
+        let continuation = self.fresh_value();
+        let normal = self.new_block(vec![BlockArg {
+            value: continuation,
+            ty: result_ty.clone(),
+            own,
+        }]);
+        let failure_blocks: Vec<_> = required
+            .iter()
+            .map(|kind| (*kind, self.new_block(Vec::new())))
+            .collect();
+        let failures = failure_blocks
+            .iter()
+            .map(|(kind, block)| CheckedFailure {
+                kind: *kind,
+                edge: Edge {
+                    target: *block,
+                    args: Vec::new(),
+                },
+            })
+            .collect();
+        let live_at_operation = self.owned_live.clone();
+        let id = OpId(self.ops);
+        self.ops += 1;
+        self.set_terminator(SemTerminator::CheckedBinary {
+            id,
+            op,
+            lhs,
+            rhs,
+            result: ValueDef {
+                id: raw_result,
+                ty: result_ty,
+                own,
+            },
+            normal: Edge {
+                target: normal,
+                args: vec![Operand { value: raw_result }],
+            },
+            failures,
+        })?;
+        for (kind, block) in failure_blocks {
+            self.current = block;
+            self.owned_live = live_at_operation.clone();
+            self.destroy_all_live()?;
+            self.set_terminator(SemTerminator::Trap { kind })?;
+        }
+        self.current = normal;
+        self.owned_live = live_at_operation;
+        if own == OwnKind::Owned {
+            self.owned_live.insert(continuation, self.ty(&expr.ty));
+        }
+        Ok(continuation)
     }
 
     fn fresh_value(&mut self) -> ValueId {

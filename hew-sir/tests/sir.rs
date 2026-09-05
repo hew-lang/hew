@@ -243,7 +243,7 @@ fn block_arguments_are_ssa_join_values() {
                         id: OpId(3),
                         results: vec![definition(6)],
                         kind: SemOpKind::Binary {
-                            op: BinaryOp::Add,
+                            op: BinaryOp::WrappingAdd,
                             lhs: Operand { value: ValueId(4) },
                             rhs: Operand { value: ValueId(5) },
                         },
@@ -273,7 +273,7 @@ fn block_arguments_are_ssa_join_values() {
                         id: OpId(5),
                         results: vec![definition(9)],
                         kind: SemOpKind::Binary {
-                            op: BinaryOp::Add,
+                            op: BinaryOp::WrappingAdd,
                             lhs: Operand { value: ValueId(7) },
                             rhs: Operand { value: ValueId(8) },
                         },
@@ -303,7 +303,7 @@ fn block_arguments_are_ssa_join_values() {
                         id: OpId(7),
                         results: vec![definition(12)],
                         kind: SemOpKind::Binary {
-                            op: BinaryOp::Multiply,
+                            op: BinaryOp::WrappingMul,
                             lhs: Operand { value: ValueId(10) },
                             rhs: Operand { value: ValueId(11) },
                         },
@@ -615,13 +615,12 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
 
 #[test]
 fn operation_effects_are_derived_and_conservative() {
-    let checked_add = SemOpKind::Binary {
-        op: BinaryOp::Add,
-        lhs: Operand { value: ValueId(0) },
-        rhs: Operand { value: ValueId(1) },
+    let raw_deref = SemOpKind::Unary {
+        op: hew_parser::ast::UnaryOp::RawDeref,
+        value: Operand { value: ValueId(0) },
     };
-    assert_eq!(checked_add.effects(), EffectSet::MAY_TRAP);
-    assert!(checked_add.effects().may_trap());
+    assert_eq!(raw_deref.effects(), EffectSet::MAY_TRAP);
+    assert!(raw_deref.effects().may_trap());
 
     let wrapping_add = SemOpKind::Binary {
         op: BinaryOp::WrappingAdd,
@@ -1137,7 +1136,7 @@ fn rewrite_fixture() -> SemFunction {
                     id: OpId(0),
                     results: vec![definition(3)],
                     kind: SemOpKind::Binary {
-                        op: BinaryOp::Add,
+                        op: BinaryOp::WrappingAdd,
                         lhs: read(ValueId(0)),
                         rhs: read(ValueId(0)),
                     },
@@ -1482,10 +1481,9 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
     );
 }
 
-/// The same refusal for `Trap`: §1.6 gives a trap endpoint a kind table this
-/// phase does not check, so the terminator is refused rather than admitted.
+/// A typed trap is a complete semantic endpoint and needs no synthetic return.
 #[test]
-fn verifier_rejects_a_trap_endpoint_it_states_no_rule_for() {
+fn verifier_admits_a_typed_trap_endpoint() {
     let function = SemFunction {
         id: ItemId(0),
         callable: CallableId(0),
@@ -1509,17 +1507,13 @@ fn verifier_rejects_a_trap_endpoint_it_states_no_rule_for() {
     };
     let diagnostics = verify_module(&module(vec![function]));
     assert!(
-        diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            SirDiagnosticKind::InvalidTerminator { .. }
-        )),
-        "a trap endpoint must be refused, got {diagnostics:?}"
+        diagnostics.is_empty(),
+        "typed trap must verify: {diagnostics:?}"
     );
 }
 
-/// The counterfactual for both rows above: the terminators this table does
-/// state a relation for are still admitted, so the refusal is about the
-/// unverified kinds and not about terminators in general.
+/// Ordinary control terminators remain admitted alongside typed traps; the
+/// refusal above is specific to an unimplemented suspend relation.
 #[test]
 fn verifier_still_admits_the_terminators_it_states_rules_for() {
     let function = SemFunction {
@@ -1833,8 +1827,7 @@ fn any_reason_contains(diagnostics: &[hew_sir::SirDiagnostic], needle: &str) -> 
     })
 }
 
-/// §1.2 rule 3's `Borrow` header slot is representable and walled: the callable
-/// table refuses a header that carries it, before any body reads it.
+/// A scalar header cannot claim the owned-value `Borrow` convention.
 #[test]
 fn verifier_refuses_a_callable_header_carrying_a_borrow_slot() {
     let diagnostics = verify_module(&borrow_slot_module(SemParamPassing::Borrow));
@@ -1842,20 +1835,18 @@ fn verifier_refuses_a_callable_header_carrying_a_borrow_slot() {
         &diagnostic.kind,
         SirDiagnosticKind::InvalidCallable { callable, reason }
             if *callable == CallableId(0)
-                && reason.contains("parameter 0 has non-ReadOnly ABI passing")
+                && reason.contains("parameter 0 has Borrow passing, expected ReadOnly")
     )));
 }
 
-/// The second wall on the same module: a direct call to a callee whose slot is
-/// `Borrow` is refused at the call site too, so a header that slipped through
-/// cannot be reached by a call.
+/// A direct call must match the declared parameter-passing decision exactly.
 #[test]
 fn verifier_refuses_a_direct_call_to_a_borrow_slot_parameter() {
     let diagnostics = verify_module(&borrow_slot_module(SemParamPassing::Borrow));
     assert!(diagnostics.iter().any(|diagnostic| matches!(
         &diagnostic.kind,
         SirDiagnosticKind::InvalidOperation { reason, .. }
-            if reason.contains("parameter 0 has non-ReadOnly ABI passing")
+            if reason.contains("is Copy, expected Borrow for Borrow parameter passing")
     )));
 }
 

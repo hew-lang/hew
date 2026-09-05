@@ -309,31 +309,10 @@ fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() 
             SemBlock {
                 id: BlockId(2),
                 args: Vec::new(),
-                ops: vec![
-                    SemOp {
-                        id: OpId(1),
-                        results: vec![value(1, ResolvedTy::I64)],
-                        kind: SemOpKind::ConstI64(1),
-                        provenance: Provenance::Synthesized,
-                    },
-                    SemOp {
-                        id: OpId(2),
-                        results: vec![value(2, ResolvedTy::I64)],
-                        kind: SemOpKind::ConstI64(0),
-                        provenance: Provenance::Synthesized,
-                    },
-                    SemOp {
-                        id: OpId(3),
-                        results: vec![value(3, ResolvedTy::I64)],
-                        kind: SemOpKind::Binary {
-                            op: hew_parser::ast::BinaryOp::Divide,
-                            lhs: read(1),
-                            rhs: read(2),
-                        },
-                        provenance: Provenance::Synthesized,
-                    },
-                ],
-                terminator: SemTerminator::Return { value: None },
+                ops: Vec::new(),
+                terminator: SemTerminator::Trap {
+                    kind: hew_sir::TrapKind::DivideByZero,
+                },
             },
         ],
     );
@@ -341,7 +320,7 @@ fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() 
     assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 
     // This is the counterfactual: the ordinary post-fold verifier alone sees
-    // valid SSA even though compaction would erase a MayTrap region.
+    // valid SSA even though compaction would erase a trapping terminator.
     let mut structurally_valid_but_unsafe = function.clone();
     structurally_valid_but_unsafe.blocks[0].terminator = SemTerminator::Goto(Edge {
         target: BlockId(1),
@@ -353,7 +332,8 @@ fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() 
     )
     .is_empty());
 
-    let error = canonicalize(&mut function).expect_err("discarding a MayTrap arm must fail closed");
+    let error =
+        canonicalize(&mut function).expect_err("discarding a trapping terminator must fail closed");
     assert!(matches!(
         error,
         SirOptimizationError::InvalidOutput(diagnostics)
@@ -361,7 +341,7 @@ fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() 
                 &diagnostic.kind,
                 SirDiagnosticKind::UnsafeCfgDiscard {
                     block: BlockId(2),
-                    reason: CfgDiscardSafetyReason::MayTrap { op: OpId(3) },
+                    reason: CfgDiscardSafetyReason::MayTrapTerminator,
                 }
             ))
     ));

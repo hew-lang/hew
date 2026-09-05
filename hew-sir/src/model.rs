@@ -616,6 +616,13 @@ pub enum CallUnwind {
     Cleanup(Edge),
 }
 
+/// One exact checked-arithmetic failure successor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedFailure {
+    pub kind: TrapKind,
+    pub edge: Edge,
+}
+
 /// Value-producing, non-suspending operations in the first SIR slice.
 ///
 /// Effects are derived by [`Self::effects`] rather than stored redundantly on
@@ -858,18 +865,7 @@ impl SemOpKind {
     pub const fn effects(&self) -> EffectSet {
         match self {
             Self::Unary {
-                op: hew_parser::ast::UnaryOp::Negate | hew_parser::ast::UnaryOp::RawDeref,
-                ..
-            }
-            | Self::Binary {
-                op:
-                    hew_parser::ast::BinaryOp::Add
-                    | hew_parser::ast::BinaryOp::Subtract
-                    | hew_parser::ast::BinaryOp::Multiply
-                    | hew_parser::ast::BinaryOp::Divide
-                    | hew_parser::ast::BinaryOp::Modulo
-                    | hew_parser::ast::BinaryOp::Shl
-                    | hew_parser::ast::BinaryOp::Shr,
+                op: hew_parser::ast::UnaryOp::RawDeref,
                 ..
             } => EffectSet::MAY_TRAP,
             // Ownership operations are optimization barriers, not pure
@@ -945,6 +941,19 @@ pub enum SemTerminator {
         condition: Operand,
         then_target: Edge,
         else_target: Edge,
+    },
+    /// Checked integer arithmetic with explicit normal and failure control.
+    ///
+    /// `result` exists only on the normal edge. Each failure edge must clean
+    /// up live owners before reaching a matching [`SemTerminator::Trap`].
+    CheckedBinary {
+        id: OpId,
+        op: hew_parser::ast::BinaryOp,
+        lhs: Operand,
+        rhs: Operand,
+        result: ValueDef,
+        normal: Edge,
+        failures: Vec<CheckedFailure>,
     },
     /// A resolved ordinary Hew direct call with explicit normal and unwind
     /// control flow.
@@ -1031,6 +1040,7 @@ impl SemTerminator {
             Self::Return { value: None }
             | Self::Goto(_)
             | Self::Branch { .. }
+            | Self::CheckedBinary { .. }
             | Self::Trap { .. }
             | Self::ResumeUnwind
             | Self::Unreachable => {}
@@ -1047,7 +1057,8 @@ impl SemTerminator {
             | Self::RtCall {
                 result: CallResult::Value(result),
                 ..
-            } => visit(result),
+            }
+            | Self::CheckedBinary { result, .. } => visit(result),
             Self::Return { .. }
             | Self::Goto(_)
             | Self::Branch { .. }
@@ -1100,6 +1111,13 @@ impl SemTerminator {
                         .expect("SIR branch operand count exceeds u32");
                 }
             }
+            Self::CheckedBinary {
+                lhs,
+                rhs,
+                normal,
+                failures,
+                ..
+            } => visit_checked_binary_operands(lhs, rhs, normal, failures, visit),
             Self::Call {
                 args,
                 normal,
@@ -1193,6 +1211,13 @@ impl SemTerminator {
                         .expect("SIR branch operand count exceeds u32");
                 }
             }
+            Self::CheckedBinary {
+                lhs,
+                rhs,
+                normal,
+                failures,
+                ..
+            } => visit_checked_binary_operands_mut(lhs, rhs, normal, failures, visit),
             Self::Call {
                 args,
                 normal,
@@ -1279,6 +1304,20 @@ impl SemTerminator {
                 visit(SuccessorSlot(0), then_target);
                 visit(SuccessorSlot(1), else_target);
             }
+            Self::CheckedBinary {
+                normal, failures, ..
+            } => {
+                visit(SuccessorSlot(0), normal);
+                for (index, failure) in failures.iter().enumerate() {
+                    visit(
+                        SuccessorSlot(
+                            u32::try_from(index + 1)
+                                .expect("SIR checked-binary edge count exceeds u32"),
+                        ),
+                        &failure.edge,
+                    );
+                }
+            }
             Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
                 if let CallUnwind::Cleanup(edge) = unwind {
@@ -1320,6 +1359,20 @@ impl SemTerminator {
             } => {
                 visit(SuccessorSlot(0), then_target);
                 visit(SuccessorSlot(1), else_target);
+            }
+            Self::CheckedBinary {
+                normal, failures, ..
+            } => {
+                visit(SuccessorSlot(0), normal);
+                for (index, failure) in failures.iter_mut().enumerate() {
+                    visit(
+                        SuccessorSlot(
+                            u32::try_from(index + 1)
+                                .expect("SIR checked-binary edge count exceeds u32"),
+                        ),
+                        &mut failure.edge,
+                    );
+                }
             }
             Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
@@ -1374,6 +1427,14 @@ impl SemTerminator {
                     _ => None,
                 }
             }
+            Self::CheckedBinary {
+                normal, failures, ..
+            } => match slot.0 {
+                0 => Some(normal),
+                value => failures
+                    .get(usize::try_from(value - 1).ok()?)
+                    .map(|failure| &failure.edge),
+            },
             Self::Suspend {
                 resumes, cancel, ..
             } => resumes
@@ -1412,6 +1473,14 @@ impl SemTerminator {
                     _ => None,
                 }
             }
+            Self::CheckedBinary {
+                normal, failures, ..
+            } => match slot.0 {
+                0 => Some(normal),
+                value => failures
+                    .get_mut(usize::try_from(value - 1).ok()?)
+                    .map(|failure| &mut failure.edge),
+            },
             Self::Suspend {
                 resumes, cancel, ..
             } => resumes
@@ -1458,6 +1527,18 @@ impl SemTerminator {
                 "branch then-edge argument"
             }
             Self::Branch { .. } => "branch else-edge argument",
+            Self::CheckedBinary { normal, .. }
+                if usize::try_from(slot.0).is_ok_and(|slot| slot < 2 + normal.args.len()) =>
+            {
+                if slot.0 == 0 {
+                    "checked-binary left operand"
+                } else if slot.0 == 1 {
+                    "checked-binary right operand"
+                } else {
+                    "checked-binary normal-edge argument"
+                }
+            }
+            Self::CheckedBinary { .. } => "checked-binary failure-edge argument",
             Self::Call { args, normal, .. } | Self::RtCall { args, normal, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < args.len()) =>
             {
@@ -1499,5 +1580,46 @@ impl SemTerminator {
             }
         });
         replaced
+    }
+}
+
+fn visit_checked_binary_operands(
+    lhs: &Operand,
+    rhs: &Operand,
+    normal: &Edge,
+    failures: &[CheckedFailure],
+    mut visit: impl FnMut(OperandSlot, &Operand),
+) {
+    visit(OperandSlot(0), lhs);
+    visit(OperandSlot(1), rhs);
+    let mut next = 2_u32;
+    for edge in std::iter::once(normal).chain(failures.iter().map(|failure| &failure.edge)) {
+        for operand in &edge.args {
+            visit(OperandSlot(next), operand);
+            next = next
+                .checked_add(1)
+                .expect("SIR checked-binary operand count exceeds u32");
+        }
+    }
+}
+
+fn visit_checked_binary_operands_mut(
+    lhs: &mut Operand,
+    rhs: &mut Operand,
+    normal: &mut Edge,
+    failures: &mut [CheckedFailure],
+    mut visit: impl FnMut(OperandSlot, &mut Operand),
+) {
+    visit(OperandSlot(0), lhs);
+    visit(OperandSlot(1), rhs);
+    let mut next = 2_u32;
+    for edge in std::iter::once(normal).chain(failures.iter_mut().map(|failure| &mut failure.edge))
+    {
+        for operand in &mut edge.args {
+            visit(OperandSlot(next), operand);
+            next = next
+                .checked_add(1)
+                .expect("SIR checked-binary operand count exceeds u32");
+        }
     }
 }

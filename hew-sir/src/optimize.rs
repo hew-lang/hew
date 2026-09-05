@@ -106,6 +106,7 @@ fn canonicalize_verified_function(
                 }
             }),
             SemTerminator::Return { .. }
+            | SemTerminator::CheckedBinary { .. }
             | SemTerminator::Call { .. }
             | SemTerminator::RtCall { .. }
             | SemTerminator::Goto(_)

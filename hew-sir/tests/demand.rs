@@ -43,9 +43,8 @@ fn status_of<'a>(lowered: &'a LoweredModule, name: &str) -> &'a SirLoweringStatu
         .unwrap_or_else(|| panic!("source must declare `{name}`"))
 }
 
-/// `var` bindings are outside the initial SIR surface, which makes them a
-/// stable way to write a body that cannot lower.
-const UNSUPPORTED_BODY: &str = "var accumulator = value; accumulator";
+/// Aggregate array construction remains outside this executable SIR slice.
+const UNSUPPORTED_BODY: &str = "let deferred = [value]; value";
 
 #[test]
 fn an_unreachable_unsupported_function_does_not_block_the_reachable_component() {
@@ -239,8 +238,8 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
             {UNSUPPORTED_BODY}
         }}
 
-        fn refused_header(text: string) -> i64 {{
-            text.len()
+        fn refused_header(value: Option<i64>) -> i64 {{
+            0
         }}
 
         fn main() -> i64 {{
@@ -285,7 +284,7 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
         );
     };
     assert!(
-        reason.contains("string"),
+        reason.contains("Option<i64>"),
         "the refusal must name the offending parameter type: {reason}"
     );
     let stranded = &every

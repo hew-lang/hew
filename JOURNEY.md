@@ -169,3 +169,22 @@
 - Hand-built SIR fixtures now publish explicit rows for the structural types
   they model. This is fixture setup for the production boundary, not a restored
   fallback or a source-text oracle.
+
+## Executable owned SIR
+
+- String and bytes callable parameters now borrow ordinary inputs. Returning
+  or storing a borrowed input emits an explicit `copy_value`; owned literals,
+  call results and replacements are destroyed on normal, unwind and early
+  exits.
+- Mutable owned bindings remain SSA values. Conditional reassignment merges
+  them through block arguments, while loop headers carry the current values
+  explicitly across back edges and scoped locals are cleaned before leaving
+  their block.
+- Integer arithmetic now ends its block with `checked.binary`, an explicit
+  normal result edge and the exact failure edges required by its type and
+  operator. Every produced failure path destroys live owners before reaching
+  the matching typed trap; the verifier rejects wrong kinds, non-trapping
+  cycles and legacy checked arithmetic hidden in ordinary `Binary` operations.
+- The old SIR-to-MIR bridges fail closed on this new terminator. Physical MIR
+  realization remains the next layer and must preserve the explicit edges and
+  ownership operations rather than inferring copies or cleanup.

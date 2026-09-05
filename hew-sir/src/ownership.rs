@@ -122,6 +122,50 @@ pub enum TrapKind {
     ShiftOutOfRange,
 }
 
+/// Exact language-visible failures for a checked binary integer operation.
+///
+/// This is the semantic authority shared by SIR construction, verification
+/// and the physical consumer. A backend may choose how to test these
+/// conditions, but it may neither add nor omit a failure edge.
+#[must_use]
+pub fn checked_binary_failure_kinds(
+    op: hew_parser::ast::BinaryOp,
+    ty: &ResolvedTy,
+) -> Option<&'static [TrapKind]> {
+    use hew_parser::ast::BinaryOp;
+
+    const OVERFLOW: &[TrapKind] = &[TrapKind::IntegerOverflow];
+    const DIV_UNSIGNED: &[TrapKind] = &[TrapKind::DivideByZero];
+    const DIV_SIGNED: &[TrapKind] = &[TrapKind::DivideByZero, TrapKind::SignedMinDivNegOne];
+    const SHIFT: &[TrapKind] = &[TrapKind::ShiftOutOfRange];
+
+    if !ty.is_integer() {
+        return None;
+    }
+    match op {
+        BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply => Some(OVERFLOW),
+        BinaryOp::Divide | BinaryOp::Modulo if ty.is_signed_integer() => Some(DIV_SIGNED),
+        BinaryOp::Divide | BinaryOp::Modulo => Some(DIV_UNSIGNED),
+        BinaryOp::Shl | BinaryOp::Shr => Some(SHIFT),
+        BinaryOp::Equal
+        | BinaryOp::NotEqual
+        | BinaryOp::Less
+        | BinaryOp::LessEqual
+        | BinaryOp::Greater
+        | BinaryOp::GreaterEqual
+        | BinaryOp::And
+        | BinaryOp::Or
+        | BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor
+        | BinaryOp::Range
+        | BinaryOp::RangeInclusive
+        | BinaryOp::WrappingAdd
+        | BinaryOp::WrappingSub
+        | BinaryOp::WrappingMul => None,
+    }
+}
+
 /// Which runtime operation a `Suspend` terminator parks on (§1.5).
 ///
 /// One variant per spelling in the **SIR `SuspendKind`** column of §1.5's kind

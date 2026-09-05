@@ -115,6 +115,15 @@ actionlint:
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
+# Optional, gitignored local settings in Make assignment syntax (NAME=value).
+# Command-line assignments still take precedence. Export build-tool settings
+# so Cargo, rustc and temporary-file helpers receive the same configuration.
+-include .env
+LOCAL_BUILD_ENV := $(filter TMPDIR CARGO_BUILD_JOBS RUSTC_WRAPPER CARGO_TARGET_DIR,$(.VARIABLES))
+ifneq ($(LOCAL_BUILD_ENV),)
+export $(LOCAL_BUILD_ENV)
+endif
+
 # Repository scripts require Python 3.12+ (PEP 701 and stdlib tomllib).
 # Override with `make PYTHON=/path/to/python3.12 <target>` when needed.
 ifeq ($(OS),Windows_NT)

@@ -504,7 +504,12 @@ impl Checker {
             // the codegen output, preventing unresolved holes from reaching the
             // codegen backend. `drain_deferred_bound_checks` revisits the
             // deferred entry once post-inference defaulting settles.
-            if resolved_arg.has_inference_var() {
+            if resolved_arg.has_inference_var()
+                || (!self.type_decls_registered
+                    && bounds
+                        .iter()
+                        .any(|bound| MarkerTrait::from_name(bound) == Some(MarkerTrait::Eq)))
+            {
                 self.deferred_bound_checks.push(DeferredBoundCheck {
                     type_param: param_name.clone(),
                     bounds,
@@ -1068,6 +1073,21 @@ impl Checker {
     }
 
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
+        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Eq)
+            && !Self::ty_mentions_type_params(
+                ty,
+                &self
+                    .current_type_param_names()
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            )
+        {
+            let ty = self.normalize_for_use(ty).materialize_literal_defaults();
+            return Self::selected_eq_available(
+                &mut TypeFactService::new(self.type_fact_context(), BTreeMap::new()),
+                &ty,
+            );
+        }
         match ty {
             // `instant` is a monotonic i64-nanos timestamp; it canonicalises to
             // i64 at the MIR boundary and renders through the i64 Display arm

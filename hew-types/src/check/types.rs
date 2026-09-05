@@ -2213,26 +2213,15 @@ pub(super) struct DeferredBuiltinCloneAdmission {
     pub(super) source_module: Option<String>,
 }
 
-/// A structural-equality requirement raised by a generic function body.
-///
-/// `a == b` on an aggregate whose members bottom out in the enclosing
-/// function's type parameters is admitted in the template — the parameter has
-/// no concrete leaf to walk yet — and the obligation is recorded here in the
-/// owner's own type-parameter terms (`Option<T>`). Every instantiation of that
-/// function substitutes the obligation and re-runs the *same* eligibility
-/// walk, so the checker refuses `T = HashMap<string, i64>` instead of letting
-/// codegen's `eq_thunk` be the first to notice.
-///
-/// A semantic `Eq` bound is deliberately NOT accepted as a proxy: `Eq` can be
-/// satisfied by types that have no structural compare path.
+/// An equality demand in the existing generic instantiation graph.
+/// Concrete comparisons are checked after registration and inference; generic
+/// comparisons use the same selected Eq authority after substitution.
 #[derive(Debug, Clone)]
-pub(super) struct GenericStructuralEqRequirement {
-    /// The aggregate type, spelled in the owning function's type parameters.
+pub(super) struct EqRequirement {
     pub(super) ty: Ty,
-    /// The owning signature's type parameters, so the discharge walk can tell a
-    /// fully pinned instantiation from one whose substitution left a parameter
-    /// abstract (which it must not decide).
     pub(super) owner_type_params: Vec<String>,
+    pub(super) span: Span,
+    pub(super) source_module: Option<String>,
 }
 
 /// One generic function call site, recorded so structural-equality obligations
@@ -2246,7 +2235,7 @@ pub(super) struct GenericFnInstantiationSite {
     /// Partial, name-keyed binding of the callee's type parameters, captured in
     /// the CALLER's terms: inside a generic caller the values may still name the
     /// caller's own parameters, which is what lets
-    /// [`Checker::finalize_generic_structural_eq`] walk generic → generic call
+    /// [`Checker::finalize_eq_requirements`] walk generic → generic call
     /// edges from a concrete root instead of stopping at the first hop.
     pub(super) substitution: HashMap<String, Ty>,
     pub(super) span: Span,
@@ -2760,7 +2749,7 @@ pub struct Checker {
     pub(super) deferred_builtin_clone_admission: HashMap<SpanKey, DeferredBuiltinCloneAdmission>,
     /// Structural-equality obligations raised inside generic function bodies,
     /// keyed by the owning function's `fn_sigs` key. Discharged per
-    /// instantiation by `finalize_generic_structural_eq`.
+    /// instantiation by `finalize_eq_requirements`.
     /// Dedup set for [`Checker::reject_shadowing_method_type_params`], keyed by
     /// the DECLARATION's identity: owner key, declaration span, parameter name.
     ///
@@ -2769,10 +2758,9 @@ pub struct Checker {
     /// registering-module key emitted the same diagnostic once per module — the
     /// second copy landing at unrelated lines in the implementor's file.
     pub(super) shadowed_method_type_param_reports: HashSet<(String, usize, usize, String)>,
-    pub(super) generic_structural_eq_requirements:
-        HashMap<String, Vec<GenericStructuralEqRequirement>>,
+    pub(super) eq_requirements: HashMap<Option<String>, Vec<EqRequirement>>,
     /// Every generic function call site observed while checking bodies, in
-    /// source order. Consumed alongside `generic_structural_eq_requirements`.
+    /// source order. Consumed alongside `eq_requirements`.
     pub(super) generic_fn_instantiation_sites: Vec<GenericFnInstantiationSite>,
     /// Channel method call rewrites deferred until after inference completes.
     /// Keyed by call-site span so repeated traversal of the same site is
@@ -3826,7 +3814,7 @@ impl Checker {
             deferred_vec_admission: HashMap::new(),
             deferred_builtin_clone_admission: HashMap::new(),
             shadowed_method_type_param_reports: HashSet::new(),
-            generic_structural_eq_requirements: HashMap::new(),
+            eq_requirements: HashMap::new(),
             generic_fn_instantiation_sites: Vec::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),

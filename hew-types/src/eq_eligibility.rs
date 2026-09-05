@@ -277,12 +277,3 @@ pub(crate) fn ty_eq_ineligibility(
 ) -> Option<EqEligibilityFailure> {
     eq_ineligibility(ty, type_defs, &HashSet::new())
 }
-
-#[must_use]
-pub(crate) fn ty_eq_ineligibility_with_type_params(
-    ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
-    type_params: &HashSet<String>,
-) -> Option<EqEligibilityFailure> {
-    eq_ineligibility(ty, type_defs, type_params)
-}

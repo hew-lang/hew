@@ -2116,7 +2116,7 @@ impl Checker {
         self.finalize_hashset_admission();
         self.finalize_vec_admission();
         self.finalize_channel_rewrites();
-        self.finalize_generic_structural_eq();
+        self.finalize_eq_requirements();
 
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();

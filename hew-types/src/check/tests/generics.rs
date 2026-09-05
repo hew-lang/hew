@@ -4431,11 +4431,13 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
     // Without the module in the visited-set key the second one is swallowed.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let type_param = Ty::normalize_named("T".to_string(), vec![]);
-    checker.generic_structural_eq_requirements.insert(
-        "same".to_string(),
-        vec![crate::check::types::GenericStructuralEqRequirement {
+    checker.eq_requirements.insert(
+        Some("same".to_string()),
+        vec![crate::check::types::EqRequirement {
             ty: Ty::builtin_named(crate::BuiltinType::Option, vec![type_param]),
             owner_type_params: vec!["T".to_string()],
+            span: 0..1,
+            source_module: None,
         }],
     );
     let span = Span::from(10..20);
@@ -4456,7 +4458,7 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
         );
     }
 
-    checker.finalize_generic_structural_eq();
+    checker.finalize_eq_requirements();
 
     let modules: Vec<Option<String>> = checker
         .errors

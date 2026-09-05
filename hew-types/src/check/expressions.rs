@@ -7,13 +7,10 @@ use super::types::GenericLambdaSig;
 )]
 use super::*;
 use crate::check::types::{
-    DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    GenericStructuralEqRequirement, PendingInstantiation,
+    DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
+    PendingInstantiation,
 };
 use crate::env::{PlaceConflict, PlacePath};
-use crate::eq_eligibility::{
-    ty_eq_ineligibility_with_type_params, EqEligibility, EqEligibilityFailure,
-};
 use crate::BuiltinType;
 use std::collections::VecDeque;
 
@@ -5176,55 +5173,21 @@ impl Checker {
         names
     }
 
-    /// Fail-closed gate for aggregate comparisons outside the structural-equality subset.
-    ///
-    /// Eligible records and payload enums may use `==`/`!=`; ordering remains
-    /// rejected. The gate deliberately uses the structural equality eligibility
-    /// substrate, not the broader `MarkerTrait::Eq`, because semantic Eq can
-    /// admit handles that have no structural compare path. Generic type
-    /// parameters are admitted only inside a generic frame: MIR/codegen must
-    /// resolve the concrete monomorphized leaves and fail closed for any leaf
-    /// that still lacks an equality path.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "aggregate comparison admission keeps record, enum, and diagnostic routing in one checker gate"
-    )]
+    /// Equality uses the selected Eq authority after declarations and inference
+    /// settle. Ordinary numeric comparisons bypass this gate and retain IEEE
+    /// float semantics; selecting aggregate Eq does not change ordering.
     fn reject_record_comparison(
         &mut self,
         op: BinaryOp,
         left_resolved: &Ty,
-        right_resolved: &Ty,
+        _right_resolved: &Ty,
         left_span: &Span,
         right_span: &Span,
         expr_span: &Span,
     ) {
-        enum UnsupportedComparison {
-            Record {
-                type_name: String,
-                reason: Option<EqEligibilityFailure>,
-            },
-            PayloadEnum {
-                type_name: String,
-                reason: EqEligibilityFailure,
-            },
-            Tuple {
-                type_name: String,
-                reason: Option<EqEligibilityFailure>,
-            },
-            EnumOrdering(String),
-        }
-        // D340: a user `impl Eq for T { .. }` overrides the derived
-        // structural default and is never walled off by the structural
-        // eligibility gate below — the whole point of a user impl is to
-        // state a rule the structural walk cannot express (a case-
-        // insensitive key, a tolerance-based float compare). Record the
-        // dispatch fact for HIR lowering (`Expr::Binary` consults
-        // `user_comparison_dispatch` before falling back to the structural
-        // comparison thunk) and return before the eligibility scan runs.
-        // Both operands already have the same resolved type here (the
-        // caller's `expect_type` check above only reaches this function on
-        // agreement), so checking `left_resolved` alone is sufficient.
         if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+            // Preserve the exact top-level user-method dispatch route. Nested
+            // user methods are selected recursively by TypeFactService.
             if let Ty::Named { builtin: None, .. } = left_resolved {
                 if let Some((method, _)) =
                     self.trait_impl_method_declaration(left_resolved, "Eq", "eq")
@@ -5236,238 +5199,71 @@ impl Checker {
                     return;
                 }
             }
-        }
-        // Ordering operators on an aggregate: no structural lexicographic
-        // comparison thunk exists in codegen (only eq/hash thunks do — see
-        // `hew-codegen-rs/src/thunks.rs`), so the derived-Ord half of D26
-        // ("ordered lexicographically by field order when every field is
-        // itself ordered") cannot be made true here without a new codegen
-        // lowering, which is out of this change's reach. A user
-        // `impl Ord`/`impl PartialOrd` is still honoured (D340, same
-        // dispatch mechanism as Eq, no codegen thunk involved — HIR emits a
-        // call to the resolved `lt` method); absent that, every aggregate
-        // ordering comparison that is structurally derivable reports the
-        // Limitation-channel `E_LIMIT_DERIVED_ORD`. A shape with an unordered
-        // member does not derive the trait and remains an ordinary user error.
-        if matches!(
-            op,
-            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
-        ) {
-            if let Ty::Named { builtin: None, .. } = left_resolved {
-                if let Some((method, _)) =
-                    self.trait_impl_method_declaration(left_resolved, "Ord", "lt")
-                {
-                    self.record_user_comparison_dispatch(
-                        expr_span,
-                        UserComparisonDispatch::Ord { method },
-                    );
-                    return;
-                }
-                if let Some((method, _)) =
-                    self.trait_impl_method_declaration(left_resolved, "PartialOrd", "lt")
-                {
-                    self.record_user_comparison_dispatch(
-                        expr_span,
-                        UserComparisonDispatch::PartialOrd { method },
-                    );
-                    return;
-                }
-            }
-        }
-
-        let current_type_params = self.current_type_param_names();
-        let unsupported = [left_resolved, right_resolved].into_iter().find_map(|ty| {
-            let type_name = ty.user_facing().to_string();
-            if matches!(ty, Ty::Tuple(_)) {
-                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                    return ty_eq_ineligibility_with_type_params(
-                        ty,
-                        &self.type_defs,
-                        &current_type_params,
-                    )
-                    .map(|reason| UnsupportedComparison::Tuple {
-                        type_name,
-                        reason: Some(reason),
-                    });
-                }
-                return Some(UnsupportedComparison::Tuple {
-                    type_name,
-                    reason: None,
-                });
-            }
-            let Ty::Named { name, builtin, .. } = ty else {
-                return None;
-            };
-            if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
-                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                    return ty_eq_ineligibility_with_type_params(
-                        ty,
-                        &self.type_defs,
-                        &current_type_params,
-                    )
-                    .map(|reason| UnsupportedComparison::PayloadEnum { type_name, reason });
-                }
-                return Some(UnsupportedComparison::EnumOrdering(type_name));
-            }
-            let type_def = self.type_defs.get(name)?;
-            match type_def.kind {
-                TypeDefKind::Struct | TypeDefKind::Record => {
-                    if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                        return ty_eq_ineligibility_with_type_params(
-                            ty,
-                            &self.type_defs,
-                            &current_type_params,
-                        )
-                        .map(|reason| UnsupportedComparison::Record {
-                            type_name,
-                            reason: Some(reason),
-                        });
-                    }
-                    Some(UnsupportedComparison::Record {
-                        type_name,
-                        reason: None,
-                    })
-                }
-                TypeDefKind::Enum => {
-                    let has_payload_variant = type_def
-                        .variants
-                        .values()
-                        .any(|variant| !matches!(variant, VariantDef::Unit));
-                    if has_payload_variant {
-                        if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                            ty_eq_ineligibility_with_type_params(
-                                ty,
-                                &self.type_defs,
-                                &current_type_params,
-                            )
-                            .map(|reason| UnsupportedComparison::PayloadEnum { type_name, reason })
-                        } else {
-                            Some(UnsupportedComparison::EnumOrdering(type_name))
-                        }
-                    } else if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                        None
-                    } else {
-                        Some(UnsupportedComparison::EnumOrdering(type_name))
-                    }
-                }
-                TypeDefKind::Actor | TypeDefKind::Machine => None,
-            }
-        });
-        let Some(unsupported) = unsupported else {
-            // Admitted. If the admission leaned on an abstract type parameter,
-            // the template proved nothing about the concrete leaves — record
-            // the obligation so every instantiation re-runs the same walk.
-            if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                for ty in [left_resolved, right_resolved] {
-                    self.record_generic_structural_eq_requirement(ty, &current_type_params);
-                }
-            }
+            self.record_eq_requirement(left_resolved, expr_span);
             return;
-        };
-        // Span the whole comparison, not just one operand.
-        let span = Span {
-            start: left_span.start,
-            end: right_span.end,
-        };
-        if matches!(
-            op,
-            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
-        ) {
-            let type_name = match &unsupported {
-                UnsupportedComparison::Record { type_name, .. }
-                | UnsupportedComparison::PayloadEnum { type_name, .. }
-                | UnsupportedComparison::Tuple { type_name, .. } => type_name.clone(),
-                UnsupportedComparison::EnumOrdering(name) => name.clone(),
-            };
-            if !self
-                .registry
-                .implements_marker(left_resolved, MarkerTrait::PartialOrd)
+        }
+        if let Ty::Named { builtin: None, .. } = left_resolved {
+            if let Some((method, _)) =
+                self.trait_impl_method_declaration(left_resolved, "Ord", "lt")
             {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    &span,
-                    format!(
-                        "`{op}` is not available for `{type_name}` because the type does not \
-                         derive `PartialOrd`; provide a user `impl Ord` or `impl PartialOrd`"
-                    ),
+                self.record_user_comparison_dispatch(
+                    expr_span,
+                    UserComparisonDispatch::Ord { method },
                 );
                 return;
             }
-            // No user impl (the bypass above already returned) and the type
-            // does derive ordering, but no structural lexicographic lowering
-            // exists yet. This is a compiler limitation, not a program error.
+            if let Some((method, _)) =
+                self.trait_impl_method_declaration(left_resolved, "PartialOrd", "lt")
+            {
+                self.record_user_comparison_dispatch(
+                    expr_span,
+                    UserComparisonDispatch::PartialOrd { method },
+                );
+                return;
+            }
+        }
+        let aggregate = match left_resolved {
+            Ty::Tuple(_)
+            | Ty::Named {
+                builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                ..
+            } => true,
+            Ty::Named { name, .. } => self.type_defs.get(name).is_some_and(|definition| {
+                matches!(
+                    definition.kind,
+                    TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
+                )
+            }),
+            _ => false,
+        };
+        if !aggregate {
+            return;
+        }
+        let span = left_span.start..right_span.end;
+        let type_name = left_resolved.user_facing().to_string();
+        if !self
+            .registry
+            .implements_marker(left_resolved, MarkerTrait::PartialOrd)
+        {
             self.report_error(
-                TypeErrorKind::DerivedOrdUnavailable {
-                    type_name: type_name.clone(),
-                },
+                TypeErrorKind::InvalidOperation,
                 &span,
                 format!(
-                    "E_LIMIT_DERIVED_ORD: `{op}` has no derived ordering for `{type_name}` yet \
-                     — provide `impl Ord for {type_name}` (or `impl PartialOrd`) with a `lt` \
-                     method"
+                    "`{op}` is not available for `{type_name}` because the type does not \
+                     derive `PartialOrd`; provide a user `impl Ord` or `impl PartialOrd`"
                 ),
             );
             return;
         }
-        let (message, suggestion) = match unsupported {
-            UnsupportedComparison::Record { type_name, reason } => {
-                if let Some(reason) = reason {
-                    (
-                        format!(
-                            "`{op}` on record type `{type_name}` is not supported because member \
-                             `{}` is ineligible: {}",
-                            reason.member,
-                            Self::structural_eq_ineligibility_reason(reason.reason)
-                        ),
-                        "compare individual eligible fields explicitly, or match/destructure and \
-                         handle managed fields with their supported equality operations"
-                            .to_string(),
-                    )
-                } else {
-                    (
-                        format!("`{op}` is not supported for record type `{type_name}`"),
-                        format!("compare an individual field instead (e.g. `a.x {op} b.x`)"),
-                    )
-                }
-            }
-            UnsupportedComparison::PayloadEnum { type_name, reason } => (
-                format!(
-                    "`{op}` on enum `{type_name}` with payload variants is not supported because \
-                     member `{}` is ineligible: {}",
-                    reason.member,
-                    Self::structural_eq_ineligibility_reason(reason.reason)
-                ),
-                "match on the enum and compare eligible payload fields in the relevant arms"
-                    .to_string(),
-            ),
-            UnsupportedComparison::Tuple { type_name, reason } => {
-                if let Some(reason) = reason {
-                    (
-                        format!(
-                            "`{op}` on tuple type `{type_name}` is not supported because member \
-                             `{}` is ineligible: {}",
-                            reason.member,
-                            Self::structural_eq_ineligibility_reason(reason.reason)
-                        ),
-                        "compare only tuple members that support equality".to_string(),
-                    )
-                } else {
-                    (
-                        format!("`{op}` is not supported for tuple type `{type_name}`"),
-                        "tuple ordering is not structural; compare an explicit member".to_string(),
-                    )
-                }
-            }
-            UnsupportedComparison::EnumOrdering(type_name) => (
-                format!("`{op}` is not supported for enum `{type_name}`"),
-                "match on the enum and compare an explicit value in each arm".to_string(),
-            ),
-        };
-        self.report_error_with_suggestions(
-            TypeErrorKind::InvalidOperation,
+        self.report_error(
+            TypeErrorKind::DerivedOrdUnavailable {
+                type_name: type_name.clone(),
+            },
             &span,
-            message,
-            vec![suggestion],
+            format!(
+                "E_LIMIT_DERIVED_ORD: `{op}` has no derived ordering for `{type_name}` yet \
+                 — provide `impl Ord for {type_name}` (or `impl PartialOrd`) with a `lt` method"
+            ),
         );
     }
 
@@ -5497,40 +5293,28 @@ impl Checker {
         ty.substitute_named_params_parallel(&probe) != *ty
     }
 
-    /// Record a structural-equality obligation raised by the generic function
-    /// currently being checked.
-    ///
-    /// Only aggregates that actually mention the owning signature's type
-    /// parameters are recorded — a fully concrete aggregate was already decided
-    /// on the spot by `reject_record_comparison`.
-    fn record_generic_structural_eq_requirement(&mut self, ty: &Ty, in_scope: &HashSet<String>) {
-        if in_scope.is_empty() {
+    /// Record an Eq demand in the existing instantiation obligation graph.
+    /// Concrete demands are checked once declarations and inference settle;
+    /// abstract demands are substituted at the graph's concrete call roots.
+    fn record_eq_requirement(&mut self, ty: &Ty, span: &Span) {
+        let owner = self.current_function.clone();
+        let params = owner
+            .as_ref()
+            .and_then(|key| self.fn_sigs.get(key))
+            .map_or_else(Vec::new, |sig| sig.type_params.clone());
+        let requirements = self.eq_requirements.entry(owner).or_default();
+        if requirements.iter().any(|existing| {
+            existing.ty == *ty
+                && existing.span == *span
+                && existing.source_module == self.current_module
+        }) {
             return;
         }
-        let Some(fn_key) = self.current_function.clone() else {
-            return;
-        };
-        let Some(params) = self
-            .fn_sigs
-            .get(&fn_key)
-            .map(|sig| sig.type_params.clone())
-            .filter(|params| !params.is_empty())
-        else {
-            return;
-        };
-        if !Self::ty_mentions_type_params(ty, &params) {
-            return;
-        }
-        let requirements = self
-            .generic_structural_eq_requirements
-            .entry(fn_key)
-            .or_default();
-        if requirements.iter().any(|existing| existing.ty == *ty) {
-            return;
-        }
-        requirements.push(GenericStructuralEqRequirement {
+        requirements.push(EqRequirement {
             ty: ty.clone(),
             owner_type_params: params,
+            span: span.clone(),
+            source_module: self.current_module.clone(),
         });
     }
 
@@ -5684,7 +5468,6 @@ impl Checker {
     fn generic_structural_eq_instantiation_error(
         template: &Ty,
         concrete: &Ty,
-        failure: EqEligibilityFailure,
         pending: &PendingInstantiation,
     ) -> crate::error::TypeError {
         let callee = &pending.callee;
@@ -5692,17 +5475,13 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             pending.report_span.clone(),
             format!(
-                "`{callee}` compares `{}` structurally; this instantiation `{}` has no \
-                 structural equality path because member `{}` is ineligible: {}",
+                "`{callee}` compares `{}` for equality; this instantiation `{}` has no selected Eq implementation",
                 template.user_facing(),
                 concrete.user_facing(),
-                failure.member,
-                Self::structural_eq_ineligibility_reason(failure.reason),
             ),
         )
         .with_suggestion(format!(
-            "instantiate `{callee}` with a type whose members all support structural equality, \
-             or compare the eligible members explicitly inside `{callee}`"
+            "instantiate `{callee}` with a type that supports Eq, or provide an Eq implementation"
         ));
         if let Some(module) = pending.report_module.clone() {
             err = err.with_source_module(module);
@@ -5742,6 +5521,49 @@ impl Checker {
         err
     }
 
+    pub(super) fn selected_eq_available(service: &mut TypeFactService, ty: &Ty) -> bool {
+        ResolvedTy::from_ty(ty).ok().is_some_and(|resolved| {
+            service
+                .capability_plan(&resolved, crate::ValueCapability::Eq)
+                .is_ok_and(|selection| selection.is_some())
+        })
+    }
+
+    fn check_concrete_eq_requirements(
+        &self,
+        requirements: &HashMap<Option<String>, Vec<EqRequirement>>,
+        service: &mut TypeFactService,
+    ) -> Vec<crate::error::TypeError> {
+        let mut new_errors = Vec::new();
+        for requirement in requirements.values().flatten() {
+            let concrete = self
+                .normalize_for_use(&requirement.ty)
+                .materialize_literal_defaults();
+            if concrete.contains_error()
+                || concrete.has_inference_var()
+                || concrete.contains_assoc_type()
+                || Self::ty_mentions_type_params(&concrete, &requirement.owner_type_params)
+            {
+                continue;
+            }
+            if !Self::selected_eq_available(service, &concrete) {
+                let mut error = crate::error::TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    requirement.span.clone(),
+                    format!(
+                        "`{}` has no selected Eq implementation for equality comparison",
+                        concrete.user_facing()
+                    ),
+                );
+                if let Some(module) = &requirement.source_module {
+                    error = error.with_source_module(module.clone());
+                }
+                new_errors.push(error);
+            }
+        }
+        new_errors
+    }
+
     /// Discharge every generic structural-equality obligation against the
     /// concrete instantiations the program actually contains.
     ///
@@ -5750,22 +5572,23 @@ impl Checker {
     /// raised two hops down still lands on the concrete application the
     /// programmer wrote. Codegen's `eq_thunk` is therefore never the first to
     /// notice an ineligible instantiation.
-    pub(super) fn finalize_generic_structural_eq(&mut self) {
+    pub(super) fn finalize_eq_requirements(&mut self) {
         // WHY a hop budget: polymorphic recursion (`fn f<T>() { g::<Vec<T>>() }`)
         // generates an unbounded instantiation chain. Exceeding it is reported,
         // never skipped — see `generic_structural_eq_depth_error`.
         const MAX_INSTANTIATION_DEPTH: u32 = 64;
 
-        let requirements = std::mem::take(&mut self.generic_structural_eq_requirements);
+        let requirements = std::mem::take(&mut self.eq_requirements);
         let sites = std::mem::take(&mut self.generic_fn_instantiation_sites);
         if requirements.is_empty() {
             return;
         }
 
+        let mut service = TypeFactService::new(self.type_fact_context(), BTreeMap::new());
+        let mut new_errors = self.check_concrete_eq_requirements(&requirements, &mut service);
         let (roots, edges) = self.partition_generic_instantiation_sites(sites);
         let mut seen: HashSet<(String, String, usize, Option<String>)> = HashSet::new();
         let mut work: VecDeque<PendingInstantiation> = roots.into();
-        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
 
         while let Some(pending) = work.pop_front() {
             // Span offsets are module-local, so two modules can produce the same
@@ -5787,7 +5610,14 @@ impl Checker {
                 continue;
             }
 
-            for requirement in requirements.get(&pending.callee).into_iter().flatten() {
+            for requirement in requirements
+                .get(&Some(pending.callee.clone()))
+                .into_iter()
+                .flatten()
+            {
+                if !Self::ty_mentions_type_params(&requirement.ty, &requirement.owner_type_params) {
+                    continue;
+                }
                 // Substitute, then collapse any associated-type projection the
                 // substitution just made resolvable (`Option<C::Item>` with
                 // `C = IntBox` becomes `Option<i64>`). A projection that
@@ -5809,15 +5639,13 @@ impl Checker {
                 if Self::ty_mentions_type_params(&concrete, &requirement.owner_type_params) {
                     continue;
                 }
-                if let Some(failure) = ty_eq_ineligibility_with_type_params(
-                    &concrete,
-                    &self.type_defs,
-                    &HashSet::new(),
+                if !Self::selected_eq_available(
+                    &mut service,
+                    &concrete.materialize_literal_defaults(),
                 ) {
                     new_errors.push(Self::generic_structural_eq_instantiation_error(
                         &requirement.ty,
                         &concrete,
-                        failure,
                         &pending,
                     ));
                 }
@@ -5847,25 +5675,6 @@ impl Checker {
         }
 
         self.errors.extend(new_errors);
-    }
-
-    fn structural_eq_ineligibility_reason(reason: EqEligibility) -> String {
-        match reason {
-            EqEligibility::Eligible => {
-                "structural equality eligibility was unexpectedly unresolved".to_string()
-            }
-            EqEligibility::IneligibleManaged(managed_ty) => format!(
-                "it contains layout-managed/non-Copy data `{}`",
-                managed_ty.user_facing()
-            ),
-            EqEligibility::IneligibleOwned(owned_ty) => format!(
-                "it contains owned or heap-backed data `{}`",
-                owned_ty.user_facing()
-            ),
-            EqEligibility::IneligibleUnknown => {
-                "aggregate equality eligibility is unknown".to_string()
-            }
-        }
     }
 
     /// Type-check an arithmetic operation where at least one operand is `duration` or `instant`.

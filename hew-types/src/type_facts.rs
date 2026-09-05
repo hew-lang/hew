@@ -584,8 +584,25 @@ impl TypeFactService {
                 )
             }
             _ => Ok(matches!(
-                crate::eq_eligibility::ty_is_eq_eligible(&ty.to_ty(), &self.context.type_defs),
-                crate::eq_eligibility::EqEligibility::Eligible
+                ty,
+                ResolvedTy::I8
+                    | ResolvedTy::I16
+                    | ResolvedTy::I32
+                    | ResolvedTy::I64
+                    | ResolvedTy::U8
+                    | ResolvedTy::U16
+                    | ResolvedTy::U32
+                    | ResolvedTy::U64
+                    | ResolvedTy::Isize
+                    | ResolvedTy::Usize
+                    | ResolvedTy::F32
+                    | ResolvedTy::F64
+                    | ResolvedTy::Bool
+                    | ResolvedTy::Char
+                    | ResolvedTy::Duration
+                    | ResolvedTy::Unit
+                    | ResolvedTy::String
+                    | ResolvedTy::Bytes
             )),
         }
     }

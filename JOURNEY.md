@@ -1387,3 +1387,20 @@ across equality/direct/runtime calls and insertion of a parent into its own
 collection field. Every source passes the shared SIR verifier. Native execution
 is pending physical selected-call emission; these expected results are not yet
 accepted as executable evidence.
+
+## Ordinary equality uses selected capabilities
+
+Ordinary non-numeric equality now records demands in the existing generic
+instantiation obligation graph and resolves concrete demands after declaration
+registration and inference. Both concrete comparisons and instantiated generic
+comparisons ask TypeFactService for Eq, allowing nested selected user methods.
+Top-level user dispatch and aggregate ordering retain their existing routes;
+ordinary scalar float comparisons continue through the numeric path. The Eq
+leaf admits bytes independently of Hash. The separate Vec.contains admission
+contract is outside this change.
+
+The checker layer compiles through Make and the existing eligible generic
+comparison control passes. Focused selected-Eq regressions, obsolete bytes
+rejection expectations and full affected checker validation remain pending at
+this checkpoint. Native selected-operation lowering belongs to the integration
+owner and has not been changed or validated here.

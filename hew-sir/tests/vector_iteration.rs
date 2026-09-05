@@ -116,3 +116,86 @@ fn nested_fields_update_through_the_same_aggregate_operations() {
     "#,
     );
 }
+
+#[test]
+fn nested_iteration_exits_keep_enclosing_loop_owners_live() {
+    lower_source(
+        r#"
+        fn main() -> i64 {
+            var result = "";
+            for outer in ["A", "B"] {
+                for inner in ["skip", "keep", "end"] {
+                    if inner == "skip" { continue; }
+                    result = result + outer + inner;
+                    break;
+                }
+            }
+            result.len()
+        }
+    "#,
+    );
+}
+
+#[test]
+fn iteration_return_and_fault_edges_release_cursor_and_local_values() {
+    lower_source(
+        r#"
+        fn first() -> string {
+            let outer = "empty";
+            for item in ["first", "return"] {
+                let local = [item.to_upper()];
+                if item == "return" { return local[0]; }
+                let out_of_bounds = local[3];
+            }
+            outer
+        }
+        fn main() -> i64 { first().len() }
+    "#,
+    );
+}
+
+#[test]
+fn missing_break_cleanup_is_rejected_by_the_ownership_verifier() {
+    let mut module = lower_source(
+        r#"
+        fn main() -> i64 {
+            for item in ["first", "last"] {
+                let local = item.to_upper();
+                break;
+            }
+            0
+        }
+    "#,
+    );
+    let function = module
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .unwrap();
+    let local = function
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "local")
+        .unwrap();
+    let hew_sir::BindingTarget::Value(local) = local.target else {
+        panic!("the local must name its owning SSA value");
+    };
+    let block = function
+        .blocks
+        .iter_mut()
+        .find(|block| {
+            matches!(block.terminator, hew_sir::SemTerminator::Goto(_))
+                && block
+                    .ops
+                    .iter()
+                    .any(|op| matches!(&op.kind, hew_sir::SemOpKind::DestroyValue { value } if value.value == local))
+        })
+        .expect("the break edge must release iteration-local owners");
+    block.ops.retain(
+        |op| !matches!(&op.kind, hew_sir::SemOpKind::DestroyValue { value } if value.value == local),
+    );
+    assert!(verify_module(&module).iter().any(|diagnostic| matches!(
+        diagnostic.kind,
+        hew_sir::SirDiagnosticKind::OwnershipLifetime { .. }
+    )));
+}

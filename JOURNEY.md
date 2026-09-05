@@ -620,3 +620,36 @@ contracts and semantic cursor/for-in/cleanup/nested-field cases pass. Native O0/
 paired sanitizer acceptance and the broader semantic suite remain outstanding at
 this checkpoint. The compiler cache client reported a server protocol error;
 subsequent Make commands use an empty RUSTC_WRAPPER and the dedicated lane target.
+
+Vector iteration validation found a consumed array-literal temporary being
+carried into the cursor loop. The old for-in block hoist extended that temporary's
+lexical lifetime; retaining the ordinary expression block fixes the producer.
+Nested loop break/continue now verifies and executes. A focused malformed SIR
+control removes the named local's break-edge destruction and remains rejected by
+the ownership verifier. Return and bounds-fault edges have semantic coverage.
+
+Validation through Make in the dedicated iteration target:
+
+- `make hew-native RUSTC_WRAPPER=` and `make core-safety-build` succeeded.
+- The temporary `iteration-matrix` Make target ran nine source cases at O0/O2;
+  all native and paired generated/runtime ASan/LSan executions matched exact
+  stdout, stderr and exit status. The safety driver also required generated LLVM
+  address instrumentation. Cases cover scalar sums, explicit next/exhaustion,
+  cursor copies, source mutation, strings, nested vectors, generic records,
+  retained items, single evaluation, nested loops, early return and bounds faults.
+- `make test-strict -o test-artifacts` selecting hew-types, hew-hir and hew-sir
+  libraries/integration tests passed, including malformed ownership negatives.
+- `make core-acceptance` and `make lint-rust RUSTC_WRAPPER=` passed.
+- `make bench-mir -o hew` still fails: the cursor aggregate rejection is gone,
+  but Vec.is_empty remains outside the current semantic vector operation set.
+  A reduced nested record iteration passes with len() > 0. The benchmark shell
+  additionally divides by zero after the rejected fixture; neither path was
+  altered to manufacture a passing gate.
+
+Limitations: native evidence is Linux only. Explicit next retains the existing
+mutable-local receiver requirement. Ordinary aggregate field projection copies
+owned values: the emitted next body consequently clones the cursor vector for
+its length and item reads. This is safe but makes traversal copying quadratic;
+a future common borrowed-projection contract should remove those copies without
+introducing iterator-specific backend behaviour. MIR/backend/runtime, acceptance
+fixtures and the other owner's stdlib catalog change remain outside this lane.

@@ -26150,28 +26150,9 @@ impl LowerCtx {
                 builtin: Some(BuiltinType::Vec),
                 ..
             } if args.len() == 1 => {
-                // Hoist nested block statements in evaluation order while retaining
-                // each transparent source wrapper around the iterator input.
                 let elem_ty = args[0].clone();
-                let mut consumed_blocks = Vec::new();
-                while let HirExprKind::Block(block) = lowered_iterable.kind {
-                    let Some(tail) = block.tail else {
-                        lowered_iterable.kind = HirExprKind::Block(block);
-                        break;
-                    };
-                    source_prelude.extend(block.statements);
-                    consumed_blocks.push((
-                        lowered_iterable.site,
-                        lowered_iterable.span,
-                        lowered_iterable.intent,
-                    ));
-                    lowered_iterable = *tail;
-                }
-                lowered_iterable.intent = IntentKind::Read;
-                for (site, block_span, block_intent) in consumed_blocks.into_iter().rev() {
-                    lowered_iterable =
-                        self.subsumed_value(site, &block_span, block_intent, lowered_iterable);
-                }
+                // Keep the iterable's lexical block intact. Its temporary bindings
+                // end before the cursor loop and must not become loop-carried values.
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
                     Self::resolved_vec_iter_ty(elem_ty.clone()),

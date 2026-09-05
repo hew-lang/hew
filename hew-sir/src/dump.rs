@@ -171,10 +171,20 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
             shape,
             aggregate,
             field,
+        }
+        | SemOpKind::AggregateProjectBorrow {
+            shape,
+            aggregate,
+            field,
         } => {
+            let operation = if op.kind.borrow_parent().is_some() {
+                "aggregate.project_borrow"
+            } else {
+                "aggregate.project_copy"
+            };
             writeln!(
                 out,
-                "aggregate.project_copy {} {}, {field}",
+                "{operation} {} {}, {field}",
                 aggregate_shape(*shape),
                 operand(aggregate)
             )

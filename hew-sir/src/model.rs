@@ -949,6 +949,13 @@ pub enum SemOpKind {
         aggregate: Operand,
         field: u32,
     },
+    /// Borrow one owning aggregate field. The guaranteed result depends on
+    /// the aggregate until `end_borrow`; it cannot escape as an owned value.
+    AggregateProjectBorrow {
+        shape: AggregateShapeRef,
+        aggregate: Operand,
+        field: u32,
+    },
     /// Construct one enum value by consuming every ordered field of the exact
     /// declaration-order variant. The descriptor carries no physical tag or
     /// payload layout.
@@ -1106,7 +1113,8 @@ impl SemOpKind {
                     );
                 }
             }
-            Self::AggregateProjectCopy { aggregate, .. } => visit(OperandSlot(0), aggregate),
+            Self::AggregateProjectCopy { aggregate, .. }
+            | Self::AggregateProjectBorrow { aggregate, .. } => visit(OperandSlot(0), aggregate),
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
@@ -1171,7 +1179,8 @@ impl SemOpKind {
                     );
                 }
             }
-            Self::AggregateProjectCopy { aggregate, .. } => visit(OperandSlot(0), aggregate),
+            Self::AggregateProjectCopy { aggregate, .. }
+            | Self::AggregateProjectBorrow { aggregate, .. } => visit(OperandSlot(0), aggregate),
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
@@ -1192,6 +1201,18 @@ impl SemOpKind {
             }
             | Self::StoreInit { value, .. }
             | Self::StoreAssign { value, .. } => visit(OperandSlot(0), value),
+        }
+    }
+
+    /// Immediate lifetime dependency of the operation's guaranteed result.
+    /// Projection chains preserve each parent rather than guessing an owner
+    /// from the result's type or its eventual runtime consumer.
+    #[must_use]
+    pub const fn borrow_parent(&self) -> Option<&Operand> {
+        match self {
+            Self::BeginBorrow { owner } => Some(owner),
+            Self::AggregateProjectBorrow { aggregate, .. } => Some(aggregate),
+            _ => None,
         }
     }
 
@@ -1216,6 +1237,7 @@ impl SemOpKind {
             | Self::AggregateMake { .. }
             | Self::VariantMake { .. }
             | Self::AggregateProjectCopy { .. }
+            | Self::AggregateProjectBorrow { .. }
             | Self::Destructure { .. }
             | Self::AllocPlace { .. }
             | Self::LoadCopy { .. }

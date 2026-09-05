@@ -1,8 +1,8 @@
-//! Path-sensitive availability of owned SSA obligations.
+//! Path-sensitive availability of owned SSA obligations and local loans.
 //!
 //! Guaranteed inputs can be read or explicitly copied, never consumed or
-//! escaped. This is not local borrow-region or place-initialization verification;
-//! those producers remain closed until their checks and lowering exist.
+//! escaped. Local loans keep their immediate owner or parent loan live until
+//! they end. Place initialization remains outside this value-based relation.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -75,6 +75,8 @@ struct Flow<'a> {
     indices: BTreeMap<ValueId, usize>,
     values: Vec<ValueId>,
     guaranteed: BTreeSet<ValueId>,
+    local_borrows: BTreeSet<ValueId>,
+    borrowers: BTreeMap<ValueId, Vec<ValueId>>,
 }
 
 impl<'a> Flow<'a> {
@@ -104,6 +106,18 @@ impl<'a> Flow<'a> {
                 .terminator
                 .visit_results(|value| record(value.id, value.own));
         }
+        let mut local_borrows = BTreeSet::new();
+        let mut borrowers = BTreeMap::<_, Vec<_>>::new();
+        for op in function.blocks.iter().flat_map(|block| &block.ops) {
+            if let Some(parent) = op.kind.borrow_parent() {
+                for result in &op.results {
+                    local_borrows.insert(result.id);
+                    borrowers.entry(parent.value).or_default().push(result.id);
+                }
+            }
+        }
+        values.extend(&local_borrows);
+        guaranteed.extend(&local_borrows);
         let values: Vec<_> = values.into_iter().collect();
         Self {
             blocks: function
@@ -118,6 +132,8 @@ impl<'a> Flow<'a> {
                 .collect(),
             values,
             guaranteed,
+            local_borrows,
+            borrowers,
         }
     }
 
@@ -144,12 +160,57 @@ impl<'a> Flow<'a> {
             emit(Violation {
                 block,
                 value,
-                reason: "owned value is not live on every incoming path",
+                reason: if self.local_borrows.contains(&value) {
+                    "borrow is not live on every incoming path"
+                } else {
+                    "owned value is not live on every incoming path"
+                },
             });
         }
         if consume {
+            self.require_no_live_borrows(block, value, state, emit);
             state[index] = DEAD;
         }
+    }
+
+    fn require_no_live_borrows(
+        &self,
+        block: BlockId,
+        value: ValueId,
+        state: &State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        if self.borrowers.get(&value).is_some_and(|borrows| {
+            borrows
+                .iter()
+                .any(|borrow| state[self.indices[borrow]] & LIVE != 0)
+        }) {
+            emit(Violation {
+                block,
+                value,
+                reason: "value cannot be consumed or ended while a dependent borrow is live",
+            });
+        }
+    }
+
+    fn end_borrow(
+        &self,
+        block: BlockId,
+        value: ValueId,
+        state: &mut State,
+        emit: &mut impl FnMut(Violation),
+    ) {
+        if !self.local_borrows.contains(&value) {
+            emit(Violation {
+                block,
+                value,
+                reason: "end_borrow requires a local borrow producer",
+            });
+            return;
+        }
+        self.access(block, value, false, state, emit);
+        self.require_no_live_borrows(block, value, state, emit);
+        state[self.indices[&value]] = DEAD;
     }
 
     fn define(
@@ -166,7 +227,11 @@ impl<'a> Flow<'a> {
             emit(Violation {
                 block,
                 value,
-                reason: "previous dynamic owner remains live at definition",
+                reason: if self.local_borrows.contains(&value) {
+                    "previous dynamic borrow remains live at definition"
+                } else {
+                    "previous dynamic owner remains live at definition"
+                },
             });
         }
         state[index] = LIVE;
@@ -199,6 +264,10 @@ impl<'a> Flow<'a> {
     ) -> Vec<(BlockId, State)> {
         let block = self.blocks[&id];
         for op in &block.ops {
+            if let SemOpKind::EndBorrow { borrow } = &op.kind {
+                self.end_borrow(id, borrow.value, &mut state, emit);
+                continue;
+            }
             let consumes = operation_consumes_operands(&op.kind);
             op.visit_operands(|_, operand| {
                 self.access(id, operand.value, consumes, &mut state, emit);
@@ -259,7 +328,11 @@ impl<'a> Flow<'a> {
                         emit(Violation {
                             block: id,
                             value,
-                            reason: "owned value remains live at exit",
+                            reason: if self.local_borrows.contains(&value) {
+                                "local borrow remains live at exit"
+                            } else {
+                                "owned value remains live at exit"
+                            },
                         });
                     }
                 }
@@ -339,6 +412,7 @@ impl<'a> Flow<'a> {
                         reason: "guaranteed input requires an explicit owned copy at this boundary",
                     });
                 }
+                self.access(id, value, false, state, emit);
                 return;
             }
             let consumes = matches!(
@@ -460,6 +534,106 @@ mod tests {
 
     fn done() -> SemTerminator {
         SemTerminator::Return { value: None }
+    }
+
+    fn begin_borrow(id: u32, owner: u32, loan: u32) -> SemOp {
+        op(
+            id,
+            SemOpKind::BeginBorrow {
+                owner: operand(owner),
+            },
+            vec![ValueDef {
+                own: OwnKind::Guaranteed,
+                ..owned(loan)
+            }],
+        )
+    }
+
+    fn end_borrow(id: u32, loan: u32) -> SemOp {
+        op(
+            id,
+            SemOpKind::EndBorrow {
+                borrow: operand(loan),
+            },
+            vec![],
+        )
+    }
+
+    #[test]
+    fn a_local_loan_can_make_an_independent_owned_copy() {
+        let f = function(vec![block(
+            0,
+            vec![
+                begin_borrow(0, 0, 1),
+                op(
+                    1,
+                    SemOpKind::CopyValue { source: operand(1) },
+                    vec![owned(2)],
+                ),
+                end_borrow(2, 1),
+                destroy(3, 0),
+                destroy(4, 2),
+            ],
+            done(),
+        )]);
+        assert!(verify(&f).is_empty(), "{:?}", verify(&f));
+    }
+
+    #[test]
+    fn a_loop_creates_and_ends_each_dynamic_loan_before_its_backedge() {
+        let f = function(vec![
+            block(0, vec![], SemTerminator::Goto(edge(1, &[]))),
+            block(
+                1,
+                vec![begin_borrow(0, 0, 1), end_borrow(1, 1)],
+                SemTerminator::Branch {
+                    condition: operand(99),
+                    then_target: edge(1, &[]),
+                    else_target: edge(2, &[]),
+                },
+            ),
+            block(2, vec![destroy(2, 0)], done()),
+        ]);
+        assert!(verify(&f).is_empty(), "{:?}", verify(&f));
+        let mut missing_end = f;
+        missing_end.blocks[1].ops.pop();
+        assert!(verify(&missing_end).iter().any(|violation| {
+            violation.reason == "previous dynamic borrow remains live at definition"
+        }));
+    }
+
+    #[test]
+    fn a_local_loan_cannot_escape_through_a_return_boundary() {
+        for decision in [
+            BoundaryDecision::Borrow,
+            BoundaryDecision::Copy,
+            BoundaryDecision::Move,
+        ] {
+            let f = function(vec![block(
+                0,
+                vec![begin_borrow(0, 0, 1)],
+                SemTerminator::Return {
+                    value: Some(BoundaryOperand {
+                        operand: operand(1),
+                        decision,
+                    }),
+                },
+            )]);
+            assert!(verify(&f).iter().any(|violation| {
+                violation.value == ValueId(1)
+                    && violation.reason
+                        == "guaranteed input requires an explicit owned copy at this boundary"
+            }));
+        }
+    }
+
+    #[test]
+    fn a_parameter_is_not_a_local_loan_that_the_callee_can_end() {
+        let mut f = function(vec![block(0, vec![end_borrow(0, 0)], done())]);
+        f.params[0].own = OwnKind::Guaranteed;
+        assert!(verify(&f).iter().any(|violation| {
+            violation.reason == "end_borrow requires a local borrow producer"
+        }));
     }
 
     #[test]

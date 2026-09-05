@@ -183,6 +183,9 @@ pub struct PhysicalStorage {
     pub layout: PhysicalLayout,
     pub own: OwnKind,
     pub origin: StorageOrigin,
+    /// Immediate SIR loan dependency, mapped to concrete storage. This is
+    /// retained provenance for validation, never a physical cleanup decision.
+    pub borrow_parent: Option<StorageId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,6 +357,12 @@ pub enum PhysicalOp {
         field: u32,
         glue: PhysicalAggregateId,
         action: CloneAction,
+    },
+    AggregateProjectBorrow {
+        dest: StorageId,
+        aggregate: StorageId,
+        field: u32,
+        glue: PhysicalAggregateId,
     },
     AggregateDestructure {
         aggregate: StorageId,
@@ -1195,7 +1204,16 @@ fn lower_function(
             layout: required_layout(target, &place.ty)?.clone(),
             own: OwnKind::of_ty(&place.ty, &module.type_facts).map_err(PhysicalError::new)?,
             origin: StorageOrigin::Place(place.id),
+            borrow_parent: None,
         });
+    }
+
+    for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+        if let Some(parent) = operation.kind.borrow_parent() {
+            let dest = lowerer.one_result(operation)?;
+            let source = lowerer.value(parent.value)?;
+            lowerer.storage[dest.0 as usize].borrow_parent = Some(source);
+        }
     }
 
     let blocks = function
@@ -1302,6 +1320,7 @@ impl FunctionLowerer<'_> {
             layout: required_layout(self.target, ty)?.clone(),
             own,
             origin,
+            borrow_parent: None,
         });
         Ok(id)
     }
@@ -1447,6 +1466,17 @@ impl FunctionLowerer<'_> {
                     field: *field,
                     glue: self.aggregate_id(&self.storage[aggregate.0 as usize].ty)?,
                     action: self.clone_action(&self.storage[dest.0 as usize].ty)?,
+                })
+            }
+            SemOpKind::AggregateProjectBorrow {
+                aggregate, field, ..
+            } => {
+                let aggregate = self.value(aggregate.value)?;
+                one(PhysicalOp::AggregateProjectBorrow {
+                    dest: self.one_result(operation)?,
+                    aggregate,
+                    field: *field,
+                    glue: self.aggregate_id(&self.storage[aggregate.0 as usize].ty)?,
                 })
             }
             SemOpKind::CopyValue { source } => {
@@ -2228,6 +2258,22 @@ fn verify_physical_function(
                 storage.id.0
             )));
         }
+        if let Some(parent) = storage.borrow_parent {
+            if storage.own != OwnKind::Guaranteed
+                || parent == storage.id
+                || function.storage.get(parent.0 as usize).is_none()
+            {
+                return Err(PhysicalError::new(
+                    "physical loan storage has an invalid SIR parent dependency",
+                ));
+            }
+        } else if storage.own == OwnKind::Guaranteed
+            && !matches!(storage.origin, StorageOrigin::Parameter(_))
+        {
+            return Err(PhysicalError::new(
+                "physical local loan storage has no SIR parent dependency",
+            ));
+        }
     }
     for (index, (parameter, abi)) in function.parameters.iter().zip(&callable.params).enumerate() {
         let slot = storage(function, *parameter)?;
@@ -2473,6 +2519,32 @@ fn verify_aggregate_make(
     Ok(())
 }
 
+fn aggregate_projection_field<'a>(
+    module: &'a PhysicalModule,
+    function: &PhysicalFunction,
+    aggregate: StorageId,
+    field: u32,
+    glue: PhysicalAggregateId,
+) -> Result<&'a PhysicalAggregateField, PhysicalError> {
+    let aggregate = storage(function, aggregate)?;
+    let recipe = aggregate_glue(module, glue)?;
+    let source_own_matches = aggregate.own == recipe.own
+        || (recipe.own == OwnKind::Owned && aggregate.own == OwnKind::Guaranteed);
+    if aggregate.ty != recipe.ty || !source_own_matches {
+        return Err(PhysicalError::new(
+            "physical aggregate projection source disagrees with its glue recipe",
+        ));
+    }
+    usize::try_from(field)
+        .ok()
+        .and_then(|index| recipe.fields.get(index))
+        .ok_or_else(|| {
+            PhysicalError::new(format!(
+                "physical aggregate projection index {field} is out of bounds"
+            ))
+        })
+}
+
 fn verify_aggregate_project_copy(
     module: &PhysicalModule,
     function: &PhysicalFunction,
@@ -2482,24 +2554,8 @@ fn verify_aggregate_project_copy(
     glue: PhysicalAggregateId,
     action: CloneAction,
 ) -> Result<(), PhysicalError> {
-    let aggregate = storage(function, aggregate)?;
     let destination = storage(function, dest)?;
-    let recipe = aggregate_glue(module, glue)?;
-    let source_own_matches = aggregate.own == recipe.own
-        || (recipe.own == OwnKind::Owned && aggregate.own == OwnKind::Guaranteed);
-    if aggregate.ty != recipe.ty || !source_own_matches {
-        return Err(PhysicalError::new(
-            "physical aggregate projection source disagrees with its glue recipe",
-        ));
-    }
-    let expected = usize::try_from(field)
-        .ok()
-        .and_then(|index| recipe.fields.get(index))
-        .ok_or_else(|| {
-            PhysicalError::new(format!(
-                "physical aggregate projection index {field} is out of bounds"
-            ))
-        })?;
+    let expected = aggregate_projection_field(module, function, aggregate, field, glue)?;
     if destination.ty != expected.ty
         || destination.own != expected.own
         || expected.clone != Some(action)
@@ -2509,6 +2565,44 @@ fn verify_aggregate_project_copy(
         ));
     }
     verify_clone_action(module, &destination.ty, destination.own, action)
+}
+
+fn verify_borrow_dependency(
+    function: &PhysicalFunction,
+    dest: StorageId,
+    source: StorageId,
+) -> Result<(), PhysicalError> {
+    let destination = storage(function, dest)?;
+    if destination.own != OwnKind::Guaranteed
+        || destination.borrow_parent != Some(source)
+        || !matches!(
+            storage(function, source)?.own,
+            OwnKind::Owned | OwnKind::Guaranteed
+        )
+    {
+        return Err(PhysicalError::new(
+            "physical borrow disagrees with its SIR loan dependency",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_aggregate_project_borrow(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    dest: StorageId,
+    aggregate: StorageId,
+    field: u32,
+    glue: PhysicalAggregateId,
+) -> Result<(), PhysicalError> {
+    let destination = storage(function, dest)?;
+    let expected = aggregate_projection_field(module, function, aggregate, field, glue)?;
+    if destination.ty != expected.ty || expected.own != OwnKind::Owned {
+        return Err(PhysicalError::new(
+            "physical borrowed projection disagrees with its owning field recipe",
+        ));
+    }
+    verify_borrow_dependency(function, dest, aggregate)
 }
 
 fn verify_aggregate_destructure(
@@ -2670,10 +2764,14 @@ fn verify_operation_storage(
         PhysicalOp::StorageLive { storage: dest } => {
             storage(function, *dest)?;
         }
-        PhysicalOp::Unary { dest, source, .. }
-        | PhysicalOp::Transfer { dest, source }
-        | PhysicalOp::Borrow { dest, source } => {
+        PhysicalOp::Unary { dest, source, .. } => {
             require_same_storage_type(function, *dest, *source, "physical operation")?;
+        }
+        PhysicalOp::Transfer { dest, source } => {
+            verify_transfer(function, *dest, *source)?;
+        }
+        PhysicalOp::Borrow { dest, source } => {
+            verify_whole_value_borrow(module, function, *dest, *source)?;
         }
         PhysicalOp::Cast { dest, source, .. } => {
             storage(function, *dest)?;
@@ -2695,6 +2793,12 @@ fn verify_operation_storage(
         } => verify_aggregate_project_copy(
             module, function, *dest, *aggregate, *field, *glue, *action,
         )?,
+        PhysicalOp::AggregateProjectBorrow {
+            dest,
+            aggregate,
+            field,
+            glue,
+        } => verify_aggregate_project_borrow(module, function, *dest, *aggregate, *field, *glue)?,
         PhysicalOp::AggregateDestructure {
             aggregate,
             fields,
@@ -2714,7 +2818,12 @@ fn verify_operation_storage(
             verify_destroy_action(module, &source.ty, source.own, *action)?;
         }
         PhysicalOp::EndBorrow { source } => {
-            storage(function, *source)?;
+            let source = storage(function, *source)?;
+            if source.own != OwnKind::Guaranteed || source.borrow_parent.is_none() {
+                return Err(PhysicalError::new(
+                    "physical end-borrow requires a local SIR loan",
+                ));
+            }
         }
         PhysicalOp::Clone {
             dest,
@@ -2743,6 +2852,38 @@ fn verify_operation_storage(
         }
     }
     Ok(())
+}
+
+fn verify_transfer(
+    function: &PhysicalFunction,
+    dest: StorageId,
+    source: StorageId,
+) -> Result<(), PhysicalError> {
+    require_same_storage_type(function, dest, source, "physical transfer")?;
+    let source = storage(function, source)?;
+    let dest = storage(function, dest)?;
+    if source.own != dest.own || source.own == OwnKind::Guaranteed {
+        return Err(PhysicalError::new(
+            "physical transfer cannot change ownership or move a loan",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_whole_value_borrow(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    dest: StorageId,
+    source: StorageId,
+) -> Result<(), PhysicalError> {
+    require_same_storage_type(function, dest, source, "physical borrow")?;
+    let ty = &storage(function, source)?.ty;
+    if OwnKind::of_class(semantic_type_facts(module, ty)?.class) != OwnKind::Owned {
+        return Err(PhysicalError::new(
+            "physical borrow requires an owning value",
+        ));
+    }
+    verify_borrow_dependency(function, dest, source)
 }
 
 fn verify_constant(
@@ -2939,6 +3080,7 @@ fn define(
     block: BlockId,
     context: &str,
 ) -> Result<(), PhysicalError> {
+    require_no_live_borrows(function, state, id)?;
     let own = storage(function, id)?.own;
     let slot = state
         .slots
@@ -2963,12 +3105,30 @@ fn define(
     Ok(())
 }
 
+fn require_no_live_borrows(
+    function: &PhysicalFunction,
+    state: &FlowState,
+    source: StorageId,
+) -> Result<(), PhysicalError> {
+    if function.storage.iter().any(|slot| {
+        slot.borrow_parent == Some(source)
+            && state.slots[slot.id.0 as usize] != InitState::Uninitialized
+    }) {
+        return Err(PhysicalError::new(format!(
+            "physical storage {} cannot end or change while a dependent loan is live",
+            source.0
+        )));
+    }
+    Ok(())
+}
+
 fn consume_if_owned(
     function: &PhysicalFunction,
     state: &mut FlowState,
     id: StorageId,
 ) -> Result<(), PhysicalError> {
     if storage(function, id)?.own == OwnKind::Owned {
+        require_no_live_borrows(function, state, id)?;
         *state
             .slots
             .get_mut(id.0 as usize)
@@ -3029,6 +3189,9 @@ fn apply_operation(
         }
         PhysicalOp::AggregateProjectCopy {
             dest, aggregate, ..
+        }
+        | PhysicalOp::AggregateProjectBorrow {
+            dest, aggregate, ..
         } => {
             initialized(state, *aggregate, block, "aggregate projection")?;
             define(function, state, *dest, block, "aggregate projection")?;
@@ -3060,15 +3223,18 @@ fn apply_operation(
         }
         PhysicalOp::Destroy { source, .. } | PhysicalOp::EndBorrow { source } => {
             initialized(state, *source, block, "destroy or end-borrow")?;
+            require_no_live_borrows(function, state, *source)?;
             state.slots[source.0 as usize] = InitState::Uninitialized;
         }
         PhysicalOp::Assign { dest, source, .. } => {
             initialized(state, *dest, block, "assignment destination")?;
             initialized(state, *source, block, "assignment source")?;
+            require_no_live_borrows(function, state, *dest)?;
             consume_if_owned(function, state, *source)?;
         }
         PhysicalOp::StorageDead { storage: id, .. } => {
             initialized(state, *id, block, "end-lifetime")?;
+            require_no_live_borrows(function, state, *id)?;
             state.slots[id.0 as usize] = InitState::Uninitialized;
         }
     }
@@ -3114,6 +3280,19 @@ fn terminator_successors(
     mut state: FlowState,
     block: BlockId,
 ) -> Result<Vec<(BlockId, FlowState)>, PhysicalError> {
+    if matches!(
+        terminator,
+        PhysicalTerminator::Return { .. }
+            | PhysicalTerminator::Trap(_)
+            | PhysicalTerminator::Unreachable
+            | PhysicalTerminator::PropagateFault
+    ) && function.storage.iter().any(|slot| {
+        slot.borrow_parent.is_some() && state.slots[slot.id.0 as usize] != InitState::Uninitialized
+    }) {
+        return Err(PhysicalError::new(
+            "physical function exit leaves a local loan live",
+        ));
+    }
     match terminator {
         PhysicalTerminator::Return { value } => {
             if state.fault != FaultState::None {
@@ -3205,6 +3384,13 @@ fn terminator_successors(
                     ArgumentTransfer::Move(source) => (*source, true),
                 };
                 initialized(&state, source, block, "call argument")?;
+                if storage(function, source)?.own == OwnKind::Guaranteed
+                    && !matches!(argument, ArgumentTransfer::Borrow(_))
+                {
+                    return Err(PhysicalError::new(
+                        "physical guaranteed call argument must use its borrow contract",
+                    ));
+                }
                 if moves {
                     consume_if_owned(function, &mut state, source)?;
                 }
@@ -3246,6 +3432,13 @@ fn terminator_successors(
                     ArgumentTransfer::Move(source) => (*source, true),
                 };
                 initialized(&state, source, block, "runtime call argument")?;
+                if storage(function, source)?.own == OwnKind::Guaranteed
+                    && !matches!(argument, ArgumentTransfer::Borrow(_))
+                {
+                    return Err(PhysicalError::new(
+                        "physical guaranteed runtime argument must use its borrow contract",
+                    ));
+                }
                 if moves {
                     consume_if_owned(function, &mut state, source)?;
                 }
@@ -3344,7 +3537,10 @@ fn verify_terminator(
     let edge = |edge: &PhysicalEdge| {
         if blocks.contains(&edge.target) {
             for (source, destination) in &edge.transfers {
-                if slot(*source)?.ty != slot(*destination)?.ty {
+                if slot(*source)?.ty != slot(*destination)?.ty
+                    || slot(*source)?.own != slot(*destination)?.own
+                    || slot(*source)?.own == OwnKind::Guaranteed
+                {
                     return Err(PhysicalError::new(format!(
                         "physical edge to block {} transfers incompatible storage",
                         edge.target.0
@@ -3366,6 +3562,13 @@ fn verify_terminator(
                 | ReturnTransfer::Move(id)
                 | ReturnTransfer::Clone { source: id, .. } => id,
             });
+            if let Some(id) = returned {
+                if slot(id)?.own == OwnKind::Guaranteed {
+                    return Err(PhysicalError::new(
+                        "physical function return cannot escape guaranteed storage",
+                    ));
+                }
+            }
             match (
                 &callable_for(module, function.callable)?.return_ty,
                 returned,
@@ -3773,6 +3976,13 @@ fn callable_for(
 
 #[cfg(test)]
 mod tests {
+    mod borrow_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../hew-sir/tests/support/borrowed_aggregate.rs"
+        ));
+    }
+
     mod utf8_fixture {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -4462,6 +4672,108 @@ mod tests {
         )));
     }
 
+    fn borrowed_aggregate_fixture() -> PhysicalModule {
+        let semantic = borrow_fixture::nested_borrow_module();
+        lower_physical_module(&semantic, target_for_inventory(&semantic))
+            .expect("nested field loans lower through physical storage")
+            .into_unverified()
+    }
+
+    #[test]
+    fn borrowed_aggregate_fields_retain_exact_sir_parent_dependencies() {
+        let physical = borrowed_aggregate_fixture();
+        let function = &physical.functions[0];
+        let mut loans = 0;
+        for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+            if let PhysicalOp::AggregateProjectBorrow {
+                dest, aggregate, ..
+            } = operation
+            {
+                loans += 1;
+                let slot = &function.storage[dest.0 as usize];
+                assert_eq!(slot.own, OwnKind::Guaranteed);
+                assert_eq!(slot.borrow_parent, Some(*aggregate));
+            }
+        }
+        assert_eq!(loans, 2);
+    }
+
+    #[test]
+    fn physical_field_loans_refuse_wrong_fields_and_forged_dependencies() {
+        for wrong_field in [false, true] {
+            let mut physical = borrowed_aggregate_fixture();
+            let function = &mut physical.functions[0];
+            let operation = function
+                .blocks
+                .iter_mut()
+                .flat_map(|block| &mut block.ops)
+                .find(|op| matches!(op, PhysicalOp::AggregateProjectBorrow { .. }))
+                .unwrap();
+            let PhysicalOp::AggregateProjectBorrow { dest, field, .. } = operation else {
+                unreachable!()
+            };
+            if wrong_field {
+                *field = u32::MAX;
+            } else {
+                function.storage[dest.0 as usize].borrow_parent = None;
+            }
+            let error = verify_physical_module(&physical).expect_err("malformed field loan");
+            assert!(
+                error.message.contains("out of bounds")
+                    || error.message.contains("no SIR parent dependency"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn physical_borrow_roots_cannot_end_before_their_dependent_reads() {
+        for end_owner in [false, true] {
+            let mut physical = borrowed_aggregate_fixture();
+            let function = &mut physical.functions[0];
+            let loans = function
+                .storage
+                .iter()
+                .filter(|slot| slot.borrow_parent.is_some())
+                .map(|slot| (slot.id, slot.borrow_parent.unwrap()))
+                .collect::<Vec<_>>();
+            let (parent, owner) = loans[0];
+            let value = if end_owner { owner } else { parent };
+            let mut cleanup = None;
+            for block in &mut function.blocks {
+                if let Some(index) = block.ops.iter().position(|op| {
+                    matches!(op,
+                    PhysicalOp::Destroy { source, .. } | PhysicalOp::EndBorrow { source }
+                        if *source == value)
+                }) {
+                    cleanup = Some(block.ops.remove(index));
+                    break;
+                }
+            }
+            let read = vector_block(function, VecValueOp::Index);
+            read.ops.push(cleanup.unwrap());
+            let error = verify_physical_module(&physical).expect_err("live dependent loan");
+            assert!(error.message.contains("dependent loan is live"), "{error}");
+        }
+    }
+
+    #[test]
+    fn physical_fault_cleanup_must_end_its_field_loans() {
+        let mut physical = borrowed_aggregate_fixture();
+        let fault = physical.functions[0]
+            .blocks
+            .iter_mut()
+            .find(|block| matches!(block.terminator, PhysicalTerminator::Trap(_)))
+            .unwrap();
+        let before = fault.ops.len();
+        fault
+            .ops
+            .retain(|op| !matches!(op, PhysicalOp::EndBorrow { .. }));
+        assert!(fault.ops.len() < before);
+        let error = verify_physical_module(&physical).expect_err("loan cleanup on fault edge");
+        assert!(error.message.contains("dependent loan is live"), "{error}");
+    }
+
     #[test]
     fn verifier_rejects_variant_payload_carriers_that_cannot_hold_every_case() {
         let module = lower_source(
@@ -5120,6 +5432,7 @@ mod tests {
                         .clone(),
                     own: OwnKind::Owned,
                     origin: StorageOrigin::Value(ValueId(0)),
+                    borrow_parent: None,
                 },
                 PhysicalStorage {
                     id: StorageId(1),
@@ -5130,6 +5443,7 @@ mod tests {
                         .clone(),
                     own: OwnKind::None,
                     origin: StorageOrigin::Value(ValueId(1)),
+                    borrow_parent: None,
                 },
             ],
             blocks: vec![
@@ -5519,12 +5833,22 @@ mod tests {
             let block = vector_block(&mut physical.functions[0], operation);
             let PhysicalTerminator::RuntimeCall {
                 result: Some(result),
+                ref args,
                 ..
             } = block.terminator
             else {
                 unreachable!()
             };
-            physical.functions[0].storage[result.0 as usize].own = OwnKind::Guaranteed;
+            let parent = match args[0] {
+                ArgumentTransfer::Borrow(source)
+                | ArgumentTransfer::Move(source)
+                | ArgumentTransfer::Clone { source, .. } => source,
+            };
+            let slot = &mut physical.functions[0].storage[result.0 as usize];
+            slot.own = OwnKind::Guaranteed;
+            // Even a forged loan dependency cannot change an owning extraction
+            // into a borrowed result of this runtime operation.
+            slot.borrow_parent = Some(parent);
             let error = verify_physical_module(&physical)
                 .expect_err("extraction cannot yield an interior borrow");
             assert!(

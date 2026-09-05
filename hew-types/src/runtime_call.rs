@@ -131,12 +131,14 @@ pub enum RuntimeValueKind {
     I64,
     String,
     Bytes,
-    /// The single canonical Vec<T> instance bound by the signature.
-    Vector,
-    VectorElement,
-    OptionalVectorElement,
-    /// A checked pop returns the updated receiver and its removed element.
-    VectorPopResult,
+    /// The signature's receiver, constrained by canonical builtin identity.
+    Receiver(BuiltinType),
+    /// One type argument from the signature's canonical collection receiver.
+    TypeArgument(usize),
+    /// Ordinary type construction, shared by optional results and projections.
+    Applied(BuiltinType, &'static [Self]),
+    /// Ordinary product results, including receiver replacement with a value.
+    Tuple(&'static [Self]),
 }
 
 impl RuntimeValueKind {
@@ -152,25 +154,40 @@ impl RuntimeValueKind {
         )
     }
 
-    /// Resolve a type expression using the signature's one vector binding.
+    /// Resolve a type expression using the signature's one receiver binding.
     #[must_use]
-    pub fn resolve(self, vector: Option<&ResolvedTy>) -> Option<ResolvedTy> {
+    pub fn resolve(self, receiver: Option<&ResolvedTy>) -> Option<ResolvedTy> {
         Some(match self {
             Self::Bool => ResolvedTy::Bool,
             Self::U8 => ResolvedTy::U8,
             Self::I64 => ResolvedTy::I64,
             Self::String => ResolvedTy::String,
             Self::Bytes => ResolvedTy::Bytes,
-            Self::Vector => vector?.clone(),
-            Self::VectorElement => vector_element_type(vector?)?.clone(),
-            Self::OptionalVectorElement => ResolvedTy::named_builtin(
-                "Option",
-                crate::BuiltinType::Option,
-                vec![vector_element_type(vector?)?.clone()],
-            ),
-            Self::VectorPopResult => {
-                ResolvedTy::Tuple(vec![vector?.clone(), Self::VectorElement.resolve(vector)?])
+            Self::Receiver(expected) => {
+                let receiver = receiver?;
+                let (actual, _) = collection_type_arguments(receiver)?;
+                if actual != expected {
+                    return None;
+                }
+                receiver.clone()
             }
+            Self::TypeArgument(index) => {
+                collection_type_arguments(receiver?)?.1.get(index)?.clone()
+            }
+            Self::Applied(builtin, arguments) => ResolvedTy::named_builtin(
+                builtin.canonical_name(),
+                builtin,
+                arguments
+                    .iter()
+                    .map(|ty| ty.resolve(receiver))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            Self::Tuple(fields) => ResolvedTy::Tuple(
+                fields
+                    .iter()
+                    .map(|ty| ty.resolve(receiver))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
         })
     }
 }
@@ -288,7 +305,7 @@ impl RuntimeSemanticContract {
     /// it never overrides a receiver's element type.
     ///
     /// # Errors
-    /// Rejects wrong arity, noncanonical vectors and mismatched element types.
+    /// Rejects wrong arity, noncanonical receivers and mismatched type arguments.
     pub fn instantiate(
         self,
         params: &[ResolvedTy],
@@ -301,14 +318,14 @@ impl RuntimeSemanticContract {
                 self.arguments.len()
             ));
         }
-        let vector = params
+        let receiver = params
             .first()
-            .filter(|ty| vector_element_type(ty).is_some())
+            .filter(|ty| collection_type_arguments(ty).is_some())
             .or_else(|| {
                 params
                     .is_empty()
                     .then_some(result_hint)
-                    .filter(|ty| vector_element_type(ty).is_some())
+                    .filter(|ty| collection_type_arguments(ty).is_some())
             });
         let arguments = self
             .arguments
@@ -316,8 +333,8 @@ impl RuntimeSemanticContract {
             .zip(params)
             .enumerate()
             .map(|(index, (expected, actual))| {
-                let ty = expected.ty.resolve(vector).ok_or_else(|| {
-                    "runtime signature has no canonical Vec<T> binding".to_string()
+                let ty = expected.ty.resolve(receiver).ok_or_else(|| {
+                    "runtime signature has no matching canonical receiver binding".to_string()
                 })?;
                 if ty != *actual {
                     return Err(format!(
@@ -335,9 +352,11 @@ impl RuntimeSemanticContract {
             | RuntimeResultEffect::FreshOwned(kind)
             | RuntimeResultEffect::IndependentValue(kind)
             | RuntimeResultEffect::UpdatedReceiver(kind)
-            | RuntimeResultEffect::UpdatedReceiverAndValue(kind) => kind
-                .resolve(vector)
-                .ok_or_else(|| "runtime result has no canonical Vec<T> binding".to_string())?,
+            | RuntimeResultEffect::UpdatedReceiverAndValue(kind) => {
+                kind.resolve(receiver).ok_or_else(|| {
+                    "runtime result has no matching canonical receiver binding".to_string()
+                })?
+            }
             RuntimeResultEffect::FreshOwnedVariant(kind) if kind.matches(result_hint) => {
                 result_hint.clone()
             }
@@ -357,6 +376,24 @@ impl RuntimeSemanticContract {
 pub struct RuntimeInstantiatedContract {
     pub arguments: Vec<ResolvedTy>,
     pub result_ty: ResolvedTy,
+}
+
+/// Recognize supported canonical collection instances and their exact arity.
+fn collection_type_arguments(ty: &ResolvedTy) -> Option<(BuiltinType, &[ResolvedTy])> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(builtin),
+            args,
+            ..
+        } if matches!(
+            (builtin, args.len()),
+            (BuiltinType::Vec | BuiltinType::HashSet, 1) | (BuiltinType::HashMap, 2)
+        ) =>
+        {
+            Some((*builtin, args))
+        }
+        _ => None,
+    }
 }
 
 /// Recognize canonical Vec identity without inspecting a source leaf name.
@@ -405,15 +442,15 @@ impl VecValueOp {
         use RuntimeResultEffect::{
             BitCopy, FreshOwned, IndependentValue, UpdatedReceiver, UpdatedReceiverAndValue,
         };
-        use RuntimeValueKind::{
-            OptionalVectorElement, Vector, VectorElement, VectorPopResult, I64,
-        };
+        use RuntimeValueKind::{Applied, Receiver, Tuple, TypeArgument, I64};
+        const VECTOR: RuntimeValueKind = Receiver(BuiltinType::Vec);
+        const ELEMENT_TYPE: RuntimeValueKind = TypeArgument(0);
         const READ: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: Vector,
+            ty: VECTOR,
             effect: Borrow,
         };
         const WRITE: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: Vector,
+            ty: VECTOR,
             effect: Move,
         };
         const INDEX: RuntimeArgumentContract = RuntimeArgumentContract {
@@ -421,34 +458,34 @@ impl VecValueOp {
             effect: Copy,
         };
         const ELEMENT: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: VectorElement,
+            ty: ELEMENT_TYPE,
             effect: Borrow,
         };
         match self {
-            Self::New => runtime_semantic_contract(&[], FreshOwned(Vector), &[]),
+            Self::New => runtime_semantic_contract(&[], FreshOwned(VECTOR), &[]),
             Self::Len => runtime_semantic_contract(&[READ], BitCopy(I64), &[]),
             Self::Index => runtime_semantic_contract(
                 &[READ, INDEX],
-                IndependentValue(VectorElement),
+                IndependentValue(ELEMENT_TYPE),
                 &[RuntimeLogicalFailure::IndexOutOfBounds],
             ),
             Self::Get => runtime_semantic_contract(
                 &[READ, INDEX],
-                IndependentValue(OptionalVectorElement),
+                IndependentValue(Applied(BuiltinType::Option, &[ELEMENT_TYPE])),
                 &[],
             ),
             Self::Push => {
-                runtime_semantic_contract(&[WRITE, ELEMENT], UpdatedReceiver(Vector), &[])
+                runtime_semantic_contract(&[WRITE, ELEMENT], UpdatedReceiver(VECTOR), &[])
             }
             Self::Set => runtime_semantic_contract(
                 &[WRITE, INDEX, ELEMENT],
-                UpdatedReceiver(Vector),
+                UpdatedReceiver(VECTOR),
                 &[RuntimeLogicalFailure::IndexOutOfBounds],
             ),
-            Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(Vector), &[]),
+            Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(VECTOR), &[]),
             Self::Pop => runtime_semantic_contract(
                 &[WRITE],
-                UpdatedReceiverAndValue(VectorPopResult),
+                UpdatedReceiverAndValue(Tuple(&[VECTOR, ELEMENT_TYPE])),
                 &[RuntimeLogicalFailure::IndexOutOfBounds],
             ),
         }
@@ -2695,10 +2732,10 @@ impl RuntimeCallFamily {
                     RuntimeValueKind::Bool
                     | RuntimeValueKind::U8
                     | RuntimeValueKind::I64
-                    | RuntimeValueKind::Vector
-                    | RuntimeValueKind::VectorElement
-                    | RuntimeValueKind::OptionalVectorElement
-                    | RuntimeValueKind::VectorPopResult,
+                    | RuntimeValueKind::Receiver(_)
+                    | RuntimeValueKind::TypeArgument(_)
+                    | RuntimeValueKind::Applied(_, _)
+                    | RuntimeValueKind::Tuple(_),
                 ) => RuntimeResultOwnership::Untracked,
             };
         }
@@ -4602,14 +4639,17 @@ mod vector_semantic_contract_tests {
                 .semantic_contract()
                 .unwrap()
                 .result,
-            RuntimeResultEffect::IndependentValue(RuntimeValueKind::VectorElement)
+            RuntimeResultEffect::IndependentValue(RuntimeValueKind::TypeArgument(0))
         );
         assert_eq!(
             RuntimeCallFamily::Vector(VecValueOp::Get)
                 .semantic_contract()
                 .unwrap()
                 .result,
-            RuntimeResultEffect::IndependentValue(RuntimeValueKind::OptionalVectorElement)
+            RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
+                BuiltinType::Option,
+                &[RuntimeValueKind::TypeArgument(0)],
+            ))
         );
         assert_eq!(
             RuntimeCallFamily::Vector(VecValueOp::Index)

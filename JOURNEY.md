@@ -665,3 +665,9 @@ insertion functions. Their explicit borrowing contracts and generated surface
 now agree. The retained native and paired sanitizer suites and the combined
 runtime/C ABI/stdlib suite pass. Unsupported language coverage and the pinned
 structural grammar remain separate full-lint failures.
+
+Runtime semantic signatures now bind a canonical collection receiver and build
+ordinary result types from its type arguments. Vector element, optional and
+receiver-plus-element results use the same type templates that map/set operations
+will consume, replacing the vector-only signature vocabulary. The full checker
+suite passes with the existing vector contracts preserved.

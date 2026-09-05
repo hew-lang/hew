@@ -1617,6 +1617,131 @@ fn vec_iter_admits_recursive_enum_through_its_vec_field() {
 }
 
 #[test]
+fn recursive_collection_admission_through_entry_record() {
+    let output = check_source(
+        r#"
+        enum Carrier { Text(string), Sequence(Vec<Carrier>), Fields(Vec<Entry>), }
+        type Entry { key: string, value: Carrier, }
+
+        fn main() {
+            var children: Vec<Carrier> = Vec.new();
+            children.push(Carrier.Text("retained"));
+            var entries: Vec<Entry> = Vec.new();
+            entries.push(Entry { key: "child", value: Carrier.Sequence(children) });
+            var roots: Vec<Carrier> = Vec.new();
+            roots.push(Carrier.Fields(entries));
+            let copied = roots.clone();
+            for value in copied {
+                match value {
+                    Carrier.Text(_) => {},
+                    Carrier.Sequence(_) => {},
+                    Carrier.Fields(_) => {},
+                }
+            }
+        }
+        "#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
+fn recursive_collection_admission_through_generic_entry_record() {
+    let output = check_source(
+        r#"
+        enum Carrier<T> { Leaf(T), Fields(Vec<Entry<T>>), }
+        type Entry<T> { key: string, value: Carrier<T>, }
+
+        fn main() {
+            var entries: Vec<Entry<string>> = Vec.new();
+            entries.push(Entry { key: "child", value: Carrier.Leaf("retained") });
+            var roots: Vec<Carrier<string>> = Vec.new();
+            roots.push(Carrier.Fields(entries));
+            let copied = roots.clone();
+            for _ in copied { let seen: i64 = 0; }
+        }
+        "#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
+fn recursive_collection_admission_rejects_inline_cycles_after_outer_vec() {
+    for declarations in [
+        "type Root { children: Vec<Bad> } type Bad { next: Bad }",
+        "type Root { children: Vec<Bad> } type Bad { next: Peer } type Peer { next: Bad }",
+        "type Root { children: Vec<Bad<string>> } type Bad<T> { next: Inline<Bad<T>> } type Inline<T> { value: T }",
+        "type Root { children: Vec<Bad<string>> } type Bad<T> { next: Inline<Bad<Vec<T>>> } type Inline<T> { value: T }",
+        "type Root { children: Vec<Bad<string>> } type Bad<T> { valid: Vec<Bad<T>>, invalid: Inline<Bad<T>> } type Inline<T> { value: T }",
+    ] {
+        let parsed = hew_parser::parse(declarations);
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        assert!(
+            output.errors.iter().any(|error| matches!(error.kind, TypeErrorKind::RecursiveValueType { .. } | TypeErrorKind::ClassRecursion)),
+            "the inline declaration must itself be rejected: {declarations}: {:#?}",
+            output.errors,
+        );
+        // Probe these gates directly too: the declaration diagnostic must not
+        // hide a permissive collection walker below an unrelated outer Vec.
+        let root = Ty::Named { name: "Root".to_string(), args: vec![], builtin: None };
+        assert!(
+            !checker.vec_owned_element_admissible(&root),
+            "constructor admitted an inline cycle: {declarations}",
+        );
+        assert!(
+            !checker.validate_vec_iter_element_clone_type(&root, &(0..0)),
+            "iterator admitted an inline cycle: {declarations}",
+        );
+    }
+}
+
+#[test]
+fn recursive_collection_admission_preserves_finite_nested_generic_copy_layout() {
+    let output = check_source(
+        r"
+        type Wrap<T> { value: T }
+        type Outer<T> { child: Wrap<T> }
+        fn main() {
+            var direct: Vec<Wrap<Wrap<i64>>> = Vec.new();
+            direct.push(Wrap { value: Wrap { value: 1 } });
+            var mixed: Vec<Outer<Outer<i64>>> = Vec.new();
+            mixed.push(Outer { child: Wrap { value: Outer { child: Wrap { value: 2 } } } });
+            for _ in direct { let seen: i64 = 0; }
+            for _ in mixed { let seen: i64 = 0; }
+        }
+        ",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
+fn recursive_collection_admission_preserves_resource_clone_refusal() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Token { id: i64 }
+        impl Token { fn close(self) {} }
+        enum Carrier<T> { Leaf(T), Fields(Vec<Entry<T>>), }
+        type Entry<T> { value: Carrier<T>, }
+        fn scan(values: Vec<Carrier<Token>>) {
+            for _ in values { let seen: i64 = 0; }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error.message.contains("VecIter<")
+                && error.message.contains("resource/linear value `Token`")
+        }),
+        "recursive heap indirection must not admit resource cloning: {:#?}",
+        output.errors,
+    );
+}
+
+#[test]
 fn vec_iter_admits_generic_mutual_vec_and_hashmap_value_recursion() {
     // The active-nominal witness is per declaration: `A -> Vec<B>` crosses
     // one heap buffer, then `B -> HashMap<i64, A>` closes through the map's

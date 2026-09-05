@@ -755,3 +755,20 @@ Native evidence is Linux only. Owned extraction and captures across later effect
 remain copies by contract; this is a bounded call-argument borrowing change.
 Map/Set source admission and the other owner's physical hash/equality work remain
 outside this checkpoint. Native sources and runner logs are preserved for intake.
+
+## Recursive collection admission
+
+Start from `6086afcf7`. Extend the existing constructor and iterator clone
+walks with the container depth at each active declaration. A cycle may close
+through an entry record after its Vec edge, while an unrelated outer buffer
+cannot admit a later inline cycle. Keep leaf ownership and key capabilities.
+
+Focused tests reproduce the original carrier rejection and cover generic entry
+records, inline cycles below outer buffers, mixed/growing generic paths,
+resource clone refusal and finite nested generic Copy values. The mixed-path
+negative also exposed a stack overflow when Copy-layout parameter expansion
+restarted its walk; reuse the existing declaration-termination authority before
+that restart. No type-fact or TypeContext changes are needed.
+
+Focused and full checker tests and scoped JSON Clippy pass. Native carrier
+retry follows this checker checkpoint; fixture intake remains with integration.

@@ -5,6 +5,36 @@
 use super::*;
 use crate::BuiltinType;
 
+/// Active declarations and the heap depth at which each was entered.
+/// A repeated declaration is finite only if its own cycle crossed a container.
+#[derive(Default)]
+pub(super) struct CollectionClonePath {
+    active: HashMap<String, usize>,
+    container_depth: usize,
+}
+
+impl CollectionClonePath {
+    /// Enter a declaration, or return whether an existing cycle is indirect.
+    pub(super) fn enter(&mut self, name: &str) -> Option<bool> {
+        if let Some(depth) = self.active.get(name) {
+            return Some(self.container_depth > *depth);
+        }
+        self.active.insert(name.to_string(), self.container_depth);
+        None
+    }
+
+    pub(super) fn leave(&mut self, name: &str) {
+        self.active.remove(name);
+    }
+
+    pub(super) fn through_container<T>(&mut self, walk: impl FnOnce(&mut Self) -> T) -> T {
+        self.container_depth += 1;
+        let result = walk(self);
+        self.container_depth -= 1;
+        result
+    }
+}
+
 pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
     params.iter().any(ty_contains_error) || ty_contains_error(ret)
 }
@@ -129,6 +159,14 @@ fn primitive_copy_layout_member_on_path(
                 .iter()
                 .position(|param| param == name)?;
             let type_arg = type_args.get(type_param_index)?;
+            // A fresh parameter path is needed for finite Wrap<Wrap<i64>>,
+            // but must not erase a declaration cycle through that parameter.
+            // Reuse the checker termination proof before restarting the walk;
+            // it also refuses cycles with growing generic arguments.
+            let resolved_arg = ResolvedTy::from_ty(type_arg).ok()?;
+            if !declaration_walk_terminates(&resolved_arg, type_defs) {
+                return None;
+            }
             primitive_copy_layout(type_arg, type_defs)
         }
         Ty::Array(elem, count) => {
@@ -1021,11 +1059,7 @@ impl Checker {
             && self.registry.implements_marker(ty, MarkerTrait::Eq)
     }
 
-    fn hashmap_nested_key_clone_blocker(
-        &self,
-        ty: &Ty,
-        _visiting: &mut HashSet<String>,
-    ) -> Option<String> {
+    fn hashmap_nested_key_clone_blocker(&self, ty: &Ty) -> Option<String> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if primitive_copy_layout(&resolved, &self.type_defs).is_some() {
             return None;
@@ -1139,13 +1173,13 @@ impl Checker {
             }
             Some(BuiltinType::HashMap) if args.len() == 2 => {
                 return self
-                    .hashmap_nested_key_clone_blocker(&args[0], visiting)
+                    .hashmap_nested_key_clone_blocker(&args[0])
                     .or_else(|| self.hashmap_value_clone_blocker(&args[1], visiting));
             }
             Some(BuiltinType::HashSet) => {
                 return args
                     .first()
-                    .and_then(|elem| self.hashmap_nested_key_clone_blocker(elem, visiting));
+                    .and_then(|elem| self.hashmap_nested_key_clone_blocker(elem));
             }
             Some(BuiltinType::Option | BuiltinType::Result | BuiltinType::Range) => {
                 if let Some(blocker) = args
@@ -1204,46 +1238,15 @@ impl Checker {
         }
     }
 
-    /// Clone-totality for the element/value position of a descriptor-backed
-    /// heap container (`Vec<T>`, `HashMap<K, V>`'s `V`).
-    ///
-    /// A `Vec`/`HashMap` slot is a pointer into a separately allocated buffer,
-    /// so a value cycle that crosses this edge is FINITE: re-encountering a
-    /// nominal that is still on the active recursion stack means the layout
-    /// closes through the container's heap indirection, not through an inline
-    /// self-embedding. The cloned-out element owns its own buffer, and the
-    /// container's per-element clone/drop descriptor re-enters the element
-    /// type's own thunk per slot, so the copy-in deep clone terminates.
-    ///
-    /// The witness is evaluated per nominal AT THIS EDGE, never accumulated:
-    /// only the nominal whose cycle closes across this exact container is
-    /// admitted. An unrelated container crossed earlier on the path leaves no
-    /// residue, so a direct inline self-cycle introduced below that boundary
-    /// still fails closed in [`vec_iter_clone_blocker`].
-    ///
-    /// The witness applies only when the element position IS the nominal: an
-    /// element that wraps the nominal inline (a tuple, `Option<T>`, a record)
-    /// re-descends and re-detects the inline cycle.
+    /// Cross a descriptor-backed buffer while retaining the active type path.
+    /// Inline members below this edge may close an earlier cycle, but a cycle
+    /// entered entirely below the edge still needs its own heap indirection.
     fn vec_iter_container_element_clone_blocker(
         &self,
         elem: &Ty,
-        visiting: &mut HashSet<String>,
+        visiting: &mut CollectionClonePath,
     ) -> Option<String> {
-        let resolved = self.subst.resolve(elem).materialize_literal_defaults();
-        if let Ty::Named {
-            name,
-            builtin: None,
-            ..
-        } = &resolved
-        {
-            let visit_key = self
-                .lookup_type_def(name)
-                .map_or_else(|| name.clone(), |type_def| type_def.name);
-            if visiting.contains(&visit_key) {
-                return None;
-            }
-        }
-        self.vec_iter_clone_blocker(&resolved, visiting)
+        visiting.through_container(|visiting| self.vec_iter_clone_blocker(elem, visiting))
     }
 
     /// Return the first leaf that prevents `VecIter::next` from cloning an
@@ -1258,7 +1261,11 @@ impl Checker {
         clippy::too_many_lines,
         reason = "the positive clone-totality proof deliberately enumerates every Ty shape in one exhaustive match"
     )]
-    fn vec_iter_clone_blocker(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Option<String> {
+    fn vec_iter_clone_blocker(
+        &self,
+        ty: &Ty,
+        visiting: &mut CollectionClonePath,
+    ) -> Option<String> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         // User resource/linear markers are semantic ownership authority. A
         // marker may sit on an otherwise bit-copy layout, so this must precede
@@ -1317,14 +1324,12 @@ impl Checker {
                         return self.vec_iter_container_element_clone_blocker(&args[0], visiting);
                     }
                     Some(BuiltinType::HashMap) if args.len() == 2 => {
-                        return self
-                            .hashmap_nested_key_clone_blocker(&args[0], visiting)
-                            .or_else(|| {
-                                self.vec_iter_container_element_clone_blocker(&args[1], visiting)
-                            });
+                        return self.hashmap_nested_key_clone_blocker(&args[0]).or_else(|| {
+                            self.vec_iter_container_element_clone_blocker(&args[1], visiting)
+                        });
                     }
                     Some(BuiltinType::HashSet) if args.len() == 1 => {
-                        return self.hashmap_nested_key_clone_blocker(&args[0], visiting);
+                        return self.hashmap_nested_key_clone_blocker(&args[0]);
                     }
                     Some(BuiltinType::Option | BuiltinType::Result | BuiltinType::Range) => {
                         return args
@@ -1361,22 +1366,11 @@ impl Checker {
                 ) {
                     return Some(format!("non-value type `{name}`"));
                 }
-                // Keep the active-stack key at nominal identity, not its
-                // substituted display spelling: a recursive generic may
-                // reach the same declaration under different type arguments,
-                // but its outgoing layout edges are already being checked by
-                // the outer frame. This is also the key used by the container
-                // witness above.
+                // Resolve aliases to the declaration identity before checking
+                // whether this repeated type cycle crossed a heap container.
                 let visit_key = type_def.name.clone();
-                // Reaching a nominal already on the active stack through an
-                // INLINE edge (record field, enum payload, tuple member) is an
-                // infinite value layout: the element would have to embed a copy
-                // of itself. A cycle that crosses a descriptor-backed heap
-                // container is admitted earlier, at the container edge itself
-                // (`vec_iter_container_element_clone_blocker`), so it never
-                // reaches here.
-                if !visiting.insert(visit_key.clone()) {
-                    return Some(format!("recursive value layout `{visit_key}`"));
+                if let Some(indirected) = visiting.enter(&visit_key) {
+                    return (!indirected).then(|| format!("recursive value layout `{visit_key}`"));
                 }
                 let blocker = type_def
                     .fields
@@ -1423,7 +1417,7 @@ impl Checker {
                                 }
                             })
                     });
-                visiting.remove(&visit_key);
+                visiting.leave(&visit_key);
                 blocker
             }
             Ty::Var(_) | Ty::AssocType { .. } => {
@@ -1600,7 +1594,7 @@ impl Checker {
         if matches!(resolved, Ty::TraitObject { .. }) {
             return true;
         }
-        let mut visiting = HashSet::new();
+        let mut visiting = CollectionClonePath::default();
         let Some(blocker) = self.vec_iter_clone_blocker(&resolved, &mut visiting) else {
             return true;
         };
@@ -1646,7 +1640,7 @@ impl Checker {
         let Some(witnessed) = Self::clone_proven_witness(&resolved, type_params) else {
             return false;
         };
-        let mut visiting = HashSet::new();
+        let mut visiting = CollectionClonePath::default();
         self.vec_iter_clone_blocker(&witnessed, &mut visiting)
             .is_none()
     }

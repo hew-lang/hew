@@ -323,6 +323,25 @@ pub unsafe extern "C" fn hew_hashset_insert_layout(
     unsafe { hew_hashmap_insert_layout((*set).map, elem, ptr::null()) }
 }
 
+/// Insert an independent copy of a borrowed element.
+///
+/// Returns true when the element was absent. The caller retains its element
+/// on both insertion and duplicate paths.
+///
+/// # Safety
+///
+/// `set` must be live and `elem` must borrow a slot matching its element descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_insert_clone_layout(
+    set: *mut HewLayoutHashSet,
+    elem: *const c_void,
+) -> bool {
+    // SAFETY: the shared validator checks the live set and element input.
+    unsafe { validate_set_op_elem(set, elem) };
+    // SAFETY: the set owns a live map with a plain zero-sized value descriptor.
+    unsafe { crate::hashmap::hew_hashmap_insert_clone_layout((*set).map, elem, ptr::null()) }
+}
+
 // ---------------------------------------------------------------------------
 // Contains
 // ---------------------------------------------------------------------------

@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1498u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1500u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1498] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1500] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -2149,6 +2149,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1498] = {
      "*const c_void\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_hashmap_insert_clone_layout",
+     "{\"native\": \"fn hew_hashmap_insert_clone_layout( *mut "
+     "HewLayoutHashMap, *const c_void, *const c_void, ) -> bool\", "
+     "\"wasm32-wasip1\": \"fn hew_hashmap_insert_clone_layout( *mut "
+     "HewLayoutHashMap, *const c_void, *const c_void, ) -> bool\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_insert_layout",
      "{\"native\": \"fn hew_hashmap_insert_layout( *mut HewLayoutHashMap, "
      "*const c_void, *const c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
@@ -2241,6 +2248,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1498] = {
      "\"wasm32-wasip1\": \"fn hew_hashset_free_layout( *mut "
      "HewLayoutHashSet)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_hashset_insert_clone_layout",
+     "{\"native\": \"fn hew_hashset_insert_clone_layout( *mut "
+     "HewLayoutHashSet, *const c_void, ) -> bool\", \"wasm32-wasip1\": \"fn "
+     "hew_hashset_insert_clone_layout( *mut HewLayoutHashSet, *const c_void, ) "
+     "-> bool\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_insert_layout",
      "{\"native\": \"fn hew_hashset_insert_layout( *mut HewLayoutHashSet, "

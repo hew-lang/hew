@@ -6108,6 +6108,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_insert_clone_layout( *mut HewLayoutHashMap, *const c_void, *const c_void, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_insert_clone_layout( *mut HewLayoutHashMap, *const c_void, *const c_void, ) -> bool"
+      },
+      "symbol": "hew_hashmap_insert_clone_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -6312,6 +6327,21 @@
         "wasm32-wasip1": "fn hew_hashset_free_layout( *mut HewLayoutHashSet)"
       },
       "symbol": "hew_hashset_free_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_insert_clone_layout( *mut HewLayoutHashSet, *const c_void, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashset_insert_clone_layout( *mut HewLayoutHashSet, *const c_void, ) -> bool"
+      },
+      "symbol": "hew_hashset_insert_clone_layout"
     },
     {
       "availability": [

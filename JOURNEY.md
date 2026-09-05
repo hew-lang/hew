@@ -551,3 +551,10 @@ tests and the existing string-reference and recursive-container lifetime tests
 pass under ASan/LSan without suppressions. The Make sanitizer target can select
 integration tests while retaining its library-test default. Generated native
 map lowering and platform validation remain subsequent work.
+
+Borrowed map/set insertion now copies inputs before growth or replacement,
+including inputs borrowed from the same collection. Callers retain their input
+owners on either insertion outcome. Zero-sized value callbacks now track logical
+owners during copying, replacement and destruction. The complete runtime/C ABI
+suite and focused ownership integration tests pass, including unsuppressed
+ASan/LSan checks and the generated C ABI census.

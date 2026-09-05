@@ -990,20 +990,18 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
         unsafe {
             clone_layout_blob(src.key_layout.value, src_key, dst_key, "map key");
         }
-        if src.val_layout.size > 0 {
-            // SAFETY: occupied slot has a valid value blob.
-            let src_val = unsafe { slot_val(src.entries, idx, src.stride, src.val_offset) };
-            // SAFETY: destination slot is in-bounds in the cloned allocation.
-            let dst_val = unsafe { slot_val(cloned_entries, idx, src.stride, src.val_offset) };
-            // SAFETY: forwarded blob contracts.
-            unsafe {
-                clone_layout_blob(
-                    src.val_layout,
-                    src_val,
-                    dst_val,
-                    "hew_hashmap_clone_layout value",
-                );
-            }
+        // SAFETY: occupied slot has a valid value blob.
+        let src_val = unsafe { slot_val(src.entries, idx, src.stride, src.val_offset) };
+        // SAFETY: destination slot is in-bounds in the cloned allocation.
+        let dst_val = unsafe { slot_val(cloned_entries, idx, src.stride, src.val_offset) };
+        // SAFETY: forwarded blob contracts.
+        unsafe {
+            clone_layout_blob(
+                src.val_layout,
+                src_val,
+                dst_val,
+                "hew_hashmap_clone_layout value",
+            );
         }
     }
 
@@ -1013,6 +1011,64 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
 // ---------------------------------------------------------------------------
 // Insert / Get / Contains / Remove / Len (layout-backed)
 // ---------------------------------------------------------------------------
+
+/// Insert an independent copy of a borrowed key and value.
+///
+/// Returns true for a new key and false for replacement. Both caller-owned
+/// inputs remain unchanged on either path. Inputs may borrow slots in this map:
+/// the complete copies are staged before resizing or releasing an old value.
+///
+/// # Safety
+///
+/// `m` must be a live map. `key` and `val` must borrow initialized slots matching
+/// its descriptors. A zero-sized plain value may use a null `val`; a value
+/// requiring a clone callback must supply a non-null slot even when zero-sized.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_insert_clone_layout(
+    m: *mut HewLayoutHashMap,
+    key: *const c_void,
+    val: *const c_void,
+) -> bool {
+    // SAFETY: the caller supplies a live map and borrowed inputs.
+    unsafe { validate_op_inputs(m, key, Some(val)) };
+    // SAFETY: copy the descriptor and geometry before any mutation or resize.
+    let (key_layout, val_layout, stride, key_offset, val_offset) = unsafe {
+        (
+            (*m).key_layout.value,
+            (*m).val_layout,
+            (*m).stride,
+            (*m).key_offset,
+            (*m).val_offset,
+        )
+    };
+    require_clone(&key_layout, "map insert key");
+    require_clone(&val_layout, "map insert value");
+    if val.is_null() && val_layout.clone_fn.is_some() {
+        abort_layout_clone("map insert value: clone callback requires a non-null input slot");
+    }
+    let alignment = key_layout.align.max(val_layout.align);
+    // SAFETY: the map constructor validated this geometry. One slot is enough
+    // for the two staged values, including padding and zero-sized fields.
+    let scratch = unsafe { alloc_layout_entries(1, stride, alignment) };
+    // SAFETY: the stored field offsets are within this fresh aligned slot.
+    let (staged_key, staged_value) = unsafe { (scratch.add(key_offset), scratch.add(val_offset)) };
+    // SAFETY: both clones finish while their input map slots are still live.
+    // Insert then moves the staged value and either adopts or preserves the key.
+    let inserted = unsafe {
+        clone_layout_blob(key_layout, key.cast(), staged_key, "map insert key");
+        clone_layout_blob(val_layout, val.cast(), staged_value, "map insert value");
+        hew_hashmap_insert_layout(m, staged_key.cast(), staged_value.cast())
+    };
+    if !inserted {
+        if let Some(drop_key) = key_layout.drop_fn {
+            // SAFETY: replacement left this duplicate staged key with the caller.
+            unsafe { drop_key(staged_key.cast()) };
+        }
+    }
+    // SAFETY: all owners have moved or been released; only temporary slot storage remains.
+    unsafe { dealloc_layout_entries(scratch, 1, stride, alignment) };
+    inserted
+}
 
 /// Insert or overwrite `key -> val`. Returns `true` if a new entry was added,
 /// `false` if an existing key was overwritten.
@@ -1118,14 +1174,12 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
         //    no-op fast path.
         // 3. The stored K's `drop_fn` is NEVER invoked here — the slot K is
         //    reused, not freed.
-        if val_size > 0 {
-            if let Some(val_drop) = val_drop_fn_opt {
-                // SAFETY: dst_val points to the old V blob owned by the map;
-                // `drop_fn` is the descriptor-registered owned-V drop thunk and
-                // runs the type's drop plan in place (it must not deallocate
-                // the slot bytes themselves — the kernel owns slot storage).
-                val_drop(dst_val.cast::<c_void>());
-            }
+        if let Some(val_drop) = val_drop_fn_opt {
+            // SAFETY: dst_val points to the old V blob owned by the map;
+            // `drop_fn` is the descriptor-registered owned-V drop thunk and
+            // runs the type's drop plan in place (it must not deallocate
+            // the slot bytes themselves — the kernel owns slot storage).
+            val_drop(dst_val.cast::<c_void>());
         }
         // Raw-copy new V over the (now-dropped) old V slot bytes. For a
         // `String` value this is the ownership-transfer MOVE described in the
@@ -1245,8 +1299,8 @@ pub unsafe extern "C" fn hew_hashmap_get_clone_layout(
     unsafe { validate_op_inputs(m, key, None) };
     // SAFETY: m non-null per gate.
     let map = unsafe { &*m };
-    if map.val_layout.size > 0 && out.is_null() {
-        crate::set_last_error("hew_hashmap_get_clone_layout: out is null for non-zero value");
+    if (map.val_layout.size > 0 || map.val_layout.clone_fn.is_some()) && out.is_null() {
+        crate::set_last_error("hew_hashmap_get_clone_layout: out must hold the cloned value");
         std::process::abort();
     }
     if map.cap == 0 || map.len == 0 {
@@ -1274,19 +1328,17 @@ pub unsafe extern "C" fn hew_hashmap_get_clone_layout(
     if !found {
         return false;
     }
-    if map.val_layout.size > 0 {
-        // SAFETY: idx < cap; val_offset valid.
-        let val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
-        // SAFETY: val_ptr points at the occupied slot value and `out` was
-        // validated for this value layout above.
-        unsafe {
-            clone_layout_blob(
-                map.val_layout,
-                val_ptr,
-                out.cast::<u8>(),
-                "hew_hashmap_get_clone_layout value",
-            );
-        }
+    // SAFETY: idx < cap; val_offset valid.
+    let val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
+    // SAFETY: val_ptr points at the occupied slot value and `out` was
+    // validated for this value layout above.
+    unsafe {
+        clone_layout_blob(
+            map.val_layout,
+            val_ptr,
+            out.cast::<u8>(),
+            "hew_hashmap_get_clone_layout value",
+        );
     }
     true
 }
@@ -1327,12 +1379,11 @@ pub unsafe extern "C" fn hew_hashmap_remove_layout(
     // Snapshot the drop thunks + scalar layout fields BEFORE taking the
     // mutable handle to the entries (avoids any aliasing between the
     // descriptor read and the slot pointer arithmetic below).
-    let (hash_fn_opt, eq_fn_opt, key_drop_fn_opt, val_drop_fn_opt, val_size) = (
+    let (hash_fn_opt, eq_fn_opt, key_drop_fn_opt, val_drop_fn_opt) = (
         map.key_layout.hash_fn,
         map.key_layout.eq_fn,
         map.key_layout.value.drop_fn,
         map.val_layout.drop_fn,
-        map.val_layout.size,
     );
     let (Some(hash_fn), Some(eq_fn)) = (hash_fn_opt, eq_fn_opt) else {
         crate::set_last_error(
@@ -1368,13 +1419,11 @@ pub unsafe extern "C" fn hew_hashmap_remove_layout(
         // SAFETY: slot K is an owned blob registered to the K drop thunk.
         key_drop(slot_key_ptr.cast::<c_void>());
     }
-    if val_size > 0 {
-        if let Some(val_drop) = val_drop_fn_opt {
-            // SAFETY: slot V is an owned blob registered to the V drop thunk;
-            // val_size > 0 guarantees there is an actual blob to drop.
-            let slot_val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
-            val_drop(slot_val_ptr.cast::<c_void>());
-        }
+    if let Some(val_drop) = val_drop_fn_opt {
+        // SAFETY: slot V is an owned blob registered to the V drop thunk;
+        // val_size > 0 guarantees there is an actual blob to drop.
+        let slot_val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
+        val_drop(slot_val_ptr.cast::<c_void>());
     }
     // SAFETY: idx < cap.
     let state_ptr = unsafe { slot_state(map.entries, idx, map.stride) };
@@ -1546,7 +1595,6 @@ pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
     let entries_align = core::cmp::max(kl.value.align, vl.align);
     let key_drop_fn_opt = kl.value.drop_fn;
     let val_drop_fn_opt = vl.drop_fn;
-    let val_size = vl.size;
 
     // W4.001 Stage C0a (plan rev6 §4 contract-table free row + invariant 4):
     // iterate occupied slots, drop K + V on each via the descriptor thunks
@@ -1562,7 +1610,7 @@ pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
     if entries.is_null() || cap == 0 {
         // Defensive: nothing to iterate. Fall through to dealloc which is
         // itself a no-op on null entries (`dealloc_layout_entries`).
-    } else if key_drop_fn_opt.is_some() || (val_size > 0 && val_drop_fn_opt.is_some()) {
+    } else if key_drop_fn_opt.is_some() || val_drop_fn_opt.is_some() {
         for idx in 0..cap {
             // SAFETY: idx < cap; stride matches allocation.
             let state = unsafe { *slot_state(entries, idx, stride) };
@@ -1574,12 +1622,10 @@ pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
                 let slot_key_ptr = unsafe { slot_key(entries, idx, stride, key_offset) };
                 key_drop(slot_key_ptr.cast::<c_void>());
             }
-            if val_size > 0 {
-                if let Some(val_drop) = val_drop_fn_opt {
-                    // SAFETY: occupied slot has a valid V blob at val_offset.
-                    let slot_val_ptr = unsafe { slot_val(entries, idx, stride, val_offset) };
-                    val_drop(slot_val_ptr.cast::<c_void>());
-                }
+            if let Some(val_drop) = val_drop_fn_opt {
+                // SAFETY: occupied slot has a valid V blob at val_offset.
+                let slot_val_ptr = unsafe { slot_val(entries, idx, stride, val_offset) };
+                val_drop(slot_val_ptr.cast::<c_void>());
             }
         }
     }
@@ -1618,7 +1664,6 @@ pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
     let vl = &map.val_layout;
     let key_drop_fn_opt = kl.value.drop_fn;
     let val_drop_fn_opt = vl.drop_fn;
-    let val_size = vl.size;
 
     if !entries.is_null() && cap > 0 {
         for idx in 0..cap {
@@ -1632,12 +1677,10 @@ pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
                     let slot_key_ptr = unsafe { slot_key(entries, idx, stride, key_offset) };
                     key_drop(slot_key_ptr.cast::<c_void>());
                 }
-                if val_size > 0 {
-                    if let Some(val_drop) = val_drop_fn_opt {
-                        // SAFETY: occupied slot has a valid V blob at val_offset.
-                        let slot_val_ptr = unsafe { slot_val(entries, idx, stride, val_offset) };
-                        val_drop(slot_val_ptr.cast::<c_void>());
-                    }
+                if let Some(val_drop) = val_drop_fn_opt {
+                    // SAFETY: occupied slot has a valid V blob at val_offset.
+                    let slot_val_ptr = unsafe { slot_val(entries, idx, stride, val_offset) };
+                    val_drop(slot_val_ptr.cast::<c_void>());
                 }
             }
             if state != EMPTY {

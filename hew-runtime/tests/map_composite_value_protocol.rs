@@ -233,3 +233,157 @@ fn set_composite_copy_and_projection_preserve_independent_elements() {
     }
     assert_eq!(LIVE_NUMBERS.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn borrowed_insert_copies_inputs_before_replacement_or_growth() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    assert_eq!(LIVE_NUMBERS.load(Ordering::SeqCst), 0);
+    // SAFETY: inputs remain separately owned because the copy-in entry point
+    // borrows them. The iterator's borrowed slots stay live until insertion
+    // stages its copies, after which the map may resize and replace them.
+    unsafe {
+        let map = hashmap::hew_hashmap_new_with_layout(&KEY_LAYOUT, &RECORD_LAYOUT);
+        for number in 0..11 {
+            let mut key = record("copy\0key", number);
+            let mut value = record("copy\0value", number * 10);
+            assert!(hashmap::hew_hashmap_insert_clone_layout(
+                map,
+                (&raw const key).cast(),
+                (&raw const value).cast(),
+            ));
+            *value.number = -1;
+            drop_record((&raw mut key).cast());
+            drop_record((&raw mut value).cast());
+        }
+        let old_capacity = (*map).cap;
+        let iterator = hashmap::hew_hashmap_iter_new_layout(map);
+        let mut borrowed_key = core::ptr::null();
+        let mut borrowed_value = core::ptr::null();
+        assert!(hashmap::hew_hashmap_iter_next_layout(
+            iterator,
+            &raw mut borrowed_key,
+            &raw mut borrowed_value,
+        ));
+        hashmap::hew_hashmap_iter_free_layout(iterator);
+        assert!(!hashmap::hew_hashmap_insert_clone_layout(
+            map,
+            borrowed_key,
+            borrowed_value
+        ));
+        assert!((*map).cap > old_capacity);
+        assert_eq!(hashmap::hew_hashmap_len_layout(map), 11);
+
+        let entries =
+            hashmap::hew_hashmap_entries_layout(map, &PAIR_LAYOUT, offset_of!(Pair, value) as u64);
+        hashmap::hew_hashmap_free_layout(map);
+        for index in 0..11 {
+            let pair = &*vec::hew_vec_get_owned(entries, index).cast::<Pair>();
+            assert_eq!(*pair.value.number, *pair.key.number * 10);
+        }
+        vec::hew_vec_free_owned(entries);
+    }
+    assert_eq!(LIVE_NUMBERS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn borrowed_set_insert_retains_the_input_on_both_paths() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    assert_eq!(LIVE_NUMBERS.load(Ordering::SeqCst), 0);
+    // SAFETY: both local Records remain owned, and the set owns an independent copy.
+    unsafe {
+        let set = hashset::hew_hashset_new_with_layout(&KEY_LAYOUT);
+        let mut value = record("set\0copy", 1);
+        assert!(hashset::hew_hashset_insert_clone_layout(
+            set,
+            (&raw const value).cast()
+        ));
+        assert!(!hashset::hew_hashset_insert_clone_layout(
+            set,
+            (&raw const value).cast()
+        ));
+        *value.number = 2;
+        let mut lookup = record("set\0copy", 1);
+        assert!(hashset::hew_hashset_contains_layout(
+            set,
+            (&raw const lookup).cast()
+        ));
+        hashset::hew_hashset_free_layout(set);
+        assert_eq!(string_as_str(value.label), "set\0copy");
+        drop_record((&raw mut value).cast());
+        drop_record((&raw mut lookup).cast());
+    }
+    assert_eq!(LIVE_NUMBERS.load(Ordering::SeqCst), 0);
+}
+
+static ZERO_OWNERS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn clone_zero(source: *const c_void, destination: *mut c_void) -> i32 {
+    assert!(!source.is_null() && !destination.is_null());
+    ZERO_OWNERS.fetch_add(1, Ordering::SeqCst);
+    0
+}
+
+unsafe extern "C" fn drop_zero(slot: *mut c_void) {
+    assert!(!slot.is_null());
+    ZERO_OWNERS.fetch_sub(1, Ordering::SeqCst);
+}
+
+#[test]
+fn zero_sized_value_callbacks_follow_logical_owners() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
+    let layout = HewVecElemLayout {
+        size: 0,
+        align: 1,
+        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        clone_fn: Some(clone_zero),
+        drop_fn: Some(drop_zero),
+    };
+    let unit = ();
+    // SAFETY: unit slots have no payload bytes. Their callbacks track logical
+    // ownership independently of representation size; map keys are plain i64.
+    unsafe {
+        let map = hashmap::hew_hashmap_new_with_layout(
+            &raw const hew_cabi::map::hew_layout_key_i64,
+            &raw const layout,
+        );
+        for key in 0_i64..3 {
+            assert!(hashmap::hew_hashmap_insert_clone_layout(
+                map,
+                (&raw const key).cast(),
+                (&raw const unit).cast(),
+            ));
+        }
+        assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 3);
+        let copy = hashmap::hew_hashmap_clone_layout(map);
+        assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 6);
+        let values = hashmap::hew_hashmap_values_layout(map);
+        assert_eq!(vec::hew_vec_len(values), 3);
+        assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 9);
+        let key = 1_i64;
+        let mut output = ();
+        assert!(hashmap::hew_hashmap_get_clone_layout(
+            map,
+            (&raw const key).cast(),
+            (&raw mut output).cast(),
+        ));
+        assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 10);
+        assert!(!hashmap::hew_hashmap_insert_clone_layout(
+            map,
+            (&raw const key).cast(),
+            (&raw const unit).cast(),
+        ));
+        assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 10);
+        assert!(hashmap::hew_hashmap_remove_layout(
+            map,
+            (&raw const key).cast()
+        ));
+        assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 9);
+        hashmap::hew_hashmap_clear_layout(map);
+        hashmap::hew_hashmap_free_layout(map);
+        hashmap::hew_hashmap_free_layout(copy);
+        vec::hew_vec_free_owned(values);
+        drop_zero((&raw mut output).cast());
+    }
+    assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
+}

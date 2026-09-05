@@ -558,3 +558,16 @@ owners on either insertion outcome. Zero-sized value callbacks now track logical
 owners during copying, replacement and destruction. The complete runtime/C ABI
 suite and focused ownership integration tests pass, including unsuppressed
 ASan/LSan checks and the generated C ABI census.
+
+Descriptor-backed vector buffers now allocate, grow and release with the
+descriptor's alignment and capacity. Legacy scalar buffers retain their matching
+allocator. Descriptor sizes must preserve alignment between adjacent elements;
+logical zero-sized vector elements retain an aligned backing address.
+
+Aligned owning records exercise map/set projections and vector growth, copies,
+slices, buffer transfer, source reuse and truncation. Aligned zero-sized vector
+callbacks preserve both alignment and logical owner balance. Focused runtime and
+unsuppressed ASan/LSan checks pass. The broader runtime/C ABI run passed all other
+cases; its initial zero-sized test used alignment outside the existing map
+contract, so aligned ZST vector coverage is now separate from map ZST coverage.
+Cross-platform allocator validation follows integration.

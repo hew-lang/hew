@@ -15,7 +15,7 @@ use hew_runtime::{hashmap, hashset, vec};
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 static LIVE_NUMBERS: AtomicUsize = AtomicUsize::new(0);
 
-#[repr(C)]
+#[repr(C, align(64))]
 struct Record {
     label: *mut HewString,
     number: *mut i64,
@@ -36,6 +36,8 @@ fn record(label: &str, number: i64) -> Record {
 }
 
 unsafe extern "C" fn clone_record(source: *const c_void, destination: *mut c_void) -> i32 {
+    assert!(source.cast::<Record>().is_aligned());
+    assert!(destination.cast::<Record>().is_aligned());
     // SAFETY: the descriptor uses these callbacks only for live Record slots.
     unsafe {
         let source = &*source.cast::<Record>();
@@ -47,6 +49,7 @@ unsafe extern "C" fn clone_record(source: *const c_void, destination: *mut c_voi
 }
 
 unsafe extern "C" fn drop_record(slot: *mut c_void) {
+    assert!(slot.cast::<Record>().is_aligned());
     // SAFETY: the collection transfers one complete Record owner to this callback.
     unsafe {
         let value = slot.cast::<Record>().read();
@@ -57,6 +60,7 @@ unsafe extern "C" fn drop_record(slot: *mut c_void) {
 }
 
 unsafe extern "C" fn hash_record(slot: *const c_void) -> u64 {
+    assert!(slot.cast::<Record>().is_aligned());
     // SAFETY: hash borrows the complete key and reads only its typed fields.
     unsafe {
         let value = &*slot.cast::<Record>();
@@ -69,6 +73,8 @@ unsafe extern "C" fn hash_record(slot: *const c_void) -> u64 {
 }
 
 unsafe extern "C" fn equal_record(left: *const c_void, right: *const c_void) -> i32 {
+    assert!(left.cast::<Record>().is_aligned());
+    assert!(right.cast::<Record>().is_aligned());
     // SAFETY: both arguments borrow Record keys with live owned fields.
     unsafe {
         let left = &*left.cast::<Record>();
@@ -81,6 +87,8 @@ unsafe extern "C" fn equal_record(left: *const c_void, right: *const c_void) -> 
 }
 
 unsafe extern "C" fn clone_pair(source: *const c_void, destination: *mut c_void) -> i32 {
+    assert!(source.cast::<Pair>().is_aligned());
+    assert!(destination.cast::<Pair>().is_aligned());
     // SAFETY: these are Pair slots; each field uses the same Record descriptor.
     unsafe {
         let source = &*source.cast::<Pair>();
@@ -98,6 +106,7 @@ unsafe extern "C" fn clone_pair(source: *const c_void, destination: *mut c_void)
 }
 
 unsafe extern "C" fn drop_pair(slot: *mut c_void) {
+    assert!(slot.cast::<Pair>().is_aligned());
     // SAFETY: the pair owns both complete fields, whose inline slots stay allocated here.
     unsafe {
         let pair = slot.cast::<Pair>();
@@ -127,6 +136,45 @@ const PAIR_LAYOUT: HewVecElemLayout = HewVecElemLayout {
     clone_fn: Some(clone_pair),
     drop_fn: Some(drop_pair),
 };
+
+#[test]
+fn aligned_vector_owners_survive_growth_slice_and_buffer_transfer() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    assert_eq!(LIVE_NUMBERS.load(Ordering::SeqCst), 0);
+    // SAFETY: callbacks and descriptors match Record; every fresh collection
+    // and standalone owner is released once. No interior borrow spans mutation.
+    unsafe {
+        let original = vec::hew_vec_new_with_elem_layout(&RECORD_LAYOUT);
+        for number in 0..33 {
+            let mut source = record("aligné\0value", number);
+            vec::hew_vec_push_owned(original, (&raw const source).cast());
+            drop_record((&raw mut source).cast());
+        }
+        let copy = vec::hew_vec_clone_owned(original);
+        let slice = vec::hew_vec_slice_range_owned(original, 3, 17);
+        let moved = vec::hew_vec_take_all(original);
+        assert_eq!((*original).len, 0);
+        assert!((*original).data.is_null());
+        let mut replacement = record("reused", 99);
+        vec::hew_vec_push_owned(original, (&raw const replacement).cast());
+        drop_record((&raw mut replacement).cast());
+        vec::hew_vec_free_owned(original);
+        for (collection, first, count) in [(copy, 0, 33), (slice, 3, 14), (moved, 0, 33)] {
+            assert_eq!((*collection).len, count);
+            for index in 0..count {
+                let slot = vec::hew_vec_get_owned(collection, i64::try_from(index).unwrap())
+                    .cast::<Record>();
+                assert!(slot.is_aligned());
+                assert_eq!(*(*slot).number, first + i64::try_from(index).unwrap());
+            }
+            // Releasing fewer live values than allocated slots also checks
+            // that buffer deallocation retains the original capacity layout.
+            vec::hew_vec_truncate(collection, 2);
+            vec::hew_vec_free_owned(collection);
+        }
+    }
+    assert_eq!(LIVE_NUMBERS.load(Ordering::SeqCst), 0);
+}
 
 #[test]
 fn map_composite_copies_and_projections_survive_their_source() {
@@ -317,6 +365,9 @@ fn borrowed_set_insert_retains_the_input_on_both_paths() {
 
 static ZERO_OWNERS: AtomicUsize = AtomicUsize::new(0);
 
+#[repr(align(256))]
+struct AlignedUnit;
+
 unsafe extern "C" fn clone_zero(source: *const c_void, destination: *mut c_void) -> i32 {
     assert!(!source.is_null() && !destination.is_null());
     ZERO_OWNERS.fetch_add(1, Ordering::SeqCst);
@@ -384,6 +435,50 @@ fn zero_sized_value_callbacks_follow_logical_owners() {
         hashmap::hew_hashmap_free_layout(copy);
         vec::hew_vec_free_owned(values);
         drop_zero((&raw mut output).cast());
+    }
+    assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
+}
+
+unsafe extern "C" fn clone_aligned_zero(source: *const c_void, destination: *mut c_void) -> i32 {
+    assert!(source.cast::<AlignedUnit>().is_aligned());
+    assert!(destination.cast::<AlignedUnit>().is_aligned());
+    // SAFETY: these valid logical slots have no payload bytes.
+    unsafe { clone_zero(source, destination) }
+}
+
+unsafe extern "C" fn drop_aligned_zero(slot: *mut c_void) {
+    assert!(slot.cast::<AlignedUnit>().is_aligned());
+    // SAFETY: the vector transfers this logical owner to the drop callback.
+    unsafe { drop_zero(slot) }
+}
+
+#[test]
+fn aligned_zero_sized_vector_preserves_callback_alignment() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
+    let layout = HewVecElemLayout {
+        size: size_of::<AlignedUnit>(),
+        align: align_of::<AlignedUnit>(),
+        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        clone_fn: Some(clone_aligned_zero),
+        drop_fn: Some(drop_aligned_zero),
+    };
+    let unit = AlignedUnit;
+    // SAFETY: the descriptor matches the aligned logical slots and every
+    // collection owner is released once, including after buffer transfer.
+    unsafe {
+        let vector = vec::hew_vec_new_with_elem_layout(&raw const layout);
+        for _ in 0..17 {
+            vec::hew_vec_push_owned(vector, (&raw const unit).cast());
+        }
+        let copy = vec::hew_vec_clone_owned(vector);
+        let slice = vec::hew_vec_slice_range_owned(vector, 2, 7);
+        let moved = vec::hew_vec_take_all(vector);
+        assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 39);
+        vec::hew_vec_free_owned(vector);
+        vec::hew_vec_free_owned(copy);
+        vec::hew_vec_free_owned(slice);
+        vec::hew_vec_free_owned(moved);
     }
     assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
 }

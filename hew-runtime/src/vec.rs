@@ -9,11 +9,11 @@
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
-// The `data` field is `*mut u8` (matching C `void*`) but always allocated via
-// `realloc` which guarantees max alignment.  Casts to typed pointers are safe.
+// Descriptor-backed buffers preserve the element's alignment. Legacy typed
+// buffers use libc's fundamental alignment for their supported scalar types.
 #![expect(
     clippy::cast_ptr_alignment,
-    reason = "data buffer allocated via libc::realloc which guarantees max alignment"
+    reason = "buffer allocation preserves the element type's alignment"
 )]
 // ABI boundary uses i64 (Hew's `int`) for sizes/indices; internal code needs usize.
 #![expect(
@@ -35,6 +35,7 @@ use crate::trap_code::{fmt_decimal_usize, runtime_bounds_trap};
 use core::ffi::c_void;
 use core::ptr;
 use hew_cabi::string::HewString;
+use std::alloc::{alloc, dealloc, realloc, Layout};
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -99,16 +100,33 @@ unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         };
-        // Zero-sized values still have a logical length. Keep a non-null
-        // backing address for zero-byte copies without relying on realloc(0),
-        // which may free its input and return null on supported platforms.
-        let new_data = libc::realloc(vec.data.cast(), alloc_size.max(1));
+        // Keep a non-null, aligned backing address even for logical zero-sized
+        // values. Allocation and release use capacity, never the live length.
+        let new_data = if vec.layout.is_null() {
+            libc::realloc(vec.data.cast(), alloc_size.max(1)).cast::<u8>()
+        } else {
+            let layout = buffer_layout(alloc_size, (*vec.layout).align);
+            if vec.data.is_null() {
+                alloc(layout)
+            } else {
+                let old_layout = buffer_layout(vec.cap * vec.elem_size, (*vec.layout).align);
+                realloc(vec.data, old_layout, layout.size())
+            }
+        };
         if new_data.is_null() {
             libc::abort();
         }
         vec.data = new_data.cast();
         vec.cap = new_cap;
     }
+}
+
+/// Allocation geometry for a descriptor-backed buffer, including logical ZSTs.
+fn buffer_layout(size: usize, align: usize) -> Layout {
+    Layout::from_size_align(size.max(1), align).unwrap_or_else(|_| {
+        // SAFETY: an unrepresentable allocation cannot admit a live buffer.
+        unsafe { libc::abort() }
+    })
 }
 
 /// Trap with an out-of-bounds message.
@@ -242,6 +260,10 @@ unsafe fn validate_type_layout(layout: *const HewTypeLayout) {
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         }
+        if !descriptor.size.is_multiple_of(descriptor.align) {
+            write_stderr(b"PANIC: HewTypeLayout size must preserve element alignment\n");
+            libc::abort();
+        }
     }
 }
 
@@ -257,6 +279,10 @@ unsafe fn validate_elem_layout(layout: *const HewVecElemLayout) {
         if descriptor.align == 0 || !descriptor.align.is_power_of_two() {
             let msg = b"PANIC: HewVecElemLayout align must be a non-zero power of two\n\0";
             write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }
+        if !descriptor.size.is_multiple_of(descriptor.align) {
+            write_stderr(b"PANIC: HewVecElemLayout size must preserve element alignment\n");
             libc::abort();
         }
         if descriptor.ownership_kind == HewTypeOwnershipKind::Bytes {
@@ -1523,7 +1549,12 @@ unsafe fn free_vec_descriptor(v: *mut HewVec) {
         }
         if !(*v).data.is_null() {
             drop_element_range(v, 0, (*v).len);
-            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
+            if (*v).layout.is_null() {
+                libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
+            } else {
+                let layout = buffer_layout((*v).cap * (*v).elem_size, (*(*v).layout).align);
+                dealloc((*v).data, layout); // ALLOCATOR-PAIRING: std::alloc
+            }
         }
         libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
     }

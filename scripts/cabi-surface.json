@@ -7504,11 +7504,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_array_push_string( *mut HewJsonValue, *const c_char)",
-        "wasm32-wasip1": "fn hew_json_array_push_string( *mut HewJsonValue, *const c_char)"
+        "native": "fn hew_json_array_push_string( *mut HewJsonValue, *const HewString)",
+        "wasm32-wasip1": "fn hew_json_array_push_string( *mut HewJsonValue, *const HewString)"
       },
       "symbol": "hew_json_array_push_string"
     },
@@ -7594,11 +7594,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_from_string( *const c_char) -> *mut HewJsonValue",
-        "wasm32-wasip1": "fn hew_json_from_string( *const c_char) -> *mut HewJsonValue"
+        "native": "fn hew_json_from_string( *const HewString) -> *mut HewJsonValue",
+        "wasm32-wasip1": "fn hew_json_from_string( *const HewString) -> *mut HewJsonValue"
       },
       "symbol": "hew_json_from_string"
     },
@@ -7669,11 +7669,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_get_field( *const HewJsonValue, *const c_char, ) -> *mut HewJsonValue",
-        "wasm32-wasip1": "fn hew_json_get_field( *const HewJsonValue, *const c_char, ) -> *mut HewJsonValue"
+        "native": "fn hew_json_get_field( *const HewJsonValue, *const HewString, ) -> *mut HewJsonValue",
+        "wasm32-wasip1": "fn hew_json_get_field( *const HewJsonValue, *const HewString, ) -> *mut HewJsonValue"
       },
       "symbol": "hew_json_get_field"
     },
@@ -7714,11 +7714,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_get_string( *const HewJsonValue) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_json_get_string( *const HewJsonValue) -> *mut c_char"
+        "native": "fn hew_json_get_string( *const HewJsonValue) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_json_get_string( *const HewJsonValue) -> *mut HewString"
       },
       "symbol": "hew_json_get_string"
     },
@@ -7744,11 +7744,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_last_error() -> *mut c_char",
-        "wasm32-wasip1": "fn hew_json_last_error() -> *mut c_char"
+        "native": "fn hew_json_last_error() -> *mut HewString",
+        "wasm32-wasip1": "fn hew_json_last_error() -> *mut HewString"
       },
       "symbol": "hew_json_last_error"
     },
@@ -7789,11 +7789,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_object_set( *mut HewJsonValue, *const c_char, *mut HewJsonValue, )",
-        "wasm32-wasip1": "fn hew_json_object_set( *mut HewJsonValue, *const c_char, *mut HewJsonValue, )"
+        "native": "fn hew_json_object_set( *mut HewJsonValue, *const HewString, *mut HewJsonValue, )",
+        "wasm32-wasip1": "fn hew_json_object_set( *mut HewJsonValue, *const HewString, *mut HewJsonValue, )"
       },
       "symbol": "hew_json_object_set"
     },
@@ -7804,11 +7804,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_object_set_bool( *mut HewJsonValue, *const c_char, i32, )",
-        "wasm32-wasip1": "fn hew_json_object_set_bool( *mut HewJsonValue, *const c_char, i32, )"
+        "native": "fn hew_json_object_set_bool( *mut HewJsonValue, *const HewString, i32, )",
+        "wasm32-wasip1": "fn hew_json_object_set_bool( *mut HewJsonValue, *const HewString, i32, )"
       },
       "symbol": "hew_json_object_set_bool"
     },
@@ -7819,11 +7819,11 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_object_set_char( *mut HewJsonValue, *const c_char, i64, )",
-        "wasm32-wasip1": "fn hew_json_object_set_char( *mut HewJsonValue, *const c_char, i64, )"
+        "native": "fn hew_json_object_set_char( *mut HewJsonValue, *const HewString, i64, )",
+        "wasm32-wasip1": "fn hew_json_object_set_char( *mut HewJsonValue, *const HewString, i64, )"
       },
       "symbol": "hew_json_object_set_char"
     },
@@ -7834,11 +7834,11 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_object_set_duration( *mut HewJsonValue, *const c_char, i64, )",
-        "wasm32-wasip1": "fn hew_json_object_set_duration( *mut HewJsonValue, *const c_char, i64, )"
+        "native": "fn hew_json_object_set_duration( *mut HewJsonValue, *const HewString, i64, )",
+        "wasm32-wasip1": "fn hew_json_object_set_duration( *mut HewJsonValue, *const HewString, i64, )"
       },
       "symbol": "hew_json_object_set_duration"
     },
@@ -7849,11 +7849,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_object_set_float( *mut HewJsonValue, *const c_char, f64, )",
-        "wasm32-wasip1": "fn hew_json_object_set_float( *mut HewJsonValue, *const c_char, f64, )"
+        "native": "fn hew_json_object_set_float( *mut HewJsonValue, *const HewString, f64, )",
+        "wasm32-wasip1": "fn hew_json_object_set_float( *mut HewJsonValue, *const HewString, f64, )"
       },
       "symbol": "hew_json_object_set_float"
     },
@@ -7864,11 +7864,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_object_set_int( *mut HewJsonValue, *const c_char, i64, )",
-        "wasm32-wasip1": "fn hew_json_object_set_int( *mut HewJsonValue, *const c_char, i64, )"
+        "native": "fn hew_json_object_set_int( *mut HewJsonValue, *const HewString, i64, )",
+        "wasm32-wasip1": "fn hew_json_object_set_int( *mut HewJsonValue, *const HewString, i64, )"
       },
       "symbol": "hew_json_object_set_int"
     },
@@ -7879,11 +7879,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_object_set_null( *mut HewJsonValue, *const c_char)",
-        "wasm32-wasip1": "fn hew_json_object_set_null( *mut HewJsonValue, *const c_char)"
+        "native": "fn hew_json_object_set_null( *mut HewJsonValue, *const HewString)",
+        "wasm32-wasip1": "fn hew_json_object_set_null( *mut HewJsonValue, *const HewString)"
       },
       "symbol": "hew_json_object_set_null"
     },
@@ -7894,11 +7894,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_object_set_string( *mut HewJsonValue, *const c_char, *const c_char, )",
-        "wasm32-wasip1": "fn hew_json_object_set_string( *mut HewJsonValue, *const c_char, *const c_char, )"
+        "native": "fn hew_json_object_set_string( *mut HewJsonValue, *const HewString, *const HewString, )",
+        "wasm32-wasip1": "fn hew_json_object_set_string( *mut HewJsonValue, *const HewString, *const HewString, )"
       },
       "symbol": "hew_json_object_set_string"
     },
@@ -7909,11 +7909,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_parse( *const c_char) -> *mut HewJsonValue",
-        "wasm32-wasip1": "fn hew_json_parse( *const c_char) -> *mut HewJsonValue"
+        "native": "fn hew_json_parse( *const HewString) -> *mut HewJsonValue",
+        "wasm32-wasip1": "fn hew_json_parse( *const HewString) -> *mut HewJsonValue"
       },
       "symbol": "hew_json_parse"
     },
@@ -7924,11 +7924,11 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_string_free( *mut c_char)",
-        "wasm32-wasip1": "fn hew_json_string_free( *mut c_char)"
+        "native": "fn hew_json_string_free( *mut HewString)",
+        "wasm32-wasip1": "fn hew_json_string_free( *mut HewString)"
       },
       "symbol": "hew_json_string_free"
     },
@@ -7939,11 +7939,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_stringify( *const HewJsonValue) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_json_stringify( *const HewJsonValue) -> *mut c_char"
+        "native": "fn hew_json_stringify( *const HewJsonValue) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_json_stringify( *const HewJsonValue) -> *mut HewString"
       },
       "symbol": "hew_json_stringify"
     },
@@ -20398,11 +20398,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_array_push_string( *mut HewYamlValue, *const c_char)",
-        "wasm32-wasip1": "fn hew_yaml_array_push_string( *mut HewYamlValue, *const c_char)"
+        "native": "fn hew_yaml_array_push_string( *mut HewYamlValue, *const HewString)",
+        "wasm32-wasip1": "fn hew_yaml_array_push_string( *mut HewYamlValue, *const HewString)"
       },
       "symbol": "hew_yaml_array_push_string"
     },
@@ -20488,11 +20488,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_from_string( *const c_char) -> *mut HewYamlValue",
-        "wasm32-wasip1": "fn hew_yaml_from_string( *const c_char) -> *mut HewYamlValue"
+        "native": "fn hew_yaml_from_string( *const HewString) -> *mut HewYamlValue",
+        "wasm32-wasip1": "fn hew_yaml_from_string( *const HewString) -> *mut HewYamlValue"
       },
       "symbol": "hew_yaml_from_string"
     },
@@ -20563,11 +20563,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_get_field( *const HewYamlValue, *const c_char, ) -> *mut HewYamlValue",
-        "wasm32-wasip1": "fn hew_yaml_get_field( *const HewYamlValue, *const c_char, ) -> *mut HewYamlValue"
+        "native": "fn hew_yaml_get_field( *const HewYamlValue, *const HewString, ) -> *mut HewYamlValue",
+        "wasm32-wasip1": "fn hew_yaml_get_field( *const HewYamlValue, *const HewString, ) -> *mut HewYamlValue"
       },
       "symbol": "hew_yaml_get_field"
     },
@@ -20608,11 +20608,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_get_string( *const HewYamlValue) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_yaml_get_string( *const HewYamlValue) -> *mut c_char"
+        "native": "fn hew_yaml_get_string( *const HewYamlValue) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_yaml_get_string( *const HewYamlValue) -> *mut HewString"
       },
       "symbol": "hew_yaml_get_string"
     },
@@ -20638,11 +20638,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_last_error() -> *mut c_char",
-        "wasm32-wasip1": "fn hew_yaml_last_error() -> *mut c_char"
+        "native": "fn hew_yaml_last_error() -> *mut HewString",
+        "wasm32-wasip1": "fn hew_yaml_last_error() -> *mut HewString"
       },
       "symbol": "hew_yaml_last_error"
     },
@@ -20668,11 +20668,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_object_set( *mut HewYamlValue, *const c_char, *mut HewYamlValue, )",
-        "wasm32-wasip1": "fn hew_yaml_object_set( *mut HewYamlValue, *const c_char, *mut HewYamlValue, )"
+        "native": "fn hew_yaml_object_set( *mut HewYamlValue, *const HewString, *mut HewYamlValue, )",
+        "wasm32-wasip1": "fn hew_yaml_object_set( *mut HewYamlValue, *const HewString, *mut HewYamlValue, )"
       },
       "symbol": "hew_yaml_object_set"
     },
@@ -20683,11 +20683,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_object_set_bool( *mut HewYamlValue, *const c_char, i32, )",
-        "wasm32-wasip1": "fn hew_yaml_object_set_bool( *mut HewYamlValue, *const c_char, i32, )"
+        "native": "fn hew_yaml_object_set_bool( *mut HewYamlValue, *const HewString, i32, )",
+        "wasm32-wasip1": "fn hew_yaml_object_set_bool( *mut HewYamlValue, *const HewString, i32, )"
       },
       "symbol": "hew_yaml_object_set_bool"
     },
@@ -20698,11 +20698,11 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_object_set_char( *mut HewYamlValue, *const c_char, i64, )",
-        "wasm32-wasip1": "fn hew_yaml_object_set_char( *mut HewYamlValue, *const c_char, i64, )"
+        "native": "fn hew_yaml_object_set_char( *mut HewYamlValue, *const HewString, i64, )",
+        "wasm32-wasip1": "fn hew_yaml_object_set_char( *mut HewYamlValue, *const HewString, i64, )"
       },
       "symbol": "hew_yaml_object_set_char"
     },
@@ -20713,11 +20713,11 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_object_set_duration( *mut HewYamlValue, *const c_char, i64, )",
-        "wasm32-wasip1": "fn hew_yaml_object_set_duration( *mut HewYamlValue, *const c_char, i64, )"
+        "native": "fn hew_yaml_object_set_duration( *mut HewYamlValue, *const HewString, i64, )",
+        "wasm32-wasip1": "fn hew_yaml_object_set_duration( *mut HewYamlValue, *const HewString, i64, )"
       },
       "symbol": "hew_yaml_object_set_duration"
     },
@@ -20728,11 +20728,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_object_set_float( *mut HewYamlValue, *const c_char, f64, )",
-        "wasm32-wasip1": "fn hew_yaml_object_set_float( *mut HewYamlValue, *const c_char, f64, )"
+        "native": "fn hew_yaml_object_set_float( *mut HewYamlValue, *const HewString, f64, )",
+        "wasm32-wasip1": "fn hew_yaml_object_set_float( *mut HewYamlValue, *const HewString, f64, )"
       },
       "symbol": "hew_yaml_object_set_float"
     },
@@ -20743,11 +20743,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_object_set_int( *mut HewYamlValue, *const c_char, i64, )",
-        "wasm32-wasip1": "fn hew_yaml_object_set_int( *mut HewYamlValue, *const c_char, i64, )"
+        "native": "fn hew_yaml_object_set_int( *mut HewYamlValue, *const HewString, i64, )",
+        "wasm32-wasip1": "fn hew_yaml_object_set_int( *mut HewYamlValue, *const HewString, i64, )"
       },
       "symbol": "hew_yaml_object_set_int"
     },
@@ -20758,11 +20758,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_object_set_null( *mut HewYamlValue, *const c_char)",
-        "wasm32-wasip1": "fn hew_yaml_object_set_null( *mut HewYamlValue, *const c_char)"
+        "native": "fn hew_yaml_object_set_null( *mut HewYamlValue, *const HewString)",
+        "wasm32-wasip1": "fn hew_yaml_object_set_null( *mut HewYamlValue, *const HewString)"
       },
       "symbol": "hew_yaml_object_set_null"
     },
@@ -20773,11 +20773,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_object_set_string( *mut HewYamlValue, *const c_char, *const c_char, )",
-        "wasm32-wasip1": "fn hew_yaml_object_set_string( *mut HewYamlValue, *const c_char, *const c_char, )"
+        "native": "fn hew_yaml_object_set_string( *mut HewYamlValue, *const HewString, *const HewString, )",
+        "wasm32-wasip1": "fn hew_yaml_object_set_string( *mut HewYamlValue, *const HewString, *const HewString, )"
       },
       "symbol": "hew_yaml_object_set_string"
     },
@@ -20788,11 +20788,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_parse( *const c_char) -> *mut HewYamlValue",
-        "wasm32-wasip1": "fn hew_yaml_parse( *const c_char) -> *mut HewYamlValue"
+        "native": "fn hew_yaml_parse( *const HewString) -> *mut HewYamlValue",
+        "wasm32-wasip1": "fn hew_yaml_parse( *const HewString) -> *mut HewYamlValue"
       },
       "symbol": "hew_yaml_parse"
     },
@@ -20803,11 +20803,11 @@
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_string_free( *mut c_char)",
-        "wasm32-wasip1": "fn hew_yaml_string_free( *mut c_char)"
+        "native": "fn hew_yaml_string_free( *mut HewString)",
+        "wasm32-wasip1": "fn hew_yaml_string_free( *mut HewString)"
       },
       "symbol": "hew_yaml_string_free"
     },
@@ -20818,11 +20818,11 @@
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
+      "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_stringify( *const HewYamlValue) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_yaml_stringify( *const HewYamlValue) -> *mut c_char"
+        "native": "fn hew_yaml_stringify( *const HewYamlValue) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_yaml_stringify( *const HewYamlValue) -> *mut HewString"
       },
       "symbol": "hew_yaml_stringify"
     },

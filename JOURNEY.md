@@ -528,3 +528,10 @@ pass. The full standard-library run identifies failures in the untouched
 regex/DNS Vec-string consumers already recorded by the boundary audit; those
 remain with their owners. Combined census and native/platform acceptance are
 integration work outside this slice.
+
+Windows validation found that the file-read compatibility entry point used a
+managed string type whose import was still restricted to Unix platforms. The
+import is now unconditional, matching the cross-platform function signature.
+The integrated JSON/YAML tests pass, and the combined C ABI census reflects
+their managed text arguments and results. A fresh Windows build verifies the
+import repair; earlier Linux results do not substitute for that check.

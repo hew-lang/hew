@@ -9,7 +9,6 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 use hew_cabi::string::HewString;
 use std::ffi::c_int;
 use std::ffi::c_void;

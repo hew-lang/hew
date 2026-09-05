@@ -224,7 +224,13 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::PostfixTry(inner)
         | Expr::Unary { operand: inner, .. }
         | Expr::ForkChild { expr: inner, .. } => find_in_expr(ctx, levels, &inner.0, out),
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             find_in_expr(ctx, levels, &left.0, out);
             find_in_expr(ctx, levels, &right.0, out);
         }
@@ -580,7 +586,13 @@ impl BodyScan<'_> {
                     self.expr(&base.0);
                 }
             }
-            Expr::Binary { left, right, .. } => {
+            Expr::Binary { left, right, .. }
+            | Expr::Coalesce { left, right }
+            | Expr::Handle {
+                operand: left,
+                body: right,
+                ..
+            } => {
                 self.expr(&left.0);
                 self.expr(&right.0);
             }

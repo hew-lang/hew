@@ -1,0 +1,17 @@
+enum Token { Value(f64, char); Empty }
+
+fn classify(token: Token) -> i64 {
+    match token {
+        .Value(1.5, 'x') => 1,
+        .Value(1.5, _) => 2,
+        .Value(_, 'x') => 3,
+        .Value(_, _) => 4,
+        .Empty => 5,
+    }
+}
+
+fn main() -> i64 {
+    let exact = Token.Value(1.5, 'x');
+    println(f"{classify(exact)}:{classify(exact)}:{classify(Token.Value(1.5, 'y'))}:{classify(Token.Value(2.5, 'x'))}:{classify(Token.Value(2.5, 'y'))}:{classify(Token.Empty)}");
+    0
+}

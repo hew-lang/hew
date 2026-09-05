@@ -670,11 +670,25 @@ fn collect_locals_from_stmt(
 ) {
     let in_stmt_scope = span_contains_offset(stmt_span, offset);
     match stmt {
-        Stmt::Let { pattern, .. } => {
-            collect_pattern_names(&pattern.0, locals);
+        Stmt::Let { pattern, value, .. } => {
+            if let Some(value) = value
+                .as_ref()
+                .filter(|value| span_contains_offset(&value.1, offset))
+            {
+                collect_locals_from_spanned_expr(value, offset, locals);
+            } else {
+                collect_pattern_names(&pattern.0, locals);
+            }
         }
-        Stmt::Var { name, .. } => {
-            locals.push(local_completion(name));
+        Stmt::Var { name, value, .. } => {
+            if let Some(value) = value
+                .as_ref()
+                .filter(|value| span_contains_offset(&value.1, offset))
+            {
+                collect_locals_from_spanned_expr(value, offset, locals);
+            } else {
+                locals.push(local_completion(name));
+            }
         }
         Stmt::For { pattern, body, .. } if in_stmt_scope => {
             collect_pattern_names(&pattern.0, locals);
@@ -796,9 +810,20 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
                 collect_locals_from_spanned_expr(arg.expr(), offset, locals);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. } | Expr::Coalesce { left, right } => {
             collect_locals_from_spanned_expr(left, offset, locals);
             collect_locals_from_spanned_expr(right, offset, locals);
+        }
+        Expr::Handle {
+            operand,
+            error,
+            body,
+        } => {
+            collect_locals_from_spanned_expr(operand, offset, locals);
+            if span_contains_offset(&body.1, offset) {
+                locals.push(local_completion(&error.0));
+                collect_locals_from_spanned_expr(body, offset, locals);
+            }
         }
         Expr::Unary { operand, .. } => {
             collect_locals_from_spanned_expr(operand, offset, locals);
@@ -1305,6 +1330,16 @@ fn probe(mat: Matcher, s: string) {
             "sibling impl method find_all should also be surfaced, got: {:?}",
             items.iter().map(|i| &i.label).collect::<Vec<_>>(),
         );
+    }
+
+    #[test]
+    fn local_handler_completions_include_only_the_lexical_error_binding() {
+        let inside = labels_at_cursor("fn f(value: Result<i64, string>) { let answer = value handle problem { /*cursor*/ 7 }; answer }");
+        assert!(inside.iter().any(|name| name == "problem"));
+        assert!(!inside.iter().any(|name| name == "answer"));
+        let outside = labels_at_cursor("fn f(value: Result<i64, string>) { let answer = value handle problem { 7 }; /*cursor*/ answer }");
+        assert!(outside.iter().any(|name| name == "answer"));
+        assert!(!outside.iter().any(|name| name == "problem"));
     }
 
     #[test]

@@ -323,3 +323,16 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
 - Native and paired generated/runtime sanitizer cases cover owned and scalar
   payloads, variant-size differences, repeated calls, and callee faults while
   the caller retains an enum owner.
+
+### Local optional and error recovery
+
+- Added lazy Option defaults and expression-local Result handlers with a named
+  error binding. They normalize to ordinary typed variant matches; the semantic
+  backend remains responsible for payload transfer and cleanup.
+- Preserved lexical returns, loop control and closure captures in handler
+  bodies. Required optional let-else exposes only the success payload, while
+  postfix propagation now rejects Option/Result conflation.
+- Formatter round trips preserve grouping around recovery expressions. Editor
+  binding lookup now uses live lexical scopes, including handler-local errors.
+- Frontend and native compiler builds validate the surface; source execution
+  awaits composition with the semantic match continuation implementation.

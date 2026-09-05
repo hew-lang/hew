@@ -3134,7 +3134,13 @@ impl Checker {
                     self.classify_escapes_in_expr(v, vs, in_fork, AnonContext::StoredInBinding);
                 }
             }
-            Expr::Binary { left, right, .. } => {
+            Expr::Binary { left, right, .. }
+            | Expr::Coalesce { left, right }
+            | Expr::Handle {
+                operand: left,
+                body: right,
+                ..
+            } => {
                 self.classify_escapes_in_expr(&left.0, &left.1, in_fork, AnonContext::Other);
                 self.classify_escapes_in_expr(&right.0, &right.1, in_fork, AnonContext::Other);
             }
@@ -3611,7 +3617,13 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(v, vs, out);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             collect_lambda_spans_in_expr(&left.0, &left.1, out);
             collect_lambda_spans_in_expr(&right.0, &right.1, out);
         }

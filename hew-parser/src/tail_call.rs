@@ -138,9 +138,13 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
 )]
 fn expr_contains_defer(expr: &Expr) -> bool {
     match expr {
-        Expr::Binary { left, right, .. } => {
-            expr_contains_defer(&left.0) || expr_contains_defer(&right.0)
-        }
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => expr_contains_defer(&left.0) || expr_contains_defer(&right.0),
         Expr::Unary { operand, .. }
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)
@@ -355,6 +359,15 @@ fn mark_stmt(stmt: &mut Stmt) {
 )]
 fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
     match expr {
+        Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
+            mark_expr(&mut left.0, false);
+            mark_expr(&mut right.0, is_tail_position);
+        }
         Expr::Binary { left, right, .. } => {
             mark_expr(&mut left.0, false);
             mark_expr(&mut right.0, false);

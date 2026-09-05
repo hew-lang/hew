@@ -5,7 +5,8 @@ use std::ops::Range;
 use hew_hir::{
     BindingId, HirBinding, HirBlock, HirDestructureField, HirDestructureSelector, HirExpr,
     HirExprKind, HirFn, HirItem, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirModule, HirStmtKind, IntentKind, ResolvedRef,
+    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirStmtKind, IntentKind,
+    ResolvedRef,
 };
 use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeFactService, TypeInstanceKey};
 
@@ -1644,7 +1645,11 @@ fn callable_signature_with_substitution(
 }
 
 fn is_initial_scalar(ty: &ResolvedTy) -> bool {
-    ty.is_integer() || matches!(ty, hew_types::ResolvedTy::Bool)
+    ty.is_integer()
+        || matches!(
+            ty,
+            hew_types::ResolvedTy::Bool | ResolvedTy::F64 | ResolvedTy::Char
+        )
 }
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
@@ -1672,10 +1677,10 @@ fn is_supported_call_return(module: &HirModule, ty: &ResolvedTy) -> bool {
 
 /// The first aggregate value family admitted into SIR.
 ///
-/// These values remain purely semantic until Raw MIR decides whether a
+/// These values remain purely semantic until physical MIR decides whether a
 /// representation boundary requires storage. Restricting tuple leaves to the
-/// existing `BitCopy` scalar domain keeps this first slice free of drops,
-/// borrowing, reference counts, and layout-dependent behavior.
+/// existing `BitCopy` scalar domain keeps this slice free of drops,
+/// borrowing, reference counts, and layout-dependent behaviour.
 fn is_initial_value_type(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
         || matches!(ty, ResolvedTy::Tuple(elements)
@@ -1710,7 +1715,7 @@ fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
 /// no-drop scalar/tuple domain.
 ///
 /// HIR intentionally marks these positions `Consume`: their result transfers
-/// to a new binding or the caller. For `i*`/`u*`/`bool`, that semantic transfer
+/// to a new binding or the caller. For bitcopy scalars, that semantic transfer
 /// has no exclusive ownership obligation, so SIR keeps the same virtual value
 /// and represents the receiving flow as `Read`. The same applies recursively
 /// to tuples made solely from such scalar values. This is a narrow value-class
@@ -1782,6 +1787,26 @@ fn lower_initial_value_transfer(
 enum OwnedBindingUse {
     Copy,
     Move,
+}
+
+#[derive(Clone)]
+struct ControlState {
+    block: BlockId,
+    bindings: HashMap<BindingId, ValueId>,
+    binding_declarations: HashMap<BindingId, usize>,
+    owned_live: BTreeMap<ValueId, ResolvedTy>,
+}
+
+struct MatchExit {
+    state: ControlState,
+    result: Option<Operand>,
+}
+
+struct VariantBranch {
+    variant: u32,
+    block: BlockId,
+    fields: Vec<BlockArg>,
+    owned_live: BTreeMap<ValueId, ResolvedTy>,
 }
 
 /// Lower a unit expression transferred by an explicit `return`.
@@ -2226,6 +2251,165 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    fn control_state(&self) -> ControlState {
+        ControlState {
+            block: self.current,
+            bindings: self.bindings.clone(),
+            binding_declarations: self.binding_declarations.clone(),
+            owned_live: self.owned_live.clone(),
+        }
+    }
+
+    fn restore_control_state(&mut self, state: &ControlState) {
+        self.current = state.block;
+        self.bindings.clone_from(&state.bindings);
+        self.binding_declarations
+            .clone_from(&state.binding_declarations);
+        self.owned_live = state.owned_live.clone();
+    }
+
+    fn retain_bindings(
+        bindings: &HashMap<BindingId, ValueId>,
+        retained: &std::collections::HashSet<BindingId>,
+    ) -> HashMap<BindingId, ValueId> {
+        bindings
+            .iter()
+            .filter(|(binding, _)| retained.contains(binding))
+            .map(|(binding, value)| (*binding, *value))
+            .collect()
+    }
+
+    fn cleanup_match_candidate(
+        &mut self,
+        root_live: &BTreeMap<ValueId, ResolvedTy>,
+        outer_bindings: &std::collections::HashSet<BindingId>,
+    ) -> Result<(), String> {
+        let mut keep = root_live
+            .iter()
+            .filter(|(value, _)| self.owned_live.contains_key(value))
+            .map(|(value, ty)| (*value, ty.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for binding in outer_bindings {
+            let Some(value) = self.bindings.get(binding).copied() else {
+                continue;
+            };
+            if let Some(ty) = self.owned_live.get(&value) {
+                keep.insert(value, ty.clone());
+            }
+        }
+        self.destroy_live_since(&keep)?;
+        self.bindings = Self::retain_bindings(&self.bindings, outer_bindings);
+        self.binding_declarations
+            .retain(|binding, _| outer_bindings.contains(binding));
+        Ok(())
+    }
+
+    fn merge_control_states(&mut self, states: Vec<ControlState>) -> Result<(), String> {
+        let Some(first) = states.first() else {
+            return Err("control-flow join has no live predecessor".to_string());
+        };
+        if states.len() == 1 {
+            self.restore_control_state(first);
+            return Ok(());
+        }
+        let edge_args = vec![Vec::new(); states.len()];
+        self.join_control_states(states, Vec::new(), edge_args)
+    }
+
+    fn join_control_states(
+        &mut self,
+        mut states: Vec<ControlState>,
+        mut block_args: Vec<BlockArg>,
+        mut edge_args: Vec<Vec<Operand>>,
+    ) -> Result<(), String> {
+        if states.is_empty() || edge_args.len() != states.len() {
+            return Err("control-flow join has inconsistent predecessor metadata".to_string());
+        }
+        let binding_keys = states[0].bindings.keys().copied().collect::<BTreeSet<_>>();
+        if states
+            .iter()
+            .any(|state| state.bindings.keys().copied().collect::<BTreeSet<_>>() != binding_keys)
+        {
+            return Err("control-flow predecessors expose different source bindings".to_string());
+        }
+        if states
+            .iter()
+            .any(|state| state.binding_declarations != states[0].binding_declarations)
+        {
+            return Err(
+                "control-flow predecessors expose different binding declarations".to_string(),
+            );
+        }
+        let states_binding_declarations = states[0].binding_declarations.clone();
+        self.binding_declarations = states_binding_declarations.clone();
+
+        let mut joined_bindings = states[0].bindings.clone();
+        let mut joined_owners = Vec::new();
+        for binding in self.mutable_bindings() {
+            let values = states
+                .iter()
+                .map(|state| {
+                    state.bindings.get(&binding).copied().ok_or_else(|| {
+                        format!(
+                            "mutable binding `{binding}` is absent from a control-flow predecessor"
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let ty = self.value_ty(values[0]).ok_or_else(|| {
+                format!("mutable binding `{binding}` has no concrete type at its join")
+            })?;
+            if values
+                .iter()
+                .any(|value| self.value_ty(*value).as_ref() != Some(&ty))
+            {
+                return Err(format!(
+                    "mutable binding `{binding}` has mismatched types at its join"
+                ));
+            }
+            self.service.require_type_facts(&ty)?;
+            let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+            let joined = self.fresh_value();
+            block_args.push(BlockArg {
+                value: joined,
+                ty: ty.clone(),
+                own,
+            });
+            for (index, value) in values.into_iter().enumerate() {
+                edge_args[index].push(Operand { value });
+                states[index].owned_live.remove(&value);
+            }
+            joined_bindings.insert(binding, joined);
+            if own == OwnKind::Owned {
+                joined_owners.push((joined, ty));
+            }
+            self.record_binding_version(binding, joined)?;
+        }
+
+        let remaining_live = states[0].owned_live.clone();
+        if states
+            .iter()
+            .skip(1)
+            .any(|state| state.owned_live != remaining_live)
+        {
+            return Err(
+                "control-flow predecessors leave different non-binding owners live".to_string(),
+            );
+        }
+
+        let join = self.new_block(block_args);
+        for (state, args) in states.into_iter().zip(edge_args) {
+            self.current = state.block;
+            self.set_terminator(SemTerminator::Goto(Edge { target: join, args }))?;
+        }
+        self.current = join;
+        self.bindings = joined_bindings;
+        self.binding_declarations = states_binding_declarations;
+        self.owned_live = remaining_live;
+        self.owned_live.extend(joined_owners);
+        Ok(())
+    }
+
     fn lower_block(
         &mut self,
         block: &HirBlock,
@@ -2296,7 +2480,24 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 HirStmtKind::Destructure { value, fields } => {
                     self.lower_destructure(value, fields)?;
                 }
-                HirStmtKind::LetElse { .. } | HirStmtKind::Defer { .. } => {
+                HirStmtKind::LetElse {
+                    scrutinee,
+                    variant_idx,
+                    bindings,
+                    success_prelude,
+                    payload_variant_predicates,
+                    else_body,
+                } => {
+                    self.lower_let_else(
+                        scrutinee,
+                        *variant_idx,
+                        bindings,
+                        success_prelude,
+                        payload_variant_predicates,
+                        else_body,
+                    )?;
+                }
+                HirStmtKind::Defer { .. } => {
                     return Err(
                         "control-flow ownership forms are deferred to a later SIR slice"
                             .to_string(),
@@ -2421,6 +2622,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 else_expr,
             } if self.ty(&expr.ty) == ResolvedTy::Unit => {
                 return self.lower_unit_if(condition, then_expr, else_expr.as_deref());
+            }
+            HirExprKind::Match { scrutinee, arms } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+                self.lower_match_control(expr, scrutinee, arms)?;
+                return Ok(());
             }
             HirExprKind::While {
                 label,
@@ -2655,6 +2860,24 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 self.emit(expr, SemOpKind::ConstBool(*value))
             }
+            HirLiteral::Float(value) => {
+                if self.ty(&expr.ty) != ResolvedTy::F64 {
+                    return Err(format!(
+                        "floating literal resolved as `{}` needs a dedicated SIR literal representation",
+                        self.ty(&expr.ty).user_facing()
+                    ));
+                }
+                self.emit(expr, SemOpKind::ConstF64(*value))
+            }
+            HirLiteral::Char(value) => {
+                if self.ty(&expr.ty) != ResolvedTy::Char {
+                    return Err(format!(
+                        "character literal resolved as `{}` violates the SIR char literal invariant",
+                        self.ty(&expr.ty).user_facing()
+                    ));
+                }
+                self.emit(expr, SemOpKind::ConstChar(*value))
+            }
             HirLiteral::String(value) => {
                 let literal = self.service.intern_string(value);
                 self.emit(expr, SemOpKind::ConstStr(literal))
@@ -2800,31 +3023,464 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    fn emit_variant_switch(
+        &mut self,
+        shape: VariantShapeId,
+        descriptor: &SemVariantShape,
+        scrutinee: ValueId,
+    ) -> Result<Vec<VariantBranch>, String> {
+        let mut semantic_arms = Vec::with_capacity(descriptor.variants.len());
+        let mut branches = Vec::with_capacity(descriptor.variants.len());
+        let mut inherited_live = self.owned_live.clone();
+        inherited_live.remove(&scrutinee);
+        for (variant_index, variant) in descriptor.variants.iter().enumerate() {
+            let mut fields = Vec::with_capacity(variant.fields.len());
+            let mut block_args = Vec::with_capacity(variant.fields.len());
+            let mut edge_args = Vec::with_capacity(variant.fields.len());
+            let mut branch_live = inherited_live.clone();
+            for field in &variant.fields {
+                self.service.require_type_facts(&field.ty)?;
+                let own = OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?;
+                let field_value = self.fresh_value();
+                fields.push(ValueDef {
+                    id: field_value,
+                    ty: field.ty.clone(),
+                    own,
+                });
+                edge_args.push(Operand { value: field_value });
+                let arg = BlockArg {
+                    value: self.fresh_value(),
+                    ty: field.ty.clone(),
+                    own,
+                };
+                if own == OwnKind::Owned {
+                    branch_live.insert(arg.value, arg.ty.clone());
+                }
+                block_args.push(arg);
+            }
+            let block = self.new_block(block_args.clone());
+            let variant = u32::try_from(variant_index)
+                .map_err(|_| "variant arm index exceeds u32".to_string())?;
+            semantic_arms.push(SemVariantArm {
+                variant,
+                fields,
+                target: Edge {
+                    target: block,
+                    args: edge_args,
+                },
+            });
+            branches.push(VariantBranch {
+                variant,
+                block,
+                fields: block_args,
+                owned_live: branch_live,
+            });
+        }
+        let id = OpId(self.ops);
+        self.ops += 1;
+        self.owned_live.remove(&scrutinee);
+        self.set_terminator(SemTerminator::SwitchVariant {
+            id,
+            shape,
+            scrutinee: Operand { value: scrutinee },
+            arms: semantic_arms,
+        })?;
+        Ok(branches)
+    }
+
+    fn bind_match_fields(
+        &mut self,
+        bindings: &[HirMatchArmBinding],
+        fields: &[BlockArg],
+        span: &Range<usize>,
+    ) -> Result<(), String> {
+        for binding in bindings {
+            let field = usize::try_from(binding.field_idx)
+                .ok()
+                .and_then(|index| fields.get(index))
+                .ok_or_else(|| {
+                    format!(
+                        "match binding `{}` selects missing field {}",
+                        binding.name, binding.field_idx
+                    )
+                })?;
+            let binding_ty = self.ty(&binding.ty);
+            if binding_ty != field.ty {
+                return Err(format!(
+                    "match binding `{}` has `{}`, expected `{}`",
+                    binding.name,
+                    binding_ty.user_facing(),
+                    field.ty.user_facing()
+                ));
+            }
+            self.bind_match_arm_value(binding, field.value, span.clone())?;
+        }
+        Ok(())
+    }
+
+    fn lower_string_equals_values(
+        &mut self,
+        lhs: ValueId,
+        rhs: ValueId,
+    ) -> Result<ValueId, String> {
+        let raw = self.fresh_value();
+        let continuation = self.fresh_value();
+        let normal = self.new_block(vec![BlockArg {
+            value: continuation,
+            ty: ResolvedTy::Bool,
+            own: OwnKind::None,
+        }]);
+        let id = OpId(self.ops);
+        self.ops += 1;
+        self.set_terminator(SemTerminator::RtCall {
+            id,
+            family: hew_types::RuntimeCallFamily::StringEquals,
+            args: vec![
+                crate::BoundaryOperand {
+                    operand: Operand { value: lhs },
+                    decision: crate::BoundaryDecision::Borrow,
+                },
+                crate::BoundaryOperand {
+                    operand: Operand { value: rhs },
+                    decision: crate::BoundaryDecision::Borrow,
+                },
+            ],
+            result: CallResult::Value(ValueDef {
+                id: raw,
+                ty: ResolvedTy::Bool,
+                own: OwnKind::None,
+            }),
+            normal: Edge {
+                target: normal,
+                args: vec![Operand { value: raw }],
+            },
+            unwind: CallUnwind::NotApplicable,
+        })?;
+        self.current = normal;
+        Ok(continuation)
+    }
+
+    fn lower_payload_literal_test(
+        &mut self,
+        fields: &[BlockArg],
+        predicate: &HirPayloadPredicate,
+    ) -> Result<ValueId, String> {
+        let field = usize::try_from(predicate.field_idx)
+            .ok()
+            .and_then(|index| fields.get(index))
+            .ok_or_else(|| {
+                format!(
+                    "payload literal selects missing field {}",
+                    predicate.field_idx
+                )
+            })?;
+        let ty = self.ty(&predicate.ty);
+        if field.ty != ty {
+            return Err(format!(
+                "payload literal field has `{}`, predicate expects `{}`",
+                field.ty.user_facing(),
+                ty.user_facing()
+            ));
+        }
+        let literal = match &predicate.literal {
+            HirLiteral::Integer(value) if ty.is_integer() => {
+                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstI64(*value))?
+            }
+            HirLiteral::Bool(value) if ty == ResolvedTy::Bool => {
+                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstBool(*value))?
+            }
+            HirLiteral::Float(value) if ty == ResolvedTy::F64 => {
+                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstF64(*value))?
+            }
+            HirLiteral::Char(value) if ty == ResolvedTy::Char => {
+                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstChar(*value))?
+            }
+            HirLiteral::String(value) if ty == ResolvedTy::String => {
+                let literal = self.service.intern_string(value);
+                self.emit_typed(
+                    Provenance::Synthesized,
+                    &ResolvedTy::String,
+                    SemOpKind::ConstStr(literal),
+                )?
+            }
+            HirLiteral::Bytes(_) => {
+                return Err(
+                    "bytes payload literal matching awaits an audited BytesEquals runtime contract"
+                        .to_string(),
+                );
+            }
+            _ => {
+                return Err(format!(
+                    "payload literal has no verified equality operation for `{}`",
+                    ty.user_facing()
+                ));
+            }
+        };
+        if ty == ResolvedTy::String {
+            let equals = self.lower_string_equals_values(field.value, literal)?;
+            self.emit_destroy(literal)?;
+            Ok(equals)
+        } else {
+            self.emit_typed(
+                Provenance::Synthesized,
+                &ResolvedTy::Bool,
+                SemOpKind::Binary {
+                    op: hew_parser::ast::BinaryOp::Equal,
+                    lhs: Operand { value: field.value },
+                    rhs: Operand { value: literal },
+                },
+            )
+        }
+    }
+
+    fn branch_candidate_test(&mut self, condition: ValueId) -> Result<ControlState, String> {
+        let pass = self.new_block(Vec::new());
+        let fail = self.new_block(Vec::new());
+        let bindings = self.bindings.clone();
+        let binding_declarations = self.binding_declarations.clone();
+        let owned_live = self.owned_live.clone();
+        self.set_terminator(SemTerminator::Branch {
+            condition: Operand { value: condition },
+            then_target: Edge {
+                target: pass,
+                args: Vec::new(),
+            },
+            else_target: Edge {
+                target: fail,
+                args: Vec::new(),
+            },
+        })?;
+        self.current = pass;
+        Ok(ControlState {
+            block: fail,
+            bindings,
+            binding_declarations,
+            owned_live,
+        })
+    }
+
     #[allow(
         clippy::too_many_lines,
-        reason = "variant selection, payload definition and arm cleanup form one ownership boundary"
+        reason = "nested predicate validation and its exhaustive probe form one ownership boundary"
     )]
-    fn lower_match(
+    fn lower_nested_predicate(
+        &mut self,
+        parent_fields: &[BlockArg],
+        predicate: &HirPayloadVariantPredicate,
+        candidate_root_live: &BTreeMap<ValueId, ResolvedTy>,
+        outer_bindings: &std::collections::HashSet<BindingId>,
+        span: &Range<usize>,
+    ) -> Result<Vec<ControlState>, String> {
+        let field = usize::try_from(predicate.field_idx)
+            .ok()
+            .and_then(|index| parent_fields.get(index))
+            .ok_or_else(|| {
+                format!(
+                    "nested variant predicate selects missing field {}",
+                    predicate.field_idx
+                )
+            })?;
+        let payload_ty = self.ty(&predicate.payload_ty);
+        if field.ty != payload_ty {
+            return Err(format!(
+                "nested variant field has `{}`, predicate expects `{}`",
+                field.ty.user_facing(),
+                payload_ty.user_facing()
+            ));
+        }
+        let shape = self.service.require_variant_shape(&payload_ty)?;
+        let descriptor = self
+            .service
+            .variant_shapes
+            .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
+            .filter(|descriptor| descriptor.id == shape)
+            .cloned()
+            .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
+        let desired = descriptor
+            .variants
+            .get(
+                usize::try_from(predicate.variant_idx)
+                    .map_err(|_| "nested variant index exceeds usize".to_string())?,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "nested variant tag {} is absent from `{}`",
+                    predicate.variant_idx,
+                    payload_ty.user_facing()
+                )
+            })?;
+        if desired.name != predicate.variant_match.variant_name {
+            return Err(format!(
+                "nested variant tag {} names `{}`, exact descriptor names `{}`",
+                predicate.variant_idx, predicate.variant_match.variant_name, desired.name
+            ));
+        }
+
+        let probe = match self.value_own_kind(field.value) {
+            Some(OwnKind::None) => field.value,
+            Some(OwnKind::Owned) => {
+                let facts = self
+                    .service
+                    .checked_facts
+                    .rows()
+                    .get(&TypeInstanceKey(payload_ty.clone()))
+                    .ok_or_else(|| {
+                        format!(
+                            "nested variant `{}` has no concrete type-fact row",
+                            payload_ty.user_facing()
+                        )
+                    })?;
+                if facts.clone == hew_types::CloneKind::None {
+                    return Err(format!(
+                        "nested speculative match of `{}` needs borrow/refinement support because it has no copy operation",
+                        payload_ty.user_facing()
+                    ));
+                }
+                self.emit_typed(
+                    Provenance::Synthesized,
+                    &payload_ty,
+                    SemOpKind::CopyValue {
+                        source: Operand { value: field.value },
+                    },
+                )?
+            }
+            Some(OwnKind::Guaranteed) | None => {
+                return Err(format!(
+                    "nested variant `{}` has no independently testable value",
+                    payload_ty.user_facing()
+                ));
+            }
+        };
+        let inherited_bindings = self.bindings.clone();
+        let inherited_declarations = self.binding_declarations.clone();
+        let branches = self.emit_variant_switch(shape, &descriptor, probe)?;
+        let mut failures = Vec::new();
+        let mut success = None;
+        for branch in branches {
+            self.current = branch.block;
+            self.bindings.clone_from(&inherited_bindings);
+            self.binding_declarations
+                .clone_from(&inherited_declarations);
+            self.owned_live = branch.owned_live;
+            if branch.variant == predicate.variant_idx {
+                self.bind_match_fields(&predicate.bindings, &branch.fields, span)?;
+                let mut nested_failures = Vec::new();
+                for nested in &predicate.nested {
+                    nested_failures.extend(self.lower_nested_predicate(
+                        &branch.fields,
+                        nested,
+                        candidate_root_live,
+                        outer_bindings,
+                        span,
+                    )?);
+                }
+                failures.extend(nested_failures);
+                success = Some(self.control_state());
+            } else {
+                self.cleanup_match_candidate(candidate_root_live, outer_bindings)?;
+                failures.push(self.control_state());
+            }
+        }
+        let success = success.ok_or_else(|| {
+            format!(
+                "nested variant `{}` has no selected descriptor arm",
+                predicate.variant_match.variant_name
+            )
+        })?;
+        self.restore_control_state(&success);
+        Ok(failures)
+    }
+
+    fn lower_selected_match_body(
+        &mut self,
+        arm: &HirMatchArm,
+        result_ty: &ResolvedTy,
+    ) -> Result<Option<Operand>, String> {
+        if *result_ty == ResolvedTy::Unit {
+            self.lower_discarded_expr(&arm.body)?;
+            return Ok(None);
+        }
+        if matches!(self.ty(&arm.body.ty), ResolvedTy::Unit | ResolvedTy::Never) {
+            self.lower_discarded_expr(&arm.body)?;
+            if self.is_open() {
+                return Err(
+                    "non-divergent variant arm does not produce the match result".to_string(),
+                );
+            }
+            return Ok(None);
+        }
+        let value = lower_initial_value_transfer(
+            self,
+            &arm.body,
+            "variant match arm result",
+            OwnedBindingUse::Move,
+        )?;
+        if self.value_ty(value).as_ref() != Some(result_ty) {
+            return Err(format!(
+                "variant match arm yields `{}`, expected `{}`",
+                self.value_ty(value).map_or_else(
+                    || "<missing>".to_string(),
+                    |ty| ty.user_facing().to_string()
+                ),
+                result_ty.user_facing()
+            ));
+        }
+        Ok(Some(Operand { value }))
+    }
+
+    fn merge_match_exits(
+        &mut self,
+        exits: Vec<MatchExit>,
+        result_ty: &ResolvedTy,
+    ) -> Result<Option<ValueId>, String> {
+        if exits.is_empty() {
+            return Ok(None);
+        }
+        let mut result_arg = None;
+        let mut block_args = Vec::new();
+        let mut edge_prefixes = vec![Vec::new(); exits.len()];
+        if *result_ty != ResolvedTy::Unit {
+            self.service.require_type_facts(result_ty)?;
+            let own = OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?;
+            let joined = self.fresh_value();
+            block_args.push(BlockArg {
+                value: joined,
+                ty: result_ty.clone(),
+                own,
+            });
+            for (index, exit) in exits.iter().enumerate() {
+                let result = exit
+                    .result
+                    .as_ref()
+                    .ok_or_else(|| "non-divergent match arm has no result operand".to_string())?;
+                edge_prefixes[index].push(result.clone());
+            }
+            result_arg = Some((joined, own));
+        } else if exits.iter().any(|exit| exit.result.is_some()) {
+            return Err("unit match arm unexpectedly carries a result".to_string());
+        }
+
+        let states = exits.into_iter().map(|exit| exit.state).collect::<Vec<_>>();
+        self.join_control_states(states, block_args, edge_prefixes)?;
+        if let Some((result, OwnKind::Owned)) = result_arg {
+            self.owned_live.insert(result, result_ty.clone());
+        }
+        Ok(result_arg.map(|(result, _)| result))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered predicate selection and ownership cleanup form one source match boundary"
+    )]
+    fn lower_match_control(
         &mut self,
         whole: &HirExpr,
         scrutinee_expr: &HirExpr,
         source_arms: &[HirMatchArm],
-    ) -> Result<ValueId, String> {
+    ) -> Result<Option<ValueId>, String> {
         if source_arms.is_empty() {
             return Err("variant match has no source arms".to_string());
         }
-        for arm in source_arms {
-            if arm.guard.is_some()
-                || !arm.payload_predicates.is_empty()
-                || !arm.payload_variant_predicates.is_empty()
-            {
-                return Err(
-                    "guarded, literal-payload and nested variant patterns require explicit SIR predicate CFG"
-                        .to_string(),
-                );
-            }
-        }
-
         let enum_ty = self.ty(&scrutinee_expr.ty);
         let shape = self.service.require_variant_shape(&enum_ty)?;
         let descriptor = self
@@ -2834,40 +3490,38 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .filter(|descriptor| descriptor.id == shape)
             .cloned()
             .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
-        let mut arm_for_variant = vec![None; descriptor.variants.len()];
-        let mut wildcard = None;
-        for (arm_index, arm) in source_arms.iter().enumerate() {
+        for arm in source_arms {
             match &arm.predicate {
-                HirMatchArmPredicate::EnumVariant { variant_idx, .. } => {
-                    let index = usize::try_from(*variant_idx)
-                        .map_err(|_| "match variant index exceeds usize".to_string())?;
-                    let slot = arm_for_variant.get_mut(index).ok_or_else(|| {
-                        format!(
-                            "match arm tag {variant_idx} is absent from exact shape `{}`",
-                            enum_ty.user_facing()
+                HirMatchArmPredicate::EnumVariant {
+                    variant_match,
+                    variant_idx,
+                } => {
+                    let variant = descriptor
+                        .variants
+                        .get(
+                            usize::try_from(*variant_idx)
+                                .map_err(|_| "match variant index exceeds usize".to_string())?,
                         )
-                    })?;
-                    if slot.replace(arm_index).is_some() {
-                        return Err(format!("match repeats variant tag {variant_idx}"));
-                    }
-                    let HirMatchArmPredicate::EnumVariant { variant_match, .. } = &arm.predicate
-                    else {
-                        unreachable!()
-                    };
-                    if descriptor.variants[index].name != variant_match.variant_name {
+                        .ok_or_else(|| {
+                            format!(
+                                "match arm tag {variant_idx} is absent from `{}`",
+                                enum_ty.user_facing()
+                            )
+                        })?;
+                    if variant.name != variant_match.variant_name {
                         return Err(format!(
                             "match tag {variant_idx} names `{}`, exact descriptor names `{}`",
-                            variant_match.variant_name, descriptor.variants[index].name
+                            variant_match.variant_name, variant.name
                         ));
                     }
                 }
                 HirMatchArmPredicate::Wildcard => {
-                    if wildcard.replace(arm_index).is_some() {
-                        return Err("match contains more than one wildcard arm".to_string());
-                    }
-                    if arm_index + 1 != source_arms.len() {
+                    if !arm.bindings.is_empty()
+                        || !arm.payload_predicates.is_empty()
+                        || !arm.payload_variant_predicates.is_empty()
+                    {
                         return Err(
-                            "variant-switch wildcard must be the final source arm".to_string()
+                            "wildcard variant arm carries impossible payload metadata".to_string()
                         );
                     }
                 }
@@ -2888,168 +3542,278 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
             }
         }
-        for (variant, slot) in arm_for_variant.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = wildcard;
-            }
-            if slot.is_none() {
+
+        let candidates = (0..descriptor.variants.len())
+            .map(|variant| {
+                source_arms
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, arm)| match arm.predicate {
+                        HirMatchArmPredicate::EnumVariant { variant_idx, .. }
+                            if usize::try_from(variant_idx).ok() == Some(variant) =>
+                        {
+                            Some(index)
+                        }
+                        HirMatchArmPredicate::Wildcard => Some(index),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        for (variant, arms) in candidates.iter().enumerate() {
+            if arms.is_empty() {
                 return Err(format!("match is missing exhaustive variant tag {variant}"));
             }
         }
 
         let result_ty = self.ty(&whole.ty);
-        if result_ty == ResolvedTy::Unit {
-            return Err("unit-valued variant matches need a zero-result join contract".to_string());
-        }
-        self.service.require_type_facts(&result_ty)?;
-        let result_own = OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?;
-        let joined_result = self.fresh_value();
-        let join = self.new_block(vec![BlockArg {
-            value: joined_result,
-            ty: result_ty.clone(),
-            own: result_own,
-        }]);
-
         let scrutinee = lower_initial_value_transfer(
             self,
             scrutinee_expr,
             "variant match scrutinee",
             OwnedBindingUse::Copy,
         )?;
-        let switch_block = self.current;
-        let baseline_bindings = self.bindings.clone();
-        let baseline_declarations = self.binding_declarations.clone();
+        let outer_bindings = self
+            .bindings
+            .keys()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
         let prior_move_protected = self.move_protected_bindings.clone();
-        let mut baseline_live = self.owned_live.clone();
-        baseline_live.remove(&scrutinee);
+        self.move_protected_bindings
+            .extend(outer_bindings.iter().copied());
+        let mut outer_live = self.owned_live.clone();
+        outer_live.remove(&scrutinee);
+        let inherited_bindings = self.bindings.clone();
+        let inherited_declarations = self.binding_declarations.clone();
+        let branches = self.emit_variant_switch(shape, &descriptor, scrutinee)?;
+        let mut exits = Vec::new();
 
-        let mut semantic_arms = Vec::with_capacity(descriptor.variants.len());
-        let mut arm_blocks = Vec::with_capacity(descriptor.variants.len());
-        for (variant_index, variant) in descriptor.variants.iter().enumerate() {
-            let mut fields = Vec::with_capacity(variant.fields.len());
-            let mut block_args = Vec::with_capacity(variant.fields.len());
-            let mut edge_args = Vec::with_capacity(variant.fields.len());
-            for field in &variant.fields {
-                self.service.require_type_facts(&field.ty)?;
-                let own = OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?;
-                let field_value = self.fresh_value();
-                fields.push(ValueDef {
-                    id: field_value,
-                    ty: field.ty.clone(),
-                    own,
-                });
-                edge_args.push(Operand { value: field_value });
-                block_args.push(BlockArg {
-                    value: self.fresh_value(),
-                    ty: field.ty.clone(),
-                    own,
-                });
-            }
-            let block = self.new_block(block_args);
-            arm_blocks.push(block);
-            semantic_arms.push(SemVariantArm {
-                variant: u32::try_from(variant_index)
-                    .map_err(|_| "variant arm index exceeds u32".to_string())?,
-                fields,
-                target: Edge {
-                    target: block,
-                    args: edge_args,
-                },
-            });
-        }
-        self.current = switch_block;
-        self.owned_live.remove(&scrutinee);
-        let id = OpId(self.ops);
-        self.ops += 1;
-        self.set_terminator(SemTerminator::SwitchVariant {
-            id,
-            shape,
-            scrutinee: Operand { value: scrutinee },
-            arms: semantic_arms,
-        })?;
-
-        for (variant_index, block) in arm_blocks.into_iter().enumerate() {
-            let source_arm = &source_arms
-                [arm_for_variant[variant_index].expect("exhaustive arm mapping checked above")];
-            self.current = block;
-            self.bindings = baseline_bindings.clone();
-            self.binding_declarations = baseline_declarations.clone();
-            self.move_protected_bindings = prior_move_protected.clone();
-            self.move_protected_bindings
-                .extend(baseline_bindings.keys().copied());
-            self.owned_live = baseline_live.clone();
-            let block_args = self.current_block().args.clone();
-            for arg in &block_args {
-                if arg.own == OwnKind::Owned {
-                    self.owned_live.insert(arg.value, arg.ty.clone());
+        for branch in branches {
+            self.current = branch.block;
+            self.bindings.clone_from(&inherited_bindings);
+            self.binding_declarations
+                .clone_from(&inherited_declarations);
+            self.owned_live = branch.owned_live;
+            let root_live = self.owned_live.clone();
+            let branch_candidates = &candidates[usize::try_from(branch.variant)
+                .map_err(|_| "variant tag exceeds usize".to_string())?];
+            for (candidate_position, arm_index) in branch_candidates.iter().enumerate() {
+                let arm = &source_arms[*arm_index];
+                let mut failures = Vec::new();
+                self.bind_match_fields(&arm.bindings, &branch.fields, &arm.span)?;
+                for predicate in &arm.payload_predicates {
+                    let condition = self.lower_payload_literal_test(&branch.fields, predicate)?;
+                    failures.push(self.branch_candidate_test(condition)?);
                 }
-            }
-            for binding in &source_arm.bindings {
-                let field = usize::try_from(binding.field_idx)
-                    .ok()
-                    .and_then(|index| block_args.get(index))
-                    .ok_or_else(|| {
-                        format!(
-                            "match binding `{}` selects missing field {} of variant {}",
-                            binding.name, binding.field_idx, variant_index
+                for predicate in &arm.payload_variant_predicates {
+                    failures.extend(self.lower_nested_predicate(
+                        &branch.fields,
+                        predicate,
+                        &root_live,
+                        &outer_bindings,
+                        &arm.span,
+                    )?);
+                }
+                if let Some(guard) = &arm.guard {
+                    let saved_protected = self.move_protected_bindings.clone();
+                    self.move_protected_bindings
+                        .extend(self.bindings.keys().copied());
+                    let guard_live = self.owned_live.clone();
+                    let condition = self.lower_read_operand(guard, "match guard")?.value;
+                    let keep_guard_values = self
+                        .bindings
+                        .values()
+                        .filter_map(|value| {
+                            self.owned_live.get(value).map(|ty| (*value, ty.clone()))
+                        })
+                        .chain(
+                            guard_live
+                                .iter()
+                                .filter(|(value, _)| self.owned_live.contains_key(value))
+                                .map(|(value, ty)| (*value, ty.clone())),
                         )
-                    })?;
-                let binding_ty = self.ty(&binding.ty);
-                if binding_ty != field.ty {
-                    return Err(format!(
-                        "match binding `{}` has `{}`, expected `{}`",
-                        binding.name,
-                        binding_ty.user_facing(),
-                        field.ty.user_facing()
-                    ));
+                        .collect::<BTreeMap<_, _>>();
+                    self.destroy_live_since(&keep_guard_values)?;
+                    self.move_protected_bindings = saved_protected;
+                    failures.push(self.branch_candidate_test(condition)?);
                 }
-                self.bind_match_arm_value(binding, field.value, source_arm.span.clone())?;
-            }
 
-            let result = lower_initial_value_transfer(
-                self,
-                &source_arm.body,
-                "variant match arm result",
-                OwnedBindingUse::Move,
-            )?;
-            if self.value_ty(result).as_ref() != Some(&result_ty) {
-                return Err(format!(
-                    "variant match arm {variant_index} yields the wrong SIR type"
-                ));
-            }
-            self.owned_live.remove(&result);
-            for value in baseline_live.keys() {
-                if !self.owned_live.contains_key(value) {
-                    return Err(format!(
-                        "variant match arm {variant_index} consumes an outer owner"
-                    ));
+                let result = self.lower_selected_match_body(arm, &result_ty)?;
+                if self.is_open() {
+                    if let Some(result) = &result {
+                        self.owned_live.remove(&result.value);
+                    }
+                    for value in outer_live.keys() {
+                        if !self.owned_live.contains_key(value)
+                            && !inherited_bindings.values().any(|outer| outer == value)
+                        {
+                            return Err(format!(
+                                "variant match arm {arm_index} consumes an outer non-binding owner"
+                            ));
+                        }
+                    }
+                    self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
+                    exits.push(MatchExit {
+                        state: self.control_state(),
+                        result,
+                    });
                 }
-            }
-            self.destroy_live_since(&baseline_live)?;
-            for (binding, value) in &baseline_bindings {
-                if self.bindings.get(binding) != Some(value) {
-                    return Err(format!(
-                        "variant match arm {variant_index} mutates an outer binding before the match join"
-                    ));
+
+                if failures.is_empty() {
+                    break;
                 }
-            }
-            if self.is_open() {
-                self.set_terminator(SemTerminator::Goto(Edge {
-                    target: join,
-                    args: vec![Operand { value: result }],
-                }))?;
+                let mut cleaned_failures = Vec::with_capacity(failures.len());
+                for failure in failures {
+                    self.restore_control_state(&failure);
+                    self.cleanup_match_candidate(&root_live, &outer_bindings)?;
+                    cleaned_failures.push(self.control_state());
+                }
+                if candidate_position + 1 == branch_candidates.len() {
+                    for failure in cleaned_failures {
+                        self.restore_control_state(&failure);
+                        self.destroy_all_live()?;
+                        self.set_terminator(SemTerminator::Unreachable)?;
+                    }
+                    break;
+                }
+                self.merge_control_states(cleaned_failures)?;
             }
         }
 
-        self.current = join;
-        self.bindings = baseline_bindings;
-        self.binding_declarations = baseline_declarations;
         self.move_protected_bindings = prior_move_protected;
-        self.owned_live = baseline_live;
-        if result_own == OwnKind::Owned {
-            self.owned_live.insert(joined_result, result_ty);
+        self.merge_match_exits(exits, &result_ty)
+    }
+
+    fn lower_match(
+        &mut self,
+        whole: &HirExpr,
+        scrutinee_expr: &HirExpr,
+        source_arms: &[HirMatchArm],
+    ) -> Result<ValueId, String> {
+        self.lower_match_control(whole, scrutinee_expr, source_arms)?
+            .ok_or_else(|| "divergent or unit match cannot produce an SSA value".to_string())
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "let-else validates one bind-or-diverge ownership boundary"
+    )]
+    fn lower_let_else(
+        &mut self,
+        scrutinee_expr: &HirExpr,
+        success_variant: u32,
+        bindings: &[HirMatchArmBinding],
+        success_prelude: &[hew_hir::HirStmt],
+        nested_predicates: &[HirPayloadVariantPredicate],
+        else_body: &HirBlock,
+    ) -> Result<(), String> {
+        let enum_ty = self.ty(&scrutinee_expr.ty);
+        let shape = self.service.require_variant_shape(&enum_ty)?;
+        let descriptor = self
+            .service
+            .variant_shapes
+            .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
+            .filter(|descriptor| descriptor.id == shape)
+            .cloned()
+            .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
+        if descriptor
+            .variants
+            .get(
+                usize::try_from(success_variant)
+                    .map_err(|_| "let-else variant index exceeds usize".to_string())?,
+            )
+            .is_none()
+        {
+            return Err(format!(
+                "let-else success tag {success_variant} is absent from `{}`",
+                enum_ty.user_facing()
+            ));
         }
-        Ok(joined_result)
+
+        let scrutinee = lower_initial_value_transfer(
+            self,
+            scrutinee_expr,
+            "let-else scrutinee",
+            OwnedBindingUse::Copy,
+        )?;
+        let outer_bindings = self
+            .bindings
+            .keys()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let inherited_bindings = self.bindings.clone();
+        let inherited_declarations = self.binding_declarations.clone();
+        let mut outer_live = self.owned_live.clone();
+        outer_live.remove(&scrutinee);
+        let branches = self.emit_variant_switch(shape, &descriptor, scrutinee)?;
+        let mut failures = Vec::new();
+        let mut success = None;
+
+        for branch in branches {
+            self.current = branch.block;
+            self.bindings.clone_from(&inherited_bindings);
+            self.binding_declarations
+                .clone_from(&inherited_declarations);
+            self.owned_live = branch.owned_live;
+            if branch.variant != success_variant {
+                self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
+                failures.push(self.control_state());
+                continue;
+            }
+
+            let candidate_root_live = self.owned_live.clone();
+            self.bind_match_fields(bindings, &branch.fields, &scrutinee_expr.span)?;
+            for predicate in nested_predicates {
+                failures.extend(self.lower_nested_predicate(
+                    &branch.fields,
+                    predicate,
+                    &candidate_root_live,
+                    &outer_bindings,
+                    &scrutinee_expr.span,
+                )?);
+            }
+            let escaping_bindings = self
+                .bindings
+                .keys()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            self.cleanup_match_candidate(&outer_live, &escaping_bindings)?;
+            for statement in success_prelude {
+                match &statement.kind {
+                    HirStmtKind::Destructure { value, fields } => {
+                        self.lower_destructure(value, fields)?;
+                    }
+                    _ => {
+                        return Err(
+                            "let-else success prelude contains a non-destructure statement"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            success = Some(self.control_state());
+        }
+
+        let success = success.ok_or_else(|| {
+            format!("let-else success tag {success_variant} has no exact descriptor branch")
+        })?;
+        if failures.is_empty() {
+            return Err("let-else has no mismatch path".to_string());
+        }
+        let mut cleaned_failures = Vec::with_capacity(failures.len());
+        for failure in failures {
+            self.restore_control_state(&failure);
+            self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
+            cleaned_failures.push(self.control_state());
+        }
+        self.merge_control_states(cleaned_failures)?;
+        self.lower_scoped_block(else_body, OwnedBindingUse::Copy)?;
+        if self.is_open() {
+            return Err("let-else mismatch block does not diverge".to_string());
+        }
+        self.restore_control_state(&success);
+        Ok(())
     }
 
     /// Lower an immutable, no-drop tuple as one semantic aggregate value.
@@ -4291,21 +5055,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let condition = self.lower_read_operand(condition, "if condition")?;
         let then_block = self.new_block(Vec::new());
         let else_block = self.new_block(Vec::new());
-        let join_value = self.fresh_value();
         let join_ty = self.ty(&whole.ty);
-        if !is_initial_value_type(&join_ty) {
-            return Err(format!(
-                "value-producing if over `{}` is outside the current SIR value domain",
-                join_ty.user_facing()
-            ));
-        }
-        self.service.require_type_facts(&join_ty)?;
-        let join_own = OwnKind::of_ty(&join_ty, self.service.checked_facts.rows())?;
-        let join_block = self.new_block(vec![BlockArg {
-            value: join_value,
-            own: join_own,
-            ty: join_ty,
-        }]);
         self.set_terminator(SemTerminator::Branch {
             condition,
             then_target: Edge {
@@ -4317,27 +5067,52 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 args: Vec::new(),
             },
         })?;
-        let before = self.bindings.clone();
-        self.current = then_block;
-        self.bindings = before.clone();
-        let then_value = self.lower_read_operand(then_expr, "if then value")?;
-        if self.is_open() {
-            self.set_terminator(SemTerminator::Goto(Edge {
-                target: join_block,
-                args: vec![then_value],
-            }))?;
+        let before = self.control_state();
+        let prior_protected = self.move_protected_bindings.clone();
+        self.move_protected_bindings
+            .extend(before.bindings.keys().copied());
+        let mut exits = Vec::new();
+        for (block, expression) in [(then_block, then_expr), (else_block, else_expr)] {
+            self.current = block;
+            self.bindings.clone_from(&before.bindings);
+            self.binding_declarations
+                .clone_from(&before.binding_declarations);
+            self.owned_live = before.owned_live.clone();
+            if matches!(
+                self.ty(&expression.ty),
+                ResolvedTy::Unit | ResolvedTy::Never
+            ) {
+                self.lower_discarded_expr(expression)?;
+                if self.is_open() {
+                    return Err("non-divergent if branch does not produce its result".to_string());
+                }
+                continue;
+            }
+            let value = lower_initial_value_transfer(
+                self,
+                expression,
+                "if branch value",
+                OwnedBindingUse::Copy,
+            )?;
+            if self.value_ty(value).as_ref() != Some(&join_ty) {
+                return Err(format!(
+                    "if branch yields `{}`, expected `{}`",
+                    self.value_ty(value).map_or_else(
+                        || "<missing>".to_string(),
+                        |ty| ty.user_facing().to_string()
+                    ),
+                    join_ty.user_facing()
+                ));
+            }
+            self.owned_live.remove(&value);
+            exits.push(MatchExit {
+                state: self.control_state(),
+                result: Some(Operand { value }),
+            });
         }
-        self.current = else_block;
-        self.bindings = before;
-        let else_value = self.lower_read_operand(else_expr, "if else value")?;
-        if self.is_open() {
-            self.set_terminator(SemTerminator::Goto(Edge {
-                target: join_block,
-                args: vec![else_value],
-            }))?;
-        }
-        self.current = join_block;
-        Ok(join_value)
+        self.move_protected_bindings = prior_protected;
+        self.merge_match_exits(exits, &join_ty)?
+            .ok_or_else(|| "divergent if expression cannot produce an SSA value".to_string())
     }
 
     /// Lower short-circuit `&&` as CFG rather than an eager binary operation.

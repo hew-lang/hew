@@ -638,6 +638,13 @@ impl<'a> ProfileChecker<'a> {
             | Expr::PostfixTry(operand) => {
                 self.check_expr(operand);
             }
+            Expr::Coalesce { left, right }
+            | Expr::Handle { operand: left, body: right, .. } => {
+                self.reject(span.clone(), "reserved_runtime_feature",
+                    "local optional/error recovery requires the shared semantic backend");
+                self.check_expr(left);
+                self.check_expr(right);
+            }
             Expr::Return(operand) => {
                 // `return` in expression position is not yet lowered by the
                 // sandbox-wasm emitter (it emits `unsupported`). Reject it here

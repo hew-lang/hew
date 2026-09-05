@@ -410,9 +410,33 @@ Specifically:
 
 Actors may declare `#[max_heap(N)]` to cap their per-actor arena. If an arena allocation would exceed that cap, the runtime fails closed with the `ExitReason::HeapExceeded` crash variant and the `HEW_TRAP_HEAP_EXCEEDED` trap-kind discriminator. Supervisors receive that heap-exhaustion payload through the same crash-report routing path as other traps, so restart policy, escalation, and `#[on(crash)]` observation all see the cap breach as an unrecoverable actor failure rather than a recoverable `Result`.
 
-> **Error propagation:** `Result<T, E>` and `Option<T>` are first-class. User functions may return either type and use `?` for propagation. The `?` operator is available in any function whose return type is `Result` or `Option` with the same error type, or with `dyn Error` (§2.2.1).
+> **Error propagation:** `Result<T, E>` and `Option<T>` are first-class. `?` propagates absence only into an enclosing `Option` return, and errors only into an enclosing `Result` return with a compatible error type (§2.2.1). It never converts absence into an error or discards an error as absence.
 
 ### 2.2.1 Error Propagation
+
+**Local recovery.** `optional_value ?? fallback` evaluates its left operand
+once. A present value supplies its payload; only absence evaluates `fallback`.
+The fallback must have the payload type (or diverge). `??` accepts only
+`Option`, never `Result`; it associates right and binds below logical operators.
+
+`result_value handle problem { recovery }` evaluates its Result operand once.
+Success supplies the success payload. Only an error runs the block, with
+`problem` bound to the error payload. The block must produce the success
+payload type or diverge. `handle` is contextual, and the error binder is
+user-named and scoped to the block. It is not a surrounding exception handler:
+an inner `?` in the operand retains its enclosing function's return edge.
+
+Handler blocks are ordinary lexical blocks: `return`, `break`, `continue`,
+`await`, captures and sends retain their usual contexts and contracts. There
+is no implicit task, retry or asynchronous continuation. Errors produced in a
+handler still require handling. Typed Result recovery does not intercept
+runtime faults or clear cancellation.
+
+`let value = optional_value else { divergent_block };` requires a present
+optional payload and binds it for the rest of the enclosing scope. A type
+annotation describes that payload. The else block cannot see the new binding
+and must diverge. Without `else`, an ordinary `let` preserves the Option value.
+Explicit variant-pattern let-else remains available for other patterns.
 
 The `?` operator propagates errors from `Result` and `Option` types:
 

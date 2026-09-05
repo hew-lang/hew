@@ -364,7 +364,13 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &base.0, tc, hints);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             collect_inlay_hints_from_expr(source, &left.0, tc, hints);
             collect_inlay_hints_from_expr(source, &right.0, tc, hints);
         }

@@ -1,0 +1,22 @@
+enum Number { Some(i64); None }
+
+fn classify(value: Number) -> i64 {
+    var attempts = 0;
+    let selected = match value {
+        .Some(number) if { attempts += 1; number < 0 } => attempts,
+        .Some(number) if { attempts += 1; number > 0 } => attempts,
+        .Some(0) => attempts,
+        .Some(_) => attempts,
+        .None => attempts,
+    };
+    selected + attempts
+}
+
+fn main() -> i64 {
+    let negative = classify(Number.Some(-1));
+    let positive = classify(Number.Some(1));
+    let zero = classify(Number.Some(0));
+    let absent = classify(Number.None);
+    println(f"{negative}:{positive}:{zero}:{absent}");
+    0
+}

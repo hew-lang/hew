@@ -714,6 +714,13 @@ impl Checker {
                 }
             }
 
+            Expr::Coalesce { left, right } => self.check_local_recovery(left, right, None, span),
+            Expr::Handle {
+                operand,
+                error,
+                body,
+            } => self.check_local_recovery(operand, body, Some(error), span),
+
             // Yield
             Expr::Yield(value) => self.synthesize_yield(value.as_deref(), span),
 
@@ -1102,6 +1109,62 @@ impl Checker {
             }
         }
         self.make_vec_type(elem_ty, span)
+    }
+
+    /// Type one lazy recovery branch without introducing a callable boundary.
+    /// The success path preserves the state after the operand; only the other
+    /// path evaluates the fallback or binds the Result error.
+    fn check_local_recovery(
+        &mut self,
+        operand: &Spanned<Expr>,
+        body: &Spanned<Expr>,
+        error: Option<&Spanned<String>>,
+        span: &Span,
+    ) -> Ty {
+        let container = self.synthesize(&operand.0, &operand.1);
+        let container = self.subst.resolve(&container);
+        let (payload, error_ty) = if error.is_some() {
+            container
+                .as_result()
+                .map(|(ok, err)| (ok.clone(), err.clone()))
+        } else {
+            container.as_option().map(|some| (some.clone(), Ty::Unit))
+        }
+        .unwrap_or_else(|| {
+            if !matches!(container, Ty::Error) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    if error.is_some() {
+                        format!(
+                            "`handle` requires Result, found `{}`",
+                            container.user_facing()
+                        )
+                    } else {
+                        format!(
+                            "`??` requires Option, found `{}`; handle Result errors explicitly",
+                            container.user_facing()
+                        )
+                    },
+                );
+            }
+            (Ty::Error, Ty::Error)
+        });
+        let entry = self.env.ownership_snapshot();
+        self.env.push_scope();
+        if let Some((name, binding_span)) = error {
+            self.check_shadowing(name, binding_span);
+            self.env
+                .define_with_span(name.clone(), error_ty, false, binding_span.clone());
+        }
+        let body_ty = self.check_expr_with_expected(&body.0, &body.1, &payload);
+        let taken = BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: Self::arm_skips_join_expr(&body.0, &body_ty),
+        };
+        self.env.pop_scope();
+        self.join_fall_through(&entry, taken);
+        self.subst.resolve(&payload)
     }
 
     pub(super) fn synthesize_array_literal(&mut self, elems: &[Spanned<Expr>], span: &Span) -> Ty {
@@ -5961,6 +6024,14 @@ impl Checker {
         scopes: &[DangerousRcScope],
     ) {
         match expr {
+            Expr::Coalesce { right, .. } => {
+                self.check_expr_is_rc_param_return(&right.0, &right.1, scopes);
+            }
+            Expr::Handle { error, body, .. } => {
+                let mut handler_scopes = scopes.to_vec();
+                handler_scopes.push(HashMap::from([(error.0.clone(), None)]));
+                self.check_expr_is_rc_param_return(&body.0, &body.1, &handler_scopes);
+            }
             Expr::Identifier(name) => {
                 if let Some(source_param) = Self::lookup_dangerous_binding(name, scopes) {
                     self.emit_borrowed_param_return(name, &source_param, span);
@@ -6808,6 +6879,20 @@ impl Checker {
                         bindings,
                     );
                 }
+            }
+            Expr::Coalesce { right: body, .. } | Expr::Handle { body, .. } => {
+                let mut branch_bindings = bindings.clone();
+                if let Expr::Handle { error, .. } = expr {
+                    branch_bindings.remove(&error.0);
+                }
+                self.check_expr_for_owned_handle_field_return(
+                    &body.0,
+                    &body.1,
+                    receiver_name,
+                    type_name,
+                    method_name,
+                    &mut branch_bindings,
+                );
             }
             Expr::Binary { .. }
             | Expr::Unary { .. }
@@ -9215,6 +9300,15 @@ impl Checker {
     /// `var` bindings produce hints in this slice.
     fn scan_expr_for_stack_hints(&mut self, expr: &Expr) {
         match expr {
+            Expr::Coalesce { left, right }
+            | Expr::Handle {
+                operand: left,
+                body: right,
+                ..
+            } => {
+                self.scan_expr_for_stack_hints(&left.0);
+                self.scan_expr_for_stack_hints(&right.0);
+            }
             Expr::Block(block) => self.scan_block_for_stack_hints(block),
             Expr::If {
                 condition,

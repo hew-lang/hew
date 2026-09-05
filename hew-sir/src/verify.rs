@@ -1281,18 +1281,18 @@ fn verify_function_callable_identity(
 }
 
 fn is_initial_scalar(ty: &ResolvedTy) -> bool {
-    ty.is_integer() || matches!(ty, ResolvedTy::Bool)
+    ty.is_integer() || matches!(ty, ResolvedTy::Bool | ResolvedTy::F64 | ResolvedTy::Char)
 }
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty) || matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
 }
 
-/// Value types the initial Raw-MIR virtual-value bridge can realize without
-/// borrowing, drops, allocation, or layout-dependent semantics.
+/// Value types physical MIR can realize without borrowing, drops, allocation,
+/// or layout-dependent semantics.
 ///
 /// SIR retains tuples as abstract values; this predicate merely bounds the
-/// first lowering slice to recursively `BitCopy` scalar elements until the
+/// semantic domain to recursively `BitCopy` scalar elements until the
 /// ownership/layout layer owns aggregate resource realization.
 fn is_initial_value_type(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
@@ -1428,6 +1428,22 @@ fn verify_operation_shape(
             SirDiagnosticKind::InvalidConstType {
                 op: operation.id,
                 expected: "bool",
+                actual: result.ty.user_facing().to_string(),
+            },
+        )),
+        SemOpKind::ConstF64(_) if result.ty != ResolvedTy::F64 => diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidConstType {
+                op: operation.id,
+                expected: "f64",
+                actual: result.ty.user_facing().to_string(),
+            },
+        )),
+        SemOpKind::ConstChar(_) if result.ty != ResolvedTy::Char => diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidConstType {
+                op: operation.id,
+                expected: "char",
                 actual: result.ty.user_facing().to_string(),
             },
         )),
@@ -1896,16 +1912,13 @@ fn verify_operation_shape(
         }
         SemOpKind::ConstI64(_)
         | SemOpKind::ConstBool(_)
+        | SemOpKind::ConstF64(_)
+        | SemOpKind::ConstChar(_)
         | SemOpKind::ConstStr(_)
         | SemOpKind::ConstBytes(_) => {}
-        // The §1.3 ownership operations, the P1 literal producers, the
-        // structural-equality ops and `rt.call` have no producer on this route
-        // yet, and the rules that admit them are rules 1-6, which are the
-        // verifier lane's. Until those land the relation table refuses rather
-        // than admitting an operation nothing checks.
-        SemOpKind::ConstF64(_)
-        | SemOpKind::ConstChar(_)
-        | SemOpKind::ConstUnit
+        // Dormant operations remain fail-closed until their producer and
+        // complete semantic validation land together.
+        SemOpKind::ConstUnit
         | SemOpKind::ConstDuration(_)
         | SemOpKind::StrEq { .. }
         | SemOpKind::BytesEq { .. }

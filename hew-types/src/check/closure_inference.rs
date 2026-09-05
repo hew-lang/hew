@@ -206,7 +206,13 @@ fn body_visit_expr(expr: &Expr, out: &mut LambdaBodyFacts) {
             body_visit_expr(&receiver.0, out);
             body_visit_args(args, out);
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             body_visit_expr(&left.0, out);
             body_visit_expr(&right.0, out);
         }
@@ -655,6 +661,20 @@ fn esc_visit_expr(
         Expr::Binary { left, right, .. } => {
             esc_visit_expr(&left.0, name, in_fork, acc, false);
             esc_visit_expr(&right.0, name, in_fork, acc, false);
+        }
+        Expr::Coalesce { left, right } => {
+            esc_visit_expr(&left.0, name, in_fork, acc, false);
+            esc_visit_expr(&right.0, name, in_fork, acc, is_tail);
+        }
+        Expr::Handle {
+            operand,
+            error,
+            body,
+        } => {
+            esc_visit_expr(&operand.0, name, in_fork, acc, false);
+            if error.0 != name {
+                esc_visit_expr(&body.0, name, in_fork, acc, is_tail);
+            }
         }
         // `clone <operand>` is read-only and recurses like other unary forms.
         Expr::Unary { operand, .. } | Expr::Clone(operand) => {

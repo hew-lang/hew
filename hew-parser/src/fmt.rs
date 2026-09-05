@@ -2321,6 +2321,12 @@ impl<'a> Formatter<'a> {
             | Expr::Yield(Some(operand))
             | Expr::Return(Some(operand)) => Self::can_format_expr_inline(&operand.0),
             Expr::Binary { left, right, .. }
+            | Expr::Coalesce { left, right }
+            | Expr::Handle {
+                operand: left,
+                body: right,
+                ..
+            }
             | Expr::Is {
                 lhs: left,
                 rhs: right,
@@ -2866,6 +2872,8 @@ impl<'a> Formatter<'a> {
         matches!(
             expr,
             Expr::Binary { .. }
+                | Expr::Coalesce { .. }
+                | Expr::Handle { .. }
                 | Expr::Unary { .. }
                 | Expr::Clone(_)
                 | Expr::Range { .. }
@@ -2933,7 +2941,15 @@ impl<'a> Formatter<'a> {
                 self.write(")");
             }
         } else {
+            let needs_parens =
+                matches!(expr, Expr::Coalesce { .. } | Expr::Handle { .. }) && parent_prec > 0;
+            if needs_parens {
+                self.write("(");
+            }
             self.format_expr(expr);
+            if needs_parens {
+                self.write(")");
+            }
         }
     }
 
@@ -2955,7 +2971,10 @@ impl<'a> Formatter<'a> {
                     UnaryOp::BitNot => self.write("~"),
                     UnaryOp::RawDeref => self.write("*"),
                 }
-                let needs_parens = matches!(operand.0, Expr::Binary { .. });
+                let needs_parens = matches!(
+                    operand.0,
+                    Expr::Binary { .. } | Expr::Coalesce { .. } | Expr::Handle { .. }
+                );
                 if needs_parens {
                     self.write("(");
                 }
@@ -3389,6 +3408,28 @@ impl<'a> Formatter<'a> {
                 self.format_receiver(&expr.0);
                 self.write("?");
             }
+            Expr::Coalesce { left, right } => {
+                self.format_expr_prec(&left.0, 1, false);
+                self.write(" ?? ");
+                if matches!(right.0, Expr::Handle { .. }) {
+                    self.write("(");
+                    self.format_expr(&right.0);
+                    self.write(")");
+                } else {
+                    self.format_expr(&right.0);
+                }
+            }
+            Expr::Handle {
+                operand,
+                error,
+                body,
+            } => {
+                self.format_expr(&operand.0);
+                self.write(" handle ");
+                self.write(&error.0);
+                self.write(" ");
+                self.format_expr(&body.0);
+            }
             Expr::Range {
                 start,
                 end,
@@ -3408,7 +3449,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Await(inner) => {
                 self.write("await ");
-                self.format_expr(&inner.0);
+                self.format_expr_prec(&inner.0, 25, false);
             }
             Expr::AwaitRestart(inner) => {
                 self.write("await_restart ");
@@ -4535,6 +4576,18 @@ fn main() {
         // Lower-precedence operand on the right of higher-precedence op needs parens
         let src = "fn main() {\n    let x = a * (b + c);\n}\n";
         assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn optional_recovery_preserves_grouping_under_unary_and_binary_operators() {
+        for source in [
+            "fn main() {\n    let value = (a ?? b) ?? c;\n}\n",
+            "fn main() {\n    let value = a ?? b ?? c;\n}\n",
+            "fn main() {\n    let value = -(a ?? b);\n}\n",
+            "fn main() {\n    let value = (a ?? b) + c;\n}\n",
+        ] {
+            assert_eq!(roundtrip(source), source);
+        }
     }
 
     #[test]

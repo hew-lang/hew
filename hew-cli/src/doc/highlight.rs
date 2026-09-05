@@ -163,6 +163,7 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Less
         | Token::Greater
         | Token::Question
+        | Token::QuestionQuestion
         | Token::Pipe
         | Token::Ampersand
         | Token::Caret

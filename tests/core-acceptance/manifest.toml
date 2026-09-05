@@ -3,6 +3,78 @@
 # failures are failures, not a differential pass.
 
 [[case]]
+id = "scalar-variant-patterns"
+intent = "Float and character payloads survive repeated calls and select ordered exact or wildcard patterns independently."
+source = "cases/scalar-variant-patterns.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1:1:2:3:4:5\n"
+exit = 0
+
+[[case]]
+id = "lazy-optional-default"
+intent = "Present owning options skip fallback side effects and survive repeated calls; absence evaluates the fallback once."
+source = "cases/lazy-optional-default.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "KEPT\nKEPT\nfallback\nDEFAULT\n"
+exit = 0
+
+[[case]]
+id = "local-error-recovery"
+intent = "Local recovery binds only errors, preserves caller values and supports a divergent return from the handler."
+source = "cases/local-error-recovery.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "KEPT\nKEPT\nBROKEN\nFALLBACK\nBROKEN\nSUCCESS\n"
+exit = 0
+
+[[case]]
+id = "ordered-match-guards"
+intent = "Failed guards preserve ordered side effects for subsequent arms and the final mutable-value join."
+source = "cases/ordered-match-guards.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2:4:4:0\n"
+exit = 0
+
+[[case]]
+id = "nested-match-payload"
+intent = "Nested variant mismatches and failed string guards preserve owning payloads for later arms and repeated calls."
+source = "cases/nested-match-payload.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "KEPT:KEPT:none:BROKEN:skipped\n"
+exit = 0
+
+[[case]]
+id = "required-optional-value"
+intent = "Required optional binding and owning if-value joins preserve the source and clean up both presence and absence paths."
+source = "cases/required-optional-value.hew"
+suites = ["acceptance", "safety"]
+host_capabilities = ["native"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "PRESENT:present:MISSING\n"
+exit = 0
+
+[[case]]
 id = "owned-enum-loop"
 intent = "Repeated enum copies and matches release each iteration's owners without accumulating dynamic stack scratch space."
 source = "cases/owned-enum-loop.hew"

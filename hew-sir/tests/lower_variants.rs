@@ -1,7 +1,7 @@
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
     lower_module, verify_module, BoundaryDecision, SemOpKind, SemParamPassing, SemTerminator,
-    SirLoweringStatus,
+    SirDiagnosticKind, SirLoweringStatus,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -274,7 +274,7 @@ fn bitcopy_record_and_option_use_exact_descriptors_without_owner_glue() {
 }
 
 #[test]
-fn guarded_variant_match_is_diagnosed_until_predicate_cfg_is_explicit() {
+fn guarded_variant_match_lowers_explicit_predicate_cfg() {
     let lowered = lower_source(
         r#"
         fn choose(value: Option<string>) -> i64 {
@@ -291,23 +291,118 @@ fn guarded_variant_match_is_diagnosed_until_predicate_cfg_is_explicit() {
         "#,
     );
 
-    assert!(matches!(
-        lowered
-            .statuses
-            .iter()
-            .find(|status| status.name == "choose")
-            .map(|status| &status.status),
-        Some(SirLoweringStatus::Unsupported { reason })
-            if reason.contains("require explicit SIR predicate CFG")
-    ));
-    assert!(
-        lowered
-            .module
-            .functions
-            .iter()
-            .all(|function| function.name != "choose"),
-        "a guarded match must not publish a partially lowered body"
+    assert_main_lowered(&lowered);
+    let choose = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "choose")
+        .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
+    assert!(choose.blocks.iter().any(|block| matches!(
+        block.terminator,
+        SemTerminator::RtCall {
+            family: hew_types::RuntimeCallFamily::StringEquals,
+            ..
+        }
+    )));
+    assert!(choose
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::Branch { .. })));
+}
+
+#[test]
+fn scalar_literal_payloads_use_their_exact_sir_constants() {
+    let lowered = lower_source(
+        r"
+        enum Token { Value(f64, char); Empty }
+
+        fn classify(value: Token) -> i64 {
+            match value {
+                .Value(1.5, 'x') => 1,
+                .Value(_, _) => 2,
+                .Empty => 0,
+            }
+        }
+
+        fn main() {
+            classify(Token.Value(1.5, 'x'));
+        }
+        ",
     );
+    assert_main_lowered(&lowered);
+
+    let classify = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "classify")
+        .expect("classify must have a body");
+    let operations = classify
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .collect::<Vec<_>>();
+    assert!(operations
+        .iter()
+        .any(|operation| matches!(operation.kind, SemOpKind::ConstF64(value) if value.to_bits() == 1.5_f64.to_bits())));
+    assert!(operations
+        .iter()
+        .any(|operation| matches!(operation.kind, SemOpKind::ConstChar('x'))));
+}
+
+#[test]
+fn verifier_refuses_scalar_literals_with_forged_result_types() {
+    let mut lowered = lower_source(
+        r"
+        enum Token { Value(f64, char); Empty }
+
+        fn classify(value: Token) -> i64 {
+            match value {
+                .Value(1.5, 'x') => 1,
+                .Value(_, _) => 2,
+                .Empty => 0,
+            }
+        }
+
+        fn main() {
+            classify(Token.Value(1.5, 'x'));
+        }
+        ",
+    );
+    assert_main_lowered(&lowered);
+
+    for operation in lowered
+        .module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.ops)
+    {
+        if matches!(operation.kind, SemOpKind::ConstF64(_)) {
+            operation.results[0].ty = ResolvedTy::Char;
+        } else if matches!(operation.kind, SemOpKind::ConstChar(_)) {
+            operation.results[0].ty = ResolvedTy::F64;
+        }
+    }
+
+    let diagnostics = verify_module(&lowered.module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidConstType {
+            expected: "f64",
+            actual,
+            ..
+        } if actual == "char"
+    )));
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidConstType {
+            expected: "char",
+            actual,
+            ..
+        } if actual == "f64"
+    )));
 }
 
 #[test]
@@ -338,7 +433,7 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
         .functions
         .iter()
         .find(|function| function.name == "choose")
-        .expect("choose must have a body");
+        .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
     let fallback = choose
         .blocks
         .iter()
@@ -360,4 +455,210 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
             )),
         "the None arm must copy its outer fallback instead of consuming it"
     );
+}
+
+#[test]
+fn ordered_guards_thread_mutation_into_later_same_variant_arms() {
+    let lowered = lower_source(
+        r"
+        enum Number { Some(i64); None }
+
+        fn classify(value: Number) -> i64 {
+            var attempts = 0;
+            match value {
+                .Some(number) if { attempts = attempts + 1; number < 0 } => attempts,
+                .Some(number) if { attempts = attempts + 1; number > 0 } => attempts,
+                .Some(0) => attempts,
+                .Some(_) => attempts,
+                .None => attempts,
+            }
+        }
+
+        fn main() {
+            classify(Number.Some(5));
+        }
+        ",
+    );
+    assert_main_lowered(&lowered);
+
+    let classify = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "classify")
+        .expect("classify must have a body");
+    assert!(
+        classify
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, SemTerminator::Branch { .. }))
+            .count()
+            >= 3,
+        "two guards and one literal predicate must remain ordered CFG decisions"
+    );
+    assert!(
+        classify.blocks.iter().any(|block| block.args.len() >= 2),
+        "the match join must carry both its value and the mutated outer binding"
+    );
+}
+
+#[test]
+fn nested_match_and_failed_string_guard_preserve_the_later_payload() {
+    let lowered = lower_source(
+        r#"
+        fn choose(value: Result<Option<string>, string>) -> string {
+            match value {
+                .Ok(.Some(text)) if text == "skip" => "wrong",
+                .Ok(.Some(text)) => text,
+                .Ok(.None) => "none",
+                .Err(reason) => reason,
+            }
+        }
+
+        fn keep_text(value: string) {}
+        fn main() {
+            let original = Ok(Some("kept"));
+            keep_text(choose(original));
+            keep_text(choose(original));
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let choose = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "choose")
+        .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
+    assert!(
+        choose
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, SemTerminator::SwitchVariant { .. }))
+            .count()
+            >= 3,
+        "the outer Result and independently initialized nested Option tests must be explicit"
+    );
+    assert!(choose.blocks.iter().any(|block| matches!(
+        block.terminator,
+        SemTerminator::RtCall {
+            family: hew_types::RuntimeCallFamily::StringEquals,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn unit_match_allows_a_selected_divergent_handler() {
+    let lowered = lower_source(
+        r#"
+        fn report(value: string) {}
+        fn handle(value: Result<string, string>) {
+            match value {
+                .Ok(text) => report(text),
+                .Err(error) => { report(error); return; },
+            }
+        }
+
+        fn main() {
+            handle(Ok("ok"));
+            handle(Err("error"));
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let handle = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "handle")
+        .expect("handle must have a body");
+    assert!(handle
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::SwitchVariant { .. })));
+    assert!(
+        handle
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, SemTerminator::Return { value: None }))
+            .count()
+            >= 2,
+        "both the selected divergent handler and ordinary continuation must return explicitly"
+    );
+}
+
+#[test]
+fn let_else_binds_the_success_payload_into_the_enclosing_scope() {
+    let lowered = lower_source(
+        r#"
+        fn choose(value: Option<string>) -> string {
+            let .Some(text) = value else { return "missing"; };
+            text
+        }
+
+        fn keep_text(value: string) {}
+        fn main() {
+            let original = Some("present");
+            keep_text(choose(original));
+            keep_text(choose(original));
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let choose = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "choose")
+        .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
+    assert!(choose
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::SwitchVariant { .. })));
+    assert!(choose.bindings.iter().any(|binding| binding.name == "text"));
+}
+
+#[test]
+fn owning_if_expression_joins_independent_string_values() {
+    let lowered = lower_source(
+        r#"
+        enum Setting { Small(bool); Missing }
+
+        fn describe(value: Setting) -> string {
+            match value {
+                .Small(enabled) => if enabled { "small" } else { "disabled" },
+                .Missing => "missing",
+            }
+        }
+
+        fn discard(enabled: bool) {
+            let ignored = if enabled { "unused" } else { "also unused" };
+        }
+
+        fn keep_text(value: string) {}
+        fn main() {
+            keep_text(describe(Setting.Small(true)));
+            keep_text(describe(Setting.Small(false)));
+            discard(true);
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let describe = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "describe")
+        .unwrap_or_else(|| panic!("describe must have a body: {:#?}", lowered.statuses));
+    assert!(describe.blocks.iter().any(|block| {
+        block
+            .args
+            .iter()
+            .any(|argument| argument.ty == ResolvedTy::String)
+    }));
 }

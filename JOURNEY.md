@@ -685,3 +685,16 @@ CABI cross-checks pass for Windows MSVC and macOS ARM64; the wasm32-wasip1
 CABI/runtime check also passes, exercising the retained 32-bit layout
 assertions. Census regeneration, freshness and verifier self-tests pass.
 Native platform execution and acceptance intake remain with integration.
+
+## Common borrowed aggregate reads
+
+Continued from the clean signed iteration checkpoint. Vec.is_empty now composes
+Vector(Len) and scalar equality in HIR. The focused semantic suite and a native
+nested record/vector case at O0/O2 pass without a new runtime primitive.
+
+Inspection found BeginBorrow/EndBorrow and physical borrow operations dormant:
+the semantic verifier still rejects local loans. The next bounded change will
+activate local loan validation and shape-checked aggregate borrowing, keeping
+ordinary escaping reads as independent copies. Argument evaluation order must
+remain observable: a value needed across a later mutation still needs a snapshot.
+The prior quadratic cursor read remains until this borrowing contract is complete.

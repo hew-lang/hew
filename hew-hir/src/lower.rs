@@ -22267,6 +22267,30 @@ impl LowerCtx {
                 ..
             } => self.vector_call_kind(hew_types::VecValueOp::New, args, ty, span),
             HirExprKind::ResolvedImplCall {
+                target:
+                    CallTarget::RuntimeCollection(hew_types::MethodTargetFamily::Vec(
+                        hew_types::VecMethod::IsEmpty,
+                    )),
+                receiver,
+                args,
+                ..
+            } if args.is_empty() => {
+                let length = self.vector_call_kind(
+                    hew_types::VecValueOp::Len,
+                    vec![*receiver],
+                    &ResolvedTy::I64,
+                    span,
+                );
+                let length =
+                    self.make_expr(length, ResolvedTy::I64, IntentKind::Read, span.clone());
+                let zero = self.make_i64_literal(0, span.clone());
+                HirExprKind::Binary {
+                    op: BinaryOp::Equal,
+                    left: Box::new(length),
+                    right: Box::new(zero),
+                }
+            }
+            HirExprKind::ResolvedImplCall {
                 target: CallTarget::RuntimeCollection(hew_types::MethodTargetFamily::Vec(method)),
                 receiver,
                 args,

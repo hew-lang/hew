@@ -255,12 +255,17 @@ fn select_cases<'a>(
     selected_id: Option<&str>,
 ) -> Result<Vec<&'a Case>> {
     if let Some(selected_id) = selected_id {
-        return manifest
+        let case = manifest
             .cases
             .iter()
             .find(|case| case.id == selected_id)
-            .map(|case| vec![case])
-            .ok_or_else(|| format!("unknown core acceptance case: {selected_id}"));
+            .ok_or_else(|| format!("unknown core acceptance case: {selected_id}"))?;
+        if case.suite != suite {
+            return Err(format!(
+                "core acceptance case {selected_id:?} does not belong to suite {suite:?}"
+            ));
+        }
+        return Ok(vec![case]);
     }
     let selected = manifest
         .cases
@@ -623,10 +628,13 @@ mod tests {
     }
 
     #[test]
-    fn focused_case_is_not_restricted_to_the_default_suite() {
+    fn focused_case_cannot_replace_the_requested_suite() {
         let manifest = manifest();
-        let selected = select_cases(&manifest, "acceptance", Some("safety-case"))
-            .expect("a focused case remains selectable for local diagnosis");
+        let error = select_cases(&manifest, "safety", Some("acceptance-case"))
+            .expect_err("ordinary execution cannot substitute for safety validation");
+        assert!(error.contains("does not belong to suite"));
+        let selected = select_cases(&manifest, "safety", Some("safety-case"))
+            .expect("a focused case within its suite remains selectable");
         assert_eq!(selected[0].id, "safety-case");
     }
 

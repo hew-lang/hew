@@ -10,8 +10,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewVecElemCloneThunk,
-    HewVecElemDropThunk, HewVecElemLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueCloneThunk, HewValueDropThunk,
+    HewValueLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -93,7 +93,7 @@ fn owned_entries_allocations_are_freed_exactly_once_after_map_drop() {
     HEAP_FREES.store(0, Ordering::SeqCst);
 
     let key_layout = HewMapKeyLayout {
-        value: HewVecElemLayout {
+        value: HewValueLayout {
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -103,14 +103,14 @@ fn owned_entries_allocations_are_freed_exactly_once_after_map_drop() {
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
-    let value_layout = HewVecElemLayout {
+    let value_layout = HewValueLayout {
         size: size_of::<OwnedValue>(),
         align: align_of::<OwnedValue>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        drop_fn: Some(drop_value as HewVecElemDropThunk),
-        clone_fn: Some(clone_value as HewVecElemCloneThunk),
+        drop_fn: Some(drop_value as HewValueDropThunk),
+        clone_fn: Some(clone_value as HewValueCloneThunk),
     };
-    let pair_layout = HewVecElemLayout {
+    let pair_layout = HewValueLayout {
         size: size_of::<Pair>(),
         align: align_of::<Pair>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,

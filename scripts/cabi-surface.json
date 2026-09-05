@@ -3179,7 +3179,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_channel_recv_layout( *mut HewChannelReceiver, *mut c_void, *const HewVecElemLayout, ) -> i32",
+        "native": "fn hew_channel_recv_layout( *mut HewChannelReceiver, *mut c_void, *const HewValueLayout, ) -> i32",
         "wasm32-wasip1": "fn hew_channel_recv_layout( *mut c_void, *mut c_void, *const c_void, ) -> i32"
       },
       "symbol": "hew_channel_recv_layout"
@@ -3194,8 +3194,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_channel_send_layout( *mut HewChannelSender, *const c_void, *const HewVecElemLayout, )",
-        "wasm32-wasip1": "fn hew_channel_send_layout( *mut HewWasmChannelSender, *const c_void, *const HewVecElemLayout, )"
+        "native": "fn hew_channel_send_layout( *mut HewChannelSender, *const c_void, *const HewValueLayout, )",
+        "wasm32-wasip1": "fn hew_channel_send_layout( *mut HewWasmChannelSender, *const c_void, *const HewValueLayout, )"
       },
       "symbol": "hew_channel_send_layout"
     },
@@ -3239,8 +3239,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_channel_try_recv_layout( *mut HewChannelReceiver, *mut c_void, *const HewVecElemLayout, ) -> i32",
-        "wasm32-wasip1": "fn hew_channel_try_recv_layout( *mut HewWasmChannelReceiver, *mut c_void, *const HewVecElemLayout, ) -> i32"
+        "native": "fn hew_channel_try_recv_layout( *mut HewChannelReceiver, *mut c_void, *const HewValueLayout, ) -> i32",
+        "wasm32-wasip1": "fn hew_channel_try_recv_layout( *mut HewWasmChannelReceiver, *mut c_void, *const HewValueLayout, ) -> i32"
       },
       "symbol": "hew_channel_try_recv_layout"
     },
@@ -6053,8 +6053,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_hashmap_entries_layout( *const HewLayoutHashMap, *const HewVecElemLayout, u64, ) -> *mut HewVec",
-        "wasm32-wasip1": "fn hew_hashmap_entries_layout( *const HewLayoutHashMap, *const HewVecElemLayout, u64, ) -> *mut HewVec"
+        "native": "fn hew_hashmap_entries_layout( *const HewLayoutHashMap, *const HewValueLayout, u64, ) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_hashmap_entries_layout( *const HewLayoutHashMap, *const HewValueLayout, u64, ) -> *mut HewVec"
       },
       "symbol": "hew_hashmap_entries_layout"
     },
@@ -6218,8 +6218,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_hashmap_new_with_layout( *const HewMapKeyLayout, *const HewVecElemLayout, ) -> *mut HewLayoutHashMap",
-        "wasm32-wasip1": "fn hew_hashmap_new_with_layout( *const HewMapKeyLayout, *const HewVecElemLayout, ) -> *mut HewLayoutHashMap"
+        "native": "fn hew_hashmap_new_with_layout( *const HewMapKeyLayout, *const HewValueLayout, ) -> *mut HewLayoutHashMap",
+        "wasm32-wasip1": "fn hew_hashmap_new_with_layout( *const HewMapKeyLayout, *const HewValueLayout, ) -> *mut HewLayoutHashMap"
       },
       "symbol": "hew_hashmap_new_with_layout"
     },
@@ -13678,7 +13678,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_stream_await_send_layout( *mut HewSink, *mut HewActor, *mut HewReadSlot, *const c_void, *const HewVecElemLayout, ) -> i32"
+        "native": "fn hew_stream_await_send_layout( *mut HewSink, *mut HewActor, *mut HewReadSlot, *const c_void, *const HewValueLayout, ) -> i32"
       },
       "symbol": "hew_stream_await_send_layout"
     },
@@ -13957,7 +13957,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_stream_next_layout( *mut HewStream, *mut c_void, *const HewVecElemLayout, ) -> i32"
+        "native": "fn hew_stream_next_layout( *mut HewStream, *mut c_void, *const HewValueLayout, ) -> i32"
       },
       "symbol": "hew_stream_next_layout"
     },
@@ -14100,7 +14100,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_stream_pop_layout( *mut HewStream, *mut c_void, *const HewVecElemLayout, ) -> i32"
+        "native": "fn hew_stream_pop_layout( *mut HewStream, *mut c_void, *const HewValueLayout, ) -> i32"
       },
       "symbol": "hew_stream_pop_layout"
     },
@@ -14126,7 +14126,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_stream_send_layout( *mut HewSink, *const c_void, *const HewVecElemLayout, )"
+        "native": "fn hew_stream_send_layout( *mut HewSink, *const c_void, *const HewValueLayout, )"
       },
       "symbol": "hew_stream_send_layout"
     },
@@ -14182,7 +14182,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_stream_try_next_layout( *mut HewStream, *mut c_void, *const HewVecElemLayout, ) -> i32"
+        "native": "fn hew_stream_try_next_layout( *mut HewStream, *mut c_void, *const HewValueLayout, ) -> i32"
       },
       "symbol": "hew_stream_try_next_layout"
     },
@@ -18387,8 +18387,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_new_with_elem_layout( *const HewVecElemLayout, ) -> *mut HewVec",
-        "wasm32-wasip1": "fn hew_vec_new_with_elem_layout( *const HewVecElemLayout, ) -> *mut HewVec"
+        "native": "fn hew_vec_new_with_elem_layout( *const HewValueLayout, ) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_vec_new_with_elem_layout( *const HewValueLayout, ) -> *mut HewVec"
       },
       "symbol": "hew_vec_new_with_elem_layout"
     },
@@ -21139,8 +21139,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_bool: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_bool: HewVecElemLayout"
+        "native": "static hew_layout_val_bool: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_bool: HewValueLayout"
       },
       "symbol": "hew_layout_val_bool"
     },
@@ -21154,8 +21154,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_bytes: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_bytes: HewVecElemLayout"
+        "native": "static hew_layout_val_bytes: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_bytes: HewValueLayout"
       },
       "symbol": "hew_layout_val_bytes"
     },
@@ -21169,8 +21169,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_char: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_char: HewVecElemLayout"
+        "native": "static hew_layout_val_char: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_char: HewValueLayout"
       },
       "symbol": "hew_layout_val_char"
     },
@@ -21184,8 +21184,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_f32: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_f32: HewVecElemLayout"
+        "native": "static hew_layout_val_f32: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_f32: HewValueLayout"
       },
       "symbol": "hew_layout_val_f32"
     },
@@ -21199,8 +21199,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_f64: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_f64: HewVecElemLayout"
+        "native": "static hew_layout_val_f64: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_f64: HewValueLayout"
       },
       "symbol": "hew_layout_val_f64"
     },
@@ -21214,8 +21214,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_i32: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_i32: HewVecElemLayout"
+        "native": "static hew_layout_val_i32: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_i32: HewValueLayout"
       },
       "symbol": "hew_layout_val_i32"
     },
@@ -21229,8 +21229,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_i64: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_i64: HewVecElemLayout"
+        "native": "static hew_layout_val_i64: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_i64: HewValueLayout"
       },
       "symbol": "hew_layout_val_i64"
     },
@@ -21244,8 +21244,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_string: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_string: HewVecElemLayout"
+        "native": "static hew_layout_val_string: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_string: HewValueLayout"
       },
       "symbol": "hew_layout_val_string"
     },
@@ -21259,8 +21259,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_u32: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_u32: HewVecElemLayout"
+        "native": "static hew_layout_val_u32: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_u32: HewValueLayout"
       },
       "symbol": "hew_layout_val_u32"
     },
@@ -21274,8 +21274,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_u64: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_u64: HewVecElemLayout"
+        "native": "static hew_layout_val_u64: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_u64: HewValueLayout"
       },
       "symbol": "hew_layout_val_u64"
     },
@@ -21289,8 +21289,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "static hew_layout_val_unit: HewVecElemLayout",
-        "wasm32-wasip1": "static hew_layout_val_unit: HewVecElemLayout"
+        "native": "static hew_layout_val_unit: HewValueLayout",
+        "wasm32-wasip1": "static hew_layout_val_unit: HewValueLayout"
       },
       "symbol": "hew_layout_val_unit"
     }

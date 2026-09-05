@@ -16,7 +16,7 @@
 use core::ffi::c_void;
 use core::ptr;
 
-use hew_cabi::map::{HewMapKeyLayout, HewVecElemLayout};
+use hew_cabi::map::{HewMapKeyLayout, HewValueLayout};
 use hew_cabi::vec::{HewTypeOwnershipKind, HewVec};
 
 /// Entry states.
@@ -90,7 +90,7 @@ pub struct HewLayoutHashMap {
     /// map, not just a one-shot at-entry check.
     pub key_layout: HewMapKeyLayout,
     /// Value descriptor — owned by-value snapshot (same rationale).
-    pub val_layout: HewVecElemLayout,
+    pub val_layout: HewValueLayout,
 }
 
 /// Opaque cursor for borrowing occupied entries from a layout-backed map.
@@ -383,7 +383,7 @@ pub unsafe fn validate_key_layout(key_layout: *const HewMapKeyLayout) {
     // the constructor).
 }
 
-/// Validate a `HewVecElemLayout` at constructor time.
+/// Validate a `HewValueLayout` at constructor time.
 ///
 /// Exposed `pub` for the same reason as [`validate_key_layout`].
 ///
@@ -397,8 +397,8 @@ pub unsafe fn validate_key_layout(key_layout: *const HewMapKeyLayout) {
 ///
 /// # Safety
 ///
-/// `val_layout` must be non-null and point to a valid `HewVecElemLayout`.
-pub unsafe fn validate_val_layout(val_layout: *const HewVecElemLayout) {
+/// `val_layout` must be non-null and point to a valid `HewValueLayout`.
+pub unsafe fn validate_val_layout(val_layout: *const HewValueLayout) {
     if val_layout.is_null() {
         crate::set_last_error("HewLayoutHashMap: val_layout is null");
         panic!("HewLayoutHashMap: val_layout is null");
@@ -441,7 +441,7 @@ pub unsafe fn validate_val_layout(val_layout: *const HewVecElemLayout) {
 /// `validate_key_layout` / `validate_val_layout` first).
 pub unsafe fn validate_descriptor_ownership(
     key_layout: *const HewMapKeyLayout,
-    val_layout: *const HewVecElemLayout,
+    val_layout: *const HewValueLayout,
 ) {
     // SAFETY: caller-guaranteed non-null + valid.
     let kl = unsafe { &*key_layout };
@@ -519,7 +519,7 @@ pub unsafe fn validate_descriptor_ownership(
 #[must_use]
 pub unsafe fn validate_and_compute_slot_layout(
     key_layout: *const HewMapKeyLayout,
-    val_layout: *const HewVecElemLayout,
+    val_layout: *const HewValueLayout,
 ) -> (usize, usize, usize, usize) {
     // SAFETY: forwarded; the validator itself null-checks.
     unsafe { validate_key_layout(key_layout) };
@@ -831,7 +831,7 @@ unsafe fn layout_resize(m: *mut HewLayoutHashMap) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_new_with_layout(
     key_layout: *const HewMapKeyLayout,
-    val_layout: *const HewVecElemLayout,
+    val_layout: *const HewValueLayout,
 ) -> *mut HewLayoutHashMap {
     if key_layout.is_null() {
         crate::set_last_error("hew_hashmap_new_with_layout: key_layout is null");
@@ -897,7 +897,7 @@ fn abort_layout_clone(reason: impl Into<String>) -> ! {
     std::process::abort();
 }
 
-fn require_clone(layout: &HewVecElemLayout, label: &str) {
+fn require_clone(layout: &HewValueLayout, label: &str) {
     if layout.ownership_kind != HewTypeOwnershipKind::Plain && layout.clone_fn.is_none() {
         abort_layout_clone(format!("{label}: clone callback is unavailable"));
     }
@@ -905,7 +905,7 @@ fn require_clone(layout: &HewVecElemLayout, label: &str) {
 
 /// Copy one value through the shared descriptor. The callback replaces owning
 /// leaves after the complete representation is seeded, exactly as for vectors.
-unsafe fn clone_layout_blob(layout: HewVecElemLayout, src: *const u8, dst: *mut u8, label: &str) {
+unsafe fn clone_layout_blob(layout: HewValueLayout, src: *const u8, dst: *mut u8, label: &str) {
     require_clone(&layout, label);
     if layout.size > 0 {
         // SAFETY: the caller supplies live, non-overlapping value slots of this layout.
@@ -1724,7 +1724,7 @@ pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
 /// Collect one field from each occupied slot using the vector's copy protocol.
 unsafe fn collect_layout_field(
     map: &HewLayoutHashMap,
-    layout: HewVecElemLayout,
+    layout: HewValueLayout,
     offset: usize,
 ) -> *mut HewVec {
     require_clone(&layout, "map projection");
@@ -1787,7 +1787,7 @@ pub unsafe extern "C" fn hew_hashmap_keys_layout(m: *const HewLayoutHashMap) -> 
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_entries_layout(
     m: *const HewLayoutHashMap,
-    pair_layout: *const HewVecElemLayout,
+    pair_layout: *const HewValueLayout,
     v_offset: u64,
 ) -> *mut HewVec {
     if m.is_null() || pair_layout.is_null() {

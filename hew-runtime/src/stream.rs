@@ -2475,7 +2475,7 @@ pub unsafe extern "C" fn hew_stream_await_next(
 // ── Layout-witness element path (generic Stream<T> width) ────────────────────
 //
 // The `*_layout` entries carry ANY element type the compiler can describe
-// through one mechanism: a `HewVecElemLayout` witness selects the envelope
+// through one mechanism: a `HewValueLayout` witness selects the envelope
 // encoding and ownership discipline (see `crate::channel_common`). String and
 // bytes elements stay content-encoded, so the witness path composes with
 // platform backings (TCP, file, lines/chunks adapters) that produce raw byte
@@ -2490,13 +2490,13 @@ pub unsafe extern "C" fn hew_stream_await_next(
 ///
 /// `sink` must be a valid pointer. `data` must point to one live element of
 /// the witness's type (see [`crate::channel_common::encode_elem_envelope`]).
-/// `layout` must point to a valid `HewVecElemLayout` for the duration of the
+/// `layout` must point to a valid `HewValueLayout` for the duration of the
 /// call (in practice a codegen static).
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_send_layout(
     sink: *mut HewSink,
     data: *const c_void,
-    layout: *const crate::vec::HewVecElemLayout,
+    layout: *const crate::vec::HewValueLayout,
 ) {
     cabi_guard!(sink.is_null());
     // SAFETY: layout validity is the caller's contract; the helper aborts
@@ -2550,7 +2550,7 @@ pub unsafe extern "C" fn hew_stream_send_layout(
 pub unsafe extern "C" fn hew_stream_next_layout(
     stream: *mut HewStream,
     out: *mut c_void,
-    layout: *const crate::vec::HewVecElemLayout,
+    layout: *const crate::vec::HewValueLayout,
 ) -> i32 {
     cabi_guard!(stream.is_null() || out.is_null(), 0);
     // SAFETY: layout validity is the caller's contract.
@@ -2578,7 +2578,7 @@ pub unsafe extern "C" fn hew_stream_next_layout(
 pub unsafe extern "C" fn hew_stream_pop_layout(
     stream: *mut HewStream,
     out: *mut c_void,
-    layout: *const crate::vec::HewVecElemLayout,
+    layout: *const crate::vec::HewValueLayout,
 ) -> i32 {
     cabi_guard!(stream.is_null() || out.is_null(), 0);
     // SAFETY: layout validity is the caller's contract.
@@ -2612,7 +2612,7 @@ pub unsafe extern "C" fn hew_stream_pop_layout(
 pub unsafe extern "C" fn hew_stream_try_next_layout(
     stream: *mut HewStream,
     out: *mut c_void,
-    layout: *const crate::vec::HewVecElemLayout,
+    layout: *const crate::vec::HewValueLayout,
 ) -> i32 {
     cabi_guard!(stream.is_null() || out.is_null(), 0);
     // SAFETY: layout validity is the caller's contract.
@@ -2729,7 +2729,7 @@ pub unsafe extern "C" fn hew_stream_await_send_layout(
     actor: *mut crate::actor::HewActor,
     slot: *mut crate::read_slot::HewReadSlot,
     data: *const c_void,
-    layout: *const crate::vec::HewVecElemLayout,
+    layout: *const crate::vec::HewValueLayout,
 ) -> i32 {
     if sink.is_null() {
         return crate::channel_core::STREAM_AWAIT_READY;
@@ -5434,10 +5434,10 @@ mod tests {
 
     // ── Layout-witness element path (generic Stream<T> width) ───────────────
 
-    use crate::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+    use crate::vec::{HewTypeOwnershipKind, HewValueLayout};
 
-    fn plain_elem_layout(size: usize, align: usize) -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn plain_elem_layout(size: usize, align: usize) -> HewValueLayout {
+        HewValueLayout {
             size,
             align,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -5446,8 +5446,8 @@ mod tests {
         }
     }
 
-    fn string_elem_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn string_elem_layout() -> HewValueLayout {
+        HewValueLayout {
             size: size_of::<*const HewString>(),
             align: align_of::<*const HewString>(),
             ownership_kind: HewTypeOwnershipKind::String,
@@ -5456,8 +5456,8 @@ mod tests {
         }
     }
 
-    fn bytes_elem_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn bytes_elem_layout() -> HewValueLayout {
+        HewValueLayout {
             size: size_of::<crate::bytes::BytesTriple>(),
             align: align_of::<crate::bytes::BytesTriple>(),
             ownership_kind: HewTypeOwnershipKind::Bytes,
@@ -5646,8 +5646,8 @@ mod tests {
         ST_OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn st_owned_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn st_owned_layout() -> HewValueLayout {
+        HewValueLayout {
             size: size_of::<StOwnedElem>(),
             align: align_of::<StOwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

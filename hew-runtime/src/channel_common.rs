@@ -3,7 +3,7 @@ use std::ptr;
 
 use std::ffi::c_void;
 
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
 
 pub(crate) unsafe fn free_channel_pair<P, S, R>(
     pair: *mut P,
@@ -37,7 +37,7 @@ pub(crate) unsafe fn free_channel_pair<P, S, R>(
 // ---------------------------------------------------------------------------
 //
 // The channel and stream queue cores carry opaque `Vec<u8>` envelopes; the
-// `*_layout` runtime entries use a `HewVecElemLayout` witness (the same
+// `*_layout` runtime entries use a `HewValueLayout` witness (the same
 // descriptor W5.016 production-proved for `Vec<owned-T>`) to decide how a
 // typed element is serialised into and decoded out of that envelope:
 //
@@ -71,12 +71,12 @@ pub(crate) fn abort_elem_witness(context: &str, reason: &str) -> ! {
 ///
 /// # Safety
 ///
-/// `layout`, when non-null, must point to a `HewVecElemLayout` that lives for
+/// `layout`, when non-null, must point to a `HewValueLayout` that lives for
 /// the duration of the caller's operation (in practice a codegen static).
 pub(crate) unsafe fn elem_layout_witness<'a>(
-    layout: *const HewVecElemLayout,
+    layout: *const HewValueLayout,
     context: &str,
-) -> &'a HewVecElemLayout {
+) -> &'a HewValueLayout {
     if layout.is_null() {
         abort_elem_witness(context, "element layout witness must be non-null");
     }
@@ -110,7 +110,7 @@ pub(crate) unsafe fn elem_layout_witness<'a>(
 /// discarded.
 #[allow(dead_code, reason = "used by the wasm32 channel backing")]
 pub(crate) fn drop_elem_envelope(
-    layout: Option<&HewVecElemLayout>,
+    layout: Option<&HewValueLayout>,
     mut envelope: Vec<u8>,
     context: &str,
 ) {
@@ -145,7 +145,7 @@ pub(crate) fn drop_elem_envelope(
 /// `String`, a `BytesTriple` slot for `Bytes`.
 pub(crate) unsafe fn encode_elem_envelope(
     data: *const c_void,
-    layout: &HewVecElemLayout,
+    layout: &HewValueLayout,
     context: &str,
 ) -> Vec<u8> {
     match layout.ownership_kind {
@@ -216,7 +216,7 @@ pub(crate) unsafe fn encode_elem_envelope(
 pub(crate) unsafe fn decode_elem_envelope(
     item: Option<Vec<u8>>,
     out: *mut c_void,
-    layout: &HewVecElemLayout,
+    layout: &HewValueLayout,
     context: &str,
 ) -> i32 {
     let Some(item) = item else {

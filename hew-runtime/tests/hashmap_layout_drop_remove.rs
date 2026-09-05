@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewVecElemDropThunk, HewVecElemLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueDropThunk, HewValueLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -61,21 +61,21 @@ fn remove_drops_stored_k_and_v_exactly_once_each() {
     V_DROP_COUNT.store(0, Ordering::SeqCst);
 
     let kl = HewMapKeyLayout {
-        value: HewVecElemLayout {
+        value: HewValueLayout {
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
             clone_fn: None,
-            drop_fn: Some(k_drop_count as HewVecElemDropThunk),
+            drop_fn: Some(k_drop_count as HewValueDropThunk),
         },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
-    let vl = HewVecElemLayout {
+    let vl = HewValueLayout {
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        drop_fn: Some(v_drop_count as HewVecElemDropThunk),
+        drop_fn: Some(v_drop_count as HewValueDropThunk),
         clone_fn: None,
     };
 
@@ -119,21 +119,21 @@ fn remove_missing_key_invokes_no_drops() {
     K_DROP_COUNT.store(0, Ordering::SeqCst);
     V_DROP_COUNT.store(0, Ordering::SeqCst);
     let kl = HewMapKeyLayout {
-        value: HewVecElemLayout {
+        value: HewValueLayout {
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
             clone_fn: None,
-            drop_fn: Some(k_drop_count as HewVecElemDropThunk),
+            drop_fn: Some(k_drop_count as HewValueDropThunk),
         },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
-    let vl = HewVecElemLayout {
+    let vl = HewValueLayout {
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        drop_fn: Some(v_drop_count as HewVecElemDropThunk),
+        drop_fn: Some(v_drop_count as HewValueDropThunk),
         clone_fn: None,
     };
     unsafe {

@@ -9,7 +9,7 @@ use hew_cabi::map::HewMapKeyLayout;
 use hew_cabi::string::{
     string_as_bytes, string_as_str, string_from_str, string_release, HewString,
 };
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
 use hew_runtime::{hashmap, hashset, vec};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -115,7 +115,7 @@ unsafe extern "C" fn drop_pair(slot: *mut c_void) {
     }
 }
 
-const RECORD_LAYOUT: HewVecElemLayout = HewVecElemLayout {
+const RECORD_LAYOUT: HewValueLayout = HewValueLayout {
     size: size_of::<Record>(),
     align: align_of::<Record>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -129,7 +129,7 @@ const KEY_LAYOUT: HewMapKeyLayout = HewMapKeyLayout {
     eq_fn: Some(equal_record),
 };
 
-const PAIR_LAYOUT: HewVecElemLayout = HewVecElemLayout {
+const PAIR_LAYOUT: HewValueLayout = HewValueLayout {
     size: size_of::<Pair>(),
     align: align_of::<Pair>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -383,7 +383,7 @@ unsafe extern "C" fn drop_zero(slot: *mut c_void) {
 fn zero_sized_value_callbacks_follow_logical_owners() {
     let _guard = TEST_LOCK.lock().unwrap();
     assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
-    let layout = HewVecElemLayout {
+    let layout = HewValueLayout {
         size: 0,
         align: 1,
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -456,7 +456,7 @@ unsafe extern "C" fn drop_aligned_zero(slot: *mut c_void) {
 fn aligned_zero_sized_vector_preserves_callback_alignment() {
     let _guard = TEST_LOCK.lock().unwrap();
     assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
-    let layout = HewVecElemLayout {
+    let layout = HewValueLayout {
         size: size_of::<AlignedUnit>(),
         align: align_of::<AlignedUnit>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,

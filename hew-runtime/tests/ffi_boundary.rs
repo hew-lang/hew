@@ -2136,7 +2136,7 @@ mod generic_vec_tests {
         );
         assert!(
             String::from_utf8_lossy(&status.stderr)
-                .contains("HewTypeLayout LayoutManaged requires HewVecElemLayout thunks"),
+                .contains("HewTypeLayout LayoutManaged requires HewValueLayout thunks"),
             "thunk-less LayoutManaged construction must report the hard-cutover diagnostic"
         );
     }
@@ -2259,7 +2259,7 @@ mod generic_vec_tests {
         );
         assert!(
             String::from_utf8_lossy(&status.stderr)
-                .contains("HewTypeLayout LayoutManaged requires HewVecElemLayout thunks"),
+                .contains("HewTypeLayout LayoutManaged requires HewValueLayout thunks"),
             "thunk-less LayoutManaged construction must report the hard-cutover diagnostic"
         );
     }

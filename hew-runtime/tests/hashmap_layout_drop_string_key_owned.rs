@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewVecElemDropThunk, HewVecElemLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueDropThunk, HewValueLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -99,19 +99,19 @@ unsafe extern "C" fn eq_cstr_slot(lhs: *const c_void, rhs: *const c_void) -> i32
     }
 }
 
-fn make_descriptors() -> (HewMapKeyLayout, HewVecElemLayout) {
+fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
-        value: HewVecElemLayout {
+        value: HewValueLayout {
             size: size_of::<*mut c_char>(),
             align: align_of::<*mut c_char>(),
             ownership_kind: HewTypeOwnershipKind::String,
             clone_fn: None,
-            drop_fn: Some(string_key_drop as HewVecElemDropThunk),
+            drop_fn: Some(string_key_drop as HewValueDropThunk),
         },
         hash_fn: Some(hash_cstr_slot as HewMapKeyHashThunk),
         eq_fn: Some(eq_cstr_slot as HewMapKeyEqThunk),
     };
-    let vl = HewVecElemLayout {
+    let vl = HewValueLayout {
         size: size_of::<i32>(),
         align: align_of::<i32>(),
         ownership_kind: HewTypeOwnershipKind::Plain,

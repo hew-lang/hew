@@ -289,7 +289,7 @@ pub unsafe extern "C" fn hew_channel_pair_free(pair: *mut HewChannelPair) {
 // ── Layout-witness element path (generic Sender<T> / Receiver<T> width) ─────
 //
 // The `*_layout` entries carry ANY element type the compiler can describe
-// through one mechanism: a `HewVecElemLayout` witness (the W5.016 descriptor)
+// through one mechanism: a `HewValueLayout` witness (the W5.016 descriptor)
 // selects the envelope encoding and the ownership discipline. See the table in
 // `crate::channel_common` for the per-kind envelope contract.
 //
@@ -310,13 +310,13 @@ pub unsafe extern "C" fn hew_channel_pair_free(pair: *mut HewChannelPair) {
 ///
 /// `sender` must be a valid pointer. `data` must point to one live element of
 /// the witness's type (see [`crate::channel_common::encode_elem_envelope`]).
-/// `layout` must point to a valid `HewVecElemLayout` for the duration of the
+/// `layout` must point to a valid `HewValueLayout` for the duration of the
 /// call (in practice a codegen static).
 #[no_mangle]
 pub unsafe extern "C" fn hew_channel_send_layout(
     sender: *mut HewChannelSender,
     data: *const c_void,
-    layout: *const crate::vec::HewVecElemLayout,
+    layout: *const crate::vec::HewValueLayout,
 ) {
     cabi_guard!(sender.is_null() || data.is_null());
     // SAFETY: layout validity is the caller's contract; the helper aborts
@@ -351,7 +351,7 @@ pub unsafe extern "C" fn hew_channel_send_layout(
 pub unsafe extern "C" fn hew_channel_recv_layout(
     receiver: *mut HewChannelReceiver,
     out: *mut c_void,
-    layout: *const crate::vec::HewVecElemLayout,
+    layout: *const crate::vec::HewValueLayout,
 ) -> i32 {
     cabi_guard!(receiver.is_null() || out.is_null(), 0);
     // SAFETY: layout validity is the caller's contract.
@@ -378,7 +378,7 @@ pub unsafe extern "C" fn hew_channel_recv_layout(
 pub unsafe extern "C" fn hew_channel_try_recv_layout(
     receiver: *mut HewChannelReceiver,
     out: *mut c_void,
-    layout: *const crate::vec::HewVecElemLayout,
+    layout: *const crate::vec::HewValueLayout,
 ) -> i32 {
     cabi_guard!(receiver.is_null() || out.is_null(), 0);
     // SAFETY: layout validity is the caller's contract.
@@ -1349,10 +1349,10 @@ mod tests {
 
     // ── Layout-witness element path (generic element width) ─────────────────
 
-    use crate::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+    use crate::vec::{HewTypeOwnershipKind, HewValueLayout};
 
-    fn plain_layout(size: usize, align: usize) -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn plain_layout(size: usize, align: usize) -> HewValueLayout {
+        HewValueLayout {
             size,
             align,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -1361,8 +1361,8 @@ mod tests {
         }
     }
 
-    fn string_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn string_layout() -> HewValueLayout {
+        HewValueLayout {
             size: size_of::<*const HewString>(),
             align: align_of::<*const HewString>(),
             ownership_kind: HewTypeOwnershipKind::String,
@@ -1571,8 +1571,8 @@ mod tests {
         CH_OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn ch_owned_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn ch_owned_layout() -> HewValueLayout {
+        HewValueLayout {
             size: size_of::<ChOwnedElem>(),
             align: align_of::<ChOwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

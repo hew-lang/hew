@@ -1024,7 +1024,7 @@ fn vector_descriptor_type<'ctx>(
 ) -> inkwell::types::StructType<'ctx> {
     let size_ty = ctx.ptr_sized_int_type(target, None);
     let pointer = ctx.ptr_type(AddressSpace::default());
-    // HewVecElemLayout's C layout is realized for the selected target,
+    // HewValueLayout's C layout is realized for the selected target,
     // including padding around its u8 ownership discriminant.
     ctx.struct_type(
         &[
@@ -3666,7 +3666,7 @@ mod tests {
 
     #[test]
     fn vector_descriptor_matches_the_runtime_c_abi() {
-        use hew_runtime::vec::HewVecElemLayout;
+        use hew_runtime::vec::HewValueLayout;
         use std::mem::{align_of, offset_of, size_of};
 
         let triple = native_emission_triple();
@@ -3676,18 +3676,18 @@ mod tests {
         let descriptor = vector_descriptor_type(&ctx, &target);
         assert_eq!(
             target.get_abi_size(&descriptor),
-            size_of::<HewVecElemLayout>() as u64
+            size_of::<HewValueLayout>() as u64
         );
         assert_eq!(
             target.get_abi_alignment(&descriptor) as usize,
-            align_of::<HewVecElemLayout>()
+            align_of::<HewValueLayout>()
         );
         for (index, expected) in [
-            offset_of!(HewVecElemLayout, size),
-            offset_of!(HewVecElemLayout, align),
-            offset_of!(HewVecElemLayout, ownership_kind),
-            offset_of!(HewVecElemLayout, clone_fn),
-            offset_of!(HewVecElemLayout, drop_fn),
+            offset_of!(HewValueLayout, size),
+            offset_of!(HewValueLayout, align),
+            offset_of!(HewValueLayout, ownership_kind),
+            offset_of!(HewValueLayout, clone_fn),
+            offset_of!(HewValueLayout, drop_fn),
         ]
         .into_iter()
         .enumerate()

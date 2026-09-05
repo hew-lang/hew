@@ -665,3 +665,23 @@ insertion functions. Their explicit borrowing contracts and generated surface
 now agree. The retained native and paired sanitizer suites and the combined
 runtime/C ABI/stdlib suite pass. Unsupported language coverage and the pinned
 structural grammar remain separate full-lint failures.
+
+## Shared value layout naming
+
+Based on `a38f3de3d`, move the shared value descriptor, ownership kind and
+copy/drop thunks into `hew-cabi/src/value.rs`. Collections re-export the
+canonical names without compatibility aliases. Preserve the physical layout,
+callback signatures, clone rollback and drop semantics; keep the legacy
+`HewTypeLayout` unchanged. Update runtime consumers, HTTP header-pair glue,
+owning documentation and generated CABI census. Regeneration also refreshes
+DNS/regex signatures whose implementations had already migrated in the base.
+
+CABI and runtime suites, stdlib/testkit tests, format and scoped JSON Clippy
+pass. The isolated compiler name substitutions were included for compilation
+but are supplied separately for integration with the borrowed-projection work;
+the main checkpoint excludes those files. No Hew source or behaviour changes.
+
+CABI cross-checks pass for Windows MSVC and macOS ARM64; the wasm32-wasip1
+CABI/runtime check also passes, exercising the retained 32-bit layout
+assertions. Census regeneration, freshness and verifier self-tests pass.
+Native platform execution and acceptance intake remain with integration.

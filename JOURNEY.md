@@ -1121,3 +1121,22 @@ variant/optional payloads, and Hash/Eq callback faults with live callback locals
 and nested insertion payloads. Their SIR source controls pass and now require
 every demanded callable to lower. Native callback and sanitizer execution remain
 pending the emitter and fault-kernel composition.
+
+### Selected physical key callback emitter
+
+Added a child emitter that predeclares the selected capability graph and executes
+physical Scalar, String, Bytes, Aggregate and User Hash/Eq recipes. Variant,
+Vector, Map and Set recipes implement structural Eq; their derived Hash recipes
+explicitly refuse because the checker does not admit them. User calls preserve
+the selected private ABI, exact fault/status and borrowed carriers. Callback
+results are staged until success. Fields exclude padding, byte hashing visits
+only the active region, and floating keys use coherent total bitwise Hash/Eq.
+Container comparisons borrow slots and release their local iterators on all exits.
+Map/Set key descriptors reuse the existing value clone/drop descriptor generator
+and require both selected key capabilities before emission.
+
+The child compiles with the separately staged parent hook, and the existing
+hew-codegen-rs suite and scoped make lint-rust pass. This is an initial compiled
+checkpoint; direct callback execution and fault regression tests are the next
+validation step. At this base the checker also refuses derived Map/Set Eq, so
+those recipes are present for the physical interface but are not source-admitted.

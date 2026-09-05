@@ -29,7 +29,7 @@ type GenericWrapper<T> {
 }
 
 enum ResourceEnvelope {
-    Full(ResourceToken);
+    Full(ResourceToken),
     Empty
 }
 

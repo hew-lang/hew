@@ -139,12 +139,12 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "enum unit-variant construction + dispatch",
-        probe: "enum Op { Double; }\nfn apply(op: Op, x: i64) -> i64 {\n    match op { .Double => x * 2 }\n}\nfn main() {\n    println(f\"{apply(.Double, 5)}\");\n}\n",
+        probe: "enum Op { Double, }\nfn apply(op: Op, x: i64) -> i64 {\n    match op { .Double => x * 2 }\n}\nfn main() {\n    println(f\"{apply(.Double, 5)}\");\n}\n",
         coverage: Coverage::Parity("function_composition"),
     },
     Construct {
         id: "match with constructor-payload patterns",
-        probe: "enum Box { Has(i64); Empty; }\nfn unwrap(b: Box) -> i64 {\n    match b { .Has(x) => x, .Empty => 0 }\n}\nfn main() {\n    println(unwrap(.Has(7)));\n}\n",
+        probe: "enum Box { Has(i64), Empty, }\nfn unwrap(b: Box) -> i64 {\n    match b { .Has(x) => x, .Empty => 0 }\n}\nfn main() {\n    println(unwrap(.Has(7)));\n}\n",
         coverage: Coverage::Parity("pattern_matching"),
     },
     Construct {
@@ -154,7 +154,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "record StructInit + field access",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let p = Point { x: 3, y: 4 };\n    println(p.x);\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let p = Point { x: 3, y: 4 };\n    println(p.x);\n}\n",
         coverage: Coverage::Parity("record_types"),
     },
     Construct {
@@ -164,7 +164,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "actor spawn + receive + mutable state",
-        probe: "actor Counter {\n    var count: i64;\n    receive fn bump(n: i64) -> i64 { count = count + n; count }\n}\nfn main() {\n    let c = spawn Counter(count: 0);\n    println(match await c.bump(3) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
+        probe: "actor Counter {\n    var count: i64,\n    receive fn bump(n: i64) -> i64 { count = count + n; count }\n}\nfn main() {\n    let c = spawn Counter(count: 0);\n    println(match await c.bump(3) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
         coverage: Coverage::Parity("counter_actor"),
     },
     Construct {
@@ -191,7 +191,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "machine new/step/state_name",
-        probe: "machine Light {\n    events { Next; }\n    state Red;\n    state Green;\n    on Next: Red => .Green;\n    on Next: Green => .Red;\n}\nfn main() {\n    let m = Light.Red;\n    println(m.state_name());\n}\n",
+        probe: "machine Light {\n    events { Next, }\n    state Red,\n    state Green,\n    on Next: Red => .Green,\n    on Next: Green => .Red,\n}\nfn main() {\n    let m = Light.Red;\n    println(m.state_name());\n}\n",
         coverage: Coverage::Parity("traffic_light"),
     },
     Construct {
@@ -251,7 +251,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "match with wildcard arm",
-        probe: "enum C { A; B; }\nfn name(c: C) -> string {\n    match c { .A => \"a\", _ => \"other\" }\n}\nfn main() {\n    println(name(.B));\n}\n",
+        probe: "enum C { A, B, }\nfn name(c: C) -> string {\n    match c { .A => \"a\", _ => \"other\" }\n}\nfn main() {\n    println(name(.B));\n}\n",
         coverage: Coverage::Parity("wildcard_match"),
     },
     Construct {
@@ -293,17 +293,17 @@ const CONSTRUCTS: &[Construct] = &[
         // scrutinee is a separate, still-NotYetRunnable construct (`enum.tag`
         // dispatch traps on a non-enum value), so this probe isolates the
         // statement-position lowering #1901 made runnable.
-        probe: "enum Color { Red; Green; }\nfn main() {\n    let c: Color = .Green;\n    match c {\n        .Red => println(\"stop\"),\n        .Green => println(\"go\"),\n    }\n    return;\n}\n",
+        probe: "enum Color { Red, Green, }\nfn main() {\n    let c: Color = .Green;\n    match c {\n        .Red => println(\"stop\"),\n        .Green => println(\"go\"),\n    }\n    return;\n}\n",
         coverage: Coverage::Parity("stmt_match"),
     },
     Construct {
         id: "match arm guard (guarded enum arm)",
-        probe: "enum L { Hi(i64); Lo(i64); }\nfn f(l: L) -> i64 {\n    match l { .Hi(n) if n > 50 => 2, .Hi(_) => 1, .Lo(_) => 0 }\n}\nfn main() { println(f(.Hi(99))); }\n",
+        probe: "enum L { Hi(i64), Lo(i64), }\nfn f(l: L) -> i64 {\n    match l { .Hi(n) if n > 50 => 2, .Hi(_) => 1, .Lo(_) => 0 }\n}\nfn main() { println(f(.Hi(99))); }\n",
         coverage: Coverage::Parity("match_guard_parity"),
     },
     Construct {
         id: "match arm guard (non-last guarded catch-all)",
-        probe: "enum L { Hi(i64); Lo(i64); }\nfn never() -> bool { 1 == 2 }\nfn main() {\n    let l: L = .Lo(7);\n    match l { .Hi(n) if n > 50 => println(\"high\"), _ if never() => println(\"never\"), _ => println(\"fallback\") }\n    return;\n}\n",
+        probe: "enum L { Hi(i64), Lo(i64), }\nfn never() -> bool { 1 == 2 }\nfn main() {\n    let l: L = .Lo(7);\n    match l { .Hi(n) if n > 50 => println(\"high\"), _ if never() => println(\"never\"), _ => println(\"fallback\") }\n    return;\n}\n",
         coverage: Coverage::Parity("match_guard_catch_all_fallthrough"),
     },
     Construct {
@@ -312,7 +312,7 @@ const CONSTRUCTS: &[Construct] = &[
         // effects. The pattern is a constructor-with-binding (the runnable form
         // the stmt_if_let case proves); a unit-variant `if let` binds no payload
         // and exercises a different path. Pinned to the stmt_if_let case.
-        probe: "enum Wrapped { Value(i64); Empty; }\nfn main() {\n    let w: Wrapped = .Value(7);\n    if let .Value(n) = w {\n        println(f\"value {n}\");\n    }\n    return;\n}\n",
+        probe: "enum Wrapped { Value(i64), Empty, }\nfn main() {\n    let w: Wrapped = .Value(7);\n    if let .Value(n) = w {\n        println(f\"value {n}\");\n    }\n    return;\n}\n",
         coverage: Coverage::Parity("stmt_if_let"),
     },
 
@@ -387,7 +387,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "struct functional-update (`R { x: v, ..base }`)",
-        probe: "type P { x: i64; y: i64; }\nfn main() {\n    let a = P { x: 1, y: 2 };\n    let b = P { x: 9, ..a };\n    println(b.y);\n}\n",
+        probe: "type P { x: i64, y: i64, }\nfn main() {\n    let a = P { x: 1, y: 2 };\n    let b = P { x: 9, ..a };\n    println(b.y);\n}\n",
         coverage: Coverage::Parity("struct_functional_update"),
     },
     Construct {
@@ -423,7 +423,7 @@ const CONSTRUCTS: &[Construct] = &[
         // { y }`) is the separate "value-position if-let" construct below, which
         // joins the arm values on a result local. This row covers only the
         // discarded-result / no-else form.
-        probe: "enum Box { Has(i64); Empty; }\nfn describe(b: Box) {\n    if let .Has(x) = b {\n        println(f\"has {x}\");\n    } else {\n        println(\"empty\");\n    }\n}\nfn main() {\n    describe(.Has(9));\n    describe(.Empty);\n}\n",
+        probe: "enum Box { Has(i64), Empty, }\nfn describe(b: Box) {\n    if let .Has(x) = b {\n        println(f\"has {x}\");\n    } else {\n        println(\"empty\");\n    }\n}\nfn main() {\n    describe(.Has(9));\n    describe(.Empty);\n}\n",
         coverage: Coverage::Parity("stmt_if_let"),
     },
     Construct {
@@ -435,7 +435,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `Expr::If`. Before #1901's follow-up this silently yielded unit
         // regardless of the matched value (a G1-class silent-wrong hole); it now
         // runs at parity. Pinned to the if_let_value case.
-        probe: "enum Wrapped { Value(i64); Empty; }\nfn pick(w: Wrapped) -> i64 {\n    let v = if let .Value(n) = w { n } else { 0 };\n    v\n}\nfn main() {\n    println(pick(.Value(7)));\n    println(pick(.Empty));\n}\n",
+        probe: "enum Wrapped { Value(i64), Empty, }\nfn pick(w: Wrapped) -> i64 {\n    let v = if let .Value(n) = w { n } else { 0 };\n    v\n}\nfn main() {\n    println(pick(.Value(7)));\n    println(pick(.Empty));\n}\n",
         coverage: Coverage::Parity("if_let_value"),
     },
     Construct {
@@ -447,7 +447,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `{ type, tag, payload: [] }` JSON; same-tag variants compare equal,
         // different-tag variants compare unequal. Admitted by the checker in
         // #1987 and pinned to the fieldless_enum_eq parity case.
-        probe: "enum Colour { Red; Green; Blue; }\nfn check(c: Colour) {\n    if c == Colour.Red { println(\"red\"); } else { println(\"other\"); }\n    if c != Colour.Blue { println(\"not-blue\"); } else { println(\"blue\"); }\n}\nfn main() {\n    check(Colour.Red);\n    check(Colour.Blue);\n}\n",
+        probe: "enum Colour { Red, Green, Blue, }\nfn check(c: Colour) {\n    if c == Colour.Red { println(\"red\"); } else { println(\"other\"); }\n    if c != Colour.Blue { println(\"not-blue\"); } else { println(\"blue\"); }\n}\nfn main() {\n    check(Colour.Red);\n    check(Colour.Blue);\n}\n",
         coverage: Coverage::Parity("fieldless_enum_eq"),
     },
     Construct {
@@ -459,7 +459,7 @@ const CONSTRUCTS: &[Construct] = &[
         // serialises `{ type, fields: [...] }` to a canonical JSON string,
         // giving structural field-by-field equality that mirrors native Hew.
         // Pinned to the record_equality parity case.
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let a = Point { x: 1, y: 2 };\n    let b = Point { x: 1, y: 2 };\n    let c = Point { x: 3, y: 4 };\n    println(a == b);\n    println(a == c);\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let a = Point { x: 1, y: 2 };\n    let b = Point { x: 1, y: 2 };\n    let c = Point { x: 3, y: 4 };\n    println(a == b);\n    println(a == c);\n}\n",
         coverage: Coverage::Parity("record_equality"),
     },
     Construct {
@@ -471,7 +471,7 @@ const CONSTRUCTS: &[Construct] = &[
         // variants compare equal and any difference compares unequal — matching
         // native structural equality semantics. Subsumed by the record_equality
         // parity case which exercises both records and payload enums.
-        probe: "enum Shape { Circle(i64); Square(i64); }\nfn main() {\n    let s1 = Shape.Circle(5);\n    let s2 = Shape.Circle(5);\n    let s3 = Shape.Square(5);\n    println(s1 == s2);\n    println(s1 == s3);\n}\n",
+        probe: "enum Shape { Circle(i64), Square(i64), }\nfn main() {\n    let s1 = Shape.Circle(5);\n    let s2 = Shape.Circle(5);\n    let s3 = Shape.Square(5);\n    println(s1 == s2);\n    println(s1 == s3);\n}\n",
         coverage: Coverage::Parity("record_equality"),
     },
     Construct {
@@ -496,17 +496,17 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "struct pattern in match arm",
-        probe: "type Point { x: i64; y: i64; }\nfn sum(p: Point) -> i64 {\n    match p { Point { x: a, y: b } => a + b }\n}\nfn main() {\n    println(sum(Point { x: 3, y: 4 }));\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn sum(p: Point) -> i64 {\n    match p { Point { x: a, y: b } => a + b }\n}\nfn main() {\n    println(sum(Point { x: 3, y: 4 }));\n}\n",
         coverage: Coverage::Parity("struct_pattern_match"),
     },
     Construct {
         id: "struct destructure in let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let Point { x: a, y: b } = Point { x: 8, y: 13 };\n    println(a);\n    println(b);\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let Point { x: a, y: b } = Point { x: 8, y: 13 };\n    println(a);\n    println(b);\n}\n",
         coverage: Coverage::Parity("struct_destructure_let"),
     },
     Construct {
         id: "record shorthand destructure in let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let rec = Point { x: 21, y: 34 };\n    let { x, y } = rec;\n    println(x);\n    println(y);\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let rec = Point { x: 21, y: 34 };\n    let { x, y } = rec;\n    println(x);\n    println(y);\n}\n",
         coverage: Coverage::Parity("record_shorthand_destructure_let"),
     },
     Construct {
@@ -530,21 +530,21 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "struct pattern in statement if-let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let point = Point { x: 5, y: 8 };\n    if let Point { x: a, y: b } = point {\n        println(a + b);\n    }\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let point = Point { x: 5, y: 8 };\n    if let Point { x: a, y: b } = point {\n        println(a + b);\n    }\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },
     },
     Construct {
         id: "struct pattern in value if-let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let point = Point { x: 21, y: 34 };\n    let sum = if let Point { x: a, y: b } = point { a + b } else { 0 };\n    println(sum);\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let point = Point { x: 21, y: 34 };\n    let sum = if let Point { x: a, y: b } = point { a + b } else { 0 };\n    println(sum);\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },
     },
     Construct {
         id: "struct pattern in while-let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let point = Point { x: 3, y: 4 };\n    while let Point { x: a, y: b } = point {\n        println(a + b);\n        break;\n    }\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let point = Point { x: 3, y: 4 };\n    while let Point { x: a, y: b } = point {\n        println(a + b);\n        break;\n    }\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },
@@ -661,7 +661,7 @@ const CONSTRUCTS: &[Construct] = &[
         id: "identity comparison (`is`)",
         // Value-shaped operands are rejected by the checker before the sandbox
         // profile sees the identity-comparison expression.
-        probe: "type Point { x: i64; }\nfn same(a: Point, b: Point) -> bool { a is b }\nfn main() {\n    println(\"x\");\n}\n",
+        probe: "type Point { x: i64, }\nfn same(a: Point, b: Point) -> bool { a is b }\nfn main() {\n    println(\"x\");\n}\n",
         coverage: Coverage::RejectedByParser {
             diagnostic_code: "E_IS_VALUE_TYPE",
         },
@@ -746,7 +746,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "generic record `==` (Pair<A,B>)",
-        probe: "type Pair<A, B> { first: A; second: B; }\nfn same<A, B>(a: Pair<A, B>, b: Pair<A, B>) -> bool { a == b }\nfn main() {\n    println(same(Pair { first: 1, second: \"x\" }, Pair { first: 1, second: \"x\" }));\n    println(same(Pair { first: 1, second: \"x\" }, Pair { first: 2, second: \"x\" }));\n}\n",
+        probe: "type Pair<A, B> { first: A, second: B, }\nfn same<A, B>(a: Pair<A, B>, b: Pair<A, B>) -> bool { a == b }\nfn main() {\n    println(same(Pair { first: 1, second: \"x\" }, Pair { first: 1, second: \"x\" }));\n    println(same(Pair { first: 1, second: \"x\" }, Pair { first: 2, second: \"x\" }));\n}\n",
         coverage: Coverage::Parity("generic_aggregate_eq"),
     },
     Construct {
@@ -832,7 +832,7 @@ const CONSTRUCTS: &[Construct] = &[
         // (deep recursive copy) — so the result is independent from the original.
         // Pins deep-copy semantics: no aliasing of nested fields.
         id: "record method `clone()`",
-        probe: "type P { x: i64; }\nfn main() {\n    let a = P { x: 5 };\n    let b = a.clone();\n    println(b.x);\n}\n",
+        probe: "type P { x: i64, }\nfn main() {\n    let a = P { x: 5 };\n    let b = a.clone();\n    println(b.x);\n}\n",
         coverage: Coverage::Parity("record_clone"),
     },
     Construct {
@@ -841,7 +841,7 @@ const CONSTRUCTS: &[Construct] = &[
         // retrieves it via `record.get`, and calls it via `call.indirect`.
         // The type-checker admitted this form in ac0bc0ed.
         id: "fn-field call `(rec.f)(args)`",
-        probe: "type T { f: fn(i64) -> i64; }\nfn double(x: i64) -> i64 { x * 2 }\nfn main() {\n    let t = T { f: double };\n    println((t.f)(7));\n}\n",
+        probe: "type T { f: fn(i64) -> i64, }\nfn double(x: i64) -> i64 { x * 2 }\nfn main() {\n    let t = T { f: double };\n    println((t.f)(7));\n}\n",
         coverage: Coverage::Parity("fn_field_call"),
     },
     Construct {

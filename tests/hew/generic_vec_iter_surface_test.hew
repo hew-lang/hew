@@ -31,8 +31,8 @@ fn test_generic_vec_iter_i64() {
 // `is_owned_vec_element` authority `push`/`get`/etc. already use, routing an
 // owned element to `hew_vec_clone_owned` instead.
 type IterOwnedItem {
-    name: string;
-    n: i64;
+    name: string,
+    n: i64,
 }
 
 #[test]

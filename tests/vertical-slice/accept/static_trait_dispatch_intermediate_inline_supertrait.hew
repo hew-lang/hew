@@ -5,7 +5,7 @@ trait Base {
 trait Mid: Base {}
 trait Leaf: Mid {}
 
-type Widget { label: string; }
+type Widget { label: string, }
 
 impl Mid for Widget {
     fn name(w: Widget) -> string { "intermediate" }

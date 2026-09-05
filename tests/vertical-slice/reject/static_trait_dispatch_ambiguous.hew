@@ -9,7 +9,7 @@ trait Athlete {
     fn run(val: Self) -> i64;
 }
 
-type Robot { id: i64; }
+type Robot { id: i64, }
 
 impl Engine for Robot {
     fn run(r: Robot) -> i64 { 1 }

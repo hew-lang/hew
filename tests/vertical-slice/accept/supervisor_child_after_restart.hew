@@ -36,7 +36,7 @@
 //   - sup.w1 returned Live (not Transient) after the restart.
 //   - The restarted actor's state was deep-cloned correctly.
 actor Worker {
-    var value: i64;
+    var value: i64,
     receive fn get_value() -> i64 {
         value
     }
@@ -46,10 +46,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child w1: Worker(value: 7);
+    child w1: Worker(value: 7),
 }
 
 // hew_supervisor_wait_restart is a C ABI function in hew-runtime that blocks

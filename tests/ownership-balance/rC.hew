@@ -1,7 +1,7 @@
 import std.string;
 
 type Secret { value: string, kind: string }
-enum CredErr { Missing(string); Denied(string) }
+enum CredErr { Missing(string), Denied(string) }
 
 fn resolve(n: i64) -> Result<Secret, CredErr> {
     if n % 3 == 0 {

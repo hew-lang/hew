@@ -2,7 +2,7 @@ import std.link_monitor.{MonitorRef};
 
 #[resource]
 type Handle {
-    name: string;
+    name: string,
 }
 
 impl Handle {
@@ -10,7 +10,7 @@ impl Handle {
 }
 
 type Wrapper {
-    handle: Handle;
+    handle: Handle,
 }
 
 type PositionalWrapper(Handle);

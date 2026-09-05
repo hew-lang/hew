@@ -9,8 +9,8 @@
 // reading through to the owned payload. The Err/None counterpart drop path is
 // exercised by the runtime oracle fixtures.
 enum Maybe<T> {
-    Some(T);
-    None;
+    Some(T),
+    None,
 }
 
 fn greet() -> Maybe<string> {

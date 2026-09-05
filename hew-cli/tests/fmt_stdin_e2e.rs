@@ -65,7 +65,7 @@ fn fmt_stdin_writes_formatted_source_to_stdout() {
 #[test]
 fn fmt_stdin_handles_regex_records_and_is_operator() {
     let input = concat!(
-        r#"type Point{x:i32;y:i32} fn main()->i32{let pattern=re"^hew[0-9]+$";let base=Point{x:1,y:2};let updated=Point{x:3,..base};if updated.x is i32 {pattern;} updated.x}"#,
+        r#"type Point{x:i32,y:i32} fn main()->i32{let pattern=re"^hew[0-9]+$";let base=Point{x:1,y:2};let updated=Point{x:3,..base};if updated.x is i32 {pattern;} updated.x}"#,
         "\n"
     );
     let output = run_fmt(&["fmt", "--stdin"], input);
@@ -257,7 +257,7 @@ fn fmt_migrate_uses_checker_resolved_variant_owners_and_check_is_non_destructive
     let dir = support::tempdir();
     let path = dir.path().join("legacy.hew");
     let source = concat!(
-        "enum Choice { Present(i64); }\n\n",
+        "enum Choice { Present(i64), }\n\n",
         "fn contextual() -> Choice { Present(42) }\n",
         "fn inferred() { let value = Present(7); }\n"
     );
@@ -311,7 +311,7 @@ fn fmt_migrate_root_discovers_nested_hew_sources() {
     let path = nested.join("legacy.hew");
     std::fs::write(
         &path,
-        "enum Choice { Present(i64); }\n\nfn main() -> Choice { Present(42) }\n",
+        "enum Choice { Present(i64), }\n\nfn main() -> Choice { Present(42) }\n",
     )
     .unwrap();
 
@@ -381,7 +381,7 @@ fn fmt_migrate_root_typechecks_legacy_directory_module_peers() {
     std::fs::write(
         &peer,
         concat!(
-            "pub type Dog { label: string; }\n",
+            "pub type Dog { label: string, }\n",
             "impl Greeter for Dog {\n",
             "    fn name(self) -> string { self.label }\n",
             "}\n",
@@ -435,7 +435,7 @@ fn fmt_migrate_root_refuses_nonrewritable_directory_peer_transactionally() {
 fn fmt_migrate_lists_typecheck_failure_sites_instead_of_succeeding() {
     let dir = support::tempdir();
     let path = dir.path().join("invalid.hew");
-    let source = "enum Choice { Present; }\n\nfn main() { let value = Choice; }\n";
+    let source = "enum Choice { Present, }\n\nfn main() { let value = Choice; }\n";
     std::fs::write(&path, source).unwrap();
 
     let output = Command::new(hew_binary())
@@ -461,7 +461,7 @@ fn fmt_migrate_refuses_checker_variants_missing_migration_warnings() {
     let dir = support::tempdir();
     let path = dir.path().join("missing-warning.hew");
     let source = concat!(
-        "enum Shape { Box { w: i64, h: i64 }; }\n\n",
+        "enum Shape { Box { w: i64, h: i64 }, }\n\n",
         "fn make() -> Shape { Box { w: 3, h: 4 } }\n"
     );
     std::fs::write(&path, source).unwrap();

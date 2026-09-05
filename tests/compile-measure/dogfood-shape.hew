@@ -5,13 +5,13 @@ import std.string;
 
 machine JobState {
     events {
-        Start;
-        Finish;
+        Start,
+        Finish,
     }
 
-    state Idle;
-    state Running;
-    state Complete;
+    state Idle,
+    state Running,
+    state Complete,
 
     on Start: Idle => Running {
         .Running
@@ -25,7 +25,7 @@ machine JobState {
 }
 
 actor Ledger {
-    var total: i64 = 0;
+    var total: i64 = 0,
 
     receive fn add(amount: i64) {
         total = total + amount;

@@ -3,8 +3,8 @@
 import std.testing;
 
 type Pair {
-    number: i64;
-    label: string;
+    number: i64,
+    label: string,
 }
 
 #[test]

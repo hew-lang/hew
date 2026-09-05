@@ -25,8 +25,8 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE_TEMPLATE: &str = r#"
 enum Blob {
-    Data(bytes);
-    Empty;
+    Data(bytes),
+    Empty,
 }
 
 fn same_scope(i: i64) -> i64 {

@@ -1,7 +1,7 @@
 import std.string;
 
-pub type UserRecord { name: string; id: i64; }
-pub enum UserEnum { Missing(string); }
+pub type UserRecord { name: string, id: i64, }
+pub enum UserEnum { Missing(string), }
 
 pub fn fetch(n: i64) -> Result<UserRecord, UserEnum> {
     if n >= 0 {

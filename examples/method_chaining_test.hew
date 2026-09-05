@@ -2,8 +2,8 @@
 //! Description: Method Chaining Test example.
 
 type Point {
-    x: f64;
-    y: f64;
+    x: f64,
+    y: f64,
 }
 
 impl PointMethods for Point {

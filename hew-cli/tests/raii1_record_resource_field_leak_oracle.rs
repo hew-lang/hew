@@ -170,7 +170,7 @@ fn main() {\n\
 /// Actor-shutdown IR fixture: the resource-field record is an actor state field.
 const ACTOR_BODY: &str = "\
 actor Keeper {\n\
-    let h: Holder;\n\
+    let h: Holder,\n\
     receive fn ping() -> i64 { 1 }\n\
 }\n\
 fn main() -> i64 {\n\

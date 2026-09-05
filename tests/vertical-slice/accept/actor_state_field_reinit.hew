@@ -4,7 +4,7 @@
 // place be named on the left-hand side.
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {
@@ -15,7 +15,7 @@ impl Socket {
 }
 
 actor Vault {
-    var sock: Socket;
+    var sock: Socket,
     receive fn swap() -> i64 {
         let fd = sock.detach();
         sock = Socket { fd: fd + 1 };

@@ -3,12 +3,12 @@
 
 machine TrafficLight {
     events {
-        Tick;
+        Tick,
     }
 
-    state Red;
-    state Green;
-    state Yellow;
+    state Red,
+    state Green,
+    state Yellow,
 
     on Tick: Red => Green {
         .Green

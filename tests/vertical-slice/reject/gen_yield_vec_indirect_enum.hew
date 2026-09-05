@@ -9,7 +9,7 @@
 // release-verdict refusal remains as a backstop for any shape that reaches it
 // without local construction.
 indirect enum Wrapped {
-    Val(i64);
+    Val(i64),
 }
 
 gen fn make_vecs(n: i64) -> Vec<Wrapped> {

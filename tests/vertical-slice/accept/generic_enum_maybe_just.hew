@@ -2,8 +2,8 @@
 // Maybe::Just { value: 42 } must lower through HIR EnumLayoutRegistry → MIR
 // → codegen and exit 42.
 enum Maybe<T> {
-    Just { value: T };
-    Nothing;
+    Just { value: T },
+    Nothing,
 }
 
 fn main() -> i64 {

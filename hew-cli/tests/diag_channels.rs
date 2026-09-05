@@ -58,7 +58,7 @@ const LIMITATION_FIXTURE: &str = "fn main() {\n    scope { fork { println(\"x\")
 /// checker's own first Limitation-channel kind (every prior `TypeError` was
 /// User-channel; HIR/MIR diagnostics carried the only prior Limitation
 /// codes).
-const CHECKER_LIMITATION_FIXTURE: &str = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 3 };\n    println(a < b);\n}\n";
+const CHECKER_LIMITATION_FIXTURE: &str = "type Pt {\n    x: i64,\n    y: i64,\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 3 };\n    println(a < b);\n}\n";
 
 #[test]
 fn user_channel_exits_1_with_no_prefix_and_json_channel_user() {

@@ -11,7 +11,7 @@ use std::process::Command;
 use support::{describe_output, hew_binary, repo_root, require_codegen, tempdir};
 
 const SOURCE: &str = "\
-type Item { name: string; n: i64; }\n\
+type Item { name: string, n: i64, }\n\
 fn count_items(xs: Vec<Item>) -> i64 {\n\
     let it = xs.iter();\n\
     var total = 0;\n\

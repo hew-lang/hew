@@ -1,10 +1,10 @@
 enum Colour {
-    Red;
-    Green;
+    Red,
+    Green,
 }
 
 actor Holder {
-    var ready: bool;
+    var ready: bool,
 
     receive fn hold(v: Colour) -> i64 {
         sleep(2ms);

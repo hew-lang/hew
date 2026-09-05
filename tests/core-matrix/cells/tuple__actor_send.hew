@@ -1,5 +1,5 @@
 actor Sink {
-    var hits: i64;
+    var hits: i64,
 
     receive fn take(v: (i64, string)) -> i64 {
         let (v_a, v_b) = v;

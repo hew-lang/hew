@@ -14,7 +14,7 @@
 // path, or fails to free the worker (HEW_WORKERS=1 deadlocks) prints the wrong
 // line. The exact stdout is asserted under both pools.
 actor Worker {
-    var fired: i64 = 0;
+    var fired: i64 = 0,
 
     // The scoped child sleeps 500ms; the deadline is 20ms, so the deadline wins
     // and the recovery body runs (fired = 7).

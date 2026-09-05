@@ -27,7 +27,7 @@
 //   - The re-fetched handle answers with the restarted actor's deep-cloned
 //      state (the value-only-the-live-actor-can-produce sentinel — teeth).
 actor Worker {
-    var value: i64;
+    var value: i64,
     receive fn get_value() -> i64 {
         value
     }
@@ -37,10 +37,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child w: Worker(value: 7);
+    child w: Worker(value: 7),
 }
 
 fn main() -> i64 {

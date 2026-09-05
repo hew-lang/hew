@@ -2,7 +2,7 @@
 //! in that same file module before the declarations are flattened at HIR.
 
 pub actor Worker {
-    let id: i64;
+    let id: i64,
 
     receive fn identify() -> i64 {
         id
@@ -10,7 +10,7 @@ pub actor Worker {
 }
 
 supervisor Inner {
-    strategy: one_for_one;
+    strategy: one_for_one,
 
-    child worker: Worker(id: 23) restart: temporary;
+    child worker: Worker(id: 23) restart: temporary,
 }

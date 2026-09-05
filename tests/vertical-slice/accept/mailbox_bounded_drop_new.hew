@@ -15,9 +15,9 @@
 //   - before the fix: processed == 20 (unbounded)      -> exit 1
 //   - after the fix:  processed  < 20 (bounded to ~4-5) -> exit 0
 actor MailboxWorker {
-    var processed: i64;
+    var processed: i64,
 
-    mailbox 4 overflow drop_new;
+    mailbox 4 overflow drop_new,
     receive fn process(value: i32) {
         sleep(20ms);
         processed = processed + 1;

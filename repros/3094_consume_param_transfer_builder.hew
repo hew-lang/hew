@@ -19,7 +19,7 @@ type Handle {
 
 #[resource]
 type Value {
-    handle: Handle;
+    handle: Handle,
 }
 
 trait ValueMethods {
@@ -30,7 +30,7 @@ trait ValueMethods {
 }
 
 pub enum BuildError {
-    Failed(string);
+    Failed(string),
 }
 
 impl ValueMethods for Value {

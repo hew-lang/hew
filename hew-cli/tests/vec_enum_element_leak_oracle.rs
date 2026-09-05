@@ -107,7 +107,7 @@ const SLOPE_TOLERANCE: usize = 5;
 /// the final fall-through.
 fn colour_vec_loop_source(frames: usize) -> String {
     format!(
-        "enum Colour {{ Red; Green; Blue; }}\n\
+        "enum Colour {{ Red, Green, Blue, }}\n\
          \n\
          fn tag(c: Colour) -> i64 {{\n\
          \x20   match c {{\n\
@@ -141,7 +141,7 @@ fn colour_vec_loop_source(frames: usize) -> String {
 /// proves the fix flips ONLY heap-free direct enums.
 fn payload_enum_vec_loop_source(frames: usize) -> String {
     format!(
-        "enum Shape {{ Dot; Label(string); }}\n\
+        "enum Shape {{ Dot, Label(string), }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
@@ -166,7 +166,7 @@ fn payload_enum_vec_loop_source(frames: usize) -> String {
 /// `[Green, Blue]` (tags 2 + 3 = 5); the consumed vec is `[Blue, Blue]`
 /// (tags 3 + 3 = 6); the sum is 11.
 const ESCAPE_SHAPES_SOURCE: &str = "\
-enum Colour { Red; Green; Blue; }\n\
+enum Colour { Red, Green, Blue, }\n\
 \n\
 fn tag(c: Colour) -> i64 {\n\
 \x20   match c {\n\

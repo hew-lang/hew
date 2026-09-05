@@ -19,16 +19,16 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE_TEMPLATE: &str = r#"
 enum CleanupError {
-    Dirty(string);
+    Dirty(string),
 }
 
 type Retirement {
-    blocked: bool;
-    detail: string;
+    blocked: bool,
+    detail: string,
 }
 
 type Outcome {
-    status: string;
+    status: string,
 }
 
 fn persist(value: string) {
@@ -137,12 +137,12 @@ fn overwritten_alias_source(frames: usize) -> String {
     format!(
         r#"
 enum CleanupError {{
-    Dirty(string);
+    Dirty(string),
 }}
 
 type Pair {{
-    first: string;
-    second: string;
+    first: string,
+    second: string,
 }}
 
 fn cleanup() -> Result<(), CleanupError> {{
@@ -182,12 +182,12 @@ fn stable_loop_alias_source(frames: usize) -> String {
     format!(
         r#"
 enum CleanupError {{
-    Dirty(string);
+    Dirty(string),
 }}
 
 type Pair {{
-    first: string;
-    second: string;
+    first: string,
+    second: string,
 }}
 
 fn persist(value: string) {{
@@ -234,12 +234,12 @@ fn overwritten_before_fork_source(frames: usize) -> String {
     format!(
         r#"
 enum CleanupError {{
-    Dirty(string);
+    Dirty(string),
 }}
 
 type Pair {{
-    first: string;
-    second: string;
+    first: string,
+    second: string,
 }}
 
 fn cleanup() -> Result<(), CleanupError> {{
@@ -279,8 +279,8 @@ fn reused_non_returned_alias_source(frames: usize) -> String {
     format!(
         r#"
 type Pair {{
-    first: string;
-    second: string;
+    first: string,
+    second: string,
 }}
 
 fn main() {{

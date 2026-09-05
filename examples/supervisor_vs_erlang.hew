@@ -61,8 +61,8 @@
 // lifecycle code. The runtime handles crash isolation, restart backoff,
 // and budget enforcement automatically.
 actor ConnWorker {
-    let role: i32; // 0 = reader, 1 = writer
-    let port: i32;
+    let role: i32, // 0 = reader, 1 = writer
+    let port: i32,
     receive fn handle(request_id: i32) {
         if role == 0 {
             print("  [reader:");
@@ -87,11 +87,11 @@ actor ConnWorker {
 
 // This IS the supervision tree. 6 lines.
 supervisor ConnectionPool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child reader: ConnWorker(role: 0, port: 8080);
-    child writer: ConnWorker(role: 1, port: 8081);
+    child reader: ConnWorker(role: 0, port: 8080),
+    child writer: ConnWorker(role: 1, port: 8081),
 }
 
 fn main() {

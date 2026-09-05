@@ -10,7 +10,7 @@ fn node_register_accepts_local_pid() {
     let output = common::typecheck(
         r#"
         actor Worker {
-            let n: i32;
+            let n: i32,
             init() {}
         }
         fn main() {
@@ -54,7 +54,7 @@ fn node_register_rejects_remote_pid() {
     let output = common::typecheck(
         r#"
         actor Worker {
-            let n: i32;
+            let n: i32,
             init() {}
         }
         fn main() {
@@ -79,7 +79,7 @@ fn node_register_result_eq_zero_typechecks() {
     let output = common::typecheck(
         r#"
         actor Worker {
-            let n: i32;
+            let n: i32,
             init() {}
         }
         fn main() {

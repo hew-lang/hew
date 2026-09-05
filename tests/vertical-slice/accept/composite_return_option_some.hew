@@ -2,8 +2,8 @@
 // Exercises MachineVariantCtor → Move to ReturnSlot → aggregate ret.
 // Exit 42 proves the caller received and destructured the composite.
 enum Maybe<T> {
-    Some(T);
-    None;
+    Some(T),
+    None,
 }
 
 fn maybe() -> Maybe<i64> {

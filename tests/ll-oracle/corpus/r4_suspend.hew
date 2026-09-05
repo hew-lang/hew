@@ -4,7 +4,7 @@
 // checking and raw-MIR parity. Focused coroutine/codegen tests own frame and
 // resume-dispatch invariants.
 actor Adder {
-    var base: i64 = 0;
+    var base: i64 = 0,
     receive fn set_base(n: i64) {
         base = n;
     }

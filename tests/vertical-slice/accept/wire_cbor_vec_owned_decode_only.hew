@@ -7,9 +7,9 @@
 // declared-but-undefined and LLVM verify would reject the module. Exit 11 proves
 // the decode-only program links and round-trips.
 #[wire]
-type Item { name: string @1; }
+type Item { name: string @1, }
 #[wire]
-type Batch { items: Vec<Item> @1; seq: i64 @2; }
+type Batch { items: Vec<Item> @1, seq: i64 @2, }
 
 fn source_bytes() -> bytes {
     let xs: Vec<Item> = Vec.new();

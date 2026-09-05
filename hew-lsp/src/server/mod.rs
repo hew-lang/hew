@@ -1097,7 +1097,7 @@ mod tests {
         // Place the cursor right after the dot (before the field name) to simulate
         // the user typing `p.` and requesting completions.
         let source =
-            "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1214,7 +1214,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![repo_root]);
         let source = concat!(
             "actor Counter {\n",
-            "    count: i64;\n",
+            "    count: i64,\n",
             "    receive fn increment(n: i64) { count = count + n; }\n",
             "}\n",
             "fn main() {\n",
@@ -1268,7 +1268,7 @@ mod tests {
 
     #[test]
     fn completions_enum_variant_after_dot() {
-        let source = "enum Color { Blue; Point { x: i32, y: i32 }; Rgb(u8, u8, u8); }\nfn main() { let color = Color.Blue; }";
+        let source = "enum Color { Blue, Point { x: i32, y: i32 }, Rgb(u8, u8, u8), }\nfn main() { let color = Color.Blue; }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1463,8 +1463,8 @@ mod tests {
     #[test]
     fn completions_cover_type_impl_methods_if_else_match_and_patterns() {
         let source = r"
-type Point { x: i32; y: i32; }
-enum Result { Ok(i32); Err(i32); }
+type Point { x: i32, y: i32, }
+enum Result { Ok(i32), Err(i32), }
 
 type Worker {
     fn process(input: i32, point: Point, result: Result) -> i32 {
@@ -1560,7 +1560,7 @@ impl Worker {
 
     #[test]
     fn goto_def_receive_method() {
-        let source = "actor Counter {\n    count: i32;\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\nfn main() { let c = spawn Counter(count: 0); c.increment(1); }";
+        let source = "actor Counter {\n    count: i32,\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\nfn main() { let c = spawn Counter(count: 0); c.increment(1); }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let call_offset = source.rfind("increment").unwrap();
@@ -1611,7 +1611,7 @@ impl Worker {
     #[test]
     fn goto_def_resolves_struct_field_access_fallback() {
         let source =
-            "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let doc = make_typed_doc(source);
         let offset = source.rfind("p.x").unwrap() + 2;
         let word = word_at_offset(source, offset).unwrap();
@@ -1792,7 +1792,7 @@ impl Worker {
     #[test]
     fn hover_on_type_name() {
         let source =
-            "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let parse_result = hew_parser::parse(source);
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
@@ -1855,7 +1855,7 @@ impl Worker {
     #[test]
     fn folding_ranges_for_actor() {
         let source = r"actor Counter {
-    count: i32;
+    count: i32,
     receive fn increment(n: i32) {
         count = count + n;
     }
@@ -1939,7 +1939,7 @@ impl Worker {
 
     #[test]
     fn type_hierarchy_item_for_struct() {
-        let source = "type Point { x: i32; y: i32 }";
+        let source = "type Point { x: i32, y: i32 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -2403,16 +2403,16 @@ impl Worker {
     #[test]
     fn workspace_symbols_include_fields_states_and_events() {
         let source = r"type Point {
-    x: i32;
+    x: i32,
 }
 
 machine Traffic {
     events {
-        Start;
+        Start,
     }
 
-    state Idle;
-    on Start: Idle => .Idle;
+    state Idle,
+    on Start: Idle => .Idle,
 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
@@ -2798,7 +2798,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_for_actor_with_receive() {
-        let source = "actor Counter {\n    count: i32;\n    receive fn increment(n: i32) { count = count + n; }\n}";
+        let source = "actor Counter {\n    count: i32,\n    receive fn increment(n: i32) { count = count + n; }\n}";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -2814,7 +2814,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_for_enum() {
-        let source = "enum Colour { Red; Green; Blue; }";
+        let source = "enum Colour { Red, Green, Blue, }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -2830,7 +2830,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_with_children() {
-        let source = "type Point { x: i32; y: i32; fn distance() -> i32 { 0 } }";
+        let source = "type Point { x: i32, y: i32, fn distance() -> i32 { 0 } }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -2854,16 +2854,16 @@ machine Traffic {
     #[test]
     fn document_symbols_use_child_definition_ranges() {
         let source = r"type Point {
-    x: i32;
+    x: i32,
 }
 
 machine Traffic {
     events {
-        Start;
+        Start,
     }
 
-    state Idle;
-    on Start: Idle => .Idle;
+    state Idle,
+    on Start: Idle => .Idle,
 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
@@ -3095,7 +3095,7 @@ machine Traffic {
     fn code_actions_for_non_exhaustive_match() {
         use hew_analysis::code_actions::{build_code_actions, DiagnosticInfo};
         let source = r#"
-            enum Colour { Red; Blue; }
+            enum Colour { Red, Blue, }
             fn label(colour: Colour) -> string {
                 match colour {
                     .Red => "red",
@@ -6784,8 +6784,8 @@ machine Traffic {
     /// refused program there would need a ratchet row it has not earned. The
     /// accepted `LocalPid<Worker>` value form lives in the fixture instead.
     const IS_RHS_TYPE_PATTERN_SOURCE: &str = "enum Payload {\n\
-         First;\n\
-         Second;\n\
+         First,\n\
+         Second,\n\
          }\n\
          \n\
          fn is_probe() -> i32 {\n\

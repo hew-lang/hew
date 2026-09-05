@@ -8,15 +8,15 @@ import tests.hew.imported_supervisor_named_binding_support.worker.{Worker as Ren
 import std.testing;
 
 supervisor DirectPool {
-    strategy: one_for_one;
+    strategy: one_for_one,
 
-    child worker: Worker(id: 31) restart: temporary;
+    child worker: Worker(id: 31) restart: temporary,
 }
 
 supervisor AliasedPool {
-    strategy: one_for_one;
+    strategy: one_for_one,
 
-    child worker: Renamed(id: 47) restart: temporary;
+    child worker: Renamed(id: 47) restart: temporary,
 }
 
 #[test]

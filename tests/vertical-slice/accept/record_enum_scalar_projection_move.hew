@@ -1,4 +1,4 @@
-enum EnumScalarMoveChoice { Pair(string, i64); }
+enum EnumScalarMoveChoice { Pair(string, i64), }
 type EnumScalarMoveCarrier {
     choice: EnumScalarMoveChoice,
     sibling: string,

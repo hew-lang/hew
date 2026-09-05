@@ -1,4 +1,4 @@
 pub type Vec2 {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }

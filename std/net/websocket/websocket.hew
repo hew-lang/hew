@@ -75,7 +75,7 @@ type MessageHandle {
 
 #[resource]
 pub type Message {
-    handle: MessageHandle;
+    handle: MessageHandle,
 }
 
 // ── Conn methods ──────────────────────────────────────────────────────

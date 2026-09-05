@@ -52,7 +52,7 @@ fn find_match_in_fn<'a>(output: &'a hew_hir::LowerOutput, fn_name: &str) -> &'a 
 fn variant_payload_literal_lowers_to_pending_payload_predicate() {
     let output = lower_checked(
         r"
-enum Maybe { Some(i64); None }
+enum Maybe { Some(i64), None }
 fn classify(x: Maybe) -> i64 {
     match x {
         .Some(0) => 1,
@@ -83,7 +83,7 @@ fn classify(x: Maybe) -> i64 {
 fn variant_payload_bindings_still_lower_to_arm_bindings() {
     let output = lower_checked(
         r"
-enum List { Cons(i64, i64); Nil }
+enum List { Cons(i64, i64), Nil }
 fn sum_pair(x: List) -> i64 {
     match x {
         .Cons(h, t) => h + t,
@@ -303,7 +303,7 @@ fn assert_arm_tuple_payload(arm: &hew_hir::HirMatchArm, field_idx: u32, names: &
 fn qualified_tuple_variant_aggregate_binds_nested_names() {
     let output = lower_checked(
         r"
-enum Pair { Both((i64, i64)); None }
+enum Pair { Both((i64, i64)), None }
 
 fn sum(pair: Pair) -> i64 {
     match pair {
@@ -335,8 +335,8 @@ fn struct_variant_tuple_field_destructure_binds_inner_names() {
     let output = lower_checked(
         r"
 enum Packet {
-    Data { value: (i64, i64) };
-    Empty;
+    Data { value: (i64, i64) },
+    Empty,
 }
 
 fn sum(p: Packet) -> i64 {
@@ -366,8 +366,8 @@ fn struct_variant_mixed_and_reordered_fields_all_bind() {
     let output = lower_checked(
         r"
 enum P {
-    D { p: (i64, i64), q: (i64, i64) };
-    E;
+    D { p: (i64, i64), q: (i64, i64) },
+    E,
 }
 
 fn sum(v: P) -> i64 {
@@ -399,8 +399,8 @@ fn generic_struct_variant_tuple_field_destructure_binds_inner_names() {
     let output = lower_checked(
         r"
 enum Box<T> {
-    Pair { both: (T, T) };
-    Empty;
+    Pair { both: (T, T) },
+    Empty,
 }
 
 fn sum(b: Box<i64>) -> i64 {
@@ -427,8 +427,8 @@ fn struct_variant_tuple_field_let_else_binds_inner_names() {
     let output = lower_checked(
         r"
 enum Packet {
-    Data { pair: (i64, i64) };
-    Empty;
+    Data { pair: (i64, i64) },
+    Empty,
 }
 
 fn sum(value: Packet) -> i64 {

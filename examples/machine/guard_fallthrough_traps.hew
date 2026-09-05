@@ -26,11 +26,11 @@
 // `guard_fallthrough_no_default_traps_not_ub`.
 machine Latch {
     events {
-        Try;
+        Try,
     }
 
-    state Closed { code: i64; }
-    state Open;
+    state Closed { code: i64, },
+    state Open,
 
     on Try: Closed => Open when self.code == 42 {
         Latch.Open

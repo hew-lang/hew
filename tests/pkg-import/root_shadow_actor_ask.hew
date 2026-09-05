@@ -7,7 +7,7 @@ import hew.rootreply;
 
 // Root's own `Payload` with a DIVERGENT field set (`tag`, not `code`).
 type Payload {
-    tag: i64;
+    tag: i64,
 }
 
 fn main() {

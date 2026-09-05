@@ -1,10 +1,10 @@
 pub machine FileLifecycle {
     events {
-        Finish;
+        Finish,
     }
 
-    state Running;
-    state Completed;
+    state Running,
+    state Completed,
 
     on Finish: Running => Completed {
         FileLifecycle.Completed

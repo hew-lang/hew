@@ -10,7 +10,7 @@
 import hew.assocreq.{Source};
 
 pub type W {
-    id: i64;
+    id: i64,
 }
 
 impl Source for W {

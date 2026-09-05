@@ -27,12 +27,12 @@ import hew.aliassrc.{ Payload as Tag };
 
 /// Type-decl member: a struct field typed by this module's own import alias.
 pub type DeepBoxed {
-    item: Tag;
+    item: Tag,
 }
 
 /// Type-decl member: an enum-variant payload typed by the import alias.
 pub enum DeepWrap {
-    Has(Tag);
+    Has(Tag),
 }
 
 /// Exercise both member positions end-to-end. The aliased members must resolve

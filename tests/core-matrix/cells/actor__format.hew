@@ -1,5 +1,5 @@
 actor Echo {
-    var seen: i64;
+    var seen: i64,
 
     receive fn take(v: i64) -> i64 {
         seen = seen + v;

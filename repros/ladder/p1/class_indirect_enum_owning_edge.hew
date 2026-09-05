@@ -5,13 +5,13 @@
 // no owner. `Colour` is the counterfactual in the same program: a
 // non-recursive enum over the same scalar payloads is bit-copyable.
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 enum Colour {
-    Red;
-    Green;
+    Red,
+    Green,
 }
 
 fn main() -> i64 {

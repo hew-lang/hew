@@ -2,7 +2,7 @@
 // payload slot (no second release at scope exit), and a returned payload
 // transfers out of the slot so the parameter's terminal drop skips it.
 type Bag {
-    items: Vec<string>;
+    items: Vec<string>,
 }
 
 fn count(b: Bag) -> i64 {

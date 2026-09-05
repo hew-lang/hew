@@ -9,11 +9,11 @@
 // Then: hew run examples/quic_mesh/client.hew
 #[wire]
 enum CounterMsg {
-    Increment(i64);
+    Increment(i64),
 }
 
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn handle(msg: CounterMsg) {
         match msg {
             CounterMsg.Increment(n) => {

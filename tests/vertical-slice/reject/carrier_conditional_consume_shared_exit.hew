@@ -20,8 +20,8 @@
 //! (terminal drop kept globally).
 
 type Packet {
-    tag: string;
-    body: string;
+    tag: string,
+    body: string,
 }
 
 fn measure(p: Packet, skip: bool) -> i64 {

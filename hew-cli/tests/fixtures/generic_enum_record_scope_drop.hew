@@ -1,8 +1,8 @@
 import std.string;
 
 enum Choice<T> {
-    Present(T);
-    Empty;
+    Present(T),
+    Empty,
 }
 
 type EnumHolder<T> {

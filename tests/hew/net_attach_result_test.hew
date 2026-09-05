@@ -16,7 +16,7 @@ actor AttachedHandler {
 }
 
 actor RefusedHandler {
-    mailbox 1 overflow drop_old;
+    mailbox 1 overflow drop_old,
 
     receive fn on_data(data: bytes) {}
 

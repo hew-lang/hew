@@ -271,7 +271,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         }
 
         pub type Label {
-            text: string;
+            text: string,
         }
 
         impl Describable for Label {

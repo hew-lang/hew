@@ -1,5 +1,5 @@
 type Shared {
-    handle: Rc<i64>;
+    handle: Rc<i64>,
 }
 
 fn main() -> i64 {

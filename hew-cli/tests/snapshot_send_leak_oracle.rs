@@ -17,7 +17,7 @@ type Boxed {{
 }}
 
 actor ProbeSink {{
-    var seen: i64;
+    var seen: i64,
 
     receive fn take(value: Boxed, tag: i64) {{
         value.payload.push(tag);
@@ -63,7 +63,7 @@ type Boxed {{
 }}
 
 actor ProbeSink {{
-    var seen: i64;
+    var seen: i64,
     receive fn take(value: Boxed) {{
         seen = seen + value.payload.len();
     }}
@@ -98,7 +98,7 @@ type Envelope {{
 }}
 
 actor ProbeSink {{
-    var seen: i64;
+    var seen: i64,
 
     receive fn take(value: Boxed, tag: i64) {{
         value.payload.push(tag);
@@ -145,7 +145,7 @@ type Envelope {{
 }}
 
 actor ProbeSink {{
-    var seen: i64;
+    var seen: i64,
 
     receive fn take(value: Boxed, tag: i64) {{
         value.payload.push(tag);
@@ -156,10 +156,10 @@ actor ProbeSink {{
 }}
 
 supervisor App {{
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child sink: ProbeSink(seen: 0);
+    child sink: ProbeSink(seen: 0),
 }}
 
 fn main() -> i64 {{
@@ -188,7 +188,7 @@ fn borrowed_resend_source(frames: usize) -> String {
     format!(
         r#"
 actor Consumer {{
-    var last: string;
+    var last: string,
 
     receive fn take(value: string) {{
         last = value;
@@ -200,8 +200,8 @@ actor Consumer {{
 }}
 
 actor Relay {{
-    var consumer: LocalPid<Consumer>;
-    var last: string;
+    var consumer: LocalPid<Consumer>,
+    var last: string,
 
     receive fn forward(value: string) {{
         consumer.take(value);

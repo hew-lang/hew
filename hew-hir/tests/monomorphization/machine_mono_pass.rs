@@ -76,7 +76,7 @@ trait Resource {
     fn close(self);
 }
 
-type File { raw: i64; }
+type File { raw: i64, }
 
 impl Resource for File {
     fn close(self) {}
@@ -84,12 +84,12 @@ impl Resource for File {
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
     on Start: Idle => Active { Active { handle: event.handle } }
@@ -130,15 +130,15 @@ fn machine_mono_pass_uniform_path_includes_non_generic_machines() {
     let source = r"
 machine TrafficLight {
     events {
-        Tick;
+        Tick,
     }
 
-    state Red;
-    state Green;
+    state Red,
+    state Green,
 
 
-    on Tick: Red => Green;
-    on Tick: Green => Red;
+    on Tick: Red => Green,
+    on Tick: Green => Red,
 }
 
 fn main() {}
@@ -303,16 +303,16 @@ fn machine_mono_residual_check_does_not_false_positive_on_unrelated_type_param_n
     // this program lowers without an UnresolvedMachineTypeParamPostMono
     // diagnostic.
     let source = r"
-type T { value: i64; }
+type T { value: i64, }
 
 machine Holder {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
     on Start: Idle => Active { Active { handle: event.handle } }
@@ -351,8 +351,8 @@ trait Resource {
     fn close(self);
 }
 
-type File { raw: i64; }
-type Socket { fd: i64; }
+type File { raw: i64, }
+type Socket { fd: i64, }
 
 impl Resource for File {
     fn close(self) {}
@@ -364,12 +364,12 @@ impl Resource for Socket {
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
     on Start: Idle => Active { Active { handle: event.handle } }
@@ -560,15 +560,15 @@ fn machine_mono_walker_covers_top_level_record_annotation() {
     let source = r"
 machine TrafficLight {
     events {
-        Tick;
+        Tick,
     }
 
-    state Red;
-    state Green;
+    state Red,
+    state Green,
 
 
-    on Tick: Red => Green;
-    on Tick: Green => Red;
+    on Tick: Red => Green,
+    on Tick: Green => Red,
 }
 
 type Dashboard {
@@ -604,20 +604,20 @@ fn machine_mono_walker_covers_top_level_type_decl_enum_variant_payload() {
     let source = r"
 machine TrafficLight {
     events {
-        Tick;
+        Tick,
     }
 
-    state Red;
-    state Green;
+    state Red,
+    state Green,
 
 
-    on Tick: Red => Green;
-    on Tick: Green => Red;
+    on Tick: Red => Green,
+    on Tick: Green => Red,
 }
 
 enum Signal {
-    Off;
-    On(TrafficLight);
+    Off,
+    On(TrafficLight),
 }
 
 fn main() {}
@@ -646,17 +646,17 @@ fn main() {}
 fn machine_mono_walker_visits_supervisor_children_without_double_emission() {
     let source = r"
 actor Worker {
-    let id: i64;
+    let id: i64,
 
     receive fn ping() {}
 }
 
 supervisor Root {
-    strategy: one_for_one;
-    intensity: 3 within 10s;
+    strategy: one_for_one,
+    intensity: 3 within 10s,
 
-    child w1: Worker(id: 1);
-    child w2: Worker(id: 2);
+    child w1: Worker(id: 1),
+    child w2: Worker(id: 2),
 }
 
 fn main() {}
@@ -753,16 +753,16 @@ fn machine_mono_const_args_thread_through_from_w3_039_subengine() {
 fn machine_mono_residual_check_does_not_false_positive_on_concrete_type_with_same_name_as_origin_param(
 ) {
     let source = r"
-type T { value: i64; }
+type T { value: i64, }
 
 machine Holder<X> {
     events {
-        Start { handle: X; }
-        Stop;
+        Start { handle: X, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: X; }
+    state Idle,
+    state Active { handle: X, },
 
 
     on Start: Idle => Active { Active { handle: event.handle } }
@@ -811,16 +811,16 @@ fn main() {
 #[test]
 fn machine_mono_impl_block_residual_check_does_not_get_masked_by_same_name_top_level_decl() {
     let source = r"
-type T { value: i64; }
+type T { value: i64, }
 
 machine Holder<X> {
     events {
-        Start { handle: X; }
-        Stop;
+        Start { handle: X, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: X; }
+    state Idle,
+    state Active { handle: X, },
 
 
     on Start: Idle => Active { Active { handle: event.handle } }
@@ -829,7 +829,7 @@ machine Holder<X> {
     on Stop: _ => _ { state }
 }
 
-type Wrap<T> { value: T; }
+type Wrap<T> { value: T, }
 
 trait Container {
     type Item;

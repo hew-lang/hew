@@ -61,7 +61,7 @@ use support::{describe_output, require_codegen};
 /// scribbled memory (not `"owned-ok"`). The exact-string equality plus clean
 /// exit pin both directions simultaneously.
 const INDEX_GET_SINGLE_ROUNDTRIP_SOURCE: &str = "\
-type Name { label: string; }\n\
+type Name { label: string, }\n\
 \n\
 fn main() {\n\
 \x20   let m: HashMap<string, Name> = HashMap.new();\n\
@@ -89,7 +89,7 @@ const INDEX_GET_SINGLE_ROUNDTRIP_EXPECTED: &str = "owned-ok";
 /// count flat.
 fn index_roundtrip_loop_source(frames: usize) -> String {
     format!(
-        "type Name {{ label: string; }}\n\
+        "type Name {{ label: string, }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
          \x20   let m: HashMap<string, Name> = HashMap.new();\n\

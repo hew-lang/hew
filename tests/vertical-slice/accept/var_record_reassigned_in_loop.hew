@@ -3,8 +3,8 @@
 // ends the previous generation at the overwrite and the loop back-edge
 // re-arms the next one; no generation may leak or be released twice.
 type Status {
-    state: string;
-    detail: string;
+    state: string,
+    detail: string,
 }
 
 fn fetch(n: i64) -> Result<Status, string> {

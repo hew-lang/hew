@@ -121,7 +121,7 @@ fn spawn_expr_type_is_local_pid() {
     // survives into the type-check output that HIR lowering consumes.
     let source = r"
         actor Counter {
-            let n: i32;
+            let n: i32,
             init() {}
         }
         fn main() {
@@ -162,7 +162,7 @@ fn hir_lower_actor_no_diagnostics() {
     // checker don't break actor declaration lowering.
     let source = r"
         actor Bot {
-            let x: i32;
+            let x: i32,
             init() {}
             receive fn handle(msg: i32) {}
         }
@@ -182,7 +182,7 @@ fn hir_lower_actor_no_diagnostics() {
 fn hir_module_has_main() {
     let source = r"
         actor Foo {
-            let v: i32;
+            let v: i32,
             init() {}
         }
 
@@ -206,7 +206,7 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
         }
 
         actor Worker {
-            let id: i32;
+            let id: i32,
             init() {}
             receive fn run(job: Job) -> i64 { 21 }
         }

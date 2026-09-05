@@ -28,7 +28,7 @@ const TRAIT_AND_IMPL: &str = r#"
         fn drain(val: Self);
     }
 
-    type Bucket { tag: string; }
+    type Bucket { tag: string, }
 
     impl Sink for Bucket {
         fn drain(val: Bucket) {}
@@ -148,7 +148,7 @@ fn flag_span_matches_consuming_call_site() {
             fn drain(val: Self);
         }
 
-        type Bucket { tag: string; }
+        type Bucket { tag: string, }
 
         impl Sink for Bucket {
             fn drain(val: Bucket) {}

@@ -4,7 +4,7 @@
 import std.stream;
 
 actor Writer {
-    let sink: stream.Sink<string>;
+    let sink: stream.Sink<string>,
     receive fn put(item: string) {
         sink.send(item);
     }

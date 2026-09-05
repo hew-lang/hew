@@ -3,9 +3,9 @@
 // Fieldless enum values are represented as discriminant tags, so `==` and
 // `!=` compare the tag of each operand.
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 fn describe_eq(c: Colour) {

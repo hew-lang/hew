@@ -3,17 +3,17 @@
 type Config { label: string }
 
 actor Reader {
-    var name: string;
+    var name: string,
     receive gen fn stream() -> i64 {
         yield name.len();
     }
 }
 
 supervisor App(config: Config) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child r: Reader(name: config.label);
+    child r: Reader(name: config.label),
 }
 
 fn main() {

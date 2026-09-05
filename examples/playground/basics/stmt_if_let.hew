@@ -2,8 +2,8 @@
 //! @description Statement-position if-let with side-effecting branches
 
 enum Wrapped {
-    Value(i64);
-    Empty;
+    Value(i64),
+    Empty,
 }
 
 fn announce(w: Wrapped) {

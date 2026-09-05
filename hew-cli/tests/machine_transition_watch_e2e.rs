@@ -167,7 +167,7 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
         "import std.channel.channel;\n\
          \n\
          enum Transition {\n\
-         \x20   Moved { from_state: string, to_state: string };\n\
+         \x20   Moved { from_state: string, to_state: string },\n\
          }\n\
          \n\
          actor Combined {\n\
@@ -560,16 +560,16 @@ fn heap_payload_machine_actor_field_steps_clean() {
         "heap_machine_field",
         "machine Conn {\n\
          \x20   events {\n\
-         \x20       Connect;\n\
-         \x20       Fail { reason: string; }\n\
-         \x20       Reset;\n\
+         \x20       Connect,\n\
+         \x20       Fail { reason: string, }\n\
+         \x20       ,Reset,\n\
          \x20   }\n\
          \n\
-         \x20   state Idle;\n\
-         \x20   state Open;\n\
-         \x20   state Failed { reason: string; }\n\
+         \x20   state Idle,\n\
+         \x20   state Open,\n\
+         \x20   state Failed { reason: string, }\n\
          \n\
-         \x20   on Connect: Idle => Open {\n\
+         \x20   ,on Connect: Idle => Open {\n\
          \x20       Conn.Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
@@ -590,7 +590,7 @@ fn heap_payload_machine_actor_field_steps_clean() {
          }\n\
          \n\
          actor Holder {\n\
-         \x20   var c: Conn = Conn.Idle;\n\
+         \x20   var c: Conn = Conn.Idle,\n\
          \n\
          \x20   receive fn drive() {\n\
          \x20       c.step(ConnEvent.Connect);\n\
@@ -626,24 +626,24 @@ fn supervisor_child_with_machine_state_fails_closed() {
         &source,
         "machine Light {\n\
          \x20   events {\n\
-         \x20       Flip;\n\
+         \x20       Flip,\n\
          \x20   }\n\
-         \x20   state Off;\n\
-         \x20   state On;\n\
+         \x20   state Off,\n\
+         \x20   state On,\n\
          \x20   on Flip: Off => On { Light.On }\n\
          \x20   on Flip: On => Off { Light.Off }\n\
          }\n\
          \n\
          actor Worker {\n\
-         \x20   var l: Light = Light.Off;\n\
+         \x20   var l: Light = Light.Off,\n\
          \x20   receive fn ping() {}\n\
          }\n\
          \n\
          supervisor Pool {\n\
-         \x20   strategy: one_for_one;\n\
-         \x20   intensity: 3 within 60s;\n\
+         \x20   strategy: one_for_one,\n\
+         \x20   intensity: 3 within 60s,\n\
          \n\
-         \x20   child w: Worker();\n\
+         \x20   child w: Worker(),\n\
          }\n\
          \n\
          fn main() {\n\
@@ -687,15 +687,15 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \n\
          machine Conn {\n\
          \x20   events {\n\
-         \x20       Connect;\n\
-         \x20       Fail { reason: string; }\n\
+         \x20       Connect,\n\
+         \x20       Fail { reason: string, }\n\
          \x20   }\n\
          \n\
-         \x20   state Idle;\n\
-         \x20   state Open;\n\
-         \x20   state Failed { reason: string; }\n\
+         \x20   state Idle,\n\
+         \x20   state Open,\n\
+         \x20   state Failed { reason: string, }\n\
          \n\
-         \x20   on Connect: Idle => Open {\n\
+         \x20   ,on Connect: Idle => Open {\n\
          \x20       Conn.Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
@@ -776,13 +776,13 @@ fn vec_machine_element_refuses_at_compile_time() {
         &source,
         "machine Conn {\n\
          \x20   events {\n\
-         \x20       Connect;\n\
-         \x20       Fail { reason: string; }\n\
+         \x20       Connect,\n\
+         \x20       Fail { reason: string, }\n\
          \x20   }\n\
-         \x20   state Idle;\n\
-         \x20   state Open;\n\
-         \x20   state Failed { reason: string; }\n\
-         \x20   on Connect: Idle => Open { Conn.Open }\n\
+         \x20   state Idle,\n\
+         \x20   state Open,\n\
+         \x20   state Failed { reason: string, }\n\
+         \x20   ,on Connect: Idle => Open { Conn.Open }\n\
          \x20   on Fail: Open => Failed { Conn.Failed { reason: event.reason } }\n\
          \x20   on Connect: _ => _ { state }\n\
          \x20   on Fail: _ => _ { state }\n\
@@ -934,15 +934,15 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \n\
          machine Conn {\n\
          \x20   events {\n\
-         \x20       Connect;\n\
-         \x20       Fail { reason: string; }\n\
+         \x20       Connect,\n\
+         \x20       Fail { reason: string, }\n\
          \x20   }\n\
          \n\
-         \x20   state Idle;\n\
-         \x20   state Open;\n\
-         \x20   state Failed { reason: string; }\n\
+         \x20   state Idle,\n\
+         \x20   state Open,\n\
+         \x20   state Failed { reason: string, }\n\
          \n\
-         \x20   on Connect: Idle => Open {\n\
+         \x20   ,on Connect: Idle => Open {\n\
          \x20       Conn.Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\

@@ -17,25 +17,25 @@
 // nested-get would surface as a non-42 exit (a Dead/Transient lookup yields
 // the Err arm → exit 0).
 actor Worker {
-    let tag: i64;
+    let tag: i64,
     receive fn echo(n: i64) -> i64 {
         n + tag
     }
 }
 
 supervisor Inner {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child leaf: Worker(tag: 0);
+    child leaf: Worker(tag: 0),
 }
 
 supervisor Root {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child direct: Worker(tag: 0);
-    child sub: Inner;
+    child direct: Worker(tag: 0),
+    child sub: Inner,
 }
 
 fn main() -> i64 {

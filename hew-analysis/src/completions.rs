@@ -1214,7 +1214,7 @@ mod tests {
     #[test]
     fn spawn_completions_disambiguate_same_named_module_actors() {
         let actor_src = "pub actor Account {\n\
-                         \x20   var n: i64 = 0;\n\
+                         \x20   var n: i64 = 0,\n\
                          \x20   receive fn who() -> i64 { 1 }\n\
                          }\n";
         // Checked program (parsable shape) supplies the imported actors.
@@ -1288,8 +1288,8 @@ mod tests {
     #[test]
     fn completions_surface_impl_block_methods_with_return_type() {
         let source = "\
-type Caps { count: i64; }
-type Matcher { id: i64; }
+type Caps { count: i64, }
+type Matcher { id: i64, }
 trait MatcherMethods {
     fn captures(self, input: string) -> Caps;
     fn find_all(self, input: string) -> Vec<string>;
@@ -1457,8 +1457,8 @@ fn example() {
     #[test]
     fn struct_init_completions_do_not_fire_for_enum_types() {
         let source = r"enum Color {
-    Red;
-    Blue;
+    Red,
+    Blue,
 }
 
 fn example() {
@@ -1477,9 +1477,9 @@ fn example() {
     #[test]
     fn enum_variant_completions_offer_all_variants() {
         let source = r"enum Color {
-    Blue;
-    Point { x: i32, y: i32 };
-    Rgb(u8, u8, u8);
+    Blue,
+    Point { x: i32, y: i32 },
+    Rgb(u8, u8, u8),
 }
 
 fn example() {
@@ -1535,9 +1535,9 @@ fn example() {
     #[test]
     fn enum_variant_completions_include_payload_detail() {
         let source = r"enum Color {
-    Blue;
-    Point { x: i32, y: i32 };
-    Rgb(u8, u8, u8);
+    Blue,
+    Point { x: i32, y: i32 },
+    Rgb(u8, u8, u8),
 }
 
 fn example() {
@@ -1747,7 +1747,7 @@ impl Box {
         // This test uses an empty module registry (no stdlib), so `tell` won't
         // appear here; it is covered by the stdlib-loaded hew-lsp integration test.
         let source = r"actor Counter {
-    count: i64;
+    count: i64,
     receive fn increment(n: i64) { count = count + n; }
 }
 fn main() {

@@ -20,11 +20,11 @@ extern "C" {
 }
 
 type Holder {
-    dq: Dq;
+    dq: Dq,
 }
 
 actor DirectKeeper {
-    let dq: Dq;
+    let dq: Dq,
 
     receive fn ping() -> i64 {
         1
@@ -32,7 +32,7 @@ actor DirectKeeper {
 }
 
 actor WrappedKeeper {
-    let holder: Holder;
+    let holder: Holder,
 
     receive fn ping() -> i64 {
         2

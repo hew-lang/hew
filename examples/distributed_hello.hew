@@ -6,7 +6,7 @@
 // it links the mesh transport in the native runtime. WASM/sandbox builds carry
 // no networking, so this example is native-only there.
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn increment(n: i64) {
         count = count + n;
         println(count);

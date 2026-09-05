@@ -4,9 +4,9 @@
 // Backpressure test - bounded mailbox demo
 // Demonstrates that actors with bounded mailboxes apply backpressure
 actor SlowWorker {
-    let id: i32;
+    let id: i32,
 
-    mailbox 4;
+    mailbox 4,
     receive fn process(value: i32) {
         print("SlowWorker ");
         print(id);

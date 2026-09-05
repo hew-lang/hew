@@ -6,9 +6,9 @@
 // stride via the layout descriptor), while indirect enums continue to route
 // to `hew_vec_get_ptr` (pointer-sized slot).
 enum Colour {
-    Red;
-    Green(i64);
-    Blue(i64, i64);
+    Red,
+    Green(i64),
+    Blue(i64, i64),
 }
 
 fn main() {

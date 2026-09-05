@@ -2,9 +2,9 @@
 //! @description Named functions and enum dispatch for composable behaviour
 
 enum Operation {
-    Double;
-    Square;
-    Negate;
+    Double,
+    Square,
+    Negate,
 }
 
 fn apply(op: Operation, x: i64) -> i64 {

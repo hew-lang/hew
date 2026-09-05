@@ -1,10 +1,10 @@
 machine Door {
     events {
-        Toggle;
+        Toggle,
     }
 
-    state Closed;
-    state Open;
+    state Closed,
+    state Open,
 
     on Toggle: Closed => Open {
         await pending;

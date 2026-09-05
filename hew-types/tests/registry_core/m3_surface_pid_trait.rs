@@ -58,7 +58,7 @@ fn pid_trait_generic_send_fails_closed_without_serializable_projection_bound() {
         }
 
         actor Worker {
-            let id: i32;
+            let id: i32,
             init() {}
             receive fn handle(msg: Work) {}
         }
@@ -99,7 +99,7 @@ fn local_pid_generic_pid_send_still_fails_closed_without_projection_bound() {
         }
 
         actor Worker {
-            let id: i32;
+            let id: i32,
             init() {}
             receive fn run(job: Job) {}
         }
@@ -145,7 +145,7 @@ fn local_pid_send_without_handler_rejected_even_with_actor_msg_envelope() {
         }
 
         actor Worker {
-            let id: i32;
+            let id: i32,
             init() {}
             receive fn run(job: Job) {}
         }
@@ -182,7 +182,7 @@ fn remote_pid_send_returns_typed_send_error_stub() {
         }
 
         actor Worker {
-            let id: i32;
+            let id: i32,
             init() {}
             receive fn run(job: Job) {}
         }
@@ -214,7 +214,7 @@ fn remote_pid_ask_returns_typed_reply_or_ask_error() {
         }
 
         actor Worker {
-            let id: i32;
+            let id: i32,
             init() {}
             receive fn run(job: Job) -> i64 { 21 }
         }
@@ -248,7 +248,7 @@ fn remote_pid_ask_rejects_nonserializable_reply() {
         }
 
         actor Worker {
-            let id: i32;
+            let id: i32,
             init() {}
             receive fn run(job: Job) {}
         }

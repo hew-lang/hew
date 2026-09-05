@@ -12,17 +12,17 @@
 
 /// Monomorphic record reached through `qualshapes.Point`.
 pub type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 /// Payload record for the generic instantiation.
 pub type Box {
-    payload: i64;
+    payload: i64,
 }
 
 /// Generic record reached through `qualshapes.Holder<qualshapes.Box>`.
 pub type Holder<T> {
-    inner: T;
-    tag: i64;
+    inner: T,
+    tag: i64,
 }

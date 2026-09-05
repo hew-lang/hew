@@ -1,7 +1,7 @@
 enum Shape {
-    Empty;
-    Circle(i64);
-    Rect { w: i64; h: i64 }
+    Empty,
+    Circle(i64),
+    Rect { w: i64, h: i64 }
 }
 
 fn make() -> Shape {

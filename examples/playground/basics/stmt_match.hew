@@ -2,9 +2,9 @@
 //! @description Statement-position match with side-effecting arms
 
 enum Color {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 fn describe(c: Color) {

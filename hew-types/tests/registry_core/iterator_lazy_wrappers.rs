@@ -56,8 +56,8 @@ pub fn panic(message: string) {}
 /// The wrapper shapes and `Item` projections are what this stage locks.
 const ITER_WRAPPER_SURFACE: &str = r#"
 pub type Map<I, A, B> {
-    iter: I;
-    f: fn(A) -> B;
+    iter: I,
+    f: fn(A) -> B,
 }
 
 impl<I, A, B> Iterator for Map<I, A, B>
@@ -72,8 +72,8 @@ where
 }
 
 pub type Filter<I, A> {
-    iter: I;
-    pred: fn(A) -> bool;
+    iter: I,
+    pred: fn(A) -> bool,
 }
 
 impl<I, A> Iterator for Filter<I, A>
@@ -88,8 +88,8 @@ where
 }
 
 pub type Take<I> {
-    iter: I;
-    remaining: i64;
+    iter: I,
+    remaining: i64,
 }
 
 impl<I, A> Iterator for Take<I>
@@ -104,8 +104,8 @@ where
 }
 
 pub type Skip<I> {
-    iter: I;
-    remaining: i64;
+    iter: I,
+    remaining: i64,
 }
 
 impl<I, A> Iterator for Skip<I>
@@ -386,8 +386,8 @@ fn chained_adapters_typecheck() {
     let driver = r"
 
 pub type Counter {
-    n: i64;
-    limit: i64;
+    n: i64,
+    limit: i64,
 }
 
 impl Iterator for Counter {
@@ -419,8 +419,8 @@ fn terminal_helpers_typecheck() {
     let driver = r"
 
 pub type Counter {
-    n: i64;
-    limit: i64;
+    n: i64,
+    limit: i64,
 }
 
 impl Iterator for Counter {

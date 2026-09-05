@@ -1117,7 +1117,7 @@ mod tests {
                 "std/builtins.hew",
                 r#"
 #[lang_item("option")]
-pub enum Maybe<T> { Some(T); None; }
+pub enum Maybe<T> { Some(T), None, }
 
 #[intrinsic("math.sqrt")]
 pub fn sqrt(x: f64) -> f64;

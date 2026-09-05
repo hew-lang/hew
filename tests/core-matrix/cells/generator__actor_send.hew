@@ -1,5 +1,5 @@
 actor Sink {
-    var hits: i64;
+    var hits: i64,
 
     receive fn take(v: Generator<i64, ()>) -> i64 {
         var v_sum = 0;

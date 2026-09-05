@@ -10,8 +10,8 @@
 // per-element release is unwired. Once that release is wired this fixture
 // compiles — delete its entry from hew-corpus-expected-failures.txt then.
 indirect enum Foo {
-    A(i64);
-    B;
+    A(i64),
+    B,
 }
 
 fn main() {

@@ -2,18 +2,18 @@
 //! @description Structured record types, enums, and exhaustive pattern matching
 
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 type Circle {
-    centre: Point;
-    radius: i64;
+    centre: Point,
+    radius: i64,
 }
 
 enum Shape {
-    Dot(Point);
-    Ring(Circle);
+    Dot(Point),
+    Ring(Circle),
 }
 
 fn area_description(s: Shape) -> string {

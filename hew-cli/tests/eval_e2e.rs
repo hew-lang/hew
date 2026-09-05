@@ -3059,11 +3059,11 @@ fn trait_bound_probe1_bounded_machine_runs() {
         &hew_src,
         "machine Tagger<T: Display> {\n\
          \x20   events {\n\
-         \x20       Tag { value: T; }\n\
+         \x20       Tag { value: T, }\n\
          \x20   }\n\
-         \x20   state Empty;\n\
-         \x20   state Tagged { value: T; }\n\
-         \x20   on Tag: Empty => Tagged { Tagged { value: event.value } }\n\
+         \x20   state Empty,\n\
+         \x20   state Tagged { value: T, }\n\
+         \x20   ,on Tag: Empty => Tagged { Tagged { value: event.value } }\n\
          \x20   on Tag: Tagged => Tagged reenter { Tagged { value: event.value } }\n\
          }\n\
          fn main() {\n\
@@ -3111,12 +3111,12 @@ fn trait_bound_probe2_multi_bound_machine_runs() {
         &hew_src,
         "machine Pair<A: Display, B: Display> {\n\
          \x20   events {\n\
-         \x20       Load { first: A; second: B; }\n\
-         \x20       Clear;\n\
+         \x20       Load { first: A, second: B, }\n\
+         \x20       ,Clear,\n\
          \x20   }\n\
-         \x20   state Empty;\n\
-         \x20   state Full { first: A; second: B; }\n\
-         \x20   on Load: Empty => Full { Full { first: event.first, second: event.second } }\n\
+         \x20   state Empty,\n\
+         \x20   state Full { first: A, second: B, }\n\
+         \x20   ,on Load: Empty => Full { Full { first: event.first, second: event.second } }\n\
          \x20   on Load: Full => Full reenter { Full { first: event.first, second: event.second } }\n\
          \x20   on Clear: Empty => Empty reenter { Pair.Empty }\n\
          \x20   on Clear: Full => Empty { Pair.Empty }\n\
@@ -3171,7 +3171,7 @@ fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
     let hew_src = dir.path().join("pair_iter.hew");
     std::fs::write(
         &hew_src,
-        "pub type Pair<T> { left: T; right: T; }\n\
+        "pub type Pair<T> { left: T, right: T, }\n\
          impl<T> Iterator for Pair<T> where T: Display {\n\
          \x20   type Item = T;\n\
          \x20   fn next(var p: Pair<T>) -> Option<T> {\n\
@@ -3226,7 +3226,7 @@ fn var_self_concrete_receiver_trait_dispatch_option_abi_and_writeback() {
     let hew_src = dir.path().join("counter_iter.hew");
     std::fs::write(
         &hew_src,
-        "pub type Counter<T> { current: T; step: T; }\n\
+        "pub type Counter<T> { current: T, step: T, }\n\
          impl<T> Iterator for Counter<T> where T: Display {\n\
          \x20   type Item = T;\n\
          \x20   fn next(var c: Counter<T>) -> Option<T> {\n\
@@ -3335,7 +3335,7 @@ fn w4_047_static_trait_dispatch_concrete_return_totality() {
         "trait Valued {\n\
          \x20   fn value(val: Self) -> i64;\n\
          }\n\
-         type Token { id: i64; }\n\
+         type Token { id: i64, }\n\
          impl Valued for Token {\n\
          \x20   fn value(t: Token) -> i64 { t.id }\n\
          }\n\

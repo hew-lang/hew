@@ -22,7 +22,7 @@
 // owns the process exit status (HEW-SPEC-2026 §5.8, exit 1). Exit 1 versus a
 // SIGTRAP's 133 still carries the no-trap claim.
 actor Worker {
-    var value: i64 = 5;
+    var value: i64 = 5,
     receive fn get_value() -> i64 {
         value
     }
@@ -32,10 +32,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child w1: Worker(value: 5);
+    child w1: Worker(value: 5),
 }
 
 fn main() -> i64 {

@@ -13,7 +13,7 @@
 import std.testing;
 
 type Rec {
-    s: string;
+    s: string,
 }
 
 #[test]

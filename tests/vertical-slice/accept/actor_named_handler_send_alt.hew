@@ -4,7 +4,7 @@
 //
 // Adder.add accumulates n into count; main calls add(10) + add(32) = 42 → 42.
 actor Adder {
-    var count: i64;
+    var count: i64,
     receive fn add(n: i64) {
         count = count + n;
     }

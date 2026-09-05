@@ -29,7 +29,7 @@ actor Logger {
     // let monitor = Node.lookup("monitor");
 
     // Simulate 6 ticks
-    var count: i32;
+    var count: i32,
     receive fn log_event(source: string, msg: string) {
         count = count + 1;
         println(f"[log #{count}] {source}: {msg}");
@@ -37,9 +37,9 @@ actor Logger {
 }
 
 actor Monitor {
-    let readings: Vec<i32>;
-    let logger: LocalPid<Logger>;
-    let threshold: i32;
+    let readings: Vec<i32>,
+    let logger: LocalPid<Logger>,
+    let threshold: i32,
     receive fn reading(sensor_id: string, temp: i32) {
         readings.push(temp);
         if temp > threshold {
@@ -57,9 +57,9 @@ actor Monitor {
 }
 
 actor Sensor {
-    let sensor_id: string;
-    let monitor: LocalPid<Monitor>;
-    let base_temp: i32;
+    let sensor_id: string,
+    let monitor: LocalPid<Monitor>,
+    let base_temp: i32,
     receive fn tick(cycle: i32) {
         let temp = base_temp + cycle % 5 - 2;
         monitor.reading(sensor_id, temp);

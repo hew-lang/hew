@@ -75,7 +75,7 @@ fn result_temp_consume_source(frames: usize) -> String {
 /// passed as an inline temporary. `handle` returns 1 for the `Text` arm.
 fn user_enum_consume_source(frames: usize) -> String {
     format!(
-        "enum Msg {{ Text(string); Code(i64) }}\n\
+        "enum Msg {{ Text(string), Code(i64) }}\n\
          fn handle(m: Msg) -> i64 {{ match m {{ Text(s) => 1, Code(n) => n }} }}\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\

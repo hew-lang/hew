@@ -4,7 +4,7 @@
 // `actor_arg_field_projection_sibling_use` — but the aggregate is not.
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {
@@ -15,8 +15,8 @@ impl Socket {
 }
 
 type Holder {
-    sock: Socket;
-    count: i64;
+    sock: Socket,
+    count: i64,
 }
 
 actor TestSink {

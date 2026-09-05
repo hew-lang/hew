@@ -55,7 +55,7 @@ pub enum MetricsError {
     /// The name was malformed, exceeded a registry cap, or collided with a
     /// runtime built-in metric. The registry counts the rejection in its
     /// `hew_metrics_*_dropped_total` self-metrics, visible in the scrape.
-    Rejected(string);
+    Rejected(string),
 }
 
 impl Display for MetricsError {
@@ -71,7 +71,7 @@ impl Display for MetricsError {
 /// Created by `metrics.counter(name)`. `Copy`: the handle is the registry slot
 /// index, not an owning pointer.
 pub type Counter {
-    id: i64;
+    id: i64,
 }
 
 /// A bidirectional gauge handle.
@@ -79,7 +79,7 @@ pub type Counter {
 /// Created by `metrics.gauge(name)`. `Copy`: the handle is the registry slot
 /// index, not an owning pointer.
 pub type Gauge {
-    id: i64;
+    id: i64,
 }
 
 /// A histogram handle.
@@ -92,7 +92,7 @@ pub type Gauge {
 /// Bucketed histograms (custom `le` upper bounds, the `name_bucket` lines) are
 /// not yet expressible from the stdlib surface and arrive in a later release.
 pub type Histogram {
-    id: i64;
+    id: i64,
 }
 
 /// Methods on a `Counter`.

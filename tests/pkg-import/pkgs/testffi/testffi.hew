@@ -8,7 +8,7 @@
 /// A fixture result set. A zero handle is an error result.
 /// Must be freed exactly once with `free()`.
 type TestResult {
-    handle: i64;
+    handle: i64,
 }
 
 trait TestResultMethods {
@@ -64,7 +64,7 @@ impl TestResultMethods for TestResult {
 
 /// Fixture actor: every ask replies through the native library.
 pub actor Db {
-    let seed: i64;
+    let seed: i64,
 
     // Ask returning i32.
     receive fn count32() -> i32 {

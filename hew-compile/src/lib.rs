@@ -3307,7 +3307,7 @@ mod tests {
         let peer = write_source(
             &module_dir,
             "dog.hew",
-            "pub type Dog { label: string; }\nimpl Greeter for Dog {\n    fn name(self) -> string { self.label }\n}\npub fn describe(d: Dog) -> string { d.greet() }\n",
+            "pub type Dog { label: string, }\nimpl Greeter for Dog {\n    fn name(self) -> string { self.label }\n}\npub fn describe(d: Dog) -> string { d.greet() }\n",
         );
 
         let result = check_file(
@@ -3340,12 +3340,12 @@ mod tests {
         write_source(
             &module_dir,
             "shapes.hew",
-            "type Point { x: i64; }\npub fn ax() -> i64 { let p = Point { x: 1 }; p.x }\n",
+            "type Point { x: i64, }\npub fn ax() -> i64 { let p = Point { x: 1 }; p.x }\n",
         );
         write_source(
             &module_dir,
             "circle.hew",
-            "type Point { y: i64; }\npub fn by() -> i64 { let p = Point { y: 2 }; p.y }\n",
+            "type Point { y: i64, }\npub fn by() -> i64 { let p = Point { y: 2 }; p.y }\n",
         );
         let input = write_source(
             dir.path(),
@@ -3402,12 +3402,12 @@ mod tests {
         write_source(
             dir.path(),
             "lib.hew",
-            "type Point { x: i64; }\npub fn lib_point() -> i64 { let p = Point { x: 1 }; p.x }\n",
+            "type Point { x: i64, }\npub fn lib_point() -> i64 { let p = Point { x: 1 }; p.x }\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import \"lib.hew\";\n\ntype Point { y: i64; }\n\n             fn main() { let p = Point { y: 2 }; println(p.y + lib_point()); }\n",
+            "import \"lib.hew\";\n\ntype Point { y: i64, }\n\n             fn main() { let p = Point { y: 2 }; println(p.y + lib_point()); }\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -4158,7 +4158,7 @@ fn main() {
              pub fn render(value: Box<i64>) -> string { \"specialised\" }\n}\n";
         const DECLARATIONS: &str = "pub trait Render {\n    \
              fn render(value: Self) -> string;\n}\n\n\
-             pub type Box<T> {\n    value: T;\n}\n\n";
+             pub type Box<T> {\n    value: T,\n}\n\n";
 
         let mut mismatches: Vec<String> = Vec::new();
         for (order, first, second) in [
@@ -5231,13 +5231,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0;\n    \
+            "pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 1 }\n}\n",
         );
         write_source(
             dir.path(),
             "store.hew",
-            "pub actor Account {\n    var n: i64 = 0;\n    \
+            "pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 2 }\n}\n",
         );
         let input = write_source(
@@ -5260,13 +5260,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0;\n    \
+            "pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 1 }\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import bank;\n\nactor Account {\n    var n: i64 = 0;\n    \
+            "import bank;\n\nactor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 2 }\n}\n\nfn main() -> i64 { 0 }\n",
         );
 
@@ -5283,9 +5283,9 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0;\n    \
+            "pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 1 }\n}\n\
-             pub actor Account {\n    var n: i64 = 0;\n    \
+             pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 2 }\n}\n",
         );
         let input = write_source(
@@ -5311,13 +5311,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0;\n    \
+            "pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 1 }\n}\n",
         );
         write_source(
             dir.path(),
             "store.hew",
-            "pub actor Register {\n    var n: i64 = 0;\n    \
+            "pub actor Register {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 2 }\n}\n",
         );
         let input = write_source(
@@ -5341,7 +5341,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "counter.hew",
-            "pub actor Counter {\n    var n: i64 = 0;\n    \
+            "pub actor Counter {\n    var n: i64 = 0,\n    \
              receive fn bump() -> i64 { n = n + 1; n }\n}\n",
         );
         let input = write_source(
@@ -5370,13 +5370,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             dir.path(),
             "secret.hew",
             // No `pub`: the actor is private to its module.
-            "actor Account {\n    var n: i64 = 0;\n    \
+            "actor Account {\n    var n: i64 = 0,\n    \
              receive fn id() -> i64 { 999 }\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    \
+            "import secret;\n\nactor Account {\n    var n: i64 = 0,\n    \
              receive fn id() -> i64 { 111 }\n}\n\n\
              fn main() { let a = spawn secret.Account(); }\n",
         );
@@ -5419,7 +5419,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    \
+            "import secret;\n\nactor Account {\n    var n: i64 = 0,\n    \
              receive fn id() -> i64 { 111 }\n}\n\n\
              fn main() { let a = spawn secret.Account(); }\n",
         );
@@ -5673,13 +5673,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             &workflow_dir,
             "workflow.hew",
-            "pub type Marker { value: i64; }\n",
+            "pub type Marker { value: i64, }\n",
         );
         let peer_source = concat!(
             "pub machine Workflow {\n",
-            "    events { Crash; }\n",
-            "    state Ready;\n",
-            "    state Faulted { code: i64; }\n",
+            "    events { Crash, }\n",
+            "    state Ready,\n",
+            "    state Faulted { code: i64, },\n",
             "    on Crash: Ready => .Faulted {\n",
             "        Workflow.Faulted { wrong: 1 }\n",
             "    }\n",

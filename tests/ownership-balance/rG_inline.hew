@@ -3,7 +3,7 @@ import std.string;
 type Snap { label: string, n: i64, terminal: bool }
 
 actor Svc {
-    let seed: i64;
+    let seed: i64,
 
     receive fn snapshot() -> Snap {
         Snap { label: "snap-" + string.from_int(seed), n: seed, terminal: seed > 2 }

@@ -4,7 +4,7 @@
 // production WASI both terminate.
 
 actor StartPanic {
-    var value: i64 = 0;
+    var value: i64 = 0,
 
     #[on(start)]
     fn start() {

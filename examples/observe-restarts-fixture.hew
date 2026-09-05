@@ -1,18 +1,18 @@
 import std.observe;
 
 actor Fragile {
-    let id: i32;
+    let id: i32,
     receive fn break_it() {
         panic("fragile crash");
     }
 }
 
 supervisor Pair {
-    strategy: one_for_one;
-    intensity: 10 within 60s;
+    strategy: one_for_one,
+    intensity: 10 within 60s,
 
-    child a: Fragile(id: 1);
-    child b: Fragile(id: 2);
+    child a: Fragile(id: 1),
+    child b: Fragile(id: 2),
 }
 
 fn main() {

@@ -36,13 +36,13 @@ pub type TlsStream {
 }
 
 type TlsWriteFfiResult {
-    written: i32;
-    status: i32;
+    written: i32,
+    status: i32,
 }
 
 type TlsReadFfiResult {
-    data: bytes;
-    status: i32;
+    data: bytes,
+    status: i32,
 }
 
 const TLS_STATUS_SUCCESS: i32 = 0;

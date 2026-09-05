@@ -1,7 +1,7 @@
 import util;
 
 type Counter {
-    value: i64;
+    value: i64,
 }
 
 impl Counter {

@@ -6,13 +6,13 @@
 // (`hew_vec_slice_range_owned`), and the owned-element scope-exit drop
 // (`hew_vec_free_owned`) plus per-string drops.
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 type Tag {
-    name: string;
-    n: i64;
+    name: string,
+    n: i64,
 }
 
 fn main() {

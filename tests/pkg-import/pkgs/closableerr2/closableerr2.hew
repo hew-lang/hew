@@ -8,5 +8,5 @@
 
 /// A distinct error type with the same bare name as `closableerr.CloseError`.
 pub type CloseError {
-    detail: i64;
+    detail: i64,
 }

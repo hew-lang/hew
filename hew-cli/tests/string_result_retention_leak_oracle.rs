@@ -79,7 +79,7 @@ fn borrow_len(value: string) -> i64 {
 }
 
 actor Runner {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
 
     receive fn go(frames: i64) -> i64 {
         let gate_pid = gate;
@@ -121,7 +121,7 @@ extern "C" {
 }
 
 actor Reader {
-    let ready: channel.Sender<i64>;
+    let ready: channel.Sender<i64>,
 
     receive fn go(unused: i64) {
         let ready_tx = ready;
@@ -160,7 +160,7 @@ import std.net.{Listener};
 import std.observe;
 
 actor Reader {
-    let addr: string;
+    let addr: string,
 
     receive fn go(trigger: i64) -> i64 {
         let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
@@ -212,7 +212,7 @@ const SUSPENDING_CLOSURE_PEER_EOF_SOURCE: &str = r#"
 import std.net.{Listener};
 
 actor Reader {
-    let addr: string;
+    let addr: string,
 
     receive fn go(trigger: i64) -> i64 {
         let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
@@ -271,7 +271,7 @@ fn tcp_resource_crash_source(frames: usize, fresh_argument: bool) -> String {
 import std.net.{{Listener}};
 
 actor Reader {{
-    let addr: string;
+    let addr: string,
 
     receive fn go(trigger: i64) -> i64 {{
         let conn = match net.connect(addr) {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
@@ -327,7 +327,7 @@ actor Gate {{
 }}
 
 actor Crasher {{
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
 
     receive fn go(trigger: i64) -> i64 {{
         let gate_pid = gate;
@@ -378,7 +378,7 @@ fn helper_normal() -> i64 {
 }
 actor Gate { receive fn tick() -> i64 { 1 } }
 actor Runner {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
     receive fn go(frames: i64) -> i64 {
         let _ = await gate.tick();
         for _ in 0..frames {
@@ -418,7 +418,7 @@ fn helper_trap() -> i64 {
 }
 actor Gate { receive fn tick() -> i64 { 1 } }
 actor Runner {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
     receive fn go() -> i64 {
         let _ = await gate.tick();
         helper_trap()
@@ -458,7 +458,7 @@ actor Gate {
 }
 
 actor Runner {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
 
     receive fn go(trigger: i64) -> i64 {
         let gate_pid = gate;
@@ -535,7 +535,7 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
 
     receive fn run() -> i64 {
         let child = |child_gate: LocalPid<Gate>| {
@@ -594,7 +594,7 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
 
     receive fn run() -> i64 {
         let child = |child_gate: LocalPid<Gate>| {
@@ -650,7 +650,7 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
 
     receive fn run() -> i64 {
         let child = |child_gate: LocalPid<Gate>| {
@@ -708,7 +708,7 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
 
     receive fn run() -> i64 {
         let gate_pid = gate;
@@ -761,7 +761,7 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>;
+    let gate: LocalPid<Gate>,
 
     receive fn run() -> i64 {
         let outer_owner = "outer-crash-owner".to_upper();

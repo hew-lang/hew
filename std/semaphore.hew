@@ -27,7 +27,7 @@ type SemaphoreHandle {
 
 #[resource]
 pub type Semaphore {
-    handle: SemaphoreHandle;
+    handle: SemaphoreHandle,
 }
 
 /// Methods available on a `Semaphore`.

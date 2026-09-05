@@ -17,8 +17,8 @@
 import hew.aliassrc.{ Payload as Tag };
 
 enum Wrap {
-    Has(Tag);
-    Empty;
+    Has(Tag),
+    Empty,
 }
 
 fn main() {

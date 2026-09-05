@@ -10,8 +10,8 @@ impl Tok {
 }
 
 enum Held {
-    Nothing;
-    One(Tok);
+    Nothing,
+    One(Tok),
 }
 
 fn main() {

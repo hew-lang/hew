@@ -31,7 +31,7 @@ type UrlHandle {
 
 #[resource]
 pub type Url {
-    handle: UrlHandle;
+    handle: UrlHandle,
 }
 
 /// Methods available on a parsed `Url`.

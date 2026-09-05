@@ -4,8 +4,8 @@
 // checker admitted this as an irrefutable destructure and silently lowered the
 // projection as `Point.x`, so the written `Other` constructor was never
 // enforced. Exactly one spanned error must fire, naming both types.
-type Point { x: i64; }
-type Other { x: i64; }
+type Point { x: i64, }
+type Other { x: i64, }
 
 fn main() -> i64 {
     let Other { x } = Point { x: 41 };

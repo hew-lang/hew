@@ -12,12 +12,12 @@
 
 pub machine Light {
     events {
-        Toggle;
-        Ping;
+        Toggle,
+        Ping,
     }
 
-    state On;
-    state Off;
+    state On,
+    state Off,
 
     on Toggle: On => Off {
         .Off

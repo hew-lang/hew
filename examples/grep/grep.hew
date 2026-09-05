@@ -32,19 +32,19 @@ import std.text.regex;
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 type Config {
-    pattern: string; // raw pattern string as given on argv
-    flag_i: bool; // -i  case-insensitive
-    flag_n: bool; // -n  line numbers
-    flag_v: bool; // -v  invert match
-    flag_c: bool; // -c  count-only
-    flag_r: bool; // -r  recursive directory walk
-    files: Vec<string>; // remaining positional arguments (files/dirs)
+    pattern: string, // raw pattern string as given on argv
+    flag_i: bool, // -i  case-insensitive
+    flag_n: bool, // -n  line numbers
+    flag_v: bool, // -v  invert match
+    flag_c: bool, // -c  count-only
+    flag_r: bool, // -r  recursive directory walk
+    files: Vec<string>, // remaining positional arguments (files/dirs)
 }
 
 // ── Match state ────────────────────────────────────────────────────────────────
 type MatchState {
-    found_any: bool; // any match seen across all files
-    had_error: bool; // any file open / read error
+    found_any: bool, // any match seen across all files
+    had_error: bool, // any file open / read error
 }
 
 // ── Argument parsing ──────────────────────────────────────────────────────────

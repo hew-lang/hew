@@ -4,7 +4,7 @@ trait Super {
 
 trait Sub: Super {}
 
-type Widget { label: string; }
+type Widget { label: string, }
 
 impl Sub for Widget {
     fn name(w: Widget) -> string { "inline" }

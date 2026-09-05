@@ -55,17 +55,17 @@ use support::{describe_output, require_codegen};
 fn fungible_tell_recover_loop_source(frames: usize) -> String {
     format!(
         "actor Worker {{\n\
-         \x20   var seen: i64;\n\
+         \x20   var seen: i64,\n\
          \x20   receive fn take(s: string) {{\n\
          \x20       if s.is_empty() {{ seen = seen; }} else {{ seen = seen + 1; }}\n\
          \x20   }}\n\
          }}\n\
          \n\
          supervisor App {{\n\
-         \x20   strategy: one_for_one;\n\
-         \x20   intensity: 3 within 60s;\n\
+         \x20   strategy: one_for_one,\n\
+         \x20   intensity: 3 within 60s,\n\
          \n\
-         \x20   child w: Worker(seen: 0);\n\
+         \x20   child w: Worker(seen: 0),\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -90,7 +90,7 @@ fn fungible_tell_recover_loop_source(frames: usize) -> String {
 /// handler) still owns.
 const DELIVERED_SCRIBBLE_SOURCE: &str = "\
 actor Worker {\n\
-\x20   var seen: i64;\n\
+\x20   var seen: i64,\n\
 \x20   receive fn take(s: string) {\n\
 \x20       if s.is_empty() { seen = seen; } else { seen = seen + 1; }\n\
 \x20   }\n\
@@ -100,10 +100,10 @@ actor Worker {\n\
 }\n\
 \n\
 supervisor App {\n\
-\x20   strategy: one_for_one;\n\
-\x20   intensity: 3 within 60s;\n\
+\x20   strategy: one_for_one,\n\
+\x20   intensity: 3 within 60s,\n\
 \n\
-\x20   child w: Worker(seen: 0);\n\
+\x20   child w: Worker(seen: 0),\n\
 }\n\
 \n\
 fn main() -> i64 {\n\

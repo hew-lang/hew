@@ -21,7 +21,7 @@
 //! 102 length, 103–105 element values) so a regression is legible.
 
 type Countdown {
-    n: i64;
+    n: i64,
 }
 
 impl Iterator for Countdown {
@@ -39,8 +39,8 @@ impl Iterator for Countdown {
 }
 
 type Map<I, A, B> {
-    iter: I;
-    f: fn(A) -> B;
+    iter: I,
+    f: fn(A) -> B,
 }
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {

@@ -1,6 +1,6 @@
 type Rec {
-    a: i64;
-    b: string;
+    a: i64,
+    b: string,
 }
 
 fn main() {

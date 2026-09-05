@@ -11,8 +11,8 @@
 // This is the same "dependency-aware restart" pattern used in Erlang/OTP
 // application supervisors and Kubernetes pod restart policies.
 actor Cache {
-    let capacity: i32;
-    var entries: i32;
+    let capacity: i32,
+    var entries: i32,
     receive fn store(key: i32) {
         entries = entries + 1;
         print("[cache] stored key=");
@@ -40,7 +40,7 @@ actor Database {
     // Normal operation
 
     // Cache crashes — only cache restarts (DB and API unaffected)
-    let connections: i32 = 4;
+    let connections: i32 = 4,
     receive fn query(id: i32) {
         print("[db] connected (pool=");
         print(connections);
@@ -54,7 +54,7 @@ actor Database {
 }
 
 actor ApiHandler {
-    let port: i32 = 8080;
+    let port: i32 = 8080,
     receive fn request(user_id: i32) {
         print("[api] listening on port ");
         print(port);
@@ -64,12 +64,12 @@ actor ApiHandler {
 }
 
 supervisor ServiceStack {
-    strategy: rest_for_one;
-    intensity: 5 within 60s;
+    strategy: rest_for_one,
+    intensity: 5 within 60s,
 
-    child cache: Cache(capacity: 1000, entries: 0);
-    child db: Database;
-    child api: ApiHandler;
+    child cache: Cache(capacity: 1000, entries: 0),
+    child db: Database,
+    child api: ApiHandler,
 }
 
 fn main() {

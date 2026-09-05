@@ -3,7 +3,7 @@
 // snapshotted into its env at stream construction (point-in-time copy,
 // not a live view of the actor's state).
 actor Ticker {
-    var base: i64;
+    var base: i64,
     init(b: i64) {
         base = b;
     }

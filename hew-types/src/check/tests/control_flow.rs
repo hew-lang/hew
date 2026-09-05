@@ -8,7 +8,7 @@ pub(super) use super::*;
 fn user_receiver_recv_is_not_a_channel_select_source() {
     let output = check_source(
         r"
-        type Receiver<T> { value: T; }
+        type Receiver<T> { value: T, }
         impl<T> Receiver<T> {
             fn recv(self) -> T { self.value }
         }
@@ -210,7 +210,7 @@ mod supervisor_child_slot_tests {
             }
 
             supervisor App {
-                child cache: Cache
+                child cache: Cache,
                 child log: Log
             }
 
@@ -347,7 +347,7 @@ mod supervisor_child_slot_tests {
             }
 
             supervisor App {
-                child cache: Cache
+                child cache: Cache,
                 pool worker: Worker
             }
 
@@ -456,7 +456,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn iflet_stmt_struct_pattern_is_accepted() {
         let errors = check_iflet_whilelet(
-            r"type Point { x: i64; y: i64; } fn foo(p: Point) { if let Point { x, y } = p { x + y } }",
+            r"type Point { x: i64, y: i64, } fn foo(p: Point) { if let Point { x, y } = p { x + y } }",
         );
         assert!(
             !errors
@@ -480,7 +480,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn iflet_stmt_or_pattern_is_accepted() {
         let errors =
-            check_iflet_whilelet(r"enum E { A; B; } fn foo(x: E) { if let .A | .B = x { 0 } }");
+            check_iflet_whilelet(r"enum E { A, B, } fn foo(x: E) { if let .A | .B = x { 0 } }");
         assert!(
             !errors
                 .iter()
@@ -525,7 +525,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn whilelet_stmt_struct_pattern_is_accepted() {
         let errors = check_iflet_whilelet(
-            r"enum Msg { Data { value: i64 }; Done; } fn foo(x: Msg) { while let .Data { value } = x { break; } }",
+            r"enum Msg { Data { value: i64 }, Done, } fn foo(x: Msg) { while let .Data { value } = x { break; } }",
         );
         assert!(
             !errors
@@ -550,7 +550,7 @@ mod iflet_whilelet_pattern_contract {
     #[test]
     fn whilelet_stmt_or_pattern_is_accepted() {
         let errors = check_iflet_whilelet(
-            r"enum E { A; B; } fn foo(x: E) { while let .A | .B = x { break; } }",
+            r"enum E { A, B, } fn foo(x: E) { while let .A | .B = x { break; } }",
         );
         assert!(
             !errors
@@ -766,7 +766,7 @@ mod for_loop_iterable_fail_closed {
         let output = check_source(
             r"
             type Counter {
-                val: i32;
+                val: i32,
             }
 
             impl Iterator for Counter {
@@ -803,7 +803,7 @@ mod for_loop_iterable_fail_closed {
         let output = check_source(
             r"
             type Counter {
-                val: i32;
+                val: i32,
             }
 
             impl Iterator for Counter {
@@ -1155,7 +1155,7 @@ mod for_loop_iterable_fail_closed {
         let output = check_source(
             r"
             actor Counter {
-                var count: i64;
+                var count: i64,
                 receive fn increment(n: i64) { count = count + n; }
             }
             fn main() {

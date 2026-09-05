@@ -1,10 +1,10 @@
 enum Colour {
-    Red;
-    Green;
+    Red,
+    Green,
 }
 
 actor Sink {
-    var hits: i64;
+    var hits: i64,
 
     receive fn take(v: Colour) -> i64 {
         match v { .Red => println("Red"), .Green => println("Green"), }

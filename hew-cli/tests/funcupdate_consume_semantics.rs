@@ -456,9 +456,9 @@ fn reject_machine_state_field_projection_base() {
 import std.string;
 type Inner { label: string, n: i64 }
 machine Holder {
-    events { Bump; }
-    state Empty;
-    state Full { payload: Inner; }
+    events { Bump, }
+    state Empty,
+    state Full { payload: Inner, },
     on Bump: Empty => Full {
         Full { payload: Inner { label: string.repeat("a", 32), n: 1 } }
     }
@@ -1701,7 +1701,7 @@ fn reject_carry_tuple_of_enum_field() {
     let source = r#"
 import std.string;
 type Inner { label: string, n: i64 }
-enum Payload { Value(Inner); Empty; }
+enum Payload { Value(Inner), Empty, }
 type T { pair: (Payload, i64), tag: string }
 fn mk() -> T {
     let b = T { pair: (.Value(Inner { label: string.repeat("k", 32), n: 1 }), 7), tag: string.repeat("x", 32) };
@@ -1947,7 +1947,7 @@ fn carry_rule_matrix_cases() -> Vec<CarryRuleMatrixCase> {
             class: "enum-payload",
             depth: 2,
             ty: "Payload",
-            declarations: "enum Payload { Value(Leaf); Empty; }",
+            declarations: "enum Payload { Value(Leaf), Empty, }",
             setup: "",
             value: ".Value(Leaf { label: string.repeat(\"k\", 32), n: 1 })",
             accepted: false,
@@ -1956,7 +1956,7 @@ fn carry_rule_matrix_cases() -> Vec<CarryRuleMatrixCase> {
             class: "enum-payload",
             depth: 3,
             ty: "(Payload, i64)",
-            declarations: "enum Payload { Value(Leaf); Empty; }",
+            declarations: "enum Payload { Value(Leaf), Empty, }",
             setup: "",
             value: "(.Value(Leaf { label: string.repeat(\"k\", 32), n: 1 }), 3)",
             accepted: false,
@@ -1965,7 +1965,7 @@ fn carry_rule_matrix_cases() -> Vec<CarryRuleMatrixCase> {
             class: "enum-payload",
             depth: 4,
             ty: "((Payload, i64), i64)",
-            declarations: "enum Payload { Value(Leaf); Empty; }",
+            declarations: "enum Payload { Value(Leaf), Empty, }",
             setup: "",
             value: "((.Value(Leaf { label: string.repeat(\"k\", 32), n: 1 }), 3), 4)",
             accepted: false,

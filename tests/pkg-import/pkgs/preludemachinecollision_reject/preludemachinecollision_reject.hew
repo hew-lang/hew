@@ -1,9 +1,9 @@
 //! A package-owned machine collision must report once at its declaration.
 
 pub machine Result {
-    events { advance; }
-    state Start;
-    state Done;
+    events { advance, }
+    state Start,
+    state Done,
     on advance: Start => Done { Done }
     on advance: _ => _ { state }
 }

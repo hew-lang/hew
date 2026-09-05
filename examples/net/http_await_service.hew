@@ -23,8 +23,8 @@ import std.net.http.http_async_client;
 import std.string;
 
 actor Server {
-    let addr: string;
-    let requests: i64;
+    let addr: string,
+    let requests: i64,
 
     receive fn serve(unused: i64) {
         let listener = match net.listen(addr) {
@@ -70,8 +70,8 @@ actor Server {
 }
 
 actor Client {
-    let addr: string;
-    let host: string;
+    let addr: string,
+    let host: string,
 
     receive fn fetch(path: string) {
         let conn = match net.connect(addr) {

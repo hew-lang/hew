@@ -6,7 +6,7 @@
 // see the original snapshot. A second, freshly-started stream sees the new
 // value.
 actor Ticker {
-    var base: i64;
+    var base: i64,
     init(b: i64) {
         base = b;
     }

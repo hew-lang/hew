@@ -15,13 +15,13 @@
 // contains the record root (the composite drop stays excluded), while the
 // caller's plans still release the returned `Inner` binding exactly once.
 type Inner {
-    label: string;
-    n: i64;
+    label: string,
+    n: i64,
 }
 
 type Outer {
-    inner: Inner;
-    tag: string;
+    inner: Inner,
+    tag: string,
 }
 
 fn extract() -> Inner {

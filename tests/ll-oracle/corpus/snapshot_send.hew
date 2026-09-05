@@ -1,9 +1,9 @@
 type Boxed {
-    payload: Vec<i64>;
+    payload: Vec<i64>,
 }
 
 actor TestSink {
-    var observed: i64;
+    var observed: i64,
 
     receive fn take(value: Boxed, tag: i64) {
         value.payload.push(tag);

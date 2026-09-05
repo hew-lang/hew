@@ -1,6 +1,6 @@
 enum Choice {
-    Present(i64);
-    Named { value: i64 };
+    Present(i64),
+    Named { value: i64 },
 }
 
 fn main() {

@@ -4,8 +4,8 @@
 // payload field is bound (no skipped owned sibling), so this rides the owner
 // mint + back-edge release rather than the `while let` skipped-owned refusal.
 enum Feed {
-    Item { a: string, b: string };
-    Done;
+    Item { a: string, b: string },
+    Done,
 }
 
 fn step(n: i64) -> Feed {

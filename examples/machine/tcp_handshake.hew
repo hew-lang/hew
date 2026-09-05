@@ -16,36 +16,36 @@
 //   hew machine diagram examples/machine/tcp_handshake.hew --machine TcpHandshake
 machine TcpHandshake {
     events {
-        SynReceive { remote_port: u16; }
-        AckReceive;
-        FinReceive;
-        Reset;
+        SynReceive { remote_port: u16, }
+        ,AckReceive,
+        FinReceive,
+        Reset,
     }
 
     emits {
-        AckReceive;
+        AckReceive,
     }
 
-    state Closed;
+    state Closed,
     state SynReceived {
-        remote_port: u16;
+        remote_port: u16,
         entry {
             println("SYN received — sent SYN-ACK");
         }
-    }
+    },
     state Established {
-        remote_port: u16;
+        remote_port: u16,
         entry {
             println("connection established");
         }
-    }
+    },
     state CloseWait {
         entry {
 
             // Passive close: we received a FIN from the peer.
             println("received FIN — entering close-wait");
         }
-    }
+    },
 
     on SynReceive(remote_port): Closed => SynReceived {
 

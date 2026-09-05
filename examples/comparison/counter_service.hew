@@ -1,7 +1,7 @@
 // Hew: Counter Service
 // The compiler enforces that actor state is never shared.
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn increment(amount: i64) {
         count = count + amount;
     }
@@ -12,11 +12,11 @@ actor Counter {
 
 // Supervision is a language construct, not a library choice.
 supervisor CounterPool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child c1: Counter(count: 0);
-    child c2: Counter(count: 0);
+    child c1: Counter(count: 0),
+    child c2: Counter(count: 0),
 }
 
 // Wire types are first-class.

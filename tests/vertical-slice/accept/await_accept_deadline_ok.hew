@@ -23,7 +23,7 @@ actor Connector {
 }
 
 actor Acceptor {
-    let connector: LocalPid<Connector>;
+    let connector: LocalPid<Connector>,
     receive fn run() -> i64 {
         let ln = match net.listen("127.0.0.1:0") {
             .Ok(listener) => listener,

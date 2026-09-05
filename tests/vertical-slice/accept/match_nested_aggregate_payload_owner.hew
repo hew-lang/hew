@@ -10,26 +10,26 @@
 // moved leaf; it is a leak, not a double free, and it is tracked separately.
 import std.string;
 
-type Inner { v: Vec<i64>; }
+type Inner { v: Vec<i64>, }
 
 type OuterRecord {
-    other: Vec<i64>;
-    value: Option<Inner>;
+    other: Vec<i64>,
+    value: Option<Inner>,
 }
 
 type OuterTuple {
-    other: Vec<i64>;
-    value: Option<(Vec<i64>, i64)>;
+    other: Vec<i64>,
+    value: Option<(Vec<i64>, i64)>,
 }
 
 // A `string` payload is the negative control: it is copy-on-write, so the
 // binder takes a balanced share of its own and the parent KEEPS its cleanup.
 // Suppressing the parent here would leak `other`.
-type Retained { s: string; }
+type Retained { s: string, }
 
 type OuterRetained {
-    other: Vec<i64>;
-    value: Option<Retained>;
+    other: Vec<i64>,
+    value: Option<Retained>,
 }
 
 fn main() {

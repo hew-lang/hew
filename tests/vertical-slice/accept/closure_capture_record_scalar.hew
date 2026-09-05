@@ -6,8 +6,8 @@
 // plan yet still classifies `UserRecord` at the env free-thunk site. The
 // caller binding is a byte-copy alias and stays live after the capture.
 type Pair {
-    a: i64;
-    b: i64;
+    a: i64,
+    b: i64,
 }
 
 fn apply(f: fn(i64) -> i64, x: i64) -> i64 {

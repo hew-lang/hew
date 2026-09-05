@@ -53,7 +53,7 @@ impl ResourceShape {
                 "#[opaque]\n\
                  type Raw {}\n\
                  #[resource]\n\
-                 type Handle { raw: Raw; tag: i64; }\n\
+                 type Handle { raw: Raw, tag: i64, }\n\
                  impl Handle {\n\
                  \x20   fn probe(self) -> i64 { self.tag }\n\
                  \x20   fn close(self) { unsafe { hew_deque_free(self.raw) }; }\n\

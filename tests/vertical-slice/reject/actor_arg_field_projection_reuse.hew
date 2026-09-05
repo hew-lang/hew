@@ -5,7 +5,7 @@
 // the projection left no fact behind and this was accepted.
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {
@@ -16,7 +16,7 @@ impl Socket {
 }
 
 type Holder {
-    sock: Socket;
+    sock: Socket,
 }
 
 actor TestSink {

@@ -12,13 +12,13 @@
 
 pub machine Light {
     events {
-        Toggle;
-        Label;
+        Toggle,
+        Label,
     }
 
-    state On;
-    state Off;
-    state Named { label: string; }
+    state On,
+    state Off,
+    state Named { label: string, },
 
     on Toggle: On => Off {
         .Off

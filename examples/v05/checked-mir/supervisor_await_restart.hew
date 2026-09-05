@@ -14,10 +14,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child w: Worker;
+    child w: Worker,
 }
 
 fn main() -> i64 {

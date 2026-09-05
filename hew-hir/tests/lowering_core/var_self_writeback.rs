@@ -10,7 +10,7 @@ trait Stepper {
     fn next(var self) -> Option<Self.Item>;
 }
 
-type Countdown { n: i64; }
+type Countdown { n: i64, }
 
 impl Stepper for Countdown {
     type Item = i64;

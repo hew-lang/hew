@@ -10,18 +10,18 @@ import std.os;
 
 // Mirror the server's serializable types.  Both nodes must agree on these.
 type KvPut {
-    key: string;
-    val: string;
+    key: string,
+    val: string,
 }
 
 enum KvReq {
-    Put(KvPut);
-    GetKey(string);
+    Put(KvPut),
+    GetKey(string),
 }
 
 enum KvResp {
-    Ack;
-    Value(string);
+    Ack,
+    Value(string),
 }
 
 // Minimal actor declaration — matches the server's ActorMsg contract.

@@ -25,8 +25,8 @@ fn record_rest_matches_wildcard_profile_decision() {
     // Rest form: `{ x, .. }` omits `y`.
     let rest = r"
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn main() {
@@ -38,8 +38,8 @@ fn main() {
     // Explicit-wildcard form: `{ x, y: _ }` — the erasure target.
     let wildcard = r"
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn main() {
@@ -61,8 +61,8 @@ fn record_rest_bare_is_handled() {
     // `{ .. }` alone binds nothing — the profile must not panic or diverge.
     let source = r"
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn main() {
@@ -75,8 +75,8 @@ fn main() {
     // equivalent's admission.
     let all_wild = r"
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn main() {

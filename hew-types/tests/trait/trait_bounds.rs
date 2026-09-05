@@ -62,7 +62,7 @@ fn trait_bound_violation_reports_error() {
         }
 
         type Dog {
-            name: string;
+            name: string,
         }
 
         impl Describable for Dog {

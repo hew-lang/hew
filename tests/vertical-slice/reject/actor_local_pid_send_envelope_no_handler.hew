@@ -12,7 +12,7 @@ type Job {
 }
 
 actor Adder {
-    var count: i64;
+    var count: i64,
     receive fn increment(job: Job) {
         count = count + job.n;
     }

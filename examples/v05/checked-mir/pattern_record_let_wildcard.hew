@@ -4,8 +4,8 @@
 // Drop elaboration retains the record composite release while the projected
 // string aliases receive their existing balancing releases.
 type Pair {
-    a: string;
-    b: string;
+    a: string,
+    b: string,
 }
 
 fn make() -> Pair {

@@ -22,7 +22,7 @@ extern "C" {
 }
 
 enum Resource {
-    Live(Handle);
+    Live(Handle),
     Dead
 }
 

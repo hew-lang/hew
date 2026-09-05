@@ -18,13 +18,13 @@
 //     the scrutinee's own composite drop is retained (visible in the elab
 //     drop plans) and frees every owned field.
 type Inner {
-    value: string;
+    value: string,
 }
 
 type Duo {
-    n: i64;
-    inner: Inner;
-    s: string;
+    n: i64,
+    inner: Inner,
+    s: string,
 }
 
 fn make(n: i64) -> Duo {

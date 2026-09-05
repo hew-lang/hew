@@ -3,7 +3,7 @@
 // consumed again through it.
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {

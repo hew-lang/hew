@@ -6,11 +6,11 @@
 
 /// Non-Send reply: an `Rc<i64>` field must not cross the actor boundary.
 type Reply {
-    field: Rc<i64>;
+    field: Rc<i64>,
 }
 
 pub actor Producer {
-    let seed: i64;
+    let seed: i64,
 
     receive fn make() -> Reply {
         panic("unreachable: the ask is rejected at the Send gate")

@@ -8,7 +8,7 @@
 // `make_handler(make_adder(7))` builds a Handler whose `action` adds 7; the
 // final `h.action(35)` dispatches through the field for 35 + 7 = 42.
 type Handler {
-    action: fn(i64) -> i64;
+    action: fn(i64) -> i64,
 }
 
 fn make_adder(n: i64) -> fn(i64) -> i64 {

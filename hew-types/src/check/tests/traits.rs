@@ -9,7 +9,7 @@ fn closable_consume_authority_matches_exact_impl_trait_identity() {
     let parsed = hew_parser::parse(
         r"
         import std.io.closable;
-        type Probe { value: i64; }
+        type Probe { value: i64, }
         impl Closable for Probe {
             fn close(value: Probe) -> Result<(), closable.CloseError> { Ok(()) }
         }
@@ -632,7 +632,7 @@ fn dyn_trait_return_signature_is_admitted() {
         }
 
         type Person {
-            name: string;
+            name: string,
         }
 
         impl Named for Person {
@@ -659,7 +659,7 @@ fn nested_dyn_trait_return_signature_is_admitted() {
         }
 
         type Person {
-            name: string;
+            name: string,
         }
 
         impl Named for Person {
@@ -1887,7 +1887,7 @@ fn index_trait_user_impl_runs() {
     let output = check_source(
         r"
         type Grid {
-            bias: i32;
+            bias: i32,
         }
 
         impl Index<i32> for Grid {

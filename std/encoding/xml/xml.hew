@@ -32,7 +32,7 @@ type NodeHandle {
 
 #[resource]
 pub type Node {
-    handle: NodeHandle;
+    handle: NodeHandle,
 }
 
 /// Methods available on an XML `Node`.

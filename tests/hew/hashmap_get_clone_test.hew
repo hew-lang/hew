@@ -7,8 +7,8 @@
 import std.testing;
 
 type Payload {
-    label: string;
-    count: i64;
+    label: string,
+    count: i64,
 }
 
 #[test]

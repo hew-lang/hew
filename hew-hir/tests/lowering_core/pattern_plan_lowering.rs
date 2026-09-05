@@ -128,8 +128,8 @@ fn classify(x: i64) -> i64 {
 fn record_let_rest_projects_omitted_fields_as_wildcards() {
     let source = r"
 type Pair {
-    a: i64;
-    b: i64;
+    a: i64,
+    b: i64,
 }
 
 fn main() -> i64 {
@@ -167,7 +167,7 @@ fn main() -> i64 {
 #[test]
 fn missing_record_pattern_plan_fails_closed() {
     let source = r"
-type Pair { a: i64; b: i64; }
+type Pair { a: i64, b: i64, }
 fn main() -> i64 {
     let p = Pair { a: 1, b: 2 };
     let Pair { a, .. } = p;
@@ -189,8 +189,8 @@ fn main() -> i64 {
 fn owned_record_literal_predicate_reads_pattern_plan() {
     let source = r#"
 type Packet {
-    tag: string;
-    payload: string;
+    tag: string,
+    payload: string,
 }
 
 fn classify(packet: Packet) -> i64 {
@@ -226,8 +226,8 @@ fn or_pattern_struct_leaves_lower_through_the_single_producer() {
     // accidental re-narrowing regresses visibly.
     let source = r"
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn classify(p: Point) -> i64 {
@@ -278,13 +278,13 @@ fn nested_record_rest_projects_omitted_fields_as_wildcards() {
     // list — one field-list source, no erasure-ordering divergence.
     let source = r"
 type Inner {
-    a: i64;
-    b: i64;
+    a: i64,
+    b: i64,
 }
 
 type Outer {
-    inner: Inner;
-    tag: i64;
+    inner: Inner,
+    tag: i64,
 }
 
 fn main() -> i64 {
@@ -334,7 +334,7 @@ fn missing_enum_struct_plan_fails_closed_in_refutable_positions() {
         (
             "if_let",
             r#"
-enum Packet { Data { a: string, b: string }; Empty; }
+enum Packet { Data { a: string, b: string }, Empty, }
 fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
 fn main() -> i64 {
     let p = make();
@@ -344,7 +344,7 @@ fn main() -> i64 {
         (
             "while_let",
             r#"
-enum Packet { Data { a: string, b: string }; Empty; }
+enum Packet { Data { a: string, b: string }, Empty, }
 fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
 fn main() {
     var p = make();
@@ -357,7 +357,7 @@ fn main() {
         (
             "let_else",
             r#"
-enum Packet { Data { a: string, b: string }; Empty; }
+enum Packet { Data { a: string, b: string }, Empty, }
 fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
 fn main() -> i64 {
     let Packet.Data { a, .. } = make() else { return 0 };

@@ -30,7 +30,7 @@ const DEFAULT_TEMPLATE: &str = r#"// Hew: safe concurrency with actors
 // Try the examples or tutorials to learn more!
 
 actor Counter {
-    let count: i64;
+    let count: i64,
 
     receive fn increment(n: i64) -> i64 {
         count = count + n;

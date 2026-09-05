@@ -26,10 +26,10 @@ impl Point {
 }
 
 actor Ledger {
-    var count: i64;
-    var label: string;
-    var items: Vec<i64>;
-    var origin: Point;
+    var count: i64,
+    var label: string,
+    var items: Vec<i64>,
+    var origin: Point,
 
     receive fn record(n: i64) {
         self.count = self.count + n;

@@ -15,7 +15,7 @@
 import std.testing;
 
 actor Counter {
-    var n: i64 = 0;
+    var n: i64 = 0,
     receive fn step() -> i64 {
         n = n + 1;
         return n;
@@ -23,7 +23,7 @@ actor Counter {
 }
 
 actor Classifier {
-    let counter: LocalPid<Counter>;
+    let counter: LocalPid<Counter>,
 
     // Three distinct `return` paths reached through one `await`: the early
     // `return 100` when the stepped value exceeds 3, the `return v`

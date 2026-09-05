@@ -1,5 +1,5 @@
 enum AppError {
-    Failed(string);
+    Failed(string),
 }
 
 impl Display for AppError {

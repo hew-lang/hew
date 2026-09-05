@@ -27,7 +27,7 @@
 // `hew run examples/v05/vec_string_actor_drop_run_pass.hew` must complete with
 // exit 0 and print `ok`.
 actor WordHolder {
-    let words: Vec<string>;
+    let words: Vec<string>,
     receive fn ping() -> i64 {
         1
     }

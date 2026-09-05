@@ -11,7 +11,7 @@
 import std.channel.channel;
 
 indirect enum Wrapped {
-    Val(i64);
+    Val(i64),
 }
 
 fn main() {

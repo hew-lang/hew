@@ -1,12 +1,12 @@
 // Exercises structural equality and inequality on nested value records.
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 type Line {
-    a: Point;
-    b: Point;
+    a: Point,
+    b: Point,
 }
 
 fn main() {

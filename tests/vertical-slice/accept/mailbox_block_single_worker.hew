@@ -3,7 +3,7 @@
 // message. A cooperative block send suspends Driver instead, freeing the sole
 // worker to deliver both queued messages.
 actor BlockedWorker {
-    mailbox 1;
+    mailbox 1,
     receive fn work(value: i64) {
         if value == 2 {
             println("BLOCK_WORK_DELIVERED");

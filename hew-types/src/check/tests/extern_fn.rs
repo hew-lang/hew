@@ -669,11 +669,11 @@ fn empty_extern_symbol_template_is_rejected_with_empty_reason() {
 fn check_peer_assembled_extern(divergent: bool) -> TypeCheckOutput {
     use std::path::PathBuf;
     let pkg_source = if divergent {
-        "type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n"
+        "type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n"
     } else {
         "pub fn unrelated() -> i64 {\n    0\n}\n"
     };
-    let aaa_source = "type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let aaa_source = "type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let pkg_file = PathBuf::from("/nonexistent/oracle/pkg/pkg.hew");
     let aaa_file = PathBuf::from("/nonexistent/oracle/pkg/aaa.hew");
 
@@ -783,8 +783,8 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
     let primary_source = "pub fn unrelated() -> i64 {\n    0\n}\n";
     let inert_source = "pub fn filler() -> i64 {\n    1\n}\n";
     let two_field_source =
-        "type Tok {\n    a: i64;\n    b: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
-    let three_field_source = "type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+        "type Tok {\n    a: i64,\n    b: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let three_field_source = "type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let primary_file = PathBuf::from("/nonexistent/tri/pkg/pkg.hew");
     let inert_file = PathBuf::from("/nonexistent/tri/pkg/a-b.hew");
     let two_field_file = PathBuf::from("/nonexistent/tri/pkg/a+b.hew");
@@ -854,9 +854,9 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
 fn distinctly_named_peer_declarations_assemble_without_a_redefinition() {
     use std::path::PathBuf;
     let primary_source =
-        "type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+        "type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let peer_source =
-        "type Tag {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_yy(t: Tag) -> i64;\n}\n";
+        "type Tag {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_yy(t: Tag) -> i64;\n}\n";
     let primary_file = PathBuf::from("/nonexistent/distinct/pkg/pkg.hew");
     let peer_file = PathBuf::from("/nonexistent/distinct/pkg/peer.hew");
 
@@ -938,8 +938,8 @@ enum ImportLexicalShape {
 fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
     use std::path::PathBuf;
     let sm_source =
-        "pub type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
-    let om_source = "pub type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n";
+        "pub type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let om_source = "pub type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n";
     let nt_source = "extern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let sm_file = PathBuf::from("/nonexistent/implex/sm.hew");
     let om_file = PathBuf::from("/nonexistent/implex/om.hew");

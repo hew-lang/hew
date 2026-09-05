@@ -2,7 +2,7 @@
 
 /// Opaque lifecycle failure payload.
 pub enum Error {
-    Code(i64);
+    Code(i64),
 }
 
 impl Display for Error {
@@ -15,18 +15,18 @@ impl Display for Error {
 
 pub machine Lifecycle<T> {
     events {
-        Initialise;
-        Started { handle: T; }
-        Stop;
-        Crashed { error: Error; }
+        Initialise,
+        Started { handle: T, }
+        ,Stop,
+        Crashed { error: Error, }
     }
 
-    state Created;
-    state Initialising;
-    state Running { handle: T; }
-    state Stopping;
-    state Stopped;
-    state Faulted { error: Error; }
+    state Created,
+    state Initialising,
+    state Running { handle: T, },
+    state Stopping,
+    state Stopped,
+    state Faulted { error: Error, },
 
     on Initialise: Created => Initialising {
         Lifecycle.Initialising

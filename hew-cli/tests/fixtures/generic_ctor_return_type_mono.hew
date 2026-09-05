@@ -12,7 +12,7 @@
 // the nested `Stack<Stack<i64>>` case proves the outer and inner ctors both
 // resolve through the same machinery.
 type Stack<T> {
-    items: Vec<T>;
+    items: Vec<T>,
 }
 
 impl<T> Stack<T> {

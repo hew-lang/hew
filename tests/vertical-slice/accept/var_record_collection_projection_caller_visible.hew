@@ -3,8 +3,8 @@
 // caller. The declaration must remain accepted and both mutations must be
 // visible after the call.
 type Holder {
-    items: Vec<i64>;
-    counts: HashMap<string, i64>;
+    items: Vec<i64>,
+    counts: HashMap<string, i64>,
 }
 
 fn mutate(var holder: Holder) {

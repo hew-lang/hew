@@ -24,27 +24,27 @@ import std.failure.{CrashKind};
 /// Error returned when a monitor delivery cannot be completed.
 pub enum MonitorError {
     /// No distributed node runtime is active.
-    NodeNotRunning;
+    NodeNotRunning,
     /// The supplied pid is local or otherwise not a valid remote target.
-    InvalidTarget;
+    InvalidTarget,
     /// The route to the monitored peer is unavailable or the peer is suspect.
-    Partition;
+    Partition,
     /// The monitor refers to an old session or actor incarnation.
-    StaleRef;
+    StaleRef,
     /// The monitor control frame could not be encoded.
-    EncodeFailure;
+    EncodeFailure,
     /// The local node is shutting down before monitor delivery can complete.
-    LocalShutdown;
+    LocalShutdown,
     /// The peer rejected the monitor because protocol or schema versions differ.
-    VersionMismatch;
+    VersionMismatch,
     /// The peer rejected the monitor because the caller lacks authority.
-    Unauthorized;
+    Unauthorized,
     /// The monitor payload could not be decoded on receipt.
-    DecodeFailure;
+    DecodeFailure,
     /// The monitor channel was lost before a definitive actor failure arrived.
-    MonitorLost;
+    MonitorLost,
     /// The runtime exhausted its non-reusing monitor-id space.
-    ResourceExhausted;
+    ResourceExhausted,
 }
 
 impl Display for MonitorError {
@@ -68,53 +68,53 @@ impl Display for MonitorError {
 /// Policy for resolving actor operations across network partitions.
 pub enum PartitionPolicy {
     /// Return `Partition` immediately when the route is unavailable or suspect.
-    FailFast;
+    FailFast,
     /// Retry until the caller deadline, then return `Timeout` or `Partition`.
-    Deadline;
+    Deadline,
     /// Resolve monitor and supervision partitions as `MonitorLost`.
-    MonitorLost;
+    MonitorLost,
     /// Opt in to cross-node link and supervision fail-together behavior.
-    CrashLinked;
+    CrashLinked,
     /// Stop sending to a suspect or dead peer until a fresh incarnation appears.
-    Quarantine;
+    Quarantine,
 }
 
 /// Stable identifier for one monitor registration.
 pub type MonitorId {
-    value: u64;
+    value: u64,
 }
 
 /// Actor identity carried by a DOWN notification.
 pub enum DownTarget {
     /// A process-local actor slot.
-    Local(u64);
+    Local(u64),
     /// A complete remote actor location.
-    Remote(Location);
+    Remote(Location),
 }
 
 /// Terminal cause carried by a DOWN notification.
 pub enum DownReason {
     /// The monitored actor exited normally.
-    Exited;
+    Exited,
     /// The monitored actor crashed.
-    Crashed(CrashKind);
+    Crashed(CrashKind),
     /// The remote actor became unreachable.
-    MonitorLost;
+    MonitorLost,
     /// The local node shut down before observation completed.
-    LocalShutdown;
+    LocalShutdown,
 }
 
 /// Typed payload delivered to an actor's `#[on(down)]` hook.
 pub type DownNotification {
-    monitor: MonitorId;
-    target: DownTarget;
-    reason: DownReason;
+    monitor: MonitorId,
+    target: DownTarget,
+    reason: DownReason,
 }
 
 /// A handle to an active monitor registration.
 #[resource]
 pub type MonitorRef {
-    ref_id: u64;
+    ref_id: u64,
 }
 
 impl MonitorRef {

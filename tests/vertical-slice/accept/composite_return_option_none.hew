@@ -2,8 +2,8 @@
 // Exercises Move of tag-only struct to ReturnSlot.
 // Exit 99 proves the None arm matched in the caller.
 enum Maybe<T> {
-    Some(T);
-    None;
+    Some(T),
+    None,
 }
 
 fn nothing() -> Maybe<i64> {

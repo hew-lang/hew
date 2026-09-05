@@ -20,7 +20,7 @@
 //   2. sup.w1 returned a Live handle (tag=0 from hew_supervisor_child_get).
 //   3. The init() dispatch ran and the actor replied correctly.
 actor Worker {
-    var value: i64;
+    var value: i64,
     init(value: i64) {
 
         // The init() block generates Worker__init in codegen.
@@ -33,10 +33,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child w1: Worker(value: 42);
+    child w1: Worker(value: 42),
 }
 
 fn main() -> i64 {

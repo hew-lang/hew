@@ -7,14 +7,14 @@
 // the coordinator, run the worker actor, then resume the coordinator — a
 // blocking ask would deadlock the lone worker.
 actor Worker {
-    let factor: i64;
+    let factor: i64,
     receive fn compute(n: i64) -> i64 {
         n * factor
     }
 }
 
 actor Coordinator {
-    let worker: LocalPid<Worker>;
+    let worker: LocalPid<Worker>,
     receive fn run(n: i64) -> i64 {
         let r = await worker.compute(n);
         match r {

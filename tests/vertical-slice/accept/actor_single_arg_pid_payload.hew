@@ -22,7 +22,7 @@ actor Echo {
 }
 
 actor Pinger {
-    var echo: LocalPid<Echo>;
+    var echo: LocalPid<Echo>,
 
     receive fn ping() {
         // `this` is the Pinger's own `LocalPid<Pinger>` — the single message arg.

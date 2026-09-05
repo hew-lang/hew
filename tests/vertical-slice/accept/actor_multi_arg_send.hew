@@ -8,7 +8,7 @@
 // Output is deterministic: all prints run inside TestSink in mailbox FIFO
 // order; the trailing ask fences main until every send has dispatched.
 actor TestSink {
-    var total: i64;
+    var total: i64,
     receive fn process(label: string, count: i64) {
         total = total + count;
         println(f"{label}: count={count} total={total}");

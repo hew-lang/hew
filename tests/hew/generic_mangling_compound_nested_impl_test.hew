@@ -15,11 +15,11 @@ trait Describe {
 }
 
 type Boxx<T> {
-    inner: T;
+    inner: T,
 }
 
 type Wrapper<T> {
-    payload: T;
+    payload: T,
 }
 
 impl Describe for Wrapper<Boxx<i64>> {

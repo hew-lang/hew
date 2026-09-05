@@ -48,28 +48,28 @@ pub type RemotePid<T> {
 /// Error returned when a pid send cannot be completed.
 pub enum SendError {
     /// The destination mailbox is full.
-    Full;
+    Full,
     /// The destination is closed or no longer alive.
-    Closed;
+    Closed,
     /// Cross-node routing has not been wired for this runtime path yet.
-    NodeRoutingNotWired;
+    NodeRoutingNotWired,
     /// The route to the peer is unavailable or the peer is suspected dead.
-    Partition;
+    Partition,
     /// The pid refers to an old session or actor incarnation.
-    StaleRef;
+    StaleRef,
     /// The local node is shutting down before the send can complete.
-    LocalShutdown;
+    LocalShutdown,
     /// The caller cancelled the send before it completed.
-    Cancelled;
+    Cancelled,
     /// The peer rejected the send because protocol or schema versions differ.
-    VersionMismatch;
+    VersionMismatch,
     /// The peer rejected the send because the caller lacks authority.
-    Unauthorized;
+    Unauthorized,
     /// The destination or route is applying flow control.
-    Backpressure;
+    Backpressure,
     /// The declared mailbox policy discarded, replaced, or coalesced work
     /// while processing this send.
-    MessageLost;
+    MessageLost,
 }
 
 impl Display for SendError {
@@ -100,21 +100,21 @@ impl Display for SendError {
 /// per `set_last_error` for the diagnostic detail.
 pub enum LookupError {
     /// No actor is registered under the requested name.
-    NotFound;
+    NotFound,
     /// The lookup route is unavailable or the peer is suspected dead.
-    Partition;
+    Partition,
     /// The caller's lookup deadline elapsed before a result arrived.
-    Timeout;
+    Timeout,
     /// The name resolved to an old session or actor incarnation.
-    StaleRef;
+    StaleRef,
     /// The caller cancelled the lookup before it completed.
-    Cancelled;
+    Cancelled,
     /// The local node is shutting down before the lookup can complete.
-    LocalShutdown;
+    LocalShutdown,
     /// The peer rejected the lookup because protocol or schema versions differ.
-    VersionMismatch;
+    VersionMismatch,
     /// The peer rejected the lookup because the caller lacks authority.
-    Unauthorized;
+    Unauthorized,
 }
 
 impl Display for LookupError {
@@ -138,48 +138,48 @@ impl Display for LookupError {
 /// materializing this public error-only enum.
 pub enum AskError {
     /// The local node is not running.
-    NodeNotRunning;
+    NodeNotRunning,
     /// The destination node or actor could not be routed.
-    RoutingFailed;
+    RoutingFailed,
     /// The request payload could not be encoded.
-    EncodeFailed;
+    EncodeFailed,
     /// The request could not be sent.
-    SendFailed;
+    SendFailed,
     /// The caller-supplied timeout elapsed before a reply arrived.
-    Timeout;
+    Timeout,
     /// The remote connection closed before the reply arrived.
-    ConnectionDropped;
+    ConnectionDropped,
     /// The reply payload did not match the expected reply size.
-    PayloadSizeMismatch;
+    PayloadSizeMismatch,
     /// The remote ask worker is at capacity.
-    WorkerAtCapacity;
+    WorkerAtCapacity,
     /// The destination actor is stopped.
-    ActorStopped;
+    ActorStopped,
     /// The destination actor mailbox is full.
-    MailboxFull;
+    MailboxFull,
     /// A reply arrived after its waiter was gone.
-    OrphanedAsk;
+    OrphanedAsk,
     /// The runtime had no runnable work while waiting for the reply.
-    NoRunnableWork;
+    NoRunnableWork,
     /// The inbound request payload could not be decoded into a value in the
     /// receiving node's address space; the handler was never dispatched.
-    DecodeFailure;
+    DecodeFailure,
     /// The route to the peer is unavailable or the peer is suspected dead.
-    Partition;
+    Partition,
     /// The pid refers to an old session or actor incarnation.
-    StaleRef;
+    StaleRef,
     /// The caller cancelled the ask before it completed.
-    Cancelled;
+    Cancelled,
     /// The local node is shutting down before the ask can complete.
-    LocalShutdown;
+    LocalShutdown,
     /// The peer rejected the ask because protocol or schema versions differ.
-    VersionMismatch;
+    VersionMismatch,
     /// The peer rejected the ask because the caller lacks authority.
-    Unauthorized;
+    Unauthorized,
     /// The destination or route is applying flow control.
-    Backpressure;
+    Backpressure,
     /// A monitor required to resolve the ask was lost before completion.
-    MonitorLost;
+    MonitorLost,
 }
 
 impl Display for AskError {
@@ -228,7 +228,7 @@ impl Display for AskError {
 /// ```
 pub enum TimeoutError {
     /// The deadline fired before the recv completed.
-    Timeout;
+    Timeout,
 }
 
 impl Display for TimeoutError {
@@ -251,16 +251,16 @@ impl Display for TimeoutError {
 /// as `Ok(())`. `TargetDead` is returned when the target actor has already
 /// exited; the caller's exit handler will fire immediately.
 pub enum LinkError {
-    AlreadyLinked;
-    TargetDead;
-    NodeNotRunning;
-    NoCurrentActor;
-    InvalidTarget;
-    Partition;
-    StaleRef;
-    EncodeFailure;
-    LocalShutdown;
-    ResourceExhausted;
+    AlreadyLinked,
+    TargetDead,
+    NodeNotRunning,
+    NoCurrentActor,
+    InvalidTarget,
+    Partition,
+    StaleRef,
+    EncodeFailure,
+    LocalShutdown,
+    ResourceExhausted,
 }
 
 impl Display for LinkError {
@@ -535,8 +535,8 @@ impl<T> Vec<T> {
 /// per-stdlib-module receiver-impl harness only handles a fixed set of
 /// receivers; auto-registration on builtin nominals belongs in builtins).
 pub type VecIter<T> {
-    vec: Vec<T>;
-    idx: i64;
+    vec: Vec<T>,
+    idx: i64,
 }
 
 impl<T> Iterator for VecIter<T> {
@@ -592,9 +592,9 @@ impl<T> IntoIterator for Vec<T> {
 /// receiver stays `Live` after exhaustion and drops at scope exit — the
 /// `Iterator` "exhaustion ≠ drop" invariant.
 pub type HashMapIter<K, V> {
-    ks: Vec<K>;
-    vs: Vec<V>;
-    idx: i64;
+    ks: Vec<K>,
+    vs: Vec<V>,
+    idx: i64,
 }
 
 impl<K, V> Iterator for HashMapIter<K, V> {

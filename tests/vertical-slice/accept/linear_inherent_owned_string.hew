@@ -7,7 +7,7 @@
 // Expected stdout:
 //   txn
 #[linear]
-type Tx { label: string; }
+type Tx { label: string, }
 impl Tx {
     fn commit(consuming self) -> string { self.label }
 }

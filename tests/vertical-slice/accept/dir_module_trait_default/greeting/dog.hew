@@ -1,7 +1,7 @@
 // Peer file of the `greeting` directory module: the implementing type lives
 // in a DIFFERENT file from the trait that declares the defaults.
 pub type Dog {
-    call_sign: string;
+    call_sign: string,
 }
 
 pub fn make_dog(call_sign: string) -> Dog {

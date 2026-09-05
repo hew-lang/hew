@@ -7,7 +7,7 @@
 import "file_import_trait_default_local_type_lib.hew";
 
 type Widget {
-    id: string;
+    id: string,
 }
 
 impl Describe for Widget {

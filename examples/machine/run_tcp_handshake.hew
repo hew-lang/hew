@@ -1,14 +1,14 @@
 // Runnable fixture: TCP handshake state machine executed end-to-end.
 machine TcpHandshake {
     events {
-        Syn;
-        Ack;
-        Reset;
+        Syn,
+        Ack,
+        Reset,
     }
 
-    state Closed;
-    state SynReceived;
-    state Established;
+    state Closed,
+    state SynReceived,
+    state Established,
 
     on Syn: Closed => SynReceived {
         TcpHandshake.SynReceived

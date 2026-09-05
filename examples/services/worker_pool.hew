@@ -24,8 +24,8 @@ fn fib(n: i64) -> i64 {
 }
 
 actor Worker {
-    let id: i64;
-    var jobs_done: i64;
+    let id: i64,
+    var jobs_done: i64,
     receive fn compute(n: i64) -> i64 {
         jobs_done = jobs_done + 1;
         let result = fib(n);
@@ -41,13 +41,13 @@ actor Worker {
 // Supervisor: restart any crashed worker individually.
 // Budget: up to 10 restarts in 60 seconds before giving up.
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 10 within 60s;
+    strategy: one_for_one,
+    intensity: 10 within 60s,
 
-    child w0: Worker(id: 0, jobs_done: 0);
-    child w1: Worker(id: 1, jobs_done: 0);
-    child w2: Worker(id: 2, jobs_done: 0);
-    child w3: Worker(id: 3, jobs_done: 0);
+    child w0: Worker(id: 0, jobs_done: 0),
+    child w1: Worker(id: 1, jobs_done: 0),
+    child w2: Worker(id: 2, jobs_done: 0),
+    child w3: Worker(id: 3, jobs_done: 0),
 }
 
 fn main() {

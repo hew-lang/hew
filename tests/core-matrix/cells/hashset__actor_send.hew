@@ -1,5 +1,5 @@
 actor Sink {
-    var hits: i64;
+    var hits: i64,
 
     receive fn take(v: HashSet<i64>) -> i64 {
         let v_l = v.len();

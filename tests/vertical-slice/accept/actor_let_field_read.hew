@@ -1,8 +1,8 @@
 // A `let` actor state field set at spawn time is readable from every
 // handler; only `var` fields accept writes outside `init`.
 actor Counter {
-    let step: i64;
-    var count: i64;
+    let step: i64,
+    var count: i64,
 
     receive fn bump() {
         count = count + step;

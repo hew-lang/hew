@@ -89,11 +89,11 @@ pub const MAX_READS: i64 = 4096;
 /// well-formed request, or the HTTP status the codec failed closed with
 /// (`400` malformed framing, `413` over a size bound).
 pub type AsyncRequest {
-    verb: string;
-    target: string;
-    header_section: string;
-    body_text: string;
-    reject_code: i64;
+    verb: string,
+    target: string,
+    header_section: string,
+    body_text: string,
+    reject_code: i64,
 }
 
 /// Methods on [`AsyncRequest`] — the request-side accessor surface.

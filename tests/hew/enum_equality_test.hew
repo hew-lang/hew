@@ -3,9 +3,9 @@
 import std.testing;
 
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 fn colour_id(c: Colour) -> i64 {

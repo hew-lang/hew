@@ -5,7 +5,7 @@
 // link-time drop dispatch — fail-closed at the HIR boundary instead.
 #[resource]
 type Sock {
-    fd: i64
+    fd: i64,
     fn close(consuming self) { }
 }
 

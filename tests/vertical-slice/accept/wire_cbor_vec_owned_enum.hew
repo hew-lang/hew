@@ -5,9 +5,9 @@
 // so `hew_vec_free` releases each decoded variant's owned string. Exit 2 (the
 // count of `Full` payloads) proves the array round-trips with the right shape.
 #[wire]
-enum Payload { Empty; Full(string); }
+enum Payload { Empty, Full(string), }
 #[wire]
-type Bag { items: Vec<Payload> @1; n: i64 @2; }
+type Bag { items: Vec<Payload> @1, n: i64 @2, }
 
 fn main() -> i64 {
     let xs: Vec<Payload> = Vec.new();

@@ -14,7 +14,7 @@
 //! must not false-reject a callee-frame bare alias that reaches that fallback.
 
 pub type Widget {
-    tag: i64;
+    tag: i64,
 }
 
 /// Return type is bare `Widget` in this module's frame.

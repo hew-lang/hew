@@ -73,7 +73,7 @@ pub fn env(name: string) -> Option<string> {
 
 /// Invalid environment-variable name.
 pub enum EnvError {
-    InvalidName(string);
+    InvalidName(string),
 }
 
 impl Display for EnvError {

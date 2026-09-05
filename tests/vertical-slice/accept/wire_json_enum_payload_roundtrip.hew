@@ -4,9 +4,9 @@
 // fixture constructs `Rect(40, 2)`; the recovered fields sum to 42.
 #[wire]
 enum Shape {
-    Dot;
-    Circle(i64);
-    Rect(i64, i64);
+    Dot,
+    Circle(i64),
+    Rect(i64, i64),
 }
 
 fn main() -> i64 {

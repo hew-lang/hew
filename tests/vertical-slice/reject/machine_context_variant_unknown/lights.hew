@@ -3,11 +3,11 @@
 // accepting any dotted name that appears in a transition body.
 pub machine Light {
     events {
-        Toggle;
+        Toggle,
     }
 
-    state On;
-    state Off;
+    state On,
+    state Off,
 
     on Toggle: On => Off {
         .Nope

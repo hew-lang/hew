@@ -48,8 +48,8 @@
 /// `A` is the inner `Item` type (carried in the type parameters so the
 /// closure's input projection is explicit); `B` is the produced `Item`.
 pub type Map<I, A, B> {
-    iter: I;
-    f: fn(A) -> B;
+    iter: I,
+    f: fn(A) -> B,
 }
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
@@ -84,8 +84,8 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
 /// Lazy filter adapter: yields only those items for which `pred` returns
 /// `true`. Inner `Item` and produced `Item` agree on `A`.
 pub type Filter<I, A> {
-    iter: I;
-    pred: fn(A) -> bool;
+    iter: I,
+    pred: fn(A) -> bool,
 }
 
 impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
@@ -138,8 +138,8 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
 /// stays free and terminals (`count`/`collect`/`fold`) fail to monomorphise
 /// (mir-gap-where-clause-proj-monomorph).
 pub type Take<I, A> {
-    iter: I;
-    remaining: i64;
+    iter: I,
+    remaining: i64,
 }
 
 impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
@@ -176,8 +176,8 @@ impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
 /// only item param cannot be pinned by the collector, so terminals over
 /// `Skip` fail to monomorphise.
 pub type Skip<I, A> {
-    iter: I;
-    remaining: i64;
+    iter: I,
+    remaining: i64,
 }
 
 impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
@@ -225,8 +225,8 @@ impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
 /// The index advances only when the inner iterator yields an item, so an
 /// exhausted iterator remains exhausted without manufacturing a final index.
 pub type Enumerate<I, A> {
-    iter: I;
-    index: i64;
+    iter: I,
+    index: i64,
 }
 
 impl<I, A> Iterator for Enumerate<I, A> where I: Iterator<Item = A> {

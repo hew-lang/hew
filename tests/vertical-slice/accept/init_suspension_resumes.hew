@@ -2,7 +2,7 @@
 // discard bug. With no on_start present it is driven resumably, identically to a
 // suspending `#[on(start)]`.
 actor Booter {
-  var value: i64 = 0;
+  var value: i64 = 0,
   init() {
     println("init-before");
     sleep(50ms);

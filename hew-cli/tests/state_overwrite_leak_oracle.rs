@@ -76,9 +76,9 @@ const SLOPE_TOLERANCE: usize = 5;
 fn collection_overwrite_source(frames: usize) -> String {
     format!(
         "actor Cache {{\n\
-         \x20   var items: Vec<string>;\n\
-         \x20   var index: HashMap<string, i64>;\n\
-         \x20   var seen: HashSet<i64>;\n\
+         \x20   var items: Vec<string>,\n\
+         \x20   var index: HashMap<string, i64>,\n\
+         \x20   var seen: HashSet<i64>,\n\
          \n\
          \x20   receive fn refresh(round: i64) {{\n\
          \x20       let next: Vec<string> = Vec.new();\n\
@@ -136,7 +136,7 @@ fn record_functional_update_source(frames: usize) -> String {
          }}\n\
          \n\
          actor Keeper {{\n\
-         \x20   var cur: Outer;\n\
+         \x20   var cur: Outer,\n\
          \n\
          \x20   receive fn bump() {{\n\
          \x20       cur = Outer {{\n\
@@ -189,7 +189,7 @@ fn nested_record_alias_source(frames: usize) -> String {
          }}\n\
          \n\
          actor Keeper {{\n\
-         \x20   var cur: Wrap;\n\
+         \x20   var cur: Wrap,\n\
          \n\
          \x20   receive fn rewrite() {{\n\
          \x20       cur = Wrap {{ leaf: cur.leaf }};\n\
@@ -230,8 +230,8 @@ fn enum_payload_alias_source(frames: usize) -> String {
          }}\n\
          \n\
          enum Payload {{\n\
-         \x20   Empty;\n\
-         \x20   Hold(Leaf);\n\
+         \x20   Empty,\n\
+         \x20   Hold(Leaf),\n\
          }}\n\
          \n\
          type Wrap {{\n\
@@ -239,7 +239,7 @@ fn enum_payload_alias_source(frames: usize) -> String {
          }}\n\
          \n\
          actor Keeper {{\n\
-         \x20   var cur: Wrap;\n\
+         \x20   var cur: Wrap,\n\
          \n\
          \x20   receive fn rewrite() {{\n\
          \x20       cur = Wrap {{ payload: cur.payload }};\n\
@@ -277,13 +277,13 @@ fn enum_payload_alias_source(frames: usize) -> String {
 fn enum_overwrite_source(frames: usize) -> String {
     format!(
         "enum Status {{\n\
-         \x20   Idle;\n\
-         \x20   Working(string);\n\
-         \x20   Done(string, i64);\n\
+         \x20   Idle,\n\
+         \x20   Working(string),\n\
+         \x20   Done(string, i64),\n\
          }}\n\
          \n\
          actor Tracker {{\n\
-         \x20   var status: Status;\n\
+         \x20   var status: Status,\n\
          \n\
          \x20   receive fn advance(n: i64) {{\n\
          \x20       status = match n % 3 {{\n\
@@ -330,7 +330,7 @@ fn enum_overwrite_source(frames: usize) -> String {
 fn string_inspect_overwrite_source(frames: usize) -> String {
     format!(
         "actor Namer {{\n\
-         \x20   var name: string;\n\
+         \x20   var name: string,\n\
          \n\
          \x20   receive fn tick() {{\n\
          \x20       if name.len() < 1000000 {{\n\
@@ -371,7 +371,7 @@ fn string_inspect_overwrite_source(frames: usize) -> String {
 fn collection_iterate_source(frames: usize) -> String {
     format!(
         "actor Summer {{\n\
-         \x20   var items: Vec<i64>;\n\
+         \x20   var items: Vec<i64>,\n\
          \n\
          \x20   receive fn spin() {{\n\
          \x20       var s: i64 = 0;\n\
@@ -418,7 +418,7 @@ type Profile {
 }
 
 actor Keeper {
-    var prof: Profile;
+    var prof: Profile,
 
     receive fn refresh() {
         prof = prof;
@@ -457,7 +457,7 @@ type Pair {
 }
 
 actor Swapper {
-    var pair: Pair;
+    var pair: Pair,
 
     receive fn swap() {
         pair = Pair { a: pair.b, b: pair.a };
@@ -499,8 +499,8 @@ fn main() -> i64 {
 /// a clean exit code.
 const VEC_SWAP_SOURCE: &str = "\
 actor TwoVecs {
-    var x: Vec<i64>;
-    var y: Vec<i64>;
+    var x: Vec<i64>,
+    var y: Vec<i64>,
 
     receive fn flip() {
         let t = x;
@@ -541,8 +541,8 @@ fn main() -> i64 {
 /// `y` (`"RIGHT-SIDE"`, len 10).
 const STRING_SWAP_SOURCE: &str = "\
 actor TwoStrings {
-    var x: string;
-    var y: string;
+    var x: string,
+    var y: string,
 
     receive fn flip() {
         let t = x;
@@ -579,8 +579,8 @@ type Box {
 }
 
 actor TwoBoxes {
-    var x: Box;
-    var y: Box;
+    var x: Box,
+    var y: Box,
 
     receive fn flip() {
         let t = x;
@@ -632,7 +632,7 @@ type Box {
 }
 
 actor Summer {
-    var b: Box;
+    var b: Box,
 
     receive fn total() -> i64 {
         var s: i64 = 0;
@@ -983,7 +983,7 @@ fn tuple_alias_emits_one_retain_per_string_occurrence() {
 type Wrap { nested: (string, string, string) }
 
 actor Keeper {
-    var cur: Wrap;
+    var cur: Wrap,
     receive fn rewrite() {
         cur = Wrap { nested: cur.nested };
     }
@@ -1022,7 +1022,7 @@ type Leaf { value: i64 }
 type Wrap { leaf: Leaf }
 
 actor Keeper {
-    var cur: Wrap;
+    var cur: Wrap,
     receive fn rewrite() {
         cur = Wrap { leaf: cur.leaf };
     }

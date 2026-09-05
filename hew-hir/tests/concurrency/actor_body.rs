@@ -91,7 +91,7 @@ fn actor_body_params_are_bound_and_reachable() {
     let output = lower_checked(
         r"
 actor Counter {
-    let count: i32;
+    let count: i32,
 
     init(start: i32) {
         let seed: i32 = start;

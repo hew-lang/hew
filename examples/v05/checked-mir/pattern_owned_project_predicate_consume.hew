@@ -1,6 +1,6 @@
 #[resource]
 type Token {
-    id: i64;
+    id: i64,
 }
 
 impl Token {
@@ -8,9 +8,9 @@ impl Token {
 }
 
 type Packet {
-    tag: i64;
-    token: Token;
-    text: string;
+    tag: i64,
+    token: Token,
+    text: string,
 }
 
 fn record_join(p: Packet) -> i64 {

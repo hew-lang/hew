@@ -11,8 +11,8 @@
 import std.testing;
 
 type Item {
-    name: string;
-    n: i64;
+    name: string,
+    n: i64,
 }
 
 // Clone a Vec of owned records; assert each cloned element holds the

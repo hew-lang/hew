@@ -23,7 +23,7 @@ fn probe_trait_method_inside_generic_free_fn_rewrite() {
         }
 
         pub type Label {
-            text: string;
+            text: string,
         }
 
         impl Describable for Label {

@@ -10,7 +10,7 @@
 // Expected diagnostic: E_SUPERVISOR_INIT_ARG_NON_BITCOPY
 
 actor Collector {
-    var items: Vec<i64>;
+    var items: Vec<i64>,
     init(items: Vec<i64>) {
         items = items;
     }
@@ -18,10 +18,10 @@ actor Collector {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child c: Collector(items: []);
+    child c: Collector(items: []),
 }
 
 fn main() -> i64 {

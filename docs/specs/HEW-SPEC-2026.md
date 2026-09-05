@@ -815,24 +815,25 @@ let q = Point { x: 0, y: 0 };
 
 **Type field syntax:**
 
-Type fields do NOT require a `let`/`var` prefix. Fields are immutable and use semicolons as terminators:
+Type fields do NOT require a `let`/`var` prefix. Commas separate the fields:
 
 ```hew
 type Point {
-    x: f64;          // field declaration
-    y: f64;          // field declaration
-    label: string;   // field declaration
+    x: f64,          // field declaration
+    y: f64,          // field declaration
+    label: string,   // field declaration
 }
 ```
 
 **Actor field syntax:**
 
-Actor fields require a `let` or `var` prefix and use semicolons as terminators:
+Actor fields use `let` or `var` to distinguish immutable and mutable state.
+Commas separate these structural members, just as in a type declaration:
 
 ```hew
 actor Counter {
-    var count: i64 = 0;     // mutable field with default
-    let name: string;        // immutable field, set by init
+    var count: i64 = 0,     // mutable field with default
+    let name: string,       // immutable field, set by init
 }
 ```
 
@@ -3174,22 +3175,23 @@ MachineDecl    = "machine" Ident TypeParams? "{"
                    [ DefaultArm ]
                  "}" ;
 
-EventsHeader   = "events" "{" { EventDecl } "}" ;
-EventDecl      = Ident ( ";" | "{" { Ident ":" Type (";" | ",") } "}" ";"? ) ;
-EmitsHeader    = "emits" "{" { Ident ";" } "}" ;
+EventsHeader   = "events" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
+EventDecl      = Ident [ "{" FieldList "}" ] ;
+FieldList      = [ Ident ":" Type { "," Ident ":" Type } [ "," ] ] ;
+EmitsHeader    = "emits" "{" [ Ident { "," Ident } [ "," ] ] "}" ;
 
 StateDecl      = "state" Ident ( "{"
-                   { Ident ":" Type (";" | ",") }  (* field declarations *)
+                   { Ident ":" Type "," }          (* field declarations *)
                    [ "entry" Block ]                (* entry hook *)
                    [ "exit"  Block ]                (* exit hook  *)
                    { CompositeMember }              (* depth-1 composite only *)
-                 "}" )? ";"? ;
+                 "}" )? ;
 CompositeMember = [ "initial" ] StateDecl ;         (* exactly one "initial" required *)
 
 TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
                  StatePattern "=>" StatePattern
                  [ "reenter" ] [ "when" Expr ] TransitionBody ;
-TransitionBody = ";" | "{" FieldInitList "}" | Block ;
+TransitionBody = "," | "{" FieldInitList "}" | Block ;
 StatePattern   = Ident | "_" ;
 DefaultArm     = "default" "{" "state" "}" ;
 
@@ -5655,6 +5657,57 @@ Grammar fragments appear throughout this document in `ebnf` blocks. They are
 illustrations of the surface spelling for the construct under discussion,
 written to be read beside the prose; they are not a grammar in their own
 right and are not normative where they and the parser differ.
+
+### Structural punctuation
+
+Commas separate structural data members: type and wire fields, enum variants
+and variant fields, record values and patterns, actor state and mailbox config,
+machine events, states and bodyless routes, and supervisor config and children.
+A trailing comma is accepted before a closing brace. Adjacent members require
+a comma; a newline is whitespace, not a separator.
+
+Semicolons terminate statements and bodyless declarations, including trait
+method signatures and extern function signatures. Function, method, lifecycle
+and executable blocks do not acquire a terminator just because they occur
+beside structural members. An array's `[T; N]` size syntax is not a member list
+and retains its semicolon.
+
+```hew
+type Point { x: i64, y: i64 }
+enum Reply { Ready, Value { label: string, count: i64 }, Failed(string) }
+
+actor Counter {
+    var count: i64 = 0,
+    mailbox 64 overflow drop_new,
+    receive fn bump() { count += 1; }
+}
+
+machine Switch {
+    events { Toggle }
+    state Off,
+    state On,
+    on Toggle: Off => On,
+    on Toggle: On => Off,
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 5 within 60s,
+    child counter: Counter() restart: permanent,
+}
+
+trait Reader { fn read(self) -> i64; }
+extern "C" { fn read_value() -> i64; }
+```
+
+Declaration context distinguishes an actor's `var count: i64 = 0,` state
+member from an executable block's `var count = 0;` local statement. A machine
+state with a body is still a structural member (`state Active { n: i64 },`);
+its `entry` and `exit` blocks contain ordinary statements. A bodyless route
+ends with a comma, whereas `on Toggle: Off => On { ... }` is self-delimiting.
+The `events { ... }`, `emits { ... }` and `default { ... }` blocks do not take
+an extra terminator. Supervisor child clauses such as `restart:` and
+`shutdown:` remain parts of one child member, whose final separator is a comma.
 
 **Implementation note:** pipe closures lower through `Expr::Lambda`; captured closure environment records are the current substrate direction. Generic `<T>(...) => ...` is not a valid source syntax; type-parameterized lambdas are not supported in this edition (see §3.8.6).
 

@@ -11,17 +11,17 @@
 // cast, so any index that cannot itself fit the pool's member-count range is
 // rejected as out-of-bounds regardless of how it would have wrapped.
 actor Worker {
-    var value: i64;
+    var value: i64,
     receive fn id() -> i64 {
         value
     }
 }
 
 supervisor Pool {
-    strategy: simple_one_for_one;
-    intensity: 5 within 60s;
+    strategy: simple_one_for_one,
+    intensity: 5 within 60s,
 
-    pool workers: Worker(value: 42) count: 3;
+    pool workers: Worker(value: 42) count: 3,
 }
 
 fn main() -> i64 {

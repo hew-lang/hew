@@ -1,5 +1,5 @@
 enum BoxError<T> {
-    Failed(T);
+    Failed(T),
 }
 
 impl Display for BoxError<string> {

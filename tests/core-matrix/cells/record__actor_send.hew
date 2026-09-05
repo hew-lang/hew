@@ -1,10 +1,10 @@
 type Rec {
-    a: i64;
-    b: string;
+    a: i64,
+    b: string,
 }
 
 actor Sink {
-    var hits: i64;
+    var hits: i64,
 
     receive fn take(v: Rec) -> i64 {
         let v_a = v.a;

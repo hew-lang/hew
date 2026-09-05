@@ -7,7 +7,7 @@ fn test_actor_init_type_mismatch_detected() {
     let output = typecheck(
         r"
         actor Worker {
-            let count: i32;
+            let count: i32,
             init() {
                 let x: string = 123;
             }
@@ -30,7 +30,7 @@ fn test_actor_init_undefined_var_detected() {
     let output = typecheck(
         r"
         actor Worker {
-            let id: i32;
+            let id: i32,
             init() {
                 nope = 1;
             }
@@ -53,7 +53,7 @@ fn test_actor_init_valid_field_access() {
     let output = typecheck(
         r"
         actor Worker {
-            let id: i32;
+            let id: i32,
             init() {
                 println(id);
             }
@@ -75,7 +75,7 @@ fn test_actor_init_params_in_scope() {
     let output = typecheck(
         r"
         actor Greeter {
-            let name: string;
+            let name: string,
             init(prefix: string) {
                 println(prefix);
             }
@@ -95,7 +95,7 @@ fn test_actor_no_init_still_works() {
     let output = typecheck(
         r"
         actor Counter {
-            var count: i32;
+            var count: i32,
             receive fn inc() {
                 count = count + 1;
             }
@@ -117,7 +117,7 @@ fn test_actor_method_valid_field_access() {
     let output = typecheck(
         r"
         actor Counter {
-            let count: i32;
+            let count: i32,
 
             fn current() -> i32 {
                 count
@@ -139,7 +139,7 @@ fn test_actor_receive_self_field_reads_state() {
     let output = typecheck(
         r"
         actor Counter {
-            let count: i32;
+            let count: i32,
 
             receive fn current() -> i32 {
                 self.count
@@ -161,7 +161,7 @@ fn test_actor_self_unknown_field_reports_against_state() {
     let output = typecheck(
         r"
         actor Counter {
-            let count: i32;
+            let count: i32,
 
             receive fn current() -> i32 {
                 self.counts
@@ -196,7 +196,7 @@ fn test_actor_bare_self_uses_actor_guidance() {
     let output = typecheck(
         r"
         actor Counter {
-            let count: i32;
+            let count: i32,
 
             receive fn current() -> i32 {
                 let held = self;
@@ -240,7 +240,7 @@ fn test_actor_init_and_method_self_field_reads_state() {
     let output = typecheck(
         r"
         actor Counter {
-            var count: i32;
+            var count: i32,
 
             init() {
                 self.count = 1;
@@ -266,7 +266,7 @@ fn test_actor_self_field_write_obeys_field_mutability() {
     let output = typecheck(
         r"
         actor Counter {
-            let count: i32;
+            let count: i32,
 
             receive fn bump() {
                 self.count = 1;
@@ -296,7 +296,7 @@ fn test_actor_self_nested_write_obeys_field_mutability() {
     let output = typecheck(
         r"
         actor Bag {
-            let items: Vec<i64>;
+            let items: Vec<i64>,
 
             receive fn poke() {
                 self.items[0] = 5;
@@ -322,7 +322,7 @@ fn test_actor_on_stop_hook_valid_field_access() {
     let output = typecheck(
         r"
         actor Worker {
-            let id: i32;
+            let id: i32,
 
             #[on(stop)]
             fn flush() {
@@ -350,7 +350,7 @@ fn ask_method_form_rejected_by_typechecker() {
     let output = typecheck(
         r"
         actor Counter {
-            var count: i32 = 0;
+            var count: i32 = 0,
             receive fn get() -> i32 { count }
         }
         fn main() {
@@ -377,7 +377,7 @@ fn spawn_arg_name_collision_differing_types_reports_checker_diagnostic() {
     let output = typecheck(
         r"
         actor Widget {
-            var n: string;
+            var n: string,
             init(n: i32) {
                 let _ = n;
             }
@@ -422,7 +422,7 @@ fn spawn_arg_name_collision_matching_types_is_accepted() {
     let output = typecheck(
         r"
         actor Widget2 {
-            var n: i64;
+            var n: i64,
             init(n: i64) {
                 let _ = n;
             }

@@ -9,15 +9,15 @@
 // funnel through one worker by suspension — a lost wake or mis-resumed second
 // await would hang or crash; a bounded run with the correct totals is the proof.
 actor Worker {
-    let factor: i64;
+    let factor: i64,
     receive fn compute(n: i64) -> i64 {
         n * factor
     }
 }
 
 actor Coordinator {
-    let worker: LocalPid<Worker>;
-    let rounds: i64;
+    let worker: LocalPid<Worker>,
+    let rounds: i64,
 
     // Two sequential awaits: 7*6 + 7*6 = 84.
     receive fn two(n: i64) -> i64 {

@@ -32,7 +32,7 @@ fn actor_with_matching_receive_fns_coerces_to_handler_pid() {
         }
 
         actor Echo {
-            let n: i32;
+            let n: i32,
             init() {}
             receive fn on_data(data: bytes) {}
             receive fn on_close() {}
@@ -68,7 +68,7 @@ fn explicit_handler_impl_without_receive_fns_is_rejected_early() {
         }
 
         actor Bare {
-            let n: i32;
+            let n: i32,
             init() {}
         }
 

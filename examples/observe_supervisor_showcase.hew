@@ -51,8 +51,8 @@
 // boots cleanly under a supervisor with no init() block. This is the
 // canonical supervised-child shape for a live Supervisors tab.
 actor Worker {
-    let id: i32;
-    var processed: i32 = 0;
+    let id: i32,
+    var processed: i32 = 0,
     receive fn process(item: i32) {
         processed = processed + 1;
     }
@@ -71,8 +71,8 @@ actor Worker {
 // single crash restarts the whole group — useful for contrasting the two
 // restart strategies side by side in the Supervisors tab.
 actor Service {
-    let port: i32;
-    var requests: i32 = 0;
+    let port: i32,
+    var requests: i32 = 0,
     receive fn handle() {
         requests = requests + 1;
     }
@@ -86,12 +86,12 @@ actor Service {
 // one_for_one: when a child crashes, ONLY that child restarts. The siblings
 // keep their state and keep running. This is the worker-pool pattern.
 supervisor WorkerPool {
-    strategy: one_for_one;
-    intensity: 10 within 60s;
+    strategy: one_for_one,
+    intensity: 10 within 60s,
 
-    child alpha: Worker(id: 1, processed: 0);
-    child beta: Worker(id: 2, processed: 0);
-    child gamma: Worker(id: 3, processed: 0);
+    child alpha: Worker(id: 1, processed: 0),
+    child beta: Worker(id: 2, processed: 0),
+    child gamma: Worker(id: 3, processed: 0),
 }
 
 // one_for_all: when ANY child crashes, the supervisor restarts ALL of them.
@@ -99,11 +99,11 @@ supervisor WorkerPool {
 // connection pool plus its health checker). We do not crash this tree — it
 // stays at restarts:0 so the two strategies read cleanly in the tab.
 supervisor ServiceStack {
-    strategy: one_for_all;
-    intensity: 5 within 30s;
+    strategy: one_for_all,
+    intensity: 5 within 30s,
 
-    child api: Service(port: 8080, requests: 0);
-    child cache: Service(port: 6379, requests: 0);
+    child api: Service(port: 8080, requests: 0),
+    child cache: Service(port: 6379, requests: 0),
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────

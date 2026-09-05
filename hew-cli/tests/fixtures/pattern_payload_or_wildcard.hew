@@ -4,9 +4,9 @@
 // PayloadBinding emitted) alongside the unit-variant arm.
 // Oracle: "active" for the two payload variants, "idle" for the unit.
 enum Event {
-    Click(i64);
-    Scroll(i64);
-    Idle;
+    Click(i64),
+    Scroll(i64),
+    Idle,
 }
 
 fn kind(e: Event) -> string {

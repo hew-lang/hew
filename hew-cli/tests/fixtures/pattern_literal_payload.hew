@@ -2,8 +2,8 @@
 // Matches on a specific literal value in an enum constructor payload.
 // Oracle: "zero" when payload is 0, "nonzero" otherwise, "nothing" for None.
 enum MyOpt {
-    Some(i64);
-    None;
+    Some(i64),
+    None,
 }
 
 fn describe(v: MyOpt) -> string {

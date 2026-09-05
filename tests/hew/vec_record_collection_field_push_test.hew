@@ -11,13 +11,13 @@
 import std.testing;
 
 type Boxed {
-    payload: [i64];
+    payload: [i64],
 }
 
 enum Reply {
-    Nil;
-    Num(i64);
-    Arr([Reply]);
+    Nil,
+    Num(i64),
+    Arr([Reply]),
 }
 
 // ── record-with-Vec-field: copy-in independence ────────────────────────────

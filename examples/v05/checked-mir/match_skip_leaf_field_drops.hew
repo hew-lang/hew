@@ -21,18 +21,18 @@
 // The elab golden additionally pins exactly-once parent suppression: no
 // exit or back-edge drop plan contains the destructured scrutinee root.
 type TaggedString {
-    n: i64;
-    s: string;
+    n: i64,
+    s: string,
 }
 
 type TaggedVec {
-    n: i64;
-    items: Vec<string>;
+    n: i64,
+    items: Vec<string>,
 }
 
 type TaggedBytes {
-    n: i64;
-    payload: bytes;
+    n: i64,
+    payload: bytes,
 }
 
 fn skip_string_record(k: i64) -> i64 {

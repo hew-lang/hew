@@ -5,9 +5,9 @@
 // Sends many messages to a bounded mailbox and verifies backpressure
 // doesn't deadlock and all messages are eventually processed.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
-    mailbox 4 overflow block;
+    mailbox 4 overflow block,
     receive fn increment() {
         count = count + 1;
     }

@@ -37,7 +37,7 @@ fn fixture_source(port: u16) -> String {
 import std.net;
 
 actor Handler {{
-    let addr: string;
+    let addr: string,
 
     receive fn run(unused: i64) {{
         let listener = match net.listen(addr) {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};

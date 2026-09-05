@@ -10,7 +10,7 @@
 // length, and a clause read as the field would make each member report 2.
 
 actor Ticker {
-    var count: i64;
+    var count: i64,
 
     receive fn ticks() -> i64 {
         count
@@ -18,10 +18,10 @@ actor Ticker {
 }
 
 supervisor Farm {
-    strategy: simple_one_for_one;
-    intensity: 3 within 60s;
+    strategy: simple_one_for_one,
+    intensity: 3 within 60s,
 
-    pool tickers: Ticker(count: 9) count: 2;
+    pool tickers: Ticker(count: 9) count: 2,
 }
 
 fn main() -> i64 {

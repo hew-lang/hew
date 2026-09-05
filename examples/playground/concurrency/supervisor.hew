@@ -2,7 +2,7 @@
 //! @description Supervision tree for fault-tolerant actors
 
 actor Worker {
-    let id: i64;
+    let id: i64,
     receive fn work(x: i64) -> i64 {
         println(f"Worker {id} processing {x}");
         x
@@ -10,11 +10,11 @@ actor Worker {
 }
 
 supervisor WorkerPool {
-    strategy: one_for_one;
-    intensity: 5 within 10s;
+    strategy: one_for_one,
+    intensity: 5 within 10s,
 
-    child w1: Worker(id: 1);
-    child w2: Worker(id: 2);
+    child w1: Worker(id: 1),
+    child w2: Worker(id: 2),
 }
 
 fn main() {

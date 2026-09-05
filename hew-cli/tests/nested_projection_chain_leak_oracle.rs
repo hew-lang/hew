@@ -566,9 +566,9 @@ fn escaped_into_field_store_source(frames: usize) -> String {
 fn escaped_inline_enum_source(frames: usize) -> String {
     format!(
         "enum Payload {{\n\
-         \x20   Text(string);\n\
-         \x20   Number(i64);\n\
-         \x20   Empty;\n\
+         \x20   Text(string),\n\
+         \x20   Number(i64),\n\
+         \x20   Empty,\n\
          }}\n\
          type Outer {{ payload: Payload, sibling: string }}\n\
          type Holder {{ held: Payload }}\n\

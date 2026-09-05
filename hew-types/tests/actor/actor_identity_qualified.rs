@@ -50,7 +50,7 @@ fn typecheck_with_modules(root_source: &str, modules: &[(&[&str], &str)]) -> Typ
 
 const BANK_SRC: &str = "
 pub actor Account {
-    var balance: i64 = 0;
+    var balance: i64 = 0,
     receive fn deposit(n: i64) -> i64 {
         balance = balance + n;
         balance
@@ -60,7 +60,7 @@ pub actor Account {
 
 const STORE_SRC: &str = "
 pub actor Account {
-    var credit: i64 = 0;
+    var credit: i64 = 0,
     receive fn deposit(n: i64) -> bool {
         credit = credit + n;
         true
@@ -161,7 +161,7 @@ fn bare_spawn_resolves_local_actor_over_imported_same_name() {
     let output = typecheck_with_modules(
         "
 actor Account {
-    var local_n: i64 = 0;
+    var local_n: i64 = 0,
     receive fn deposit(n: i64) -> i64 { n }
 }
 

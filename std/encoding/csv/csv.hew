@@ -20,8 +20,8 @@ import std.fs;
 
 /// A parsed CSV table with headers and data rows.
 type Table {
-    hdrs: Vec<string>;
-    data: Vec<Vec<string>>;
+    hdrs: Vec<string>,
+    data: Vec<Vec<string>>,
 }
 
 /// Methods available on a CSV `Table`.

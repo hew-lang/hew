@@ -64,7 +64,7 @@ fn actor_bare_send_no_handler_rejected_at_typecheck() {
     let tco = typecheck(
         r"
         actor Worker {
-            let count: i64;
+            let count: i64,
             receive fn handle(n: i64) {
             }
         }
@@ -94,7 +94,7 @@ fn actor_bare_send_non_unit_named_handler_rejected_at_typecheck() {
     let tco = typecheck(
         r"
         actor Calculator {
-            let total: i64;
+            let total: i64,
 
             receive fn compute(x: i64) -> i64 {
                 return x + 1;
@@ -125,7 +125,7 @@ fn actor_bare_send_no_handler_in_machine_transition_rejected_at_typecheck() {
     let tco = typecheck(
         r"
         actor Calculator {
-            let total: i64;
+            let total: i64,
 
             receive fn compute(x: i64) -> i64 {
                 return x + 1;
@@ -134,11 +134,11 @@ fn actor_bare_send_no_handler_in_machine_transition_rejected_at_typecheck() {
 
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
-            state Active;
-            state Idle;
+            state Active,
+            state Idle,
 
             on Tick: Active => Active reenter {
                 let c = spawn Calculator(total: 0);
@@ -169,7 +169,7 @@ fn actor_ask_non_unit_handler_accepted() {
     let output = lower_clean(
         r"
         actor Calculator {
-            let total: i64;
+            let total: i64,
 
             receive fn compute(x: i64) -> i64 {
                 return x + 1;

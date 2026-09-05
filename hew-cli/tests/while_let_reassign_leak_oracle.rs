@@ -56,8 +56,8 @@ fn moved_out_source(frames: usize) -> String {
 
 const EXIT_EDGES_SOURCE: &str = r#"
 enum Packet {
-    Payload(string);
-    Done;
+    Payload(string),
+    Done,
 }
 
 fn next(i: i64, cap: i64) -> Packet {

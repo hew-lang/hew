@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn rename_struct_field_updates_declaration_and_accesses() {
-        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let source = "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
         let pr = parse(source);
         let offset = source.find("p.x").unwrap() + 2;
         let edits = rename(source, &pr, offset, "z").expect("should rename struct field");
@@ -436,7 +436,7 @@ mod tests {
         assert!(edits.iter().any(|edit| edit.span.start == decl_start));
 
         let renamed = apply_edits(source, &edits);
-        assert!(renamed.contains("type Point { z: i32; y: i32 }"));
+        assert!(renamed.contains("type Point { z: i32, y: i32 }"));
         assert!(renamed.contains("Point { z: 1, y: 2 }"));
         assert!(renamed.contains("Point { z: 3, y: 4 }"));
         assert!(renamed.contains("p.z + q.z"));
@@ -715,7 +715,7 @@ mod tests {
         // actor field must be rejected with ShadowsTopLevel.  Prior to the
         // fix, find_definition skipped Actor.fields so detect_conflicts
         // silently bypassed the conflict check.
-        let source = "actor Counter { count: i64; receive fn inc() {} }\nfn foo() -> i64 { 0 }";
+        let source = "actor Counter { count: i64, receive fn inc() {} }\nfn foo() -> i64 { 0 }";
         let pr = parse(source);
         let offset = source.find("fn foo").unwrap() + 3;
         let err = plan_rename(source, &pr, offset, "count").unwrap_err();

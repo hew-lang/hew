@@ -5,7 +5,7 @@
 // either miss the transfer or reject the siblings.
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {
@@ -16,9 +16,9 @@ impl Socket {
 }
 
 type Holder {
-    sock: Socket;
-    count: i64;
-    name: string;
+    sock: Socket,
+    count: i64,
+    name: string,
 }
 
 actor TestSink {

@@ -2,9 +2,9 @@
 //! @description if/match/if-let in statement position with side-effecting branches
 
 enum Mood {
-    Happy;
-    Sad;
-    Neutral;
+    Happy,
+    Sad,
+    Neutral,
 }
 
 fn check_number(n: i64) {

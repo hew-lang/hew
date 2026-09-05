@@ -2,11 +2,11 @@
 // must retain the real `outer.inner.s` span/type on its receiver while its own
 // zero-width span carries the fresh Vec result.
 type Inner {
-    s: HashSet<i64>;
+    s: HashSet<i64>,
 }
 
 type Outer {
-    inner: Inner;
+    inner: Inner,
 }
 
 fn make_outer() -> Outer {

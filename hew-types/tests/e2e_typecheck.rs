@@ -501,7 +501,7 @@ fn method_call_receiver_kinds_record_named_type_instance_dispatch() {
     let output = typecheck_inline(
         r"
 type Widget {
-    value: i64;
+    value: i64,
 }
 
 impl Widget {
@@ -543,7 +543,7 @@ trait Greeter {
 }
 
 type Bot {
-    name: string;
+    name: string,
 }
 
 impl Greeter for Bot {
@@ -824,7 +824,7 @@ fn assign_target_kinds_record_assignment_target_authority() {
     let output = typecheck_inline(
         r"
 type Boxed {
-    value: i64;
+    value: i64,
 }
 
 fn mutate() {
@@ -839,7 +839,7 @@ fn mutate() {
 }
 
 actor Counter {
-    var total: i64;
+    var total: i64,
 
     receive fn set(v: i64) {
         total = v;
@@ -953,7 +953,7 @@ fn assign_target_shapes_accompanies_kinds_for_every_accepted_target() {
     let output = typecheck_inline(
         r"
 type Boxed {
-    value: i64;
+    value: i64,
 }
 
 fn mutate() {
@@ -968,7 +968,7 @@ fn mutate() {
 }
 
 actor Counter {
-    var total: i64;
+    var total: i64,
 
     receive fn set(v: i64) {
         total = v;
@@ -1151,7 +1151,7 @@ fn stream_decode_fails_closed_before_codegen() {
 
         #[wire]
         type Message {
-            id: i64 @1;
+            id: i64 @1,
         }
 
         fn main() {
@@ -1178,7 +1178,7 @@ fn sink_encode_fails_closed_before_codegen() {
 
         #[wire]
         type Message {
-            id: i64 @1;
+            id: i64 @1,
         }
 
         fn main() {
@@ -1763,7 +1763,7 @@ fn weak_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
         r"
         actor BoundarySink {
-            let _unused: i64;
+            let _unused: i64,
             receive fn consume(value: Weak<i64>) {}
         }
         fn main() {
@@ -1892,7 +1892,7 @@ fn rc_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
         r"
         actor BoundarySink {
-            let _unused: i64;
+            let _unused: i64,
             receive fn consume(val: Rc<i64>) {}
         }
         fn main() {
@@ -1919,7 +1919,7 @@ fn ordinary_actor_send_keeps_sender_binding_readable() {
         }
 
         actor BoundarySink {
-            let _unused: i64;
+            let _unused: i64,
             receive fn take(value: Boxed) {}
         }
 
@@ -1947,7 +1947,7 @@ fn actor_spawn_still_moves_affine_handle_arguments() {
         import std.stream;
 
         actor Writer {
-            let sink: stream.Sink<string>;
+            let sink: stream.Sink<string>,
         }
 
         fn main() {
@@ -1977,7 +1977,7 @@ fn nested_rc_and_weak_send_rejections_do_not_cascade() {
         }
 
         actor BoundarySink {
-            let _unused: i64;
+            let _unused: i64,
             receive fn take_box(value: RcBox) {}
             receive fn take_tuple(value: (i64, Weak<i64>)) {}
         }
@@ -2097,7 +2097,7 @@ fn actor_ref_send_method_requires_send_payload() {
     let output = typecheck_inline(
         r"
         actor Sink {
-            let _unused: i64;
+            let _unused: i64,
         }
 
         fn main() {
@@ -2128,7 +2128,7 @@ fn actor_receive_fn_option_reply_accepted() {
     let output = typecheck_inline(
         r"
         actor Queue {
-            let items: Vec<i64>;
+            let items: Vec<i64>,
             receive fn dequeue() -> Option<i64> {
                 None
             }
@@ -2403,7 +2403,7 @@ fn rc_copy_struct_construction_ok() {
         r"
         type Point {
             x: i64
-            y: i64
+            ,y: i64
         }
 
         fn main() {
@@ -4701,8 +4701,8 @@ fn rc_in_named_enum_variant_vec_push_supported() {
     assert_inline_typechecks_cleanly(
         r"
         enum MaybeHolder {
-            Some(Rc<i64>);
-            None;
+            Some(Rc<i64>),
+            None,
         }
         fn main() {
             var v = Vec.new();
@@ -5403,8 +5403,8 @@ fn type_def_with_error_field_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         type Broken {
-            value: Task<i64>;
-            ok: i64;
+            value: Task<i64>,
+            ok: i64,
         }
         ",
     );
@@ -5434,8 +5434,8 @@ fn enum_with_error_variant_payload_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         enum Broken {
-            Bad(Task<i64>);
-            Good(i64);
+            Bad(Task<i64>),
+            Good(i64),
         }
         ",
     );
@@ -5463,7 +5463,7 @@ fn type_def_method_with_error_param_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         type Widget {
-            value: i64;
+            value: i64,
         }
 
         impl Widget {
@@ -5510,7 +5510,7 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         type Widget {
-            value: i64;
+            value: i64,
         }
 
         impl Widget {
@@ -6037,10 +6037,10 @@ fn monomorphic_machine_channel_element_admitted() {
 
         machine Light {
             events {
-                Flip;
+                Flip,
             }
-            state Off;
-            state On;
+            state Off,
+            state On,
             on Flip: Off => .On { .On }
             on Flip: On => .Off { .Off }
         }
@@ -6104,10 +6104,10 @@ fn container_bearing_machine_channel_element_refused() {
 
         machine Buffered {
             events {
-                Load { items: Vec<i64>; }
+                Load { items: Vec<i64>, }
             }
-            state Empty;
-            state Loaded { items: Vec<i64>; }
+            state Empty,
+            state Loaded { items: Vec<i64>, },
             on Load: Empty => .Loaded { Buffered.Loaded { items: event.items } }
             on Load: _ => _ { state }
         }

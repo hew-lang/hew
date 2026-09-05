@@ -47,7 +47,7 @@ fn test_while_bare_ident_empty_body_parses() {
 // no-struct-literal restriction is lifted inside `(...)`, and the formatter
 // keeps the parens so the form round-trips.
 type Flags {
-    on: bool;
+    on: bool,
 }
 
 fn paren_struct_cond() -> i64 {
@@ -84,8 +84,8 @@ fn test_block_expression_condition_with_inner_struct_literal() {
 // No regression: a normal struct literal in expression (non-condition) position
 // still parses and evaluates.
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn make_point() -> Point {

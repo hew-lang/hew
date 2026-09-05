@@ -24,11 +24,11 @@ fn build_cross_module_program() -> Program {
     let imported_src = r"
 pub machine Toggle {
     events {
-        Flip;
+        Flip,
     }
 
-    state Off;
-    state On;
+    state Off,
+    state On,
     on Flip: Off => On { On }
     on Flip: On => Off { Off }
 }
@@ -167,11 +167,11 @@ fn cross_module_machine_ctor_resolves_to_machine_variant_ctor() {
 fn imported_generic_machine_usage_discovers_a_concrete_layout() {
     let imported_src = r"
 pub machine Lifecycle<T> {
-    events { Stop; }
-    state Created;
-    state Stopped;
+    events { Stop, }
+    state Created,
+    state Stopped,
     on Stop: Created => Stopped { Stopped }
-    on Stop: Stopped => Stopped;
+    on Stop: Stopped => Stopped,
 }
 ";
     let root_src = r"
@@ -225,9 +225,9 @@ fn main() {
 fn private_imported_machine_retains_runtime_layout() {
     let imported_src = r"
 machine RunLifecycle {
-    events { Finish; }
-    state Running;
-    state Completed;
+    events { Finish, }
+    state Running,
+    state Completed,
     on Finish: Running => Completed { Completed }
     default { state }
 }
@@ -250,9 +250,9 @@ pub fn initial() -> RunLifecycle { RunLifecycle.Running }
 fn dotted_imported_constructor_uses_the_source_owner() {
     let imported_src = r"
 pub machine Toggle {
-    events { Flip; }
-    state Off;
-    state On;
+    events { Flip, }
+    state Off,
+    state On,
     on Flip: Off => On { On }
     on Flip: On => Off { Off }
 }
@@ -294,9 +294,9 @@ fn main() { let _value = m.Toggle.Off; }
 fn module_qualified_pattern_uses_the_source_owner() {
     let imported_src = r"
 pub machine Toggle {
-    events { Flip; }
-    state Off;
-    state On;
+    events { Flip, }
+    state Off,
+    state On,
     on Flip: Off => On { On }
     on Flip: On => Off { Off }
 }

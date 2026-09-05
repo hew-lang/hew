@@ -6,10 +6,10 @@ import "imported_supervisor_child_support/worker.hew";
 import std.testing;
 
 supervisor ImportedWorkerPool {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child worker: ImportedWorker(id: 17);
+    child worker: ImportedWorker(id: 17),
 }
 
 #[test]

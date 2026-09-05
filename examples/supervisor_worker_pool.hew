@@ -20,8 +20,8 @@
 //
 // In Hew, the same thing is 5 lines:
 actor Worker {
-    let id: i32;
-    var processed: i32;
+    let id: i32,
+    var processed: i32,
     receive fn process(item: i32) {
         processed = processed + 1;
         print("worker ");
@@ -45,12 +45,12 @@ actor Worker {
 // The supervisor declaration IS the pool definition.
 // No boilerplate, no factory functions, no lifecycle hooks.
 supervisor WorkerPool {
-    strategy: one_for_one;
-    intensity: 10 within 60s;
+    strategy: one_for_one,
+    intensity: 10 within 60s,
 
-    child w1: Worker(id: 1, processed: 0);
-    child w2: Worker(id: 2, processed: 0);
-    child w3: Worker(id: 3, processed: 0);
+    child w1: Worker(id: 1, processed: 0),
+    child w2: Worker(id: 2, processed: 0),
+    child w3: Worker(id: 3, processed: 0),
 }
 
 fn main() {

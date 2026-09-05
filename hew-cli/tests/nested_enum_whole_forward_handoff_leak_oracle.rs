@@ -23,23 +23,23 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE_TEMPLATE: &str = r#"
 enum Inner {
-    Text(string);
-    Empty;
+    Text(string),
+    Empty,
 }
 
 enum Outer {
-    Wrap(Inner);
-    Empty;
+    Wrap(Inner),
+    Empty,
 }
 
 enum Middle {
-    Wrap(Inner);
-    Empty;
+    Wrap(Inner),
+    Empty,
 }
 
 enum DeepOuter {
-    Wrap(Middle);
-    Empty;
+    Wrap(Middle),
+    Empty,
 }
 
 type Holder {
@@ -48,13 +48,13 @@ type Holder {
 }
 
 enum RecordOuter {
-    Wrap(Holder);
-    Empty;
+    Wrap(Holder),
+    Empty,
 }
 
 enum TupleOuter {
-    Wrap((Inner, i64));
-    Empty;
+    Wrap((Inner, i64)),
+    Empty,
 }
 
 fn whole(i: i64) -> i64 {

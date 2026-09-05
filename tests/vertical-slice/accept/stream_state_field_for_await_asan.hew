@@ -23,7 +23,7 @@
 import std.stream;
 
 actor Consumer {
-    var input: Stream<string>;
+    var input: Stream<string>,
 
     receive fn drain() {
         for await item in input {

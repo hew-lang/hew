@@ -35,8 +35,8 @@
 // `hew run examples/v05/hashset_actor_drop_run_pass.hew` must complete with
 // exit 0 and print `ok`.
 actor SetHolder {
-    let ints: HashSet<i64>;
-    let names: HashSet<string>;
+    let ints: HashSet<i64>,
+    let names: HashSet<string>,
 
     // Touch nothing on the moved-in sets — the load-bearing exercise is the
     // teardown free of the NON-EMPTY layout sets, not in-receive access.

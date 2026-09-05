@@ -4,7 +4,7 @@
 // rooted in the state binding whichever way the access is spelled.
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {
@@ -15,7 +15,7 @@ impl Socket {
 }
 
 actor Vault {
-    let sock: Socket;
+    let sock: Socket,
     receive fn steal() -> i64 {
         return self.sock.detach();
     }

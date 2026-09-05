@@ -5,9 +5,9 @@ fn dotted_type_member_shapes_lower_from_checker_facts() {
     let output = support::checker_pipeline::lower_through_checker(
         r"
 machine Lifecycle {
-    events { Reset; }
-    state Start;
-    state Running { value: i64; }
+    events { Reset, }
+    state Start,
+    state Running { value: i64, },
     on Reset: Running => Start { Start }
     default { state }
 }

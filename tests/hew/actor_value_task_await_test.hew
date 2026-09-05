@@ -38,7 +38,7 @@ fn compute_pair() -> Pair {
 }
 
 actor ValueWorker {
-    var acc: i64 = 0;
+    var acc: i64 = 0,
 
     // Bind a scalar result. The exact value 42 proves the result channel
     // published the body's return and the resume edge bound it.

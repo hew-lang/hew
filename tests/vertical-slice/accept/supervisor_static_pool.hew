@@ -16,17 +16,17 @@
 // Exit code = len(3) + worker0.id(7) + worker1.id(7) + worker2.id(7) = 24. A
 // wrong count or an unreachable member (trap → exit 133) would change it.
 actor Worker {
-    var value: i64;
+    var value: i64,
     receive fn id() -> i64 {
         value
     }
 }
 
 supervisor Pool {
-    strategy: simple_one_for_one;
-    intensity: 5 within 60s;
+    strategy: simple_one_for_one,
+    intensity: 5 within 60s,
 
-    pool workers: Worker(value: 7) count: 3;
+    pool workers: Worker(value: 7) count: 3,
 }
 
 fn main() -> i64 {

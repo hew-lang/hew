@@ -3,7 +3,7 @@
 // facts join by union, which is what makes the partial re-init still report.
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {
@@ -14,7 +14,7 @@ impl Socket {
 }
 
 actor Vault {
-    var sock: Socket;
+    var sock: Socket,
     receive fn maybe_swap(restore: bool) -> i64 {
         let fd = sock.detach();
         if restore {

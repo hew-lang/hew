@@ -63,29 +63,29 @@ import std.stream;
 /// For file-system errors see `fs.IoError`.
 pub enum NetError {
     /// The remote host actively refused the connection (ECONNREFUSED).
-    ConnectionRefused(i64);
+    ConnectionRefused(i64),
     /// The local address is already in use (EADDRINUSE).
-    AddressInUse(i64);
+    AddressInUse(i64),
     /// The address or hostname could not be resolved (EADDRNOTAVAIL).
-    AddressNotAvailable(i64);
+    AddressNotAvailable(i64),
     /// The connection attempt or I/O operation timed out (ETIMEDOUT).
-    TimedOut(i64);
+    TimedOut(i64),
     /// Operation was cancelled (e.g., a deadline expired before the I/O
     /// could complete).
     ///
     /// Distinct from `TimedOut`: `TimedOut` means the OS deadline expired;
     /// `Cancelled` means the operation was abandoned for another reason
     /// (e.g. the blocking pool was shut down mid-call).
-    Cancelled(i64);
+    Cancelled(i64),
     /// An argument was rejected before it reached the operating system.
     ///
     /// Carries the rejection detail rather than an errno: no syscall was
     /// made, so there is no platform error code to report. Produced by the
     /// endpoint and duration validation below, which run before every native
     /// call whose C ABI narrows an `i64` to an `i32`.
-    InvalidArgument(string);
+    InvalidArgument(string),
     /// Any other network-level failure.
-    Other(i64);
+    Other(i64),
 }
 
 /// Failure to transfer a TCP connection into active mode.
@@ -94,7 +94,7 @@ pub enum NetError {
 /// receives no connection back and must not attempt a second close.
 pub enum AttachError {
     /// The runtime refused the active-mode registration.
-    Refused;
+    Refused,
 }
 
 impl Display for AttachError {
@@ -212,8 +212,8 @@ pub fn port_arg(context: string, port: i64) -> Result<i64, NetError> {
 /// `host` never carries the IPv6 bracket form: `[::1]:9000` yields host
 /// `::1`, which is what the resolver expects.
 pub type Endpoint {
-    host: string;
-    port: i64;
+    host: string,
+    port: i64,
 }
 
 /// Longest address string the endpoint grammar accepts.
@@ -355,13 +355,13 @@ pub enum WriteError {
     /// a frame boundary (i.e., no bytes were sent before the timeout fired).
     /// The i64 payload is the raw OS errno (EAGAIN/EWOULDBLOCK on Unix,
     /// WSAETIMEDOUT on Windows; 0 if none was recorded).
-    BackpressureExceeded(i64);
+    BackpressureExceeded(i64),
     /// The peer reset or closed the connection, or the local end was shut
     /// down (ECONNRESET, EPIPE, ENOTCONN). The connection is no longer
     /// usable for writes. The i64 payload is the raw OS errno.
-    Disconnected(i64);
+    Disconnected(i64),
     /// Any other write-side failure. The i64 payload is the raw OS errno.
-    Other(i64);
+    Other(i64),
 }
 
 /// Map an OS errno integer to a structured `WriteError` variant.

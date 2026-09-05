@@ -4,8 +4,8 @@
 // previously only emitted pub types and non-generic structs, so a private
 // enum's layout was invisible to MIR and produced "E_MIR: unknown type".
 enum AppErr {
-    NotFound;
-    Forbidden;
+    NotFound,
+    Forbidden,
 }
 
 pub fn make_error() -> AppErr {

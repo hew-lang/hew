@@ -3,23 +3,23 @@
 import std.testing;
 
 type VecSliceName {
-    label: string;
+    label: string,
 }
 
 type VecSlicePoint {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 enum VecSliceColour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 enum VecSliceShape {
-    Circle(i64);
-    Rect(i64, i64);
+    Circle(i64),
+    Rect(i64, i64),
 }
 
 fn generic_slice<T>(xs: Vec<T>, start: i64, end: i64) -> Vec<T> {

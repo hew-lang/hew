@@ -107,8 +107,8 @@ pub const JSON: i64 = 1;
 /// }
 /// ```
 pub type Logger {
-    level: i64;
-    format: i64;
+    level: i64,
+    format: i64,
 }
 
 /// Construct a Logger with the given level threshold and output format.

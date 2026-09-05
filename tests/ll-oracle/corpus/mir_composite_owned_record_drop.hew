@@ -11,8 +11,8 @@
 // own scope exit. This corpus preserves the input shape and raw-MIR parity;
 // focused ownership tests own the release invariant.
 type Bundle {
-    label: string;
-    parts: Vec<string>;
+    label: string,
+    parts: Vec<string>,
 }
 
 fn main() -> i64 {

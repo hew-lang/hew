@@ -4,7 +4,7 @@
 // of the consumed place.
 #[linear]
 type Ticket {
-    id: i64;
+    id: i64,
 }
 
 impl Ticket {
@@ -15,11 +15,11 @@ impl Ticket {
 }
 
 type Inner {
-    ticket: Ticket;
+    ticket: Ticket,
 }
 
 type Outer {
-    inner: Inner;
+    inner: Inner,
 }
 
 actor Gate {

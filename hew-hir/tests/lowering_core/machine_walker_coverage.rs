@@ -48,12 +48,12 @@ fn wasm_blocking_recv_in_machine_state_entry() {
     let source = r"
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
             state Idle {
                 entry { let _ = ch.recv(); }
-            }
+            },
             on Tick: Idle => Idle reenter { Idle }
         }
     ";
@@ -71,12 +71,12 @@ fn wasm_blocking_recv_in_machine_state_exit() {
     let source = r"
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
             state Idle {
                 exit { let _ = ch.recv(); }
-            }
+            },
             on Tick: Idle => Idle reenter { Idle }
         }
     ";
@@ -94,10 +94,10 @@ fn wasm_blocking_recv_in_machine_transition_guard() {
     let source = r"
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
-            state Idle;
+            state Idle,
             on Tick: Idle => Idle reenter when ch.recv() { Idle }
         }
     ";
@@ -115,10 +115,10 @@ fn wasm_blocking_recv_in_machine_transition_body() {
     let source = r"
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
-            state Idle;
+            state Idle,
             on Tick: Idle => Idle reenter { let _ = ch.recv(); Idle }
         }
     ";
@@ -136,12 +136,12 @@ fn wasm_machine_without_recv_no_diagnostic() {
     let source = r"
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
             state Idle {
                 entry { let _ = 1; }
-            }
+            },
             on Tick: Idle => Idle reenter { Idle }
         }
     ";
@@ -168,12 +168,12 @@ fn task_gate_in_machine_state_entry() {
     let source = r"
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
             state Idle {
                 entry { scope { fork child = helper(); } }
-            }
+            },
             on Tick: Idle => Idle reenter { Idle }
         }
     ";
@@ -190,12 +190,12 @@ fn task_gate_in_machine_state_exit() {
     let source = r"
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
             state Idle {
                 exit { scope { fork child = helper(); } }
-            }
+            },
             on Tick: Idle => Idle reenter { Idle }
         }
     ";
@@ -216,10 +216,10 @@ fn task_gate_in_machine_transition_guard() {
     let source = r"
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
-            state Idle;
+            state Idle,
             on Tick: Idle => Idle reenter
                 when { scope { fork child = helper(); } true }
                 { Idle }
@@ -238,10 +238,10 @@ fn task_gate_in_machine_transition_body() {
     let source = r"
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
-            state Idle;
+            state Idle,
             on Tick: Idle => Idle reenter {
                 scope { fork child = helper(); }
                 Idle
@@ -263,12 +263,12 @@ fn task_gate_machine_without_fork_no_diagnostic() {
     let source = r"
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
             state Idle {
                 entry { let _ = 1; }
-            }
+            },
             on Tick: Idle => Idle reenter { Idle }
         }
     ";
@@ -289,12 +289,12 @@ fn task_gate_machine_arg_bearing_direct_fork_no_diagnostic() {
         fn worker(x: int) {}
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
             state Idle {
                 entry { scope { fork child = worker(42); await child; } }
-            }
+            },
             on Tick: Idle => Idle reenter { Idle }
         }
     ";

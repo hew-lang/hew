@@ -30,7 +30,7 @@ type DequeHandle {
 
 #[resource]
 pub type Deque {
-    handle: DequeHandle;
+    handle: DequeHandle,
 }
 
 /// Methods available on a `Deque`.

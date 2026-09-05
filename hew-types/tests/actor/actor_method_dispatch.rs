@@ -8,7 +8,7 @@ fn actor_method_dispatch_classifies_fire_and_ask_sites() {
     let output = typecheck(
         r"
         actor Counter {
-            let count: i32;
+            let count: i32,
 
             receive fn increment(n: i32) {
             }

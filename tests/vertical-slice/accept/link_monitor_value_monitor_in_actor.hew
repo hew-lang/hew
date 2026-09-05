@@ -16,7 +16,7 @@ actor Target {
 }
 
 actor Watcher {
-    var active_monitor: Result<MonitorRef, MonitorError> = Err(MonitorError.InvalidTarget);
+    var active_monitor: Result<MonitorRef, MonitorError> = Err(MonitorError.InvalidTarget),
     receive fn watch(t: LocalPid<Target>) {
         active_monitor = monitor(t);
         // Borrow the active MonitorRef through the Result payload. The actor

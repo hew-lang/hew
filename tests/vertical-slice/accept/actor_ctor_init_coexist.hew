@@ -4,8 +4,8 @@
 //   count = 0 (zero-init) + offset (5) = 5, then init sets count *= multiplier (2) → 10.
 // Then total() returns count (10) + base (100) = 110.
 actor Calc {
-    var count: i64;
-    var base: i64;
+    var count: i64,
+    var base: i64,
     init(multiplier: i64) {
         count = count * multiplier;
     }

@@ -20,27 +20,27 @@
 // suppression. The elab golden therefore pins that no exit or back-edge
 // drop plan contains the destructured scrutinee root.
 type Inner {
-    value: string;
+    value: string,
 }
 
 enum Shade {
-    Plain;
-    Named(string);
+    Plain,
+    Named(string),
 }
 
 type HoldsRecord {
-    n: i64;
-    inner: Inner;
+    n: i64,
+    inner: Inner,
 }
 
 type HoldsTuple {
-    n: i64;
-    pair: (string, i64);
+    n: i64,
+    pair: (string, i64),
 }
 
 type HoldsEnum {
-    n: i64;
-    shade: Shade;
+    n: i64,
+    shade: Shade,
 }
 
 fn skip_record_field(k: i64) -> i64 {

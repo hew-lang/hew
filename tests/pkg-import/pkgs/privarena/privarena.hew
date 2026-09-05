@@ -13,12 +13,12 @@
 //! call site.
 
 type Slot<T> {
-    generation: i64;
-    value: Option<T>;
+    generation: i64,
+    value: Option<T>,
 }
 
 pub type Arena<T> {
-    slots: Vec<Slot<T>>;
+    slots: Vec<Slot<T>>,
 }
 
 pub fn new<T>() -> Arena<T> {

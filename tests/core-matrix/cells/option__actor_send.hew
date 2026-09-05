@@ -1,5 +1,5 @@
 actor Sink {
-    var hits: i64;
+    var hits: i64,
 
     receive fn take(v: Option<i64>) -> i64 {
         match v { Option.Some(v_v) => println(f"some {v_v}"), Option.None => println("none"), }

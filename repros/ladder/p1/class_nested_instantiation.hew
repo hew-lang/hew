@@ -5,16 +5,16 @@
 // declaration's own members - whether the body of `L<T>` mentions `L<...>` at
 // an instantiation other than `L<T>` - not of the argument a caller supplies.
 type Wrapper<T> {
-    value: T;
+    value: T,
 }
 
 type Outer<T> {
-    wrapped: Wrapper<T>;
+    wrapped: Wrapper<T>,
 }
 
 enum Maybe<T> {
-    Some(T);
-    None;
+    Some(T),
+    None,
 }
 
 fn main() -> i64 {

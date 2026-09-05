@@ -5,7 +5,7 @@
 // forward send routes through the captured handle on every dispatch.
 // forward(10) + forward(32) = 42; the trailing ask fences delivery.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn increment(n: i64) {
         count = count + n;

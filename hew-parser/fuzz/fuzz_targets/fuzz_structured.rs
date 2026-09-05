@@ -260,9 +260,9 @@ impl RecordSpec {
 impl EnumSpec {
     fn to_source(&self, idx: usize) -> String {
         if self.with_payload {
-            format!("enum FuzzEnum{idx} {{\n    Empty;\n    One(i64);\n    Pair(i64, i64);\n}}\n")
+            format!("enum FuzzEnum{idx} {{\n    Empty,\n    One(i64),\n    Pair(i64, i64),\n}}\n")
         } else {
-            format!("enum FuzzEnum{idx} {{\n    A;\n    B;\n    C;\n}}\n")
+            format!("enum FuzzEnum{idx} {{\n    A,\n    B,\n    C,\n}}\n")
         }
     }
 }

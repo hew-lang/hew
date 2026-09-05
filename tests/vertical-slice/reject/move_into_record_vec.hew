@@ -1,4 +1,4 @@
-type Holder { values: Vec<string>; }
+type Holder { values: Vec<string>, }
 
 fn main() -> i64 {
     let values: Vec<string> = Vec.new();

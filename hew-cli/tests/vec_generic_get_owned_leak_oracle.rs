@@ -58,7 +58,7 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 /// returns scribbled memory (not `"owned-ok"`). The exact-string equality plus
 /// clean exit pin both directions simultaneously.
 const GENERIC_GET_SINGLE_ROUNDTRIP_SOURCE: &str = "\
-type Name { label: string; }\n\
+type Name { label: string, }\n\
 \n\
 fn first<T>(v: Vec<T>) -> Option<T> {\n\
 \x20   v.get(0)\n\
@@ -87,7 +87,7 @@ const GENERIC_GET_SINGLE_ROUNDTRIP_EXPECTED: &str = "owned-ok";
 /// generic param that leaves the Vec unreleased) leaks per iteration.
 fn generic_get_loop_source(frames: usize) -> String {
     format!(
-        "type Name {{ label: string; }}\n\
+        "type Name {{ label: string, }}\n\
          \n\
          fn first<T>(v: Vec<T>) -> Option<T> {{\n\
          \x20   v.get(0)\n\

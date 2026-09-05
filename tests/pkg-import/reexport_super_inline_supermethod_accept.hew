@@ -10,7 +10,7 @@
 import hew.reexsub.{Sub};
 
 type W {
-    id: i64;
+    id: i64,
 }
 
 impl Sub for W {

@@ -42,15 +42,15 @@ fn first_machine_emit(expr: &HirExpr) -> Option<(usize, &[(String, HirExpr)])> {
 const TRAFFIC_LIGHT_SRC: &str = r"
 machine TrafficLight {
     events {
-        Tick;
+        Tick,
     }
 
-    state Red;
-    state Green;
+    state Red,
+    state Green,
 
 
-    on Tick: Red => Green;
-    on Tick: Green => Red;
+    on Tick: Red => Green,
+    on Tick: Green => Red,
 }
 ";
 
@@ -58,21 +58,21 @@ machine TrafficLight {
 const MEALY_MACHINE_SRC: &str = r"
 machine Door {
     events {
-        OpenDoor;
-        CloseDoor;
+        OpenDoor,
+        CloseDoor,
     }
 
     state Closed {
         entry { Closed }
         exit { Closed }
-    }
-    state Open;
+    },
+    state Open,
 
 
-    on OpenDoor: Closed => Open;
-    on OpenDoor: Open => Open;
-    on CloseDoor: Open => Closed;
-    on CloseDoor: Closed => Closed;
+    on OpenDoor: Closed => Open,
+    on OpenDoor: Open => Open,
+    on CloseDoor: Open => Closed,
+    on CloseDoor: Closed => Closed,
 }
 ";
 
@@ -128,16 +128,16 @@ fn reject_machine_missing_transition_coverage() {
     let src = r"
 machine Bad {
     events {
-        Tick;
-        Reset;
+        Tick,
+        Reset,
     }
 
-    state Red;
-    state Green;
+    state Red,
+    state Green,
 
 
-    on Tick: Red => Green;
-    on Reset: Red => Red;
+    on Tick: Red => Green,
+    on Reset: Red => Red,
 }
 ";
     let output = lower(src);
@@ -160,16 +160,16 @@ fn accept_machine_with_default_arm_satisfies_exhaustiveness() {
     let src = r"
 machine WithDefault {
     events {
-        Toggle;
-        Ping;
+        Toggle,
+        Ping,
     }
 
-    state On;
-    state Off;
+    state On,
+    state Off,
 
 
-    on Toggle: On => Off;
-    on Toggle: Off => On;
+    on Toggle: On => Off,
+    on Toggle: Off => On,
 
     default { self }
 }
@@ -188,10 +188,10 @@ fn reject_machine_emit_cycle() {
     let src = r"
 machine Cyclic {
     events {
-        Tick;
+        Tick,
     }
 
-    state Active;
+    state Active,
 
 
     on Tick: Active => Active {
@@ -222,11 +222,11 @@ fn accept_indirect_machine_emit_cycle_out_of_scope() {
     let src = r"
 machine Indirect {
     events {
-        A;
-        B;
+        A,
+        B,
     }
 
-    state Active;
+    state Active,
 
 
     on A: Active => Active reenter {
@@ -262,10 +262,10 @@ fn self_transition_flag_recorded() {
     let src = r"
 machine Counter {
     events {
-        Tick;
+        Tick,
     }
 
-    state Running { count: Int; }
+    state Running { count: Int, },
 
 
     on Tick: Running => Running reenter {
@@ -306,10 +306,10 @@ fn reject_self_transition_nonempty_body_without_reenter() {
     let src = r"
 machine Counter {
     events {
-        Tick;
+        Tick,
     }
 
-    state Running { count: Int; }
+    state Running { count: Int, },
 
 
     on Tick: Running => Running {
@@ -342,13 +342,13 @@ fn accept_self_transition_empty_body_no_reenter() {
     let src = r"
 machine Ping {
     events {
-        Noop;
+        Noop,
     }
 
-    state Active;
+    state Active,
 
 
-    on Noop: Active => Active;
+    on Noop: Active => Active,
 }
 ";
     let output = lower(src);
@@ -377,26 +377,26 @@ fn reject_effect_parity_entry_conflict() {
     let src = r"
 machine Conflict {
     events {
-        Start;
-        Stop;
+        Start,
+        Stop,
     }
 
-    state Idle;
+    state Idle,
     state Active {
-        count: Int;
+        count: Int,
         entry {
             this.count = 0;
         }
-    }
+    },
 
 
     on Start: Idle => Active {
         this.count = 1;
         Active { count: 1 }
     }
-    on Stop: Active => Idle;
-    on Start: Active => Active;
-    on Stop: Idle => Idle;
+    on Stop: Active => Idle,
+    on Start: Active => Active,
+    on Stop: Idle => Idle,
 }
 ";
     let output = lower(src);
@@ -426,26 +426,26 @@ fn reject_effect_parity_exit_conflict() {
     let src = r"
 machine ExitConflict {
     events {
-        Move;
-        Reset;
+        Move,
+        Reset,
     }
 
     state Source {
-        val: Int;
+        val: Int,
         exit {
             this.val = 0;
         }
-    }
-    state Target;
+    },
+    state Target,
 
 
     on Move: Source => Target {
         this.val = 99;
         Target
     }
-    on Reset: Target => Source;
-    on Move: Target => Target;
-    on Reset: Source => Source;
+    on Reset: Target => Source,
+    on Move: Target => Target,
+    on Reset: Source => Source,
 }
 ";
     let output = lower(src);
@@ -479,10 +479,10 @@ fn transition_body_lowers_to_hir_expr_substrate() {
     let src = r"
 machine Counter {
     events {
-        Tick;
+        Tick,
     }
 
-    state Running { count: Int; }
+    state Running { count: Int, },
 
 
     on Tick: Running => Running reenter {
@@ -530,10 +530,10 @@ fn transition_body_scopes_state_event_implicit_bindings() {
     let src = r"
 machine Counter {
     events {
-        Tick;
+        Tick,
     }
 
-    state Running;
+    state Running,
 
 
     on Tick: Running => Running reenter {
@@ -607,21 +607,21 @@ fn entry_exit_blocks_lower_to_hir_block_substrate() {
     let src = r"
 machine Door {
     events {
-        OpenDoor;
-        CloseDoor;
+        OpenDoor,
+        CloseDoor,
     }
 
     state Closed {
         entry { Closed }
         exit { Closed }
-    }
-    state Open;
+    },
+    state Open,
 
 
-    on OpenDoor: Closed => Open;
-    on OpenDoor: Open => Open;
-    on CloseDoor: Open => Closed;
-    on CloseDoor: Closed => Closed;
+    on OpenDoor: Closed => Open,
+    on OpenDoor: Open => Open,
+    on CloseDoor: Open => Closed,
+    on CloseDoor: Closed => Closed,
 }
 ";
     let output = lower(src);
@@ -676,10 +676,10 @@ fn transition_body_with_machine_emit_filters_only_emit_noise() {
     let src = r"
 machine Cyclic {
     events {
-        Tick;
+        Tick,
     }
 
-    state Active;
+    state Active,
 
 
     on Tick: Active => Active {
@@ -712,11 +712,11 @@ fn transition_body_machine_emit_resolves_event_idx_and_payload_fields() {
     let src = r#"
 machine Payloads {
     events {
-        First { code: Int; }
-        Second { label: String; }
+        First { code: Int, }
+        ,Second { label: String, }
     }
 
-    state Active;
+    state Active,
 
 
     on First: Active => Active reenter {
@@ -806,10 +806,10 @@ fn transition_body_unrelated_unresolved_symbol_still_diagnoses() {
     let src = r"
 machine Counter {
     events {
-        Tick;
+        Tick,
     }
 
-    state Running { count: Int; }
+    state Running { count: Int, },
 
 
     on Tick: Running => Running reenter {
@@ -853,20 +853,20 @@ fn entry_block_unrelated_unresolved_symbol_still_diagnoses() {
     let src = r"
 machine Door {
     events {
-        OpenDoor;
-        CloseDoor;
+        OpenDoor,
+        CloseDoor,
     }
 
     state Closed {
         entry { not_a_real_helper(); }
-    }
-    state Open;
+    },
+    state Open,
 
 
-    on OpenDoor: Closed => Open;
-    on OpenDoor: Open => Open;
-    on CloseDoor: Open => Closed;
-    on CloseDoor: Closed => Closed;
+    on OpenDoor: Closed => Open,
+    on OpenDoor: Open => Open,
+    on CloseDoor: Open => Closed,
+    on CloseDoor: Closed => Closed,
 }
 ";
     let output = lower(src);
@@ -890,20 +890,20 @@ fn exit_block_unrelated_unresolved_symbol_still_diagnoses() {
     let src = r"
 machine Door {
     events {
-        OpenDoor;
-        CloseDoor;
+        OpenDoor,
+        CloseDoor,
     }
 
     state Closed {
         exit { not_a_real_helper(); }
-    }
-    state Open;
+    },
+    state Open,
 
 
-    on OpenDoor: Closed => Open;
-    on OpenDoor: Open => Open;
-    on CloseDoor: Open => Closed;
-    on CloseDoor: Closed => Closed;
+    on OpenDoor: Closed => Open,
+    on OpenDoor: Open => Open,
+    on CloseDoor: Open => Closed,
+    on CloseDoor: Closed => Closed,
 }
 ";
     let output = lower(src);
@@ -929,10 +929,10 @@ fn transition_body_non_state_name_identifier_still_diagnoses() {
     let src = r"
 machine Counter {
     events {
-        Tick;
+        Tick,
     }
 
-    state Running;
+    state Running,
 
 
     on Tick: Running => Running reenter {
@@ -976,10 +976,10 @@ fn reject_machine_emit_cycle_inside_conditional_or_match() {
     let src = r"
 machine Conditional {
     events {
-        Tick;
+        Tick,
     }
 
-    state Active;
+    state Active,
 
 
     on Tick: Active => Active reenter {
@@ -1019,10 +1019,10 @@ fn reject_machine_emit_cycle_in_stmt_else_if() {
     let src = r"
 machine StmtElseIf {
     events {
-        Tick;
+        Tick,
     }
 
-    state Active;
+    state Active,
 
 
     on Tick: Active => Active reenter {
@@ -1074,7 +1074,7 @@ trait Resource {
     fn close(self);
 }
 
-type File { path: i64; }
+type File { path: i64, }
 
 impl Resource for File {
     fn close(self) {}
@@ -1082,12 +1082,12 @@ impl Resource for File {
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
     on Start: Idle => Active { Active { handle: event.handle } }
@@ -1122,7 +1122,7 @@ trait Resource {
     fn close(self);
 }
 
-type File { path: i64; }
+type File { path: i64, }
 
 impl Resource for File {
     fn close(self) {}
@@ -1130,12 +1130,12 @@ impl Resource for File {
 
 machine Holder<T> where T: Resource {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
     on Start: Idle => Active { Active { handle: event.handle } }
@@ -1175,7 +1175,7 @@ trait Display {
     fn show(self);
 }
 
-type File { path: i64; }
+type File { path: i64, }
 
 impl Resource for File {
     fn close(self) {}
@@ -1187,12 +1187,12 @@ impl Display for File {
 
 machine Holder<T: Resource> where T: Display {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
     on Start: Idle => Active { Active { handle: event.handle } }
@@ -1228,12 +1228,12 @@ fn machine_without_bounds_lowers_empty_type_param_bounds() {
     let source = r"
 machine Counter<T> {
     events {
-        Start;
-        Stop;
+        Start,
+        Stop,
     }
 
-    state Idle;
-    state Running;
+    state Idle,
+    state Running,
 
 
     on Start: Idle => Running { Running }
@@ -1265,11 +1265,11 @@ fn machine_event_undeclared_field_emits_field_not_found_not_nyi() {
     let source = r"
         machine Light {
             events {
-                Switch { brightness: i64; }
+                Switch { brightness: i64, }
             }
 
-            state Off;
-            state On;
+            state Off,
+            state On,
 
             on Switch: Off => On {
                 let _ = event.wrong_field;
@@ -1341,10 +1341,10 @@ fn machine_event_undeclared_field_emits_field_not_found_not_nyi() {
 /// anchor instead of dropping the occurrence.
 const DOTTED_STRUCT_VARIANT_BODY_SRC: &str = r"
 machine Name {
-    events { EventY { payload: i64; } }
+    events { EventY { payload: i64, } }
 
-    state StateA;
-    state StateB { field: i64; }
+    state StateA,
+    state StateB { field: i64, },
 
     on EventY: StateA => StateB { .StateB { field: event.payload } }
     on EventY: StateB => StateB reenter { .StateB { field: self.field } }

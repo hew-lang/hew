@@ -10,7 +10,7 @@
 import hew.reexchaina.{Top};
 
 type W {
-    id: i64;
+    id: i64,
 }
 
 impl Top for W {

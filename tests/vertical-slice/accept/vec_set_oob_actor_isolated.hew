@@ -1,7 +1,7 @@
 import std.failure;
 
 actor VecSetCrasher {
-    var value: i64;
+    var value: i64,
 
     receive fn boom() {
         let xs: Vec<i64> = Vec.new();
@@ -24,10 +24,10 @@ actor VecSetCrasher {
 }
 
 supervisor VecSetSupervisor {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child worker: VecSetCrasher(value: 1);
+    child worker: VecSetCrasher(value: 1),
 }
 
 fn main() -> i64 {

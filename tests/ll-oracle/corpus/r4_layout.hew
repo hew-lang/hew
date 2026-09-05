@@ -4,14 +4,14 @@
 // HashMap<string, record> source shapes for compiler checking and raw-MIR
 // parity. Focused layout/codegen tests own emitted ABI invariants.
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 enum Color {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 fn make_point(x: i64, y: i64) -> Point {

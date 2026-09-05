@@ -15,7 +15,7 @@
 //! distinct diagnostic code (101/102) so a regression is legible.
 
 type Countdown {
-    n: i64;
+    n: i64,
 }
 
 impl Iterator for Countdown {
@@ -33,8 +33,8 @@ impl Iterator for Countdown {
 }
 
 type Filter<I, A> {
-    iter: I;
-    pred: fn(A) -> bool;
+    iter: I,
+    pred: fn(A) -> bool,
 }
 
 impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {

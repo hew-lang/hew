@@ -25,8 +25,8 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE_TEMPLATE: &str = r#"
 enum Box {
-    Text(string);
-    Empty;
+    Text(string),
+    Empty,
 }
 
 fn same_scope(i: i64) -> i64 {

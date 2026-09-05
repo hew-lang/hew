@@ -1,6 +1,6 @@
 enum Colour {
-    Red;
-    Green;
+    Red,
+    Green,
 }
 
 fn make() -> Colour {

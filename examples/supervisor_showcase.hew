@@ -25,7 +25,7 @@ actor Counter {
     // After restart, the counter has fresh state (value=100 from init → 110)
 
     // ── Part 3: StrictPool with one_for_all ──
-    var value: i32 = 100;
+    var value: i32 = 100,
     init() {
         print("Counter started at ");
         println(value);
@@ -44,7 +44,7 @@ actor Counter {
 }
 
 actor Logger {
-    let level: i32 = 1;
+    let level: i32 = 1,
     init() {
         print("Logger level=");
         println(level);
@@ -57,20 +57,20 @@ actor Logger {
 }
 
 supervisor ServiceTree {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child counter: Counter;
-    child debug_log: Logger;
-    child error_log: Logger;
+    child counter: Counter,
+    child debug_log: Logger,
+    child error_log: Logger,
 }
 
 supervisor StrictPool {
-    strategy: one_for_all;
-    intensity: 3 within 30s;
+    strategy: one_for_all,
+    intensity: 3 within 30s,
 
-    child a: Counter;
-    child b: Counter;
+    child a: Counter,
+    child b: Counter,
 }
 
 fn main() {

@@ -9,8 +9,8 @@
 //! error label on each failure path, then exits 0.
 
 enum ConfigError {
-    ParseFailed(string);
-    MissingField(string);
+    ParseFailed(string),
+    MissingField(string),
 }
 
 fn validate(s: string) -> Result<i64, string> {

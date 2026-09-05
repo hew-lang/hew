@@ -78,7 +78,7 @@ fn test_while_let_resource_can_close_explicitly() {
 type Endpoint { host: string, port: i64 }
 
 enum ParseError {
-    Invalid(string);
+    Invalid(string),
 }
 
 fn parse_error_message(e: ParseError) -> string {

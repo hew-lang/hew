@@ -166,6 +166,32 @@ impl<'src> Parser<'src> {
         false
     }
 
+    /// Data members require commas, with an optional trailing comma before `}`.
+    /// Recover at a wrong delimiter without admitting a second source dialect.
+    pub(crate) fn expect_structural_separator(&mut self) {
+        if self.eat(&Token::Comma) || self.peek() == Some(&Token::RightBrace) {
+            return;
+        }
+        let mut span = self.peek_span();
+        let semicolon = self.peek() == Some(&Token::Semicolon);
+        if !semicolon {
+            let end = self.tokens[self.pos.saturating_sub(1)].1.end;
+            span = end..end;
+        }
+        self.error_at_with_hint(
+            "expected `,` between structural members".to_string(),
+            span,
+            if semicolon {
+                "replace `;` with `,`"
+            } else {
+                "insert `,` after the member"
+            },
+        );
+        if semicolon {
+            self.advance();
+        }
+    }
+
     /// Returns true if the current token could start a new statement.
     pub(crate) fn peek_starts_stmt(&self) -> bool {
         matches!(

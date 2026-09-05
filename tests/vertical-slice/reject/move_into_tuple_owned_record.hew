@@ -1,4 +1,4 @@
-type Owned { value: string; }
+type Owned { value: string, }
 
 fn main() -> string {
     let item = Owned { value: "hello" };

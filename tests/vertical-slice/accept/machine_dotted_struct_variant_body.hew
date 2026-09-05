@@ -3,10 +3,10 @@
 // exactly as a unit-state body does, and the lowered body keeps the checker's
 // consumed children as source anchors (hew-lang/hew#3241).
 machine Name {
-    events { EventY { payload: i64; } }
+    events { EventY { payload: i64, } }
 
-    state StateA;
-    state StateB { field: i64; }
+    state StateA,
+    state StateB { field: i64, },
 
     on EventY: StateA => StateB { .StateB { field: event.payload } }
     on EventY: StateB => StateB reenter { .StateB { field: self.field } }

@@ -7,11 +7,11 @@
 
 /// Reply carrying a single `code` field.
 pub type Payload {
-    code: i64;
+    code: i64,
 }
 
 pub actor Source {
-    let seed: i64;
+    let seed: i64,
 
     receive fn fetch() -> Payload {
         Payload { code: seed + 40 }

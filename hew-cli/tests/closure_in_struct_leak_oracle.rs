@@ -57,7 +57,7 @@ use support::{describe_output, require_codegen};
 fn forward_param_into_field_loop_source(frames: usize) -> String {
     let expected_total = frames + frames * frames.saturating_sub(1) / 2;
     format!(
-        "type Handler {{ action: fn(i64) -> i64; }}\n\
+        "type Handler {{ action: fn(i64) -> i64, }}\n\
          fn make_adder(n: i64) -> fn(i64) -> i64 {{ |x: i64| x + n }}\n\
          fn make_handler(f: fn(i64) -> i64) -> Handler {{ Handler {{ action: f }} }}\n\
          fn run_loop(frames: i64) -> i64 {{\n\
@@ -86,7 +86,7 @@ fn forward_param_into_field_loop_source(frames: usize) -> String {
 fn forward_fresh_call_result_into_field_loop_source(frames: usize) -> String {
     let expected_total = frames + frames * frames.saturating_sub(1) / 2;
     format!(
-        "type Handler {{ action: fn(i64) -> i64; }}\n\
+        "type Handler {{ action: fn(i64) -> i64, }}\n\
          fn make_adder(n: i64) -> fn(i64) -> i64 {{ |x: i64| x + n }}\n\
          fn wrap(n: i64) -> fn(i64) -> i64 {{ make_adder(n) }}\n\
          fn make_handler(f: fn(i64) -> i64) -> Handler {{ Handler {{ action: f }} }}\n\
@@ -113,7 +113,7 @@ fn forward_fresh_call_result_into_field_loop_source(frames: usize) -> String {
 fn store_and_drop_struct_loop_source(frames: usize) -> String {
     let expected_total = frames + frames * frames.saturating_sub(1) / 2;
     format!(
-        "type Handler {{ action: fn(i64) -> i64; }}\n\
+        "type Handler {{ action: fn(i64) -> i64, }}\n\
          fn make_adder(n: i64) -> fn(i64) -> i64 {{ |x: i64| x + n }}\n\
          fn use_then_drop(f: fn(i64) -> i64) -> i64 {{\n\
          \x20   let h = Handler {{ action: f }};\n\

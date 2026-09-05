@@ -10,16 +10,16 @@
 // owning everything it started with. Exits 0, clean.
 import std.string;
 
-type Inner { v: Vec<i64>; }
+type Inner { v: Vec<i64>, }
 
 type OuterRecord {
-    other: Vec<i64>;
-    value: Option<Inner>;
+    other: Vec<i64>,
+    value: Option<Inner>,
 }
 
 type OuterTuple {
-    other: Vec<i64>;
-    value: Option<(Vec<i64>, i64)>;
+    other: Vec<i64>,
+    value: Option<(Vec<i64>, i64)>,
 }
 
 type Carrier { pair: (Vec<string>, i64), tag: string }

@@ -23,7 +23,7 @@ type Handle {
 }
 
 type NodeId {
-    label: string;
+    label: string,
 }
 
 #[opaque]

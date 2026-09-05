@@ -207,7 +207,7 @@ fn generic_swap_return_type_typechecks_without_false_mismatch() {
     // `second` field of the return, which expects type A after swapping).
     let output = check_source(
         r"
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 
 fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
     Pair<B, A> { first: p.second, second: p.first }
@@ -233,7 +233,7 @@ fn generic_swap_heterogeneous_params_typechecks() {
     // `i64`, and the checker emitted "expected `A`, found `i64`".
     let output = check_source(
         r"
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 
 fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
     Pair<B, A> { first: p.second, second: p.first }
@@ -258,7 +258,7 @@ fn generic_identity_pair_homogeneous_still_typechecks() {
     // parallel-substitution change.
     let output = check_source(
         r"
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 
 fn fst<A, B>(p: Pair<A, B>) -> A { p.first }
 
@@ -294,7 +294,7 @@ fn generic_field_access_on_swapped_instantiation_typechecks() {
     // sequential A→B then B→A gives A again; parallel gives B.
     let output = check_source(
         r"
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 
 fn get_first_of_swapped<A, B>(p: Pair<B, A>) -> B {
     p.first
@@ -317,7 +317,7 @@ fn generic_field_access_second_on_swapped_instantiation_typechecks() {
     // exercises both fields in the same function to catch any residual alias.
     let output = check_source(
         r"
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 
 fn get_second_of_swapped<A, B>(p: Pair<B, A>) -> A {
     p.second

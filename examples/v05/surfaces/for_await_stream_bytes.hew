@@ -4,7 +4,7 @@
 import std.stream;
 
 actor DrainBytes {
-    let frames: i64;
+    let frames: i64,
 
     receive fn run(unused: i64) {
         let (sink, input) = match stream.bytes_pipe(8) {

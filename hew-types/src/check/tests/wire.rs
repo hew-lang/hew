@@ -266,7 +266,7 @@ fn wire_layout_table_populated_from_wire_enum() {
     let output = check_source(
         r"
         #[wire]
-        enum Status { Active; Inactive; }
+        enum Status { Active, Inactive, }
         ",
     );
 

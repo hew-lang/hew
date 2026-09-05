@@ -5,10 +5,10 @@ actor LogWorker {
 }
 
 supervisor AppSupervisor {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child logger: LogWorker;
+    child logger: LogWorker,
 }
 
 fn supervisor_probe() -> i64 {

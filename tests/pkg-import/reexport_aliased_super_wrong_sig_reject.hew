@@ -12,7 +12,7 @@ import hew.reexsubalias.{SubA};
 import hew.wrongbase.{Base};
 
 type W {
-    id: i64;
+    id: i64,
 }
 
 impl SubA for W {

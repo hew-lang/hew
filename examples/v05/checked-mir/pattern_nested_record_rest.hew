@@ -4,13 +4,13 @@
 // field-list source, no erasure-ordering divergence. The nested __rec temp's
 // composite drop discharges the wildcarded field exactly once.
 type Inner {
-    a: string;
-    b: string;
+    a: string,
+    b: string,
 }
 
 type Outer {
-    inner: Inner;
-    tag: i64;
+    inner: Inner,
+    tag: i64,
 }
 
 fn make() -> Outer {

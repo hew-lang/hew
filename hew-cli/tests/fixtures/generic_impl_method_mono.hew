@@ -6,8 +6,8 @@
 // to. Passing at *both* types proves the impl-method monomorphisation is
 // genuinely polymorphic, not a single-instantiation special case.
 pub type Pair<T> {
-    left: T;
-    right: T;
+    left: T,
+    right: T,
 }
 
 impl<T> Pair<T> {

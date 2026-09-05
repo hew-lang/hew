@@ -5,7 +5,7 @@
 // Pinning the bare twin proves the fix is not a special case bolted onto the
 // receiver path — this program is the one that mis-ran on main.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn go() {
         for count in [10, 20, 30] {

@@ -311,3 +311,15 @@ size 1`; matching clean in-bounds O0/O2 controls must exit without a report.
 - Nested closure and generator bodies retain their own return contexts.
   Generator `fails` composition and sandbox execution remain explicitly
   unadmitted pending their respective semantic consumers.
+
+### Uniform structural punctuation
+
+- Structural data members now use commas across types, enums, actors,
+  machines, wire records and supervisors. Executable statements and bodyless
+  function declarations retain semicolons; block declarations remain
+  self-delimiting. The parser rejects obsolete delimiters with precise spans.
+- Parser and formatter tests cover strict rejection, trailing commas and the
+  boundary between actor state declarations and executable local statements.
+- Retained source fixtures are migrated by parser-confirmed delimiter spans.
+  Concatenated and interpolated test-source builders require a follow-up pass;
+  their failures remain fixture admission errors, not semantic test results.

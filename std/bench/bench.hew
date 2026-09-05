@@ -25,18 +25,18 @@ import std.time.datetime;
 // ── Types ─────────────────────────────────────────────────────────────
 /// A single benchmark result containing timing statistics.
 pub type BenchResult {
-    name: string;
-    iterations: i64;
-    avg_ns: i64;
-    min_ns: i64;
-    max_ns: i64;
-    total_ns: i64;
+    name: string,
+    iterations: i64,
+    avg_ns: i64,
+    min_ns: i64,
+    max_ns: i64,
+    total_ns: i64,
 }
 
 /// A collection of benchmark results.
 pub type Suite {
-    name: string;
-    results: Vec<BenchResult>;
+    name: string,
+    results: Vec<BenchResult>,
 }
 
 // ── Constructor ───────────────────────────────────────────────────────

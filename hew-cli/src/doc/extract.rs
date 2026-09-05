@@ -593,9 +593,9 @@ pub fn foo() {}
         let source = r"/// A point in space.
 pub type Point {
     /// x coordinate.
-    x: i32;
+    x: i32,
     /// y coordinate.
-    y: i32;
+    y: i32,
 }
 ";
         let result = hew_parser::parse(source);
@@ -617,9 +617,9 @@ pub type Point {
     fn extract_enum_variants_with_docs() {
         let source = r"pub enum Error {
     /// The thing that went wrong.
-    Invalid(String);
+    Invalid(String),
     /// No payload.
-    Empty;
+    Empty,
 }
 ";
         let result = hew_parser::parse(source);
@@ -663,7 +663,7 @@ pub type Point {
         let source = r"/// A simple counter actor.
 pub actor Counter {
     /// How many so far.
-    let count: i32;
+    let count: i32,
     /// Bump the counter.
     receive fn increment() {
         self.count = self.count + 1;

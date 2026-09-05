@@ -13,7 +13,7 @@
 //! legible.
 
 type Countdown {
-    n: i64;
+    n: i64,
 }
 
 impl Iterator for Countdown {

@@ -12,8 +12,8 @@
 // register, connect, and typed lookup are native-only, and lookup returns a
 // Result<RemotePid<T>, LookupError>.
 actor ChatRoom {
-    let users: Vec<string>;
-    let messages: Vec<string>;
+    let users: Vec<string>,
+    let messages: Vec<string>,
     receive fn enter(username: string) {
         users.push(username);
         println(f"[room] {username} entered ({users.len()} online)");

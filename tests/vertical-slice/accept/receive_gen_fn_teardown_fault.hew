@@ -23,10 +23,10 @@ actor Ticker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child ticker: Ticker;
+    child ticker: Ticker,
 }
 
 fn main() {

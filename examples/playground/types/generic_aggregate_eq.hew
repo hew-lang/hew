@@ -2,16 +2,16 @@
 //! @description Structural == on generic records and generic aggregates containing Vec<T>
 
 type Pair<A, B> {
-    first: A;
-    second: B;
+    first: A,
+    second: B,
 }
 
 type Slot<T> {
-    value: T;
+    value: T,
 }
 
 type Bag<T> {
-    items: Vec<T>;
+    items: Vec<T>,
 }
 
 fn pair_same<A, B>(a: Pair<A, B>, b: Pair<A, B>) -> bool {

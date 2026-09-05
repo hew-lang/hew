@@ -18,7 +18,7 @@
 //     member (a stale PID would reach the dead actor and trap / Err);
 //   - the restarted member answers with value 7 (its init template, re-applied).
 actor Worker {
-    var value: i64;
+    var value: i64,
     receive fn get_value() -> i64 {
         value
     }
@@ -28,10 +28,10 @@ actor Worker {
 }
 
 supervisor Pool {
-    strategy: simple_one_for_one;
-    intensity: 5 within 60s;
+    strategy: simple_one_for_one,
+    intensity: 5 within 60s,
 
-    pool workers: Worker(value: 7) count: 2;
+    pool workers: Worker(value: 7) count: 2,
 }
 
 extern "C" {

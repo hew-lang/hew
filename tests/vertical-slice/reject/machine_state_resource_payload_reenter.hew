@@ -7,7 +7,7 @@
 //   machine `Session` state `Active` holds `#[resource]`/`#[linear]` value `Handle`
 #[resource]
 type Handle {
-    fd: i64;
+    fd: i64,
 }
 
 impl Handle {
@@ -18,12 +18,12 @@ impl Handle {
 
 machine Session {
     events {
-        Open;
-        UseIt;
+        Open,
+        UseIt,
     }
 
-    state Idle;
-    state Active { h: Handle; }
+    state Idle,
+    state Active { h: Handle, },
 
     on Open: Idle => Active {
         Active { h: Handle { fd: 42 } }

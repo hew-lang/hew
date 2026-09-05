@@ -8,8 +8,8 @@ pub(super) use super::*;
 fn nested_supervisor_remains_a_valid_child_target() {
     let output = check_source(
         "actor Worker { receive fn ping() {} }\n\
-         supervisor Inner { child worker: Worker; }\n\
-         supervisor Root { child inner: Inner; }",
+         supervisor Inner { child worker: Worker, }\n\
+         supervisor Root { child inner: Inner, }",
     );
     assert!(
         output.errors.is_empty(),
@@ -23,12 +23,12 @@ fn supervisor_permanent_owned_heap_rejects_vec_field() {
     let output = check_source(
         r"
         actor Counter {
-            let count: Vec<i64>;
+            let count: Vec<i64>,
             receive fn inc() {}
         }
 
         supervisor App {
-            child worker: Counter restart: permanent;
+            child worker: Counter restart: permanent,
         }
         ",
     );
@@ -54,12 +54,12 @@ fn supervisor_permanent_owned_heap_rejects_string_field() {
     let output = check_source(
         r"
         actor Labelled {
-            let label: string;
+            let label: string,
             receive fn noop() {}
         }
 
         supervisor App {
-            child item: Labelled restart: permanent;
+            child item: Labelled restart: permanent,
         }
         ",
     );
@@ -83,12 +83,12 @@ fn supervisor_permanent_owned_heap_rejects_hashmap_field() {
     let output = check_source(
         r"
         actor Registry {
-            let entries: HashMap<string, i64>;
+            let entries: HashMap<string, i64>,
             receive fn noop() {}
         }
 
         supervisor App {
-            child reg: Registry restart: permanent;
+            child reg: Registry restart: permanent,
         }
         ",
     );
@@ -112,12 +112,12 @@ fn supervisor_permanent_owned_heap_rejects_hashset_field() {
     let output = check_source(
         r"
         actor Deduplicator {
-            let seen: HashSet<i64>;
+            let seen: HashSet<i64>,
             receive fn noop() {}
         }
 
         supervisor App {
-            child dedup: Deduplicator restart: permanent;
+            child dedup: Deduplicator restart: permanent,
         }
         ",
     );
@@ -141,12 +141,12 @@ fn supervisor_permanent_owned_heap_rejects_bytes_field() {
     let output = check_source(
         r"
         actor Blob {
-            let data: bytes;
+            let data: bytes,
             receive fn noop() {}
         }
 
         supervisor App {
-            child store: Blob restart: permanent;
+            child store: Blob restart: permanent,
         }
         ",
     );
@@ -171,12 +171,12 @@ fn supervisor_implicit_permanent_owned_heap_rejects() {
     let output = check_source(
         r"
         actor Worker {
-            let items: Vec<i64>;
+            let items: Vec<i64>,
             receive fn noop() {}
         }
 
         supervisor App {
-            child w: Worker;
+            child w: Worker,
         }
         ",
     );
@@ -202,12 +202,12 @@ fn supervisor_permanent_owned_heap_rejects_nested_vec() {
     let output = check_source(
         r"
         actor Nested {
-            let matrix: Vec<Vec<i64>>;
+            let matrix: Vec<Vec<i64>>,
             receive fn noop() {}
         }
 
         supervisor App {
-            child n: Nested restart: permanent;
+            child n: Nested restart: permanent,
         }
         ",
     );
@@ -234,12 +234,12 @@ fn supervisor_transient_owned_heap_ok() {
     let output = check_source(
         r"
         actor Worker {
-            let items: Vec<i64>;
+            let items: Vec<i64>,
             receive fn noop() {}
         }
 
         supervisor App {
-            child w: Worker restart: transient;
+            child w: Worker restart: transient,
         }
         ",
     );
@@ -259,12 +259,12 @@ fn supervisor_temporary_owned_heap_ok() {
     let output = check_source(
         r"
         actor Worker {
-            let items: Vec<i64>;
+            let items: Vec<i64>,
             receive fn noop() {}
         }
 
         supervisor App {
-            child w: Worker restart: temporary;
+            child w: Worker restart: temporary,
         }
         ",
     );
@@ -284,14 +284,14 @@ fn supervisor_permanent_copy_only_fields_ok() {
     let output = check_source(
         r"
         actor Counter {
-            let count: i64;
-            let flag: bool;
-            let ratio: f64;
+            let count: i64,
+            let flag: bool,
+            let ratio: f64,
             receive fn noop() {}
         }
 
         supervisor App {
-            child c: Counter restart: permanent;
+            child c: Counter restart: permanent,
         }
         ",
     );
@@ -314,7 +314,7 @@ fn supervisor_pool_child_permanent_vec_ok() {
     let output = check_source(
         r"
         actor Worker {
-            let items: Vec<i64>;
+            let items: Vec<i64>,
             receive fn noop() {}
         }
 
@@ -349,12 +349,12 @@ fn supervisor_permanent_record_containing_vec_known_residual_gap() {
         type Wrapper { inner: Vec<i64> }
 
         actor Holder {
-            let data: Wrapper;
+            let data: Wrapper,
             receive fn noop() {}
         }
 
         supervisor App {
-            child h: Holder restart: permanent;
+            child h: Holder restart: permanent,
         }
         ",
     );
@@ -426,7 +426,7 @@ fn supervisor_init_arg_string_admitted() {
     assert_supervisor_init_arg_admitted(
         r#"
         actor Greeter {
-            let name: string;
+            let name: string,
             init(name: string) {
                 name = name;
             }
@@ -434,7 +434,7 @@ fn supervisor_init_arg_string_admitted() {
         }
 
         supervisor App {
-            child g: Greeter(name: "hello");
+            child g: Greeter(name: "hello"),
         }
         "#,
     );
@@ -445,7 +445,7 @@ fn supervisor_init_arg_vec_rejects() {
     assert_supervisor_init_arg_non_bitcopy(
         r"
         actor Collector {
-            let items: Vec<i64>;
+            let items: Vec<i64>,
             init(items: Vec<i64>) {
                 items = items;
             }
@@ -453,7 +453,7 @@ fn supervisor_init_arg_vec_rejects() {
         }
 
         supervisor App {
-            child c: Collector(items: []);
+            child c: Collector(items: []),
         }
         ",
         "Vec<i64>",
@@ -467,7 +467,7 @@ fn supervisor_init_arg_bytes_admitted() {
     assert_supervisor_init_arg_admitted(
         r"
         actor Payload {
-            let data: bytes;
+            let data: bytes,
             init(data: bytes) {
                 data = data;
             }
@@ -475,7 +475,7 @@ fn supervisor_init_arg_bytes_admitted() {
         }
 
         supervisor App {
-            child p: Payload(data: []);
+            child p: Payload(data: []),
         }
         ",
     );
@@ -486,7 +486,7 @@ fn supervisor_init_arg_option_string_rejects() {
     assert_supervisor_init_arg_non_bitcopy(
         r#"
         actor MaybeGreeter {
-            let name: Option<string>;
+            let name: Option<string>,
             init(name: Option<string>) {
                 name = name;
             }
@@ -494,7 +494,7 @@ fn supervisor_init_arg_option_string_rejects() {
         }
 
         supervisor App {
-            child g: MaybeGreeter(name: Some("hello"));
+            child g: MaybeGreeter(name: Some("hello")),
         }
         "#,
         "Option<string>",
@@ -506,7 +506,7 @@ fn supervisor_init_arg_tuple_rejects() {
     assert_supervisor_init_arg_non_bitcopy(
         r#"
         actor PairHolder {
-            let pair: (string, i64);
+            let pair: (string, i64),
             init(pair: (string, i64)) {
                 pair = pair;
             }
@@ -514,7 +514,7 @@ fn supervisor_init_arg_tuple_rejects() {
         }
 
         supervisor App {
-            child p: PairHolder(pair: ("hello", 1));
+            child p: PairHolder(pair: ("hello", 1)),
         }
         "#,
         "(string, i64)",
@@ -528,7 +528,7 @@ fn supervisor_init_arg_record_wrapping_vec_rejects() {
         type Wrapper { inner: Vec<i64> }
 
         actor Holder {
-            let data: Wrapper;
+            let data: Wrapper,
             init(data: Wrapper) {
                 data = data;
             }
@@ -536,7 +536,7 @@ fn supervisor_init_arg_record_wrapping_vec_rejects() {
         }
 
         supervisor App {
-            child h: Holder(data: Wrapper { inner: [] });
+            child h: Holder(data: Wrapper { inner: [] }),
         }
         ",
         "Wrapper",
@@ -552,7 +552,7 @@ fn supervisor_init_arg_alias_of_string_admitted() {
         type Name = string;
 
         actor Greeter {
-            let name: Name;
+            let name: Name,
             init(name: Name) {
                 name = name;
             }
@@ -560,7 +560,7 @@ fn supervisor_init_arg_alias_of_string_admitted() {
         }
 
         supervisor App {
-            child g: Greeter(name: "hello");
+            child g: Greeter(name: "hello"),
         }
         "#,
     );
@@ -571,7 +571,7 @@ fn supervisor_init_arg_hashmap_rejects() {
     assert_supervisor_init_arg_non_bitcopy(
         r"
         actor Index {
-            let entries: HashMap<string, i64>;
+            let entries: HashMap<string, i64>,
             init(entries: HashMap<string, i64>) {
                 entries = entries;
             }
@@ -579,7 +579,7 @@ fn supervisor_init_arg_hashmap_rejects() {
         }
 
         supervisor App {
-            child i: Index(entries: HashMap<string, i64>.new());
+            child i: Index(entries: HashMap<string, i64>.new()),
         }
         ",
         "HashMap<string, i64>",
@@ -591,7 +591,7 @@ fn supervisor_init_arg_hashset_rejects() {
     assert_supervisor_init_arg_non_bitcopy(
         r"
         actor Seen {
-            let ids: HashSet<i64>;
+            let ids: HashSet<i64>,
             init(ids: HashSet<i64>) {
                 ids = ids;
             }
@@ -599,7 +599,7 @@ fn supervisor_init_arg_hashset_rejects() {
         }
 
         supervisor App {
-            child s: Seen(ids: HashSet<i64>.new());
+            child s: Seen(ids: HashSet<i64>.new()),
         }
         ",
         "HashSet<i64>",
@@ -611,7 +611,7 @@ fn supervisor_init_arg_sender_handle_rejects() {
     assert_supervisor_init_arg_non_bitcopy(
         r"
         actor Forwarder {
-            let tx: channel.Sender<string>;
+            let tx: channel.Sender<string>,
             init(tx: channel.Sender<string>) {
                 tx = tx;
             }
@@ -619,7 +619,7 @@ fn supervisor_init_arg_sender_handle_rejects() {
         }
 
         supervisor App {
-            child f: Forwarder(tx: 0);
+            child f: Forwarder(tx: 0),
         }
         ",
         "channel.Sender<string>",
@@ -633,7 +633,7 @@ fn supervisor_init_arg_i64_admitted() {
     let output = check_source(
         r"
         actor Counter {
-            let start: i64;
+            let start: i64,
             init(start: i64) {
                 start = start;
             }
@@ -641,7 +641,7 @@ fn supervisor_init_arg_i64_admitted() {
         }
 
         supervisor App {
-            child c: Counter(start: 0);
+            child c: Counter(start: 0),
         }
         ",
     );
@@ -661,8 +661,8 @@ fn supervisor_init_arg_bool_and_f64_admitted() {
     let output = check_source(
         r"
         actor Sensor {
-            let enabled: bool;
-            let threshold: f64;
+            let enabled: bool,
+            let threshold: f64,
             init(enabled: bool, threshold: f64) {
                 enabled = enabled;
                 threshold = threshold;
@@ -671,7 +671,7 @@ fn supervisor_init_arg_bool_and_f64_admitted() {
         }
 
         supervisor App {
-            child s: Sensor(enabled: true, threshold: 0.5);
+            child s: Sensor(enabled: true, threshold: 0.5),
         }
         ",
     );
@@ -697,7 +697,7 @@ fn supervisor_init_arg_scalar_config_field_admitted() {
         type AppConfig { size: i64 }
 
         actor Cache {
-            var capacity: i64;
+            var capacity: i64,
             init(capacity: i64) {
                 capacity = capacity;
             }
@@ -705,7 +705,7 @@ fn supervisor_init_arg_scalar_config_field_admitted() {
         }
 
         supervisor App(config: AppConfig) {
-            child cache: Cache(capacity: config.size);
+            child cache: Cache(capacity: config.size),
         }
         ",
     );
@@ -739,7 +739,7 @@ fn supervisor_init_arg_config_nonexistent_field_surfaces_error() {
         type AppConfig { size: i64 }
 
         actor Cache {
-            var capacity: i64;
+            var capacity: i64,
             init(capacity: i64) {
                 capacity = capacity;
             }
@@ -747,7 +747,7 @@ fn supervisor_init_arg_config_nonexistent_field_surfaces_error() {
         }
 
         supervisor App(config: AppConfig) {
-            child cache: Cache(capacity: config.nonexistent);
+            child cache: Cache(capacity: config.nonexistent),
         }
         ",
     );
@@ -773,7 +773,7 @@ fn supervisor_init_arg_config_field_type_mismatch_surfaces_error() {
         type AppConfig { flag: bool }
 
         actor Cache {
-            var capacity: i64;
+            var capacity: i64,
             init(capacity: i64) {
                 capacity = capacity;
             }
@@ -781,7 +781,7 @@ fn supervisor_init_arg_config_field_type_mismatch_surfaces_error() {
         }
 
         supervisor App(config: AppConfig) {
-            child cache: Cache(capacity: config.flag);
+            child cache: Cache(capacity: config.flag),
         }
         ",
     );
@@ -805,7 +805,7 @@ fn supervisor_pool_child_string_init_arg_exempt() {
     let output = check_source(
         r"
         actor Worker {
-            let name: string;
+            let name: string,
             init(name: string) {
                 name = name;
             }
@@ -976,12 +976,12 @@ fn supervisor_child_no_init_args_string_field_not_flagged_by_bitcopy_wall() {
     let output = check_source(
         r"
         actor Worker {
-            let items: Vec<i64>;
+            let items: Vec<i64>,
             receive fn noop() {}
         }
 
         supervisor App {
-            child w: Worker restart: transient;
+            child w: Worker restart: transient,
         }
         ",
     );
@@ -1007,12 +1007,12 @@ fn supervisor_permanent_owned_heap_reports_distinct_kind() {
     let output = check_source(
         r"
         actor Counter {
-            let count: Vec<i64>;
+            let count: Vec<i64>,
             receive fn inc() {}
         }
 
         supervisor App {
-            child worker: Counter restart: permanent;
+            child worker: Counter restart: permanent,
         }
         ",
     );
@@ -1048,10 +1048,10 @@ fn supervisor_wired_cycle_reports_distinct_kind() {
         }
 
         supervisor CycleApp {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child a: ActorA wired_to: { dep: b };
-            child b: ActorB wired_to: { dep: a };
+            child a: ActorA wired_to: { dep: b },
+            child b: ActorB wired_to: { dep: a },
         }
         ",
     );

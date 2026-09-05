@@ -4,8 +4,8 @@
 // Hew Language Showcase - All Core Features
 // Demonstrates: types, actors, pattern matching, enums, options, interpolation
 type Vec2 {
-    x: f64;
-    y: f64;
+    x: f64,
+    y: f64,
 }
 
 fn vec2_length(v: Vec2) -> f64 {
@@ -13,9 +13,9 @@ fn vec2_length(v: Vec2) -> f64 {
 }
 
 enum Shape {
-    Circle;
-    Square;
-    Triangle;
+    Circle,
+    Square,
+    Triangle,
 }
 
 fn describe_shape(s: Shape) {
@@ -49,7 +49,7 @@ fn divide(a: i64, b: i64) -> Result<i64, string> {
 }
 
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn increment() {
         count = count + 1;
     }

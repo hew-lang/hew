@@ -82,12 +82,12 @@ use support::{describe_output, require_codegen};
 fn actor_enum_reply_source(frames: usize) -> String {
     format!(
         "enum Status {{\n\
-         \x20   Loaded(i64);\n\
-         \x20   Described(string);\n\
+         \x20   Loaded(i64),\n\
+         \x20   Described(string),\n\
          }}\n\
          \n\
          actor Describer {{\n\
-         \x20   let name: string;\n\
+         \x20   let name: string,\n\
          \x20   receive fn describe(suffix: string, sel: i64) -> Status {{\n\
          \x20       if sel % 2 == 0 {{\n\
          \x20           Loaded(sel)\n\
@@ -125,7 +125,7 @@ fn actor_enum_reply_source(frames: usize) -> String {
 fn actor_string_concat_reply_source(frames: usize) -> String {
     format!(
         "actor Greeter {{\n\
-         \x20   let name: string;\n\
+         \x20   let name: string,\n\
          \x20   receive fn greet(suffix: string) -> string {{\n\
          \x20       name + suffix\n\
          \x20   }}\n\
@@ -153,7 +153,7 @@ fn actor_string_concat_reply_source(frames: usize) -> String {
 fn actor_string_plain_reply_source(frames: usize) -> String {
     format!(
         "actor Tagger {{\n\
-         \x20   let unused: i64;\n\
+         \x20   let unused: i64,\n\
          \x20   receive fn tag() -> string {{\n\
          \x20       \"constant-reply-value-heap\"\n\
          \x20   }}\n\
@@ -184,8 +184,8 @@ fn actor_string_plain_reply_source(frames: usize) -> String {
 fn result_enum_scalar_sibling_source(frames: usize) -> String {
     format!(
         "enum Status {{\n\
-         \x20   Loaded(i64);\n\
-         \x20   Described(string);\n\
+         \x20   Loaded(i64),\n\
+         \x20   Described(string),\n\
          }}\n\
          \n\
          fn describe(name: string, suffix: string, sel: i64) -> Result<Status, i64> {{\n\

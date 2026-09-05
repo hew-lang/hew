@@ -31,11 +31,11 @@ fn raii_handle_bindings_suppress_unused_lint_but_plain_still_warns() {
     // suppression is type-targeted, not a blanket disable.
     let source = "\
 #[resource]\n\
-type Guard { id: i64; }\n\
+type Guard { id: i64, }\n\
 impl Guard { fn close(g: Guard) { } }\n\
 fn open() -> Guard { Guard { id: 1 } }\n\
 #[linear]\n\
-type Txn { id: i64; }\n\
+type Txn { id: i64, }\n\
 impl Txn { fn commit(consuming self) -> i64 { 0 } }\n\
 fn mk() -> Txn { Txn { id: 0 } }\n\
 fn main() { let g = open(); let t = mk(); let plain = 42; }\n";
@@ -317,7 +317,7 @@ fn where_clause_assoc_binding_projects_non_iterator_assoc_type() {
         }
 
         type Meter {
-            value: i64;
+            value: i64,
         }
 
         impl Projector for Meter {
@@ -473,7 +473,7 @@ fn print_and_println_reject_struct_without_display_impl() {
     let (errors, warnings) = parse_and_check_with_stdlib(
         r"
         type Hidden {
-            value: i64;
+            value: i64,
         }
 
         fn main() {
@@ -503,7 +503,7 @@ fn display_impl_satisfies_bounded_magic_builtins() {
     let (errors, warnings) = parse_and_check_with_stdlib(
         r#"
         type Widget {
-            value: i64;
+            value: i64,
         }
 
         impl Display for Widget {
@@ -735,7 +735,7 @@ fn immutable_param_cannot_be_reassigned() {
 #[test]
 fn immutable_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64; }\n",
+        "type Point { x: i64, }\n",
         "fn main() { let p = Point { x: 1 }; p.x = 2; }\n",
     ));
     assert!(
@@ -755,7 +755,7 @@ fn immutable_field_assignment_root_is_rejected() {
 #[test]
 fn immutable_param_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64; }\n",
+        "type Point { x: i64, }\n",
         "fn bump(p: Point) { p.x = 2; }\n",
     ));
     assert!(
@@ -775,7 +775,7 @@ fn immutable_param_field_assignment_root_is_rejected() {
 #[test]
 fn immutable_compound_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64; }\n",
+        "type Point { x: i64, }\n",
         "fn main() { let p = Point { x: 1 }; p.x += 2; }\n",
     ));
     assert!(
@@ -795,7 +795,7 @@ fn immutable_compound_field_assignment_root_is_rejected() {
 #[test]
 fn mutable_field_assignment_root_counts_as_mutation() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64; }\n",
+        "type Point { x: i64, }\n",
         "fn main() { var p = Point { x: 1 }; p.x = 2; println(p.x); }\n",
     ));
     assert!(errors.is_empty(), "errors: {errors:?}");
@@ -966,7 +966,7 @@ fn no_warn_unused_println() {
 fn no_warn_unused_spawn() {
     // spawn is a side-effect expression — don't warn about discarded return
     let (_, warnings) = parse_and_check(concat!(
-        "actor Worker { count: i32;\n",
+        "actor Worker { count: i32,\n",
         "    receive fn work() {} }\n",
         "fn main() { let _w = spawn Worker(count: 0); }\n",
     ));
@@ -1045,7 +1045,7 @@ fn suggest_similar_function() {
 fn suggest_similar_type() {
     // Use a misspelled type in a constructor position, which triggers undefined type lookup
     let (errors, _) = parse_and_check(concat!(
-        "type Point { x: i32; y: i32; }\n",
+        "type Point { x: i32, y: i32, }\n",
         "fn make() { let p = Pont { x: 0, y: 0 }; println(p.x); }\n",
     ));
     let err = errors
@@ -1062,7 +1062,7 @@ fn suggest_similar_type() {
 #[test]
 fn suggest_similar_field() {
     let (errors, _) = parse_and_check(concat!(
-        "type Point { x: i32; y: i32; }\n",
+        "type Point { x: i32, y: i32, }\n",
         "fn get_z(p: Point) -> i32 { p.z }\n",
     ));
     let err = errors
@@ -2424,7 +2424,7 @@ fn test_actor_field_shadowing_is_error() {
     // unambiguous names.
     let source = r"
         actor Counter {
-            var count: i64 = 0;
+            var count: i64 = 0,
             receive fn update(count: i64) {
                 println(count);
             }
@@ -2448,7 +2448,7 @@ fn for_binder_shadowing_actor_field_is_error() {
     // reached two storages and the program silently computed the wrong total.
     let source = r"
         actor Counter {
-            var count: i64 = 0;
+            var count: i64 = 0,
             receive fn go() {
                 for count in [10, 20, 30] {
                     count = count + 1;
@@ -2472,7 +2472,7 @@ fn for_binder_shadowing_a_local_stays_exempt() {
     // silent — neither an error nor the shadowing warning a `let` would draw.
     let source = r"
         actor Counter {
-            var count: i64 = 0;
+            var count: i64 = 0,
             receive fn go() {
                 let step = 100;
                 for step in 0..3 {
@@ -2498,7 +2498,7 @@ fn test_actor_fn_method_field_shadowing_is_error() {
     // Shadowing an actor field via an fn helper method is also a hard error.
     let source = r"
         actor Counter {
-            var count: i64 = 0;
+            var count: i64 = 0,
             fn helper(count: i64) -> i64 { count }
         }
     ";
@@ -2669,7 +2669,7 @@ fn unused_free_fn_param_is_not_warned() {
 fn actor_this_field_points_to_bare_state_field() {
     let source = r"
         actor Counter {
-            let count: i64;
+            let count: i64,
             receive fn get() -> i64 {
                 this.count
             }
@@ -3015,8 +3015,8 @@ fn check_resolved_selective_import(child_source: &str, root_source: &str) -> Typ
     checker.check_program(&root.program)
 }
 
-const D8_FIXTURE_SOURCE: &str = "pub type Widget { label: string; }\n\
-                                  pub enum Status { Ok(string); Err(string); }\n";
+const D8_FIXTURE_SOURCE: &str = "pub type Widget { label: string, }\n\
+                                  pub enum Status { Ok(string), Err(string), }\n";
 
 #[test]
 fn no_warn_selective_import_used_only_as_record_literal() {
@@ -3085,7 +3085,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
         }
 
         pub type Label {
-            text: string;
+            text: string,
         }
 
         pub fn make_label() -> Label {
@@ -3263,7 +3263,7 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
         }
 
         pub type MyType {
-            value: i64;
+            value: i64,
         }
 
         impl Display for MyType {
@@ -3554,7 +3554,7 @@ fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
     let source = r#"
         pub trait Display { fn fmt(val: Self) -> string; }
         pub type Foo {
-            value: i64;
+            value: i64,
         }
         impl Display for Foo {
             fn fmt(f: Foo) -> string { "" }
@@ -3627,7 +3627,7 @@ fn ufcs_on_pub_type_receiver_does_not_record_primitive_trait_impl_metadata() {
     // entirely by the receiver-form dispatch path.
     let source = r#"
         pub trait UserDisplay { fn show(val: Self) -> string; }
-        pub type Widget { value: i64; }
+        pub type Widget { value: i64, }
         impl UserDisplay for Widget {
             fn show(w: Widget) -> string { "" }
         }
@@ -3979,7 +3979,7 @@ fn print_user_struct_without_display_impl_is_rejected_by_checker() {
     // relying on PrintOpLowering's unsupported-aggregate terminal.
     let source = r#"
         pub type Foo {
-            label: string;
+            label: string,
         }
 
         fn main() {
@@ -4314,9 +4314,9 @@ fn must_use_not_flagged_for_ordinary_result() {
 
 #[test]
 fn must_use_rejects_user_same_leaf_error_names() {
-    let src = "enum SendError { Closed; }\n\
-        enum AskError { Timeout; }\n\
-        enum WriteError { Disconnected; }\n\
+    let src = "enum SendError { Closed, }\n\
+        enum AskError { Timeout, }\n\
+        enum WriteError { Disconnected, }\n\
         fn send() -> SendError { SendError.Closed }\n\
         fn ask() -> AskError { AskError.Timeout }\n\
         fn write() -> WriteError { WriteError.Disconnected }\n\
@@ -4457,7 +4457,7 @@ fn count_sleep_loop_blocks_mailbox(diags: &[TypeError]) -> usize {
 }
 
 const SLEEP_LOOP_REPRO: &str = "actor Worker {\n\
-     var running: bool = true;\n\
+     var running: bool = true,\n\
      receive fn run() { while running { sleep(10ms); } }\n\
      receive fn stop() { running = false; }\n\
      }\n";
@@ -4533,7 +4533,7 @@ fn sleep_loop_blocks_mailbox_ignores_non_actor_function() {
 fn sleep_loop_blocks_mailbox_ignores_sleep_loop_inside_lambda() {
     let (errors, warnings) = parse_and_check(
         "actor Worker {\n\
-         var running: bool = true;\n\
+         var running: bool = true,\n\
          receive fn run() { let f = || { while running { sleep(10ms); } }; let _ = f; }\n\
          receive fn stop() { running = false; }\n\
          }\n",
@@ -4550,7 +4550,7 @@ fn sleep_loop_blocks_mailbox_ignores_sleep_loop_inside_lambda() {
 fn sleep_loop_blocks_mailbox_ignores_loop_with_reachable_break() {
     let (errors, warnings) = parse_and_check(
         "actor Worker {\n\
-         var flag: bool = false;\n\
+         var flag: bool = false,\n\
          receive fn run() { while true { sleep(1s); if flag { break; } } }\n\
          }\n",
     );
@@ -4578,7 +4578,7 @@ fn sleep_loop_blocks_mailbox_ignores_bare_sleep_without_loop() {
 fn sleep_loop_blocks_mailbox_ignores_loop_assigning_its_guard() {
     let (errors, warnings) = parse_and_check(
         "actor Worker {\n\
-         var running: bool = true;\n\
+         var running: bool = true,\n\
          receive fn run() { while running { sleep(10ms); running = false; } }\n\
          }\n",
     );
@@ -4593,7 +4593,7 @@ fn sleep_loop_blocks_mailbox_ignores_loop_assigning_its_guard() {
 #[test]
 fn sleep_loop_blocks_mailbox_suppressed_by_directive() {
     const SOURCE: &str = "actor Worker {\n\
-         var running: bool = true;\n\
+         var running: bool = true,\n\
          receive fn run() {\n\
              // hew:allow(sleep_loop_blocks_mailbox)\n\
              while running { sleep(10ms); }\n\

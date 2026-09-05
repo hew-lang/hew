@@ -4,11 +4,11 @@
 import std.testing;
 
 actor StringCoalescer {
-    var processed: i64 = 0;
-    var latest_one: i64 = -1;
-    var latest_two: i64 = -1;
+    var processed: i64 = 0,
+    var latest_one: i64 = -1,
+    var latest_two: i64 = -1,
 
-    mailbox 2 overflow coalesce(symbol) fallback drop_new;
+    mailbox 2 overflow coalesce(symbol) fallback drop_new,
 
     receive fn update(symbol: string, value: i64, pause: duration) {
         sleep(pause);

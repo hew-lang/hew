@@ -1,8 +1,8 @@
 // Yield-type generalization: a payload-carrying `enum` yield crosses the pump's
 // layout-witness send path with its discriminant and payload intact.
 enum Shape {
-    Circle(i64);
-    Square(i64);
+    Circle(i64),
+    Square(i64),
 }
 
 actor Shaper {

@@ -24,12 +24,12 @@
 // exactly.
 machine Latch {
     events {
-        Try;
+        Try,
     }
 
-    state Closed { code: i64; }
-    state Open;
-    state Bailed;
+    state Closed { code: i64, },
+    state Open,
+    state Bailed,
 
     on Try: Closed => Open when self.code == 42 {
         Latch.Open

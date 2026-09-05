@@ -23,17 +23,17 @@
 // end-to-end signal for this fixture.
 machine Signal {
     events {
-        Start;
-        Stop;
-        Ready;
+        Start,
+        Stop,
+        Ready,
     }
 
     emits {
-        Ready;
+        Ready,
     }
 
-    state Idle;
-    state Active;
+    state Idle,
+    state Active,
 
     on Start: Idle => Active {
         emit Ready {};

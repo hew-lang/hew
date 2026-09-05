@@ -8,7 +8,7 @@
 
 /// Generic value record with a string payload field.
 pub type Key<T> {
-    v: string;
+    v: string,
 }
 
 /// Build a `Key<T>` from a string.

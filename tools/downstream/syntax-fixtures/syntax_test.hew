@@ -25,15 +25,15 @@ const TIMEOUT: i32 = 1000;
 
 // === Type Declarations ===
 type Point {
-    x: i32;
-    y: i32;
+    x: i32,
+    y: i32,
 }
 
 enum Colour {
-    Red;
-    Green;
-    Blue;
-    Custom(i32, i32, i32);
+    Red,
+    Green,
+    Blue,
+    Custom(i32, i32, i32),
 }
 
 // === Trait ===
@@ -59,14 +59,14 @@ type UserMessage {
 
 #[wire]
 enum Command {
-    Start;
-    Stop;
-    Pause;
+    Start,
+    Stop,
+    Pause,
 }
 
 // === Actor ===
 actor Counter {
-    let count: i32;
+    let count: i32,
     receive fn increment() {
         count = count + 1;
     }
@@ -81,8 +81,8 @@ actor Counter {
 
 // === Supervisor ===
 supervisor CounterSupervisor {
-    strategy: one_for_one;
-    intensity: 5 within 30s;
+    strategy: one_for_one,
+    intensity: 5 within 30s,
 }
 
 // === Functions ===

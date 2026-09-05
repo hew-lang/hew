@@ -1082,7 +1082,7 @@ mod wasm_rejects {
         // checker records a type for the object and check_field_access takes the
         // normal path.
         let source = r"
-type Conn { connect: i64; }
+type Conn { connect: i64, }
 fn main() {
     let net = Conn { connect: 42 };
     println(net.connect);
@@ -1108,7 +1108,7 @@ fn main() {
     fn wasm_admits_function_param_named_stream() {
         // A function parameter named `stream` must NOT trigger the guard.
         let source = r"
-type Packet { value: i64; }
+type Packet { value: i64, }
 fn process(stream: Packet) -> i64 {
     stream.value
 }
@@ -1858,7 +1858,7 @@ fn main() {
         let output = check_wasm(
             r"
             actor Responder {
-                let value: i64;
+                let value: i64,
                 receive fn get() -> i64 {
                     value
                 }
@@ -1899,7 +1899,7 @@ fn main() {
         let output = check_wasm(
             r"
             actor Responder {
-                let value: i64;
+                let value: i64,
                 receive fn get() -> i64 {
                     value
                 }

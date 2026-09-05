@@ -1,5 +1,5 @@
 type Node {
-    value: i64;
+    value: i64,
 }
 
 fn main() -> i64 {

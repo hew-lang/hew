@@ -201,12 +201,12 @@ fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> byt
 // forwards frames as actor messages, so an idle subscriber never blocks
 // publication delivery to ClientHandler.
 actor ClientHandler {
-    let sink: Sink<bytes>;
-    let session_id: string;
-    var client_id: string;
-    let router: LocalPid<Router>;
-    var buf: bytes;
-    var registered: bool;
+    let sink: Sink<bytes>,
+    let session_id: string,
+    var client_id: string,
+    let router: LocalPid<Router>,
+    var buf: bytes,
+    var registered: bool,
     receive fn register(reader: LocalPid<ClientReader>) {
         let accepted = match await router.register_client(session_id.clone(), this) {
             .Ok(value) => value,
@@ -470,8 +470,8 @@ actor ClientHandler {
 // occupying a scheduler worker, then asks ClientHandler whether parsing should
 // continue. Dropping this actor closes the stream half exactly once.
 actor ClientReader {
-    let input: Stream<bytes>;
-    let client: LocalPid<ClientHandler>;
+    let input: Stream<bytes>,
+    let client: LocalPid<ClientHandler>,
     receive fn start() {
         var reading = true;
         while reading {
@@ -507,12 +507,12 @@ actor ClientReader {
 // Parallel arrays: session_ids[i] <-> client_ids[i] <-> clients[i]
 // Parallel arrays: sub_topics[i] <-> sub_session_ids[i] <-> sub_qos[i]
 actor Router {
-    var session_ids: Vec<string>;
-    var client_ids: Vec<string>;
-    var clients: Vec<LocalPid<ClientHandler>>;
-    var sub_topics: Vec<string>;
-    var sub_session_ids: Vec<string>;
-    var sub_qos: Vec<i32>;
+    var session_ids: Vec<string>,
+    var client_ids: Vec<string>,
+    var clients: Vec<LocalPid<ClientHandler>>,
+    var sub_topics: Vec<string>,
+    var sub_session_ids: Vec<string>,
+    var sub_qos: Vec<i32>,
     receive fn register_client(session_id: string, client: LocalPid<ClientHandler>) -> bool {
         for existing_session in session_ids {
             if existing_session == session_id {
@@ -632,8 +632,8 @@ actor Router {
 // struct name codegen assigns the stdlib `net.Listener` opaque handle
 // type (see https://github.com/hew-lang/hew/issues/2509).
 actor Acceptor {
-    let router: LocalPid<Router>;
-    let addr: string;
+    let router: LocalPid<Router>,
+    let addr: string,
     receive fn start() {
         let lst = match net.listen(addr) {
             .Ok(listener) => listener,

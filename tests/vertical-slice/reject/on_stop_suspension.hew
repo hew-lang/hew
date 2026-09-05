@@ -3,7 +3,7 @@
 // to resume the parked continuation into). Refuse at compile time rather than
 // silently truncate the teardown work after the suspension point.
 actor Cleaner {
-  var value: i64 = 0;
+  var value: i64 = 0,
   #[on(stop)] fn cleanup() {
     println("stopping");
     sleep(50ms);

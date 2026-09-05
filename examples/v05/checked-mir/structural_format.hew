@@ -3,8 +3,8 @@
 // Pins `hew_structural_format`, which renders a record through a borrowed
 // structural view rather than a concrete Display implementation.
 type Point {
-    x: i64;
-    label: string;
+    x: i64,
+    label: string,
 }
 
 fn main() {

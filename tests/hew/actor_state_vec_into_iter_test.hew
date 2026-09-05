@@ -13,7 +13,7 @@ trait Formatter {
 }
 
 type TagFormatter {
-    tag: string;
+    tag: string,
 }
 
 impl Formatter for TagFormatter {
@@ -28,7 +28,7 @@ fn make_formatter(tag: string) -> dyn Formatter {
 }
 
 actor DynHolder {
-    var plugins: Vec<dyn Formatter> = Vec.new();
+    var plugins: Vec<dyn Formatter> = Vec.new(),
     receive fn drain_format(msg: string) -> i64 {
         var count: i64 = 0;
         for p in plugins.into_iter() {
@@ -51,7 +51,7 @@ actor DynHolder {
 }
 
 actor StrHolder {
-    var items: Vec<string> = Vec.new();
+    var items: Vec<string> = Vec.new(),
     receive fn drain_count() -> i64 {
         var count: i64 = 0;
         for _s in items.into_iter() {

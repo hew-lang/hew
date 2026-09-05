@@ -4,9 +4,9 @@
 // fall back to a default variant. Terminates via `llvm.trap`: exit 132
 // (SIGILL, x86_64 Linux) or 133 (SIGTRAP, aarch64/macOS).
 enum Shade {
-    Light;
-    Medium;
-    Dark;
+    Light,
+    Medium,
+    Dark,
 }
 
 fn main() -> i64 {

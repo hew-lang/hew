@@ -10,12 +10,12 @@
 // field-width sum.
 machine PaddedPayload {
     events {
-        Activate;
-        Deactivate;
+        Activate,
+        Deactivate,
     }
 
-    state Idle;
-    state Active { tag_byte: i8; value: i64; }
+    state Idle,
+    state Active { tag_byte: i8, value: i64, },
 
     on Activate: Idle => Active {
         Active { tag_byte: 0, value: 42 }

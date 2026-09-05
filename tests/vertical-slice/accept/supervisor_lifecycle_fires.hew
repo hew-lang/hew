@@ -29,7 +29,7 @@
 // A pre-fix run reads 7 + 7 = 14 (init never fires) -- a distinct, visible
 // failure, never a false pass.
 actor Counter {
-    var value: i64;
+    var value: i64,
     init() {
         value = 100;
     }
@@ -46,10 +46,10 @@ actor Counter {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child counter: Counter(value: 7);
+    child counter: Counter(value: 7),
 }
 
 extern "C" {

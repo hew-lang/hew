@@ -6,8 +6,8 @@
 import std.string;
 
 type Pair<A, B> {
-    first: A;
-    second: B;
+    first: A,
+    second: B,
 }
 
 fn emit_pair(print_it: bool) -> i64 {

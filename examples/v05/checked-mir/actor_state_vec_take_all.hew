@@ -11,7 +11,7 @@ trait Labeled {
 }
 
 type Tag {
-    label: string;
+    label: string,
 }
 
 impl Labeled for Tag {
@@ -26,7 +26,7 @@ fn make_tag(label: string) -> dyn Labeled {
 }
 
 actor Registry {
-    var plugins: Vec<dyn Labeled> = Vec.new();
+    var plugins: Vec<dyn Labeled> = Vec.new(),
     receive fn drain_total() -> i64 {
         var total: i64 = 0;
         for plugin in plugins.into_iter() {

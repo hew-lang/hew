@@ -1,12 +1,12 @@
 machine RunLifecycle {
     events {
-        StageFailed;
-        GateCompleted;
+        StageFailed,
+        GateCompleted,
     }
 
-    state Running;
-    state Failed;
-    state Completed;
+    state Running,
+    state Failed,
+    state Completed,
 
     on StageFailed: Running => Failed {
         RunLifecycle.Failed
@@ -25,11 +25,11 @@ pub fn initial() -> RunLifecycle {
 
 pub machine PayloadLifecycle {
     events {
-        Load;
+        Load,
     }
 
-    state Empty;
-    state Loaded { label: string; }
+    state Empty,
+    state Loaded { label: string, },
 
     on Load: Empty => Loaded {
         Loaded { label: "transitioned".to_upper() }

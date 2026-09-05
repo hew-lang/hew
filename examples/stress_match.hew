@@ -4,23 +4,23 @@
 // stress_match.hew - Complex pattern matching stress test
 // Exercises advanced pattern matching with enum variants, data payloads, and nested logic
 enum ComplexData {
-    Empty;
-    Single(i32);
-    Pair(i32, i32);
-    Triple(i32, i32, i32);
-    Tagged(i32, i32);
+    Empty,
+    Single(i32),
+    Pair(i32, i32),
+    Triple(i32, i32, i32),
+    Tagged(i32, i32),
 }
 
 enum MessageType {
-    Text(i32);
-    Binary(i32);
-    Structured(i32, i32);
+    Text(i32),
+    Binary(i32),
+    Structured(i32, i32),
 }
 
 enum ProcessingResult {
-    Success(i32);
-    Warning(i32, i32);
-    Error(i32);
+    Success(i32),
+    Warning(i32, i32),
+    Error(i32),
 }
 
 fn process_complex_data(data: ComplexData) -> i32 {

@@ -78,7 +78,7 @@ fn actor_ref_is_actor_ref_accepted() {
     assert_clean(
         r"
             actor Worker {
-                let _id: i64;
+                let _id: i64,
                 receive fn ping() {}
             }
 
@@ -167,7 +167,7 @@ fn negative_control_local_pid_still_accepted() {
     assert_clean(
         r"
             actor Worker {
-                let _id: i64;
+                let _id: i64,
                 receive fn ping() {}
             }
 
@@ -208,7 +208,7 @@ fn negative_control_dyn_trait_still_rejected() {
             }
 
             type EnglishGreeter {
-                name: string;
+                name: string,
             }
 
             impl Greeter for EnglishGreeter {
@@ -253,8 +253,8 @@ fn enum_is_enum_rejected() {
     assert_has_e_is_value_type(
         r"
             enum Colour {
-                Red;
-                Green;
+                Red,
+                Green,
             }
 
             fn main() {
@@ -273,8 +273,8 @@ fn payload_enum_is_payload_enum_rejected() {
     assert_has_e_is_value_type(
         r"
             enum Shape {
-                Circle(f64);
-                Square(f64);
+                Circle(f64),
+                Square(f64),
             }
 
             fn main() {
@@ -297,8 +297,8 @@ fn indirect_enum_is_indirect_enum_rejected() {
     assert_has_e_is_value_type(
         r"
             indirect enum Expr {
-                Lit(i64);
-                Neg(Expr);
+                Lit(i64),
+                Neg(Expr),
             }
 
             fn main() {
@@ -318,11 +318,11 @@ fn machine_is_machine_rejected() {
         r"
             machine Tank {
                 events {
-                    Fill;
+                    Fill,
                 }
 
-                state Filling;
-                state Draining;
+                state Filling,
+                state Draining,
 
                 on Fill: Filling => Draining {
                     Tank.Draining
@@ -347,8 +347,8 @@ fn enum_rejection_names_the_type_and_suggests_equality() {
     let output = typecheck_isolated(
         r"
             enum Colour {
-                Red;
-                Green;
+                Red,
+                Green,
             }
 
             fn main() {
@@ -384,7 +384,7 @@ fn record_type_is_record_type_rejected() {
     assert_has_e_is_value_type(
         r"
             type Point {
-                x: i64;
+                x: i64,
             }
 
             fn main() {
@@ -404,7 +404,7 @@ fn record_type_rejection_is_reported_once_per_expression() {
     let output = typecheck_isolated(
         r"
             type Point {
-                x: i64;
+                x: i64,
             }
 
             fn main() {
@@ -459,7 +459,7 @@ fn record_type_rejection_names_the_type_and_suggests_equality() {
     let output = typecheck_isolated(
         r"
             type Point {
-                x: i64;
+                x: i64,
             }
 
             fn main() {
@@ -490,7 +490,7 @@ fn record_type_structural_equality_still_accepted() {
     assert_clean(
         r"
             type Point {
-                x: i64;
+                x: i64,
             }
 
             fn main() {
@@ -513,7 +513,7 @@ fn is_result_typed_as_bool() {
     assert_clean(
         r"
             actor Worker {
-                let _id: i64;
+                let _id: i64,
                 receive fn ping() {}
             }
 
@@ -600,12 +600,12 @@ fn actor_refs_of_different_actor_types_rejected_as_mismatch() {
     assert_has_mismatch(
         r"
             actor Worker {
-                let _id: i64;
+                let _id: i64,
                 receive fn ping() {}
             }
 
             actor Other {
-                let _id: i64;
+                let _id: i64,
                 receive fn ping() {}
             }
 
@@ -630,7 +630,7 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
     // terms regardless of the move question this test is actually about.
     let src = r"
         actor SnapshotSink {
-            let _id: i64;
+            let _id: i64,
             receive fn consume(p: bytes) {}
         }
 
@@ -669,7 +669,7 @@ fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
     let output = common::typecheck_isolated(
         r"
             actor Worker {
-                let _id: i64;
+                let _id: i64,
                 receive fn ping() -> bool {
                     this is Worker
                 }
@@ -726,8 +726,8 @@ fn is_on_an_enum_through_an_inferred_closure_is_rejected() {
     assert_has_e_is_value_type(
         r"
             enum Colour {
-                Red;
-                Green;
+                Red,
+                Green,
             }
 
             fn main() {
@@ -743,7 +743,7 @@ fn is_on_a_record_through_an_inferred_closure_is_rejected() {
     assert_has_e_is_value_type(
         r"
             type Point {
-                x: i64;
+                x: i64,
             }
 
             fn main() {
@@ -762,7 +762,7 @@ fn is_on_an_actor_ref_through_an_inferred_closure_is_accepted() {
     assert_clean(
         r"
             actor Worker {
-                let _id: i64;
+                let _id: i64,
                 receive fn ping() {}
             }
 
@@ -784,12 +784,12 @@ fn mismatched_handle_types_through_an_inferred_closure_are_reported() {
     assert_has_mismatch(
         r"
             actor Worker {
-                let _id: i64;
+                let _id: i64,
                 receive fn ping() {}
             }
 
             actor Other {
-                let _id: i64;
+                let _id: i64,
                 receive fn ping() {}
             }
 

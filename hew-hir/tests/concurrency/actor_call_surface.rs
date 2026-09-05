@@ -285,7 +285,7 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
     let output = lower_checked(
         r"
         actor Counter {
-            let count: i64;
+            let count: i64,
 
             receive fn increment(n: i64) {
             }

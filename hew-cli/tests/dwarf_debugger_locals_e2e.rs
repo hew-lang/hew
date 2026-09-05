@@ -87,7 +87,7 @@ actor Source {
 }
 
 actor Handler {
-    let source: LocalPid<Source>;
+    let source: LocalPid<Source>,
 
     receive fn run() -> i64 {
         let before: i64 = 7;
@@ -202,8 +202,8 @@ type Payload {
 }
 
 enum Status {
-    Idle;
-    Packet(Payload);
+    Idle,
+    Packet(Payload),
 }
 
 fn main() {

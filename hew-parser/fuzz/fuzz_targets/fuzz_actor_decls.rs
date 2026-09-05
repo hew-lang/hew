@@ -32,7 +32,7 @@ impl ActorInput {
         format!(
             r#"#[max_heap(4096)]
 actor FuzzWorker {{
-    let total: i64;
+    let total: i64,
 
     init() {{
         total = 0;

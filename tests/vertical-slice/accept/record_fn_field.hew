@@ -3,8 +3,8 @@
 // the return), read the field, and drop the record — the environment is
 // released exactly once by the record's drop as the pair's sole owner.
 type Holder {
-    cb: fn(i64) -> i64;
-    tag: i64;
+    cb: fn(i64) -> i64,
+    tag: i64,
 }
 
 fn make_adder(n: i64) -> fn(i64) -> i64 {

@@ -20,7 +20,7 @@ actor Slow {
 }
 
 actor Coordinator {
-    let slow: LocalPid<Slow>;
+    let slow: LocalPid<Slow>,
     receive fn race_deadline(n: i64) -> i64 {
         let result = select {
             reply from slow.compute(n) => reply,

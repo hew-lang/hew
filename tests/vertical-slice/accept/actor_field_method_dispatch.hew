@@ -14,7 +14,7 @@
 // ask path (`get`, reply decoded through `match await`). Ask-shape on the
 // outer `b.total()` makes stdout deterministic regardless of scheduling.
 actor W {
-    var total: i64 = 0;
+    var total: i64 = 0,
     receive fn put(n: i64) {
         total = total + n;
     }
@@ -24,7 +24,7 @@ actor W {
 }
 
 actor B {
-    let out: W;
+    let out: W,
     receive fn go(n: i64) {
         out.put(n);
     }

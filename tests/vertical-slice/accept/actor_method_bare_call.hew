@@ -1,7 +1,7 @@
 // A plain `fn` in an actor body is callable by bare name from that actor's
 // handlers, with the same bare state-field access a handler has (#3285).
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
 
     fn helper() -> i64 {
         count + 1

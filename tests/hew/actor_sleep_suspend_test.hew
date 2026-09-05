@@ -16,7 +16,7 @@
 import std.testing;
 
 actor Sleeper {
-    var done: i64 = 0;
+    var done: i64 = 0,
     receive fn nap(d: duration) -> i64 {
         sleep(d);
         done = done + 1;

@@ -8,7 +8,7 @@ type Handle {
 // `free()` compatibility alias for the compiler-visible `close()` disposer.
 #[resource]
 type Value {
-    handle: Handle;
+    handle: Handle,
 }
 
 trait ValueMethods {

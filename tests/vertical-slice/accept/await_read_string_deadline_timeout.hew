@@ -12,7 +12,7 @@
 import std.net;
 
 actor Reader {
-    let port: i32;
+    let port: i32,
     receive fn go() {
         sleep(100ms);
         let conn = match net.connect(f"127.0.0.1:{port}") {

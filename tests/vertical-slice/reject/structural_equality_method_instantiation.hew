@@ -1,6 +1,6 @@
 type Holder<T> {
-    left: Option<T>;
-    right: Option<T>;
+    left: Option<T>,
+    right: Option<T>,
 }
 
 impl<T> Holder<T> {

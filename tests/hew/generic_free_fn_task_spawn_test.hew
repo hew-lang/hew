@@ -31,7 +31,7 @@ fn compute_val<T>() -> i64 {
 fn side_work<T>(a: i64, b: i64) {}
 
 actor TaskRunner {
-    var total: i64 = 0;
+    var total: i64 = 0,
 
     // ----------------------------------------------------------------
     // Spawn + await a no-arg value-returning generic fn at two types.

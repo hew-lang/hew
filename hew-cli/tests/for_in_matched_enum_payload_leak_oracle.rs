@@ -61,7 +61,7 @@ use support::{describe_output, require_codegen};
 /// Alternates `Batch`/`Empty` so both the composite drop and the empty no-op run.
 fn for_in_matched_payload_loop_source(frames: usize) -> String {
     format!(
-        "enum Msg {{ Empty; Batch([i64]) }}\n\
+        "enum Msg {{ Empty, Batch([i64]) }}\n\
          \n\
          fn frame(n: i64) -> i64 {{\n\
          \x20   let m: Msg = if n % 2 == 0 {{ Msg.Batch([n, n + 1, n + 2]) }} else {{ Msg.Empty }};\n\
@@ -90,7 +90,7 @@ fn for_in_matched_payload_loop_source(frames: usize) -> String {
 /// regress the sibling read.
 fn index_read_matched_payload_loop_source(frames: usize) -> String {
     format!(
-        "enum Msg {{ Empty; Batch([i64]) }}\n\
+        "enum Msg {{ Empty, Batch([i64]) }}\n\
          \n\
          fn frame(n: i64) -> i64 {{\n\
          \x20   let m: Msg = if n % 2 == 0 {{ Msg.Batch([n, n + 1, n + 2]) }} else {{ Msg.Empty }};\n\
@@ -117,7 +117,7 @@ fn index_read_matched_payload_loop_source(frames: usize) -> String {
 /// Deterministic exact-contents / no-double-free source: match a `Batch` payload,
 /// sum it via for-in, print the sum. Under the poisoned allocator a cursor that
 /// freed the shared buffer double-frees against the composite `EnumInPlace`.
-const FOR_IN_PAYLOAD_EXACT_SOURCE: &str = "enum Msg { Empty; Batch([i64]) }\n\
+const FOR_IN_PAYLOAD_EXACT_SOURCE: &str = "enum Msg { Empty, Batch([i64]) }\n\
      \n\
      fn main() {\n\
      \x20   let m: Msg = Msg.Batch([10, 20, 30]);\n\

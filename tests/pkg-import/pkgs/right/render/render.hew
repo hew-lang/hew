@@ -9,14 +9,14 @@ pub trait Render {
 }
 
 pub type Box<T> {
-    value: T;
+    value: T,
 }
 
 // Deliberately shares both its leaf name and generic shape with
 // `left::render::Parcel`.  Its payload has a distinct owned shape.
 pub enum Parcel<T> {
-    Filled(T);
-    Empty;
+    Filled(T),
+    Empty,
 }
 
 pub fn identity() -> string {

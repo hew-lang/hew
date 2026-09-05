@@ -4,8 +4,8 @@
 // it did not move; otherwise the binder and the caller's record drop release
 // the same allocation (#3156).
 type Pair {
-    other: Vec<i64>;
-    value: Option<Vec<i64>>;
+    other: Vec<i64>,
+    value: Option<Vec<i64>>,
 }
 
 // Carries the payload OUT of the parameter.

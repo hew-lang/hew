@@ -8,7 +8,7 @@ trait Show {
     fn show(val: Self) -> string;
 }
 
-type Wrapper<U> { inner: U; }
+type Wrapper<U> { inner: U, }
 
 impl<U> Show for Wrapper<U> {
     fn show(w: Wrapper<U>) -> string { "wrapped" }

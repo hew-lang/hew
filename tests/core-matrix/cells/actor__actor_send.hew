@@ -1,5 +1,5 @@
 actor Echo {
-    var seen: i64;
+    var seen: i64,
 
     receive fn take(v: i64) -> i64 {
         seen = seen + v;
@@ -8,7 +8,7 @@ actor Echo {
 }
 
 actor Sink {
-    var hits: i64;
+    var hits: i64,
 
     receive fn take(v: LocalPid<Echo>) -> i64 {
         match await v.take(1) { Result.Ok(v_v) => println(f"echo {v_v}"), Result.Err(_) => println("err"), }

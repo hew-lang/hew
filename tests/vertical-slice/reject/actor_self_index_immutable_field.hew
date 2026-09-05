@@ -3,7 +3,7 @@
 // `items[0]` does. A receiver that resolved no root would look up a binding
 // called `self`, find none, and pass the write through.
 actor Bag {
-    let items: Vec<i64>;
+    let items: Vec<i64>,
 
     receive fn poke() {
         self.items[0] = 5;

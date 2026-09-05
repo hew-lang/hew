@@ -4,7 +4,7 @@
 // drain between the two sends. `main` runs on the process main thread, not on
 // a scheduler worker, so sending from `main` would race the worker's wake.
 actor RejectingWorker {
-    mailbox 1 overflow fail;
+    mailbox 1 overflow fail,
     receive fn work(value: i64) {
         if value == 2 {
             println("REJECTED_WORK_DELIVERED");

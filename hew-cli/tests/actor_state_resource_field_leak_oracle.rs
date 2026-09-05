@@ -79,7 +79,7 @@ fn src(body: &str) -> String {
 /// REFUSED — the old handle would leak, the new one would be double-owned.
 const RESOURCE_REASSIGN_BODY: &str = "\
 actor Keeper {\n\
-    var dq: Dq;\n\
+    var dq: Dq,\n\
     receive fn replace() -> i64 {\n\
         dq = unsafe { hew_deque_new() };\n\
         1\n\
@@ -96,7 +96,7 @@ fn main() -> i64 {\n\
 /// actor-state wording — closes the descriptor-leak vector by construction.
 const IOHANDLE_REASSIGN_BODY: &str = "\
 actor Piper {\n\
-    var s: Stream<i64>;\n\
+    var s: Stream<i64>,\n\
     receive fn reset(ns: Stream<i64>) -> i64 {\n\
         s = ns;\n\
         1\n\
@@ -109,7 +109,7 @@ fn main() -> i64 { 0 }\n";
 /// `closed`.
 const POSITIVE_BODY: &str = "\
 actor Keeper {\n\
-    var dq: Dq;\n\
+    var dq: Dq,\n\
     receive fn ping() -> i64 { 1 }\n\
 }\n\
 fn main() -> i64 {\n\

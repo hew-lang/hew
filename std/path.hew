@@ -34,16 +34,16 @@ type GlobResultHandle {
 
 #[resource]
 pub type GlobResult {
-    handle: GlobResultHandle;
+    handle: GlobResultHandle,
 }
 
 /// Errors produced by `std.path` glob expansion and indexing.
 pub enum PathError {
     /// The glob walk did not complete — an unreadable directory, an
     /// allocation failure, or a platform with no implementation.
-    GlobFailed(string);
+    GlobFailed(string),
     /// A match index was negative or at/past the match count.
-    IndexOutOfRange(string);
+    IndexOutOfRange(string),
 }
 
 /// Print the human-readable detail carried by a `PathError`.

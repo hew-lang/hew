@@ -8,7 +8,7 @@
 //   machine `Plain` state `Live` holds `#[resource]`/`#[linear]` value `Handle`
 #[resource]
 type Handle {
-    fd: i64;
+    fd: i64,
 }
 
 impl Handle {
@@ -19,12 +19,12 @@ impl Handle {
 
 machine Mixed {
     events {
-        Open { fd: i64; }
-        Touch;
+        Open { fd: i64, }
+        ,Touch,
     }
 
-    state Idle;
-    state Active { h: Handle; label: string; }
+    state Idle,
+    state Active { h: Handle, label: string, },
 
     on Open(fd): Idle => Active {
         Active { h: Handle { fd: fd }, label: "conn".to_upper() }
@@ -38,12 +38,12 @@ machine Mixed {
 
 machine Plain {
     events {
-        Open { fd: i64; }
-        Shut;
+        Open { fd: i64, }
+        ,Shut,
     }
 
-    state Idle;
-    state Live { h: Handle; }
+    state Idle,
+    state Live { h: Handle, },
 
     on Open(fd): Idle => Live {
         Live { h: Handle { fd: fd } }

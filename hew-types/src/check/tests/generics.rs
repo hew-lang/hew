@@ -335,7 +335,7 @@ fn multi_param_turbofish_records_all_call_type_args() {
 #[test]
 fn return_type_polymorphic_call_records_call_type_args() {
     let source = r"
-        type Stack<T> { items: Vec<T>; }
+        type Stack<T> { items: Vec<T>, }
         impl<T> Stack<T> {
             fn new() -> Stack<T> { Stack { items: Vec.new() } }
         }
@@ -444,7 +444,7 @@ fn call_type_arg_recorder_defers_inference_var_then_reresolves() {
 #[test]
 fn generic_impl_method_underconstrained_type_param_reports_inference_failed() {
     let source = r"
-        enum Maybe<T> { Some(T); None; }
+        enum Maybe<T> { Some(T), None, }
         type Holder {}
 
         impl Holder {
@@ -665,7 +665,7 @@ fn test_trait_object_type_args_substitution() {
         }
 
         type Counter {
-            count: i64;
+            count: i64,
         }
 
         impl MyIter<i64> for Counter {
@@ -996,10 +996,10 @@ actor Greeter {
 fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
     let source = concat!(
         "actor Alpha {\n",
-        "    let beta: LocalPid<Beta>;\n",
+        "    let beta: LocalPid<Beta>,\n",
         "}\n",
         "actor Beta {\n",
-        "    let alpha: LocalPid<Alpha>;\n",
+        "    let alpha: LocalPid<Alpha>,\n",
         "}\n",
         "fn main() {}\n",
     );
@@ -1051,7 +1051,7 @@ fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
 fn recursive_value_type_self_enum_is_rejected() {
     let output = check_source(
         r"
-        enum Tree { Leaf; Node(i64, Tree, Tree); }
+        enum Tree { Leaf, Node(i64, Tree, Tree), }
         fn main() {}
         ",
     );
@@ -1080,8 +1080,8 @@ fn recursive_value_type_self_enum_is_rejected() {
 fn recursive_value_type_mutual_enums_are_rejected() {
     let output = check_source(
         r"
-        enum A { A1(B); }
-        enum B { B1(A); }
+        enum A { A1(B), }
+        enum B { B1(A), }
         fn main() {}
         ",
     );
@@ -1106,8 +1106,8 @@ fn recursive_value_type_mutual_enums_are_rejected() {
 fn recursive_value_type_allows_non_recursive_nested_enum() {
     let output = check_source(
         r"
-        enum Inner { A; B(i64); }
-        enum Outer { D(Inner); }
+        enum Inner { A, B(i64), }
+        enum Outer { D(Inner), }
         fn main() {}
         ",
     );
@@ -1124,7 +1124,7 @@ fn recursive_value_type_rejects_record_enum_cycle() {
     let output = check_source(
         r"
         type Boxed { tree: Tree }
-        enum Tree { Leaf; Node(Boxed); }
+        enum Tree { Leaf, Node(Boxed), }
         fn main() {}
         ",
     );
@@ -1144,7 +1144,7 @@ fn recursive_value_type_rejects_generic_record_wrapper_cycle() {
     let output = check_source(
         r"
         type Wrapper<T> { value: T }
-        enum Tree { Leaf; Node(Wrapper<Tree>); }
+        enum Tree { Leaf, Node(Wrapper<Tree>), }
         fn main() {}
         ",
     );
@@ -3270,8 +3270,8 @@ fn record_init_type_args_enum_struct_variant_fully_bound() {
     // The record_init_type_args entry resolves both T=i64 and E=string.
     let source = r"
         enum Either<T, E> {
-            Left { value: T };
-            Right { err: E };
+            Left { value: T },
+            Right { err: E },
         }
         fn main() {
             let _x: Either<i64, string> = Either.Left { value: 1 };
@@ -3292,8 +3292,8 @@ fn record_init_type_args_enum_struct_variant_partial_inference_pruned() {
     // `validate_record_init_type_args_output_contract`.
     let source = r"
         enum Either<T, E> {
-            Left { value: T };
-            Right { err: E };
+            Left { value: T },
+            Right { err: E },
         }
         fn main() { let _x = Either.Left { value: 42 }; }
     ";
@@ -3478,8 +3478,8 @@ fn generic_decl_bound_rejects_enum_tuple_variant_constructor_site() {
         r"
         type NoDisplay { n: i64 }
         enum Maybe<T: Display> {
-            Some(T);
-            None;
+            Some(T),
+            None,
         }
         fn main() {
             let _maybe = Maybe.Some(NoDisplay { n: 1 });
@@ -3494,8 +3494,8 @@ fn generic_decl_bound_rejects_enum_struct_variant_constructor_site() {
         r"
         type NoDisplay { n: i64 }
         enum Maybe<T: Display> {
-            Some { value: T };
-            None;
+            Some { value: T },
+            None,
         }
         fn main() {
             let _maybe = Maybe.Some { value: NoDisplay { n: 1 } };
@@ -3826,7 +3826,7 @@ fn nonwire_from_json_returns_result_self_string() {
     // Result<Self, string>, not Self.  The SHIM that returned Self directly
     // was removed; this test pins the correct surface type.
     let source = r#"
-type Point { x: i32; y: i32; }
+type Point { x: i32, y: i32, }
 fn main() {
 let s = "{\"x\":1,\"y\":2}";
 let r: Result<Point, string> = Point.from_json(s);
@@ -3852,7 +3852,7 @@ fn nonwire_from_json_bare_self_is_type_error() {
     // Assigning the result of from_json directly to `Self` (not Result<Self, …>)
     // must produce a type mismatch — confirms the SHIM is gone.
     let source = r#"
-type Point { x: i32; y: i32; }
+type Point { x: i32, y: i32, }
 fn main() {
 let s = "{\"x\":1,\"y\":2}";
 let p: Point = Point.from_json(s);
@@ -3881,7 +3881,7 @@ let p: Point = Point.from_json(s);
 fn nonwire_from_yaml_and_from_toml_return_result() {
     // Both from_yaml and from_toml should also return Result<Self, string>.
     let source = r#"
-type Cfg { n: i32; }
+type Cfg { n: i32, }
 fn main() {
 let _a: Result<Cfg, string> = Cfg.from_yaml("n: 1");
 let _b: Result<Cfg, string> = Cfg.from_toml("n = 1");
@@ -3968,7 +3968,7 @@ fn main() -> i64 { 0 }
 fn bounded_generic_clone_instantiated_with_resource_is_refused() {
     let source = r"
 #[resource]
-type Token { id: i64; }
+type Token { id: i64, }
 
 impl Token {
     fn close(self) {}
@@ -4077,7 +4077,7 @@ fn main() -> i64 {
 #[test]
 fn bare_rc_clone_stays_admitted() {
     let source = r"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4096,7 +4096,7 @@ fn main() -> i64 {
 #[test]
 fn tuple_clone_with_rc_member_is_refused() {
     let source = r#"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4119,7 +4119,7 @@ fn main() -> i64 {
 #[test]
 fn option_clone_with_rc_payload_is_refused() {
     let source = r"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4142,7 +4142,7 @@ fn main() -> i64 {
 #[test]
 fn result_clone_with_rc_payload_is_refused() {
     let source = r"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4165,8 +4165,8 @@ fn main() -> i64 {
 #[test]
 fn record_clone_with_rc_field_is_refused() {
     let source = r#"
-type Node { value: i64; }
-type Holder { r: Rc<Node>; tag: string; }
+type Node { value: i64, }
+type Holder { r: Rc<Node>, tag: string, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4189,7 +4189,7 @@ fn main() -> i64 {
 #[test]
 fn vec_clone_with_rc_elements_stays_admitted() {
     let source = r"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4212,7 +4212,7 @@ fn main() -> i64 {
 #[test]
 fn tuple_clone_with_vec_of_rc_member_stays_admitted() {
     let source = r#"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4294,7 +4294,7 @@ fn generic_method_instantiation_with_ineligible_type_is_refused_by_checker() {
     // into the signature and drops it from `sig.type_params`, so the receiver's
     // type arguments are the only record of what `T` became.
     let source = r"
-type Holder<T> { left: Option<T>; right: Option<T>; }
+type Holder<T> { left: Option<T>, right: Option<T>, }
 
 impl<T> Holder<T> {
     fn same(self) -> bool {
@@ -4335,7 +4335,7 @@ fn main() -> i64 {
 #[test]
 fn generic_method_instantiation_with_eligible_type_is_admitted() {
     let source = r"
-type Holder<T> { left: Option<T>; right: Option<T>; }
+type Holder<T> { left: Option<T>, right: Option<T>, }
 
 impl<T> Holder<T> {
     fn same(self) -> bool {
@@ -4480,7 +4480,7 @@ fn rc_member_clone_refusal_suggests_no_workaround_that_double_frees() {
     // same missing-ingress-retain path and aborts at `Rc double-free`. The help
     // text must not send the programmer there.
     let source = r#"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4514,7 +4514,7 @@ fn main() -> i64 {
 
 const GENERIC_RECEIVE_ACTOR: &str = r"
 actor Store {
-    var seen: i64;
+    var seen: i64,
 
     init() {
         seen = 0;
@@ -4596,7 +4596,7 @@ trait Carrier {
 }
 
 type IntBox {
-    value: i64;
+    value: i64,
 }
 
 impl Carrier for IntBox {
@@ -4607,7 +4607,7 @@ impl Carrier for IntBox {
 }
 
 type MapBox {
-    value: i64;
+    value: i64,
 }
 
 impl Carrier for MapBox {
@@ -4693,7 +4693,7 @@ fn method_type_parameter_shadowing_an_impl_parameter_is_refused() {
     // from the signature, so the method's own parameter cannot survive.
     let source = r"
 type Holder<T> {
-    value: T;
+    value: T,
 }
 
 impl<T> Holder<T> {
@@ -4723,7 +4723,7 @@ fn renamed_method_type_parameter_is_admitted_and_stays_independent() {
     // `i64`.
     let source = r#"
 type Holder<T> {
-    value: T;
+    value: T,
 }
 
 impl<T> Holder<T> {
@@ -4791,7 +4791,7 @@ trait Choice<T> {
 }
 
 type Holder {
-    value: i64;
+    value: i64,
 }
 
 impl Choice<i64> for Holder {
@@ -4843,7 +4843,7 @@ fn inline_type_body_method_type_parameter_shadowing_the_type_is_refused() {
     // just as an `impl` block method shadows the impl's.
     let source = r"
 type Holder<T> {
-    value: T;
+    value: T,
 
     fn same<T>(holder: Holder<T>, marker: T) -> bool {
         let _ = holder;
@@ -4869,7 +4869,7 @@ fn main() -> i64 { 0 }
 fn inline_type_body_method_with_a_distinct_type_parameter_is_admitted() {
     let source = r"
 type Holder<T> {
-    value: T;
+    value: T,
 
     fn same<U>(holder: Holder<T>, marker: U) -> bool {
         let _ = holder;
@@ -4964,7 +4964,7 @@ trait Choice<T> {
 }
 
 type Holder<T> {
-    value: T;
+    value: T,
 }
 
 impl<T> Choice<T> for Holder<T> {

@@ -21,9 +21,9 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const MODULE_SOURCE: &str = r"
 pub machine PayloadLifecycle {
-    events { Reset; }
-    state Empty;
-    state Loaded { label: string; }
+    events { Reset, }
+    state Empty,
+    state Loaded { label: string, },
     on Reset: Loaded => Empty { Empty }
     default { state }
 }
@@ -43,7 +43,7 @@ fn importer_source(frames: usize) -> String {
 import runner.machine_defs;
 import std.string;
 
-type Envelope {{ value: machine_defs.PayloadLifecycle; marker: i64; }}
+type Envelope {{ value: machine_defs.PayloadLifecycle, marker: i64, }}
 
 fn local_bounce(value: machine_defs.PayloadLifecycle) -> machine_defs.PayloadLifecycle {{
     value

@@ -8,7 +8,7 @@ use hew_types::Ty;
 fn spawn_returns_local_pid() {
     let source = r"
         actor Counter {
-            let n: i32;
+            let n: i32,
             init() {}
         }
         fn main() {

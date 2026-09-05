@@ -74,7 +74,7 @@ fn is_value_pattern_lowers_to_identity_compare() {
     let output = lower(
         r"
         actor Worker {
-            let _id: i64;
+            let _id: i64,
             receive fn ping() {}
         }
 

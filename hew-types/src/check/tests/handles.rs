@@ -242,7 +242,7 @@ fn check_source_with_handle(source: &str, handle_type: &str) -> TypeCheckOutput 
 #[test]
 fn checker_handle_rewrite_requires_exact_receiver_owner() {
     fn shared_info(symbol: &str, return_name: &str) -> crate::stdlib_loader::ModuleInfo {
-        let parsed = hew_parser::parse("pub type Handle { value: i32; }\n");
+        let parsed = hew_parser::parse("pub type Handle { value: i32, }\n");
         assert!(parsed.errors.is_empty());
         crate::stdlib_loader::ModuleInfo {
             source_path: None,
@@ -1116,7 +1116,7 @@ mod opaque_receive_fn_param_rules {
             type Handle {}
 
             actor Server {
-                var count: i64 = 0;
+                var count: i64 = 0,
                 receive fn handle(h: Handle) {
                     count = count + 1;
                 }
@@ -1150,7 +1150,7 @@ mod opaque_receive_fn_param_rules {
         let output = check_source_with_handle(
             r"
             actor Server {
-                var count: i64 = 0;
+                var count: i64 = 0,
                 receive fn handle(p: regex.Pattern) {
                     count = count + 1;
                 }
@@ -1178,7 +1178,7 @@ mod opaque_receive_fn_param_rules {
             type Wrapper { conn: regex.Pattern }
 
             actor Server {
-                var count: i64 = 0;
+                var count: i64 = 0,
                 receive fn handle(w: Wrapper) {
                     count = count + 1;
                 }
@@ -1225,7 +1225,7 @@ mod opaque_receive_fn_param_rules {
             type Handle {}
 
             actor Worker {
-                let handle: Handle;
+                let handle: Handle,
                 receive fn run() {}
             }
 
@@ -1251,7 +1251,7 @@ mod opaque_receive_fn_param_rules {
         let output = check_source(
             r"
             actor Server {
-                var count: i64 = 0;
+                var count: i64 = 0,
                 receive fn handle(n: i64, label: string) {
                     count = count + n;
                 }
@@ -1587,7 +1587,7 @@ actor Sink {
         let output = check_source(
             r"
             actor Holder {
-                let printer: LambdaPid<i64, ()>;
+                let printer: LambdaPid<i64, ()>,
                 receive fn go(n: i64) {
                     let _ = printer.send(n);
                 }
@@ -1630,7 +1630,7 @@ actor Sink {
             }
 
             actor Watcher {
-                let handle: MonitorRef;
+                let handle: MonitorRef,
                 receive fn go() {}
             }
 

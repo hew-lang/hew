@@ -2,8 +2,8 @@
 // a single spanned error pointing to `if let` or `match`.  No secondary
 // "has no binding" or UndefinedVariable cascade must fire.
 enum Status {
-    Ok(i64);
-    Err;
+    Ok(i64),
+    Err,
 }
 
 fn main() -> i64 {

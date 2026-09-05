@@ -20,7 +20,7 @@ use support::{describe_output, hew_binary, repo_root, require_codegen, strip_ans
 const TOKEN: &str = r#"
 #[resource]
 type Token {
-    id: i64;
+    id: i64,
 }
 
 impl Token {
@@ -44,7 +44,7 @@ fn main() -> i64 {
 
 const NESTED_IDENTITY_BODY: &str = r"
 type Wrap {
-    token: Token;
+    token: Token,
 }
 
 fn identity<T>(value: T) -> T {
@@ -244,8 +244,8 @@ fn main() -> i64 {
 const CONDITIONAL_HEAP_RESOURCE_SOURCE: &str = r#"
 #[resource]
 type Buf {
-    data: Vec<i64>;
-    id: i64;
+    data: Vec<i64>,
+    id: i64,
 }
 
 impl Buf {

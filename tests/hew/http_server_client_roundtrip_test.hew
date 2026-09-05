@@ -28,9 +28,9 @@ import std.testing;
 /// thread serves the single request. `status`/`body` are read back via asks
 /// that the mailbox necessarily processes AFTER `fetch` completes.
 actor Client {
-    let url: string;
-    var status: i64;
-    var body: string;
+    let url: string,
+    var status: i64,
+    var body: string,
 
     receive fn fetch(unused: i64) {
         http_client.set_timeout(3000);

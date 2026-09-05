@@ -118,7 +118,7 @@ fn cancelled_owned_reply_source(iters: usize) -> String {
 fn never_consumed_owned_reply_source(iters: usize) -> String {
     format!(
         "actor Replier {{\n\
-         \x20   let tag: string;\n\
+         \x20   let tag: string,\n\
          \x20   receive fn fetch() -> string {{ tag.to_upper() }}\n\
          }}\n\
          fn main() -> i64 {{\n\

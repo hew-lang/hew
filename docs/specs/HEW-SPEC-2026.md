@@ -126,7 +126,7 @@ The token `ask` does not appear at actor call sites. Request-reply against a nam
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
 
     // Fire-and-forget: no return type, caller does not await
     receive fn increment(n: i64) {
@@ -271,8 +271,8 @@ Receive handlers can be annotated with `#[every(duration)]` to create periodic t
 
 ```hew
 actor HealthChecker {
-    let endpoint: string;
-    var failures: i64;
+    let endpoint: string,
+    var failures: i64,
 
     #[every(5s)]
     receive fn check() {
@@ -802,8 +802,8 @@ For type fields:
 
 ```hew
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 var p = Point { x: 0, y: 0 };
@@ -1013,7 +1013,7 @@ This is enforced at compile time: any captured value in a `spawn` expression mus
 
 ```hew
 actor Example {
-    var data: Vec<i64> = Vec.new();
+    var data: Vec<i64> = Vec.new(),
 
     receive fn demo(incoming: Vec<i64>) {
         // Mutating the actor's own state - ALLOWED, no locks, no ceremony
@@ -1082,8 +1082,8 @@ Hew uses a file-based module system inspired by Rust:
 // This is module network.tcp
 
 pub type Connection {
-    address: string;       // public fields via pub keyword on type
-    internal_state: i64;   // fields are named, terminated with semicolons
+    address: string,       // public fields via pub keyword on type
+    internal_state: i64,   // named fields are separated by commas
 }
 
 pub fn connect(addr: string) -> Result<Connection, Error> {
@@ -1329,7 +1329,7 @@ trait PointRenderer {
     fn fmt(self) -> string;
 }
 
-type Point { x: f64; y: f64 }
+type Point { x: f64, y: f64 }
 
 impl PointRenderer for Point {
     fn fmt(self) -> string {
@@ -1395,7 +1395,7 @@ one member each:
 | `consume self` | consumes the receiver | is dead after the call |
 
 ```hew
-type Point { x: f64; y: f64 }
+type Point { x: f64, y: f64 }
 
 trait Formattable {
     fn fmt(self) -> string;
@@ -1451,7 +1451,7 @@ parameter — and the actor persists across handler invocations:
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn increment() {
         count += 1;  // bare field access — actor persists after handler returns
     }
@@ -1480,7 +1480,7 @@ slot: from outside the actor it is unreachable, and naming it there is
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn next() -> i64 { count + 1 }
     receive fn increment() { count = next(); }
 }
@@ -1503,7 +1503,7 @@ Hew distinguishes three cases of variable shadowing:
 
   ```hew
   actor Example {
-      var count: i64 = 0;
+      var count: i64 = 0,
 
       receive fn update(count: i64) {
           // compile error: variable `count` shadows a binding in an outer scope
@@ -1584,7 +1584,7 @@ Within an actor, values follow Hew ownership semantics:
 
 ```hew
 #[resource]
-type Connection { fd: i64; }
+type Connection { fd: i64, }
 
 impl Connection {
     fn open(host: string) -> Connection { Connection { fd: 0 } }
@@ -1698,7 +1698,7 @@ etc.):
 ```hew
 #[resource]
 type FileHandle {
-    fd: i32;
+    fd: i32,
 }
 
 impl FileHandle {
@@ -1732,9 +1732,9 @@ Enum types cannot normally reference themselves because inline storage would req
 
 ```hew
 indirect enum Expr {
-    Lit(i64);
-    Add(Expr, Expr);
-    Neg(Expr);
+    Lit(i64),
+    Add(Expr, Expr),
+    Neg(Expr),
 }
 ```
 
@@ -2260,14 +2260,14 @@ The `Send` and `Frozen` marker traits have special rules for generic types:
 
 ```hew
 // Compiler derives: Point is Send + Frozen + Copy (all fields are)
-type Point { x: f64; y: f64 }
+type Point { x: f64, y: f64 }
 
 // Compiler derives: Container<T> is Send if T is Send
-type Container<T> { value: T; }
+type Container<T> { value: T, }
 
 // MutableContainer has a mutable binding semantics determined by usage
 type MutableContainer<T> {
-    value: T;
+    value: T,
 }
 ```
 
@@ -2360,7 +2360,7 @@ Actor message handlers provide rich typing context:
 
 ```hew
 actor Calculator {
-    var result: i64 = 0;
+    var result: i64 = 0,
 
     // receive fn signature provides context for message arguments
     receive fn apply_operation(op: fn(i64, i64) -> i64, value: i64) {
@@ -2491,16 +2491,16 @@ Use `#[repr(C)]` to ensure C-compatible memory layout:
 ```hew
 #[repr(C)]
 type Point {
-    x: f64;
-    y: f64;
+    x: f64,
+    y: f64,
 }
 
 #[repr(C)]
 type FileInfo {
-    size: u64;
-    mode: u32;
-    flags: u16;
-    padding: u16;  // Explicit padding for alignment
+    size: u64,
+    mode: u32,
+    flags: u16,
+    padding: u16,  // Explicit padding for alignment
 }
 ```
 
@@ -2605,7 +2605,7 @@ extern "C" {
 // Safe wrapper (public API)
 #[resource]
 pub type File {
-    fd: i32;
+    fd: i32,
 }
 
 impl File {
@@ -2772,10 +2772,10 @@ for propagation. Any error type `E` may be used with `Result<T, E>`. Each module
 
 ```hew
 pub enum IoError {
-    NotFound(i64);
-    PermissionDenied(i64);
-    AlreadyExists(i64);
-    Other(i64);
+    NotFound(i64),
+    PermissionDenied(i64),
+    AlreadyExists(i64),
+    Other(i64),
 }
 ```
 
@@ -3125,19 +3125,19 @@ with per-state fields and compiler-checked transition logic.
 machine Name {
     // Input-event vocabulary — declared up front (mandatory header)
     events {
-        EventX;                            // event with no payload
-        EventY { payload: Type; }          // event with payload
-        EventZ;
+        EventX,                            // event with no payload
+        EventY { payload: Type, },          // event with payload
+        EventZ,
     }
 
     // Output vocabulary — optional; lists events this machine may `emit`
     emits {
-        EventX;
+        EventX,
     }
 
     // States — at least two required
-    state StateA;                          // unit state (no fields)
-    state StateB { field: Type; }         // state with data
+    state StateA,                          // unit state (no fields)
+    state StateB { field: Type, },         // state with data
 
     // Transitions: on Event: Source => Target { body }
     on EventZ: StateB => StateA { .StateA } // explicit body returns target value
@@ -3154,9 +3154,9 @@ machine Name {
 
     // Depth-1 composite state (substate block; depth > 1 is reserved)
     state Parent {
-        initial state Sub1;
-        state Sub2 { value: i64; }
-    }
+        initial state Sub1,
+        state Sub2 { value: i64, }
+    },
 
     // Default handler — fallback for ALL unmatched (state, event) pairs
     default { state }
@@ -3185,7 +3185,7 @@ StateDecl      = "state" Ident ( "{"
                    [ "entry" Block ]                (* entry hook *)
                    [ "exit"  Block ]                (* exit hook  *)
                    { CompositeMember }              (* depth-1 composite only *)
-                 "}" )? ;
+                 "}" )? "," ;
 CompositeMember = [ "initial" ] StateDecl ;         (* exactly one "initial" required *)
 
 TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
@@ -3255,8 +3255,8 @@ Inside a transition body the compiler binds two implicit names:
 
 ```hew
 machine Elevator {
-    state Stopped { floor: i64; }
-    state Moving  { from: i64; to: i64; }
+    state Stopped { floor: i64, },
+    state Moving  { from: i64, to: i64, },
 
     event GoTo  { floor: i64; }
     event Arrive;
@@ -3368,7 +3368,7 @@ Machines are values — they are commonly embedded as actor fields:
 
 ```hew
 actor ConnectionManager {
-    var tcp: TcpState = TcpState.Closed;
+    var tcp: TcpState = TcpState.Closed,
 
     receive fn handle(event: TcpStateEvent) {
         tcp.step(event);
@@ -3960,7 +3960,7 @@ reachable from inside a child body.
 <!-- doctest: skip -->
 ```hew
 actor DataProcessor {
-    var cache: HashMap<string, Data> = HashMap.new();
+    var cache: HashMap<string, Data> = HashMap.new(),
 
     receive fn prefetch(ids: Vec<string>) {
         scope {
@@ -4312,12 +4312,12 @@ Hew's supervision is modeled after OTP concepts with first-class language syntax
 
 ```hew
 supervisor MyPool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child worker1: Worker(id: 1, count: 0);
-    child worker2: Worker(id: 2, count: 0) restart: transient;
-    child logger: Logger(level: 3) restart: temporary shutdown: 10s;
+    child worker1: Worker(id: 1, count: 0),
+    child worker2: Worker(id: 2, count: 0) restart: transient,
+    child logger: Logger(level: 3) restart: temporary shutdown: 10s,
 }
 ```
 
@@ -4402,16 +4402,16 @@ The shape is:
 
 ```hew
 supervisor Inner {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child w1: Worker(id: 1, count: 0);
-    child w2: Worker(id: 2, count: 0);
+    child w1: Worker(id: 1, count: 0),
+    child w2: Worker(id: 2, count: 0),
 }
 
 supervisor Root {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
     child pool: Inner;
     child cache: CacheActor(capacity: 1000);
@@ -4611,10 +4611,10 @@ surface, not an invisible runtime setting.
 <!-- doctest: skip -->
 ```hew
 actor MyActor {
-    mailbox 1024;                              // default: capacity=1024, overflow=block
-    mailbox 100 overflow drop_new;             // explicit policy
-    mailbox 100 overflow coalesce(request_id); // coalesce with key
-    mailbox 100 overflow coalesce(request_id) fallback drop_new; // explicit fallback
+    mailbox 1024,                              // default: capacity=1024, overflow=block
+    mailbox 100 overflow drop_new,             // explicit policy
+    mailbox 100 overflow coalesce(request_id), // coalesce with key
+    mailbox 100 overflow coalesce(request_id) fallback drop_new, // explicit fallback
 }
 ```
 
@@ -4653,7 +4653,7 @@ The `coalesce(key_expr)` policy replaces an existing queued message that has the
 
 ```hew
 actor PriceTracker {
-    mailbox 100 overflow coalesce(symbol);
+    mailbox 100 overflow coalesce(symbol),
 
     receive fn update_price(symbol: string, price: f64) {
         prices.insert(symbol, price);
@@ -4883,9 +4883,9 @@ integer keys, and values use the table above.
 ```hew
 #[wire]
 type User {
-    id: u64 @1;
-    name: string @2;
-    email: Option<string> @3 optional;
+    id: u64 @1,
+    name: string @2,
+    email: Option<string> @3 optional,
 }
 
 // User { id: 42, name: "alice", email: Some("alice@example.com") } encodes as:
@@ -4913,7 +4913,7 @@ emitted alongside the wire type codec path, unified on the CBOR body format.
 
 ```hew
 #[wire]
-enum Status { Pending; Active; Completed; }
+enum Status { Pending, Active, Completed, }
 
 // Status.Pending   -> CBOR integer: 0
 // Status.Active    -> CBOR integer: 1
@@ -4927,8 +4927,8 @@ Field presence is independent of `Option<T>`'s null/value representation:
 ```hew
 #[wire]
 type Config {
-    timeout_ms: u64 @1;
-    proxy_url: Option<string> @2 optional;
+    timeout_ms: u64 @1,
+    proxy_url: Option<string> @2 optional,
 }
 
 // Config { timeout_ms: 5000, proxy_url: None } encodes as:
@@ -4955,8 +4955,8 @@ Lists are encoded as CBOR **arrays**. Each element is encoded according to the e
 ```hew
 #[wire]
 type Data {
-    values: [i64] @1;
-    tags: [string] @2;
+    values: [i64] @1,
+    tags: [string] @2,
 }
 
 // Data { values: [1, 2, 3], tags: ["a", "b"] } encodes as:
@@ -4972,9 +4972,9 @@ Nested `#[wire]` types are encoded recursively as CBOR maps:
 
 ```hew
 #[wire]
-type Inner { x: i32 @1; }
+type Inner { x: i32 @1, }
 #[wire]
-type Outer { inner: Inner @1; nested_list: [Inner] @2; }
+type Outer { inner: Inner @1, nested_list: [Inner] @2, }
 
 // Outer { inner: Inner { x: 150 }, nested_list: [Inner { x: 200 }] } encodes as:
 // CBOR map: {
@@ -5037,9 +5037,9 @@ Per-field override always wins over the type-level convention.
 #[json(camelCase)]
 #[wire]
 type User {
-    user_name: string @1;                       // JSON: "userName"
-    email_address: string @2;                   // JSON: "emailAddress"
-    internal_id: string @3 json("id");          // JSON: "id"  (override wins)
+    user_name: string @1,                       // JSON: "userName"
+    email_address: string @2,                   // JSON: "emailAddress"
+    internal_id: string @3 json("id"),          // JSON: "id"  (override wins)
 }
 ```
 
@@ -5058,8 +5058,8 @@ Without the type-level attribute, names are preserved exactly:
 ```hew
 #[wire]
 type User {
-    user_name: string @1;
-    email_address: string @2;
+    user_name: string @1,
+    email_address: string @2,
 }
 ```
 
@@ -5076,7 +5076,7 @@ Wire enums encode as the string name of the variant:
 
 ```hew
 #[wire]
-enum Status { Pending; Active; Completed; }
+enum Status { Pending, Active, Completed, }
 ```
 
 ```json
@@ -5100,7 +5100,7 @@ Enum variant names are used as-is by default. Apply `#[json(camelCase)]` (or ano
 ```hew
 #[json(camelCase)]
 #[wire]
-enum Status { PendingReview; ActiveNow; Completed; }
+enum Status { PendingReview, ActiveNow, Completed, }
 ```
 
 ```json

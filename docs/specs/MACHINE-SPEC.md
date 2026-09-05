@@ -53,19 +53,19 @@ A `machine` is a strict superset of an `enum` at the type level — it defines a
 machine TcpState {
     // Input-event vocabulary, declared up front.
     events {
-        Connect;
-        SynAck;
-        Data { payload: string; }
-        Close;
-        Timeout;
+        Connect,
+        SynAck,
+        Data { payload: string, },
+        Close,
+        Timeout,
     }
 
     // States with optional per-state data.
-    state Closed;
-    state Listen { backlog: i64; }
-    state Established { local_seq: i64; remote_seq: i64; }
-    state FinWait;
-    state TimeWait;
+    state Closed,
+    state Listen { backlog: i64, },
+    state Established { local_seq: i64, remote_seq: i64, },
+    state FinWait,
+    state TimeWait,
 
     // Transitions: on EventName: SourceState => TargetState { body }
     on Connect: Closed => Listen {
@@ -101,8 +101,8 @@ Every machine declares its input-event vocabulary in a single `events {}` block
 at the top of the body, before the states.
 
 ```
-events { EventDecl { EventDecl } }
-EventDecl = Ident ( ";" | "{" { FieldDecl } "}" [";"] )
+events { EventDecl { "," EventDecl } [","] }
+EventDecl = Ident [ "{" FieldDecl { "," FieldDecl } [","] "}" ]
 ```
 
 - Event names MUST be `PascalCase` identifiers, unique within the machine.
@@ -117,7 +117,7 @@ An optional `emits {}` block declares the Mealy-output vocabulary — the events
 transition body may produce via `emit`.
 
 ```
-emits { Ident ";" { Ident ";" } }
+emits { Ident { "," Ident } [","] }
 ```
 
 - Each entry names a declared event the machine may `emit`.
@@ -129,13 +129,15 @@ emits { Ident ";" { Ident ";" } }
 A state declaration introduces a named variant of the machine type.
 
 ```
-state Ident ;
-state Ident { { FieldDecl } [ "entry" Block ] [ "exit" Block ] } [";"]
+state Ident,
+state Ident { { FieldDecl "," } [ "entry" Block ] [ "exit" Block ] },
 ```
 
 - State names MUST be `PascalCase` identifiers, unique within the machine.
 - A machine MUST declare at least two states.
-- Fields within a state follow struct field syntax: `name: Type;`.
+- Fields within a state follow struct field syntax: `name: Type,`.
+- Commas separate state declarations and may be omitted immediately before
+  their enclosing closing brace. Newlines never replace separators.
 - State fields are accessible as `self.field` inside transition bodies where that state is the source.
 - A state body may carry `entry {}` / `exit {}` lifecycle blocks (run on state change).
 
@@ -233,7 +235,7 @@ Transitions produce a new state and may additionally emit named output events vi
 
 ```hew
 actor ConnectionManager {
-    var tcp: TcpState = TcpState.Closed;
+    var tcp: TcpState = TcpState.Closed,
 
     receive fn handle(event: TcpStateEvent) {
         tcp.step(event);
@@ -288,12 +290,12 @@ Wildcard transitions act as defaults — they fill uncovered cells for a given e
 ```hew
 machine Light {
     events {
-        Toggle;
-        Dim;
+        Toggle,
+        Dim,
     }
 
-    state Off;
-    state On;
+    state Off,
+    state On,
 
     on Toggle: Off => On { On }
     on Toggle: On => Off { Off }
@@ -356,12 +358,12 @@ exhaustiveness for all otherwise-uncovered cells:
 ```hew
 machine Tank {
     events {
-        Fill;
-        Drain;
+        Fill,
+        Drain,
     }
 
-    state Filling;
-    state Draining;
+    state Filling,
+    state Draining,
 
     on Drain: Filling => Draining { Draining }
 
@@ -400,11 +402,11 @@ The compiler generates a companion enum for events:
 ```hew
 // For machine TcpState, the compiler generates:
 enum TcpStateEvent {
-    Connect;
-    SynAck;
-    Data { payload: string; };
-    Close;
-    Timeout;
+    Connect,
+    SynAck,
+    Data { payload: string, },
+    Close,
+    Timeout,
 }
 ```
 
@@ -417,12 +419,12 @@ Machines MAY be parameterized by type parameters:
 ```hew
 machine StateMachine<T> {
     events {
-        Load { item: T; }
-        Clear;
+        Load { item: T, },
+        Clear,
     }
 
-    state Empty;
-    state Loaded { data: T; }
+    state Empty,
+    state Loaded { data: T, },
 
     on Load(item): Empty => Loaded {
         Loaded { data: item }
@@ -680,14 +682,14 @@ for user-defined record types used as actor state).
 ```hew
 machine CircuitBreaker {
     events {
-        Success;
-        Failure { timestamp: i64; }
-        Tick { now: i64; }
+        Success,
+        Failure { timestamp: i64, },
+        Tick { now: i64, }
     }
 
-    state Closed { failures: i64; }
-    state Open { expires_at: i64; }
-    state HalfOpen { successes: i64; }
+    state Closed { failures: i64, },
+    state Open { expires_at: i64, },
+    state HalfOpen { successes: i64, },
 
     // --- Success transitions ---
     on Success: Closed => Closed reenter {
@@ -752,7 +754,7 @@ current MIR limitation, not yet fully lowered):
 
 ```hew
 actor ApiGateway {
-    var breaker: CircuitBreaker = CircuitBreaker.Closed { failures: 0 };
+    var breaker: CircuitBreaker = CircuitBreaker.Closed { failures: 0 },
 
     receive fn call(req: Request) -> Result<Response, string> {
         // Check circuit state
@@ -825,19 +827,20 @@ MachineDecl    = "machine" Ident TypeParams? WhereClause? "{"
                    [ DefaultArm ]
                  "}" ;
 
-EventsHeader   = "events" "{" { EventDecl } "}" ;
+EventsHeader   = "events" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
 
-EventDecl      = Ident ( ";" | "{" { StructFieldDecl } "}" ";"? ) ;
+EventDecl      = Ident [ "{" FieldList "}" ] ;
+FieldList      = [ StructFieldDecl { "," StructFieldDecl } [ "," ] ] ;
 
-EmitsHeader    = "emits" "{" { Ident ";" } "}" ;
+EmitsHeader    = "emits" "{" [ Ident { "," Ident } [ "," ] ] "}" ;
 
 StateDecl      = "state" Ident ( "{"
-                   { StructFieldDecl }
+                   { StructFieldDecl "," }
                    [ "entry" Block ]
                    [ "exit"  Block ]
                    { CompositeMember }       (* depth-1 composite only *)
                    { TransitionDecl }        (* parent-level rules *)
-                 "}" )? ";"? ;
+                 "}" )? "," ;
 
 CompositeMember = [ "initial" ] StateDecl ;  (* exactly one "initial" required *)
 
@@ -853,13 +856,18 @@ TransitionSource = Ident | "_" ;            (* dotted Composite.Leaf strips to L
 
 TransitionTarget = Ident | "_" ;
 
-TransitionBody = ";" | "{" FieldInits "}" | Block ;
+TransitionBody = "," | "{" FieldInits "}" | Block ;
 ```
 
 `events`, `emits`, `reenter`, and `initial` are contextual keywords valid only
 inside a machine body; they do not reserve global identifiers. Where
 `StructFieldDecl`, `TypeParams`, `WhereClause`, `Block`, `Expr`, and `Ident` are
 as defined in the base Hew grammar.
+
+In these illustrative fragments, the last structural member's comma may be
+omitted immediately before the enclosing `}`. A route with an executable
+block is self-delimiting; a bodyless route uses a comma. Statements inside
+route and lifecycle blocks retain their semicolons.
 
 A `state` whose body contains substate declarations (`CompositeMember`) is a
 **depth-1 composite**. It desugars entirely at the parser/AST level to the flat

@@ -314,7 +314,7 @@ Bind with a name then guard: `x if cond =>`. A block-bodied arm `=> { ... }` sti
 ### match on enum variants binding payloads
 
 ```hew
-enum Event { Number(i64); Text(string); Empty; }
+enum Event { Number(i64), Text(string), Empty, }
 fn describe(e: Event) -> string {
     match e {
         .Number(n) if n > 100 => "big number",
@@ -330,7 +330,7 @@ Variant arms bind their payload positionally. Construct values with dotted varia
 ### match exhaustiveness is enforced
 
 ```hew
-enum Colour { Red; Green; Blue; }
+enum Colour { Red, Green, Blue, }
 // match c { .Red => 1, .Green => 2 }  // compile error: non-exhaustive match: missing Blue
 fn code(c: Colour) -> i64 { match c { .Red => 1, .Green => 2, .Blue => 3 } }
 ```
@@ -340,7 +340,7 @@ Omit `_` when matching a closed enum so the compiler forces every variant. A mis
 ### full-field struct pattern
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn sum(p: Point) -> i64 {
     match p {
         Point { x, y } => x + y,
@@ -456,7 +456,7 @@ Annotate the binding type so the element type is inferred. `.len()` returns `i64
 ### v[i] — trapping element accessor
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn main() {
     let v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
@@ -538,7 +538,7 @@ Prefer for-in for read-only traversal of any element type, including
 ### Index-loop with v[i] or .get(i)
 
 ```hew
-enum Colour { Red; Green; Blue; }
+enum Colour { Red, Green, Blue, }
 fn main() {
     let v: Vec<Colour> = Vec.new();
     v.push(Colour.Red);
@@ -683,7 +683,7 @@ fn main() {
 ### Supported HashMap value types
 
 ```hew
-type User { name: string; score: i64; }
+type User { name: string, score: i64, }
 
 fn main() {
     // Scalar values
@@ -992,7 +992,7 @@ deref/borrow access to the payload, and cross-actor transfer are not supported.
 ### Struct value param and returning a struct
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn translate(p: Point, dx: i64, dy: i64) -> Point {
     Point { x: p.x + dx, y: p.y + dy }
 }
@@ -1009,7 +1009,7 @@ For transformations, construct and return a fresh struct literal. Struct fields 
 ### Snapshot-on-send: the sender keeps its value
 
 ```hew
-actor Sink { let id: i64; receive fn take(data: string) -> i64 { data.len() } }
+actor Sink { let id: i64, receive fn take(data: string) -> i64 { data.len() } }
 fn main() {
     let s = spawn Sink(id: 0);
     let msg: string = "hello";
@@ -1043,7 +1043,7 @@ Pass strings and scalars without ceremony and keep using them. Concatenation wit
 ### Record declaration, construction, field access
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn main() {
     let p = Point { x: 3, y: 4 };
     println(p.x);
@@ -1056,7 +1056,7 @@ Struct fields use bare `name: T;` with semicolon terminators and no `let`/`var` 
 ### Mutable struct via var binding
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn main() {
     var p = Point { x: 1, y: 2 };
     p.x = 10;
@@ -1069,8 +1069,8 @@ Bind with `var` to reassign fields; `let` is immutable. Immutability is on the b
 ### Nested struct fields
 
 ```hew
-type Point { x: i64; y: i64; }
-type Line { start: Point; end: Point; }
+type Point { x: i64, y: i64, }
+type Line { start: Point, end: Point, }
 fn main() {
     let l = Line { start: Point { x: 0, y: 0 }, end: Point { x: 3, y: 4 } };
     println(l.start.x);
@@ -1092,8 +1092,8 @@ Compose records by nesting; access depth-chains directly. Every field must be su
 >
 > ```hew
 > // Definition — semicolons throughout (idiomatic)
-> type Point { x: i64; y: i64; }
-> enum Color { Red; Green; Blue; }
+> type Point { x: i64, y: i64, }
+> enum Color { Red, Green, Blue, }
 >
 > // Construction — commas (required)
 > let p = Point { x: 1, y: 2 };
@@ -1106,9 +1106,9 @@ Compose records by nesting; access depth-chains directly. Every field must be su
 
 ```hew
 enum Shape {
-    Empty;
-    Circle(f64);
-    Rect { w: f64; h: f64 }
+    Empty,
+    Circle(f64),
+    Rect { w: f64, h: f64 }
 }
 fn area(s: Shape) -> f64 {
     match s {
@@ -1129,8 +1129,8 @@ Mix unit, tuple, and struct variants in one enum. Enum variants are separated by
 
 ```hew
 enum Cmd {
-    Move(i64, i64);
-    Stop;
+    Move(i64, i64),
+    Stop,
     Speak { text: string }
 }
 fn describe(c: Cmd) -> string {
@@ -1148,7 +1148,7 @@ Combine literal patterns for special cases above general binding patterns — or
 ### Qualified variant construction
 
 ```hew
-indirect enum Expr { Lit(i64); Add(Expr, Expr); }
+indirect enum Expr { Lit(i64), Add(Expr, Expr), }
 fn eval(e: Expr) -> i64 {
     match e {
         .Lit(n) => n,
@@ -1169,9 +1169,9 @@ The bare spelling — a variant name with neither the dot nor the type qualifier
 
 ```hew
 indirect enum Expr {
-    Lit(i64);
-    Add(Expr, Expr);
-    Neg(Expr);
+    Lit(i64),
+    Add(Expr, Expr),
+    Neg(Expr),
 }
 fn eval(e: Expr) -> i64 {
     match e {
@@ -1192,8 +1192,8 @@ Prefix the enum keyword with `indirect` for self-referential variants (AST/tree 
 
 ```hew
 enum MyOpt<T> {
-    Has(T);
-    Empty;
+    Has(T),
+    Empty,
 }
 fn main() {
     let a: MyOpt<i64> = .Has(42);
@@ -1209,9 +1209,9 @@ Parameterize an enum with `<T>` for container-like sum types; annotate the bindi
 ### Struct or enum as a receive fn message parameter
 
 ```hew
-type Record { key: i64; val: i64; }
+type Record { key: i64, val: i64, }
 actor Sink {
-    var last: i64;
+    var last: i64,
     init() { last = 0; }
     receive fn put(r: Record) { last = r.val; }
     receive fn get() -> i64 { last }
@@ -1229,9 +1229,9 @@ Structs and enums cross the actor boundary as message payloads — pass them as 
 ### Block-bodied match arms
 
 ```hew
-enum Op { Inc(i64); Reset; }
+enum Op { Inc(i64), Reset, }
 actor Acc {
-    var total: i64;
+    var total: i64,
     init() { total = 0; }
     receive fn apply(op: Op) {
         match op {
@@ -1255,7 +1255,7 @@ When a match arm runs statements (e.g. an assignment), wrap the body in `{ ... }
 
 ```hew
 actor Bank {
-    var balance: i64 = 0;
+    var balance: i64 = 0,
     receive fn deposit(amt: i64) { balance = balance + amt; }
     receive fn balance_of() -> i64 { balance }
 }
@@ -1273,7 +1273,7 @@ Use `var` for fields a handler mutates (give a default), `let` for fields set on
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn increment(n: i64) { count = count + n; }
     receive fn total() -> i64 { count }
 }
@@ -1285,7 +1285,7 @@ Reference and assign state fields by bare name — there is no field prefix. Sta
 
 ```hew
 actor Greeter {
-    let name: i64;
+    let name: i64,
     receive fn greet() -> i64 { name }
 }
 fn main() {
@@ -1301,7 +1301,7 @@ The handle type is `LocalPid<T>` (the actor type itself). Let it infer, or annot
 
 ```hew
 actor Logger {
-    var n: i64 = 0;
+    var n: i64 = 0,
     receive fn log(msg: i64) { println(f"log: {msg}"); n = n + 1; }
     receive fn ping() { println("pong"); }
 }
@@ -1318,7 +1318,7 @@ Call a return-less `receive fn` directly with no `await` — the checker derives
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn increment(n: i64) { count = count + n; }
     receive fn total() -> i64 { count }
 }
@@ -1341,7 +1341,7 @@ Write request-reply as `await ref.method(args)` and match `Ok`/`Err`. The reply 
 ```hew
 actor Src { receive fn val() -> i64 { 42 } }
 actor Consumer {
-    var src: LocalPid<Src>;
+    var src: LocalPid<Src>,
     receive fn run(unused: i64) -> i64 {
         // await as a statement, inside a receive fn — always valid
         let r = await src.val();
@@ -1387,7 +1387,7 @@ Note that `.send()` is accepted as an actor method name and compiles correctly �
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn bump() -> i64 { count = count + 1; count }
 }
 fn run() -> Result<i64, AskError> {
@@ -1405,7 +1405,7 @@ Inside a fn returning `Result<_, AskError>`, use `let v? = await ...` to unwrap 
 
 ```hew
 actor Boot {
-    var ready: i64 = 0;
+    var ready: i64 = 0,
     #[on(start)] fn boot() { ready = 99; println("started"); }
     #[on(stop)] fn done() { println("stopped"); }
     receive fn status() -> i64 { ready }
@@ -1429,7 +1429,7 @@ the actor handle instead.
 ```hew
 actor FileWriter {
     // Stand-in for the private descriptor of a file or socket.
-    var descriptor: i64 = -1;
+    var descriptor: i64 = -1,
 
     #[on(start)]
     fn open() {
@@ -1464,7 +1464,7 @@ open, use, and close the real resource.
 import std.failure.{ CrashInfo, CrashAction };
 
 actor Risky {
-    var n: i64 = 0;
+    var n: i64 = 0,
     #[on(start)] fn boot() { n = 1; }
     #[on(crash)] fn on_fail(info: CrashInfo) -> CrashAction { panic("crash observed") }
     receive fn value() -> i64 { n }
@@ -1483,7 +1483,7 @@ Declare `#[on(crash)]` as `fn name(info: CrashInfo) -> CrashAction` and satisfy 
 ```hew
 fn double(x: i64) -> i64 { x * 2 }
 actor Calc {
-    var acc: i64 = 0;
+    var acc: i64 = 0,
     receive fn apply(n: i64) -> i64 { acc = acc + double(n); acc }
 }
 fn main() {
@@ -1501,7 +1501,7 @@ A plain `fn` in an actor body is an actor method: a helper over that actor's own
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn next() -> i64 { count + 1 }
     receive fn increment() { count = next(); }
 }
@@ -1513,11 +1513,11 @@ An actor method has no mailbox slot, so it is unreachable from outside the actor
 
 ```hew
 actor Worker {
-    let id: i64;
+    let id: i64,
     receive fn work(n: i64) -> i64 { n * id }
 }
 actor Manager {
-    var worker: LocalPid<Worker>;
+    var worker: LocalPid<Worker>,
     receive fn dispatch(n: i64) -> i64 {
         let r = await worker.work(n);
         match r { .Ok(v) => v, .Err(_) => -1 }
@@ -1618,7 +1618,7 @@ handlers can run between ticks.
 
 ```hew
 actor Pulse {
-    var count: i64 = 0;
+    var count: i64 = 0,
 
     #[every(50ms)]
     receive fn tick() {
@@ -1660,8 +1660,8 @@ the loop exits. Use a periodic receive handler and a flag instead:
 
 ```hew
 actor Worker {
-    var running: bool = true;
-    var ticks: i64 = 0;
+    var running: bool = true,
+    var ticks: i64 = 0,
 
     #[every(25ms)]
     receive fn tick() {
@@ -1720,7 +1720,7 @@ Inside a receive handler, use the suspending `await` form instead:
 import std.net;
 
 actor Server {
-    let addr: string;
+    let addr: string,
 
     receive fn serve() {
         let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
@@ -1746,9 +1746,9 @@ scheduler-thread cost applies.
 
 ```hew
 machine Counter {
-    events { Inc; Reset; }
-    state Zero;
-    state NonZero { value: i64; }
+    events { Inc, Reset, }
+    state Zero,
+    state NonZero { value: i64, },
     on Inc: Zero => NonZero { Counter.NonZero { value: 1 } }
     on Inc: NonZero => NonZero reenter { Counter.NonZero { value: self.value + 1 } }
     on Reset: NonZero => Zero { Counter.Zero }
@@ -1816,11 +1816,11 @@ computes the next state) is a wildcard rather than a variant, so it takes no dot
 
 ```hew
 machine Switch {
-    events { Toggle; }
-    state Off;
-    state On;
-    on Toggle: Off => .On;
-    on Toggle: On => .Off;
+    events { Toggle, }
+    state Off,
+    state On,
+    on Toggle: Off => .On,
+    on Toggle: On => .Off,
 }
 ```
 
@@ -1831,9 +1831,9 @@ removes the dot.
 
 ```hew
 machine Log {
-    events { Append { item: i64; } Clear; }
-    state Empty;
-    state Filled { items: Vec<i64>; }
+    events { Append { item: i64, }, Clear, }
+    state Empty,
+    state Filled { items: Vec<i64>, },
     on Append(item): Empty => Filled {
         let v: Vec<i64> = Vec.new(); v.push(item); Filled { items: v }
     }
@@ -1863,9 +1863,9 @@ Read the prior vec out of `self.items`, push, and rebuild the variant. Access el
 
 ```hew
 machine Acc {
-    events { Add { n: i64; } }
-    state Seed;
-    state Total { sum: i64; }
+    events { Add { n: i64, } }
+    state Seed,
+    state Total { sum: i64, },
     on Add: Seed => Total { Total { sum: event.n } }
     on Add: Total => Total reenter { Total { sum: self.sum + event.n } }
 }
@@ -1887,10 +1887,10 @@ Prefer the head binding `on Add(n): ...` so payload names are declared at the ru
 
 ```hew
 machine Conn {
-    events { Start; Bump; Kill; }
-    state Idle;
-    state Live { hits: i64; }
-    state Dead;
+    events { Start, Bump, Kill, }
+    state Idle,
+    state Live { hits: i64, },
+    state Dead,
     on Start: Idle => Live { Live { hits: 0 } }
     on Bump: Live => Live reenter {
         if self.hits + 1 >= 3 { Conn.Dead } else { Live { hits: self.hits + 1 } }
@@ -1912,9 +1912,9 @@ fn main() {
 
 ```hew
 machine Door {
-    events { Open; Close; }
-    state Shut;
-    state Ajar { angle: i64; }
+    events { Open, Close, }
+    state Shut,
+    state Ajar { angle: i64, },
     on Open: Shut => Ajar { Ajar { angle: 90 } }
     on Close: Ajar => Shut { Door.Shut }
     default { state }
@@ -1935,7 +1935,7 @@ Pass machines by value into and out of free functions and mutate a local `var`. 
 
 ```hew
 trait Named { fn name(self) -> string; }
-type User { name: string; }
+type User { name: string, }
 impl Named for User { fn name(self) -> string { self.name } }
 fn announce<T: Named>(item: T) { println(item.name()); }
 fn main() { announce(User { name: "Bob" }); }   // Bob
@@ -1948,7 +1948,7 @@ Declare the impl as `impl Trait for Type`, bound the parameter `<T: Trait>`, and
 ```hew
 trait HasName { fn name(self) -> string; }
 trait HasScore { fn score(self) -> i64; }
-type Player { name: string; score: i64; }
+type Player { name: string, score: i64, }
 impl HasName for Player { fn name(self) -> string { self.name } }
 impl HasScore for Player { fn score(self) -> i64 { self.score } }
 fn report<T: HasName + HasScore>(item: T) {
@@ -1971,7 +1971,7 @@ Unbounded `<T>` works when you only move/return the value. To call any method or
 ### Generic free function over a generic record
 
 ```hew
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 fn fst<A, B>(p: Pair<A, B>) -> A { p.first }
 fn main() { let p = Pair { first: 100, second: 2.5 }; println(fst(p)); }   // 100
 ```
@@ -1981,7 +1981,7 @@ Read fields of a generic record inside a generic free function — prefer a free
 ### Generic record type with all-bitcopy fields
 
 ```hew
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 fn main() {
     let p = Pair { first: 10, second: 3.5 };
     println(p.first);
@@ -1994,7 +1994,7 @@ Use generic records as lightweight bitcopy containers over scalar types (`i64`, 
 ### Generic record type with an owned field
 
 ```hew
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 fn make() -> Pair<i64, string> { Pair { first: 1, second: "owned" } }
 fn main() {
     let p = make();
@@ -2021,7 +2021,7 @@ Accept `Vec<T>` in a generic function and use `.len()`/`v[i]`.
 ### Vec of a concrete enum (including string payload)
 
 ```hew
-enum Shape { Circle(f64); Named(string); }
+enum Shape { Circle(f64), Named(string), }
 fn main() {
     let v: Vec<Shape> = Vec.new();
     v.push(Shape.Circle(1.5));
@@ -2035,7 +2035,7 @@ A monomorphic enum, even one carrying a string payload, is a valid Vec element. 
 ### Vec of a concrete record
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn main() {
     let v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
@@ -2067,7 +2067,7 @@ fn main() {
 **An explicit type argument is one way to pin a generic constructor's type argument, not the only one.** The checker also resolves `T` from the **expected return type** at the call site — a `let` binding's declared type, a function's declared return type, or an argument position — without an explicit type argument:
 
 ```hew
-type Stack<T> { items: Vec<T>; }
+type Stack<T> { items: Vec<T>, }
 
 fn new_empty<T>() -> Stack<T> { Stack { items: Vec.new() } }
 
@@ -2172,7 +2172,7 @@ currently supported)``. From the current module it is rejected earlier, as a
 interpolation:
 
 ```hew
-type Celsius { degrees: f64; }
+type Celsius { degrees: f64, }
 
 impl Display for Celsius {
     fn fmt(self) -> string {
@@ -2341,7 +2341,7 @@ A function that calls into several modules names `dyn Error` as its error type i
 import std.fs;
 
 enum PortError {
-    NotANumber(string);
+    NotANumber(string),
 }
 
 impl Display for PortError {
@@ -2535,7 +2535,7 @@ A trait method can carry a default body (`fn shout(self) -> string { self.greet(
 ### Display trait (fmt) for f-string interpolation
 
 ```hew
-type Point { x: f64; y: f64 }
+type Point { x: f64, y: f64 }
 impl Display for Point {
     fn fmt(self) -> string {
         f"({self.x}, {self.y})"
@@ -3032,13 +3032,13 @@ type participate — integers, `bool`, `char`, `string`, `duration`, nested
 records/enums, and **floating-point** fields (`f64`/`f32`, see below).
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 
 enum Color {
-    Red;
-    Green;
-    Blue;
-    Custom(i64);
+    Red,
+    Green,
+    Blue,
+    Custom(i64),
 }
 
 fn main() {
@@ -3067,9 +3067,9 @@ fn main() {
 so records and enums with payloads work transparently:
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 
-enum Tag { A; B(i64); }
+enum Tag { A, B(i64), }
 
 fn main() {
     // Primitive and string elements
@@ -3174,7 +3174,7 @@ refcounted heap handles:
 <!-- doctest: skip -->
 
 ```hew
-type Packet { data: bytes; }
+type Packet { data: bytes, }
 // Packet { data: bytes } == Packet { data: bytes }
 // ^^^ rejected: `==` on record type `Packet` is not supported because a
 //     field or payload contains layout-managed/non-Copy data `bytes`
@@ -3355,7 +3355,7 @@ handle inside the handler.
 import std.stream;
 
 actor Echo {
-    let n: i64;
+    let n: i64,
     receive fn run(unused: i64) {
         let (sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
         for i in 0..n {

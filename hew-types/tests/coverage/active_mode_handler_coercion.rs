@@ -117,7 +117,7 @@ fn user_transport_short_names_keep_user_attach_dispatch() {
             r"
             {module_import}
 
-            type {type_name} {{ value: i64; }}
+            type {type_name} {{ value: i64, }}
 
             impl {type_name} {{
                 fn attach(self, increment: i64) -> i64 {{

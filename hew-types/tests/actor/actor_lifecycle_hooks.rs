@@ -180,7 +180,7 @@ fn typecheck_link_monitor_import_edge(
     let target_items = common::parse_program(target_source).items;
     let mut consumer = common::parse_program(&format!(
         "import {}.{{CrashKind}};\n\
-         pub enum ImportedReason {{ Crashed(CrashKind); }}",
+         pub enum ImportedReason {{ Crashed(CrashKind), }}",
         target_path.join(".")
     ));
     for (item, _) in &mut consumer.items {

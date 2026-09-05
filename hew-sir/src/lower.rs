@@ -4130,13 +4130,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
     }
 
-    /// Lower a semantic tuple projection without exposing aggregate layout.
-    fn lower_tuple_get(
+    fn tuple_projection_index(
         &mut self,
         expr: &HirExpr,
         tuple_expr: &HirExpr,
         index: usize,
-    ) -> Result<ValueId, String> {
+    ) -> Result<u32, String> {
         let tuple_ty = self.ty(&tuple_expr.ty);
         let ResolvedTy::Tuple(elements) = &tuple_ty else {
             return Err(format!(
@@ -4163,6 +4162,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let index = u32::try_from(index).map_err(|_| {
             "tuple projection index exceeds SIR's target-independent u32 field range".to_string()
         })?;
+        Ok(index)
+    }
+
+    /// Lower a semantic tuple projection without exposing aggregate layout.
+    fn lower_tuple_get(
+        &mut self,
+        expr: &HirExpr,
+        tuple_expr: &HirExpr,
+        index: usize,
+    ) -> Result<ValueId, String> {
+        let index = self.tuple_projection_index(expr, tuple_expr, index)?;
+        let tuple_ty = self.ty(&tuple_expr.ty);
         let tuple = self.lower_read_operand(tuple_expr, "tuple projection operand")?;
         if is_initial_value_type(&tuple_ty) {
             self.emit(expr, SemOpKind::TupleGet { tuple, index })
@@ -4439,13 +4450,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(aggregate)
     }
 
-    /// Lower an ordinary named-field read as an explicit independent copy.
-    fn lower_aggregate_project(
+    /// Resolve a named projection once for both owned and borrowed reads.
+    fn aggregate_projection_shape(
         &mut self,
         expr: &HirExpr,
         object: &HirExpr,
         field: &str,
-    ) -> Result<ValueId, String> {
+    ) -> Result<(AggregateShapeRef, u32), String> {
         let aggregate_ty = self.ty(&object.ty);
         let shape = self.service.require_aggregate_shape(&aggregate_ty)?;
         let AggregateShapeRef::Record(id) = shape else {
@@ -4476,16 +4487,113 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 expected_ty.user_facing()
             ));
         }
+        Ok((
+            shape,
+            u32::try_from(index).map_err(|_| "aggregate field index exceeds u32")?,
+        ))
+    }
+
+    /// Lower an ordinary named-field read as an explicit independent copy.
+    fn lower_aggregate_project(
+        &mut self,
+        expr: &HirExpr,
+        object: &HirExpr,
+        field: &str,
+    ) -> Result<ValueId, String> {
+        let (shape, field) = self.aggregate_projection_shape(expr, object, field)?;
         let aggregate = self.lower_read_operand(object, "aggregate projection operand")?;
         self.emit(
             expr,
             SemOpKind::AggregateProjectCopy {
                 shape,
                 aggregate,
-                field: u32::try_from(index)
-                    .map_err(|_| "aggregate field index exceeds u32".to_string())?,
+                field,
             },
         )
+    }
+
+    /// These expressions cannot consume a prior argument's owner or branch to
+    /// cleanup while a call-local loan is open. Other evaluation needs an owned
+    /// snapshot of earlier arguments to preserve their source-order capture.
+    fn stable_argument_read(expr: &HirExpr) -> bool {
+        match &expr.kind {
+            HirExprKind::Literal(_) | HirExprKind::BindingRef { .. } => true,
+            HirExprKind::FieldAccess { object, .. } => Self::stable_argument_read(object),
+            HirExprKind::TupleIndex { tuple, .. } => Self::stable_argument_read(tuple),
+            HirExprKind::SubsumedValue { source, .. } => Self::stable_argument_read(source),
+            _ => false,
+        }
+    }
+
+    /// A call-local projection keeps its immediate parent live. Recursing over
+    /// a field chain therefore protects its root without copying intermediate
+    /// owning records. Whole-value operands already have the call's borrow
+    /// boundary and do not need an additional projection loan.
+    fn lower_borrowed_read(
+        &mut self,
+        expr: &HirExpr,
+        loans: &mut Vec<ValueId>,
+    ) -> Result<Operand, String> {
+        require_initial_scalar_read(expr.intent)?;
+        let (object, shape, field) = match &expr.kind {
+            HirExprKind::FieldAccess { object, field } => {
+                let (shape, field) = self.aggregate_projection_shape(expr, object, field)?;
+                (object.as_ref(), shape, field)
+            }
+            HirExprKind::TupleIndex { tuple, index } => {
+                let field = self.tuple_projection_index(expr, tuple, *index)?;
+                let ty = self.ty(&tuple.ty);
+                if is_initial_value_type(&ty) {
+                    return self.lower_read_operand(expr, "borrowed call argument");
+                }
+                (
+                    tuple.as_ref(),
+                    self.service.require_aggregate_shape(&ty)?,
+                    field,
+                )
+            }
+            HirExprKind::SubsumedValue { source, .. } => {
+                return self.lower_borrowed_read(source, loans);
+            }
+            _ => return self.lower_read_operand(expr, "borrowed call argument"),
+        };
+        let aggregate = self.lower_borrowed_read(object, loans)?;
+        let owning = OwnKind::of_ty(&self.ty(&expr.ty), self.service.checked_facts.rows())?
+            == OwnKind::Owned;
+        let kind = if owning {
+            SemOpKind::AggregateProjectBorrow {
+                shape,
+                aggregate,
+                field,
+            }
+        } else {
+            SemOpKind::AggregateProjectCopy {
+                shape,
+                aggregate,
+                field,
+            }
+        };
+        let value = self.emit(expr, kind)?;
+        if owning {
+            loans.push(value);
+        }
+        Ok(Operand { value })
+    }
+
+    fn end_call_loans(&mut self, loans: &[ValueId]) -> Result<(), String> {
+        for &value in loans.iter().rev() {
+            let op = SemOp {
+                id: OpId(self.ops),
+                results: Vec::new(),
+                kind: SemOpKind::EndBorrow {
+                    borrow: Operand { value },
+                },
+                provenance: Provenance::Synthesized,
+            };
+            self.current_block_mut().append_op(op)?;
+            self.ops += 1;
+        }
+        Ok(())
     }
 
     /// Lower an HIR direct call through the resolved SIR callable table.
@@ -4560,6 +4668,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut lowered_args = Vec::with_capacity(args.len());
+        let mut loans = Vec::new();
         for (index, (arg, expected)) in args.iter().zip(&params).enumerate() {
             let argument_ty = self.ty(&arg.ty);
             if argument_ty != expected.ty {
@@ -4570,14 +4679,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     expected.ty.user_facing()
                 ));
             }
+            let operand = if args[index + 1..].iter().all(Self::stable_argument_read) {
+                self.lower_borrowed_read(arg, &mut loans)?
+            } else {
+                self.lower_read_operand(arg, "direct call argument")?
+            };
             lowered_args.push(crate::BoundaryOperand {
-                operand: self.lower_read_operand(
-                    arg,
-                    &format!(
-                        "direct call argument {index} to `{}`",
-                        callee_declaration.full_path()
-                    ),
-                )?,
+                operand,
                 decision: match expected.passing {
                     SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
                     SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
@@ -4585,9 +4693,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             });
         }
         let live_at_call = self.owned_live.clone();
+        // Argument evaluation can replace an outer binding. Its new owner
+        // survives the call; only unbound expression owners are temporaries.
         let argument_temporaries: Vec<_> = live_at_call
             .keys()
-            .filter(|value| !live_before_arguments.contains(value))
+            .filter(|value| {
+                !live_before_arguments.contains(value)
+                    && !self.bindings.values().any(|bound| bound == *value)
+            })
             .copied()
             .collect();
         if return_ty == ResolvedTy::Unit {
@@ -4617,10 +4730,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             })?;
             self.current = unwind;
             self.owned_live = live_at_call.clone();
+            self.end_call_loans(&loans)?;
             self.destroy_all_live()?;
             self.set_terminator(SemTerminator::ResumeUnwind)?;
             self.current = normal;
             self.owned_live = live_at_call;
+            self.end_call_loans(&loans)?;
             for value in argument_temporaries.into_iter().rev() {
                 self.emit_destroy(value)?;
             }
@@ -4658,10 +4773,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             })?;
             self.current = unwind;
             self.owned_live = live_at_call.clone();
+            self.end_call_loans(&loans)?;
             self.destroy_all_live()?;
             self.set_terminator(SemTerminator::ResumeUnwind)?;
             self.current = normal;
             self.owned_live = live_at_call;
+            self.end_call_loans(&loans)?;
             for value in argument_temporaries.into_iter().rev() {
                 self.emit_destroy(value)?;
             }
@@ -4721,24 +4838,41 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.owned_live.keys().copied().collect();
         let mut transformed_binding = None;
         let mut lowered_args = Vec::with_capacity(args.len());
+        let mut loans = Vec::new();
+        let read_only = contract
+            .arguments
+            .iter()
+            .all(|argument| argument.effect != RuntimeArgumentEffect::Move);
         for (index, (&arg, expected)) in args.iter().zip(contract.arguments).enumerate() {
             let (value, decision) = match expected.effect {
-                RuntimeArgumentEffect::Borrow => (
-                    self.lower_read_operand(
-                        arg,
-                        &format!("runtime family `{family:?}` argument {index}"),
-                    )?
-                    .value,
-                    crate::BoundaryDecision::Borrow,
-                ),
-                RuntimeArgumentEffect::Copy => (
-                    self.lower_read_operand(
-                        arg,
-                        &format!("runtime family `{family:?}` argument {index}"),
-                    )?
-                    .value,
-                    crate::BoundaryDecision::Copy,
-                ),
+                RuntimeArgumentEffect::Borrow => {
+                    let operand = if read_only
+                        && args[index + 1..]
+                            .iter()
+                            .all(|arg| Self::stable_argument_read(arg))
+                    {
+                        self.lower_borrowed_read(arg, &mut loans)?
+                    } else {
+                        self.lower_read_operand(arg, "runtime borrow argument")?
+                    };
+                    (operand.value, crate::BoundaryDecision::Borrow)
+                }
+                RuntimeArgumentEffect::Copy => {
+                    let no_owner =
+                        OwnKind::of_ty(&parameter_types[index], self.service.checked_facts.rows())?
+                            == OwnKind::None;
+                    let operand = if read_only
+                        && no_owner
+                        && args[index + 1..]
+                            .iter()
+                            .all(|arg| Self::stable_argument_read(arg))
+                    {
+                        self.lower_borrowed_read(arg, &mut loans)?
+                    } else {
+                        self.lower_read_operand(arg, "runtime copy argument")?
+                    };
+                    (operand.value, crate::BoundaryDecision::Copy)
+                }
                 RuntimeArgumentEffect::Move => {
                     let HirExprKind::BindingRef {
                         resolved: ResolvedRef::Binding(binding),
@@ -4796,9 +4930,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             lowered_args[0].operand.value = moved;
         }
         let live_at_call = self.owned_live.clone();
+        // Argument evaluation can replace an outer binding. Its new owner
+        // survives the call; only unbound expression owners are temporaries.
         let argument_temporaries: Vec<_> = live_at_call
             .keys()
-            .filter(|value| !live_before_arguments.contains(value))
+            .filter(|value| {
+                !live_before_arguments.contains(value)
+                    && !self.bindings.values().any(|bound| bound == *value)
+            })
             .copied()
             .collect();
         if let RuntimeResultEffect::FreshOwnedVariant(kind) = contract.result {
@@ -4891,6 +5030,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if let (Some(failure), Some(block)) = (failure, failure_block) {
             self.current = block;
             self.owned_live = live_at_call.clone();
+            self.end_call_loans(&loans)?;
             self.destroy_all_live()?;
             self.set_terminator(SemTerminator::Trap {
                 kind: crate::runtime_failure_trap_kind(failure),
@@ -4898,6 +5038,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         self.current = normal_target;
         self.owned_live = live_at_call;
+        self.end_call_loans(&loans)?;
         for value in argument_temporaries.into_iter().rev() {
             self.emit_destroy(value)?;
         }
@@ -5528,11 +5669,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     ) -> Result<ValueId, String> {
         let value = self.fresh_value();
         self.service.require_type_facts(result_ty)?;
+        let own = OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?;
+        let own = if kind.borrow_parent().is_some() {
+            OwnKind::Guaranteed
+        } else {
+            own
+        };
         let op = SemOp {
             id: OpId(self.ops),
             results: vec![ValueDef {
                 id: value,
-                own: OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?,
+                own,
                 ty: result_ty.clone(),
             }],
             kind,

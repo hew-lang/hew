@@ -41,7 +41,7 @@ fn assert_main_lowered(lowered: &hew_sir::LoweredModule) {
 }
 
 #[test]
-fn owned_tuple_construction_and_repeated_projection_are_explicit() {
+fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
     let lowered = lower_source(
         r#"
         fn keep_text(value: string) {}
@@ -78,10 +78,10 @@ fn owned_tuple_construction_and_repeated_projection_are_explicit() {
         main.blocks
             .iter()
             .flat_map(|block| &block.ops)
-            .filter(|op| matches!(op.kind, SemOpKind::AggregateProjectCopy { .. }))
+            .filter(|op| matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }))
             .count(),
         3,
-        "each ordinary owned tuple field read must produce its own explicit copy"
+        "each read-only tuple argument must produce an explicit field loan"
     );
 }
 
@@ -133,7 +133,7 @@ fn owned_record_shape_and_field_order_are_exact() {
             .blocks
             .iter()
             .flat_map(|block| &block.ops)
-            .filter(|op| matches!(op.kind, SemOpKind::AggregateProjectCopy { .. }))
+            .filter(|op| matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }))
             .count(),
         4
     );
@@ -162,7 +162,8 @@ fn owned_projection_refuses_a_missing_clone_recipe() {
         fn keep_text(value: string) {}
         fn main() {
             let packet = Packet { label: "label" };
-            keep_text(packet.label);
+            let label = packet.label;
+            keep_text(label);
         }
         "#,
     );
@@ -387,4 +388,234 @@ fn aggregate_destructure_refuses_a_result_outside_the_exact_shape() {
                     && reason.contains("expected `string`")
         )
     }));
+}
+
+#[test]
+fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
+    let lowered = lower_source(
+        r#"
+        type Inner { items: Vec<string> }
+        type Outer { pair: (Inner, string) }
+        fn main() -> i64 {
+            let outer = Outer { pair: (Inner { items: ["first"] }, "sibling") };
+            outer.pair.0.items[0].len()
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|f| f.name == "main")
+        .unwrap();
+    let loans: Vec<_> = main
+        .blocks
+        .iter()
+        .flat_map(|b| &b.ops)
+        .filter(|op| matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }))
+        .map(|op| {
+            assert_eq!(op.results[0].own, hew_sir::OwnKind::Guaranteed);
+            op.results[0].id
+        })
+        .collect();
+    assert_eq!(
+        loans.len(),
+        3,
+        "record, tuple and nested record must all borrow"
+    );
+    let (normal, fault) = main
+        .blocks
+        .iter()
+        .find_map(|b| match &b.terminator {
+            SemTerminator::RtCall {
+                family: hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Index),
+                normal,
+                unwind: hew_sir::CallUnwind::Cleanup(fault),
+                result: CallResult::Value(result),
+                ..
+            } => {
+                assert_eq!(
+                    result.own,
+                    hew_sir::OwnKind::Owned,
+                    "index still extracts an independent item"
+                );
+                Some((normal.target, fault.target))
+            }
+            _ => None,
+        })
+        .unwrap();
+    for target in [normal, fault] {
+        let block = main.blocks.iter().find(|b| b.id == target).unwrap();
+        let ended: Vec<_> = block
+            .ops
+            .iter()
+            .take(loans.len())
+            .map(|op| match &op.kind {
+                SemOpKind::EndBorrow { borrow } => borrow.value,
+                other => panic!("loans must end before owner cleanup: {other:?}"),
+            })
+            .collect();
+        assert_eq!(ended, loans.iter().rev().copied().collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn borrowed_temporary_fields_can_return_an_independent_owner() {
+    let lowered = lower_source(
+        r#"
+        type Inner { text: string }
+        type Outer { inner: Inner }
+        fn make() -> Outer { Outer { inner: Inner { text: "kept" } } }
+        fn echo(value: string) -> string { value }
+        fn main() -> i64 {
+            let kept = echo(make().inner.text);
+            kept.len()
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|f| f.name == "main")
+        .unwrap();
+    assert_eq!(
+        main.blocks
+            .iter()
+            .flat_map(|b| &b.ops)
+            .filter(|op| { matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }) })
+            .count(),
+        2
+    );
+    let echo = lowered
+        .module
+        .functions
+        .iter()
+        .find(|f| f.name == "echo")
+        .unwrap();
+    assert!(
+        echo.blocks.iter().flat_map(|b| &b.ops).any(|op| {
+            matches!(op.kind, SemOpKind::CopyValue { .. })
+                && op.results[0].own == hew_sir::OwnKind::Owned
+        }),
+        "the callee must copy the guaranteed parameter before returning it"
+    );
+}
+
+#[test]
+fn earlier_arguments_capture_owned_fields_before_later_effects() {
+    for later in [r#"{ holder.items = ["new"]; 0 }"#, "indices[99]"] {
+        let lowered = lower_source(&format!(
+            r#"
+            type Holder {{ items: Vec<string> }}
+            fn read(items: Vec<string>, index: i64) -> string {{ items[index] }}
+            fn main() -> i64 {{
+                var holder = Holder {{ items: ["old"] }};
+                let indices = [0];
+                let kept = read(holder.items, {later});
+                kept.len() + holder.items[0].len()
+            }}
+            "#,
+        ));
+        assert_main_lowered(&lowered);
+        let read = lowered
+            .module
+            .callables
+            .iter()
+            .find(|c| c.symbol == "read")
+            .unwrap();
+        let main = lowered
+            .module
+            .functions
+            .iter()
+            .find(|f| f.name == "main")
+            .unwrap();
+        let captured = main
+            .blocks
+            .iter()
+            .find_map(|b| match &b.terminator {
+                SemTerminator::Call { callee, args, .. } if *callee == read.id => {
+                    Some(args[0].operand.value)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            main.blocks.iter().flat_map(|b| &b.ops).any(|op| {
+                matches!(op.kind, SemOpKind::AggregateProjectCopy { .. })
+                    && op.results[0].id == captured
+                    && op.results[0].own == hew_sir::OwnKind::Owned
+            }),
+            "later mutation or failure requires a captured independent value"
+        );
+    }
+}
+
+#[test]
+fn scalar_arguments_borrow_owning_intermediate_records() {
+    let lowered = lower_source(
+        r#"
+        type Inner { items: Vec<string>, count: i64 }
+        type Outer { inner: Inner }
+        fn echo(value: i64) -> i64 { value }
+        fn main() -> i64 {
+            let outer = Outer { inner: Inner { items: ["kept"], count: 7 } };
+            echo(outer.inner.count)
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|f| f.name == "main")
+        .unwrap();
+    let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|op| { matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }) })
+            .count(),
+        1,
+        "the intermediate owning record needs a loan"
+    );
+    assert!(
+        operations.iter().any(|op| {
+            matches!(op.kind, SemOpKind::AggregateProjectCopy { .. })
+                && op.results[0].own == hew_sir::OwnKind::None
+                && op.results[0].ty == hew_types::ResolvedTy::I64
+        }),
+        "the scalar field is still an independent bit copy"
+    );
+}
+
+#[test]
+fn runtime_read_keeps_bindings_replaced_by_index_evaluation() {
+    let lowered = lower_source(
+        r#"
+        type Holder { items: Vec<string> }
+        fn main() -> i64 {
+            var holder = Holder { items: ["old"] };
+            let kept = holder.items[{ holder.items = ["new"]; 0 }];
+            kept.len() + holder.items[0].len()
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|f| f.name == "main")
+        .unwrap();
+    assert!(
+        main.blocks.iter().flat_map(|b| &b.ops).any(|op| {
+            matches!(op.kind, SemOpKind::AggregateProjectCopy { .. })
+                && op.results[0].own == hew_sir::OwnKind::Owned
+        }),
+        "the receiver must be captured before the index expression replaces it"
+    );
 }

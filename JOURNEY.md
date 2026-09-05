@@ -816,3 +816,26 @@ and Eq also need fault-aware callbacks through the existing logical-fault
 transport; the direct-result callback ABI cannot silently turn those failures
 into process aborts. This remains an implementation boundary, not an accepted
 native-map milestone.
+
+## Map/Set source producers: first composed checkpoint
+
+Started the assigned Map lowering lane from b11433814 and retained the signed
+borrow producer. Integrated the shared collection-admission/value-recipe commit;
+both journal sections were preserved when their append points conflicted.
+
+Canonical checker-selected Map/Set constructors and methods now become typed
+semantic runtime calls. Map literal construction uses New/Insert and a mutable
+internal receiver; the old layout-symbol and type-pattern lowering path is gone.
+Call headers and ordinary binding/copy/return admission use the public canonical
+collection helper. The producer publishes component facts and shapes; the shared
+collection verifier owns recursive copy admissibility. Existing refusals for
+unimplemented function values remain separate execution-domain checks.
+
+The first composed Map copy/call/return, Set mutation/result and map literal
+programs produce verified SIR. The full HIR/SIR Make selection passes, including
+updated semantic projection assertions and meaningful ineligible-callable
+negatives (Map headers are now valid; function-value headers remain refused).
+No shared IR, verifier or physical producer changes belong to this checkpoint.
+Map index, clone/emptiness composition and the complete permanent source intake
+remain follow-up work. Native Map/Set operation emission and Hash/Eq capability
+selection are still being implemented by their named owners.

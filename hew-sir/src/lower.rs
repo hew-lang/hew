@@ -8,6 +8,7 @@ use hew_hir::{
     HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirStmtKind, IntentKind,
     ResolvedRef,
 };
+use hew_types::runtime_call::collection_type_arguments;
 use hew_types::{CallTarget, DefId, ResolvedTy, TypeCheckOutput, TypeFactService, TypeInstanceKey};
 
 use crate::ownership::{Binding, BytesLiteralId, OwnKind, StringLiteralId, TypeFactTable};
@@ -909,23 +910,24 @@ impl<'a> InstanceService<'a> {
                 continue;
             }
             require_type_facts(&mut self.checked_facts, &ty)?;
-            if let Some(element) = hew_types::vector_element_type(&ty) {
-                if !is_supported_call_value(self.module, &self.checked_facts, element) {
-                    return Err(format!(
-                        "vector element `{}` has no semantic value contract",
-                        element.user_facing()
-                    ));
+            if let Some((builtin, arguments)) = collection_type_arguments(&ty) {
+                for argument in arguments {
+                    if !is_supported_call_value(self.module, &self.checked_facts, argument) {
+                        let component = if builtin == hew_types::BuiltinType::Vec {
+                            "vector element"
+                        } else {
+                            "collection component"
+                        };
+                        return Err(format!(
+                            "{component} `{}` has no semantic value contract",
+                            argument.user_facing(),
+                        ));
+                    }
                 }
-                require_type_facts(&mut self.checked_facts, element)?;
-                if self.checked_facts.rows()[&TypeInstanceKey(element.clone())].clone
-                    == hew_types::CloneKind::None
-                {
-                    return Err(format!(
-                        "vector element `{}` has no semantic copy",
-                        element.user_facing()
-                    ));
-                }
-                pending.push(element.clone());
+                // Execution-domain admission is distinct from copyability.
+                // Publish facts/shapes; the shared dependency verifier owns
+                // recursive collection copy admissibility.
+                pending.extend(arguments.iter().cloned());
             } else if is_concrete_variant_type(self.module, &ty) {
                 let id = self.require_variant_shape(&ty)?;
                 pending.extend(
@@ -1703,7 +1705,7 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
         || matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
-        || hew_types::vector_element_type(ty).is_some()
+        || collection_type_arguments(ty).is_some()
 }
 
 fn is_concrete_aggregate_type(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
@@ -1809,7 +1811,7 @@ fn lower_initial_value_transfer(
     }
     builder.service.require_type_facts(&ty)?;
     if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
-        && hew_types::vector_element_type(&ty).is_none()
+        && collection_type_arguments(&ty).is_none()
     {
         if is_concrete_variant_type(builder.service.module, &ty) {
             builder

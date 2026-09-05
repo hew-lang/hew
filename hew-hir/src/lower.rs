@@ -28,11 +28,10 @@ use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, CallTarget, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, ImplId,
-    LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
-    NumericMethodLowering, OptionResultMethod, PatternKind, RcIntrinsicOp, ResolvedTraitBound,
-    ResolvedTy, SpanKey, Ty, TyPattern, TypeCheckOutput, UserComparisonDispatch,
-    WireCodecDirection,
+    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, LoweringFact,
+    MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily, NumericMethodLowering,
+    OptionResultMethod, PatternKind, RcIntrinsicOp, ResolvedTraitBound, ResolvedTy, SpanKey, Ty,
+    TypeCheckOutput, UserComparisonDispatch, WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -20297,7 +20296,7 @@ impl LowerCtx {
                 )
             }
         };
-        let kind = self.normalize_vector_call(kind, &ty, &span);
+        let kind = self.normalize_collection_call(kind, &ty, &span);
         let inner = HirExpr {
             node: self.ids.node(),
             site,
@@ -22055,12 +22054,8 @@ impl LowerCtx {
 
     fn is_hashmap_ty(ty: &ResolvedTy) -> bool {
         matches!(
-            ty,
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::HashMap),
-                args,
-                ..
-            } if args.len() == 2
+            hew_types::runtime_call::collection_type_arguments(ty),
+            Some((BuiltinType::HashMap, _))
         )
     }
 
@@ -22094,23 +22089,20 @@ impl LowerCtx {
                 return None;
             }
         };
-        match &result_ty {
-            ResolvedTy::Named {
-                args,
-                builtin: Some(BuiltinType::HashMap),
-                ..
-            } if args.len() == 2 => Some((result_ty.clone(), args[0].clone(), args[1].clone())),
-            other => {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "map literal".to_string(),
-                        reason: format!("checker produced non-HashMap type `{other}`"),
-                    },
-                    span.clone(),
-                    "map literal lowering requires the checker HashMap<K, V> type",
-                ));
-                None
-            }
+        if let Some((BuiltinType::HashMap, args)) =
+            hew_types::runtime_call::collection_type_arguments(&result_ty)
+        {
+            Some((result_ty.clone(), args[0].clone(), args[1].clone()))
+        } else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "map literal".to_string(),
+                    reason: format!("checker produced non-HashMap type `{result_ty}`"),
+                },
+                span.clone(),
+                "map literal lowering requires the checker HashMap<K, V> type",
+            ));
+            None
         }
     }
 
@@ -22147,39 +22139,13 @@ impl LowerCtx {
     }
 
     fn make_hashmap_new_expr(&mut self, hashmap_ty: ResolvedTy, span: Span) -> HirExpr {
-        let call_type_args = match &hashmap_ty {
-            ResolvedTy::Named { args, .. } => args.clone(),
-            _ => Vec::new(),
-        };
-        let callee_ty = ResolvedTy::Function {
-            params: Vec::new(),
-            ret: Box::new(hashmap_ty.clone()),
-        };
-        let callee = self.make_expr(
-            HirExprKind::BindingRef {
-                name: "HashMap::new".to_string(),
-                resolved: ResolvedRef::Builtin(
-                    hew_types::runtime_call::RuntimeCallFamily::HashMapNew,
-                ),
-            },
-            callee_ty,
-            IntentKind::Read,
-            span.clone(),
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Map(hew_types::runtime_call::MapValueOp::New),
+            Vec::new(),
+            &hashmap_ty,
+            &span,
         );
-        let call = self.make_expr(
-            HirExprKind::Call {
-                target: CallTarget::Runtime(hew_types::runtime_call::RuntimeCallFamily::HashMapNew),
-                callee: Box::new(callee),
-                args: Vec::new(),
-            },
-            hashmap_ty,
-            IntentKind::Read,
-            span,
-        );
-        if !call_type_args.is_empty() {
-            self.call_site_type_args.insert(call.site, call_type_args);
-        }
-        call
+        self.make_expr(kind, hashmap_ty, IntentKind::Read, span)
     }
 
     fn make_hashmap_insert_expr(
@@ -22187,38 +22153,20 @@ impl LowerCtx {
         map_ref: HirExpr,
         key: HirExpr,
         value: HirExpr,
-        key_ty: &ResolvedTy,
-        value_ty: &ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        self.make_expr(
-            HirExprKind::ResolvedImplCall {
-                receiver: Box::new(map_ref),
-                target: hew_types::CallTarget::RuntimeCollection(
-                    hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Insert),
-                ),
-                impl_id: ImplId(u32::MAX),
-                method_name: "insert".to_string(),
-                target_symbol: "hew_hashmap_insert_layout".to_string(),
-                target_family: hew_types::MethodTargetFamily::HashMap(
-                    hew_types::HashMapMethod::Insert,
-                ),
-                type_args: vec![
-                    Self::resolved_ty_pattern(key_ty),
-                    Self::resolved_ty_pattern(value_ty),
-                ],
-                args: vec![key, value],
-                ret_ty: ResolvedTy::Unit,
-            },
-            ResolvedTy::Unit,
-            IntentKind::Read,
-            span,
-        )
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Map(hew_types::runtime_call::MapValueOp::Insert),
+            vec![map_ref, key, value],
+            &ResolvedTy::Unit,
+            &span,
+        );
+        self.make_expr(kind, ResolvedTy::Unit, IntentKind::Read, span)
     }
 
     fn make_vec_push_expr(&mut self, vec_ref: HirExpr, elem: HirExpr, span: Span) -> HirExpr {
-        let kind = self.vector_call_kind(
-            hew_types::VecValueOp::Push,
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Push),
             vec![vec_ref, elem],
             &ResolvedTy::Unit,
             &span,
@@ -22227,17 +22175,16 @@ impl LowerCtx {
     }
 
     /// HIR retains semantic method identity and exact types, never an element ABI.
-    fn vector_call_kind(
+    fn collection_call_kind(
         &mut self,
-        op: hew_types::VecValueOp,
+        family: hew_types::RuntimeCallFamily,
         args: Vec<HirExpr>,
         result_ty: &ResolvedTy,
         span: &Span,
     ) -> HirExprKind {
-        let family = hew_types::RuntimeCallFamily::Vector(op);
         let callee = self.make_expr(
             HirExprKind::BindingRef {
-                name: format!("vector.{op:?}"),
+                name: format!("{family:?}"),
                 resolved: ResolvedRef::Builtin(family),
             },
             ResolvedTy::Function {
@@ -22254,18 +22201,49 @@ impl LowerCtx {
         }
     }
 
-    fn normalize_vector_call(
+    fn semantic_collection_method(
+        method: hew_types::MethodTargetFamily,
+    ) -> Option<hew_types::RuntimeCallFamily> {
+        use hew_types::runtime_call::{MapValueOp, SetValueOp};
+        use hew_types::{MethodTargetFamily, RuntimeCallFamily};
+        match method {
+            MethodTargetFamily::Vec(method) => {
+                hew_types::VecValueOp::from_method(method).map(RuntimeCallFamily::Vector)
+            }
+            MethodTargetFamily::HashMap(method) => {
+                MapValueOp::from_method(method).map(RuntimeCallFamily::Map)
+            }
+            MethodTargetFamily::HashSet(method) => {
+                SetValueOp::from_method(method).map(RuntimeCallFamily::Set)
+            }
+        }
+    }
+
+    fn normalize_collection_call(
         &mut self,
         kind: HirExprKind,
         ty: &ResolvedTy,
         span: &Span,
     ) -> HirExprKind {
+        use hew_types::runtime_call::{MapValueOp, SetValueOp};
+        use hew_types::{RuntimeCallFamily as Family, VecValueOp};
         match kind {
             HirExprKind::Call {
-                target: CallTarget::Runtime(hew_types::RuntimeCallFamily::VecNew),
+                target:
+                    CallTarget::Runtime(
+                        family @ (Family::VecNew | Family::HashMapNew | Family::HashSetNew),
+                    ),
                 args,
                 ..
-            } => self.vector_call_kind(hew_types::VecValueOp::New, args, ty, span),
+            } => {
+                let family = match family {
+                    Family::VecNew => Family::Vector(VecValueOp::New),
+                    Family::HashMapNew => Family::Map(MapValueOp::New),
+                    Family::HashSetNew => Family::Set(SetValueOp::New),
+                    _ => unreachable!("matched a canonical collection constructor"),
+                };
+                self.collection_call_kind(family, args, ty, span)
+            }
             HirExprKind::ResolvedImplCall {
                 target:
                     CallTarget::RuntimeCollection(hew_types::MethodTargetFamily::Vec(
@@ -22275,8 +22253,8 @@ impl LowerCtx {
                 args,
                 ..
             } if args.is_empty() => {
-                let length = self.vector_call_kind(
-                    hew_types::VecValueOp::Len,
+                let length = self.collection_call_kind(
+                    Family::Vector(VecValueOp::Len),
                     vec![*receiver],
                     &ResolvedTy::I64,
                     span,
@@ -22291,16 +22269,16 @@ impl LowerCtx {
                 }
             }
             HirExprKind::ResolvedImplCall {
-                target: CallTarget::RuntimeCollection(hew_types::MethodTargetFamily::Vec(method)),
+                target: CallTarget::RuntimeCollection(method),
                 receiver,
                 args,
                 ..
-            } if hew_types::VecValueOp::from_method(method).is_some() => {
-                let op = hew_types::VecValueOp::from_method(method)
-                    .expect("matched semantic vector method");
+            } if Self::semantic_collection_method(method).is_some() => {
+                let family = Self::semantic_collection_method(method)
+                    .expect("matched semantic collection method");
                 let mut operands = vec![*receiver];
                 operands.extend(args);
-                self.vector_call_kind(op, operands, ty, span)
+                self.collection_call_kind(family, operands, ty, span)
             }
             other => other,
         }
@@ -22551,7 +22529,7 @@ impl LowerCtx {
         entries: &[(Spanned<Expr>, Spanned<Expr>)],
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((map_ty, key_ty, value_ty)) = self.map_literal_hashmap_ty(span) else {
+        let Some((map_ty, _, _)) = self.map_literal_hashmap_ty(span) else {
             return (
                 HirExprKind::Unsupported("map literal missing checker HashMap type".into()),
                 ResolvedTy::Unit,
@@ -22570,7 +22548,7 @@ impl LowerCtx {
         let block_scope = self.ids.scope();
         self.push_scope();
         let temp_name = format!("__hew_map_{}", self.ids.binding().0);
-        let temp_binding = self.bind(temp_name.clone(), map_ty.clone(), false, span.clone());
+        let temp_binding = self.bind(temp_name.clone(), map_ty.clone(), true, span.clone());
         let temp_binding_id = temp_binding.id;
         let init_stmt = HirStmt {
             node: self.ids.node(),
@@ -22590,14 +22568,7 @@ impl LowerCtx {
                 IntentKind::Read,
                 key.span.clone(),
             );
-            let insert_expr = self.make_hashmap_insert_expr(
-                map_ref,
-                key,
-                value,
-                &key_ty,
-                &value_ty,
-                span.clone(),
-            );
+            let insert_expr = self.make_hashmap_insert_expr(map_ref, key, value, span.clone());
             statements.push(HirStmt {
                 node: self.ids.node(),
                 kind: HirStmtKind::Expr(insert_expr),
@@ -25062,8 +25033,8 @@ impl LowerCtx {
         _elem_ty: &ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        let kind = self.vector_call_kind(
-            hew_types::VecValueOp::Len,
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Len),
             vec![vec_expr],
             &ResolvedTy::I64,
             &span,
@@ -25266,19 +25237,6 @@ impl LowerCtx {
         let call = self.make_direct_method_call(callee.clone(), iterable, &ret_ty, span.clone());
         self.record_var_self_direct_monomorphisation(&callee, &receiver_ty, span, call.site);
         Some((call, ret_ty, elem_ty, next_call))
-    }
-
-    fn resolved_ty_pattern(ty: &ResolvedTy) -> TyPattern {
-        match ty {
-            ResolvedTy::Tuple(items) => {
-                TyPattern::Tuple(items.iter().map(Self::resolved_ty_pattern).collect())
-            }
-            ResolvedTy::Named { name, args, .. } if !args.is_empty() => TyPattern::App {
-                ctor: name.clone(),
-                args: args.iter().map(Self::resolved_ty_pattern).collect(),
-            },
-            _ => TyPattern::Primitive(ty.to_string()),
-        }
     }
 
     fn make_option_ctor(
@@ -25800,8 +25758,8 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let value_kind = self.vector_call_kind(
-            hew_types::VecValueOp::Get,
+        let value_kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Get),
             vec![vec_read_for_get, idx_read_for_get],
             &option_ty,
             &span,

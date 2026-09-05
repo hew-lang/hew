@@ -187,14 +187,19 @@ fn array_literal_lowers_to_vec_desugar() {
     assert_eq!(init.ty.user_facing().to_string(), "Vec<i64>");
     assert_eq!(block.statements.len(), 4);
     assert!(matches!(
-        block.statements[0].kind,
+        &block.statements[0].kind,
         HirStmtKind::Let(
-            _,
+            binding,
             Some(hew_hir::HirExpr {
-                kind: HirExprKind::Call { .. },
+                kind: HirExprKind::Call {
+                    target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Vector(
+                        hew_types::VecValueOp::New,
+                    )),
+                    ..
+                },
                 ..
             })
-        )
+        ) if binding.mutable
     ));
     let push_count = block
         .statements
@@ -249,14 +254,19 @@ fn map_literal_lowers_to_hashmap_new_insert_desugar() {
     assert_eq!(init.ty.user_facing().to_string(), "HashMap<string, i64>");
     assert_eq!(block.statements.len(), 3);
     assert!(matches!(
-        block.statements[0].kind,
+        &block.statements[0].kind,
         HirStmtKind::Let(
-            _,
+            binding,
             Some(hew_hir::HirExpr {
-                kind: HirExprKind::Call { .. },
+                kind: HirExprKind::Call {
+                    target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Map(
+                        hew_types::runtime_call::MapValueOp::New,
+                    )),
+                    ..
+                },
                 ..
             })
-        )
+        ) if binding.mutable
     ));
     let insert_count = block
         .statements
@@ -265,13 +275,15 @@ fn map_literal_lowers_to_hashmap_new_insert_desugar() {
             matches!(
                 &stmt.kind,
                 HirStmtKind::Expr(hew_hir::HirExpr {
-                    kind: HirExprKind::ResolvedImplCall {
-                        method_name,
-                        target_symbol,
+                    kind: HirExprKind::Call {
+                        target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Map(
+                            hew_types::runtime_call::MapValueOp::Insert,
+                        )),
+                        args,
                         ..
                     },
                     ..
-                }) if method_name == "insert" && target_symbol == "hew_hashmap_insert_layout"
+                }) if args.len() == 3
             )
         })
         .count();

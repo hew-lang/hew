@@ -592,7 +592,7 @@ fn select_actor_await_uses_checked_dispatch() {
         fn main() {
             let worker = spawn Worker;
             let result: i64 = select {
-                reply = await worker.process(41) => 1,
+                reply = await worker.process(41) => match reply { .Ok(value) => value, .Err(_) => -1 },
                 after 5ms => 0,
             };
         }

@@ -689,14 +689,14 @@ impl<K, V> Iterator for HashMapIter<K, V> {
 impl<Y, R> Iterator for Generator<Y, R> {
     type Item = Y;
     fn next(var self) -> Option<Y> {
-        self.next()
+        await self.next()
     }
 }
 
 impl<Y> Iterator for AsyncGenerator<Y> {
     type Item = Y;
     fn next(var self) -> Option<Y> {
-        self.next()
+        await self.next()
     }
 }
 

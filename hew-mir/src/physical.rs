@@ -834,6 +834,16 @@ impl PhysicalRuntimeAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
+    ActorAsk {
+        actor: ActorId,
+        message: u32,
+        deadline_ns: Option<i64>,
+        args: Vec<ArgumentTransfer>,
+        result: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     TaskSelect {
         tasks: Vec<ArgumentTransfer>,
         timeout: Option<StorageId>,
@@ -2662,6 +2672,28 @@ impl FunctionLowerer<'_> {
                 scope: *scope,
                 cancel: *cancel,
                 normal: self.lower_edge(&resumes[0])?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
+                kind:
+                    hew_sir::SuspendKind::Ask {
+                        actor,
+                        message,
+                        deadline_ns,
+                    },
+                inputs,
+                result: CallResult::Value(result),
+                resumes,
+                cancel,
+                unwind,
+            } => Ok(PhysicalTerminator::ActorAsk {
+                actor: *actor,
+                message: *message,
+                deadline_ns: *deadline_ns,
+                args: self.argument_transfers(inputs)?,
+                result: self.value(result.id)?,
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
                 unwind: self.lower_edge(unwind)?,
             }),
             SemTerminator::Suspend { .. } => Err(PhysicalError::new(
@@ -4961,6 +4993,35 @@ fn terminator_successors(
         ));
     }
     match terminator {
+        PhysicalTerminator::ActorAsk {
+            args,
+            result,
+            normal,
+            cancel,
+            unwind,
+            ..
+        } => {
+            for argument in args {
+                let ArgumentTransfer::Move(source) = argument else {
+                    return Err(PhysicalError::new("ask must consume its complete request"));
+                };
+                initialized(function, &state, *source, block, "ask request")?;
+                consume_if_owned(function, &mut state, *source)?;
+            }
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new("ask cannot replace an active fault"));
+            }
+            let mut completed = state.clone();
+            define(function, &mut completed, *result, block, "ask result")?;
+            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            state.fault = FaultState::Active;
+            let mut cancelled = state.clone();
+            cancelled.exit = defer::CANCEL;
+            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            state.exit = defer::TRAP;
+            successors.push(apply_edge(function, unwind, state, block)?);
+            Ok(successors)
+        }
         PhysicalTerminator::TaskSelect {
             tasks,
             timeout,
@@ -5443,6 +5504,42 @@ fn verify_terminator(
         }
     };
     match terminator {
+        PhysicalTerminator::ActorAsk {
+            actor,
+            message,
+            args,
+            result,
+            normal,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let signature = module
+                .actors
+                .get(actor.0 as usize)
+                .filter(|descriptor| descriptor.id == *actor)
+                .ok_or_else(|| PhysicalError::new("ask requires its exact actor descriptor"))?
+                .ask_signature(*message)
+                .map_err(PhysicalError::new)?;
+            if args.len() != signature.params.len() || slot(*result)?.ty != signature.return_ty {
+                return Err(PhysicalError::new(
+                    "ask differs from its full protocol signature",
+                ));
+            }
+            for (argument, parameter) in args.iter().zip(&signature.params) {
+                let ArgumentTransfer::Move(source) = argument else {
+                    return Err(PhysicalError::new("ask must transfer its complete request"));
+                };
+                if slot(*source)?.ty != parameter.ty {
+                    return Err(PhysicalError::new(
+                        "ask request field changes its protocol type",
+                    ));
+                }
+            }
+            edge(normal)?;
+            edge(cancel)?;
+            edge(unwind)
+        }
         PhysicalTerminator::TaskSelect {
             tasks,
             timeout,

@@ -455,7 +455,11 @@ pub enum SuspendKind {
     Await,
     RestartWait,
     ActorSend,
-    Ask,
+    Ask {
+        actor: crate::ActorId,
+        message: u32,
+        deadline_ns: Option<i64>,
+    },
     RemoteAsk,
     Read,
     Accept,

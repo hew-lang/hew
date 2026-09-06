@@ -3257,7 +3257,7 @@ impl Checker {
                 // raised during lowering).
                 if let Expr::Await(await_inner) = &inner.0 {
                     let inner_key = SpanKey::in_module(&await_inner.1, self.current_module_idx);
-                    if let Some(ActorMethodKind::Ask(_, reply_ty)) =
+                    if let Some(ActorMethodKind::Ask { reply_ty, .. }) =
                         self.actor_method_dispatch.get(&inner_key).cloned()
                     {
                         Ty::result(reply_ty, Ty::ask_error())

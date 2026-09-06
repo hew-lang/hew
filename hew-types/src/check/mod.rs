@@ -2030,9 +2030,15 @@ impl Checker {
                         policy,
                         argument_order,
                     },
-                    ActorMethodKind::Ask(method_id, reply_ty) => {
-                        ActorMethodKind::Ask(method_id, self.finalize_type_for_handoff(&reply_ty))
-                    }
+                    ActorMethodKind::Ask {
+                        method_id,
+                        reply_ty,
+                        argument_order,
+                    } => ActorMethodKind::Ask {
+                        method_id,
+                        reply_ty: self.finalize_type_for_handoff(&reply_ty),
+                        argument_order,
+                    },
                     ActorMethodKind::StreamProducer(method_id, elem_ty) => {
                         ActorMethodKind::StreamProducer(
                             method_id,

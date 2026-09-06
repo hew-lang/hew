@@ -226,6 +226,119 @@ impl InstanceService<'_> {
 }
 
 impl Builder<'_, '_> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ask boundary evaluates its request and constructs normal, cancellation and fault cleanup edges"
+    )]
+    pub(super) fn lower_actor_ask(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+        let HirExprKind::ActorAsk {
+            receiver,
+            method_id,
+            args,
+            reply_ty,
+            argument_order,
+            deadline_ns,
+        } = &expression.kind
+        else {
+            unreachable!()
+        };
+        let target_ty = self.ty(&receiver.ty);
+        let actor = self.service.require_actor(&target_ty)?;
+        let descriptor = &self.service.actors[actor.0 as usize];
+        let handler = descriptor
+            .handlers
+            .iter()
+            .find(|handler| handler.declaration.full_path() == method_id.as_str())
+            .ok_or("ask has no exact receive protocol member")?;
+        let message = handler.message_id;
+        if handler.return_ty != self.ty(reply_ty) {
+            return Err("ask reply differs from its receive protocol".into());
+        }
+        let signature = descriptor.ask_signature(message)?;
+        let output = self.ty(&expression.ty);
+        if signature.return_ty != output
+            || signature.params.len() != args.len() + 1
+            || argument_order.iter().copied().collect::<BTreeSet<_>>() != (0..args.len()).collect()
+            || argument_order.len() != args.len()
+            || signature
+                .params
+                .iter()
+                .skip(1)
+                .zip(argument_order)
+                .any(|(expected, index)| expected.ty != self.ty(&args[*index].ty))
+        {
+            return Err("ask must return its complete checked Result".into());
+        }
+        let mut inputs = Vec::new();
+        for source in std::iter::once(receiver.as_ref()).chain(args) {
+            let value = lower_initial_value_transfer(
+                self,
+                source,
+                "ask request argument",
+                OwnedBindingUse::Copy,
+            )?;
+            if !self.is_open() {
+                return Ok(value);
+            }
+            inputs.push(crate::BoundaryOperand {
+                operand: Operand { value },
+                decision: crate::BoundaryDecision::Move,
+            });
+        }
+        inputs = std::iter::once(inputs[0].clone())
+            .chain(argument_order.iter().map(|index| inputs[index + 1].clone()))
+            .collect();
+        for input in &inputs {
+            self.owned_live.remove(&input.operand.value);
+        }
+        self.service.require_type_facts(&output)?;
+        let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
+        let raw = self.fresh_value();
+        let value = self.fresh_value();
+        let resumed = self.new_block(vec![BlockArg {
+            value,
+            ty: output.clone(),
+            own,
+        }]);
+        let cancel = self.new_block(Vec::new());
+        let unwind = self.new_block(Vec::new());
+        let edge = |target| Edge {
+            target,
+            args: Vec::new(),
+        };
+        self.set_terminator(SemTerminator::Suspend {
+            kind: crate::SuspendKind::Ask {
+                actor,
+                message,
+                deadline_ns: *deadline_ns,
+            },
+            inputs,
+            result: CallResult::Value(ValueDef {
+                id: raw,
+                ty: output.clone(),
+                own,
+            }),
+            resumes: vec![Edge {
+                target: resumed,
+                args: vec![Operand { value: raw }],
+            }],
+            cancel: edge(cancel),
+            unwind: edge(unwind),
+        })?;
+        let saved = self.control_state();
+        for cleanup in [cancel, unwind] {
+            self.restore_control_state(&saved);
+            self.current = cleanup;
+            self.finish_fault_exit()?;
+        }
+        self.restore_control_state(&saved);
+        self.current = resumed;
+        if own == OwnKind::Owned {
+            self.owned_live.insert(value, output);
+        }
+        Ok(value)
+    }
+
     fn actor_arguments(
         &mut self,
         expression: &HirExpr,

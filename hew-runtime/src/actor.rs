@@ -3777,6 +3777,21 @@ pub(crate) unsafe fn try_submit_native_envelope(
     message: i32,
     envelope: *mut crate::mailbox::HewMsgEnvelope,
 ) -> crate::mailbox::SendOutcome {
+    // SAFETY: sends have no reply reference; the envelope transfers on admission.
+    unsafe { try_submit_native_request(token, message, envelope, std::ptr::null_mut()) }
+}
+
+/// Submit an envelope and optional reply sender reference to the exact target.
+///
+/// # Safety
+/// Both unpublished references transfer only on successful admission.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn try_submit_native_request(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+    reply: *mut c_void,
+) -> crate::mailbox::SendOutcome {
     let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
         return mailbox::SendOutcome::Closed;
     };
@@ -3787,8 +3802,9 @@ pub(crate) unsafe fn try_submit_native_envelope(
             return mailbox::SendOutcome::Closed;
         }
         // SAFETY: the pinned mailbox consumes only an admitted envelope.
-        let outcome =
-            unsafe { mailbox::try_admit_native_envelope(&*a.mailbox.cast(), message, envelope) };
+        let outcome = unsafe {
+            mailbox::try_admit_native_request(&*a.mailbox.cast(), message, envelope, reply)
+        };
         if matches!(outcome, mailbox::SendOutcome::Enqueued) {
             // SAFETY: a message reached the live, pinned actor's mailbox.
             unsafe { schedule_actor_after_enqueue(actor, a, message) };

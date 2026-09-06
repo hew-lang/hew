@@ -2645,22 +2645,23 @@ unsafe fn send_aliased_with_overflow(
     SendOutcome::Enqueued
 }
 
-/// Attempt admission without applying another sender's overflow policy.
-/// Rejection leaves the envelope and its complete payload owned by the caller.
+/// Admit one envelope and its optional sender-side reply reference together.
+/// Rejection preserves both references for the caller.
 ///
 /// # Safety
-/// `mb` is pinned for this call; `envelope` is uniquely owned and unpublished.
+/// The mailbox is pinned and both references are unpublished and uniquely owned.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn try_admit_native_envelope(
+pub(crate) unsafe fn try_admit_native_request(
     mb: &HewMailbox,
     msg_type: i32,
     envelope: *mut HewMsgEnvelope,
+    reply: *mut c_void,
 ) -> SendOutcome {
     if mb.closed.load(Ordering::Acquire) {
         return SendOutcome::Closed;
     }
     // SAFETY: allocation retains caller ownership of the envelope until publication.
-    let node = unsafe { msg_node_alloc_aliased(msg_type, envelope, ptr::null_mut()) };
+    let node = unsafe { msg_node_alloc_aliased(msg_type, envelope, reply) };
     if node.is_null() {
         return SendOutcome::Oom;
     }
@@ -2693,6 +2694,7 @@ pub(crate) unsafe fn try_admit_native_envelope(
     // leaving its single reference with the source message owner.
     unsafe {
         (*node).envelope = ptr::null_mut();
+        (*node).reply_channel = ptr::null_mut();
         hew_msg_node_free(node);
     }
     outcome
@@ -6267,14 +6269,14 @@ mod tests {
                 let payload = alloc_test_payload(b"retained");
                 let envelope = hew_msg_envelope_new(payload, 8, Some(envelope_test_drop_glue));
                 assert!(matches!(
-                    try_admit_native_envelope(&*full, 7, envelope),
+                    try_admit_native_request(&*full, 7, envelope, ptr::null_mut()),
                     SendOutcome::Failed
                 ));
                 assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
                 assert_eq!((*envelope).payload, payload);
                 assert_eq!((*envelope).refcount.load(Ordering::SeqCst), 1);
                 assert!(matches!(
-                    try_admit_native_envelope(&*backup, 7, envelope),
+                    try_admit_native_request(&*backup, 7, envelope, ptr::null_mut()),
                     SendOutcome::Enqueued
                 ));
                 hew_mailbox_free(full);
@@ -6297,14 +6299,14 @@ mod tests {
             {
                 let _fail = fail_mailbox_alloc_on_nth(0);
                 assert!(matches!(
-                    try_admit_native_envelope(&*mailbox, 7, envelope),
+                    try_admit_native_request(&*mailbox, 7, envelope, ptr::null_mut()),
                     SendOutcome::Oom
                 ));
             }
             assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
             mailbox_close(mailbox);
             assert!(matches!(
-                try_admit_native_envelope(&*mailbox, 7, envelope),
+                try_admit_native_request(&*mailbox, 7, envelope, ptr::null_mut()),
                 SendOutcome::Closed
             ));
             assert_eq!((*envelope).payload, payload);

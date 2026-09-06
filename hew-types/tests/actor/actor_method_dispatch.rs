@@ -43,7 +43,7 @@ fn actor_method_dispatch_classifies_message_and_ask_sites() {
         output.actor_method_dispatch.values().any(|kind| {
             matches!(
                 kind,
-                ActorMethodKind::Ask(method_id, Ty::I32) if method_id == "Counter::print_total"
+                ActorMethodKind::Ask { method_id, reply_ty: Ty::I32, .. } if method_id == "Counter::print_total"
             )
         }),
         "print_total call should be recorded as actor ask dispatch: {:?}",

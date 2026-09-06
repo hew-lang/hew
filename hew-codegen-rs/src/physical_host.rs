@@ -79,6 +79,7 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::Sleep { .. }
                     | PhysicalTerminator::TaskSelect { .. }
                     | PhysicalTerminator::TaskAwait { .. }
+                    | PhysicalTerminator::ActorAsk { .. }
                     | PhysicalTerminator::TaskScopeJoin { .. }
                     | PhysicalTerminator::ValueCall { .. }
                     | PhysicalTerminator::SwitchVariant { .. } => {

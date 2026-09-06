@@ -221,6 +221,8 @@ pub enum AskError {
     Backpressure,
     /// A monitor required to resolve the ask was lost before completion.
     MonitorLost,
+    /// The receiving handler failed; its actor retains ownership of the fault.
+    HandlerTrapped,
 }
 
 impl Display for AskError {
@@ -247,6 +249,7 @@ impl Display for AskError {
             AskError.Unauthorized => "the peer rejected the ask because the caller lacks authority",
             AskError.Backpressure => "the destination or route is applying flow control",
             AskError.MonitorLost => "a monitor required to resolve the ask was lost before completion",
+            AskError.HandlerTrapped => "the receiving handler failed before replying",
         }
     }
 }

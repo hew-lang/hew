@@ -60,6 +60,38 @@ impl SemModule {
 }
 
 impl SemActor {
+    /// The receive protocol owns request parameter order and its full fallible
+    /// reply type. Source and downstream verifiers consume this same signature.
+    ///
+    /// # Errors
+    /// Rejects an unknown protocol member or an unresolved reply type.
+    pub fn ask_signature(&self, message: u32) -> Result<crate::SemSignature, String> {
+        let handler = self
+            .handlers
+            .iter()
+            .find(|handler| handler.message_id == message)
+            .ok_or("ask has no exact receive protocol member")?;
+        if handler.return_ty == ResolvedTy::Unit {
+            return Err("a unit receive handler produces a message description, not an ask".into());
+        }
+        let mut params = vec![crate::SemAbiParam {
+            ty: self.handle_ty.clone(),
+            passing: crate::SemParamPassing::Consume,
+            caller_visible_projection: false,
+        }];
+        params.extend(handler.params.iter().map(|ty| crate::SemAbiParam {
+            ty: ty.clone(),
+            passing: crate::SemParamPassing::Consume,
+            caller_visible_projection: false,
+        }));
+        let return_ty = ResolvedTy::from_ty(&hew_types::Ty::result(
+            handler.return_ty.to_ty(),
+            hew_types::Ty::ask_error(),
+        ))
+        .map_err(|error| error.to_string())?;
+        Ok(crate::SemSignature { params, return_ty })
+    }
+
     pub(crate) fn validate(&self, module: &SemModule) -> Result<(), String> {
         if module.actor(self.id) != Some(self) {
             return Err("actor descriptor is not at its canonical index".into());

@@ -156,6 +156,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::ValueClose { .. }
                 | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }
+                | PhysicalTerminator::ActorAsk { .. }
                 | PhysicalTerminator::TaskScopeJoin { .. } => {
                     resumable.insert(function.callable);
                 }

@@ -1016,10 +1016,16 @@ impl Checker {
                     ),
                 ),
             }
-            ActorMethodKind::Ask(method_id, reply_ty.clone())
+            ActorMethodKind::Ask {
+                method_id,
+                reply_ty: reply_ty.clone(),
+                argument_order: Vec::new(),
+            }
         };
         let call_ty = match &dispatch {
-            ActorMethodKind::Ask(_, reply) => Ty::result(reply.clone(), Ty::ask_error()),
+            ActorMethodKind::Ask {
+                reply_ty: reply, ..
+            } => Ty::result(reply.clone(), Ty::ask_error()),
             _ => reply_ty,
         };
         self.actor_method_dispatch
@@ -7371,7 +7377,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let result = self.check_method_call_inner(receiver, method, args, span);
-        let result = self.finish_actor_message_description(receiver, args, span, result);
+        let result = self.finish_actor_receive_call(receiver, args, span, result);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.check_method_callable_place(receiver, method, span);
         let runtime_rewrite_consumes_receiver = matches!(
@@ -8672,16 +8678,10 @@ impl Checker {
                             None,
                             args,
                             span,
-                            if sig.return_type == Ty::Unit {
-                                SignatureArgApplication::FunctionLike {
-                                    param_names: &sig.param_names,
-                                    accepts_kwargs: false,
-                                    module_qualified: false,
-                                }
-                            } else {
-                                SignatureArgApplication::PositionalOnly {
-                                    arity_context: format!("method `{method}`"),
-                                }
+                            SignatureArgApplication::FunctionLike {
+                                param_names: &sig.param_names,
+                                accepts_kwargs: false,
+                                module_qualified: false,
                             },
                             true,
                             Some(GenericCallee::Method {
@@ -9461,13 +9461,28 @@ impl Checker {
                             span,
                         );
                     }
+                    let is_actor_receive_dispatch = self
+                        .type_defs
+                        .get(name)
+                        .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                        && self
+                            .actor_receive_methods
+                            .contains(&format!("{name}::{method}"));
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
                         None,
                         args,
                         span,
-                        SignatureArgApplication::PositionalOnly {
-                            arity_context: format!("method `{method}`"),
+                        if is_actor_receive_dispatch {
+                            SignatureArgApplication::FunctionLike {
+                                param_names: &sig.param_names,
+                                accepts_kwargs: false,
+                                module_qualified: false,
+                            }
+                        } else {
+                            SignatureArgApplication::PositionalOnly {
+                                arity_context: format!("method `{method}`"),
+                            }
                         },
                         true,
                         Some(GenericCallee::Method {
@@ -9492,13 +9507,6 @@ impl Checker {
                     // `methods {}` declared on the same actor (also keyed
                     // `{Actor}::{method}` in `fn_sigs`) are NOT in
                     // `actor_receive_methods`, so they stay on the direct path.
-                    let is_actor_receive_dispatch = self
-                        .type_defs
-                        .get(name)
-                        .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                        && self
-                            .actor_receive_methods
-                            .contains(&format!("{name}::{method}"));
                     if is_actor_receive_dispatch {
                         self.record_method_call_receiver_kind(
                             span,

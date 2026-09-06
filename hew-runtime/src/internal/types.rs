@@ -490,6 +490,9 @@ pub enum AskError {
     /// The monitor subscription for the ask's reply was lost before the
     /// reply arrived (e.g. the monitor actor was stopped or evicted).
     MonitorLost = 21,
+    /// The receiving handler failed. Its actor owns the fault; the caller
+    /// receives an ordinary error and may continue independently.
+    HandlerTrapped = 22,
 }
 
 /// The only runtime-to-public translation for ask result tags.
@@ -537,6 +540,7 @@ pub fn translate_ask_error_tag_for_public_result(
         tag if tag == AskError::Unauthorized as i32 => Ok(PublicAskResultTag::Err(18)),
         tag if tag == AskError::Backpressure as i32 => Ok(PublicAskResultTag::Err(19)),
         tag if tag == AskError::MonitorLost as i32 => Ok(PublicAskResultTag::Err(20)),
+        tag if tag == AskError::HandlerTrapped as i32 => Ok(PublicAskResultTag::Err(21)),
         tag => Err(tag),
     }
 }

@@ -1077,6 +1077,7 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
         x if x == AskError::Unauthorized as i32 => Some(AskError::Unauthorized),
         x if x == AskError::Backpressure as i32 => Some(AskError::Backpressure),
         x if x == AskError::MonitorLost as i32 => Some(AskError::MonitorLost),
+        x if x == AskError::HandlerTrapped as i32 => Some(AskError::HandlerTrapped),
         _ => None,
     }
 }

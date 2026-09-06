@@ -4050,6 +4050,20 @@ fn verify_terminator_shape(
             unwind,
         } => {
             let valid = match kind {
+                crate::SuspendKind::Ask { actor, message, .. } => {
+                    callable_context.and_then(|context| context.actors.get(actor.0 as usize))
+                        .filter(|descriptor| descriptor.id == *actor)
+                        .and_then(|descriptor| descriptor.ask_signature(*message).ok())
+                        .is_some_and(|signature| {
+                            resumes.len() == 1
+                                && inputs.len() == signature.params.len()
+                                && inputs.iter().zip(&signature.params).all(|(input, parameter)| {
+                                    input.decision == crate::BoundaryDecision::Move
+                                        && types.get(&input.operand.value) == Some(&parameter.ty)
+                                })
+                                && matches!(result, crate::CallResult::Value(value) if value.ty == signature.return_ty)
+                        })
+                }
                 crate::SuspendKind::Sleep => {
                     resumes.len() == 1
                         && matches!(result, crate::CallResult::Unit)

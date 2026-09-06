@@ -2520,6 +2520,25 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::ActorAsk {
+                actor,
+                message,
+                deadline_ns,
+                args,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_actor_ask(
+                *actor,
+                *message,
+                *deadline_ns,
+                args,
+                *result,
+                normal,
+                cancel,
+                unwind,
+            ),
             PhysicalTerminator::TaskSelect {
                 tasks,
                 timeout,

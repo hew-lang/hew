@@ -31,19 +31,37 @@ struct State {
     places: Vec<u8>,
 }
 
-pub(crate) fn verify(function: &SemFunction) -> Vec<Violation> {
-    let flow = Flow::new(function);
+pub(crate) fn verify(
+    function: &SemFunction,
+    projections: &crate::AggregateProjectionPlan,
+) -> Vec<Violation> {
+    let flow = Flow::new(function, projections);
     if !flow.blocks.contains_key(&function.entry) {
         return Vec::new();
     }
     let mut initial = State {
         values: vec![DEAD; flow.values.len()],
         fault: DEAD,
-        places: vec![LIVE; flow.places.len()],
+        places: flow
+            .places
+            .iter()
+            .map(|(id, _)| {
+                if flow.projections.projection(*id).is_some() {
+                    DEAD
+                } else {
+                    LIVE
+                }
+            })
+            .collect(),
     };
     for param in &function.params {
         if let Some(&index) = flow.indices.get(&param.value) {
             initial.values[index] = LIVE;
+        }
+        for (index, (_, owner)) in flow.places.iter().enumerate() {
+            if *owner == param.value {
+                initial.places[index] = LIVE;
+            }
         }
     }
     let mut incoming = BTreeMap::from([(function.entry, initial)]);
@@ -93,10 +111,12 @@ struct Flow<'a> {
     borrowers: BTreeMap<ValueId, Vec<ValueId>>,
     parents: BTreeMap<ValueId, ValueId>,
     places: Vec<(crate::PlaceId, ValueId)>,
+    projections: &'a crate::AggregateProjectionPlan,
+    place_indices: BTreeMap<crate::PlaceId, usize>,
 }
 
 impl<'a> Flow<'a> {
-    fn new(function: &'a SemFunction) -> Self {
+    fn new(function: &'a SemFunction, projections: &'a crate::AggregateProjectionPlan) -> Self {
         let mut values = BTreeSet::new();
         let mut guaranteed = BTreeSet::new();
         let mut record = |value, own| {
@@ -137,6 +157,24 @@ impl<'a> Flow<'a> {
         values.extend(&local_borrows);
         guaranteed.extend(&local_borrows);
         let values: Vec<_> = values.into_iter().collect();
+        let places: Vec<_> = function
+            .places
+            .iter()
+            .filter_map(|place| match place.origin {
+                crate::PlaceOrigin::Capture { environment, .. } => Some((place.id, environment)),
+                _ => None,
+            })
+            .chain(
+                projections
+                    .roots()
+                    .flat_map(|(root, leaves)| leaves.iter().map(move |&place| (place, root))),
+            )
+            .collect();
+        let place_indices = places
+            .iter()
+            .enumerate()
+            .map(|(index, (place, _))| (*place, index))
+            .collect();
         Self {
             blocks: function
                 .blocks
@@ -153,17 +191,9 @@ impl<'a> Flow<'a> {
             local_borrows,
             borrowers,
             parents,
-            places: function
-                .places
-                .iter()
-                .filter_map(|place| {
-                    if let crate::PlaceOrigin::Capture { environment, .. } = place.origin {
-                        Some((place.id, environment))
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
+            places,
+            place_indices,
+            projections,
         }
     }
 
@@ -270,6 +300,11 @@ impl<'a> Flow<'a> {
             });
         }
         state.values[index] = LIVE;
+        for (index, (place, owner)) in self.places.iter().enumerate() {
+            if *owner == value && self.projections.projection(*place).is_some() {
+                state.places[index] = LIVE;
+            }
+        }
     }
 
     fn edge(
@@ -280,14 +315,27 @@ impl<'a> Flow<'a> {
         emit: &mut impl FnMut(Violation),
     ) -> Option<(BlockId, State)> {
         let target = self.blocks.get(&edge.target)?;
-        // All sources transfer first: a loop edge can pass its own block
-        // argument back to itself or permute several owning arguments.
+        let before = state.places.clone();
+        // Consume all sources and define all destinations before installing
+        // leaf states. Loop edges may rename, reuse or permute root arguments.
         for argument in &edge.args {
-            self.require_complete_environment(from, argument.value, &state, emit);
+            if self.projections.leaves(argument.value).is_none() {
+                self.require_complete_environment(from, argument.value, &state, emit);
+            }
             self.access(from, argument.value, true, &mut state, emit);
         }
         for argument in &target.args {
             self.define(edge.target, argument.value, &mut state, emit);
+        }
+        for (source, destination) in edge.args.iter().zip(&target.args) {
+            let transfers = self
+                .projections
+                .transfer(source.value, destination.value)
+                .expect("projection query verified every CFG root transfer");
+            for (source, destination) in transfers {
+                state.places[self.place_indices[&destination]] =
+                    before[self.place_indices[&source]];
+            }
         }
         Some((edge.target, state))
     }
@@ -398,7 +446,7 @@ impl<'a> Flow<'a> {
                 self.end_borrow(id, borrow.value, state, emit);
                 continue;
             }
-            self.capture_operation(id, &op.kind, state, emit);
+            self.projected_operation(id, &op.kind, state, emit);
             let consumes = operation_consumes_operands(&op.kind);
             op.visit_operands(|_, operand| {
                 if !matches!(
@@ -431,12 +479,16 @@ impl<'a> Flow<'a> {
             emit(Violation {
                 block,
                 value: Some(value),
-                reason: "partially consumed environment cannot be copied, invoked or transferred",
+                reason: if self.projections.leaves(value).is_some() {
+                    "partially consumed aggregate cannot be copied, borrowed, invoked or transferred"
+                } else {
+                    "partially consumed environment cannot be copied, invoked or transferred"
+                },
             });
         }
     }
 
-    fn capture_operation(
+    fn projected_operation(
         &self,
         block: BlockId,
         kind: &SemOpKind,
@@ -445,27 +497,64 @@ impl<'a> Flow<'a> {
     ) {
         let (place, changes) = match kind {
             SemOpKind::LoadCopy { place } | SemOpKind::LoadBorrow { place, .. } => (*place, false),
-            SemOpKind::LoadTake { place } | SemOpKind::StoreAssign { place, .. } => (*place, true),
+            SemOpKind::LoadTake { place }
+            | SemOpKind::StoreAssign { place, .. }
+            | SemOpKind::StoreInit { place, .. } => (*place, true),
             _ => return,
         };
-        let Some((index, (_, owner))) = self
-            .places
-            .iter()
-            .enumerate()
-            .find(|(_, (id, _))| *id == place)
-        else {
+        if let Some(projection) = self.projections.projection(place) {
+            self.access(block, projection.root, false, state, emit);
+            if changes {
+                self.require_no_live_borrows(block, projection.root, state, emit);
+            }
+            let stores = matches!(
+                kind,
+                SemOpKind::StoreAssign { .. } | SemOpKind::StoreInit { .. }
+            );
+            for leaf in &projection.leaves {
+                let index = self.place_indices[leaf];
+                let expected = if matches!(kind, SemOpKind::StoreInit { .. }) {
+                    Some(DEAD)
+                } else if stores {
+                    None
+                } else {
+                    Some(LIVE)
+                };
+                if expected.is_some_and(|expected| state.places[index] != expected) {
+                    emit(Violation {
+                        block,
+                        value: Some(projection.root),
+                        reason: if stores {
+                            "aggregate field initialization would overwrite a live value"
+                        } else {
+                            "aggregate field is not initialized on every incoming path"
+                        },
+                    });
+                }
+                if stores {
+                    state.places[index] = LIVE;
+                } else if matches!(kind, SemOpKind::LoadTake { .. }) {
+                    state.places[index] = DEAD;
+                }
+            }
+            return;
+        }
+        // Capture semantics remain unchanged: assignment requires a live
+        // private mutable capture; it cannot restore a consumed capture.
+        let Some(&index) = self.place_indices.get(&place) else {
             return;
         };
-        self.access(block, *owner, false, state, emit);
+        let (_, owner) = self.places[index];
+        self.access(block, owner, false, state, emit);
         if state.places[index] != LIVE {
             emit(Violation {
                 block,
-                value: Some(*owner),
+                value: Some(owner),
                 reason: "capture field is not initialized on every incoming path",
             });
         }
         if changes {
-            self.require_no_live_borrows(block, *owner, state, emit);
+            self.require_no_live_borrows(block, owner, state, emit);
         }
         if matches!(kind, SemOpKind::LoadTake { .. }) {
             state.places[index] = DEAD;
@@ -659,7 +748,9 @@ fn operation_consumes_operands(kind: &SemOpKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::verify;
+    fn verify(function: &crate::SemFunction) -> Vec<super::Violation> {
+        super::verify(function, &crate::AggregateProjectionPlan::default())
+    }
     use crate::{
         BlockArg, BlockId, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, CallableId,
         Edge, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance, SemBlock, SemFunction,

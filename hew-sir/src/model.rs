@@ -409,6 +409,10 @@ pub struct SemAggregateShape {
     pub id: AggregateShapeId,
     pub aggregate_ty: ResolvedTy,
     pub instance: NominalInstance,
+    /// Exact declaration discipline, independent of the classes of members.
+    /// A plain record containing a resource is still structurally projectable;
+    /// a resource or linear declaration cannot be partially dismantled.
+    pub marker: hew_types::DeclarationMarker,
     pub fields: Vec<SemAggregateField>,
 }
 
@@ -938,7 +942,8 @@ pub enum SemOpKind {
     CallableCoerce {
         source: Operand,
     },
-    /// Borrow a captured field, retaining its explicit environment dependency.
+    /// Borrow a projected field, retaining its explicit owner dependency.
+    /// `environment` is the capture receiver or the aggregate root value.
     LoadBorrow {
         place: PlaceId,
         environment: Operand,
@@ -1080,7 +1085,9 @@ pub enum SemOpKind {
         place: PlaceId,
         value: Operand,
     },
-    /// `store.assign %p, %v` - the old value is destroyed, then stored.
+    /// `store.assign %p, %v` - replace the old value, then initialize the place.
+    /// Aggregate projections destroy only their still-initialized contents,
+    /// so assignment also restores a field taken on some or all incoming paths.
     StoreAssign {
         place: PlaceId,
         value: Operand,

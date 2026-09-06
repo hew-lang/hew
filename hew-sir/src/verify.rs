@@ -853,6 +853,16 @@ pub(crate) fn verify_function_with_context(
             ));
         }
     }
+    let projections = crate::aggregate_projection_plan(function, aggregate_shapes, facts);
+    if let Err(reason) = &projections {
+        diagnostics.push(diag(
+            function,
+            SirDiagnosticKind::InvalidCallable {
+                callable: function.callable,
+                reason: reason.clone(),
+            },
+        ));
+    }
     // Every value type is known before checking operations, edges, and
     // terminators. In particular this catches a malformed use whose value is
     // defined in a later block rather than silently skipping its type check.
@@ -871,8 +881,8 @@ pub(crate) fn verify_function_with_context(
                 callable_context,
                 &mut diagnostics,
             );
-            if let Some(result) =
-                verify_capture_operation(function, op, &types, facts, callable_context)
+            if let Some(result) = crate::projection::verify_operation(function, op, &types, facts)
+                .or_else(|| verify_capture_operation(function, op, &types, facts, callable_context))
             {
                 if let Err(reason) = result {
                     invalid_operation(function, op.id, reason, &mut diagnostics);
@@ -943,7 +953,7 @@ pub(crate) fn verify_function_with_context(
                     &definitions,
                     block.id,
                     Some(op_index),
-                    uses_in_op(op),
+                    uses_in_op(function, op),
                     &mut diagnostics,
                 );
             }
@@ -958,26 +968,28 @@ pub(crate) fn verify_function_with_context(
             );
         }
     }
-    diagnostics.extend(
-        crate::lifetime::verify(function)
-            .into_iter()
-            .map(|violation| {
-                diag(
-                    function,
-                    match violation.value {
-                        Some(value) => SirDiagnosticKind::OwnershipLifetime {
-                            block: violation.block,
-                            value,
-                            reason: violation.reason,
+    if let Ok(projections) = projections {
+        diagnostics.extend(
+            crate::lifetime::verify(function, &projections)
+                .into_iter()
+                .map(|violation| {
+                    diag(
+                        function,
+                        match violation.value {
+                            Some(value) => SirDiagnosticKind::OwnershipLifetime {
+                                block: violation.block,
+                                value,
+                                reason: violation.reason,
+                            },
+                            None => SirDiagnosticKind::FaultLifetime {
+                                block: violation.block,
+                                reason: violation.reason,
+                            },
                         },
-                        None => SirDiagnosticKind::FaultLifetime {
-                            block: violation.block,
-                            reason: violation.reason,
-                        },
-                    },
-                )
-            }),
-    );
+                    )
+                }),
+        );
+    }
     diagnostics
 }
 
@@ -1516,8 +1528,13 @@ fn verify_capture_places(
     function: &SemFunction,
     context: Option<&CallableContext<'_>>,
 ) -> Result<(), String> {
+    let places = function
+        .places
+        .iter()
+        .filter(|place| matches!(place.origin, crate::PlaceOrigin::Capture { .. }))
+        .collect::<Vec<_>>();
     let closure = closure_for_body(function, context);
-    if function.places.is_empty()
+    if places.is_empty()
         && closure
             .as_ref()
             .map_or(true, |closure| closure.fields.is_empty())
@@ -1529,10 +1546,10 @@ fn verify_capture_places(
         .params
         .first()
         .ok_or_else(|| "capture places have no environment receiver".to_string())?;
-    if receiver.ty != closure.ty || function.places.len() != closure.fields.len() {
+    if receiver.ty != closure.ty || places.len() != closure.fields.len() {
         return Err("capture places differ from the complete environment descriptor".to_string());
     }
-    for (index, (place, field)) in function.places.iter().zip(&closure.fields).enumerate() {
+    for (index, (place, field)) in places.into_iter().zip(&closure.fields).enumerate() {
         let index = u32::try_from(index).map_err(|_| "capture index exceeds u32".to_string())?;
         if place.id != crate::PlaceId(index)
             || place.ty != field.ty
@@ -1674,6 +1691,14 @@ fn callable_mutation_permitted(
             });
         };
         if let SemOpKind::LoadBorrow { place, .. } = operation.kind {
+            if let Some(crate::PlaceDecl {
+                origin: crate::PlaceOrigin::Aggregate { root, .. },
+                ..
+            }) = function.places.iter().find(|decl| decl.id == place)
+            {
+                value = *root;
+                continue;
+            }
             return closure_for_body(function, context)
                 .ok()
                 .is_some_and(|closure| {
@@ -3556,9 +3581,24 @@ fn module_diag(kind: SirDiagnosticKind) -> SirDiagnostic {
     }
 }
 
-fn uses_in_op(op: &crate::SemOp) -> Vec<(ValueId, bool)> {
+fn uses_in_op(function: &SemFunction, op: &crate::SemOp) -> Vec<(ValueId, bool)> {
     let mut uses = Vec::new();
     op.visit_operands(|_, operand| uses.push((operand.value, false)));
+    let place = match op.kind {
+        SemOpKind::LoadTake { place }
+        | SemOpKind::LoadCopy { place }
+        | SemOpKind::LoadBorrow { place, .. }
+        | SemOpKind::StoreInit { place, .. }
+        | SemOpKind::StoreAssign { place, .. } => Some(place),
+        _ => None,
+    };
+    if let Some(crate::PlaceDecl {
+        origin: crate::PlaceOrigin::Aggregate { root, .. },
+        ..
+    }) = place.and_then(|id| function.places.iter().find(|place| place.id == id))
+    {
+        uses.push((*root, false));
+    }
     uses
 }
 

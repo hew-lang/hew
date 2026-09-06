@@ -15,6 +15,7 @@ mod lower;
 mod model;
 mod optimize;
 mod ownership;
+mod projection;
 mod verify;
 
 pub use analysis::{
@@ -49,6 +50,10 @@ pub use ownership::{
     runtime_failure_trap_kind, variant_field_recipes, variant_field_types, AggregateFieldRecipe,
     Binding, BindingId, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl,
     PlaceId, PlaceOrigin, SnapshotDecision, StringLiteralId, SuspendKind, TrapKind,
+};
+pub use projection::{
+    aggregate_projection_plan, AggregateProjection, AggregateProjectionPlan,
+    AggregateProjectionStep,
 };
 pub use verify::{
     verify_function, verify_function_in_module, verify_module, CfgDiscardSafetyReason,

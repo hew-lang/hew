@@ -288,6 +288,14 @@ pub enum PlaceOrigin {
         environment: ValueId,
         field: u32,
     },
+    /// A field of a live owned aggregate. A parent selects a nested aggregate
+    /// place under the same root; neither projection creates a second owner.
+    Aggregate {
+        root: ValueId,
+        parent: Option<PlaceId>,
+        shape: AggregateShapeRef,
+        field: u32,
+    },
 }
 
 /// Module-local interned identity of a `string` literal (§1.3.1).

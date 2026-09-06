@@ -595,6 +595,7 @@ fn require_aggregate_shape(
         id,
         aggregate_ty: aggregate_ty.clone(),
         instance,
+        marker: facts.declaration_marker(aggregate_ty)?,
         fields,
     });
     shapes_by_type.insert(aggregate_ty.clone(), id);

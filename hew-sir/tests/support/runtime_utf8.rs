@@ -172,6 +172,7 @@ pub(super) fn decode_module() -> SemModule {
         aggregate_shapes: vec![SemAggregateShape {
             id: AggregateShapeId(0),
             aggregate_ty: error_ty.clone(),
+            marker: hew_types::DeclarationMarker::None,
             instance: error_ty
                 .nominal_instance()
                 .expect("canonical source error must carry nominal identity"),

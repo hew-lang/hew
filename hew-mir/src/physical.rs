@@ -1561,6 +1561,11 @@ fn lower_function(
                     environment: lowerer.value(environment)?,
                     field,
                 },
+                hew_sir::PlaceOrigin::Aggregate { .. } => {
+                    return Err(PhysicalError::new(
+                        "aggregate projection storage is not implemented",
+                    ));
+                }
                 hew_sir::PlaceOrigin::Local | hew_sir::PlaceOrigin::Runtime => {
                     StorageOrigin::Place(place.id)
                 }

@@ -161,10 +161,7 @@ impl Parser<'_> {
                     }
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));
-                } else if Self::is_block_expr(&expr.0)
-                    && (self.peek() != Some(&Token::RightBrace)
-                        || matches!(expr.0, Expr::ForkBlock { .. }))
-                {
+                } else if Self::is_block_expr(&expr.0) && self.peek() != Some(&Token::RightBrace) {
                     // Block-like expressions (if, match, blocks, loops) don't need semicolons
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));

@@ -1,0 +1,12 @@
+fn work() -> string {
+    defer println("worker cleaned");
+    let completed: () = await sleep(1ms);
+    "answer"
+}
+
+fn main() {
+    let caller = "owned caller";
+    defer println(caller);
+    let result = await work();
+    println(result);
+}

@@ -78,3 +78,6 @@ mod vertical;
 
 #[path = "lowering_core/scope_recovery.rs"]
 mod scope_recovery;
+
+#[path = "lowering_core/checked_await.rs"]
+mod checked_await;

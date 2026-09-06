@@ -1521,3 +1521,15 @@ timeout_seconds = 15
 stdout = ""
 stderr = "hew: failure: DivideByZero (202)\nhew: secondary failure: UserPanic (212): cleanup\n"
 exit = 202
+
+[[case]]
+id = "awaited-call-values"
+intent = "Awaited calls preserve owned caller values, unit results and lexical deferred cleanup across suspension."
+source = "cases/awaited-call-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "worker cleaned\nanswer\nowned caller\n"
+stderr = ""
+exit = 0

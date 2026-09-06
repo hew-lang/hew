@@ -5785,11 +5785,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 )
             }
         };
-        if args.len() != signature.params.len() || self.ty(&expr.ty) != signature.return_ty {
-            return Err(
-                "user-call argument count or result type differs from its semantic signature"
-                    .to_string(),
-            );
+        let result_ty = self.ty(&expr.ty);
+        if args.len() != signature.params.len() || result_ty != signature.return_ty {
+            let name = match target {
+                CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
+                    declaration.full_path()
+                }
+                _ => "<function value>",
+            };
+            return Err(format!(
+                "user call to `{name}` differs from its semantic signature: {} arguments, expected {}; result {result_ty:?}, expected {:?}",
+                args.len(), signature.params.len(), signature.return_ty
+            ));
         }
         let lowered_args = self.lower_user_arguments(args, &signature.params, &mut loans)?;
         self.finish_user_call(

@@ -11,8 +11,12 @@ use super::{
 };
 use crate::callable::{hew_callable_drop, HewCallableValue};
 use crate::coro_root::hew_coro_run_callable;
+use crate::coro_state::{hew_coro_state_free, hew_coro_state_new, CoroStatus, HewCoroState};
 use crate::fault::{hew_fault_combine, hew_fault_drop, HewFault, HEW_FAULT_CANCELLED};
 use crate::util::MutexExt;
+use crate::value_close::{
+    hew_value_close_collect, hew_value_close_finish, hew_value_close_poll, HewValueClose,
+};
 use crate::wake::{HewWaker, OwnedWaker};
 use hew_cabi::value::HewValueLayout;
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
@@ -113,11 +117,36 @@ impl Drop for HewCheckedTaskWait {
     }
 }
 
-/// One scope drain observes each existing child without consuming its result.
+/// One scope drain retains every child through cooperative result disposal.
 #[derive(Debug)]
 pub struct HewCheckedScopeWait {
     scope: *mut HewTaskScope,
     tasks: Vec<HewCheckedTaskWait>,
+    close: Mutex<ScopeResultClose>,
+}
+
+#[derive(Debug)]
+struct ScopeResultClose {
+    state: *mut HewCoroState,
+    collector: *mut HewValueClose,
+    collected: bool,
+    complete: bool,
+    fault: *mut HewFault,
+}
+
+impl Drop for ScopeResultClose {
+    fn drop(&mut self) {
+        // An active collector borrows task result storage. Its owners cannot
+        // be released until the retained readiness target reports quiescence.
+        if self.collected && !self.complete {
+            std::process::abort();
+        }
+        // SAFETY: no collector borrows remain; this drain owns state and fault.
+        unsafe {
+            hew_coro_state_free(self.state);
+            hew_fault_drop(self.fault);
+        }
+    }
 }
 
 unsafe fn retain(task: *mut HewTask) {
@@ -409,6 +438,7 @@ pub unsafe extern "C" fn hew_checked_task_wait_free(wait: *mut HewCheckedTaskWai
 /// # Safety
 /// Scope is live and has no further parent-side spawns during this drain.
 /// Waker obeys the retained readiness contract. Scope outlives the returned wait.
+/// Only one drain may own the scope's result cleanup at a time.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_scope_wait_new(
     scope: *mut HewTaskScope,
@@ -424,7 +454,20 @@ pub unsafe extern "C" fn hew_checked_scope_wait_new(
             task = (*task).next;
         }
     }
-    Box::into_raw(Box::new(HewCheckedScopeWait { scope, tasks }))
+    // SAFETY: scope retains the cancellation ancestry and registration retains
+    // the caller's readiness target independently of its suspended frame.
+    let state = unsafe { hew_coro_state_new(waker, (*scope).cancel_token) };
+    Box::into_raw(Box::new(HewCheckedScopeWait {
+        scope,
+        tasks,
+        close: Mutex::new(ScopeResultClose {
+            state,
+            collector: ptr::null_mut(),
+            collected: false,
+            complete: false,
+            fault: ptr::null_mut(),
+        }),
+    }))
 }
 
 /// Request cooperative cancellation; user code and operation producers must
@@ -440,7 +483,8 @@ pub unsafe extern "C" fn hew_checked_scope_cancel(scope: *mut HewTaskScope) {
 
 /// # Safety
 /// Wait and scope remain live. Returns 1 only after all child frames have
-/// completed cleanup. An observed child fault requests cancellation of siblings.
+/// completed cleanup and abandoned results have closed. An observed child fault
+/// requests cancellation of siblings. Calls on one wait must be serialized.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_scope_wait_status(wait: *const HewCheckedScopeWait) -> i32 {
     // SAFETY: caller retains the scope drain and its task references.
@@ -457,11 +501,57 @@ pub unsafe extern "C" fn hew_checked_scope_wait_status(wait: *const HewCheckedSc
         // SAFETY: wait borrows its still-live scope until released.
         unsafe { hew_checked_scope_cancel(wait.scope) };
     }
-    i32::from(!pending)
+    if pending {
+        return PENDING;
+    }
+    let mut close = wait.close.lock_or_recover();
+    if close.complete {
+        return READY;
+    }
+    // SAFETY: all child invocations have stopped. The drain retains every task
+    // allocation and claims initialized results before borrowing their children.
+    unsafe {
+        if !close.collected {
+            for task in &wait.tasks {
+                let mut state = checked(task.task).lock_or_recover();
+                if state.initialized && !state.taken {
+                    state.taken = true;
+                    hew_value_close_collect(
+                        state.result,
+                        state.layout,
+                        (&raw mut close.collector).cast(),
+                    );
+                }
+            }
+            close.collected = true;
+        }
+        if hew_value_close_poll(close.collector, close.state.cast()) == CoroStatus::Pending as i32 {
+            return PENDING;
+        }
+        let collector = std::mem::replace(&mut close.collector, ptr::null_mut());
+        hew_value_close_finish(collector, &raw mut close.fault);
+        for task in &wait.tasks {
+            let release = {
+                let mut state = checked(task.task).lock_or_recover();
+                if std::mem::take(&mut state.initialized) {
+                    (*state.layout)
+                        .drop_fn
+                        .map(|drop_fn| (drop_fn, state.result))
+                } else {
+                    None
+                }
+            };
+            if let Some((drop_fn, result)) = release {
+                drop_fn(result);
+            }
+        }
+    }
+    close.complete = true;
+    READY
 }
 
 /// Transfer unobserved child faults in completion order after a complete drain.
-/// Ordinary result values remain owned by the child until its final release.
+/// Result cleanup faults follow child faults without replacing their primary.
 ///
 /// # Safety
 /// Wait remains live and fault is an empty, writable owning slot. A pending
@@ -475,10 +565,8 @@ pub unsafe extern "C" fn hew_checked_scope_wait_take_fault(
     let wait = unsafe { &*wait };
     // Completion is monotonic. Check every child before transferring any owner,
     // so a pending child cannot discard faults already removed from siblings.
-    if wait.tasks.iter().any(|task| {
-        // SAFETY: the drain retains each task during this observation.
-        !unsafe { checked(task.task) }.lock_or_recover().completed
-    }) {
+    // SAFETY: this poll preserves fault ownership until result cleanup completes.
+    if unsafe { hew_checked_scope_wait_status(wait) } == PENDING {
         return PENDING;
     }
     let mut failures = Vec::new();
@@ -501,6 +589,14 @@ pub unsafe extern "C" fn hew_checked_scope_wait_take_fault(
         // SAFETY: each child transfers a distinct owned fault at most once.
         primary = unsafe { hew_fault_combine(primary, owner) };
     }
+    let cleanup = std::mem::replace(&mut wait.close.lock_or_recover().fault, ptr::null_mut());
+    // SAFETY: the completed collector transfers one optional cleanup fault.
+    unsafe {
+        if status == 0 {
+            status = cleanup.as_ref().map_or(0, HewFault::code);
+        }
+        primary = hew_fault_combine(primary, cleanup);
+    }
     // SAFETY: caller supplies an empty writable fault slot.
     unsafe { fault.write(primary) };
     status
@@ -508,6 +604,7 @@ pub unsafe extern "C" fn hew_checked_scope_wait_take_fault(
 
 /// # Safety
 /// Caller transfers the unique drain handle; no poll may access it afterwards.
+/// Started result cleanup must have completed and its fault must be taken.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_scope_wait_free(wait: *mut HewCheckedScopeWait) {
     if !wait.is_null() {
@@ -529,29 +626,15 @@ pub unsafe extern "C" fn hew_checked_scope_close(scope: *mut HewTaskScope) {
     if !scope.deadlines.is_null() {
         std::process::abort();
     }
-    // Dispose unobserved result owners at the lexical scope boundary even if
-    // source handles remain until the surrounding local cleanup finishes.
+    // The checked drain has closed and disposed every abandoned result before
+    // enclosing source resources can be released.
     // SAFETY: scope retains every task and the completed frames no longer use results.
     unsafe {
         let mut task = scope.tasks;
         while !task.is_null() {
-            let release = {
-                let mut state = checked(task).lock_or_recover();
-                if !state.completed {
-                    std::process::abort();
-                }
-                if state.initialized {
-                    state.initialized = false;
-                    state.taken = true;
-                    (*state.layout)
-                        .drop_fn
-                        .map(|drop_fn| (drop_fn, state.result))
-                } else {
-                    None
-                }
-            };
-            if let Some((drop_fn, result)) = release {
-                drop_fn(result);
+            let state = checked(task).lock_or_recover();
+            if !state.completed || state.initialized {
+                std::process::abort();
             }
             task = (*task).next;
         }

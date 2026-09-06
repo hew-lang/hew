@@ -3,6 +3,7 @@ use crate::support::checker_pipeline;
 #[test]
 fn checked_calls_and_task_values_compose_in_expression_positions() {
     for source in [
+        include_str!("../../../tests/core-acceptance/cases/task-call-values.hew"),
         "fn work() -> i64 { await sleep(1ms); 42 } fn main() { let value = await work(); println(value); }",
         "fn work() {} fn main() { let task = fork work(); let value: () = await task; }",
         "fn work() -> i64 { 42 } fn run() -> i64 { scope { let task = fork work(); return await task; } } fn main() {}",

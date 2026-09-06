@@ -57,6 +57,8 @@ use crate::node::{
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
 
+mod fork;
+
 /// Target architecture for compilation. Subset of the full `TargetSpec`
 /// from `hew-cli/src/target.rs`, exposed at the HIR boundary so target gates
 /// can reject unsupported constructs before codegen. Kept minimal to avoid
@@ -7659,6 +7661,8 @@ struct LowerCtx {
     recovery_kinds: HashMap<SpanKey, hew_types::check::RecoveryKind>,
     checked_call_effects: HashMap<SpanKey, hew_types::check::effects::SuspensionEffect>,
     select_sources: HashMap<SpanKey, Vec<hew_types::check::CheckedSelectSource>>,
+    checked_fork_transfers: HashMap<SpanKey, hew_types::check::effects::ForkTransferFact>,
+    fork_call_inputs: Option<fork::ForkCallInputs>,
     /// Checker-owned method-call receiver classifications. These facts prevent
     /// HIR from reclassifying a lexical spelling as a module and fail closed
     /// when a classified module or actor call lacks its dispatch fact.
@@ -8462,6 +8466,8 @@ impl LowerCtx {
             recovery_kinds: tc_output.recovery_kinds.clone(),
             checked_call_effects: tc_output.suspension_effects.calls.clone(),
             select_sources: tc_output.select_sources.clone(),
+            checked_fork_transfers: tc_output.suspension_effects.fork_transfers.clone(),
+            fork_call_inputs: None,
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -8636,6 +8642,11 @@ impl LowerCtx {
             std::mem::replace(&mut self.recovery_kinds, tc_output.recovery_kinds.clone()),
             std::mem::replace(&mut self.select_sources, tc_output.select_sources.clone()),
             std::mem::replace(
+                &mut self.checked_fork_transfers,
+                tc_output.suspension_effects.fork_transfers.clone(),
+            ),
+            std::mem::take(&mut self.fork_call_inputs),
+            std::mem::replace(
                 &mut self.checked_call_effects,
                 tc_output.suspension_effects.calls.clone(),
             ),
@@ -8662,6 +8673,8 @@ impl LowerCtx {
             self.resolved_expr_types,
             self.recovery_kinds,
             self.select_sources,
+            self.checked_fork_transfers,
+            self.fork_call_inputs,
             self.checked_call_effects,
             self.record_init_type_args,
         ) = saved;
@@ -17993,6 +18006,9 @@ impl LowerCtx {
     )]
     fn lower_expr_inner(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         let span = expr.1.clone();
+        if let Some(input) = self.fork_input(&span, intent) {
+            return input;
+        }
         // `self.count` inside an actor body names the state binding `count`.
         // The checker resolved the projection to that binding and published the
         // span, so rewrite the receiver spelling to the bare name and lower it
@@ -18846,26 +18862,14 @@ impl LowerCtx {
                     let Ok(output_ty) = ResolvedTy::from_ty(output) else {
                         return self.unsupported_expr(span, "fork batch result type is unresolved");
                     };
-                    let task_ty = ResolvedTy::Task(Box::new(output_ty));
-                    let children = branches
-                        .iter()
-                        .map(|child| self.lower_spawned_call(child))
-                        .collect();
-                    (
-                        HirExprKind::ForkBatch {
-                            children,
-                            task_ty: task_ty.clone(),
-                        },
-                        task_ty,
-                    )
+                    let batch = self.lower_fork_batch(branches, output_ty, span.clone());
+                    (batch.kind, batch.ty)
                 } else {
-                    let spawned = self.lower_spawned_call(expr);
-                    if let Some(type_args) = self.call_site_type_args.remove(&spawned.site) {
-                        self.call_site_type_args.insert(site, type_args);
-                    }
-                    (spawned.kind, spawned.ty)
+                    let child = self.lower_fork_invocation(expr);
+                    (child.kind, child.ty)
                 }
             }
+
             Expr::ForkBlock { body } => {
                 let checker_key = self.mk_key(&span);
                 let Some(Ty::Task(output)) = self.expr_types.get(&checker_key) else {
@@ -22621,16 +22625,20 @@ impl LowerCtx {
                 );
             }
         };
-        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-        let field_access = self.make_expr(
-            HirExprKind::FieldAccess {
-                object: Box::new(lowered_receiver),
-                field: method.to_string(),
-            },
-            field_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
+        let field_access = if let Some(callee) = self.fork_field_callee(&span) {
+            callee
+        } else {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            self.make_expr(
+                HirExprKind::FieldAccess {
+                    object: Box::new(lowered_receiver),
+                    field: method.to_string(),
+                },
+                field_ty.clone(),
+                IntentKind::Read,
+                span.clone(),
+            )
+        };
         let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
         (
             HirExprKind::Call {
@@ -30477,55 +30485,6 @@ impl LowerCtx {
             bindings,
             nested,
         })
-    }
-
-    /// Lower a checked call as a task-producing expression.
-    fn lower_spawned_call(&mut self, expr: &Spanned<Expr>) -> HirExpr {
-        let span = expr.1.clone();
-        let call_hir = self.lower_expr(expr, IntentKind::Consume);
-        let call_site = call_hir.site;
-
-        let explicit_type_args = match &expr.0 {
-            Expr::Call {
-                type_args: Some(type_args),
-                ..
-            } => Some(type_args.clone()),
-            _ => None,
-        };
-        let call_ret_ty = call_hir.ty.clone();
-
-        let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
-
-        let HirExprKind::Call { callee, args, .. } = call_hir.kind else {
-            // Should not happen: caller verified the expression is a Call.
-            return self.unsupported_expr(span, "lower_spawned_call on non-call");
-        };
-
-        let spawned_site = self.ids.site();
-        let type_args = self
-            .call_site_type_args
-            .get(&call_site)
-            .cloned()
-            .or_else(|| {
-                explicit_type_args.map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
-            });
-        if let Some(type_args) = type_args {
-            self.call_site_type_args.insert(spawned_site, type_args);
-        }
-
-        HirExpr {
-            node: self.ids.node(),
-            site: spawned_site,
-            value_class: ValueClass::Linear, // Task handles are linear (consume-once).
-            ty: task_ty.clone(),
-            intent: IntentKind::Consume,
-            kind: HirExprKind::SpawnedCall {
-                callee,
-                args,
-                task_ty,
-            },
-            span,
-        }
     }
 }
 

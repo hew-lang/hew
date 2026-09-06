@@ -3358,6 +3358,7 @@ impl Checker {
                     span,
                     false,
                 );
+                self.expect_type(expected, &result, span);
                 self.record_type(span, &result);
                 result
             }
@@ -7526,7 +7527,11 @@ impl Checker {
 
             self.tail_ok_armed = tail_ok_armed;
             let arm_ty = if let Some(expected) = &result_ty {
-                self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
+                if expected.contains_callable() {
+                    self.synthesize(&arm.body.0, &arm.body.1)
+                } else {
+                    self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
+                }
             } else {
                 self.synthesize(&arm.body.0, &arm.body.1)
             };
@@ -7536,8 +7541,16 @@ impl Checker {
             });
             // Skip Never/Error when setting the expected type — diverging arms
             // (return, panic, break) shouldn't constrain the match result type.
-            if result_ty.is_none() && !matches!(arm_ty, Ty::Never | Ty::Error) {
-                result_ty = Some(arm_ty);
+            if !matches!(arm_ty, Ty::Never | Ty::Error) {
+                result_ty = Some(if let Some(previous) = result_ty {
+                    if previous.contains_callable() || arm_ty.contains_callable() {
+                        self.unify_branches(&previous, &arm_ty, span)
+                    } else {
+                        previous
+                    }
+                } else {
+                    arm_ty
+                });
             }
 
             self.env.pop_scope();

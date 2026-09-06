@@ -188,4 +188,184 @@ impl Checker {
             CallableCallMode::Once => self.mark_expr_moved(&callee.0, &callee.1),
         }
     }
+    pub(super) fn callable_erasure_loses_obligation(&self, expected: &Ty, actual: &Ty) -> bool {
+        match (expected, actual) {
+            (Ty::Function { .. }, Ty::Closure { .. }) => {
+                let Ok(actual) = ResolvedTy::from_ty(actual) else {
+                    return false;
+                };
+                let declarations = self.class_declarations();
+                let context = crate::value_class::ClassContext::new(&declarations);
+                matches!(
+                    crate::value_class::ValueClass::of_ty(&actual, &context),
+                    Ok(crate::value_class::ValueClass::Linear)
+                )
+            }
+            (Ty::Named { args: expected, .. }, Ty::Named { args: actual, .. })
+            | (Ty::Tuple(expected), Ty::Tuple(actual)) => expected
+                .iter()
+                .zip(actual)
+                .any(|(expected, actual)| self.callable_erasure_loses_obligation(expected, actual)),
+            (Ty::Array(expected, _), Ty::Array(actual, _)) => {
+                self.callable_erasure_loses_obligation(expected, actual)
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn reject_callable_erasure(
+        &mut self,
+        expected: &Ty,
+        actual: &Ty,
+        span: &Span,
+    ) -> bool {
+        if !self.callable_erasure_loses_obligation(expected, actual) {
+            return false;
+        }
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            "callable erasure cannot discard a captured linear ownership obligation".to_string(),
+        );
+        true
+    }
+
+    pub(super) fn check_method_callable_place(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        span: &Span,
+    ) {
+        let key = super::SpanKey::in_module(span, self.current_module_idx);
+        if let Some(super::MethodCallRewrite::RecordFnFieldCall { field_ty }) =
+            self.method_call_rewrites.get(&key).cloned()
+        {
+            let callee = (
+                Expr::FieldAccess {
+                    object: Box::new(receiver.clone()),
+                    field: method.to_string(),
+                },
+                span.clone(),
+            );
+            self.check_callable_receiver(&field_ty.to_ty(), &callee);
+        } else if let Some((root, path)) = self.expr_place(&receiver.0) {
+            if self
+                .env
+                .place_move_conflict(&root, &path)
+                .is_some_and(|(kind, _, _)| kind == crate::env::PlaceConflict::WholeOfPartial)
+            {
+                self.report_place_use_after_move(&root, &path, &receiver.1);
+            }
+        }
+    }
+
+    fn join_callable_type_list(&mut self, left: &[Ty], right: &[Ty]) -> Option<Vec<Ty>> {
+        if left.len() != right.len() {
+            return None;
+        }
+        left.iter()
+            .zip(right)
+            .map(|(left, right)| self.join_callable_types(left, right))
+            .collect()
+    }
+
+    pub(super) fn join_callable_types(&mut self, left: &Ty, right: &Ty) -> Option<Ty> {
+        if left == right {
+            return Some(left.clone());
+        }
+        match (left, right) {
+            (
+                Ty::Function {
+                    capabilities: lc,
+                    params: lp,
+                    ret: lr,
+                }
+                | Ty::Closure {
+                    capabilities: lc,
+                    params: lp,
+                    ret: lr,
+                    ..
+                },
+                Ty::Function {
+                    capabilities: rc,
+                    params: rp,
+                    ret: rr,
+                }
+                | Ty::Closure {
+                    capabilities: rc,
+                    params: rp,
+                    ret: rr,
+                    ..
+                },
+            ) => {
+                if lp.len() != rp.len() {
+                    return None;
+                }
+                let mut trial = self.subst.clone();
+                for (left, right) in lp.iter().zip(rp).chain(std::iter::once((&**lr, &**rr))) {
+                    crate::unify::unify(&mut trial, left, right).ok()?;
+                }
+                let capabilities = CallableCapabilities {
+                    call: lc.call.max(rc.call),
+                    clone: lc.clone && rc.clone,
+                };
+                let params = lp.iter().map(|ty| trial.resolve(ty)).collect();
+                let ret = Box::new(trial.resolve(lr));
+                let joined = match (left, right) {
+                    (
+                        Ty::Closure { captures: left, .. },
+                        Ty::Closure {
+                            captures: right, ..
+                        },
+                    ) if left == right => Ty::Closure {
+                        capabilities,
+                        params,
+                        ret,
+                        captures: left.clone(),
+                    },
+                    _ => Ty::Function {
+                        capabilities,
+                        params,
+                        ret,
+                    },
+                };
+                if self.callable_erasure_loses_obligation(&joined, left)
+                    || self.callable_erasure_loses_obligation(&joined, right)
+                {
+                    return None;
+                }
+                self.subst = trial;
+                Some(joined)
+            }
+            (Ty::Tuple(left), Ty::Tuple(right)) => {
+                self.join_callable_type_list(left, right).map(Ty::Tuple)
+            }
+            (
+                Ty::Named {
+                    name: left_name,
+                    args: left,
+                    builtin: left_builtin,
+                },
+                Ty::Named {
+                    name: right_name,
+                    args: right,
+                    builtin: right_builtin,
+                },
+            ) if left_name == right_name
+                && left_builtin == right_builtin
+                && left.len() == right.len() =>
+            {
+                Some(Ty::Named {
+                    name: left_name.clone(),
+                    builtin: *left_builtin,
+                    args: self.join_callable_type_list(left, right)?,
+                })
+            }
+            (Ty::Array(left, left_len), Ty::Array(right, right_len)) if left_len == right_len => {
+                self.join_callable_types(left, right)
+                    .map(|ty| Ty::Array(Box::new(ty), *left_len))
+            }
+            _ => None,
+        }
+    }
 }

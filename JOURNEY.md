@@ -1624,3 +1624,22 @@ acquisition/consumption, private mutation, shadowing, nested captures, call-once
 reuse and forged Clone controls. Workspace Rust Clippy passed. Directional
 coercions, capability joins and canonical callable identity keys remain for the
 next checkpoint; native/runtime acceptance belongs to integration.
+
+## Directional callable coercion and type identity
+
+Separated exact callable unification from directional value coercion. Parameter
+and result signatures remain invariant; value coercion may weaken invocation
+capabilities and forget Clone through bindings and aggregates. Control-flow
+joins compute common guarantees independently of arm order. Explicit binding
+annotations retain their erased destination type, while expressions preserve
+their concrete source type for ownership lowering. Callable-field invocation
+checks the selected place and explicit clone uses the existing typed clone
+rewrite. Erasure cannot discard captured linear duties.
+
+Canonical type strings, mangled specialization keys and storage congruence now
+retain callable capabilities; closure keys also retain capture types. This
+prevents distinct ownership-bearing instances from sharing an accidental key.
+The full type unit suite and native compiler build passed through Make, as did
+focused HIR key collision controls. Native closure execution and lifetime
+acceptance remain integration work. Value-transfer consumption inference and
+generic function values remain the next source component work.

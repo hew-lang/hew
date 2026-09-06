@@ -1462,6 +1462,13 @@ impl Ty {
             || matches!(self, Ty::Bool | Ty::Char | Ty::Unit | Ty::Duration)
     }
 
+    /// Whether this value type contains a callable guarantee that erasure must preserve.
+    #[must_use]
+    pub(crate) fn contains_callable(&self) -> bool {
+        matches!(self, Self::Function { .. } | Self::Closure { .. })
+            || self.any_child(&Self::contains_callable)
+    }
+
     /// Check if this type contains a specific type variable (occurs check).
     #[must_use]
     pub fn contains_var(&self, v: TypeVar) -> bool {

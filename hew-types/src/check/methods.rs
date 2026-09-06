@@ -7359,6 +7359,7 @@ impl Checker {
     ) -> Ty {
         let result = self.check_method_call_inner(receiver, method, args, span);
         let key = SpanKey::in_module(span, self.current_module_idx);
+        self.check_method_callable_place(receiver, method, span);
         let runtime_rewrite_consumes_receiver = matches!(
             self.method_call_rewrites.get(&key),
             Some(MethodCallRewrite::RewriteToFunction {
@@ -7841,7 +7842,9 @@ impl Checker {
             }
         }
 
+        self.place_base_depth += 1;
         let receiver_ty = self.synthesize(&receiver.0, &receiver.1);
+        self.place_base_depth -= 1;
         let resolved = self.subst.resolve(&receiver_ty);
         // If the receiver is still an unresolved inference variable that was
         // created from a coercible integer-literal / const-integer range (both
@@ -7978,6 +7981,8 @@ impl Checker {
             && matches!(
                 &resolved,
                 Ty::Tuple(_)
+                    | Ty::Function { .. }
+                    | Ty::Closure { .. }
                     | Ty::Named {
                         builtin: Some(_),
                         ..
@@ -7987,6 +7992,8 @@ impl Checker {
             let is_structural_value = matches!(
                 &resolved,
                 Ty::Tuple(_)
+                    | Ty::Function { .. }
+                    | Ty::Closure { .. }
                     | Ty::Named {
                         builtin: Some(BuiltinType::Option | BuiltinType::Result),
                         ..

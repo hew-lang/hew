@@ -134,6 +134,31 @@ fn literal_promotion_root(subst: &Substitution, start: TypeVar) -> Option<TypeVa
     }
 }
 
+/// Make two types equal without granting or forgetting callable capabilities.
+///
+/// # Errors
+/// Returns an error when the types cannot be made equal by substitution.
+#[allow(
+    clippy::result_large_err,
+    reason = "unification errors carry both types for diagnostics"
+)]
+pub fn unify(subst: &mut Substitution, expected: &Ty, actual: &Ty) -> Result<(), UnifyError> {
+    relate_types(subst, expected, actual, false)
+}
+
+/// Coerce an actual value to its expected type, preserving callable signature
+/// invariance while allowing capability weakening through value aggregates.
+///
+/// # Errors
+/// Returns an error for incompatible types or an invented callable capability.
+#[allow(
+    clippy::result_large_err,
+    reason = "unification errors carry both types for diagnostics"
+)]
+pub fn coerce(subst: &mut Substitution, expected: &Ty, actual: &Ty) -> Result<(), UnifyError> {
+    relate_types(subst, expected, actual, true)
+}
+
 /// Unify two types, updating the substitution.
 ///
 /// This is the core algorithm that makes two types equal by finding
@@ -149,7 +174,8 @@ fn literal_promotion_root(subst: &Substitution, start: TypeVar) -> Option<TypeVa
     clippy::result_large_err,
     reason = "UnifyError intentionally carries concrete Ty values for diagnostics"
 )]
-pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError> {
+fn relate_types(subst: &mut Substitution, a: &Ty, b: &Ty, weaken: bool) -> Result<(), UnifyError> {
+    let relate = |subst: &mut Substitution, a: &Ty, b: &Ty| relate_types(subst, a, b, weaken);
     let a_resolved = subst.resolve(a);
     let b_resolved = subst.resolve(b);
 
@@ -191,7 +217,7 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                 });
             }
             for (a, b) in as_.iter().zip(bs.iter()) {
-                unify(subst, a, b)?;
+                relate(subst, a, b)?;
             }
             Ok(())
         }
@@ -204,68 +230,71 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                     actual: b_resolved.clone(),
                 });
             }
-            unify(subst, a_elem, b_elem)
+            relate(subst, a_elem, b_elem)
         }
 
         // Structural: slices
-        (Ty::Slice(a_elem), Ty::Slice(b_elem)) => unify(subst, a_elem, b_elem),
+        (Ty::Slice(a_elem), Ty::Slice(b_elem)) => relate(subst, a_elem, b_elem),
 
-        // Structural: functions and closures (Closure unifies with Function by params+ret)
+        // Callable signatures are invariant. A value coercion can weaken
+        // receiver capability and forget independent duplication evidence.
         (
             Ty::Function {
+                capabilities: ac,
+                params: ap,
+                ret: ar,
+            }
+            | Ty::Closure {
+                capabilities: ac,
                 params: ap,
                 ret: ar,
                 ..
             },
             Ty::Function {
+                capabilities: bc,
                 params: bp,
                 ret: br,
-                ..
-            },
-        )
-        | (
-            Ty::Closure {
-                params: ap,
-                ret: ar,
-                ..
-            },
-            Ty::Closure {
-                params: bp,
-                ret: br,
-                ..
-            },
-        )
-        | (
-            Ty::Closure {
-                params: ap,
-                ret: ar,
-                ..
-            },
-            Ty::Function {
-                params: bp,
-                ret: br,
-                ..
-            },
-        )
-        | (
-            Ty::Function {
-                params: ap,
-                ret: ar,
-                ..
-            },
-            Ty::Closure {
+            }
+            | Ty::Closure {
+                capabilities: bc,
                 params: bp,
                 ret: br,
                 ..
             },
         ) => {
+            let capabilities_match = if weaken {
+                bc.call <= ac.call && (!ac.clone || bc.clone)
+            } else {
+                ac == bc
+            };
+            let captures_match = match (&a_resolved, &b_resolved) {
+                (Ty::Closure { captures: a, .. }, Ty::Closure { captures: b, .. }) => {
+                    a.len() == b.len()
+                }
+                (Ty::Function { .. }, Ty::Closure { .. }) => weaken,
+                (Ty::Closure { .. }, Ty::Function { .. }) => false,
+                _ => true,
+            };
+            if !capabilities_match || !captures_match {
+                return Err(UnifyError::Mismatch {
+                    expected: a_resolved.clone(),
+                    actual: b_resolved.clone(),
+                });
+            }
             if ap.len() != bp.len() {
                 return Err(UnifyError::ArityMismatch {
                     expected: ap.len(),
                     actual: bp.len(),
                 });
             }
-            for (a, b) in ap.iter().zip(bp.iter()) {
+            if let (Ty::Closure { captures: a, .. }, Ty::Closure { captures: b, .. }) =
+                (&a_resolved, &b_resolved)
+            {
+                for (a, b) in a.iter().zip(b) {
+                    unify(subst, a, b)?;
+                }
+            }
+            for (a, b) in ap.iter().zip(bp) {
                 unify(subst, a, b)?;
             }
             unify(subst, ar, br)
@@ -291,7 +320,7 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                 });
             }
             for (a, b) in aa.iter().zip(ba.iter()) {
-                unify(subst, a, b)?;
+                relate(subst, a, b)?;
             }
             Ok(())
         }
@@ -306,7 +335,7 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                 is_mutable: bm,
                 pointee: bp,
             },
-        ) if am == bm => unify(subst, ap, bp),
+        ) if am == bm => relate(subst, ap, bp),
 
         // TraitObject with same traits
         (Ty::TraitObject { traits: a_traits }, Ty::TraitObject { traits: b_traits }) => {
@@ -337,7 +366,7 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                     });
                 }
                 for (a_arg, b_arg) in a_bound.args.iter().zip(b_bound.args.iter()) {
-                    unify(subst, a_arg, b_arg)?;
+                    relate(subst, a_arg, b_arg)?;
                 }
                 if a_bound.assoc_bindings.len() != b_bound.assoc_bindings.len() {
                     return Err(UnifyError::ArityMismatch {
@@ -356,7 +385,7 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                             actual: b.clone(),
                         });
                     };
-                    unify(subst, a_assoc_ty, b_assoc_ty)?;
+                    relate(subst, a_assoc_ty, b_assoc_ty)?;
                 }
             }
             Ok(())
@@ -366,7 +395,7 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
         // Task<T> ~ non-Task is deliberately rejected (falls to mismatch below)
         // per TI-5: task handles cannot be treated as their inner type without
         // an explicit `await`.
-        (Ty::Task(a_inner), Ty::Task(b_inner)) => unify(subst, a_inner, b_inner),
+        (Ty::Task(a_inner), Ty::Task(b_inner)) => relate(subst, a_inner, b_inner),
 
         // Mismatch
         _ => Err(UnifyError::Mismatch {
@@ -592,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unify_closure_with_function() {
+    fn closure_erasure_is_directional_coercion_not_unification() {
         let mut subst = Substitution::new();
         let closure = Ty::Closure {
             capabilities: crate::CallableCapabilities::default(),
@@ -605,7 +634,10 @@ mod tests {
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         };
-        assert!(unify(&mut subst, &closure, &function).is_ok());
+        assert!(unify(&mut subst, &closure, &function).is_err());
+        assert!(unify(&mut subst, &function, &closure).is_err());
+        assert!(coerce(&mut subst, &function, &closure).is_ok());
+        assert!(coerce(&mut subst, &closure, &function).is_err());
     }
 
     #[test]
@@ -622,7 +654,7 @@ mod tests {
             capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::String],
             ret: Box::new(Ty::Bool),
-            captures: vec![Ty::F64],
+            captures: vec![Ty::I32],
         };
         assert!(unify(&mut subst, &a, &b).is_ok());
         assert_eq!(subst.resolve(&Ty::Var(v)), Ty::String);
@@ -643,7 +675,7 @@ mod tests {
             ret: Box::new(Ty::Unit),
         };
         assert!(matches!(
-            unify(&mut subst, &closure, &function),
+            coerce(&mut subst, &function, &closure),
             Err(UnifyError::ArityMismatch { .. })
         ));
     }

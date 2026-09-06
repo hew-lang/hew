@@ -327,6 +327,15 @@ impl Checker {
                 return common_ty;
             }
         }
+        if then_resolved.contains_callable() || else_resolved.contains_callable() {
+            let snapshot = self.subst.snapshot();
+            if let Some(joined) = self.join_callable_types(&then_resolved, &else_resolved) {
+                self.expect_type(&joined, &then_resolved, span);
+                self.expect_type(&joined, &else_resolved, span);
+                return joined;
+            }
+            self.subst.restore(snapshot);
+        }
         self.expect_type(then_ty, else_ty, span);
         self.subst.resolve(then_ty)
     }
@@ -375,10 +384,12 @@ impl Checker {
     pub(super) fn try_unify_with_owner_identity(&mut self, expected: &Ty, actual: &Ty) -> bool {
         let expected_resolved = self.normalize_for_use(expected);
         let actual_resolved = self.normalize_for_use(actual);
-        if self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
+        if self.nominal_owner_conflict(&expected_resolved, &actual_resolved)
+            || self.callable_erasure_loses_obligation(&expected_resolved, &actual_resolved)
+        {
             return false;
         }
-        unify(&mut self.subst, &expected_resolved, &actual_resolved).is_ok()
+        crate::unify::coerce(&mut self.subst, &expected_resolved, &actual_resolved).is_ok()
     }
 
     /// Commit an inference unification without losing the source inference
@@ -414,12 +425,14 @@ impl Checker {
         let actual = &actual_projected;
         // Reject the issue #2651 nominal collision at the type boundary before
         // unification would silently accept it; see `reject_nominal_owner_conflict`.
-        if self.reject_nominal_owner_conflict(expected, actual, span) {
+        if self.reject_nominal_owner_conflict(expected, actual, span)
+            || self.reject_callable_erasure(expected, actual, span)
+        {
             return;
         }
         // Snapshot substitution so partial bindings are rolled back on failure
         let snapshot = self.subst.snapshot();
-        if let Err(_e) = unify(&mut self.subst, expected, actual) {
+        if let Err(_e) = crate::unify::coerce(&mut self.subst, expected, actual) {
             // Restore substitution to avoid partial corruption
             self.subst.restore(snapshot);
             let expected_resolved = self.subst.resolve(expected);

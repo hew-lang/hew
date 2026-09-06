@@ -85,7 +85,8 @@ impl Checker {
             return actual;
         }
         let resolved_expected = self.subst.resolve(expected);
-        if matches!(resolved_expected, Ty::TraitObject { .. })
+        if resolved_expected.contains_callable()
+            || matches!(resolved_expected, Ty::TraitObject { .. })
             || matches!(
                 &resolved_expected,
                 Ty::Named { name, .. } if self.type_aliases.contains_key(name)

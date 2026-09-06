@@ -18,7 +18,7 @@ use std::fmt;
 
 use crate::builtin_type::BuiltinType;
 use crate::ty::{TraitObjectBound, Ty, TypeVar};
-use crate::{DefId, NominalId};
+use crate::{CallableCapabilities, DefId, NominalId};
 
 /// A concrete use of a declared nominal type.
 ///
@@ -541,15 +541,16 @@ impl ResolvedTy {
                 Self::Function {
                     params: left_params,
                     ret: left_ret,
-                    ..
+                    capabilities: left_capabilities,
                 },
                 Self::Function {
                     params: right_params,
                     ret: right_ret,
-                    ..
+                    capabilities: right_capabilities,
                 },
             ) => {
-                left_params.len() == right_params.len()
+                left_capabilities == right_capabilities
+                    && left_params.len() == right_params.len()
                     && left_params
                         .iter()
                         .zip(right_params)
@@ -1037,14 +1038,24 @@ pub fn mangle_resolved_ty_segment(
             Some(format!("slice$x{elem_seg}$g"))
         }
         ResolvedTy::Named { name, args, .. } => mangle_named_segment(name, args, type_param_mode),
-        ResolvedTy::Function { params, ret, .. } => {
-            mangle_function_like_segment("fn", params, ret, type_param_mode)
-        }
-        // Captures are not part of the call-type identity — mirrors
-        // `hew-hir::monomorph::mangle_resolved_ty`.
-        ResolvedTy::Closure { params, ret, .. } => {
-            mangle_function_like_segment("closure", params, ret, type_param_mode)
-        }
+        ResolvedTy::Function {
+            capabilities,
+            params,
+            ret,
+        } => mangle_function_like_segment("fn", *capabilities, params, ret, None, type_param_mode),
+        ResolvedTy::Closure {
+            capabilities,
+            params,
+            ret,
+            captures,
+        } => mangle_function_like_segment(
+            "closure",
+            *capabilities,
+            params,
+            ret,
+            Some(captures),
+            type_param_mode,
+        ),
         ResolvedTy::Pointer {
             is_mutable,
             pointee,
@@ -1105,13 +1116,31 @@ fn mangle_named_segment(
 /// Render a `Function`/`Closure` segment.
 fn mangle_function_like_segment(
     head: &str,
+    capabilities: CallableCapabilities,
     params: &[ResolvedTy],
     ret: &ResolvedTy,
+    captures: Option<&[ResolvedTy]>,
     type_param_mode: TypeParamMangle,
 ) -> Option<String> {
+    let call = match capabilities.call {
+        crate::CallableCallMode::Read => "read",
+        crate::CallableCallMode::Var => "var",
+        crate::CallableCallMode::Once => "once",
+    };
+    let clone = if capabilities.clone {
+        "clone"
+    } else {
+        "unique"
+    };
     let params_seg = mangle_type_list_segment(params, type_param_mode)?;
     let ret_seg = mangle_resolved_ty_segment(ret, type_param_mode)?;
-    Some(format!("{head}$x{params_seg}$r{ret_seg}$g"))
+    let mut out = format!("{head}$k{call}$k{clone}$x{params_seg}$r{ret_seg}");
+    if let Some(captures) = captures {
+        out.push_str("$e");
+        out.push_str(&mangle_type_list_segment(captures, type_param_mode)?);
+    }
+    out.push_str("$g");
+    Some(out)
 }
 
 /// Render a `TraitObject` segment.
@@ -1177,6 +1206,58 @@ pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callable_keys_preserve_capabilities_and_capture_storage() {
+        use crate::CallableCallMode::{Once, Read, Var};
+        let mut keys = std::collections::HashSet::new();
+        let mut canonical = std::collections::HashSet::new();
+        let mut functions = Vec::new();
+        for call in [Read, Var, Once] {
+            for clone in [false, true] {
+                let capabilities = CallableCapabilities { call, clone };
+                let function = ResolvedTy::Function {
+                    capabilities,
+                    params: vec![ResolvedTy::I64],
+                    ret: Box::new(ResolvedTy::Bool),
+                };
+                assert!(functions
+                    .iter()
+                    .all(|previous| !function.is_storage_congruent_with(previous)));
+                functions.push(function.clone());
+                for ty in [
+                    function,
+                    ResolvedTy::Closure {
+                        capabilities,
+                        params: vec![ResolvedTy::I64],
+                        ret: Box::new(ResolvedTy::Bool),
+                        captures: vec![ResolvedTy::String],
+                    },
+                    ResolvedTy::Closure {
+                        capabilities,
+                        params: vec![ResolvedTy::I64],
+                        ret: Box::new(ResolvedTy::Bool),
+                        captures: vec![ResolvedTy::I64],
+                    },
+                ] {
+                    assert!(keys.insert(
+                        mangle_resolved_ty_segment(&ty, TypeParamMangle::Concrete).unwrap()
+                    ));
+                    assert!(canonical.insert(ty.canonical_string()));
+                }
+            }
+        }
+        let abstract_capture = ResolvedTy::Closure {
+            capabilities: CallableCapabilities::default(),
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+            captures: vec![ResolvedTy::TypeParam { name: "T".into() }],
+        };
+        assert_eq!(
+            mangle_resolved_ty_segment(&abstract_capture, TypeParamMangle::BareKeyFallback),
+            None
+        );
+    }
 
     #[test]
     fn storage_congruence_uses_nested_builtin_identity() {

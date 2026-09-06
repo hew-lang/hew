@@ -181,3 +181,183 @@ fn consumption_in_a_diverging_arm_still_requires_once() {
         .any(|ty| matches!(ty, Ty::Closure { capabilities, .. }
         if capabilities.call == CallableCallMode::Once && !capabilities.clone)));
 }
+
+#[test]
+fn callable_coercions_only_weaken_guarantees() {
+    let modes = [
+        "",
+        "[Clone]",
+        "[var]",
+        "[var, Clone]",
+        "[once]",
+        "[once, Clone]",
+    ];
+    for (from, actual) in modes.iter().enumerate() {
+        for (to, expected) in modes.iter().enumerate() {
+            let source = format!("fn accept(f: fn{expected}() -> i64) {{}} fn forward(f: fn{actual}() -> i64) {{ accept(f); }}");
+            let output = check_source(&source);
+            let accepted = from / 2 <= to / 2 && (to % 2 == 0 || from % 2 == 1);
+            assert_eq!(
+                output.errors.is_empty(),
+                accepted,
+                "{source}: {:?}",
+                output.errors
+            );
+        }
+    }
+}
+
+#[test]
+fn callable_parameter_and_result_signatures_remain_invariant() {
+    for (expected, actual) in [
+        (
+            "fn(fn[var]() -> i64) -> i64",
+            "fn(fn[once]() -> i64) -> i64",
+        ),
+        ("fn() -> fn() -> i64", "fn() -> fn[Clone]() -> i64"),
+        ("fn(i64) -> i64", "fn(i32) -> i64"),
+    ] {
+        let source =
+            format!("fn accept(f: {expected}) {{}} fn forward(f: {actual}) {{ accept(f); }}");
+        let output = check_source(&source);
+        assert!(!output.errors.is_empty(), "accepted {source}");
+    }
+}
+
+#[test]
+fn explicit_erasure_controls_later_calls_and_clone() {
+    let output = check_source("fn main() { let f: fn[once]() -> i64 = || 1; f(); f(); }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "{:?}",
+        output.errors
+    );
+    let output = check_source("fn main() { let f: fn() -> i64 = || 1; let duplicate = clone f; }");
+    assert!(
+        !output.errors.is_empty(),
+        "plain fn must not regain Clone through its initializer"
+    );
+    let output = check_source("fn main() { let f: fn[Clone]() -> i64 = || 1; let duplicate = clone f; f(); duplicate(); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn lambda_arguments_cannot_hide_private_mutation() {
+    let output = check_source("fn accept(f: fn() -> i64) {} fn main() { let n: i64 = 0; accept([var n] || { n = n + 1; n }); }");
+    assert!(
+        !output.errors.is_empty(),
+        "a var closure cannot satisfy a read-only function parameter"
+    );
+}
+
+#[test]
+fn callable_joins_forget_guarantees_independently_of_arm_order() {
+    for choice in [
+        "if flag { a } else { b }",
+        "if flag { b } else { a }",
+        "match flag { true => a, false => b }",
+        "match flag { true => b, false => a }",
+    ] {
+        let source = format!("fn choose_callable(a: fn() -> i64, b: fn[once, Clone]() -> i64, flag: bool) {{ let f = {choice}; f(); f(); }}");
+        let output = check_source(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+            "{source}: {:?}",
+            output.errors
+        );
+        assert!(output
+            .expr_types
+            .values()
+            .any(|ty| matches!(ty, Ty::Function { capabilities, .. }
+            if capabilities.call == CallableCallMode::Once && !capabilities.clone)));
+    }
+}
+
+#[test]
+fn callable_qualifiers_survive_aggregate_erasure() {
+    let output = check_source(
+        "fn main() { let pair: (fn[once]() -> i64, i64) = (|| 1, 0); (pair.0)(); (pair.0)(); }",
+    );
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            error.kind,
+            TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
+        )),
+        "{:?}",
+        output.errors
+    );
+    for (expected, actual, accepted) in [
+        (
+            "Option<fn[once]() -> i64>",
+            "Option<fn[Clone]() -> i64>",
+            true,
+        ),
+        ("Option<fn[Clone]() -> i64>", "Option<fn() -> i64>", false),
+        (
+            "Result<fn[once]() -> i64, string>",
+            "Result<fn[Clone]() -> i64, string>",
+            true,
+        ),
+    ] {
+        let source = format!(
+            "fn accept(value: {expected}) {{}} fn forward(value: {actual}) {{ accept(value); }}"
+        );
+        let output = check_source(&source);
+        assert_eq!(
+            output.errors.is_empty(),
+            accepted,
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn method_style_callable_field_invocation_checks_the_selected_place() {
+    let declarations = "type Callbacks { first: fn[once]() -> i64, second: fn[once]() -> i64 }";
+    let output = check_source(&format!(
+        "{declarations} fn invoke(pair: Callbacks) {{ pair.first(); pair.second(); }}"
+    ));
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source(&format!(
+        "{declarations} fn invoke(pair: Callbacks) {{ pair.first(); pair.first(); }}"
+    ));
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            error.kind,
+            TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
+        )),
+        "{:?}",
+        output.errors
+    );
+    let output = check_source(
+        "type Counter { next: fn[var]() -> i64 } fn invoke(counter: Counter) { counter.next(); }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::MutabilityError),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn callable_erasure_cannot_discard_linear_capture_obligations() {
+    let output = check_source("#[linear] type Ticket { value: i64 } impl Ticket { fn finish(consuming self) -> i64 { self.value } } fn erase(ticket: Ticket) -> fn[once]() -> i64 { move || ticket.finish() }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("linear ownership obligation")),
+        "{:?}",
+        output.errors
+    );
+}

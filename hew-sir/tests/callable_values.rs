@@ -286,21 +286,35 @@ fn mutable_callable_field_invocation_borrows_the_stored_environment() {
         .iter()
         .find(|function| function.name == "main")
         .unwrap();
+    let plan =
+        hew_sir::aggregate_projection_plan(main, &module.aggregate_shapes, &module.type_facts)
+            .unwrap();
+    let mut receivers = Vec::new();
     for block in &main.blocks {
         if let SemTerminator::IndirectCall { callee, .. } = &block.terminator {
-            assert!(main
+            assert_eq!(callee.decision, hew_sir::BoundaryDecision::BorrowMut);
+            let borrow = main
                 .blocks
                 .iter()
                 .flat_map(|block| &block.ops)
-                .any(
-                    |op| matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. })
-                        && op
-                            .results
-                            .iter()
-                            .any(|value| value.id == callee.operand.value)
-                ));
+                .find(|op| {
+                    op.results
+                        .iter()
+                        .any(|value| value.id == callee.operand.value)
+                })
+                .expect("stored receiver loan");
+            let SemOpKind::LoadBorrow { place, environment } = &borrow.kind else {
+                panic!("mutable field call must borrow its stored owner");
+            };
+            let projection = plan.projection(*place).unwrap();
+            assert_eq!(projection.root, environment.value);
+            assert_eq!(projection.path.len(), 1);
+            assert_eq!(projection.path[0].field, 0);
+            receivers.push(*place);
         }
     }
+    assert_eq!(receivers.len(), 2);
+    assert_eq!(receivers[0], receivers[1]);
 }
 
 #[test]

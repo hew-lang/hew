@@ -248,13 +248,13 @@ impl<I, A> Iterator for Enumerate<I, A> where I: Iterator<Item = A> {
 
 // ── lazy constructors ────────────────────────────────────────────────────
 /// Construct a lazy `Map` adapter over `it` applying `f` to each item.
-pub fn map<I, A, B>(it: I, f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
+pub fn map<I, A, B>(it: I, consume f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
     Map { iter: it, f: f }
 }
 
 /// Construct a lazy `Filter` adapter over `it` keeping items for which
 /// `pred` returns `true`.
-pub fn filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A> where I: Iterator<Item = A> {
+pub fn filter<I, A>(it: I, consume pred: fn(A) -> bool) -> Filter<I, A> where I: Iterator<Item = A> {
     Filter { iter: it, pred: pred }
 }
 
@@ -399,10 +399,10 @@ pub fn find<I, A>(it: I, pred: fn(A) -> bool) -> Option<A> where I: Iterator<Ite
 // operation as `cursor.map(f)` selects exactly the same implementation as
 // `iter::map(cursor, f)`.
 impl<T> VecIter<T> {
-    pub fn map<U>(self, f: fn(T) -> U) -> Map<VecIter<T>, T, U> {
+    pub fn map<U>(self, consume f: fn(T) -> U) -> Map<VecIter<T>, T, U> {
         map(self, f)
     }
-    pub fn filter(self, pred: fn(T) -> bool) -> Filter<VecIter<T>, T> {
+    pub fn filter(self, consume pred: fn(T) -> bool) -> Filter<VecIter<T>, T> {
         filter(self, pred)
     }
     pub fn fold<U>(self, init: U, f: fn(U, T) -> U) -> U {

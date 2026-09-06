@@ -1,4 +1,4 @@
-//! Current projected-consume guards and the owning destructure control.
+//! Field transfers preserve sibling ownership without manufacturing copies.
 
 use hew_hir::{lower_program_host_target, HirExprKind, HirItem, ResolutionCtx};
 use hew_sir::{
@@ -20,6 +20,47 @@ fn lower(source: &str) -> LoweredModule {
 fn declarations(clone: bool) -> String {
     let capabilities = if clone { "once, clone" } else { "once" };
     format!("type Two {{ a: fn[{capabilities}]() -> i64, b: fn() -> i64 }} fn answer() -> i64 {{ 41 }} fn sibling() -> i64 {{ 1 }}")
+}
+
+fn assert_lowered(source: &str) -> LoweredModule {
+    let lowered = lower(source);
+    assert!(
+        lowered
+            .callable_statuses
+            .iter()
+            .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
+        "{:?}",
+        lowered.callable_statuses
+    );
+    let diagnostics = verify_module(&lowered.module);
+    assert!(
+        diagnostics.is_empty(),
+        "{diagnostics:?}\n{}",
+        hew_sir::dump_sir(&lowered.module)
+    );
+    lowered
+}
+
+fn assert_once_field_transfer(source: &str) {
+    let lowered = assert_lowered(source);
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .unwrap();
+    let taken = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .find(|op| matches!(op.kind, SemOpKind::LoadTake { .. }))
+        .expect("once field must transfer from its existing owner");
+    let moved = main.blocks.iter().flat_map(|block| &block.ops)
+        .find(|op| matches!(&op.kind, SemOpKind::Move { source } if source.value == taken.results[0].id))
+        .expect("receiver transfers before its arguments");
+    assert!(main.blocks.iter().any(|block| matches!(&block.terminator,
+        SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::Move
+            && callee.operand.value == moved.results[0].id)));
 }
 
 #[test]
@@ -143,19 +184,63 @@ fn assert_refused(source: &str, function: &str, code: &str) {
 fn once_record_fields_never_gain_a_hidden_clone_owner() {
     for clone in [false, true] {
         let source = format!(
-            "{} fn main() -> i64 {{ let value = Two {{ a: answer, b: sibling }}; value.a() }}",
+            "{} fn main() -> i64 {{ let value = Two {{ a: answer, b: sibling }}; let first = value.a(); first + value.b() }}",
             declarations(clone)
         );
-        assert_refused(&source, "main", "E_OWN_PARTIAL_CONSUME");
+        assert_once_field_transfer(&source);
     }
 }
 
 #[test]
 fn once_tuple_fields_never_gain_a_hidden_clone_owner() {
     for capabilities in ["once", "once, clone"] {
-        let source = format!("fn answer() -> i64 {{ 41 }} fn main() -> i64 {{ let callback: fn[{capabilities}]() -> i64 = answer; let value = (callback, 1); value.0() }}");
-        assert_refused(&source, "main", "E_OWN_PARTIAL_CONSUME");
+        let source = format!("fn answer() -> i64 {{ 41 }} fn main() -> i64 {{ let callback: fn[{capabilities}]() -> i64 = answer; let value = (callback, 1); let first = value.0(); first + value.1 }}");
+        assert_once_field_transfer(&source);
     }
+}
+
+#[test]
+fn partial_jobs_preserve_nested_siblings_reinitialization_and_fault_cleanup() {
+    for source in [
+        include_str!("../../tests/core-acceptance/cases/partial-job-dispatch.hew"),
+        include_str!("../../tests/core-acceptance/cases/partial-job-reuse.hew"),
+        include_str!("../../tests/core-acceptance/cases/partial-job-later-argument-fault.hew"),
+        include_str!("../../tests/core-acceptance/cases/partial-job-callback-body-fault.hew"),
+    ] {
+        assert_lowered(source);
+    }
+}
+
+#[test]
+fn a_partial_captured_record_retains_its_remaining_fields() {
+    assert_lowered(
+        r#"
+        type Job { run: fn[once]() -> i64, label: string }
+        fn answer() -> i64 { 42 }
+        fn main() -> i64 {
+            let job = Job { run: answer, label: "captured sibling" };
+            let callback = move || { println(job.run()); println(job.label); 0 };
+            callback()
+        }
+    "#,
+    );
+}
+
+#[test]
+fn runtime_field_mutation_preserves_a_partially_consumed_container() {
+    assert_lowered(
+        r#"
+        type Bag { run: fn[once]() -> i64, values: Vec<string> }
+        fn answer() -> i64 { 42 }
+        fn main() -> i64 {
+            var bag = Bag { run: answer, values: Vec.new() };
+            println(bag.run());
+            bag.values.push("remaining field");
+            println(bag.values.len());
+            0
+        }
+    "#,
+    );
 }
 
 #[test]

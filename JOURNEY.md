@@ -1952,3 +1952,24 @@ The record-contract suite passes. An initial attempt to reuse transparent field
 admission for the marker query incorrectly excluded resource declarations; the
 final query reads their declaration metadata independently. Projected SIR will
 retain this marker alongside its separately verified aggregate shape.
+
+## Lower owned field access through projected places
+
+Local record and tuple fields now use exact SIR places rooted in one owned SSA
+value. Field takes preserve siblings; field assignment uses conditional cleanup
+and reinitialization. Structural partitions are completed across CFG root
+versions before ownership verification. Consumed aggregate captures transfer to
+one local root at entry, and runtime field transforms restore that same place.
+Owned temporary extraction retains its explicit destructuring path.
+
+The complete Job source controls verify nested siblings, conditional takes,
+field restoration, loops and argument/body faults. Captured partial records and
+mutation of a remaining vector field also verify. These exposed and corrected
+missing callable coercion on replacement and attempts to carry already consumed
+variables into loops. Iterator adapters explicitly acquire retained callbacks.
+
+Focused callable and aggregate-place controls pass. The full SIR run reaches the
+new producer but still has tests tied to replaced projection/reconstruction
+shapes; those assertions need migration while preserving their borrow, ordering
+and fault obligations. Native partial storage remains deliberately refused until
+physical realization is integrated; this is a producer checkpoint.

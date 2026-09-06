@@ -2,6 +2,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::ops::Range;
 
+#[path = "lower_projection.rs"]
+mod projection;
+
 use hew_hir::{
     BindingId, HirBinding, HirBlock, HirDestructureField, HirDestructureSelector, HirExpr,
     HirExprKind, HirFn, HirItem, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
@@ -2234,7 +2237,7 @@ struct LoopScope {
 
 /// A checked local root and concrete aggregate projections. Resolving this
 /// path does not read or consume the current binding version.
-struct MutablePlace {
+struct BindingPlace {
     binding: BindingId,
     root_ty: ResolvedTy,
     leaf_ty: ResolvedTy,
@@ -2444,6 +2447,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 mutable: capture.access == hew_types::ClosureCaptureAccess::Var,
                 target: crate::BindingTarget::Place(place),
             });
+            let ty = self.ty(&capture.ty);
+            if capture.consumption == hew_types::ClosureCaptureConsumption::Consumed
+                && is_concrete_aggregate_type(&self.service.checked_facts, &ty)
+            {
+                // A consuming closure owns the whole captured aggregate. Give
+                // its body one local root so partial fields and their siblings
+                // share ordinary cleanup, even when a branch skips the take.
+                let value = self.load_capture(capture.binding, Provenance::Synthesized, true)?;
+                self.capture_places.remove(&capture.binding);
+                self.bindings.insert(capture.binding, value);
+                let declaration = self.source_bindings.len() - 1;
+                self.binding_declarations
+                    .insert(capture.binding, declaration);
+                self.source_bindings[declaration].target = crate::BindingTarget::Value(value);
+            }
         }
         Ok(())
     }
@@ -2513,7 +2531,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .into_iter()
             .map(PendingBlock::into_sem_block)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(SemFunction {
+        let mut function = SemFunction {
             id: self.function.id,
             callable: self.callable.id,
             declaration: self.function.declaration.clone(),
@@ -2526,7 +2544,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             blocks,
             places: self.places,
             bindings: self.source_bindings,
-        })
+        };
+        projection::complete_edge_partitions(
+            &mut function,
+            &self.service.aggregate_shapes,
+            self.service.checked_facts.rows(),
+        )?;
+        Ok(function)
     }
 
     fn lower_source_body(&mut self, source: BodySource) -> Result<Option<Operand>, String> {
@@ -2582,9 +2606,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             expr = source;
         }
-        let source = self.lower_expr_with_binding_use(expr, binding_use)?;
         let ty = self.ty(&expr.ty);
         let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+        if own == OwnKind::Owned
+            && self
+                .service
+                .checked_facts
+                .rows()
+                .get(&TypeInstanceKey(ty.clone()))
+                .is_some_and(|facts| facts.clone == hew_types::CloneKind::None)
+        {
+            if let Some(value) = self.lower_consuming_projection(expr)? {
+                return Ok(value);
+            }
+        }
+        let source = self.lower_expr_with_binding_use(expr, binding_use)?;
         if own != OwnKind::Owned {
             return Ok(source);
         }
@@ -3035,6 +3071,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             self.service.require_type_facts(&ty)?;
             let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
+            if own == OwnKind::Owned
+                && states
+                    .iter()
+                    .zip(&values)
+                    .all(|(state, value)| !state.owned_live.contains_key(value))
+            {
+                // The source declaration remains useful for diagnostics, but
+                // an already consumed binding supplies no owner to this join.
+                continue;
+            }
             let joined = self.fresh_value();
             block_args.push(BlockArg {
                 value: joined,
@@ -3251,16 +3297,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let old_ty = self
             .value_ty(old)
             .ok_or_else(|| format!("assignment target `{binding}` has no concrete SIR type"))?;
-        let new_ty = self.ty(&value.ty);
-        if old_ty != new_ty {
-            return Err(format!(
-                "assignment target `{binding}` has `{}`, but its value has `{}`",
-                old_ty.user_facing(),
-                new_ty.user_facing()
-            ));
-        }
         let new =
             lower_initial_value_transfer(self, value, "assignment value", OwnedBindingUse::Copy)?;
+        let new = self.coerce_value(new, &old_ty, Provenance::Site(value.site))?;
         if self.owned_live.contains_key(&old) {
             self.emit_destroy(old)?;
         }
@@ -3272,24 +3311,48 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// mutable place. Evaluate the RHS before taking its current root apart.
     fn lower_field_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
         let place = self.resolve_mutable_place(target)?;
-        if place.leaf_ty != self.ty(&value.ty) {
-            return Err("record field assignment has an incorrect replacement type".into());
-        }
         let replacement = lower_initial_value_transfer(
             self,
             value,
             "record field assignment",
             OwnedBindingUse::Copy,
         )?;
+        let replacement =
+            self.coerce_value(replacement, &place.leaf_ty, Provenance::Site(value.site))?;
         let provenance = Provenance::Site(target.site);
+        if let Some((projected, _)) = self.owned_projection(&place)? {
+            return self.store_projected(projected, replacement, provenance);
+        }
         let (previous, parents) = self.take_mutable_place(&place, &provenance)?;
         if self.owned_live.contains_key(&previous) {
             self.emit_destroy(previous)?;
         }
-        self.replace_aggregate_leaf(place.binding, replacement, parents, &provenance)
+        self.replace_aggregate_leaf(place.binding, replacement, parents, None, &provenance)
     }
 
-    fn resolve_mutable_place(&mut self, target: &HirExpr) -> Result<MutablePlace, String> {
+    fn resolve_mutable_place(&mut self, target: &HirExpr) -> Result<BindingPlace, String> {
+        let place = self
+            .resolve_binding_place(target)?
+            .ok_or_else(|| "mutable place requires a local binding root".to_string())?;
+        let declaration = *self
+            .binding_declarations
+            .get(&place.binding)
+            .ok_or_else(|| {
+                format!(
+                    "mutable place root `{}` has no source declaration",
+                    place.binding
+                )
+            })?;
+        if !self.source_bindings[declaration].mutable {
+            return Err(format!(
+                "mutable place root `{}` is not mutable",
+                place.binding
+            ));
+        }
+        Ok(place)
+    }
+
+    fn resolve_binding_place(&mut self, target: &HirExpr) -> Result<Option<BindingPlace>, String> {
         let mut root = target;
         let mut projections = Vec::new();
         loop {
@@ -3302,6 +3365,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     let index = self.tuple_projection_index(root, tuple, *index)?;
                     let shape = self.service.require_aggregate_shape(&self.ty(&tuple.ty))?;
                     (tuple.as_ref(), shape, index)
+                }
+                HirExprKind::SubsumedValue { source } => {
+                    root = source;
+                    continue;
                 }
                 _ => break,
             };
@@ -3318,21 +3385,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             ..
         } = root.kind
         else {
-            return Err("mutable place requires a local binding root".into());
+            return Ok(None);
         };
-        let declaration = *self
-            .binding_declarations
-            .get(&binding)
-            .ok_or_else(|| format!("mutable place root `{binding}` has no source declaration"))?;
-        if !self.source_bindings[declaration].mutable {
-            return Err(format!("mutable place root `{binding}` is not mutable"));
-        }
-        Ok(MutablePlace {
+        Ok(Some(BindingPlace {
             binding,
             root_ty: self.ty(&root.ty),
             leaf_ty: self.ty(&target.ty),
             projections,
-        })
+        }))
     }
 
     /// Take the binding version left by argument evaluation. Destructuring
@@ -3340,7 +3400,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// snapshot the field container or introduce a second cleanup ledger.
     fn take_mutable_place(
         &mut self,
-        place: &MutablePlace,
+        place: &BindingPlace,
         provenance: &Provenance,
     ) -> Result<(ValueId, Vec<AggregateParent>), String> {
         let mut current = *self
@@ -3385,8 +3445,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         binding: BindingId,
         replacement: ValueId,
         parents: Vec<AggregateParent>,
+        projected: Option<crate::PlaceId>,
         provenance: &Provenance,
     ) -> Result<(), String> {
+        if let Some(place) = projected {
+            return self.store_projected(place, replacement, provenance.clone());
+        }
         let mut updated = replacement;
         for AggregateParent {
             ty,
@@ -5028,6 +5092,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         tuple_expr: &HirExpr,
         index: usize,
     ) -> Result<ValueId, String> {
+        if let Some((place, _)) = self.expression_projection(expr)? {
+            return self.emit(expr, SemOpKind::LoadCopy { place });
+        }
         let index = self.tuple_projection_index(expr, tuple_expr, index)?;
         let tuple_ty = self.ty(&tuple_expr.ty);
         let tuple = self.lower_read_operand(tuple_expr, "tuple projection operand")?;
@@ -5353,6 +5420,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         object: &HirExpr,
         field: &str,
     ) -> Result<ValueId, String> {
+        if let Some((place, _)) = self.expression_projection(expr)? {
+            return self.emit(expr, SemOpKind::LoadCopy { place });
+        }
         let (shape, field) = self.aggregate_projection_shape(expr, object, field)?;
         let aggregate = self.lower_read_operand(object, "aggregate projection operand")?;
         self.emit(
@@ -5387,6 +5457,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         expr: &HirExpr,
         loans: &mut Vec<ValueId>,
     ) -> Result<Operand, String> {
+        if let Some((place, root)) = self.expression_projection(expr)? {
+            let owning = OwnKind::of_ty(&self.ty(&expr.ty), self.service.checked_facts.rows())?
+                == OwnKind::Owned;
+            let kind = if owning {
+                SemOpKind::LoadBorrow {
+                    place,
+                    environment: Operand { value: root },
+                }
+            } else {
+                SemOpKind::LoadCopy { place }
+            };
+            let value = self.emit(expr, kind)?;
+            if owning {
+                loans.push(value);
+            }
+            return Ok(Operand { value });
+        }
         if let HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(binding),
             ..
@@ -5621,6 +5708,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &mut self,
         expression: &HirExpr,
     ) -> Result<Option<ValueId>, String> {
+        if let Some((place, _)) = self.expression_projection(expression)? {
+            return self
+                .emit(expression, SemOpKind::LoadTake { place })
+                .map(Some);
+        }
         let mut root = expression;
         let mut projections = Vec::new();
         loop {
@@ -6051,9 +6143,22 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .copied()
             .collect();
         let mut retained_parents = Vec::new();
+        let mut transformed_projection = None;
         if let Some(place) = &transformed_place {
             let provenance = Provenance::Site(expr.site);
-            let (source, parents) = self.take_mutable_place(place, &provenance)?;
+            let (source, parents) = if let Some((projected, _)) = self.owned_projection(place)? {
+                transformed_projection = Some(projected);
+                (
+                    self.emit_typed(
+                        provenance.clone(),
+                        &place.leaf_ty,
+                        SemOpKind::LoadTake { place: projected },
+                    )?,
+                    Vec::new(),
+                )
+            } else {
+                self.take_mutable_place(place, &provenance)?
+            };
             retained_parents = parents;
             self.owned_live.remove(&source);
             let moved = self.emit_typed(
@@ -6208,6 +6313,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     place.binding,
                     results[0].id,
                     retained_parents,
+                    transformed_projection,
                     &Provenance::Site(expr.site),
                 )?;
                 return Ok(Some(results[1].id));
@@ -6220,6 +6326,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     place.binding,
                     continuation,
                     retained_parents,
+                    transformed_projection,
                     &Provenance::Site(expr.site),
                 )?;
                 return Ok(None);
@@ -6445,7 +6552,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let carried: Vec<_> = self
             .mutable_bindings()
             .into_iter()
-            .filter(|binding| self.bindings.contains_key(binding))
+            .filter(|binding| {
+                self.bindings.get(binding).is_some_and(|value| {
+                    self.value_own_kind(*value) != Some(OwnKind::Owned)
+                        || self.owned_live.contains_key(value)
+                })
+            })
             .collect();
         let mut preserved: BTreeSet<_> = self.owned_live.keys().copied().collect();
         for binding in &carried {
@@ -6531,6 +6643,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let Some(&source) = before_bindings.get(&binding) else {
                 continue;
             };
+            if self.value_own_kind(source) == Some(OwnKind::Owned)
+                && !self.owned_live.contains_key(&source)
+            {
+                continue;
+            }
             let ty = self.value_ty(source).ok_or_else(|| {
                 format!("mutable binding `{binding}` has no concrete type at its range header")
             })?;

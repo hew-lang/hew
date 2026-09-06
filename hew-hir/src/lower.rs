@@ -10793,11 +10793,10 @@ impl LowerCtx {
         abi_return_ty: &ResolvedTy,
     ) {
         self.wrap_var_self_explicit_returns_in_block(block, receiver, abi_return_ty);
-        let mut tail = block
+        let tail = block
             .tail
             .take()
             .map_or_else(|| self.make_unit_expr(block.span.clone()), |tail| *tail);
-        self.wrap_var_self_explicit_expr_returns(&mut tail, receiver, abi_return_ty);
         let span = tail.span.clone();
         block.tail = Some(Box::new(self.make_var_self_return_expr(
             tail,

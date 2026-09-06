@@ -7308,6 +7308,39 @@ impl Checker {
         Some(self.project_assoc_types(&applied.return_type))
     }
 
+    /// Mutable methods write back to the receiver's place. Record projections
+    /// share their root's mutability, just as they do for field assignment.
+    fn check_mutable_method_receiver(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        description: &str,
+        span: &Span,
+    ) {
+        let place = self.expr_place(&receiver.0);
+        let root = place.as_ref().map(|(root, _)| root.as_str());
+        if !root
+            .and_then(|root| self.env.lookup_ref(root))
+            .is_some_and(|binding| binding.is_mutable)
+        {
+            if let Some(error) =
+                root.and_then(|root| self.private_capture_mutation_error(root, span))
+            {
+                self.errors.push(error);
+                return;
+            }
+            let label =
+                root.map_or_else(|| "this expression".to_string(), |root| format!("`{root}`"));
+            self.report_error(
+                TypeErrorKind::MutabilityError,
+                span,
+                format!("{description} requires a mutable binding receiver; {label} is not declared with `var`"),
+            );
+        } else if let Some((root, path)) = place {
+            self.env.mark_written(&root);
+            self.reject_borrowed_parameter_mutation(&root, &path, span);
+        }
+    }
+
     pub(super) fn check_method_call(
         &mut self,
         receiver: &Spanned<Expr>,
@@ -9382,44 +9415,12 @@ impl Checker {
                     _ => self.lookup_named_method_sig(&canonical_receiver_name, type_args, method),
                 };
                 if let Some(sig) = sig {
-                    // Mutable-receiver enforcement (Q297 Stage 1): methods
-                    // declared with `var self` (or the named-receiver `var`
-                    // equivalent) require the call-site receiver to be a
-                    // `var`-bound binding. Without this gate, a caller could
-                    // dispatch through an immutable `let`-bound binding and
-                    // silently lose the contract that the trait declared a
-                    // mutable receiver. Mirrors the precedent on `.step()`
-                    // for machines (see further below in this arm).
                     if sig.requires_mutable_receiver {
-                        let receiver_binding_name = match &receiver.0 {
-                            Expr::Identifier(n) => Some(n.clone()),
-                            _ => None,
-                        };
-                        let receiver_is_mutable = receiver_binding_name
-                            .as_deref()
-                            .and_then(|n| self.env.lookup_ref(n))
-                            .is_some_and(|b| b.is_mutable);
-                        if !receiver_is_mutable {
-                            let receiver_label = if let Some(n) = &receiver_binding_name {
-                                format!("`{n}`")
-                            } else {
-                                "this expression".to_string()
-                            };
-                            self.report_error(
-                                TypeErrorKind::MutabilityError,
-                                span,
-                                format!(
-                                    "method `{method}` on `{name}` requires a mutable binding receiver; \
-                                     {receiver_label} is not declared with `var`",
-                                ),
-                            );
-                        } else if let Some(n) = &receiver_binding_name {
-                            // Mark the binding as written so the unused-mut
-                            // analysis does not flag `var it = …; it.next()`
-                            // as a never-reassigned mutable binding.
-                            self.env.mark_written(n);
-                            self.reject_borrowed_parameter_mutation(n, &[], span);
-                        }
+                        self.check_mutable_method_receiver(
+                            receiver,
+                            &format!("method `{method}` on `{name}`"),
+                            span,
+                        );
                     }
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
@@ -9978,45 +9979,12 @@ impl Checker {
                         trait_sig.return_type = trait_sig
                             .return_type
                             .substitute_named_param("Self", &self_ty);
-                        // W3.042 S2-S4: receiver-mutability gate for the
-                        // generic-bound StaticTraitDispatch arm. Mirrors the
-                        // (Ty::Named, _) direct-call gate above (Stage 1):
-                        // when the trait method is declared with `var self`
-                        // the call site must bind the receiver with `var`,
-                        // otherwise a mutating method would silently dispatch
-                        // through an immutable binding and lose the contract.
-                        // The substituted `trait_sig.requires_mutable_receiver`
-                        // is the checker-authoritative source — we do NOT
-                        // re-walk `trait_defs` here (LESSONS `checker-authority`).
                         if trait_sig.requires_mutable_receiver {
-                            let receiver_binding_name = match &receiver.0 {
-                                Expr::Identifier(n) => Some(n.clone()),
-                                _ => None,
-                            };
-                            let receiver_is_mutable = receiver_binding_name
-                                .as_deref()
-                                .and_then(|n| self.env.lookup_ref(n))
-                                .is_some_and(|b| b.is_mutable);
-                            if !receiver_is_mutable {
-                                let receiver_label = if let Some(n) = &receiver_binding_name {
-                                    format!("`{n}`")
-                                } else {
-                                    "this expression".to_string()
-                                };
-                                self.report_error(
-                                    TypeErrorKind::MutabilityError,
-                                    span,
-                                    format!(
-                                        "trait method `{declaring_trait}.{method}` \
-                                         (statically dispatched on type parameter `{name}`) \
-                                         requires a mutable binding receiver; \
-                                         {receiver_label} is not declared with `var`",
-                                    ),
-                                );
-                            } else if let Some(n) = &receiver_binding_name {
-                                self.env.mark_written(n);
-                                self.reject_borrowed_parameter_mutation(n, &[], span);
-                            }
+                            self.check_mutable_method_receiver(
+                                receiver,
+                                &format!("trait method `{declaring_trait}.{method}` (statically dispatched on type parameter `{name}`)"),
+                                span,
+                            );
                         }
                         let applied_sig = self.apply_instantiated_call_signature(
                             &trait_sig,
@@ -10299,47 +10267,12 @@ impl Checker {
                         // re-derives it from the impl fn or by
                         // walking vtable entries (per Q-β resolution).
                         self.apply_trait_object_bound_substitutions(&mut sig, bound);
-                        // W3.042 S2-S4: receiver-mutability gate for the
-                        // Ty::TraitObject (dyn Trait) dispatch arm. Mirrors
-                        // the (Ty::Named, _) direct-call gate above (Stage 1)
-                        // and the StaticTraitDispatch gate. The substituted
-                        // `sig.requires_mutable_receiver` flag is the
-                        // checker-authoritative source (LESSONS
-                        // `checker-authority`); the flag survives
-                        // `apply_trait_object_bound_substitutions` per the
-                        // FnSig schema (W3.042 plan §3.6). Receiver shape
-                        // for dyn dispatch is always a Box<dyn Trait> bound
-                        // identifier — the same `Expr::Identifier` extraction
-                        // the other arms use applies here.
                         if sig.requires_mutable_receiver {
-                            let receiver_binding_name = match &receiver.0 {
-                                Expr::Identifier(n) => Some(n.clone()),
-                                _ => None,
-                            };
-                            let receiver_is_mutable = receiver_binding_name
-                                .as_deref()
-                                .and_then(|n| self.env.lookup_ref(n))
-                                .is_some_and(|b| b.is_mutable);
-                            if !receiver_is_mutable {
-                                let receiver_label = if let Some(n) = &receiver_binding_name {
-                                    format!("`{n}`")
-                                } else {
-                                    "this expression".to_string()
-                                };
-                                self.report_error(
-                                    TypeErrorKind::MutabilityError,
-                                    span,
-                                    format!(
-                                        "method `{method}` on `dyn {}` requires a \
-                                         mutable binding receiver; {receiver_label} is \
-                                         not declared with `var`",
-                                        bound.trait_name,
-                                    ),
-                                );
-                            } else if let Some(n) = &receiver_binding_name {
-                                self.env.mark_written(n);
-                                self.reject_borrowed_parameter_mutation(n, &[], span);
-                            }
+                            self.check_mutable_method_receiver(
+                                receiver,
+                                &format!("method `{method}` on `dyn {}`", bound.trait_name),
+                                span,
+                            );
                         }
                         // Record the per-call-site vtable-slot resolution that
                         // HIR/MIR lowering will consume to emit

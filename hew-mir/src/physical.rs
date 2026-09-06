@@ -5887,13 +5887,31 @@ mod tests {
                 ..
             }
         )));
-        assert!(operations.iter().any(|operation| matches!(
-            operation,
-            PhysicalOp::AggregateProjectCopy {
-                action: CloneAction::StringRetain,
-                ..
-            }
-        )));
+        let projected_copies = physical
+            .functions
+            .iter()
+            .flat_map(|function| {
+                function
+                    .blocks
+                    .iter()
+                    .flat_map(|block| &block.ops)
+                    .filter_map(|operation| {
+                        let PhysicalOp::Clone {
+                            source,
+                            action: CloneAction::StringRetain,
+                            ..
+                        } = operation
+                        else {
+                            return None;
+                        };
+                        function.aggregate_storage.get(source)
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(projected_copies.len(), 2);
+        assert!(projected_copies
+            .iter()
+            .all(|projection| { projection.path.len() == 1 && projection.path[0].field == 0 }));
         assert!(operations.iter().any(|operation| matches!(
             operation,
             PhysicalOp::Destroy {
@@ -6117,20 +6135,40 @@ mod tests {
             .expect_err("aggregate construction must not consume one owner twice");
         assert!(error.message.contains("more than once"));
 
-        let action = physical
-            .functions
+        let mut bad_path = physical.clone();
+        let function = &mut physical.functions[0];
+        let projected_sources = function
+            .aggregate_storage
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let (source, action) = function
+            .blocks
             .iter_mut()
-            .flat_map(|function| &mut function.blocks)
             .flat_map(|block| &mut block.ops)
             .find_map(|operation| match operation {
-                PhysicalOp::AggregateProjectCopy { action, .. } => Some(action),
+                PhysicalOp::Clone { source, action, .. } if projected_sources.contains(source) => {
+                    Some((*source, action))
+                }
                 _ => None,
             })
-            .expect("aggregate field projection");
+            .expect("clone from an aggregate field alias");
+        assert_eq!(*action, CloneAction::StringRetain);
+        assert_eq!(function.aggregate_storage[&source].path[0].field, 0);
         *action = CloneAction::BytesRetain;
         let error = verify_physical_module(&physical)
-            .expect_err("aggregate projection must use its exact field recipe");
-        assert!(error.message.contains("field copy recipe"));
+            .expect_err("projected clone must use its exact field recipe");
+        assert!(error.message.contains("physical clone action"), "{error:?}");
+
+        bad_path.functions[0]
+            .aggregate_storage
+            .get_mut(&source)
+            .unwrap()
+            .path[0]
+            .field = u32::MAX;
+        let error = verify_physical_module(&bad_path)
+            .expect_err("projected clone must address a declared aggregate field");
+        assert!(error.message.contains("aggregate"), "{error:?}");
     }
 
     #[test]

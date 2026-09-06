@@ -9,6 +9,9 @@ use super::*;
 #[path = "physical_callable_tests.rs"]
 mod callables;
 
+#[path = "physical_partial_tests.rs"]
+mod partial;
+
 type HashCallback = unsafe extern "C" fn(*const c_void, *mut u64, *mut *mut c_void) -> i32;
 type EqCallback =
     unsafe extern "C" fn(*const c_void, *const c_void, *mut bool, *mut *mut c_void) -> i32;

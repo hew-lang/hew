@@ -9,6 +9,8 @@ mod callable;
 
 #[path = "physical_key.rs"]
 mod key;
+#[path = "physical_partial.rs"]
+mod partial;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
@@ -617,6 +619,7 @@ struct FunctionEmitter<'a, 'ctx> {
     value: FunctionValue<'ctx>,
     blocks: BTreeMap<BlockId, BasicBlock<'ctx>>,
     slots: Vec<PointerValue<'ctx>>,
+    aggregate_flags: BTreeMap<StorageId, PointerValue<'ctx>>,
     result_out: Option<PointerValue<'ctx>>,
     fault_out: PointerValue<'ctx>,
     active_fault: PointerValue<'ctx>,
@@ -1570,63 +1573,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         callable: &PhysicalCallable,
         value: FunctionValue<'ctx>,
     ) -> CodegenResult<Self> {
-        if !function.aggregate_storage.is_empty() {
-            return Err(CodegenError::FailClosed(
-                "partial aggregate storage requires LLVM realization".into(),
-            ));
-        }
         let ctx = module.ctx;
         let builder = ctx.create_builder();
         let prologue = ctx.append_basic_block(value, "physical.prologue");
         builder.position_at_end(prologue);
-        let slots = function
-            .storage
-            .iter()
-            .map(|storage| {
-                if matches!(
-                    storage.origin,
-                    hew_mir::physical::StorageOrigin::Capture { .. }
-                ) {
-                    return callable::capture_parameter_slot(
-                        module, function, callable, value, &builder, storage,
-                    );
-                }
-                if let Some((index, _)) = function
-                    .parameters
-                    .iter()
-                    .zip(&callable.params)
-                    .enumerate()
-                    .find(|(_, (id, param))| {
-                        **id == storage.id
-                            && param.passing == hew_mir::physical::SemParamPassing::BorrowMut
-                    })
-                {
-                    return value
-                        .get_nth_param(u32::try_from(index).map_err(|_| {
-                            CodegenError::FailClosed("parameter index exceeds u32".into())
-                        })?)
-                        .map(|parameter| parameter.into_pointer_value())
-                        .ok_or_else(|| {
-                            CodegenError::FailClosed("missing exclusive parameter address".into())
-                        });
-                }
-                let slot = builder
-                    .build_alloca(
-                        llvm_type(ctx, &storage.layout.repr)?,
-                        &format!("s{}", storage.id.0),
-                    )
-                    .llvm_ctx("allocate physical storage")?;
-                slot.as_instruction()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "physical storage allocation is not an instruction".into(),
-                        )
-                    })?
-                    .set_alignment(storage.layout.align)
-                    .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
-                Ok(slot)
-            })
-            .collect::<CodegenResult<Vec<_>>>()?;
+        let slots = partial::allocate_storage(module, function, callable, value, &builder)?;
+        let aggregate_flags = partial::allocate_flags(module, function, &builder)?;
         let active_fault = builder
             .build_alloca(ctx.ptr_type(AddressSpace::default()), "active.fault")
             .llvm_ctx("allocate active fault")?;
@@ -1705,6 +1657,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             value,
             blocks,
             slots,
+            aggregate_flags,
             result_out,
             fault_out,
             active_fault,
@@ -1748,11 +1701,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_store(self.slots[id.0 as usize], value)
             .llvm_ctx("store physical storage")?;
         self.set_capture_initialized(id, true)?;
+        self.set_aggregate_initialized(id, true)?;
         Ok(())
     }
 
     fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
         self.set_capture_initialized(id, false)?;
+        self.set_aggregate_initialized(id, false)?;
+        if self.function.aggregate_storage.contains_key(&id) {
+            return Ok(());
+        }
         if self.storage(id)?.own == OwnKind::Owned {
             let zero = llvm_type(self.ctx, &self.storage(id)?.layout.repr)?.const_zero();
             self.builder
@@ -2313,6 +2271,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     fn destroy_value(&self, source: StorageId, action: DestroyAction) -> CodegenResult<()> {
+        if self.destroy_partial_aggregate(source)? {
+            return Ok(());
+        }
         let value = self.load(source, "destroy.source")?;
         self.clear_owned(source)?;
         self.value_emitter()
@@ -2697,6 +2658,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .iter()
             .map(|(source, _)| self.load(*source, "edge.value"))
             .collect::<CodegenResult<Vec<_>>>()?;
+        let initialized = edge
+            .leaf_transfers
+            .iter()
+            .map(|(source, _)| self.aggregate_initialized(*source))
+            .collect::<CodegenResult<Vec<_>>>()?;
         let destinations = edge
             .transfers
             .iter()
@@ -2709,6 +2675,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         for ((_, destination), value) in edge.transfers.iter().zip(values) {
             self.store(*destination, value)?;
+        }
+        for ((_, destination), initialized) in edge.leaf_transfers.iter().zip(initialized) {
+            self.builder
+                .build_store(self.aggregate_flag(*destination)?, initialized)
+                .llvm_ctx("transfer aggregate leaf initialization")?;
         }
         self.builder
             .build_unconditional_branch(self.blocks[&edge.target])
@@ -2789,7 +2760,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         for source in moved {
             self.clear_owned(source)?;
         }
-        self.emit_call_outcome(status, normal, unwind)
+        self.emit_call_outcome(status, result, normal, unwind)
     }
 
     fn emit_value_call(
@@ -2842,12 +2813,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.builder
             .build_store(self.active_status, status)
             .llvm_ctx("store selected value call status")?;
-        self.emit_call_outcome(status, normal, Some(unwind))
+        self.emit_call_outcome(status, Some(result), normal, Some(unwind))
     }
 
     fn emit_call_outcome(
         &self,
         status: IntValue<'ctx>,
+        result: Option<StorageId>,
         normal: &PhysicalEdge,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
@@ -2866,6 +2838,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_conditional_branch(ok, success, failure)
             .llvm_ctx("branch on physical call status")?;
         self.builder.position_at_end(success);
+        if let Some(result) = result {
+            self.set_aggregate_initialized(result, true)?;
+        }
         self.emit_edge(normal)?;
         self.builder.position_at_end(failure);
         if let Some(unwind) = unwind {
@@ -5562,8 +5537,8 @@ mod tests {
         module.verify().expect("owned record LLVM verification");
         let ir = module.print_to_string().to_string();
         assert!(
-            ir.contains("aggregate.clone.field") && ir.contains("aggregate.destroy.field"),
-            "whole aggregate copy/drop must execute the resolved recursive glue"
+            ir.contains("aggregate.clone.field"),
+            "whole aggregate copy must execute the resolved recursive glue"
         );
         assert!(module.get_function("hew_string_clone").is_some());
         assert!(module.get_function("hew_bytes_clone_ref").is_some());

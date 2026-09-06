@@ -2022,3 +2022,20 @@ conditional expressions. The full SIR suite passes with both source regressions.
 A consuming callback followed by `break` remains a separate loop-exit defect:
 the zero-iteration path owns the callback while the taken path has consumed it.
 The verifier correctly rejects the unconditional owner transfer at that join.
+
+## Execute partially consumed aggregate storage
+
+Physical MIR carries canonical aggregate paths, leaf partitions and exact CFG
+initialization transfers. LLVM addresses fields inside their root allocation and
+tracks only those verified leaves, including zero-sized and no-drop fields.
+Subtree replacement releases initialized old leaves before storing the new
+value. Loop edges snapshot payloads and leaf states together, and call results
+become initialized only on success.
+
+Real runtime string owners exercise mixed, live, dead and conditional subtree
+replacement, loop permutations and fault cleanup at both optimization levels.
+Generated-code checks require field aliases instead of independent payload
+allocations. The Job source cases also execute through Make at O0 and O2,
+preserving siblings and restoring callbacks while propagating argument and
+callback-body faults. Full integration acceptance and sanitizer execution remain
+separate checks.

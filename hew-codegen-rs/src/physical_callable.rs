@@ -854,7 +854,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(self.active_fault, pointer.const_null())
             .llvm_ctx("clear invocation fault")?;
-        let result = result.map_or_else(|| pointer.const_null(), |id| self.slots[id.0 as usize]);
+        let result_address =
+            result.map_or_else(|| pointer.const_null(), |id| self.slots[id.0 as usize]);
         let status = self
             .builder
             .build_indirect_call(
@@ -863,7 +864,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 &[
                     environment.into(),
                     argument_slots.into(),
-                    result.into(),
+                    result_address.into(),
                     self.active_fault.into(),
                 ],
                 "invoke.status",
@@ -879,6 +880,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         for source in moved {
             self.clear_owned(source)?;
         }
-        self.emit_call_outcome(status, normal, unwind)
+        self.emit_call_outcome(status, result, normal, unwind)
     }
 }

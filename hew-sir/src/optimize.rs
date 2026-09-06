@@ -129,6 +129,7 @@ fn canonicalize_verified_function(
             | SemTerminator::EnterDefer { .. }
             | SemTerminator::FinishDefer { .. }
             | SemTerminator::CleanupDispatch { .. }
+            | SemTerminator::RecoverFault { .. }
             | SemTerminator::CheckedRaiseFault { .. }
             | SemTerminator::Panic { .. }
             | SemTerminator::Suspend { .. }

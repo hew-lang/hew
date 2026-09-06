@@ -24,7 +24,7 @@ impl ModuleEmitter<'_, '_> {
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
-    fn task_pointer_call(
+    pub(super) fn task_pointer_call(
         &self,
         name: &str,
         args: &[BasicMetadataValueEnum<'ctx>],

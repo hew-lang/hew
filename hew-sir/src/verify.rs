@@ -824,6 +824,7 @@ pub(crate) fn verify_cfg_discard_safety(
             SemTerminator::EnterDefer { .. }
                 | SemTerminator::FinishDefer { .. }
                 | SemTerminator::CleanupDispatch { .. }
+                | SemTerminator::RecoverFault { .. }
                 | SemTerminator::CheckedRaiseFault { .. }
                 | SemTerminator::CheckedBinary { .. }
                 | SemTerminator::SwitchVariant { .. }
@@ -3387,7 +3388,8 @@ pub(crate) fn defer_drain_suffix(
     let valid = match &body.terminator {
         SemTerminator::EnterDefer { .. }
         | SemTerminator::FinishDefer { .. }
-        | SemTerminator::CleanupDispatch { .. } => true,
+        | SemTerminator::CleanupDispatch { .. }
+        | SemTerminator::RecoverFault { .. } => true,
         SemTerminator::Goto(edge) => defer_drain_suffix(edge.target, blocks, visiting),
         SemTerminator::Branch {
             then_target,
@@ -3507,16 +3509,16 @@ fn failure_cfg_matches_exit(
                         reaches_only_matching_exits(edge.target, None, blocks, visiting, complete)
                     })
             }
-            SemTerminator::EnterDefer { .. } | SemTerminator::FinishDefer { .. } => {
-                expected.is_none()
-            }
+            SemTerminator::EnterDefer { .. }
+            | SemTerminator::FinishDefer { .. }
+            | SemTerminator::RecoverFault { .. }
+            | SemTerminator::ResumeUnwind => expected.is_none(),
             SemTerminator::CheckedRaiseFault { kind, .. } => expected == Some(*kind),
             SemTerminator::CleanupDispatch { fault, .. } => {
                 expected.is_none()
                     && reaches_only_matching_exits(fault.target, None, blocks, visiting, complete)
             }
             SemTerminator::Trap { kind } => Some(*kind) == expected,
-            SemTerminator::ResumeUnwind => expected.is_none(),
             SemTerminator::Goto(next) => {
                 reaches_only_matching_exits(next.target, expected, blocks, visiting, complete)
             }
@@ -3754,6 +3756,33 @@ fn verify_terminator_shape(
 ) {
     let terminator = &block.terminator;
     match terminator {
+        SemTerminator::RecoverFault {
+            result,
+            deadline_variant,
+            fault_variant,
+            unwind,
+            ..
+        } => {
+            let valid = result.own == OwnKind::Owned
+                && variants.shapes.iter().any(|shape| {
+                    shape.enum_ty == result.ty
+                        && !shape.is_indirect
+                        && shape.variants.len() == 2
+                        && [(*deadline_variant, "Deadline"), (*fault_variant, "Fault")]
+                            .iter()
+                            .all(|(tag, name)| {
+                                shape.variants.get(*tag as usize).is_some_and(|variant| {
+                                    variant.name == *name
+                                        && variant.fields.len() == 1
+                                        && variant.fields[0].ty == ResolvedTy::String
+                                })
+                            })
+                });
+            if !valid || !failure_cfg_matches_exit(unwind, None, blocks) {
+                diagnostics.push(diag(function, SirDiagnosticKind::InvalidTerminator { reason: "scope recovery requires owned Deadline/Fault string variants and a propagating cancellation edge".into() }));
+            }
+        }
+
         SemTerminator::ActorCall {
             id,
             operation,
@@ -4210,6 +4239,7 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
             start..start + normal.args.len()
         }
         SemTerminator::CheckedBinary { normal, .. } => 2..2 + normal.args.len(),
+        SemTerminator::RecoverFault { normal, .. } => 0..normal.args.len(),
         SemTerminator::Suspend {
             inputs, resumes, ..
         } => inputs.len()..inputs.len() + resumes.first().map_or(0, |edge| edge.args.len()),

@@ -5,6 +5,155 @@ mod support;
 use std::process::Command;
 use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
 
+#[test]
+fn returning_past_recovery_does_not_catch_an_outer_child_fault() {
+    run_task(
+        r#"
+fn fail() -> i64 { await sleep(2ms); panic("outer child"); }
+fn choose() -> string {
+    let _outer = fork { await fail() };
+    scope { return "returned"; } handle failure { println("incorrect handler"); };
+    "fallback"
+}
+fn main() { println(await choose()); }
+"#,
+        "",
+        212,
+        "outer child",
+    );
+}
+
+#[test]
+fn recovery_preserves_child_and_deferred_fault_diagnostics() {
+    run_task(
+        r#"
+fn fail() -> i64 {
+    defer println("child cleanup");
+    panic("child fault");
+}
+fn main() {
+    let result = scope {
+        defer { println("scope cleanup"); panic("cleanup fault"); }
+        let child = fork { fail() };
+        await child;
+        "unreachable"
+    } handle failure {
+        match failure {
+            .Deadline { message } => { println("unexpected deadline"); },
+            .Fault { message } => { println(message); },
+        }
+        "recovered"
+    };
+    println(result);
+}
+"#,
+        "child cleanup\nscope cleanup\nhew: failure: UserPanic (212): child fault\nhew: secondary failure: UserPanic (212): cleanup fault\n\nrecovered\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn recovery_handler_failure_reaches_the_outer_boundary() {
+    run_task(
+        r#"
+fn main() {
+    scope {
+        scope { panic("inner"); } handle failure {
+            println("inner recovered");
+            panic("handler fault");
+        };
+    } handle failure {
+        match failure {
+            .Deadline { message } => { println("unexpected deadline"); },
+            .Fault { message } => { println(message); },
+        }
+    };
+    let result = scope { "success" } handle failure { panic("incorrect handler"); };
+    println(result);
+}
+"#,
+        "inner recovered\nhew: failure: UserPanic (212): handler fault\n\nsuccess\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn recovery_transfers_an_owned_result_after_fault_cleanup() {
+    run_task(
+        r#"
+fn main() {
+    let result = scope {
+        defer println("scope cleanup");
+        panic("broken é");
+        "unreachable"
+    } handle failure {
+        match failure {
+            .Deadline { message } => { println("unexpected deadline"); },
+            .Fault { message } => { println(message); },
+        }
+        "recovered"
+    };
+    println(result);
+}
+"#,
+        "scope cleanup\nhew: failure: UserPanic (212): broken é\n\nrecovered\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn recovery_distinguishes_its_deadline_after_cleanup() {
+    run_task(
+        r#"
+fn main() {
+    let result = scope within 1ms {
+        defer println("scope cleanup");
+        await sleep(1s);
+        "unreachable"
+    } handle failure {
+        match failure {
+            .Deadline { message } => "deadline recovered",
+            .Fault { message } => "unexpected fault",
+        }
+    };
+    println(result);
+}
+"#,
+        "scope cleanup\ndeadline recovered\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn parent_cancellation_bypasses_inner_recovery() {
+    run_task(
+        r#"
+fn main() {
+    scope within 1ms {
+        defer println("outer cleanup");
+        scope {
+            defer println("inner cleanup");
+            await sleep(1s);
+        } handle failure { println("incorrect inner handler"); };
+    } handle failure {
+        match failure {
+            .Deadline { message } => { println("outer recovered"); },
+            .Fault { message } => { println("unexpected fault"); },
+        }
+    };
+    println("done");
+}
+"#,
+        "inner cleanup\nouter cleanup\nouter recovered\ndone\n",
+        0,
+        "",
+    );
+}
+
 fn run_task(source: &str, expected: &str, status: i32, diagnostic: &str) {
     require_codegen();
     let dir = tempdir();

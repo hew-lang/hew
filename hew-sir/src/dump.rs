@@ -356,6 +356,20 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
             )
             .expect("write to String");
         }
+        SemTerminator::RecoverFault {
+            result,
+            deadline_variant,
+            fault_variant,
+            normal,
+            unwind,
+        } => {
+            writeln!(
+                out,
+                "    recover_fault %{} deadline #{} fault #{} bb{} unwind bb{}",
+                result.id.0, deadline_variant, fault_variant, normal.target.0, unwind.target.0
+            )
+            .expect("write to String");
+        }
         SemTerminator::CleanupDispatch { normal, fault } => {
             writeln!(
                 out,

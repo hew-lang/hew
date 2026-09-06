@@ -428,6 +428,10 @@ pub(super) fn verify_cleanup_site(
 /// This never assigns a cleanup mode: certified Trap operations and explicit
 /// panic cleanup edges seed the walk. Every continuation must remain cleanup-only and finish in a
 /// trap or fault propagation; a cycle cannot establish that obligation.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one graph walk verifies the complete certified cleanup region"
+)]
 pub(super) fn verify_trap_cleanup_refinement(
     function: &PhysicalFunction,
 ) -> Result<BTreeSet<BlockId>, PhysicalError> {
@@ -487,14 +491,14 @@ pub(super) fn verify_trap_cleanup_refinement(
                 return Err(invalid());
             }
             let block = blocks.get(&site.0).ok_or_else(invalid)?;
-            if block.ops[site.1..].iter().any(|operation| {
+            if let Some(operation) = block.ops[site.1..].iter().find(|operation| {
                 !certified(operation)
                     && !matches!(
                         operation,
                         PhysicalOp::EndBorrow { .. } | PhysicalOp::TaskScopeClose { .. }
                     )
             }) {
-                return Err(invalid());
+                return Err(PhysicalError::new(format!("physical CFG no longer realizes its certified trap cleanup region at block {}: {operation:?}", site.0.0)));
             }
             pending.push((site, true));
             match &block.terminator {
@@ -502,7 +506,8 @@ pub(super) fn verify_trap_cleanup_refinement(
                 | PhysicalTerminator::PropagateFault
                 | PhysicalTerminator::EnterDefer { .. }
                 | PhysicalTerminator::FinishDefer { .. }
-                | PhysicalTerminator::CheckedRaiseFault { .. } => {}
+                | PhysicalTerminator::CheckedRaiseFault { .. }
+                | PhysicalTerminator::RecoverFault { .. } => {}
                 PhysicalTerminator::CleanupDispatch { fault, .. } => {
                     pending.push(((fault.target, 0), false));
                 }

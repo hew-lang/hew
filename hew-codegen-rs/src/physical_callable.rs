@@ -539,7 +539,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let function = self.llvm.add_function(
             name,
-            self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
+            pointer.fn_type(&[pointer.into(); 5], false),
             Some(Linkage::Internal),
         );
         let builder = self.ctx.create_builder();
@@ -548,6 +548,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let slots = function.get_nth_param(1).unwrap().into_pointer_value();
         let result_out = function.get_nth_param(2).unwrap().into_pointer_value();
         let fault_out = function.get_nth_param(3).unwrap().into_pointer_value();
+        let state = function.get_nth_param(4).unwrap().into_pointer_value();
+        let frame = coro::begin(self.ctx, &self.llvm, &builder, function, state)?;
         let mut arguments = Vec::<BasicMetadataValueEnum<'ctx>>::new();
         let receiver = if has_receiver {
             let carrier = callable_carrier(self.ctx, &builder, environment, descriptor)?;
@@ -598,16 +600,36 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             arguments.push(result_out.into());
         }
         arguments.push(fault_out.into());
-        let callee = *self
-            .functions
-            .get(&body.id)
-            .ok_or_else(|| CodegenError::FailClosed("adapter body is not declared".into()))?;
-        let status = builder
-            .build_call(callee, &arguments, "invoke.status")
-            .llvm_ctx("invoke exact callable body")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("callable body returned no status".into()))?;
+        let status = if body.is_resumable {
+            let new_child = coro::external(
+                &self.llvm,
+                "hew_coro_state_child",
+                pointer.fn_type(&[pointer.into()], false),
+            )?;
+            let child = suspend::call_value(&builder, new_child, &[state.into()], "invoke.child")?
+                .into_pointer_value();
+            arguments.push(child.into());
+            let child_frame =
+                suspend::call_value(&builder, self.ramps[&body.id], &arguments, "invoke.frame")?
+                    .into_pointer_value();
+            suspend::await_child(
+                self.ctx,
+                &self.llvm,
+                &builder,
+                function,
+                &frame,
+                child,
+                child_frame,
+            )?
+        } else {
+            suspend::call_value(
+                &builder,
+                self.functions[&body.id],
+                &arguments,
+                "invoke.status",
+            )?
+            .into_int_value()
+        };
         // Concrete consuming bodies destroy their Owned receiver on both exits.
         // A weakened borrowed body leaves that disposal to this once adapter.
         if consuming
@@ -619,9 +641,19 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .build_call(drop, &[receiver.unwrap().into()], "")
                 .llvm_ctx("dispose weakened once receiver on either outcome")?;
         }
+        let finish = coro::external(
+            &self.llvm,
+            "hew_coro_state_finish",
+            self.ctx
+                .i32_type()
+                .fn_type(&[pointer.into(), self.ctx.i32_type().into()], false),
+        )?;
         builder
-            .build_return(Some(&status))
-            .llvm_ctx("forward invocation status and fault")?;
+            .build_call(finish, &[state.into(), status.into()], "")
+            .llvm_ctx("publish callable adapter outcome")?;
+        builder
+            .build_unconditional_branch(frame.finish)
+            .llvm_ctx("finish callable adapter frame")?;
         Ok(function)
     }
 }
@@ -856,30 +888,55 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("clear invocation fault")?;
         let result_address =
             result.map_or_else(|| pointer.const_null(), |id| self.slots[id.0 as usize]);
-        let status = self
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("indirect invocation requires a resumable caller".into())
+        })?;
+        let new_child = coro::external(
+            self.llvm,
+            "hew_coro_state_child",
+            pointer.fn_type(&[pointer.into()], false),
+        )?;
+        let child = suspend::call_value(
+            &self.builder,
+            new_child,
+            &[frame.state.into()],
+            "invoke.child",
+        )?
+        .into_pointer_value();
+        let child_frame = self
             .builder
             .build_indirect_call(
-                self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
+                pointer.fn_type(&[pointer.into(); 5], false),
                 invoke,
                 &[
                     environment.into(),
                     argument_slots.into(),
                     result_address.into(),
                     self.active_fault.into(),
+                    child.into(),
                 ],
-                "invoke.status",
+                "invoke.frame",
             )
-            .llvm_ctx("invoke callable adapter")?
+            .llvm_ctx("start callable adapter")?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| CodegenError::FailClosed("invocation returned no status".into()))?
-            .into_int_value();
+            .ok_or_else(|| CodegenError::FailClosed("invocation returned no frame".into()))?
+            .into_pointer_value();
+        for source in &moved {
+            self.clear_owned(*source)?;
+        }
+        let status = suspend::await_child(
+            self.ctx,
+            self.llvm,
+            &self.builder,
+            self.value,
+            frame,
+            child,
+            child_frame,
+        )?;
         self.builder
             .build_store(self.active_status, status)
             .llvm_ctx("retain invocation status")?;
-        for source in moved {
-            self.clear_owned(source)?;
-        }
         self.emit_call_outcome(status, result, normal, unwind)
     }
 }

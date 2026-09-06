@@ -425,7 +425,8 @@ fn verified_mutable_closure_escapes_and_copies_private_state_at_o0_o2() {
                 let mut output = -1_i64;
                 let invoke = (*value.descriptor).invoke_borrow.unwrap();
                 assert_eq!(
-                    invoke(
+                    hew_runtime::coro_root::hew_coro_run_callable(
+                        invoke,
                         value.environment,
                         args.as_ptr(),
                         (&raw mut output).cast(),

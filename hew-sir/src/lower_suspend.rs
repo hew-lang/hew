@@ -45,8 +45,7 @@ impl Builder<'_, '_> {
         for cleanup in [cancel, unwind] {
             self.current = cleanup;
             self.owned_live = live.clone();
-            self.destroy_all_live()?;
-            self.set_terminator(SemTerminator::ResumeUnwind)?;
+            self.finish_fault_exit()?;
         }
         self.current = normal;
         self.owned_live = live;

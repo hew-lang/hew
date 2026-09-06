@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn call_value<'ctx>(
+pub(super) fn call_value<'ctx>(
     builder: &Builder<'ctx>,
     function: FunctionValue<'ctx>,
     args: &[BasicMetadataValueEnum<'ctx>],
@@ -339,59 +339,94 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         for source in moved {
             self.clear_owned(*source)?;
         }
-        let poll = self.ctx.append_basic_block(self.value, "call.child.poll");
-        let wait = self.ctx.append_basic_block(self.value, "call.child.wait");
-        let resume = self.ctx.append_basic_block(self.value, "call.child.resume");
-        let destroy = self
-            .ctx
-            .append_basic_block(self.value, "call.child.destroy");
-        let done = self.ctx.append_basic_block(self.value, "call.child.done");
-        let outcome = self
-            .ctx
-            .append_basic_block(self.value, "call.child.outcome");
-        self.builder
-            .build_unconditional_branch(poll)
-            .llvm_ctx("poll child call")?;
-        self.builder.position_at_end(poll);
-        let status = self.state_value("hew_coro_state_status", child)?;
-        let pending = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.ctx.i32_type().const_zero(),
-                "call.child.pending",
-            )
-            .llvm_ctx("test child call completion")?;
-        self.builder
-            .build_conditional_branch(pending, wait, done)
-            .llvm_ctx("select child call completion")?;
-        self.builder.position_at_end(wait);
-        frame.suspend(self.ctx, self.llvm, &self.builder, resume, destroy, false)?;
-        self.builder.position_at_end(resume);
-        self.free_handle("hew_cont_resume", child_frame)?;
-        self.builder
-            .build_unconditional_branch(poll)
-            .llvm_ctx("poll resumed child")?;
-        self.builder.position_at_end(destroy);
-        self.builder
-            .build_store(frame.destroying, self.ctx.bool_type().const_int(1, false))
-            .llvm_ctx("mark destroyed caller")?;
-        self.free_handle("hew_cont_destroy", child_frame)?;
-        self.builder
-            .build_unconditional_branch(outcome)
-            .llvm_ctx("finish cancelled child")?;
-        self.builder.position_at_end(done);
-        self.free_handle("hew_cont_destroy", child_frame)?;
-        self.builder
-            .build_unconditional_branch(outcome)
-            .llvm_ctx("finish completed child")?;
-        self.builder.position_at_end(outcome);
-        let status = self.state_value("hew_coro_state_private_status", child)?;
-        self.free_handle("hew_coro_state_free", child)?;
+        let status = await_child(
+            self.ctx,
+            self.llvm,
+            &self.builder,
+            self.value,
+            frame,
+            child,
+            child_frame,
+        )?;
         self.builder
             .build_store(self.active_status, status)
             .llvm_ctx("retain child status")?;
         Ok(status)
     }
+}
+
+/// Await a child frame while preserving the caller's own continuation.
+/// Both private calls and erased callable adapters use this one frame protocol.
+pub(super) fn await_child<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    frame: &coro::Frame<'ctx>,
+    child: PointerValue<'ctx>,
+    child_frame: PointerValue<'ctx>,
+) -> CodegenResult<IntValue<'ctx>> {
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let state_value = |name: &str, state: PointerValue<'ctx>| -> CodegenResult<IntValue<'ctx>> {
+        let function =
+            coro::external(llvm, name, ctx.i32_type().fn_type(&[pointer.into()], false))?;
+        Ok(call_value(builder, function, &[state.into()], "child.status")?.into_int_value())
+    };
+    let free_handle = |name: &str, handle: PointerValue<'ctx>| -> CodegenResult<()> {
+        let function = coro::external(
+            llvm,
+            name,
+            ctx.void_type().fn_type(&[pointer.into()], false),
+        )?;
+        builder
+            .build_call(function, &[handle.into()], "")
+            .llvm_ctx("release child frame state")?;
+        Ok(())
+    };
+    let poll = ctx.append_basic_block(function, "call.child.poll");
+    let wait = ctx.append_basic_block(function, "call.child.wait");
+    let resume = ctx.append_basic_block(function, "call.child.resume");
+    let destroy = ctx.append_basic_block(function, "call.child.destroy");
+    let done = ctx.append_basic_block(function, "call.child.done");
+    let outcome = ctx.append_basic_block(function, "call.child.outcome");
+    builder
+        .build_unconditional_branch(poll)
+        .llvm_ctx("poll child call")?;
+    builder.position_at_end(poll);
+    let status = state_value("hew_coro_state_status", child)?;
+    let pending = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            ctx.i32_type().const_zero(),
+            "call.child.pending",
+        )
+        .llvm_ctx("test child call completion")?;
+    builder
+        .build_conditional_branch(pending, wait, done)
+        .llvm_ctx("select child call completion")?;
+    builder.position_at_end(wait);
+    frame.suspend(ctx, llvm, builder, resume, destroy, false)?;
+    builder.position_at_end(resume);
+    free_handle("hew_cont_resume", child_frame)?;
+    builder
+        .build_unconditional_branch(poll)
+        .llvm_ctx("poll resumed child")?;
+    builder.position_at_end(destroy);
+    builder
+        .build_store(frame.destroying, ctx.bool_type().const_int(1, false))
+        .llvm_ctx("mark destroyed caller")?;
+    free_handle("hew_cont_destroy", child_frame)?;
+    builder
+        .build_unconditional_branch(outcome)
+        .llvm_ctx("finish cancelled child")?;
+    builder.position_at_end(done);
+    free_handle("hew_cont_destroy", child_frame)?;
+    builder
+        .build_unconditional_branch(outcome)
+        .llvm_ctx("finish completed child")?;
+    builder.position_at_end(outcome);
+    let status = state_value("hew_coro_state_private_status", child)?;
+    free_handle("hew_coro_state_free", child)?;
+    Ok(status)
 }

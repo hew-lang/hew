@@ -480,6 +480,15 @@ pub struct BuildArgs {
     /// foreign-OS targets that cannot be linked on this host.
     #[arg(long = "emit-obj")]
     pub emit_obj: bool,
+    /// Experimental synchronous C string export: select SOURCE and emit SYMBOL.
+    /// Writes a matching .h beside the object; requires a library without main.
+    #[arg(
+        long = "export-c",
+        value_name = "SOURCE=SYMBOL",
+        requires = "emit_obj",
+        conflicts_with = "debug"
+    )]
+    pub export_c: Option<String>,
     /// Retain the pre-optimization textual LLVM IR beside the output.
     #[arg(long = "emit-llvm")]
     pub emit_llvm: bool,

@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1514u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1528u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1514] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1528] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -1973,6 +1973,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1514] = {
      "{\"native\": \"fn hew_fault_inject_drop( u64, u32)\"}", "native",
      "internal", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fault_into_host_error",
+     "{\"native\": \"fn hew_fault_into_host_error( *mut HewFault, ) -> *mut "
+     "hew_cabi::host_error::HewError\"}",
+     "native", "internal", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fault_new",
      "{\"native\": \"fn hew_fault_new( i32) -> *mut HewFault\"}", "native",
      "internal", "not-applicable", "no-in-signature-extent",
@@ -2367,6 +2372,86 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1514] = {
     {"hew_home_dir", "{\"native\": \"fn hew_home_dir() -> *mut HewString\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_error_code",
+     "{\"native\": \"fn hew_host_error_code( *const HewError) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_host_error_code( *const HewError) -> i32\"}",
+     "native,wasm32-wasip1", "public-host", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_error_message",
+     "{\"native\": \"fn hew_host_error_message( *const HewError, *mut usize, ) "
+     "-> *const u8\", \"wasm32-wasip1\": \"fn hew_host_error_message( *const "
+     "HewError, *mut usize, ) -> *const u8\"}",
+     "native,wasm32-wasip1", "public-host", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_error_release",
+     "{\"native\": \"fn hew_host_error_release( *mut HewError)\", "
+     "\"wasm32-wasip1\": \"fn hew_host_error_release( *mut HewError)\"}",
+     "native,wasm32-wasip1", "public-host", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_json_copy",
+     "{\"native\": \"fn hew_host_json_copy( *const HewJsonValue, *mut *mut "
+     "HewJsonValue, *mut *mut HewError, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "hew_host_json_copy( *const HewJsonValue, *mut *mut HewJsonValue, *mut "
+     "*mut HewError, ) -> i32\"}",
+     "native,wasm32-wasip1", "public-host-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_json_encode",
+     "{\"native\": \"fn hew_host_json_encode( *const HewJsonValue, *mut *mut "
+     "HewText, *mut *mut HewError, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "hew_host_json_encode( *const HewJsonValue, *mut *mut HewText, *mut *mut "
+     "HewError, ) -> i32\"}",
+     "native,wasm32-wasip1", "public-host-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_json_get_text",
+     "{\"native\": \"fn hew_host_json_get_text( *const HewJsonValue, *const "
+     "u8, usize, *mut *mut HewText, *mut *mut HewError, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_host_json_get_text( *const HewJsonValue, "
+     "*const u8, usize, *mut *mut HewText, *mut *mut HewError, ) -> i32\"}",
+     "native,wasm32-wasip1", "public-host-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_json_parse",
+     "{\"native\": \"fn hew_host_json_parse( *const u8, usize, *mut *mut "
+     "HewJsonValue, *mut *mut HewError, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "hew_host_json_parse( *const u8, usize, *mut *mut HewJsonValue, *mut *mut "
+     "HewError, ) -> i32\"}",
+     "native,wasm32-wasip1", "public-host-stdlib", "not-applicable",
+     "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_json_release",
+     "{\"native\": \"fn hew_host_json_release( *mut HewJsonValue)\", "
+     "\"wasm32-wasip1\": \"fn hew_host_json_release( *mut HewJsonValue)\"}",
+     "native,wasm32-wasip1", "public-host-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_json_set_text",
+     "{\"native\": \"fn hew_host_json_set_text( *mut HewJsonValue, *const u8, "
+     "usize, *const HewText, *mut *mut HewError, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_host_json_set_text( *mut HewJsonValue, "
+     "*const u8, usize, *const HewText, *mut *mut HewError, ) -> i32\"}",
+     "native,wasm32-wasip1", "public-host-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_text_data",
+     "{\"native\": \"fn hew_host_text_data( *const HewText, *mut usize) -> "
+     "*const u8\", \"wasm32-wasip1\": \"fn hew_host_text_data( *const HewText, "
+     "*mut usize) -> *const u8\"}",
+     "native,wasm32-wasip1", "public-host", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_text_from_owned",
+     "{\"native\": \"fn hew_host_text_from_owned( *mut HewText) -> *mut "
+     "HewText\", \"wasm32-wasip1\": \"fn hew_host_text_from_owned( *mut "
+     "HewText) -> *mut HewText\"}",
+     "native,wasm32-wasip1", "internal", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_text_from_utf8",
+     "{\"native\": \"fn hew_host_text_from_utf8( *const u8, usize, *mut *mut "
+     "HewText, *mut *mut HewError, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "hew_host_text_from_utf8( *const u8, usize, *mut *mut HewText, *mut *mut "
+     "HewError, ) -> i32\"}",
+     "native,wasm32-wasip1", "public-host", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_text_release",
+     "{\"native\": \"fn hew_host_text_release( *mut HewText)\", "
+     "\"wasm32-wasip1\": \"fn hew_host_text_release( *mut HewText)\"}",
+     "native,wasm32-wasip1", "public-host", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hostname", "{\"native\": \"fn hew_hostname() -> *mut HewString\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},

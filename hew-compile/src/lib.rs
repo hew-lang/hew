@@ -7,6 +7,8 @@ use std::sync::Arc;
 use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use serde::{de::DeserializeOwned, Deserialize};
 
+mod host;
+
 #[derive(Debug, Clone, Default)]
 #[allow(
     clippy::struct_excessive_bools,

@@ -33,6 +33,7 @@ mod diagnostic_json;
 mod doc;
 mod eval;
 mod help;
+mod host;
 mod link;
 mod machine;
 mod native_link;
@@ -843,9 +844,21 @@ fn emit_obj_only(
     package: Option<&hew_pkg::project::ResolvedPackage>,
     profile: &str,
     output: Option<&Path>,
+    host_export: Option<&str>,
 ) -> Result<(), DiagChannel> {
-    let (pipeline, _native_pkg_dirs) = lower_file_to_physical_for_target(input, target, options)?;
     let final_path = resolve_output(Artifact::Object, input, package, profile, target, output);
+    if let Some(selection) = host_export {
+        return host::emit(
+            input,
+            target,
+            options,
+            selection,
+            &final_path,
+            opt_level,
+            emit_llvm,
+        );
+    }
+    let (pipeline, _native_pkg_dirs) = lower_file_to_physical_for_target(input, target, options)?;
     let out_dir = match final_path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
@@ -992,6 +1005,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
             resolved.package(),
             profile,
             a.output.as_deref(),
+            a.export_c.as_deref(),
         ) {
             Ok(()) => 0,
             Err(channel) => channel.exit_code(),

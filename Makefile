@@ -1116,6 +1116,12 @@ CORE_ACCEPTANCE_ARGS ?=
 core-acceptance: hew-native ## Test: run audited native core acceptance cases
 	cargo run -p xtask -- core-acceptance --suite acceptance --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
 
+HOST_CLIENT_ARGS ?=
+.PHONY: test-host-client
+test-host-client: hew-native ## Test: execute C11 and C++17 clients calling compiled Hew
+	python3 tests/host/run.py --hew-bin "$(abspath $(DEBUG_HEW))" --hew-lib "$(abspath $(LIBHEW))" \
+		--out-dir "$(abspath $(DEBUG_DIR))/host-client" $(HOST_CLIENT_ARGS)
+
 # Build the compiler and runtime together so the selected compiler resolves the
 # sanitizer archive from its own Cargo profile directory. The safety runner also
 # requires generated LLVM instrumentation and rejects unexpected stderr.
@@ -1130,6 +1136,13 @@ core-safety-build:
 core-safety: core-safety-build ## Test: run native ownership cases with generated and runtime ASan/LSan
 	ASAN_SYMBOLIZER_PATH="$(ASAN_SYMBOLIZER)" cargo run -p xtask -- core-acceptance --suite safety \
 		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" $(CORE_ACCEPTANCE_ARGS)
+
+.PHONY: test-host-safety
+test-host-safety: core-safety-build ## Test: instrument compiled Hew, C/C++ clients and Rust host runtime
+	python3 tests/host/run.py \
+		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" \
+		--hew-lib "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/libhew.a" \
+		--out-dir "$(abspath $(CORE_SAFETY_TARGET_DIR))/host-client" --sanitize $(HOST_CLIENT_ARGS)
 
 # The runner has consequential case-selection and error behaviour, but it is
 # separate from the compiler acceptance command and runs only when changed.

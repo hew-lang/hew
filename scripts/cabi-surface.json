@@ -5617,6 +5617,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_fault_into_host_error( *mut HewFault, ) -> *mut hew_cabi::host_error::HewError"
+      },
+      "symbol": "hew_fault_into_host_error"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "internal",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_fault_new( i32) -> *mut HewFault"
       },
       "symbol": "hew_fault_new"
@@ -6587,6 +6600,201 @@
         "native": "fn hew_home_dir() -> *mut HewString"
       },
       "symbol": "hew_home_dir"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_error_code( *const HewError) -> i32",
+        "wasm32-wasip1": "fn hew_host_error_code( *const HewError) -> i32"
+      },
+      "symbol": "hew_host_error_code"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_error_message( *const HewError, *mut usize, ) -> *const u8",
+        "wasm32-wasip1": "fn hew_host_error_message( *const HewError, *mut usize, ) -> *const u8"
+      },
+      "symbol": "hew_host_error_message"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_error_release( *mut HewError)",
+        "wasm32-wasip1": "fn hew_host_error_release( *mut HewError)"
+      },
+      "symbol": "hew_host_error_release"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_json_copy( *const HewJsonValue, *mut *mut HewJsonValue, *mut *mut HewError, ) -> i32",
+        "wasm32-wasip1": "fn hew_host_json_copy( *const HewJsonValue, *mut *mut HewJsonValue, *mut *mut HewError, ) -> i32"
+      },
+      "symbol": "hew_host_json_copy"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_json_encode( *const HewJsonValue, *mut *mut HewText, *mut *mut HewError, ) -> i32",
+        "wasm32-wasip1": "fn hew_host_json_encode( *const HewJsonValue, *mut *mut HewText, *mut *mut HewError, ) -> i32"
+      },
+      "symbol": "hew_host_json_encode"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_json_get_text( *const HewJsonValue, *const u8, usize, *mut *mut HewText, *mut *mut HewError, ) -> i32",
+        "wasm32-wasip1": "fn hew_host_json_get_text( *const HewJsonValue, *const u8, usize, *mut *mut HewText, *mut *mut HewError, ) -> i32"
+      },
+      "symbol": "hew_host_json_get_text"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host-stdlib",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_json_parse( *const u8, usize, *mut *mut HewJsonValue, *mut *mut HewError, ) -> i32",
+        "wasm32-wasip1": "fn hew_host_json_parse( *const u8, usize, *mut *mut HewJsonValue, *mut *mut HewError, ) -> i32"
+      },
+      "symbol": "hew_host_json_parse"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_json_release( *mut HewJsonValue)",
+        "wasm32-wasip1": "fn hew_host_json_release( *mut HewJsonValue)"
+      },
+      "symbol": "hew_host_json_release"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_json_set_text( *mut HewJsonValue, *const u8, usize, *const HewText, *mut *mut HewError, ) -> i32",
+        "wasm32-wasip1": "fn hew_host_json_set_text( *mut HewJsonValue, *const u8, usize, *const HewText, *mut *mut HewError, ) -> i32"
+      },
+      "symbol": "hew_host_json_set_text"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_text_data( *const HewText, *mut usize) -> *const u8",
+        "wasm32-wasip1": "fn hew_host_text_data( *const HewText, *mut usize) -> *const u8"
+      },
+      "symbol": "hew_host_text_data"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "internal",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_text_from_owned( *mut HewText) -> *mut HewText",
+        "wasm32-wasip1": "fn hew_host_text_from_owned( *mut HewText) -> *mut HewText"
+      },
+      "symbol": "hew_host_text_from_owned"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_text_from_utf8( *const u8, usize, *mut *mut HewText, *mut *mut HewError, ) -> i32",
+        "wasm32-wasip1": "fn hew_host_text_from_utf8( *const u8, usize, *mut *mut HewText, *mut *mut HewError, ) -> i32"
+      },
+      "symbol": "hew_host_text_from_utf8"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "public-host",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_text_release( *mut HewText)",
+        "wasm32-wasip1": "fn hew_host_text_release( *mut HewText)"
+      },
+      "symbol": "hew_host_text_release"
     },
     {
       "availability": [

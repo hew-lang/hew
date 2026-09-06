@@ -396,6 +396,7 @@ mod tests {
             output: None,
             target: None,
             emit_obj: false,
+            export_c: None,
             emit_llvm: false,
             release: false,
             debug: false,

@@ -14,6 +14,10 @@ mod key;
 #[path = "physical_partial.rs"]
 mod partial;
 
+#[path = "physical_host.rs"]
+mod host;
+pub use host::HostExport;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -411,6 +415,25 @@ pub fn emit_physical_object(
     verified: &VerifiedPhysicalModule,
     options: &PhysicalEmitOptions<'_>,
 ) -> Result<EmitArtefacts, CodegenError> {
+    emit_physical_object_with_host(verified, options, None)
+}
+
+/// Emit an experimental C wrapper and its verified library body.
+///
+/// # Errors
+/// Returns target, LLVM or output errors.
+pub fn emit_host_object(
+    export: &HostExport<'_>,
+    options: &PhysicalEmitOptions<'_>,
+) -> Result<EmitArtefacts, CodegenError> {
+    emit_physical_object_with_host(export.verified, options, Some(export))
+}
+
+fn emit_physical_object_with_host(
+    verified: &VerifiedPhysicalModule,
+    options: &PhysicalEmitOptions<'_>,
+    host: Option<&HostExport<'_>>,
+) -> Result<EmitArtefacts, CodegenError> {
     let triple = options
         .target_triple
         .map_or_else(native_emission_triple, ToOwned::to_owned);
@@ -434,6 +457,7 @@ pub fn emit_physical_object(
         options.address_sanitizer,
         ll_path.as_deref(),
         Some(&object_path),
+        host,
     )?;
     Ok(EmitArtefacts {
         ll_path,
@@ -460,9 +484,14 @@ pub fn validate_physical_codegen(
         false,
         None,
         None,
+        None,
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shared native output pipeline with an optional checked host export"
+)]
 fn emit_physical_to_paths(
     verified: &VerifiedPhysicalModule,
     module_name: &str,
@@ -471,10 +500,11 @@ fn emit_physical_to_paths(
     address_sanitizer: bool,
     ll_path: Option<&Path>,
     object_path: Option<&Path>,
+    host: Option<&HostExport<'_>>,
 ) -> CodegenResult<()> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, opt_level)?;
     let ctx = Context::create();
-    let llvm_module = build_module(&ctx, verified.module(), module_name, &machine)?;
+    let llvm_module = build_module_with_host(&ctx, verified.module(), module_name, &machine, host)?;
     crate::llvm::run_module_pipeline(&llvm_module, &machine, opt_level)?;
     if address_sanitizer {
         crate::sanitizer::instrument_address_sanitizer(&llvm_module, &machine)
@@ -1266,11 +1296,22 @@ fn value_descriptor_type<'ctx>(
     )
 }
 
+#[cfg(test)]
 fn build_module<'ctx>(
     ctx: &'ctx Context,
     physical: &PhysicalModule,
     name: &str,
     machine: &TargetMachine,
+) -> CodegenResult<Module<'ctx>> {
+    build_module_with_host(ctx, physical, name, machine, None)
+}
+
+fn build_module_with_host<'ctx>(
+    ctx: &'ctx Context,
+    physical: &PhysicalModule,
+    name: &str,
+    machine: &TargetMachine,
+    host: Option<&HostExport<'_>>,
 ) -> CodegenResult<Module<'ctx>> {
     let triple = machine.get_triple();
     let triple_text = triple.as_str().to_string_lossy();
@@ -1305,6 +1346,9 @@ fn build_module<'ctx>(
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;
+    if let Some(export) = host {
+        host::emit(&emitter, export)?;
+    }
     emitter
         .llvm
         .verify()
@@ -2223,6 +2267,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let global = self
             .llvm
             .add_global(data.get_type(), None, "physical.literal");
+        global.set_linkage(Linkage::Private);
         global.set_initializer(&data);
         global.set_constant(true);
         let ptr = self.ctx.ptr_type(AddressSpace::default());

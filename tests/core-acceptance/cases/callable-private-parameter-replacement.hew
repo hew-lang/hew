@@ -1,0 +1,49 @@
+fn fresh() -> fn[var]() -> i64 {
+    let count = 0;
+    capture(var count) || {
+        count += 1;
+        count
+    }
+}
+
+fn replace_both(var cb: fn[var]() -> i64, flag: bool) -> i64 {
+    if flag {
+        cb = fresh();
+    } else {
+        cb = fresh();
+    }
+    cb();
+    cb()
+}
+
+fn replace_or_return(var cb: fn[var]() -> i64, flag: bool) -> i64 {
+    if flag {
+        return 77;
+    } else {
+        cb = fresh();
+    }
+    cb();
+    cb()
+}
+
+fn private_once(var cb: fn[once, clone]() -> string) -> string {
+    cb()
+}
+
+fn main() -> i64 {
+    var original = fresh();
+    println(original());
+    println(replace_both(original, true));
+    println(original());
+    println(replace_both(original, false));
+    println(original());
+    println(replace_or_return(original, true));
+    println(original());
+    println(replace_or_return(original, false));
+    println(original());
+    let text = "private once".to_upper();
+    let once: fn[once, clone]() -> string = move || text;
+    println(private_once(once));
+    println(once());
+    0
+}

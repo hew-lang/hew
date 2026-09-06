@@ -7,6 +7,8 @@
 #[path = "physical_callable.rs"]
 mod callable;
 
+#[path = "physical_encoding.rs"]
+mod encoding;
 #[path = "physical_key.rs"]
 mod key;
 #[path = "physical_partial.rs"]
@@ -520,6 +522,7 @@ fn primitive_repr(
             pointer_layout(ctx, target)?,
         ]),
         collection if collection_type_arguments(collection).is_some() => PhysicalRepr::Pointer,
+        encoding if hew_mir::physical::encoding_format(encoding).is_some() => PhysicalRepr::Pointer,
         ResolvedTy::Bytes => PhysicalRepr::Struct(vec![
             pointer_layout(ctx, target)?,
             integer_layout(ctx, target, 32)?,
@@ -690,6 +693,23 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         action: CloneAction,
     ) -> CodegenResult<BasicValueEnum<'ctx>> {
         match action {
+            CloneAction::Encoding(format) => {
+                let function = external_unary_ptr(
+                    self.ctx,
+                    self.llvm,
+                    hew_mir::physical::EncodingOp::Clone.c_symbol(format),
+                )?;
+                self.builder
+                    .build_call(
+                        function,
+                        &[value.into_pointer_value().into()],
+                        "encoding.clone",
+                    )
+                    .llvm_ctx("clone encoding value")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("encoding clone returned void".into()))
+            }
             CloneAction::Callable => self.clone_callable_value(value, layout),
             CloneAction::Bitwise => Ok(value),
             CloneAction::StringRetain => {
@@ -830,9 +850,13 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 Ok(())
             }
 
-            DestroyAction::StringRelease | DestroyAction::BytesRelease => {
+            DestroyAction::Encoding(_)
+            | DestroyAction::StringRelease
+            | DestroyAction::BytesRelease => {
                 let pointer = match action {
-                    DestroyAction::StringRelease => value.into_pointer_value(),
+                    DestroyAction::Encoding(_) | DestroyAction::StringRelease => {
+                        value.into_pointer_value()
+                    }
                     DestroyAction::BytesRelease => self
                         .builder
                         .build_extract_value(value.into_struct_value(), 0, "bytes.drop.ptr")
@@ -847,6 +871,9 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     }
                 };
                 let symbol = match action {
+                    DestroyAction::Encoding(format) => {
+                        hew_mir::physical::EncodingOp::Free.c_symbol(format)
+                    }
                     DestroyAction::StringRelease => "hew_string_drop",
                     DestroyAction::BytesRelease => "hew_bytes_drop",
                     DestroyAction::Callable | DestroyAction::Aggregate(_) => {
@@ -2898,6 +2925,20 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         match action {
+            PhysicalRuntimeAction::Encoding { format, op } => {
+                self.emit_encoding_call(
+                    hew_types::RuntimeCallFamily::Encoding { format, op },
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::JsonObjectKeys => {
+                self.emit_encoding_call(
+                    hew_types::RuntimeCallFamily::JsonObjectKeys,
+                    transfers,
+                    result,
+                )?;
+            }
             PhysicalRuntimeAction::Map { operation, glue } => {
                 return self.emit_map_call(
                     (operation, glue),

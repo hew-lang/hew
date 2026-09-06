@@ -9,6 +9,8 @@ use super::*;
 #[path = "physical_callable_tests.rs"]
 mod callables;
 
+#[path = "physical_encoding_tests.rs"]
+mod encoding;
 #[path = "physical_local_tests.rs"]
 mod locals;
 #[path = "physical_partial_tests.rs"]

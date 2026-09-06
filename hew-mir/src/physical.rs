@@ -20,6 +20,12 @@ pub use partial::{
     PhysicalAggregateStep, PhysicalCleanup, PhysicalPlaceLeaf, PhysicalPlaceStorage,
 };
 #[cfg(test)]
+#[path = "physical_encoding_fixture.rs"]
+mod encoding_fixture;
+#[cfg(test)]
+#[path = "physical_encoding_tests.rs"]
+mod encoding_tests;
+#[cfg(test)]
 #[path = "physical_local_fixture.rs"]
 mod local_fixture;
 #[cfg(test)]
@@ -38,6 +44,7 @@ use hew_sir::{
 };
 pub use hew_sir::{BlockId, CallableId, ClosureId, OwnKind, SemParamPassing, TrapKind};
 use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp};
+pub use hew_types::runtime_call::{EncodingFormat, EncodingOp};
 use hew_types::{
     vector_element_type, BuiltinType, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect,
     RuntimeCallFamily, RuntimeResultEffect, TypeInstanceKey, ValueCapability, VecValueOp,
@@ -306,6 +313,7 @@ pub enum PhysicalConst {
 /// A clone selected once from an explicit SIR copy plus concrete type facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloneAction {
+    Encoding(EncodingFormat),
     Callable,
     Bitwise,
     StringRetain,
@@ -320,6 +328,7 @@ pub enum CloneAction {
 /// A release selected once from an explicit SIR destroy plus concrete type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DestroyAction {
+    Encoding(EncodingFormat),
     Callable,
     StringRelease,
     BytesRelease,
@@ -663,8 +672,13 @@ pub struct PhysicalVariantArm {
 /// Exact no-unwind runtime ABI operation selected from a verified SIR runtime
 /// family. The emitter executes this closed physical action; it never selects
 /// ownership or failure behaviour from a linker symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhysicalRuntimeAction {
+    Encoding {
+        format: EncodingFormat,
+        op: EncodingOp,
+    },
+    JsonObjectKeys,
     StringConcat,
     StringEquals,
     StringStartsWith,
@@ -703,6 +717,8 @@ pub enum PhysicalRuntimeAction {
 impl PhysicalRuntimeAction {
     const fn semantic_family(self) -> RuntimeCallFamily {
         match self {
+            Self::Encoding { format, op } => RuntimeCallFamily::Encoding { format, op },
+            Self::JsonObjectKeys => RuntimeCallFamily::JsonObjectKeys,
             Self::StringConcat => RuntimeCallFamily::StringConcat,
             Self::StringEquals => RuntimeCallFamily::StringEquals,
             Self::StringStartsWith => RuntimeCallFamily::StringStartsWith,
@@ -1283,6 +1299,9 @@ fn clone_action_for_type(
         CloneKind::Bits => CloneAction::Bitwise,
         CloneKind::Retain if ty == &ResolvedTy::String => CloneAction::StringRetain,
         CloneKind::Retain if ty == &ResolvedTy::Bytes => CloneAction::BytesRetain,
+        CloneKind::DeepCopy if encoding_format(ty).is_some() => {
+            CloneAction::Encoding(encoding_format(ty).expect("checked encoding receiver"))
+        }
         CloneKind::DeepCopy | CloneKind::FieldWise
             if matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }) =>
         {
@@ -1321,6 +1340,7 @@ fn clone_action_for_type(
 
 fn destroy_action_for_type(ty: &ResolvedTy, ids: &PhysicalGlueIds) -> Option<DestroyAction> {
     match ty {
+        _ if encoding_format(ty).is_some() => encoding_format(ty).map(DestroyAction::Encoding),
         ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => Some(DestroyAction::Callable),
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
@@ -1330,6 +1350,18 @@ fn destroy_action_for_type(ty: &ResolvedTy, ids: &PhysicalGlueIds) -> Option<Des
         _ if ids.aggregates.contains_key(ty) => Some(DestroyAction::Aggregate(ids.aggregates[ty])),
         _ => ids.variants.get(ty).copied().map(DestroyAction::Variant),
     }
+}
+
+/// Resolve an encoding carrier through the shared canonical receiver contract.
+#[must_use]
+pub fn encoding_format(ty: &ResolvedTy) -> Option<EncodingFormat> {
+    [EncodingFormat::Json, EncodingFormat::Yaml]
+        .into_iter()
+        .find(|format| {
+            hew_types::RuntimeValueKind::Receiver(format.builtin())
+                .resolve(Some(ty))
+                .is_some()
+        })
 }
 
 /// Collect the concrete semantic types that the physical module must realize.
@@ -1693,6 +1725,10 @@ fn physical_runtime_action(
     family: RuntimeCallFamily,
 ) -> Result<PhysicalRuntimeAction, PhysicalError> {
     Ok(match family {
+        RuntimeCallFamily::Encoding { format, op } => {
+            PhysicalRuntimeAction::Encoding { format, op }
+        }
+        RuntimeCallFamily::JsonObjectKeys => PhysicalRuntimeAction::JsonObjectKeys,
         RuntimeCallFamily::StringConcat => PhysicalRuntimeAction::StringConcat,
         RuntimeCallFamily::StringEquals => PhysicalRuntimeAction::StringEquals,
         RuntimeCallFamily::StringStartsWith => PhysicalRuntimeAction::StringStartsWith,
@@ -3160,6 +3196,7 @@ fn verify_clone_action(
     let clone_kind_matches = matches!(
         (facts.clone, action),
         (CloneKind::Bits, CloneAction::Bitwise)
+            | (CloneKind::DeepCopy, CloneAction::Encoding(_))
             | (
                 CloneKind::Retain,
                 CloneAction::StringRetain | CloneAction::BytesRetain
@@ -3179,6 +3216,9 @@ fn verify_clone_action(
     let valid = clone_kind_matches
         && own == OwnKind::of_class(facts.class)
         && match action {
+            CloneAction::Encoding(format) => {
+                own == OwnKind::Owned && encoding_format(ty) == Some(format)
+            }
             CloneAction::Callable => {
                 own == OwnKind::Owned
                     && matches!(ty,
@@ -3241,6 +3281,9 @@ fn verify_destroy_action(
     let own_from_facts = OwnKind::of_class(semantic_type_facts(module, ty)?.class);
     let valid = own == own_from_facts
         && match action {
+            DestroyAction::Encoding(format) => {
+                own == OwnKind::Owned && encoding_format(ty) == Some(format)
+            }
             DestroyAction::Callable => {
                 own == OwnKind::Owned
                     && matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
@@ -6328,10 +6371,10 @@ mod tests {
                 PhysicalTerminator::RuntimeCall { action, .. } => Some(action),
                 _ => None,
             })
-            .collect::<BTreeSet<_>>();
+            .collect::<std::collections::HashSet<_>>();
         assert_eq!(
             actions,
-            BTreeSet::from([
+            std::collections::HashSet::from([
                 PhysicalRuntimeAction::StringEquals,
                 PhysicalRuntimeAction::StringStartsWith,
                 PhysicalRuntimeAction::StringToUppercase,
@@ -6373,7 +6416,7 @@ mod tests {
                 PhysicalTerminator::RuntimeCall { action, .. } => Some(action),
                 _ => None,
             })
-            .collect::<BTreeSet<_>>();
+            .collect::<std::collections::HashSet<_>>();
         assert!(actions.contains(&PhysicalRuntimeAction::StringToBytesOwned));
         assert!(actions.contains(&PhysicalRuntimeAction::BytesPushOwned));
         assert!(actions.contains(&PhysicalRuntimeAction::BytesLen));

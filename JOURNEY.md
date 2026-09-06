@@ -1,5 +1,15 @@
 # Core integration
 
+## Physical JSON and YAML values
+
+- Carry canonical JSON and YAML identities into pointer layout and explicit
+  clone, destroy and runtime actions. Consume mutation inputs once and return
+  the original receiver after the runtime's void mutation call.
+- Preserve the protocol's native scalar and string carriers. Add physical
+  verifier negatives and LLVM declaration checks for Linux, Windows and macOS.
+- The initial implementation builds with workspace Clippy. Executable runtime
+  ownership checks remain pending composition of SIR callable admission.
+
 ## Initial checkpoint
 
 - Preserve the profiler port-only address fix; focused profiler unit tests pass.

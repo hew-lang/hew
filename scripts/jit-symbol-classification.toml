@@ -1605,6 +1605,7 @@ internal = [
   "hew_fault_inject_delay",
   "hew_fault_inject_drop",
   "hew_fault_new",
+  "hew_fault_new_panic",
   "hew_fault_report",
   # Private physical operations initialize owned output storage.
   "hew_bytes_decode_utf8",
@@ -6771,6 +6772,14 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_fault_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_fault_new_panic"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_fault_drop"
+discharge-depth = "deep"
 result-retention = "transferred"
 
 [[ownership.contracts]]

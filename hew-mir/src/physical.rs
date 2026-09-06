@@ -27,6 +27,9 @@ mod partial;
 #[path = "physical_select_tests.rs"]
 mod select_tests;
 
+#[path = "physical_generators.rs"]
+mod generators;
+
 #[path = "physical_suspend.rs"]
 mod suspend;
 pub use partial::{
@@ -400,6 +403,7 @@ pub struct PhysicalValueRecipe {
 /// One exact closure body and its already selected concrete environment type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalClosure {
+    pub generator_yield: Option<ResolvedTy>,
     pub id: ClosureId,
     pub body: CallableId,
     pub ty: ResolvedTy,
@@ -566,6 +570,13 @@ impl PhysicalSetOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
+    GeneratorMake {
+        closure: ClosureId,
+        callable: StorageId,
+        dest: StorageId,
+        yielded: PhysicalValueRecipe,
+        returned: PhysicalValueRecipe,
+    },
     TaskScopeEnter {
         scope: hew_sir::TaskScopeId,
         parent: Option<hew_sir::TaskScopeId>,
@@ -578,7 +589,8 @@ pub enum PhysicalOp {
         scope: hew_sir::TaskScopeId,
         callable: StorageId,
         dest: StorageId,
-        output: PhysicalValueRecipe,
+        /// Absent only for the uninhabited result of Task<!>.
+        output: Option<PhysicalValueRecipe>,
     },
     /// Static scheduling marker; dependencies alias existing storage.
     RegisterDefer {
@@ -830,10 +842,29 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
+    GeneratorYield {
+        value: ArgumentTransfer,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
+    GeneratorNext {
+        generator: ArgumentTransfer,
+        result: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
+    ValueClose {
+        destroy: Option<DestroyAction>,
+        generator: StorageId,
+        conditional: bool,
+        next: PhysicalEdge,
+    },
     TaskAwait {
         task: ArgumentTransfer,
         result: Option<StorageId>,
-        normal: PhysicalEdge,
+        normal: Option<PhysicalEdge>,
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
@@ -1046,6 +1077,10 @@ impl std::error::Error for PhysicalError {}
 /// Returns [`PhysicalError`] when SIR verification fails, a concrete target
 /// layout is absent, an ownership action has no admitted physical realization,
 /// or the resulting storage/CFG model violates the physical verifier.
+#[expect(
+    clippy::too_many_lines,
+    reason = "materializes the complete checked module and its callable ABI"
+)]
 pub fn lower_physical_module(
     module: &SemModule,
     target: PhysicalTarget,
@@ -1068,7 +1103,7 @@ pub fn lower_physical_module(
         ids,
     } = build_glue(module)?;
 
-    let resumable = suspend::semantic_callables(module);
+    let resumable = suspend::semantic_callables(&checked);
     let callables = module
         .callables
         .iter()
@@ -1094,7 +1129,11 @@ pub fn lower_physical_module(
                     })
                 })
                 .collect::<Result<Vec<_>, PhysicalError>>()?;
-            let return_layout = if callable.signature.return_ty == ResolvedTy::Unit {
+            let return_layout = if callable.signature.return_ty == ResolvedTy::Never
+                || (callable.signature.return_ty == ResolvedTy::Unit
+                    && !module.closures.iter().any(|closure| {
+                        closure.body == callable.id && closure.generator_yield.is_some()
+                    })) {
                 None
             } else {
                 Some(required_layout(&target, &callable.signature.return_ty)?.clone())
@@ -1132,6 +1171,7 @@ pub fn lower_physical_module(
             .closures
             .iter()
             .map(|closure| PhysicalClosure {
+                generator_yield: closure.generator_yield.clone(),
                 id: closure.id,
                 body: closure.body,
                 ty: closure.ty.clone(),
@@ -1598,6 +1638,10 @@ fn collect_inventory_type(
     }
     inventory.types.insert(ty.clone());
     if collect_resource_type(module, inventory, ty) {
+        if let Some((yielded, returned)) = hew_sir::generator_parts(ty) {
+            collect_inventory_type(module, inventory, yielded);
+            collect_inventory_type(module, inventory, returned);
+        }
         return;
     }
     if let ResolvedTy::Closure { captures, .. } = ty {
@@ -2218,6 +2262,9 @@ impl FunctionLowerer<'_> {
             SemOpKind::TaskScopeClose { scope } => {
                 one(PhysicalOp::TaskScopeClose { scope: *scope })
             }
+            SemOpKind::GeneratorMake { closure, callable } => {
+                one(self.lower_generator_make(operation, *closure, callable)?)
+            }
             SemOpKind::TaskSpawn { scope, callable } => {
                 let dest = self.one_result(operation)?;
                 let ResolvedTy::Task(output) = &self.storage[dest.0 as usize].ty else {
@@ -2227,7 +2274,9 @@ impl FunctionLowerer<'_> {
                     scope: *scope,
                     callable: self.value(callable.value)?,
                     dest,
-                    output: physical_value_recipe(self.module, self.glue_ids, output)?,
+                    output: (output.as_ref() != &ResolvedTy::Never)
+                        .then(|| physical_value_recipe(self.module, self.glue_ids, output))
+                        .transpose()?,
                 })
             }
             SemOpKind::ClosureMake { closure, fields } => one(PhysicalOp::ClosureMake {
@@ -2451,7 +2500,7 @@ impl FunctionLowerer<'_> {
                 callee: *callee,
                 args: self.argument_transfers(args)?,
                 result: match result {
-                    CallResult::Unit => None,
+                    CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
                 },
                 normal: self.lower_edge(normal)?,
@@ -2471,7 +2520,7 @@ impl FunctionLowerer<'_> {
                 operation: operation.clone(),
                 args: self.argument_transfers(args)?,
                 result: match result {
-                    CallResult::Unit => None,
+                    CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
                 },
                 normal: self.lower_edge(normal)?,
@@ -2491,7 +2540,7 @@ impl FunctionLowerer<'_> {
                 action: self.runtime_action(*family, args, result)?,
                 args: self.argument_transfers(args)?,
                 result: match result {
-                    CallResult::Unit => None,
+                    CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
                 },
                 normal: self.lower_edge(normal)?,
@@ -2532,6 +2581,13 @@ impl FunctionLowerer<'_> {
             SemTerminator::Trap { kind } => Ok(PhysicalTerminator::Trap(*kind)),
             SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),
+            term @ SemTerminator::Suspend {
+                kind:
+                    hew_sir::SuspendKind::Yield
+                    | hew_sir::SuspendKind::GeneratorNext
+                    | hew_sir::SuspendKind::ValueClose { .. },
+                ..
+            } => self.lower_generator_suspend(term),
             SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::Select { has_timeout },
                 inputs,
@@ -2586,9 +2642,12 @@ impl FunctionLowerer<'_> {
                 task: self.argument_transfers(inputs)?[0],
                 result: match result {
                     CallResult::Value(value) => Some(self.value(value.id)?),
-                    CallResult::Unit => None,
+                    CallResult::Unit | CallResult::Never => None,
                 },
-                normal: self.lower_edge(&resumes[0])?,
+                normal: resumes
+                    .first()
+                    .map(|edge| self.lower_edge(edge))
+                    .transpose()?,
                 cancel: self.lower_edge(cancel)?,
                 unwind: self.lower_edge(unwind)?,
             }),
@@ -4052,6 +4111,7 @@ fn verify_operation_storage(
     operation: &PhysicalOp,
 ) -> Result<(), PhysicalError> {
     match operation {
+        PhysicalOp::GeneratorMake { .. } => generators::verify_make(module, function, operation)?,
         PhysicalOp::TaskScopeEnter { duration, .. } => {
             if let Some(duration) = duration {
                 if storage(function, *duration)?.ty != ResolvedTy::Duration {
@@ -4074,14 +4134,23 @@ fn verify_operation_storage(
                 hew_sir::callable_parts(&input.ty).map_err(PhysicalError::new)?;
             if !params.is_empty()
                 || capabilities.call != hew_types::CallableCallMode::Once
-                || ret != &output.ty
-                || result.ty != ResolvedTy::Task(Box::new(output.ty.clone()))
+                || result.ty != ResolvedTy::Task(Box::new(ret.clone()))
             {
                 return Err(PhysicalError::new(
                     "task spawn disagrees with its callable/result contract",
                 ));
             }
-            verify_value_recipe(module, output)?;
+            match output {
+                Some(output) if &output.ty == ret && *ret != ResolvedTy::Never => {
+                    verify_value_recipe(module, output)?;
+                }
+                None if *ret == ResolvedTy::Never => {}
+                _ => {
+                    return Err(PhysicalError::new(
+                        "task result recipe differs from its callable result",
+                    ))
+                }
+            }
         }
         PhysicalOp::RegisterDefer { dependencies, .. } => {
             for dependency in dependencies {
@@ -4609,7 +4678,8 @@ fn apply_operation(
             }
         }
         PhysicalOp::TaskScopeClose { .. } => {}
-        PhysicalOp::TaskSpawn { callable, dest, .. } => {
+        PhysicalOp::GeneratorMake { callable, dest, .. }
+        | PhysicalOp::TaskSpawn { callable, dest, .. } => {
             initialized(function, state, *callable, block, "task callable")?;
             consume_if_owned(function, state, *callable)?;
             define(function, state, *dest, block, "task handle")?;
@@ -4923,6 +4993,11 @@ fn terminator_successors(
             successors.push(apply_edge(function, unwind, state, block)?);
             Ok(successors)
         }
+        PhysicalTerminator::GeneratorYield { .. }
+        | PhysicalTerminator::GeneratorNext { .. }
+        | PhysicalTerminator::ValueClose { .. } => {
+            generators::successors(function, terminator, state, block)
+        }
         PhysicalTerminator::TaskAwait {
             task,
             result,
@@ -4942,7 +5017,12 @@ fn terminator_successors(
             if let Some(result) = result {
                 define(function, &mut completed, *result, block, "await result")?;
             }
-            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            let mut successors = normal
+                .as_ref()
+                .map(|normal| apply_edge(function, normal, completed, block))
+                .transpose()?
+                .into_iter()
+                .collect::<Vec<_>>();
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
@@ -5405,6 +5485,15 @@ fn verify_terminator(
             edge(cancel)?;
             edge(unwind)
         }
+        PhysicalTerminator::GeneratorYield { .. }
+        | PhysicalTerminator::GeneratorNext { .. }
+        | PhysicalTerminator::ValueClose { .. } => {
+            generators::verify_suspend(module, function, terminator)?;
+            for successor in defer::edges(terminator) {
+                edge(successor)?;
+            }
+            Ok(())
+        }
         PhysicalTerminator::TaskAwait {
             task,
             result,
@@ -5419,11 +5508,17 @@ fn verify_terminator(
                 return Err(PhysicalError::new("await requires an exact Task type"));
             };
             match result {
-                Some(result) if slot(*result)?.ty == **output => {}
-                None if **output == ResolvedTy::Unit => {}
+                Some(result)
+                    if slot(*result)?.ty == **output
+                        && normal.is_some()
+                        && **output != ResolvedTy::Never => {}
+                None if **output == ResolvedTy::Unit && normal.is_some() => {}
+                None if **output == ResolvedTy::Never && normal.is_none() => {}
                 _ => return Err(PhysicalError::new("await output differs from task result")),
             }
-            edge(normal)?;
+            if let Some(normal) = normal {
+                edge(normal)?;
+            }
             edge(cancel)?;
             edge(unwind)
         }

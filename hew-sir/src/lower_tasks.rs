@@ -245,7 +245,9 @@ impl Builder<'_, '_> {
     ) -> Result<Option<ValueId>, String> {
         self.owned_live.remove(&task);
         let live = self.owned_live.clone();
-        let (result, normal, continuation) = if *output == ResolvedTy::Unit {
+        let (result, normal, continuation) = if *output == ResolvedTy::Never {
+            (CallResult::Never, edge(self.new_block(Vec::new())), None)
+        } else if *output == ResolvedTy::Unit {
             (CallResult::Unit, edge(self.new_block(Vec::new())), None)
         } else {
             self.service.require_type_facts(output)?;
@@ -280,7 +282,11 @@ impl Builder<'_, '_> {
                 decision: BoundaryDecision::Move,
             }],
             result,
-            resumes: vec![normal],
+            resumes: if *output == ResolvedTy::Never {
+                Vec::new()
+            } else {
+                vec![normal]
+            },
             cancel: edge(cancel),
             unwind: edge(unwind),
         })?;
@@ -291,6 +297,9 @@ impl Builder<'_, '_> {
         }
         self.current = resumed;
         self.owned_live = live;
+        if *output == ResolvedTy::Never {
+            self.set_terminator(SemTerminator::Unreachable)?;
+        }
         if let Some((value, OwnKind::Owned)) = continuation {
             self.owned_live.insert(value, output.clone());
         }

@@ -225,7 +225,7 @@ pub(super) fn verify_indirect_call(
         || signature.params.len() != semantic.params.len()
         || args.len() != signature.params.len()
         || signature.return_layout.as_ref()
-            != if semantic.return_ty == ResolvedTy::Unit {
+            != if matches!(semantic.return_ty, ResolvedTy::Unit | ResolvedTy::Never) {
                 None
             } else {
                 module.target.layout(&semantic.return_ty)
@@ -396,7 +396,10 @@ impl FunctionLowerer<'_> {
             signature: PhysicalCallSignature {
                 params,
                 return_ty: signature.return_ty.clone(),
-                return_layout: if signature.return_ty == ResolvedTy::Unit {
+                return_layout: if matches!(
+                    signature.return_ty,
+                    ResolvedTy::Unit | ResolvedTy::Never
+                ) {
                     None
                 } else {
                     Some(required_layout(self.target, &signature.return_ty)?.clone())
@@ -404,7 +407,7 @@ impl FunctionLowerer<'_> {
             },
             args: self.argument_transfers(args)?,
             result: match result {
-                CallResult::Unit => None,
+                CallResult::Unit | CallResult::Never => None,
                 CallResult::Value(value) => Some(self.value(value.id)?),
             },
             normal: self.lower_edge(normal)?,

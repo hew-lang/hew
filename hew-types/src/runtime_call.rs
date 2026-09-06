@@ -1543,6 +1543,7 @@ pub enum RuntimeCallFamily {
     TaskCompletionObserve,
     TaskCompletionUnobserve,
     TaskFree,
+    GeneratorFree,
     TaskGetEnv,
     TaskGetError,
     TaskGetResult,
@@ -2331,6 +2332,7 @@ impl RuntimeCallFamily {
             Self::TaskCompletionObserve => "hew_task_completion_observe",
             Self::TaskCompletionUnobserve => "hew_task_completion_unobserve",
             Self::TaskFree => "hew_task_free",
+            Self::GeneratorFree => "hew_checked_generator_free",
             Self::TaskGetEnv => "hew_task_get_env",
             Self::TaskGetError => "hew_task_get_error",
             Self::TaskGetResult => "hew_task_get_result",
@@ -2719,6 +2721,7 @@ impl RuntimeCallFamily {
             "hew_task_completion_observe" => Self::TaskCompletionObserve,
             "hew_task_completion_unobserve" => Self::TaskCompletionUnobserve,
             "hew_task_free" => Self::TaskFree,
+            "hew_checked_generator_free" => Self::GeneratorFree,
             "hew_task_get_env" => Self::TaskGetEnv,
             "hew_task_get_error" => Self::TaskGetError,
             "hew_task_get_result" => Self::TaskGetResult,
@@ -3766,6 +3769,7 @@ impl RuntimeCallFamily {
             | F::TaskCompleteThreaded
             | F::TaskCompletionObserve
             | F::TaskCompletionUnobserve
+            | F::GeneratorFree
             | F::TaskFree
             | F::TaskGetEnv
             | F::TaskGetError

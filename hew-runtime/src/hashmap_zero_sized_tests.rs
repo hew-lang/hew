@@ -85,6 +85,7 @@ fn layouts(align: usize, managed: bool) -> (HewMapKeyLayout, HewValueLayout) {
     FAIL.set(0);
     assert!(LAST_FAULT.get().is_null());
     let unit = HewValueLayout {
+        visit_close: None,
         size: 0,
         align: 1,
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -93,6 +94,7 @@ fn layouts(align: usize, managed: bool) -> (HewMapKeyLayout, HewValueLayout) {
     };
     let key = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             align,
             ownership_kind: if managed {
                 HewTypeOwnershipKind::LayoutManaged

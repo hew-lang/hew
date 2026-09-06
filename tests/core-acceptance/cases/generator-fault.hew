@@ -1,0 +1,15 @@
+gen fn failed() -> string {
+    let label = "producer".to_upper();
+    defer println(label + " cleaned");
+    yield label;
+    panic("generator failure");
+}
+
+fn main() {
+    let label = "consumer".to_upper();
+    defer println(label + " cleaned");
+    for value in failed() {
+        println(value);
+    }
+    println("unreachable");
+}

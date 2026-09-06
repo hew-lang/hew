@@ -21,6 +21,9 @@ mod var_self;
 #[path = "lower_suspend.rs"]
 mod suspend;
 
+#[path = "lower_generators.rs"]
+mod generators;
+
 #[path = "lower_tasks.rs"]
 mod tasks;
 
@@ -932,7 +935,9 @@ fn require_type_shapes(
             continue;
         }
         require_type_facts(facts, &ty)?;
-        if ty != ResolvedTy::Unit && !is_supported_call_value(module, facts, &ty) {
+        if !matches!(ty, ResolvedTy::Unit | ResolvedTy::Never)
+            && !is_supported_call_value(module, facts, &ty)
+        {
             return Err(format!(
                 "nested type `{}` has no semantic value contract",
                 ty.user_facing()
@@ -1560,6 +1565,7 @@ impl<'a> InstanceService<'a> {
             return Err("closure symbol conflicts with another exact callable".to_string());
         }
         self.closures.push(crate::SemClosure {
+            generator_yield: None,
             id,
             instance,
             body,
@@ -1931,10 +1937,9 @@ fn function_source_origin(module: &HirModule, function: &HirFn) -> FunctionSourc
 }
 
 fn generic_template_admission(function: &HirFn) -> Result<(), String> {
-    if function.is_generator || function.intrinsic_id.is_some() {
+    if function.intrinsic_id.is_some() {
         return Err(
-            "generators and floor intrinsics remain outside SIR's ordinary direct-call domain"
-                .to_string(),
+            "floor intrinsics remain outside SIR's ordinary direct-call domain".to_string(),
         );
     }
     Ok(())
@@ -2037,6 +2042,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
                 | ResolvedTy::Function { .. }
                 | ResolvedTy::Closure { .. }
         )
+        || crate::generator_parts(ty).is_some()
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::LocalPid)
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
@@ -2059,7 +2065,7 @@ fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &Res
 }
 
 fn is_supported_call_return(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Unit) || is_supported_call_value(module, facts, ty)
+    matches!(ty, ResolvedTy::Unit | ResolvedTy::Never) || is_supported_call_value(module, facts, ty)
 }
 
 /// The first aggregate value family admitted into SIR.
@@ -2237,6 +2243,8 @@ struct ControlState {
     scopes: Vec<Vec<BindingId>>,
     defers: Vec<deferred::PendingDefer>,
     task_scopes: Vec<(crate::TaskScopeId, usize)>,
+    cleanup_may_fail: bool,
+    cleanup_draining: bool,
 }
 
 struct MatchExit {
@@ -2389,6 +2397,8 @@ struct Builder<'hir, 'service> {
     defer_bodies: Vec<deferred::BodyBoundary>,
     recovery_bodies: Vec<deferred::BodyBoundary>,
     task_scopes: Vec<(crate::TaskScopeId, usize)>,
+    cleanup_may_fail: bool,
+    cleanup_draining: bool,
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
@@ -2488,6 +2498,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             defer_bodies: Vec::new(),
             recovery_bodies: Vec::new(),
             task_scopes: Vec::new(),
+            cleanup_may_fail: false,
+            cleanup_draining: false,
         };
         builder.bind_captures(source)?;
         builder.bind_actor_state(source)?;
@@ -2626,10 +2638,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     .to_string(),
             );
         }
-        if self.function.is_generator || self.function.intrinsic_id.is_some() {
-            return Err(
-                "generators and floor intrinsics remain on the established MIR path".to_string(),
-            );
+        if self.function.intrinsic_id.is_some() {
+            return Err("floor intrinsic has no checked SIR operation contract".to_string());
         }
         match (
             &self.callable.instance,
@@ -3065,6 +3075,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn emit_destroy(&mut self, value: ValueId) -> Result<(), String> {
+        if self
+            .value_ty(value)
+            .as_ref()
+            .is_some_and(|ty| self.value_needs_close(ty))
+        {
+            self.close_value(None, Some(value))?;
+        }
         let id = OpId(self.ops);
         self.current_block_mut().append_op(SemOp {
             id,
@@ -3076,6 +3093,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })?;
         self.ops += 1;
         self.owned_live.remove(&value);
+        if self.cleanup_may_fail && !self.cleanup_draining {
+            self.dispatch_value_cleanup()?;
+        }
         Ok(())
     }
 
@@ -3099,6 +3119,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             scopes: self.scopes.clone(),
             defers: self.defers.clone(),
             task_scopes: self.task_scopes.clone(),
+            cleanup_may_fail: self.cleanup_may_fail,
+            cleanup_draining: self.cleanup_draining,
         }
     }
 
@@ -3111,6 +3133,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.scopes.clone_from(&state.scopes);
         self.defers.clone_from(&state.defers);
         self.task_scopes.clone_from(&state.task_scopes);
+        self.cleanup_may_fail = state.cleanup_may_fail;
+        self.cleanup_draining = state.cleanup_draining;
     }
 
     fn retain_bindings(
@@ -3152,6 +3176,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.bindings = Self::retain_bindings(&self.bindings, outer_bindings);
         self.binding_declarations
             .retain(|binding, _| outer_bindings.contains(binding));
+        if self.cleanup_may_fail && !self.cleanup_draining {
+            self.dispatch_value_cleanup()?;
+        }
         Ok(())
     }
 
@@ -3205,6 +3232,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
         let mut joined = first.clone();
+        joined.cleanup_may_fail = states.iter().any(|state| state.cleanup_may_fail);
         self.binding_declarations
             .clone_from(&first.binding_declarations);
         self.bindings.clone_from(&first.bindings);
@@ -3587,6 +3615,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     )]
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         match &expr.kind {
+            HirExprKind::Yield { value, yield_ty } => {
+                return self.lower_generator_yield(expr, value.as_deref(), yield_ty)
+            }
             HirExprKind::ScopeRecovery {
                 scope,
                 error,
@@ -3602,7 +3633,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.lower_task_select(expr, select)?;
                 return Ok(());
             }
-            HirExprKind::AwaitTask { operand, .. } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+            HirExprKind::AwaitTask { operand, .. }
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
                 self.lower_task_await(expr, operand)?;
                 return Ok(());
             }
@@ -3635,7 +3668,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } if endpoint == "panic" => return self.lower_panic(expr, args),
             _ => {}
         }
-        if self.ty(&expr.ty) != ResolvedTy::Unit || expr.intent != IntentKind::Consume {
+        if !matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
+            || expr.intent != IntentKind::Consume
+        {
             require_initial_scalar_read(expr.intent)
                 .map_err(|reason| format!("discarded expression: {reason}"))?;
         }
@@ -3656,7 +3691,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 condition,
                 then_expr,
                 else_expr,
-            } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+            } if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) => {
                 return self.lower_unit_if(condition, then_expr, else_expr.as_deref());
             }
             HirExprKind::Match { scrutinee, arms }
@@ -3814,6 +3849,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
                 None => Err("divergent select cannot produce a SIR value".into()),
             },
+            HirExprKind::GenBlock { .. } => self.lower_generator(expr),
+            HirExprKind::GeneratorNext { receiver, .. } => {
+                self.lower_generator_next(expr, receiver)
+            }
+            HirExprKind::Yield { value, yield_ty } => {
+                self.lower_generator_yield(expr, value.as_deref(), yield_ty)?;
+                self.emit(expr, SemOpKind::ConstUnit)
+            }
             HirExprKind::Closure { .. } => self.lower_closure(expr),
             HirExprKind::ForkBlock { body, captures, .. } => {
                 self.lower_fork_block(expr, body, captures)
@@ -4534,6 +4577,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             scopes: self.scopes.clone(),
             defers: self.defers.clone(),
             task_scopes: self.task_scopes.clone(),
+            cleanup_may_fail: self.cleanup_may_fail,
+            cleanup_draining: self.cleanup_draining,
         })
     }
 

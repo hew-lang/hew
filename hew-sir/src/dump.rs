@@ -157,6 +157,9 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::TaskScopeClose { scope } => {
             writeln!(out, "task_scope.close #{}", scope.0).expect("write to String");
         }
+        SemOpKind::GeneratorMake { callable, .. } => {
+            writeln!(out, "generator.make %{}", callable.value.0).expect("write to String");
+        }
         SemOpKind::TaskSpawn { scope, callable } => {
             writeln!(out, "task.spawn #{} %{}", scope.0, callable.value.0)
                 .expect("write to String");
@@ -655,6 +658,7 @@ fn dump_call(
     }
     match result {
         CallResult::Unit => write!(out, ")"),
+        CallResult::Never => write!(out, ") -> !"),
         CallResult::Value(value) => write!(
             out,
             ") -> %{}: {} [{:?}]",

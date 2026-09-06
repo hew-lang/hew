@@ -933,6 +933,8 @@ pub fn collection_value_dependencies(
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallResult {
     Unit,
+    /// The checked result is uninhabited; there is no normal continuation.
+    Never,
     Value(ValueDef),
 }
 
@@ -960,6 +962,11 @@ pub struct CheckedFailure {
 /// ordinary SSA operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemOpKind {
+    /// Transfer a nullary owning callable into a lazy generator.
+    GeneratorMake {
+        closure: ClosureId,
+        callable: Operand,
+    },
     /// Begin a lexical task lifetime with explicit cancellation ancestry.
     TaskScopeEnter {
         scope: crate::TaskScopeId,
@@ -1220,7 +1227,10 @@ impl SemOpKind {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::TaskSpawn {
+            Self::GeneratorMake {
+                callable: value, ..
+            }
+            | Self::TaskSpawn {
                 callable: value, ..
             }
             | Self::CallableCoerce { source: value }
@@ -1301,7 +1311,10 @@ impl SemOpKind {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::TaskSpawn {
+            Self::GeneratorMake {
+                callable: value, ..
+            }
+            | Self::TaskSpawn {
                 callable: value, ..
             }
             | Self::CallableCoerce { source: value }
@@ -1335,6 +1348,7 @@ impl SemOpKind {
             Self::TaskScopeEnter { .. }
             | Self::TaskScopeClose { .. }
             | Self::TaskSpawn { .. }
+            | Self::GeneratorMake { .. }
             | Self::FunctionMake { .. }
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
@@ -1398,6 +1412,7 @@ impl SemOpKind {
             | Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::TaskSpawn { .. }
+            | Self::GeneratorMake { .. }
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
             | Self::CopyValue { .. }
@@ -1449,6 +1464,7 @@ impl SemOpKind {
                 | Self::TaskScopeClose { .. }
                 | Self::RegisterDefer { .. }
                 | Self::TaskSpawn { .. }
+                | Self::GeneratorMake { .. }
                 | Self::ClosureMake { .. }
                 | Self::CallableCoerce { .. }
                 | Self::DestroyValue { .. }
@@ -1747,29 +1763,29 @@ impl SemTerminator {
             | Self::Goto(_)
             | Self::Branch { .. }
             | Self::Call {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::RtCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::ActorCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::IndirectCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::ValueCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::Panic { .. }
             | Self::Trap { .. }
             | Self::Suspend {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::ResumeUnwind

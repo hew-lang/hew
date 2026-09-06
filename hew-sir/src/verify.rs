@@ -446,6 +446,7 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
 fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
     for key in module.type_facts.keys().filter(|key| {
         matches!(key.0, ResolvedTy::Task(_))
+            || crate::generator_parts(&key.0).is_some()
             || hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some()
     }) {
         if !module.resources.contains_key(&key.0) {
@@ -2064,6 +2065,7 @@ fn verify_callable_operation(
         operation.kind,
         SemOpKind::FunctionMake { .. }
             | SemOpKind::ClosureMake { .. }
+            | SemOpKind::GeneratorMake { .. }
             | SemOpKind::CallableCoerce { .. }
     ) {
         return;
@@ -2121,6 +2123,24 @@ fn verify_callable_operation(
                     }
                 }
             }
+            SemOpKind::GeneratorMake { closure, callable } => {
+                let descriptor = context
+                    .closures
+                    .get(closure.0 as usize)
+                    .filter(|descriptor| descriptor.id == *closure)
+                    .ok_or("generator has no exact producer environment")?;
+                let (yielded, returned) = crate::generator_parts(&result.ty)
+                    .ok_or("generator construction has no checked generator type")?;
+                let (params, output, capabilities) = crate::callable_parts(&descriptor.ty)?;
+                if types.get(&callable.value) != Some(&descriptor.ty)
+                    || descriptor.generator_yield.as_ref() != Some(yielded)
+                    || output != returned
+                    || !params.is_empty()
+                    || capabilities.call != hew_types::CallableCallMode::Once
+                {
+                    return Err("generator construction changes its producer contract".into());
+                }
+            }
             SemOpKind::CallableCoerce { source } => {
                 let source_ty = types
                     .get(&source.value)
@@ -2153,7 +2173,8 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     if hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some() {
         return true;
     }
-    is_initial_scalar(ty)
+    crate::generator_parts(ty).is_some()
+        || is_initial_scalar(ty)
         || matches!(
             ty,
             ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_)
@@ -2185,7 +2206,7 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
 }
 
 fn is_supported_call_return(module: &SemModule, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Unit) || is_supported_call_value(module, ty)
+    matches!(ty, ResolvedTy::Unit | ResolvedTy::Never) || is_supported_call_value(module, ty)
 }
 
 #[allow(
@@ -2897,6 +2918,7 @@ fn verify_operation_shape(
         | SemOpKind::ConstBytes(_)
         | SemOpKind::FunctionMake { .. }
         | SemOpKind::ClosureMake { .. }
+        | SemOpKind::GeneratorMake { .. }
         | SemOpKind::CallableCoerce { .. } => {}
         // Dormant operations remain fail-closed until their producer and
         // complete semantic validation land together.
@@ -3074,6 +3096,7 @@ fn verify_runtime_call_terminator(
     };
     let result_ty = match result {
         crate::CallResult::Unit => ResolvedTy::Unit,
+        crate::CallResult::Never => ResolvedTy::Never,
         crate::CallResult::Value(value) => value.ty.clone(),
     };
     let instantiated = match contract.instantiate(&parameter_types, &result_ty) {
@@ -3519,7 +3542,9 @@ fn failure_cfg_matches_exit(
         }
         let valid = match &block.terminator {
             SemTerminator::Suspend {
-                kind: crate::SuspendKind::Join { cancel: true, .. },
+                kind:
+                    crate::SuspendKind::Join { cancel: true, .. }
+                    | crate::SuspendKind::ValueClose { .. },
                 resumes,
                 cancel,
                 unwind,
@@ -4042,7 +4067,8 @@ fn verify_terminator_shape(
             inputs,
             result,
             resumes,
-            ..
+            cancel,
+            unwind,
         } => {
             let valid = match kind {
                 crate::SuspendKind::Sleep => {
@@ -4053,14 +4079,64 @@ fn verify_terminator_shape(
                         && types.get(&input.operand.value) == Some(&ResolvedTy::Duration))
                 }
                 crate::SuspendKind::Await => {
-                    resumes.len() == 1
+                    resumes.len() == usize::from(!matches!(result, crate::CallResult::Never))
                         && matches!(inputs.as_slice(), [input]
                         if input.decision == crate::BoundaryDecision::Move
                         && matches!(types.get(&input.operand.value), Some(ResolvedTy::Task(output))
                             if match result {
                                 crate::CallResult::Unit => **output == ResolvedTy::Unit,
-                                crate::CallResult::Value(value) => value.ty == **output,
+                                crate::CallResult::Never => **output == ResolvedTy::Never,
+                                crate::CallResult::Value(value) => value.ty == **output
+                                    && value.ty != ResolvedTy::Never,
                             }))
+                }
+                crate::SuspendKind::Yield => {
+                    let yielded = callable_context
+                        .and_then(|context| {
+                            context
+                                .closures
+                                .iter()
+                                .find(|closure| closure.body == function.callable)
+                        })
+                        .and_then(|closure| closure.generator_yield.as_ref());
+                    resumes.len() == 1
+                        && matches!(result, crate::CallResult::Unit)
+                        && matches!(inputs.as_slice(), [input]
+                            if input.decision == crate::BoundaryDecision::Move
+                            && types.get(&input.operand.value) == yielded)
+                        && yielded.is_some()
+                }
+                crate::SuspendKind::GeneratorNext => {
+                    resumes.len() == 1
+                        && matches!(inputs.as_slice(), [input]
+                        if input.decision == crate::BoundaryDecision::BorrowMut
+                        && types.get(&input.operand.value).and_then(crate::generator_parts)
+                            .is_some_and(|(yielded, _)| matches!(result, crate::CallResult::Value(value)
+                                if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![yielded.clone()]))))
+                }
+                crate::SuspendKind::ValueClose { place } => {
+                    resumes.len() == 1
+                        && resumes.first() == Some(cancel)
+                        && resumes.first() == Some(unwind)
+                        && matches!(result, crate::CallResult::Unit)
+                        && match place {
+                            Some(place) => {
+                                inputs.is_empty()
+                                    && function.places.iter().any(|declaration| {
+                                        declaration.id == *place
+                                            && declaration.origin == crate::PlaceOrigin::Local
+                                            && crate::OwnKind::of_ty(
+                                                &declaration.ty,
+                                                variants.facts,
+                                            )
+                                            .ok()
+                                                == Some(crate::OwnKind::Owned)
+                                    })
+                            }
+                            None => matches!(inputs.as_slice(), [input]
+                                if input.decision == crate::BoundaryDecision::Borrow
+                                && types.get(&input.operand.value).is_some_and(|ty| crate::OwnKind::of_ty(ty, variants.facts).ok() == Some(crate::OwnKind::Owned))),
+                        }
                 }
                 crate::SuspendKind::Join { .. } => {
                     inputs.is_empty()

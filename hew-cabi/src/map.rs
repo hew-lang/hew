@@ -212,7 +212,12 @@ mod tests {
             core::mem::offset_of!(HewMapKeyLayout, eq_fn),
             size_of::<HewValueLayout>() + size_of::<HewMapKeyHashThunk>(),
         );
-        assert_eq!(size_of::<HewMapKeyLayout>(), 7 * size_of::<usize>());
+        assert_eq!(
+            size_of::<HewMapKeyLayout>(),
+            size_of::<HewValueLayout>()
+                + size_of::<Option<HewMapKeyHashThunk>>()
+                + size_of::<Option<HewMapKeyEqThunk>>()
+        );
         assert_eq!(align_of::<HewMapKeyLayout>(), align_of::<HewValueLayout>());
     }
 

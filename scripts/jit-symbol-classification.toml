@@ -623,6 +623,7 @@ stable = [
   "hew_stream_from_bytes",
   "hew_stream_from_file_read",
   "hew_stream_from_file_write",
+  "hew_stream_has_error",
   "hew_stream_is_closed",
   "hew_stream_is_valid",
   "hew_stream_last_errno",
@@ -3025,6 +3026,14 @@ discharge-depth = "shallow"
 # stream error channel — hew-runtime/src/stream_error.rs. hew_stream_last_error
 # returns an alloc_cstring_from_str header-aware string (fresh); the errno/kind
 # probes are scalar.
+# Non-consuming presence probe: extern C bool, no arguments or owned result.
+[[ownership.contracts]]
+symbol = "hew_stream_has_error"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
 [[ownership.contracts]]
 symbol = "hew_stream_last_errno"
 result = "none"

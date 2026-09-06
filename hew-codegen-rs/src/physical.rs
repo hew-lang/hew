@@ -20,10 +20,10 @@ use std::path::Path;
 
 use hew_mir::physical::{
     BlockId, CallableId, OwnKind, PhysicalAggregateDescriptor, PhysicalAggregateGlue,
-    PhysicalAggregateId, PhysicalMapId, PhysicalMapOp, PhysicalSetId, PhysicalSetOp,
-    PhysicalTypeInventory, PhysicalValueRecipe, PhysicalVariantArm, PhysicalVariantDescriptor,
-    PhysicalVariantGlue, PhysicalVariantId, PhysicalVariantLayout, PhysicalVectorGlue,
-    PhysicalVectorId, PhysicalVectorOp, TrapKind,
+    PhysicalAggregateId, PhysicalMapId, PhysicalMapOp, PhysicalResourceDescriptor, PhysicalSetId,
+    PhysicalSetOp, PhysicalTypeInventory, PhysicalValueRecipe, PhysicalVariantArm,
+    PhysicalVariantDescriptor, PhysicalVariantGlue, PhysicalVariantId, PhysicalVariantLayout,
+    PhysicalVectorGlue, PhysicalVectorId, PhysicalVectorOp, TrapKind,
 };
 use hew_mir::{
     ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier, PhysicalBlock, PhysicalCallable,
@@ -92,7 +92,13 @@ pub fn physical_target_for_types<'a>(
     triple: &str,
     types: impl IntoIterator<Item = &'a ResolvedTy>,
 ) -> Result<PhysicalTarget, CodegenError> {
-    physical_target_for_parts(triple, types, std::iter::empty(), std::iter::empty())
+    physical_target_for_parts(
+        triple,
+        types,
+        std::iter::empty(),
+        std::iter::empty(),
+        std::iter::empty(),
+    )
 }
 
 /// Resolve the exact target layouts for one demanded physical type inventory.
@@ -110,6 +116,7 @@ pub fn physical_target_for_inventory(
         inventory.types(),
         inventory.aggregates(),
         inventory.variants(),
+        inventory.resources(),
     )
 }
 
@@ -118,6 +125,7 @@ fn physical_target_for_parts<'a>(
     types: impl IntoIterator<Item = &'a ResolvedTy>,
     aggregates: impl IntoIterator<Item = &'a PhysicalAggregateDescriptor>,
     variants: impl IntoIterator<Item = &'a PhysicalVariantDescriptor>,
+    resources: impl IntoIterator<Item = &'a PhysicalResourceDescriptor>,
 ) -> Result<PhysicalTarget, CodegenError> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, OptLevel::O0)?;
     let data = machine.get_target_data();
@@ -136,6 +144,17 @@ fn physical_target_for_parts<'a>(
         .into_iter()
         .map(|variant| (variant.ty.clone(), variant.clone()))
         .collect::<BTreeMap<_, _>>();
+    for resource in resources {
+        let (size, align) = measure_layout(&data, ctx.ptr_type(AddressSpace::default()).into());
+        target.insert_layout(
+            resource.ty.clone(),
+            PhysicalLayout {
+                size,
+                align,
+                repr: PhysicalRepr::Pointer,
+            },
+        );
+    }
     let mut visiting = BTreeSet::new();
     for ty in primitive_types() {
         realize_layout(
@@ -837,6 +856,20 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         action: DestroyAction,
     ) -> CodegenResult<()> {
         match action {
+            DestroyAction::Resource(id) => {
+                let resource = self.module.resources.get(id.0 as usize).ok_or_else(|| {
+                    CodegenError::FailClosed("resource drop lacks its verified contract".into())
+                })?;
+                let family = resource
+                    .release
+                    .runtime_family()
+                    .map_err(CodegenError::FailClosed)?;
+                let function = external_drop(self.ctx, self.llvm, family.c_symbol())?;
+                self.builder
+                    .build_call(function, &[value.into()], "")
+                    .llvm_ctx("release resource owner")?;
+                Ok(())
+            }
             DestroyAction::Callable => {
                 let slot =
                     self.entry_scratch(llvm_type(self.ctx, &layout.repr)?, "callable.drop.slot")?;
@@ -862,7 +895,9 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                         .build_extract_value(value.into_struct_value(), 0, "bytes.drop.ptr")
                         .llvm_ctx("extract bytes release pointer")?
                         .into_pointer_value(),
-                    DestroyAction::Callable | DestroyAction::Aggregate(_) => {
+                    DestroyAction::Resource(_)
+                    | DestroyAction::Callable
+                    | DestroyAction::Aggregate(_) => {
                         unreachable!("matched primitive release")
                     }
                     DestroyAction::Variant(_) => unreachable!("matched primitive release"),
@@ -876,7 +911,9 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     }
                     DestroyAction::StringRelease => "hew_string_drop",
                     DestroyAction::BytesRelease => "hew_bytes_drop",
-                    DestroyAction::Callable | DestroyAction::Aggregate(_) => {
+                    DestroyAction::Resource(_)
+                    | DestroyAction::Callable
+                    | DestroyAction::Aggregate(_) => {
                         unreachable!("matched primitive release")
                     }
                     DestroyAction::Variant(_) => unreachable!("matched primitive release"),
@@ -2926,15 +2963,29 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         match action {
+            PhysicalRuntimeAction::FileRead(op) => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::FileRead(op),
+                    transfers,
+                    result,
+                )?;
+            }
+            PhysicalRuntimeAction::StreamClose => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::StreamClose,
+                    transfers,
+                    result,
+                )?;
+            }
             PhysicalRuntimeAction::Encoding { format, op } => {
-                self.emit_encoding_call(
+                self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::Encoding { format, op },
                     transfers,
                     result,
                 )?;
             }
             PhysicalRuntimeAction::JsonObjectKeys => {
-                self.emit_encoding_call(
+                self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::JsonObjectKeys,
                     transfers,
                     result,
@@ -5319,6 +5370,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            resources: BTreeMap::new(),
             closures: Vec::new(),
             value_capabilities: BTreeMap::new(),
             callables: vec![callable],
@@ -5502,6 +5554,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            resources: BTreeMap::new(),
             closures: Vec::new(),
             callables: vec![callable],
             generic_templates: vec![],

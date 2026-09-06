@@ -1118,13 +1118,21 @@ impl Checker {
         family: crate::runtime_call::RuntimeCallFamily,
     ) {
         let c_symbol = family.c_symbol().to_string();
-        // The consume verdict is derived once, here, from the resolved runtime
-        // symbol — the single rewrite-recording authority for runtime-symbol
-        // method calls (close-family handle releases route through this helper).
-        // Keying on the symbol (the dispatch discriminant) rather than a
-        // receiver type name keeps `.send()`/`.recv()` borrowing and only the
-        // `.close()`-family consuming (LESSONS: drop-allowset-from-value-flow).
-        let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
+        // Shared argument effects also govern captured receivers. An updated
+        // receiver retains its source binding; a consuming result does not.
+        let consumes_receiver =
+            family.semantic_contract().map_or_else(
+                || crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol),
+                |contract| {
+                    contract.arguments.first().is_some_and(|argument| {
+                        argument.effect == crate::RuntimeArgumentEffect::Move
+                    }) && !matches!(
+                        contract.result,
+                        crate::RuntimeResultEffect::UpdatedReceiver(_)
+                            | crate::RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                    )
+                },
+            );
         // Recover the typed family for this closed builtin symbol. Because the
         // helper only ever sees checker-emitted catalog symbols (the extern
         // split routes every open-set `#[extern_symbol]` string elsewhere), this

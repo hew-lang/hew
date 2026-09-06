@@ -550,6 +550,15 @@ fn concrete_record_fields(
     facts: &TypeFactService,
     aggregate_ty: &ResolvedTy,
 ) -> Result<(hew_types::NominalInstance, Vec<SemAggregateField>), String> {
+    if matches!(
+        facts.declaration_marker(aggregate_ty)?,
+        hew_types::DeclarationMarker::Resource | hew_types::DeclarationMarker::Linear
+    ) {
+        return Err(format!(
+            "`{}` declares a resource cleanup boundary without an admitted release recipe",
+            aggregate_ty.user_facing()
+        ));
+    }
     let (instance, fields) = facts.record_fields(aggregate_ty)?;
     Ok((
         instance,
@@ -883,6 +892,12 @@ fn require_type_shapes(
             continue;
         }
         require_type_facts(facts, &ty)?;
+        if ty != ResolvedTy::Unit && !is_supported_call_value(module, facts, &ty) {
+            return Err(format!(
+                "nested type `{}` has no semantic value contract",
+                ty.user_facing()
+            ));
+        }
         if let Some((builtin, arguments)) = collection_type_arguments(&ty) {
             for argument in arguments {
                 if !is_supported_call_value(module, facts, argument) {
@@ -1674,6 +1689,7 @@ impl<'a> InstanceService<'a> {
 
     fn into_module(self) -> SemModule {
         let Self {
+            module,
             table,
             checked_facts,
             used_templates,
@@ -1704,7 +1720,15 @@ impl<'a> InstanceService<'a> {
             &aggregate_shapes,
             &variant_shapes,
         );
+        let resources = type_facts
+            .keys()
+            .filter_map(|key| {
+                crate::resource::resource_release_from_hir(module, &key.0)
+                    .map(|release| (key.0.clone(), release))
+            })
+            .collect();
         SemModule {
+            resources,
             closures,
             callables: table.callables,
             generic_templates,
@@ -1939,6 +1963,7 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
+        || hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some()
         || matches!(
             ty,
             ResolvedTy::String
@@ -5949,6 +5974,40 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             );
         };
         match target {
+            CallTarget::Extern {
+                declaration,
+                endpoint,
+                trusted_compiled_stdlib: true,
+            } if args.first().is_some_and(|argument| {
+                hew_types::runtime_call::FileReadHandleKind::Nominal.matches(&argument.ty)
+            }) =>
+            {
+                let ty = &args.first().ok_or("resource release has no owner")?.ty;
+                let release = crate::resource::resource_release_from_hir(self.service.module, ty)
+                    .ok_or("extern call has no checked resource release")?;
+                let crate::ResourceRelease::Nominal { lifecycle, .. } = &release else {
+                    return Err("extern call lacks nominal release identity".into());
+                };
+                if &lifecycle.release_declaration != declaration
+                    || &lifecycle.release_symbol != endpoint
+                {
+                    return Err(
+                        "extern call does not name its owner's exact checked release".into(),
+                    );
+                }
+                self.service.require_type_facts(ty)?;
+                crate::verify_resource_release(
+                    ty,
+                    &release,
+                    &self.service.checked_facts.rows()[&TypeInstanceKey(ty.clone())],
+                )?;
+                self.lower_runtime_operation(
+                    expr,
+                    release.runtime_family()?,
+                    &args.iter().collect::<Vec<_>>(),
+                    value_required,
+                )
+            }
             CallTarget::Runtime(family) => self.lower_runtime_operation(
                 expr,
                 *family,

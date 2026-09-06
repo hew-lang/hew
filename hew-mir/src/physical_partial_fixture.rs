@@ -236,6 +236,7 @@ pub fn module(case: Case) -> sir::SemModule {
         facts.require(&ty).unwrap();
     }
     sir::SemModule {
+        resources: BTreeMap::new(),
         closures: vec![],
         value_capabilities: BTreeMap::new(),
         callables: vec![callable],

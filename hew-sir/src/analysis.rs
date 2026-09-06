@@ -508,6 +508,7 @@ mod tests {
             let _ = fact_service.require(ty);
         }
         SemModule {
+            resources: BTreeMap::new(),
             closures: Vec::new(),
             value_capabilities: BTreeMap::new(),
             callables: vec![SemCallable {

@@ -47,6 +47,9 @@
 //! covered by this substrate by design — it is structurally open-set
 //! and clippy-gated.
 
+mod file_resources;
+pub use file_resources::{FileReadHandleKind, FileReadOp};
+
 use crate::{BuiltinType, ResolvedTy};
 use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoEnumIterator};
@@ -126,6 +129,8 @@ pub enum RuntimeResultAuthority {
 /// runtime surface. These are semantic types, not ABI storage classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeValueKind {
+    /// A file-read owner, with exact source or builtin identity supplied by the signature.
+    FileReadHandle(FileReadHandleKind),
     Bool,
     U8,
     I32,
@@ -164,6 +169,13 @@ impl RuntimeValueKind {
     #[must_use]
     pub fn resolve(self, receiver: Option<&ResolvedTy>) -> Option<ResolvedTy> {
         Some(match self {
+            Self::FileReadHandle(kind) => {
+                let receiver = receiver?;
+                if !kind.matches(receiver) {
+                    return None;
+                }
+                receiver.clone()
+            }
             Self::Bool => ResolvedTy::Bool,
             Self::U8 => ResolvedTy::U8,
             Self::I32 => ResolvedTy::I32,
@@ -342,13 +354,19 @@ impl RuntimeSemanticContract {
         }
         let receiver = params
             .first()
-            .filter(|ty| runtime_receiver_builtin(ty).is_some())
+            .filter(|ty| {
+                runtime_receiver_builtin(ty).is_some() || FileReadHandleKind::of_ty(ty).is_some()
+            })
             .or_else(|| {
                 (params.is_empty()
                     || runtime_receiver_builtin(result_hint)
-                        .is_some_and(BuiltinType::is_encoding_value))
+                        .is_some_and(BuiltinType::is_encoding_value)
+                    || FileReadHandleKind::of_ty(result_hint).is_some())
                 .then_some(result_hint)
-                .filter(|ty| runtime_receiver_builtin(ty).is_some())
+                .filter(|ty| {
+                    runtime_receiver_builtin(ty).is_some()
+                        || FileReadHandleKind::of_ty(ty).is_some()
+                })
             });
         let arguments = self
             .arguments
@@ -1073,6 +1091,7 @@ pub enum MathIntrinsic {
 /// next slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
 pub enum RuntimeCallFamily {
+    FileRead(FileReadOp),
     /// Semantic operations over a distinct, owning encoding value.
     Encoding {
         format: EncodingFormat,
@@ -2013,6 +2032,7 @@ impl RuntimeCallFamily {
     )]
     pub fn c_symbol(self) -> &'static str {
         match self {
+            Self::FileRead(op) => op.c_symbol(),
             Self::Encoding { format, op } => op.c_symbol(format),
             Self::JsonObjectKeys => "hew_json_object_keys",
             // Actor
@@ -2387,6 +2407,10 @@ impl RuntimeCallFamily {
         reason = "inverse of the c_symbol enumeration; one arm per symbol"
     )]
     pub fn from_c_symbol(sym: &str) -> Option<Self> {
+        if let Some(op) = FileReadOp::from_c_symbol(sym) {
+            return Some(Self::FileRead(op));
+        }
+
         if let Some((format, op)) = EncodingOp::from_c_symbol(sym) {
             return Some(Self::Encoding { format, op });
         }
@@ -3254,6 +3278,8 @@ impl RuntimeCallFamily {
         }
 
         Some(match self {
+            Self::FileRead(op) => op.contract(),
+            Self::StreamClose => file_resources::stream_close_contract(),
             Self::Encoding { format, op } => op.contract(format),
             Self::JsonObjectKeys => runtime_semantic_contract(
                 &[RuntimeArgumentContract {
@@ -3323,7 +3349,8 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::Receiver(_)
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::Applied(_, _)
-                    | RuntimeValueKind::Tuple(_),
+                    | RuntimeValueKind::Tuple(_)
+                    | RuntimeValueKind::FileReadHandle(_),
                 ) => RuntimeResultOwnership::Untracked,
             };
         }
@@ -3481,7 +3508,8 @@ impl RuntimeCallFamily {
 
             // Everything else: NOT suspending today. Exhaustively listed
             // so adding a new variant requires an explicit decision.
-            F::Vector(_)
+            F::FileRead(_)
+            | F::Vector(_)
             | F::Map(_)
             | F::Set(_)
             | F::Encoding { .. }
@@ -4261,6 +4289,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
                     out.extend(EncodingOp::iter().map(|op| F::Encoding { format, op }));
                 }
             }
+            F::FileRead(_) => out.extend(FileReadOp::iter().map(F::FileRead)),
             F::Vector(_) => out.extend(VecValueOp::iter().map(F::Vector)),
             F::Map(_) => out.extend(MapValueOp::iter().map(F::Map)),
             F::Set(_) => out.extend(SetValueOp::iter().map(F::Set)),

@@ -32,6 +32,10 @@ pub enum SirDiagnosticKind {
         shape: AggregateShapeId,
         reason: String,
     },
+    InvalidResourceType {
+        ty: ResolvedTy,
+        reason: String,
+    },
     InvalidCollectionType {
         ty: ResolvedTy,
         reason: String,
@@ -439,6 +443,34 @@ pub fn verify_module(module: &SemModule) -> Vec<SirDiagnostic> {
     check_module(module).err().unwrap_or_default()
 }
 
+fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
+    for key in module
+        .type_facts
+        .keys()
+        .filter(|key| hew_types::runtime_call::FileReadHandleKind::of_ty(&key.0).is_some())
+    {
+        if !module.resources.contains_key(&key.0) {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidResourceType {
+                ty: key.0.clone(),
+                reason: "resource type has no checked release contract".into(),
+            }));
+        }
+    }
+    for (ty, release) in &module.resources {
+        let result = module
+            .type_facts
+            .get(&hew_types::TypeInstanceKey(ty.clone()))
+            .ok_or_else(|| "resource release has no exact type facts".to_string())
+            .and_then(|facts| crate::verify_resource_release(ty, release, facts));
+        if let Err(reason) = result {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidResourceType {
+                ty: ty.clone(),
+                reason,
+            }));
+        }
+    }
+}
+
 /// Verify all module contracts and every body, retaining their checked places
 /// and lifetime dispositions for the next compiler stage. Module context is
 /// checked once; each body's place plan and lifetime flow are computed once.
@@ -451,6 +483,8 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
     let callables = verify_callable_table(module, &mut diagnostics);
     verify_aggregate_shapes(module, &mut diagnostics);
     verify_variant_shapes(module, &mut diagnostics);
+    verify_resources(module, &mut diagnostics);
+
     for ((ty, capability), plan) in &module.value_capabilities {
         if let Err(reason) =
             crate::capability::verify_value_capability(module, ty, *capability, plan)
@@ -2030,6 +2064,9 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 }
 
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
+    if hew_types::runtime_call::FileReadHandleKind::of_ty(ty).is_some() {
+        return true;
+    }
     is_initial_scalar(ty) || matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
 }
 

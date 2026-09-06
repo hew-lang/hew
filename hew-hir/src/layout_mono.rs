@@ -581,7 +581,7 @@ fn walk_expr(
                 walk_expr(operand, subst, residual_domain, disc);
             }
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             walk_expr(callee, subst, residual_domain, disc);
             for a in args {
                 walk_expr(a, subst, residual_domain, disc);
@@ -645,10 +645,7 @@ fn walk_expr(
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             walk_expr(value, subst, residual_domain, disc);
         }
-        HirExprKind::TupleLiteral { elements }
-        | HirExprKind::ForkBatch {
-            children: elements, ..
-        } => {
+        HirExprKind::TupleLiteral { elements } => {
             for elem in elements {
                 walk_expr(elem, subst, residual_domain, disc);
             }

@@ -1617,26 +1617,6 @@ pub enum HirExprKind {
     Scope {
         body: HirBlock,
     },
-    /// A call expression that is recognised as a child-task spawn because it
-    /// appears as a statement-expression inside a `scope {}` body. The callee
-    /// and args are the same as `HirExprKind::Call`; the distinct kind routes
-    /// MIR lowering to the task-spawn ABI rather than a direct synchronous
-    /// call.
-    ///
-    /// `task_ty` is always `ResolvedTy::Task(call_return_ty)`. It duplicates
-    /// the `HirExpr::ty` field for convenience at codegen sites that pattern-
-    /// match on the kind without reaching back to the parent `HirExpr`.
-    SpawnedCall {
-        callee: Box<HirExpr>,
-        args: Vec<HirExpr>,
-        task_ty: ResolvedTy,
-    },
-    /// Start every child before waiting and collect one ordered aggregate result.
-    /// The task output type distinguishes vector and heterogeneous tuple batches.
-    ForkBatch {
-        children: Vec<HirExpr>,
-        task_ty: ResolvedTy,
-    },
     /// `fork { ... }` inside a scope. The block is an anonymous child task
     /// body; later MIR slices attach a derived cancellation token and spawn it.
     ForkBlock {

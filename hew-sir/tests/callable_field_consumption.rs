@@ -5,7 +5,7 @@ use hew_sir::{
     lower_module, verify_module, BoundaryDecision, LoweredModule, SemOpKind, SemTerminator,
     SirLoweringStatus,
 };
-use hew_types::{module_registry::ModuleRegistry, CallableCallMode, Checker, ResolvedTy};
+use hew_types::{module_registry::ModuleRegistry, CallTarget, Checker};
 
 fn lower(source: &str) -> LoweredModule {
     let parsed = hew_parser::parse(source);
@@ -22,6 +22,41 @@ fn declarations(clone: bool) -> String {
     format!("type Two {{ a: fn[{capabilities}]() -> i64, b: fn() -> i64 }} fn answer() -> i64 {{ 41 }} fn sibling() -> i64 {{ 1 }}")
 }
 
+#[test]
+fn temporary_record_and_tuple_fields_transfer_without_copying_siblings() {
+    for value in ["42", "100 / 0"] {
+        let source = format!(
+            r#"
+            type Job {{ run: fn[once](i64) -> i64, label: string }}
+            fn make_job() -> Job {{
+                let text = "owned callback";
+                Job {{ run: move |value: i64| {{ println(text); value }}, label: "sibling owner" }}
+            }}
+            fn make_pair() -> (Job, string) {{ (make_job(), "outer sibling") }}
+            fn invoke(consume run: fn[once](i64) -> i64, value: i64) -> i64 {{ run(value) }}
+            fn main() -> i64 {{
+                println(make_job().run(42));
+                invoke(make_pair().0.run, {value})
+            }}
+        "#
+        );
+        let lowered = lower(&source);
+        assert!(
+            lowered
+                .callable_statuses
+                .iter()
+                .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
+            "{:?}",
+            lowered.callable_statuses
+        );
+        assert!(
+            verify_module(&lowered.module).is_empty(),
+            "{:?}",
+            verify_module(&lowered.module)
+        );
+    }
+}
+
 fn assert_refused(source: &str, function: &str, code: &str) {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -35,13 +70,15 @@ fn assert_refused(source: &str, function: &str, code: &str) {
         checked.errors
     );
 
-    // Source rejection can stop aggregate type-fact publication. Build the
-    // independent SIR witness from accepted read-callable source, then change
-    // only the projected call receiver's invocation mode. This must reach the
-    // ownership guard, never pass because an aggregate descriptor is missing.
-    let read_source = source
-        .replace("fn[once, clone]", "fn[clone]")
-        .replace("fn[once]", "fn");
+    // Publish the exact once-field facts through an accepted borrowed argument.
+    // Then turn that argument into an indirect receiver without changing its
+    // type or aggregate descriptor. The refusal must be about ownership.
+    let read_source = format!(
+        "{} fn observe<T>(callback: T) -> i64 {{ 0 }}",
+        source
+            .replace("value.a()", "observe(value.a)")
+            .replace("value.0()", "observe(value.0)")
+    );
     let parsed = hew_parser::parse(&read_source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
@@ -73,18 +110,21 @@ fn assert_refused(source: &str, function: &str, code: &str) {
         })
         .expect("guard fixture function");
     let tail = body.body.tail.as_mut().expect("projected call tail");
-    let HirExprKind::Call { callee, .. } = &mut tail.kind else {
+    let HirExprKind::Call {
+        target,
+        callee,
+        args,
+    } = &mut tail.kind
+    else {
         panic!("guard fixture tail must be a call");
     };
+    assert_eq!(args.len(), 1);
+    **callee = args.remove(0);
+    *target = CallTarget::IndirectFunctionValue;
     assert!(matches!(
         callee.kind,
         HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
     ));
-    let ResolvedTy::Function { capabilities, .. } = &mut callee.ty else {
-        panic!("projected receiver must have an erased callable type");
-    };
-    assert_eq!(capabilities.call, CallableCallMode::Read);
-    capabilities.call = CallableCallMode::Once;
     let lowered = lower_module(&hir.module, &checked);
     assert!(lowered.statuses.iter().any(|status| {
         status.name == function && matches!(&status.status, SirLoweringStatus::Unsupported { reason } if reason.contains(code))
@@ -159,7 +199,8 @@ fn explicit_destructure_exposes_owned_callable_fields_and_live_siblings() {
             .results
             .iter()
             .all(|field| field.own == hew_sir::OwnKind::Owned));
-        assert!(main.blocks.iter().any(|block| matches!(&block.terminator, SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::Move && callee.operand.value == fields.results[0].id)));
+        let transfer = main.blocks.iter().flat_map(|block| &block.ops).find(|op| matches!(&op.kind, SemOpKind::Move { source } if source.value == fields.results[0].id)).expect("the once receiver transfers the extracted field");
+        assert!(main.blocks.iter().any(|block| matches!(&block.terminator, SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::Move && callee.operand.value == transfer.results[0].id)));
         assert!(main.blocks.iter().any(|block| matches!(&block.terminator, SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::Borrow && callee.operand.value == fields.results[1].id)));
     }
 }

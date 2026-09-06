@@ -5614,10 +5614,58 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Err("E_OWN_PARTIAL_CONSUME: a live aggregate field cannot be consumed; destructure the aggregate into owning bindings before calling the once field".into())
     }
 
-    /// Transfer the declared argument before evaluating later arguments. Its
+    /// Taking a field from an owned temporary transfers its siblings into the
+    /// existing cleanup relation. No temporary container remains to own them.
+    fn lower_consuming_projection(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<Option<ValueId>, String> {
+        let mut root = expression;
+        let mut projections = Vec::new();
+        loop {
+            let (object, shape, field) = match &root.kind {
+                HirExprKind::SubsumedValue { source } => {
+                    root = source;
+                    continue;
+                }
+                HirExprKind::FieldAccess { object, field } => {
+                    let (shape, field) = self.aggregate_projection_shape(root, object, field)?;
+                    (object.as_ref(), shape, field)
+                }
+                HirExprKind::TupleIndex { tuple, index } => {
+                    let field = self.tuple_projection_index(root, tuple, *index)?;
+                    let shape = self.service.require_aggregate_shape(&self.ty(&tuple.ty))?;
+                    (tuple.as_ref(), shape, field)
+                }
+                _ => break,
+            };
+            projections.push((self.ty(&object.ty), shape, field));
+            root = object;
+        }
+        if projections.is_empty() {
+            return Ok(None);
+        }
+        if matches!(root.kind, HirExprKind::BindingRef { .. }) {
+            // Local roots need persistent projected-place availability.
+            self.reject_projected_callable_consume(expression)?;
+        }
+        let mut value = self.lower_expr_with_binding_use(root, OwnedBindingUse::Move)?;
+        if self.value_own_kind(value) != Some(OwnKind::Owned) {
+            return Err(
+                "E_OWN_CONSUME_BORROWED: projected consumption requires an owned aggregate".into(),
+            );
+        }
+        for (ty, shape, field) in projections.into_iter().rev() {
+            let fields =
+                self.emit_destructure_value(value, &ty, shape, Provenance::Site(expression.site))?;
+            value = fields[usize::try_from(field).map_err(|_| "aggregate field exceeds usize")?].id;
+        }
+        Ok(Some(value))
+    }
+
+    /// Transfer a receiver or argument before evaluating later arguments. Its
     /// new owner remains live for argument-failure cleanup until the call starts.
-    fn lower_consuming_argument(&mut self, argument: &HirExpr) -> Result<ValueId, String> {
-        self.reject_projected_callable_consume(argument)?;
+    fn lower_consuming_value(&mut self, argument: &HirExpr) -> Result<ValueId, String> {
         let mut source = argument;
         while let HirExprKind::SubsumedValue { source: inner } = &source.kind {
             source = inner;
@@ -5633,7 +5681,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
             }
         }
-        let value = self.lower_expr_with_binding_use(source, OwnedBindingUse::Move)?;
+        let value = match self.lower_consuming_projection(source)? {
+            Some(value) => value,
+            None => self.lower_expr_with_binding_use(source, OwnedBindingUse::Move)?,
+        };
         if self.value_own_kind(value) != Some(OwnKind::Owned) {
             return Err("E_OWN_CONSUME_BORROWED: a consuming argument requires an owned value; declare the forwarding parameter consume".into());
         }
@@ -5681,8 +5732,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     crate::callable_value_signature(&ty, self.service.checked_facts.rows())?;
                 let (_, _, capabilities) = crate::callable_parts(&ty)?;
                 let value = if capabilities.call == hew_types::CallableCallMode::Once {
-                    self.reject_projected_callable_consume(callee)?;
-                    self.lower_expr_with_binding_use(callee, OwnedBindingUse::Move)?
+                    self.lower_consuming_value(callee)?
                 } else if matches!(
                     callee.kind,
                     HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
@@ -5723,7 +5773,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         for (index, (arg, expected)) in args.iter().zip(&signature.params).enumerate() {
             let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
             let operand = if expected.passing == SemParamPassing::Consume {
-                let value = self.lower_consuming_argument(arg)?;
+                let value = self.lower_consuming_value(arg)?;
                 Operand {
                     value: self.coerce_value(value, &expected.ty, Provenance::Site(arg.site))?,
                 }

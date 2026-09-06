@@ -1,0 +1,20 @@
+fn invoke(callback: fn[once](i64) -> i64) -> i64 {
+    let caller = "once caller".to_upper();
+    let result = callback(0);
+    println(caller);
+    result
+}
+
+fn main() -> i64 {
+    let text = "once capture".to_upper();
+    let callback: fn[once, clone](i64) -> i64 = move |divisor: i64| -> i64 {
+        let bytes = text.to_bytes();
+        let result = bytes.len() / divisor;
+        println(text);
+        result
+    };
+    let uncalled = clone callback;
+    let result = invoke(callback);
+    println(uncalled(1));
+    result
+}

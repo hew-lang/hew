@@ -1,0 +1,22 @@
+fn main() -> i64 {
+    var label = "original".to_upper();
+    let snapshot: fn[clone]() -> string = || label;
+    label = "replacement".to_upper();
+    {
+        let label = "shadow".to_upper();
+        let shadow: fn[clone]() -> string = || label;
+        println(shadow());
+        println(snapshot());
+    }
+    println(label);
+    println(snapshot());
+    let count = 90;
+    let shadowed = capture(var count) || {
+        var count = 1;
+        count += 1;
+        count
+    };
+    println(shadowed());
+    println(count);
+    0
+}

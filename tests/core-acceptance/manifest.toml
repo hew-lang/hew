@@ -845,3 +845,82 @@ timeout_seconds = 15
 stdout = "true\ntrue\ntrue\ntrue\ntrue\ntrue\nSTORED\n"
 stderr = ""
 exit = 0
+
+[[case]]
+id = "callable-snapshot-shadowing"
+intent = "Captured owned values preserve creation-time snapshots through source replacement, lexical shadowing and repeated calls."
+source = "cases/callable-snapshot-shadowing.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "SHADOW\nORIGINAL\nREPLACEMENT\nORIGINAL\n2\n90\n"
+exit = 0
+
+[[case]]
+id = "callable-private-counter-copy"
+intent = "Cloning a private mutable counter snapshots its current state into an independent environment while preserving the source binding."
+source = "cases/callable-private-counter-copy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "41\n42\n43\n42\n43\n44\n40\n"
+exit = 0
+
+[[case]]
+id = "callable-escaped-nested-owned"
+intent = "An escaped closure owns another captured closure and its allocated text; independent copies remain callable after the creating scope is released."
+source = "cases/callable-escaped-nested-owned.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "NESTED OWNED\nNESTED OWNED\nNESTED OWNED\nNESTED OWNED\n"
+exit = 0
+
+[[case]]
+id = "callable-indirect-only-functions"
+intent = "Functions referenced only as values are emitted and independently copied, including zero-argument items."
+source = "cases/callable-indirect-only-functions.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "42\n7\n9\n"
+exit = 0
+
+[[case]]
+id = "callable-borrowed-callback-fault"
+intent = "An indirect borrowed invocation fault releases callback locals, captured text and caller owners and prevents all post-fault output."
+source = "cases/callable-borrowed-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "callable-once-callback-fault"
+intent = "A consuming indirect invocation releases its captured owner on fault while a separately cloned uncalled environment is cleaned by the caller."
+source = "cases/callable-once-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202
+
+[[case]]
+id = "callable-once-and-uncalled-cleanup"
+intent = "Repeated consuming calls and scope exits release independent cloned capture environments, including closures that are never invoked."
+source = "cases/callable-once-and-uncalled-cleanup.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "3072\n"
+exit = 0

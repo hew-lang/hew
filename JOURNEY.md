@@ -1833,3 +1833,11 @@ once-callable transfers into invocation, another field remains callable after a
 take, and an argument evaluation fault releases the outstanding capture loan.
 These paths pass through verified SIR, physical MIR and LLVM at O0 and O2. The
 fault control also proves that failure leaves result-out storage untouched.
+
+### Callable acceptance checkpoint
+
+Added callable cases to both the native acceptance and paired ASan/LSan suites: owned snapshots and lexical shadowing, independently copied private counters, escaped closures owning closures, indirect-only function items, borrowed and consuming callback faults, and repeated once/uncalled cleanup. The existing runner checks exact stdout, fault status and stderr at O0/O2; its paired runtime/generated-code sanitizer build supplies the cleanup oracle. No counted-drop extension or new harness was added.
+
+The cases pass the retained frontend-only `hew_compile::check_file` API using the parser/checker build for `312adcf59`; manifest membership is verified. Native and sanitizer execution remain pending composition of the closure producer and physical lowering. The CLI's `check` also enters SIR and currently reports unsupported callable transfer, so it is not reported as passing.
+
+Generic indirect-only values remain a source-checker blocker: assigning `identity<T>` as a value to `fn[clone](i64) -> i64` or `fn[clone](string) -> string` leaves the generic `T` unresolved. That case is held out of this passing-source checkpoint pending the checker owner's fix.

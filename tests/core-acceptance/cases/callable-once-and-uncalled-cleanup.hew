@@ -1,0 +1,21 @@
+fn make_once() -> fn[once, clone]() -> string {
+    let payload = "once payload".to_upper();
+    move || payload
+}
+
+fn main() -> i64 {
+    var total = 0;
+    for _index in 0..256 {
+        let once = make_once();
+        let uncalled = clone once;
+        let result = once();
+        total += result.len();
+        let _never_called: fn[once, clone]() -> string = move || {
+            let retained = uncalled;
+            println("unexpected invocation");
+            retained()
+        };
+    }
+    println(total);
+    0
+}

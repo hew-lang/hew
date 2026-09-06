@@ -1,0 +1,12 @@
+fn answer() -> i64 { 42 }
+fn add_one(value: i64) -> i64 { value + 1 }
+
+fn main() -> i64 {
+    let zero: fn[clone]() -> i64 = answer;
+    let increment: fn[clone](i64) -> i64 = add_one;
+    let copied = clone increment;
+    println(zero());
+    println(copied(6));
+    println(increment(8));
+    0
+}

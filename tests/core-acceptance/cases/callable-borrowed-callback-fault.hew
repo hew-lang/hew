@@ -1,0 +1,21 @@
+fn invoke(callback: fn(i64) -> i64) -> i64 {
+    let local = "invoke owner".to_upper();
+    let result = callback(0);
+    println(local);
+    result
+}
+
+fn main() -> i64 {
+    let caller = "caller owner".to_upper();
+    let text = "callback owner".to_upper();
+    let callback: fn[clone](i64) -> i64 = move |divisor: i64| -> i64 {
+        let local = text.to_upper();
+        let bytes = local.to_bytes();
+        let result = bytes.len() / divisor;
+        println(local);
+        result
+    };
+    let result = invoke(callback);
+    println(caller);
+    result
+}

@@ -1689,6 +1689,9 @@ pub enum MethodCallRewrite {
         extern_identity: Option<ExternMethodCallIdentity>,
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
         consumes_receiver: bool,
+        /// Checked source receiver contract. HIR carries writeback explicitly;
+        /// an emitted body symbol is not a key for rediscovering this fact.
+        requires_mutable_receiver: bool,
         /// Exact receiver-in/result-out ownership identity, derived from the
         /// validated method signature rather than the symbol spelling.
         returns_receiver_identity: bool,

@@ -183,6 +183,7 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
             extern_identity: None,
             elem_ty: None,
             consumes_receiver: false,
+            requires_mutable_receiver: false,
             returns_receiver_identity: false,
         },
     );

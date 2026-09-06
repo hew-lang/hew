@@ -763,6 +763,7 @@ impl Checker {
                         extern_identity: None,
                         elem_ty: None,
                         consumes_receiver,
+                        requires_mutable_receiver: false,
                         returns_receiver_identity: false,
                     },
                 );
@@ -1143,6 +1144,7 @@ impl Checker {
                 extern_identity: None,
                 elem_ty: None,
                 consumes_receiver,
+                requires_mutable_receiver: false,
                 returns_receiver_identity: false,
             },
         );
@@ -1171,6 +1173,7 @@ impl Checker {
                         extern_identity: None,
                         elem_ty: None,
                         consumes_receiver: false,
+                        requires_mutable_receiver: false,
                         returns_receiver_identity: false,
                     },
                 );
@@ -1187,6 +1190,7 @@ impl Checker {
                     extern_identity: None,
                     elem_ty: None,
                     consumes_receiver: false,
+                    requires_mutable_receiver: false,
                     returns_receiver_identity: false,
                 },
             );
@@ -1246,6 +1250,7 @@ impl Checker {
                 extern_identity: Some(extern_identity),
                 elem_ty: None,
                 consumes_receiver,
+                requires_mutable_receiver: false,
                 returns_receiver_identity: false,
             },
         );
@@ -1333,6 +1338,7 @@ impl Checker {
                 extern_identity: Some(extern_identity),
                 elem_ty: None,
                 consumes_receiver,
+                requires_mutable_receiver: false,
                 returns_receiver_identity: false,
             },
         );
@@ -2594,6 +2600,7 @@ impl Checker {
                 extern_identity: None,
                 elem_ty: None,
                 consumes_receiver,
+                requires_mutable_receiver: sig.requires_mutable_receiver,
                 returns_receiver_identity: sig.returns_receiver_identity,
             },
         );
@@ -7002,6 +7009,7 @@ impl Checker {
                     // Primitive trait-impl dispatch is a user-fn call; it never
                     // consumes the receiver as a handle release.
                     consumes_receiver: sig.consumes_receiver,
+                    requires_mutable_receiver: sig.requires_mutable_receiver,
                     returns_receiver_identity: sig.returns_receiver_identity,
                 },
             );
@@ -8799,6 +8807,7 @@ impl Checker {
                                     // Fire-and-forget send; borrows the pid
                                     // handle, does not release it.
                                     consumes_receiver: false,
+                                    requires_mutable_receiver: false,
                                     returns_receiver_identity: false,
                                 },
                             );
@@ -9910,6 +9919,7 @@ impl Checker {
                                     // this type); other inherent/trait methods
                                     // are not consuming releases.
                                     consumes_receiver,
+                                    requires_mutable_receiver: sig.requires_mutable_receiver,
                                     returns_receiver_identity: sig.returns_receiver_identity,
                                 },
                             );

@@ -7538,9 +7538,8 @@ struct LowerCtx {
     /// sibling-inherent consuming method exists.
     impl_consuming_methods: HashSet<String>,
     diagnostics: Vec<HirDiagnostic>,
-    /// Checker-owned function and method signatures keyed by canonical function
-    /// symbol. Var-self write-back lowering reads `requires_mutable_receiver`
-    /// from this table instead of re-deriving it from syntax at call sites.
+    /// Checker-owned function and method signatures used for iterator dispatch
+    /// and concrete call instantiation.
     fn_sigs: HashMap<String, hew_types::FnSig>,
     /// Checker-selected targets for ordinary calls, keyed by the call span.
     /// Missing facts lower as an explicit unsupported target; HIR never
@@ -10766,12 +10765,6 @@ impl LowerCtx {
             },
             span,
         }
-    }
-
-    fn signature_requires_mutable_receiver(&self, symbol: &str) -> bool {
-        self.fn_sigs
-            .get(symbol)
-            .is_some_and(|sig| sig.requires_mutable_receiver)
     }
 
     fn make_unit_expr(&mut self, span: Span) -> HirExpr {
@@ -27649,6 +27642,7 @@ impl LowerCtx {
                 c_symbol,
                 descriptor,
                 consumes_receiver,
+                requires_mutable_receiver,
                 returns_receiver_identity,
                 elem_ty,
                 ..
@@ -27721,7 +27715,7 @@ impl LowerCtx {
                 // W4.047 P1.2: prove the typed handoff agrees at this fail-open
                 // receiver-method-rewrite return site (no behaviour change).
                 self.assert_resolved_ty_totality(&span);
-                if self.signature_requires_mutable_receiver(&c_symbol) {
+                if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
                     let receiver_ty = lowered_receiver.ty.clone();
                     self.record_var_self_direct_monomorphisation(
@@ -37707,6 +37701,7 @@ impl Widget {
                 rewrite,
                 MethodCallRewrite::StaticTraitDispatch {
                     consumes_receiver: true,
+                    requires_mutable_receiver: false,
                     returns_receiver_identity: true,
                     ..
                 }
@@ -39283,19 +39278,54 @@ impl Widget {
         assert_option_try_match(first_let_value(pass));
     }
 
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one canonical module graph exercises all payload extraction paths"
-    )]
-    fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() {
+    fn lower_canonical_encoding_fixture(
+        format: &str,
+        source: &str,
+        module_source: &str,
+    ) -> LowerOutput {
         use hew_parser::module::{Module, ModuleGraph, ModuleId};
+        let parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut program = parsed.program;
+        let Item::Import(import) = &mut program.items[0].0 else {
+            panic!("import fixture")
+        };
+        let imported = hew_parser::parse(module_source);
+        assert!(imported.errors.is_empty(), "{:?}", imported.errors);
+        import.resolved_items = Some(imported.program.items.clone());
+        import.resolved_source_paths = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join(format!("std/encoding/{format}/{format}.hew"))];
+        let module = ModuleId::new(vec!["std".into(), "encoding".into(), format.into()]);
+        let root = ModuleId::root();
+        let mut graph = ModuleGraph::new(root.clone());
+        graph
+            .add_module(Module {
+                id: module.clone(),
+                items: imported.program.items,
+                imports: Vec::new(),
+                source_paths: import.resolved_source_paths.clone(),
+                doc: None,
+            })
+            .unwrap();
+        graph.topo_order = vec![module, root];
+        program.module_graph = Some(graph);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(tco.errors.is_empty(), "{:?}", tco.errors);
+        let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+        lowered
+    }
 
+    #[test]
+    fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() {
         for (format, builtin) in [
             ("json", BuiltinType::JsonValue),
             ("yaml", BuiltinType::YamlValue),
         ] {
-            let parsed = hew_parser::parse(&format!(
+            let source = format!(
                 r#"
                 import std.encoding.{format}.{{self, Value}};
                 fn required_field(obj: Value, key: string) -> Result<Value, string> {{
@@ -39334,13 +39364,10 @@ impl Widget {
                     child
                 }}
             "#
-            ));
-            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-            let mut program = parsed.program;
-            let Item::Import(import) = &mut program.items[0].0 else {
-                panic!("import fixture")
-            };
-            let imported = hew_parser::parse(
+            );
+            let lowered = lower_canonical_encoding_fixture(
+                format,
+                &source,
                 r"
                 #[opaque] pub type Value {}
                 impl Value {
@@ -39348,34 +39375,8 @@ impl Widget {
                         Ok(Some(self))
                     }
                 }
-                ",
+            ",
             );
-            assert!(imported.errors.is_empty(), "{:?}", imported.errors);
-            import.resolved_items = Some(imported.program.items.clone());
-            import.resolved_source_paths =
-                vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap()
-                    .join(format!("std/encoding/{format}/{format}.hew"))];
-            let module = ModuleId::new(vec!["std".into(), "encoding".into(), format.into()]);
-            let root = ModuleId::root();
-            let mut graph = ModuleGraph::new(root.clone());
-            graph
-                .add_module(Module {
-                    id: module.clone(),
-                    items: imported.program.items,
-                    imports: Vec::new(),
-                    source_paths: import.resolved_source_paths.clone(),
-                    doc: None,
-                })
-                .unwrap();
-            graph.topo_order = vec![module, root];
-            program.module_graph = Some(graph);
-            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-            let tco = checker.check_program(&program);
-            assert!(tco.errors.is_empty(), "{:?}", tco.errors);
-            let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
-            assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
             let expected = ResolvedTy::Named {
                 name: builtin.canonical_name().to_string(),
                 args: Vec::new(),
@@ -39417,6 +39418,90 @@ impl Widget {
                     assert_eq!(arms[0].body.ty, option);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn imported_encoding_mutators_keep_the_checked_writeback_contract() {
+        for (format, builtin) in [
+            ("json", BuiltinType::JsonValue),
+            ("yaml", BuiltinType::YamlValue),
+        ] {
+            let source = format!(
+                r#"
+                import std.encoding.{format}.{{self, Value}};
+                fn push_probe(var value: Value, child: Value) -> Result<(), string> {{ value.push(child) }}
+                fn set_probe(var value: Value, child: Value) -> Result<(), string> {{ value.set("key", child) }}
+                fn read_probe(value: Value) -> i64 {{ value.count() }}
+            "#
+            );
+            let lowered = lower_canonical_encoding_fixture(
+                format,
+                &source,
+                r"
+                #[opaque] pub type Value {}
+                pub trait ValueMethods {
+                    fn push(var self, child: Value) -> Result<(), string>;
+                    fn set(var self, key: string, child: Value) -> Result<(), string>;
+                    fn count(self) -> i64;
+                }
+                impl ValueMethods for Value {
+                    fn push(var self, child: Value) -> Result<(), string> { self = child; Ok(()) }
+                    fn set(var self, key: string, child: Value) -> Result<(), string> { self = child; Ok(()) }
+                    fn count(self) -> i64 { 0 }
+                }
+            ",
+            );
+            let expected = ResolvedTy::Named {
+                name: builtin.canonical_name().to_string(),
+                args: vec![],
+                builtin: Some(builtin),
+                is_opaque: true,
+            };
+            for (name, arity) in [("push_probe", 1), ("set_probe", 2)] {
+                let call = function_named(&lowered, name).body.tail.as_ref().unwrap();
+                let HirExprKind::VarSelfMethodCall {
+                    receiver,
+                    receiver_ty,
+                    call_target: CallTarget::ImplMethod(declaration),
+                    args,
+                    ret_ty,
+                    ..
+                } = &call.kind
+                else {
+                    panic!("{format} {name} must retain receiver writeback: {call:#?}")
+                };
+                assert_eq!(receiver.intent, IntentKind::Consume);
+                assert_eq!(receiver.ty, expected);
+                assert_eq!(*receiver_ty, expected);
+                assert_eq!(args.len(), arity);
+                let callee = lowered
+                    .module
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        HirItem::Function(function) if &function.declaration == declaration => {
+                            Some(function)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(callee.var_self_receiver, Some(callee.params[0].id));
+                assert_eq!(
+                    callee.return_ty,
+                    ResolvedTy::Tuple(vec![ret_ty.clone(), expected.clone()])
+                );
+            }
+            assert!(matches!(
+                function_named(&lowered, "read_probe")
+                    .body
+                    .tail
+                    .as_ref()
+                    .unwrap()
+                    .kind,
+                HirExprKind::Call { .. }
+            ));
+            assert!(crate::verify_hir(&lowered.module).is_empty());
         }
     }
 

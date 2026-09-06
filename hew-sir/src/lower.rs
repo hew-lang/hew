@@ -1846,13 +1846,6 @@ fn generic_template_admission(function: &HirFn) -> Result<(), String> {
                 .to_string(),
         );
     }
-    for (index, parameter) in function.params.iter().enumerate() {
-        if parameter.is_consume {
-            return Err(format!(
-                "parameter {index} is consume-owned; SIR direct calls initially require Read operands"
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -1864,7 +1857,11 @@ fn generic_template_signature(function: &HirFn) -> Result<SemSignature, String> 
             .iter()
             .map(|parameter| SemAbiParam {
                 ty: parameter.ty.clone(),
-                passing: SemParamPassing::ReadOnly,
+                passing: if parameter.is_consume {
+                    SemParamPassing::Consume
+                } else {
+                    SemParamPassing::ReadOnly
+                },
                 caller_visible_projection: false,
             })
             .collect(),
@@ -1908,7 +1905,11 @@ fn callable_signature_with_substitution(
         params.push(SemAbiParam {
             ty,
             passing: if OwnKind::of_class(row.class) == OwnKind::Owned {
-                SemParamPassing::Borrow
+                if parameter.is_consume {
+                    SemParamPassing::Consume
+                } else {
+                    SemParamPassing::Borrow
+                }
             } else {
                 SemParamPassing::ReadOnly
             },
@@ -5540,7 +5541,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(continuation)
     }
 
-    /// D345: consuming a live aggregate field requires explicit destructuring.
+    /// A projected consume needs a verified transfer of the selected field.
     /// Check before evaluating the receiver: ordinary projection lowering is a
     /// copy and must never manufacture an owner for a consuming field call.
     fn reject_projected_callable_consume(&self, callee: &HirExpr) -> Result<(), String> {
@@ -5577,6 +5578,38 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
         Err("E_OWN_PARTIAL_CONSUME: a live aggregate field cannot be consumed; destructure the aggregate into owning bindings before calling the once field".into())
+    }
+
+    /// Transfer the declared argument before evaluating later arguments. Its
+    /// new owner remains live for argument-failure cleanup until the call starts.
+    fn lower_consuming_argument(&mut self, argument: &HirExpr) -> Result<ValueId, String> {
+        self.reject_projected_callable_consume(argument)?;
+        let mut source = argument;
+        while let HirExprKind::SubsumedValue { source: inner } = &source.kind {
+            source = inner;
+        }
+        if let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &source.kind
+        {
+            if let Some((_, field)) = self.capture_field(*binding) {
+                if field.consumption != hew_types::ClosureCaptureConsumption::Consumed {
+                    return Err("E_OWN_CONSUME_BORROWED: consuming a captured argument requires an owning capture transfer".into());
+                }
+            }
+        }
+        let value = self.lower_expr_with_binding_use(source, OwnedBindingUse::Move)?;
+        if self.value_own_kind(value) != Some(OwnKind::Owned) {
+            return Err("E_OWN_CONSUME_BORROWED: a consuming argument requires an owned value; declare the forwarding parameter consume".into());
+        }
+        self.owned_live.remove(&value);
+        self.emit(
+            argument,
+            SemOpKind::Move {
+                source: Operand { value },
+            },
+        )
     }
 
     /// Direct and indirect user calls share argument capture and both cleanup paths.
@@ -5655,7 +5688,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let mut lowered_args = Vec::with_capacity(args.len());
         for (index, (arg, expected)) in args.iter().zip(&signature.params).enumerate() {
             let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
-            let operand = if self.ty(&arg.ty) == expected.ty {
+            let operand = if expected.passing == SemParamPassing::Consume {
+                let value = self.lower_consuming_argument(arg)?;
+                Operand {
+                    value: self.coerce_value(value, &expected.ty, Provenance::Site(arg.site))?,
+                }
+            } else if expected.passing == SemParamPassing::ReadOnly
+                && arg.intent == IntentKind::Consume
+            {
+                Operand {
+                    value: lower_initial_value_transfer(
+                        self,
+                        arg,
+                        "trivial consuming argument",
+                        OwnedBindingUse::Move,
+                    )?,
+                }
+            } else if self.ty(&arg.ty) == expected.ty {
                 self.lower_call_read(arg, &mut loans, stable_tail, true)?
             } else {
                 let value = lower_initial_value_transfer(
@@ -5673,7 +5722,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 decision: match expected.passing {
                     SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
                     SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
-                    SemParamPassing::BorrowMut | SemParamPassing::Consume => {
+                    SemParamPassing::Consume => crate::BoundaryDecision::Move,
+                    SemParamPassing::BorrowMut => {
                         return Err(
                             "direct parameter transfer requires its source contract".to_string()
                         )
@@ -5682,6 +5732,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             });
         }
         self.argument_receiver_loans.truncate(receiver_loan_depth);
+        for argument in &lowered_args {
+            if argument.decision == crate::BoundaryDecision::Move {
+                self.owned_live.remove(&argument.operand.value);
+            }
+        }
         if let PreparedCallee::Indirect(receiver) = &callee {
             if receiver.decision == crate::BoundaryDecision::Move {
                 self.owned_live.remove(&receiver.operand.value);

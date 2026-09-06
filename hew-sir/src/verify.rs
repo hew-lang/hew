@@ -1126,6 +1126,9 @@ fn verify_callable_table<'a>(
                 continue;
             }
             let expected_passing = match crate::OwnKind::of_ty(&abi.ty, &module.type_facts) {
+                Ok(crate::OwnKind::Owned) if abi.passing == SemParamPassing::Consume => {
+                    SemParamPassing::Consume
+                }
                 Ok(crate::OwnKind::Owned) => SemParamPassing::Borrow,
                 Ok(crate::OwnKind::None) => SemParamPassing::ReadOnly,
                 Ok(crate::OwnKind::Guaranteed) => {
@@ -1280,12 +1283,15 @@ fn verify_generic_template_headers<'a>(
             }
         }
         for (index, parameter) in template.signature.params.iter().enumerate() {
-            if parameter.passing != SemParamPassing::ReadOnly || parameter.caller_visible_projection
+            if !matches!(
+                parameter.passing,
+                SemParamPassing::ReadOnly | SemParamPassing::Consume
+            ) || parameter.caller_visible_projection
             {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
                     template: name.clone(),
                     reason: format!(
-                        "template parameter {index} carries ownership or caller-visible ABI policy before SIR owns it"
+                        "template parameter {index} must retain a declared read or consume contract without a caller-visible projection"
                     ),
                 }));
             }
@@ -1426,7 +1432,11 @@ fn substitute_template_signature(
                 Ok(crate::SemAbiParam {
                     ty,
                     passing: if own == crate::OwnKind::Owned {
-                        SemParamPassing::Borrow
+                        if parameter.passing == SemParamPassing::Consume {
+                            SemParamPassing::Consume
+                        } else {
+                            SemParamPassing::Borrow
+                        }
                     } else {
                         SemParamPassing::ReadOnly
                     },

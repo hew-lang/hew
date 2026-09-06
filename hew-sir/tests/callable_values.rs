@@ -302,3 +302,68 @@ fn mutable_callable_field_invocation_borrows_the_stored_environment() {
         }
     }
 }
+
+#[test]
+fn declared_consuming_parameters_own_their_normal_and_fault_cleanup() {
+    for argument in ["41", "100 / 0"] {
+        let module = lower_source(&format!(
+            r#"
+            fn invoke(consume callback: fn[once](i64) -> i64, value: i64) -> i64 {{
+                let local = "callee owner";
+                let answer = callback(value);
+                println(local);
+                answer
+            }}
+            fn main() -> i64 {{
+                let text = "captured owner";
+                let callback: fn[once, clone](i64) -> i64 = move |value: i64| {{
+                    println(text);
+                    value + 1
+                }};
+                invoke(callback, {argument})
+            }}
+        "#
+        ));
+        let invoke = module
+            .functions
+            .iter()
+            .find(|function| function.name == "invoke")
+            .unwrap();
+        assert_eq!(invoke.params[0].own, hew_sir::OwnKind::Owned);
+        assert_eq!(
+            module.callable(invoke.callable).unwrap().signature.params[0].passing,
+            hew_sir::SemParamPassing::Consume
+        );
+    }
+}
+
+#[test]
+fn generic_consuming_parameter_preserves_its_concrete_owned_contract() {
+    lower_source(
+        r#"
+        fn forward<T>(consume value: T) -> T { value }
+        fn main() -> i64 {
+            let text = "owned generic value";
+            let result = forward(text);
+            println(result);
+            println(forward(42));
+            0
+        }
+    "#,
+    );
+}
+
+#[test]
+fn captured_callable_transfers_into_a_declared_consuming_parameter() {
+    lower_source(
+        r"
+        fn take(consume callback: fn[once]() -> i64) -> i64 { callback() }
+        fn answer() -> i64 { 42 }
+        fn main() -> i64 {
+            let callback: fn[once, clone]() -> i64 = answer;
+            let outer = move || take(callback);
+            outer()
+        }
+    ",
+    );
+}

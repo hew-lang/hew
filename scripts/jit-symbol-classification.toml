@@ -8,7 +8,7 @@
 # this file. Every symbol in any ABI tier must either have one contract or be
 # counted by scripts/ffi-ownership-ratchet.toml.
 #
-#   result = "fresh" | "retained" | "borrowed" | "none"
+#   result = "fresh" | "owned" | "retained" | "borrowed" | "none"
 #   params = ["borrow" | "consume" | "retain", ...]
 #   resource-result-type = "<qualified source nominal>" (optional)
 #   release-symbol = "<hew_* release function or type-directed drop thunk>" | ""
@@ -20,8 +20,11 @@
 #
 # `fresh` transfers a newly owned allocation to the caller. `retained`
 # transfers an additional reference to an existing ref-counted allocation.
+# `owned` transfers an independent owner whose allocation may come from a
+# consumed input; it claims neither a new allocation nor a refcount increment.
+# `owned` requires a balancing release and an explicit result-retention.
 # `borrowed` remains owned elsewhere and may be invalidated by mutation.
-# `none` carries no owned result. Fresh and retained results must name their
+# `none` carries no owned result. Fresh, owned and retained results must name their
 # release symbol and whether that release recursively discharges children.
 # Borrowed and none results use an empty release symbol and depth "none".
 #
@@ -54,8 +57,10 @@
 # ABSENCE is the fail-closed default and means the question has not been
 # answered for that symbol — no mint, which costs a leak rather than a double
 # free. A row may claim either positive spelling only once an executable oracle
-# has established it for that symbol. A transferred oracle requires distinct
-# live addresses, refcount 1 at handoff, and surviving producer state. A
+# has established it for that symbol. A fresh transferred oracle requires distinct
+# live addresses, refcount 1 at handoff, and surviving producer state. An owned
+# transferred oracle instead proves consuming handoff and exactly one balancing
+# release; it may preserve a consumed input address. A
 # shared-refcount oracle requires the same live address, an exact refcount bump,
 # and validity in both release orders. Those oracles are
 # hew-runtime/tests/{last_error_result_retention,string_result_retention,
@@ -1599,6 +1604,7 @@ internal = [
   "hew_dist_setup_race_kind",
   "hew_fault_clear",
   "hew_fault_clear_all",
+  "hew_fault_combine",
   "hew_fault_count",
   "hew_fault_drop",
   "hew_fault_inject_crash",
@@ -6778,6 +6784,15 @@ result-retention = "transferred"
 symbol = "hew_fault_new_panic"
 result = "fresh"
 params = ["borrow"]
+release-symbol = "hew_fault_drop"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+# Transfers an existing unique owner; never claims a fresh allocation.
+[[ownership.contracts]]
+symbol = "hew_fault_combine"
+result = "owned"
+params = ["consume", "consume"]
 release-symbol = "hew_fault_drop"
 discharge-depth = "deep"
 result-retention = "transferred"

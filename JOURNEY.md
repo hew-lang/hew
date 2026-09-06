@@ -1511,3 +1511,33 @@ includes the transparent Vec.from wrapper.
 Native execution here is Linux. Windows and macOS execution and combined
 ASan/LSan acceptance remain with integration. Supplied SIR, checker and fixture
 prerequisites are unchanged by this layer.
+
+## Selected equality native integration — 2026-09-05
+
+Ordinary composite and byte equality now demands the exact checker-selected Eq
+plan, including concrete generic user methods. SIR records borrowed operands,
+normal-only scalar results and owned fault cleanup. Physical MIR verifies that
+contract and LLVM calls the shared selected callback graph. Scalar floating
+arithmetic retains IEEE behaviour; selected composite float equality retains
+its existing bitwise contract. Bytes Eq does not imply Bytes Hash.
+
+Argument evaluation preserves the earlier value across later mutation, including
+transparent Vec.from wrappers and a container supplied to its own field mutation.
+The review finding for wrapped captures is fixed in the shared transfer producer.
+
+The full native acceptance and paired generated/runtime ASan/LSan suites pass at
+O0/O2, including composite equality, nested bytes, callback faults, read ordering
+and parent-container arguments. Combined Types/SIR/MIR/codegen/Session tests pass;
+the final additional byte-region JIT and target-verification controls pass in the
+codegen library suite. No compiler implementation changed after those native runs.
+Evidence: /tmp/hew-selected-equality-{native,safety,pipeline}-combined.log and
+/tmp/hew-selected-equality-final-codegen-tests.log.
+
+Full make -k lint was run and is not green. Rust JSON Clippy passes. The remaining
+failures are JobState's missing transparent record contract, std.string.starts_with's
+missing SIR operation contract, and the pinned grammar's std corpus parse failures.
+Evidence: /tmp/hew-selected-equality-full-lint.log. Cross-target LLVM verification
+passes for Windows x64 and macOS arm64; native platform execution of this equality
+milestone remains pending. Their preceding collection milestone c7683edaf passed
+native, runtime, C ABI and stdlib suites. Its bare-WASM C ABI libc compile failure
+is retained separately for sandbox work.

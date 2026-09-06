@@ -1739,3 +1739,17 @@ CABI tests and layout assertions compile for native, Windows x64, macOS arm64 an
 Implemented zeroed aligned environment allocation through the existing allocator, independent semantic clones with output publication only on success, and carrier-clearing drop. Compiler layout callbacks interpret capture masks and roll back partial clones; the runtime releases only outer storage after clone failure. Invocation remains in compiler adapters, with consuming adapters responsible for cleanup on either outcome.
 
 Focused runtime tests cover independent captures, alignment and zeroing, partial initialization, rollback without duplicate drop, release-only captures, empty function invocation, captured zero-sized values, and consuming success/fault cleanup. The full native runtime suite, focused native ASan/LSan, scoped JSON Clippy, generated C ABI surface checks and the export ownership verifier pass. C ABI tests and cross-target layout assertions pass for Windows x64, macOS arm64 and WASI; these are compile checks, not native platform execution. Added only the callable helpers to the existing codegen ABI classification and ownership contracts.
+
+### Callable composition through aggregate and control boundaries
+
+Callable coercion now follows record and variant payload targets and conditional
+result joins. Explicit callable cloning uses the existing semantic copy contract.
+Boolean matching evaluates its scrutinee once and carries binding guards and
+ownership cleanup through the common match continuation machinery. Mutable
+callable projections retain the original stored environment through a checked
+borrow chain.
+
+Focused source checks validate callable composition with conditional nested
+Result/Option payloads and record cloning. The stored mutable callback regression
+still identifies the HIR temporary-copy rewrite, whose replacement is pending
+composition. Native acceptance awaits physical integration.

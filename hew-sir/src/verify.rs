@@ -1619,68 +1619,79 @@ fn callable_mutation_permitted(
     value: ValueId,
     context: Option<&CallableContext<'_>>,
 ) -> bool {
-    if let Some((index, _)) = function
-        .params
-        .iter()
-        .enumerate()
-        .find(|(_, param)| param.value == value)
-    {
-        return context
-            .and_then(|context| context.param_passing(function.callable, index))
-            .is_some_and(|passing| {
-                matches!(
-                    passing,
-                    SemParamPassing::BorrowMut | SemParamPassing::Consume
-                )
+    let mut value = value;
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(value) {
+            return false;
+        }
+        if let Some((index, _)) = function
+            .params
+            .iter()
+            .enumerate()
+            .find(|(_, param)| param.value == value)
+        {
+            return context
+                .and_then(|context| context.param_passing(function.callable, index))
+                .is_some_and(|passing| {
+                    matches!(
+                        passing,
+                        SemParamPassing::BorrowMut | SemParamPassing::Consume
+                    )
+                });
+        }
+        if function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.args)
+            .any(|arg| arg.value == value)
+        {
+            return true;
+        }
+        let Some(operation) = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find(|operation| operation.results.iter().any(|result| result.id == value))
+        else {
+            // Call results are fresh owned values on their normal continuation.
+            return function.blocks.iter().any(|block| {
+                let mut found = false;
+                block.terminator.visit_results(|result| {
+                    found |= result.id == value && result.own == OwnKind::Owned;
+                });
+                found
             });
-    }
-    if function
-        .blocks
-        .iter()
-        .flat_map(|block| &block.args)
-        .any(|arg| arg.value == value)
-    {
-        return true;
-    }
-    let Some(operation) = function
-        .blocks
-        .iter()
-        .flat_map(|block| &block.ops)
-        .find(|operation| operation.results.iter().any(|result| result.id == value))
-    else {
-        // Call results are fresh owned values on their normal continuation.
-        return function.blocks.iter().any(|block| {
-            let mut found = false;
-            block.terminator.visit_results(|result| {
-                found |= result.id == value && result.own == OwnKind::Owned;
-            });
-            found
-        });
-    };
-    if let SemOpKind::LoadBorrow { place, .. } = operation.kind {
-        return closure_for_body(function, context)
-            .ok()
-            .is_some_and(|closure| {
-                function
-                    .places
-                    .iter()
-                    .find(|decl| decl.id == place)
-                    .is_some_and(|decl| {
-                        let crate::PlaceOrigin::Capture { field, .. } = decl.origin else {
-                            return false;
-                        };
-                        closure.fields.get(field as usize).is_some_and(|field| {
-                            field.access == hew_types::ClosureCaptureAccess::Var
-                        }) && crate::callable_parts(&closure.ty).is_ok_and(|(_, _, caps)| {
-                            caps.call != hew_types::CallableCallMode::Read
+        };
+        if let SemOpKind::LoadBorrow { place, .. } = operation.kind {
+            return closure_for_body(function, context)
+                .ok()
+                .is_some_and(|closure| {
+                    function
+                        .places
+                        .iter()
+                        .find(|decl| decl.id == place)
+                        .is_some_and(|decl| {
+                            let crate::PlaceOrigin::Capture { field, .. } = decl.origin else {
+                                return false;
+                            };
+                            closure.fields.get(field as usize).is_some_and(|field| {
+                                field.access == hew_types::ClosureCaptureAccess::Var
+                            }) && crate::callable_parts(&closure.ty).is_ok_and(|(_, _, caps)| {
+                                caps.call != hew_types::CallableCallMode::Read
+                            })
                         })
-                    })
-            });
+                });
+        }
+        if let Some(parent) = operation.kind.borrow_parent() {
+            value = parent.value;
+            continue;
+        }
+        return operation
+            .results
+            .iter()
+            .any(|result| result.id == value && result.own == OwnKind::Owned);
     }
-    operation
-        .results
-        .iter()
-        .any(|result| result.id == value && result.own == OwnKind::Owned)
 }
 
 fn verify_indirect_call(

@@ -230,3 +230,75 @@ fn remaining_capture_can_be_borrowed_after_another_capture_is_consumed() {
     ",
     );
 }
+
+#[test]
+fn callable_captures_compose_with_conditional_result_and_optional_payloads() {
+    for body in [
+        "if flag { .Ok(.Some(capture(var count) || { count = count + 1; count })) } else { .Ok(.None) }",
+        "match flag { true => .Ok(.Some(capture(var count) || { count = count + 1; count })), false => .Ok(.None), }",
+        "match flag { selected if selected => .Ok(.Some(capture(var count) || { count = count + 1; count })), _ => .Ok(.None), }",
+    ] {
+        lower_source(&format!(r"
+            fn choose(flag: bool) -> Result<Option<fn[var, clone]() -> i64>, string> {{
+                let count: i64 = 0;
+                {body}
+            }}
+            fn main() -> i64 {{
+                match choose(true) {{
+                    .Ok(.Some(callback)) => {{ var counter = callback; counter() }},
+                    _ => 0,
+                }}
+            }}
+        "));
+    }
+}
+
+#[test]
+fn callable_values_coerce_in_records_and_explicit_clone_preserves_capabilities() {
+    lower_source(
+        r"
+        type Holder { callback: fn[clone](i64) -> i64, }
+        fn increment(value: i64) -> i64 { value + 1 }
+        fn main() -> i64 {
+            let holder = Holder { callback: increment };
+            let copied = clone holder.callback;
+            copied(41)
+        }
+    ",
+    );
+}
+
+#[test]
+fn mutable_callable_field_invocation_borrows_the_stored_environment() {
+    let module = lower_source(
+        r"
+        type Holder { next: fn[var, clone]() -> i64, }
+        fn main() -> i64 {
+            let count = 0;
+            var holder = Holder { next: capture(var count) || { count = count + 1; count } };
+            println(holder.next());
+            holder.next()
+        }
+    ",
+    );
+    let main = module
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .unwrap();
+    for block in &main.blocks {
+        if let SemTerminator::IndirectCall { callee, .. } = &block.terminator {
+            assert!(main
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .any(
+                    |op| matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. })
+                        && op
+                            .results
+                            .iter()
+                            .any(|value| value.id == callee.operand.value)
+                ));
+        }
+    }
+}

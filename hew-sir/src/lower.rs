@@ -3535,6 +3535,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         match &expr.kind {
             HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
             HirExprKind::Closure { .. } => self.lower_closure(expr),
+            HirExprKind::RecordCloneCall { src, .. }
+                if matches!(
+                    self.ty(&src.ty),
+                    ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+                ) =>
+            {
+                let mut loans = Vec::new();
+                let source = self.lower_borrowed_read(src, &mut loans)?;
+                let copy = self.emit(expr, SemOpKind::CopyValue { source })?;
+                self.end_call_loans(&loans)?;
+                Ok(copy)
+            }
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
             HirExprKind::StructInit { fields, base, .. } => {
@@ -3887,20 +3899,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     enum_ty.user_facing()
                 ));
             }
-            let actual_ty = self.ty(&field.ty);
-            if actual_ty != declared.fields[index].ty {
-                return Err(format!(
-                    "variant constructor field `{name}` has `{}`, expected `{}`",
-                    actual_ty.user_facing(),
-                    declared.fields[index].ty.user_facing()
-                ));
-            }
+            let value = lower_initial_value_transfer(
+                self,
+                field,
+                &format!("variant field `{name}`"),
+                OwnedBindingUse::Copy,
+            )?;
             ordered[index] = Some(Operand {
-                value: lower_initial_value_transfer(
-                    self,
-                    field,
-                    &format!("variant field `{name}`"),
-                    OwnedBindingUse::Copy,
+                value: self.coerce_value(
+                    value,
+                    &declared.fields[index].ty,
+                    Provenance::Site(field.site),
                 )?,
             });
         }
@@ -4364,16 +4373,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             "variant match arm result",
             OwnedBindingUse::Move,
         )?;
-        if self.value_ty(value).as_ref() != Some(result_ty) {
-            return Err(format!(
-                "variant match arm yields `{}`, expected `{}`",
-                self.value_ty(value).map_or_else(
-                    || "<missing>".to_string(),
-                    |ty| ty.user_facing().to_string()
-                ),
-                result_ty.user_facing()
-            ));
-        }
+        let value = self.coerce_value(value, result_ty, Provenance::Site(arm.body.site))?;
         Ok(Some(Operand { value }))
     }
 
@@ -4427,6 +4427,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         scrutinee_expr: &HirExpr,
         source_arms: &[HirMatchArm],
     ) -> Result<Option<ValueId>, String> {
+        if self.ty(&scrutinee_expr.ty) == ResolvedTy::Bool {
+            return self.lower_boolean_match(whole, scrutinee_expr, source_arms);
+        }
         if source_arms.is_empty() {
             return Err("variant match has no source arms".to_string());
         }
@@ -4630,6 +4633,113 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
 
         self.move_protected_bindings = prior_move_protected;
+        self.merge_match_exits(exits, &result_ty)
+    }
+
+    fn lower_boolean_match(
+        &mut self,
+        whole: &HirExpr,
+        scrutinee: &HirExpr,
+        arms: &[HirMatchArm],
+    ) -> Result<Option<ValueId>, String> {
+        let selected = self.lower_read_operand(scrutinee, "boolean match scrutinee")?;
+        let result_ty = self.ty(&whole.ty);
+        let outer_bindings = self.bindings.keys().copied().collect();
+        let outer_live = self.owned_live.clone();
+        let saved_protected = self.move_protected_bindings.clone();
+        self.move_protected_bindings
+            .extend(self.bindings.keys().copied());
+        let mut exits = Vec::new();
+        let mut fallthrough = true;
+        for arm in arms {
+            if !arm.bindings.is_empty()
+                || !arm.payload_predicates.is_empty()
+                || !arm.payload_variant_predicates.is_empty()
+            {
+                return Err("boolean arm carries aggregate payload metadata".to_string());
+            }
+            let mut failures = Vec::new();
+            match &arm.predicate {
+                HirMatchArmPredicate::Literal {
+                    lit: HirLiteral::Bool(value),
+                    ty,
+                } if self.ty(ty) == ResolvedTy::Bool => {
+                    let condition = if *value {
+                        selected.clone()
+                    } else {
+                        Operand {
+                            value: self.emit_typed(
+                                Provenance::Synthesized,
+                                &ResolvedTy::Bool,
+                                SemOpKind::Unary {
+                                    op: hew_parser::ast::UnaryOp::Not,
+                                    value: selected.clone(),
+                                },
+                            )?,
+                        }
+                    };
+                    failures.push(self.branch_candidate_test(condition.value)?);
+                }
+                HirMatchArmPredicate::Wildcard => {}
+                HirMatchArmPredicate::Binding {
+                    binding_id,
+                    name,
+                    ty,
+                } if self.ty(ty) == ResolvedTy::Bool => {
+                    self.bind_source_value(
+                        &HirBinding {
+                            id: *binding_id,
+                            name: name.clone(),
+                            ty: ResolvedTy::Bool,
+                            mutable: false,
+                            span: arm.span.clone(),
+                            is_consume: false,
+                        },
+                        selected.value,
+                    )?;
+                }
+                _ => {
+                    return Err(
+                        "boolean match requires a boolean literal, binding or wildcard predicate"
+                            .to_string(),
+                    )
+                }
+            }
+            if let Some(guard) = &arm.guard {
+                let guard_bindings = self.bindings.keys().copied().collect();
+                let guard_live = self.owned_live.clone();
+                let condition = self.lower_read_operand(guard, "boolean match guard")?;
+                self.cleanup_match_candidate(&guard_live, &guard_bindings)?;
+                failures.push(self.branch_candidate_test(condition.value)?);
+            }
+            let result = self.lower_selected_match_body(arm, &result_ty)?;
+            if self.is_open() {
+                if let Some(result) = &result {
+                    self.owned_live.remove(&result.value);
+                }
+                self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
+                exits.push(MatchExit {
+                    state: self.control_state(),
+                    result,
+                });
+            }
+            if failures.is_empty() {
+                fallthrough = false;
+                break;
+            }
+            let mut next = Vec::new();
+            for failure in failures {
+                self.restore_control_state(&failure);
+                self.cleanup_match_candidate(&outer_live, &outer_bindings)?;
+                next.push(self.control_state());
+            }
+            self.merge_control_states(next)?;
+        }
+        if fallthrough && self.is_open() {
+            self.destroy_all_live()?;
+            self.set_terminator(SemTerminator::Unreachable)?;
+        }
+        self.move_protected_bindings = saved_protected;
         self.merge_match_exits(exits, &result_ty)
     }
 
@@ -5122,20 +5232,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             if ordered[index].is_some() {
                 return Err(format!("record initializer repeats field `{name}`"));
             }
-            let actual_ty = self.ty(&field.ty);
-            if actual_ty != declared_fields[index].ty {
-                return Err(format!(
-                    "record initializer field `{name}` has `{}`, expected `{}`",
-                    actual_ty.user_facing(),
-                    declared_fields[index].ty.user_facing()
-                ));
-            }
+            let value = lower_initial_value_transfer(
+                self,
+                field,
+                &format!("owned record field `{name}`"),
+                OwnedBindingUse::Copy,
+            )?;
             ordered[index] = Some(Operand {
-                value: lower_initial_value_transfer(
-                    self,
-                    field,
-                    &format!("owned record field `{name}`"),
-                    OwnedBindingUse::Copy,
+                value: self.coerce_value(
+                    value,
+                    &declared_fields[index].ty,
+                    Provenance::Site(field.site),
                 )?,
             });
         }
@@ -5469,7 +5576,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let (_, _, capabilities) = crate::callable_parts(&ty)?;
                 let value = if capabilities.call == hew_types::CallableCallMode::Once {
                     self.lower_expr_with_binding_use(callee, OwnedBindingUse::Move)?
-                } else if matches!(callee.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(binding), .. } if self.capture_places.contains_key(&binding))
+                } else if matches!(
+                    callee.kind,
+                    HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
+                ) || matches!(callee.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(binding), .. } if self.capture_places.contains_key(&binding))
                 {
                     self.lower_borrowed_read(callee, &mut loans)?.value
                 } else {
@@ -6407,16 +6517,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 "if branch value",
                 OwnedBindingUse::Copy,
             )?;
-            if self.value_ty(value).as_ref() != Some(&join_ty) {
-                return Err(format!(
-                    "if branch yields `{}`, expected `{}`",
-                    self.value_ty(value).map_or_else(
-                        || "<missing>".to_string(),
-                        |ty| ty.user_facing().to_string()
-                    ),
-                    join_ty.user_facing()
-                ));
-            }
+            let value = self.coerce_value(value, &join_ty, Provenance::Site(expression.site))?;
             self.owned_live.remove(&value);
             exits.push(MatchExit {
                 state: self.control_state(),

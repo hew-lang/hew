@@ -17,13 +17,39 @@ fn fork_rejects_non_send_arguments_and_indirect_captures() {
 }
 
 #[test]
-fn fork_cannot_retain_borrowed_parameters() {
-    let output = check_source("fn echo(value: string) -> string { value } fn launch(value: string) { let task = fork echo(value); } fn main() {} ");
+fn fork_promotes_borrowed_value_parameters_into_owning_captures() {
+    let source = "fn echo(value: string) -> string { value } fn launch(value: string) { let task = fork echo(value); println(value); } fn main() {}";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .suspension_effects
+        .fork_transfers
+        .iter()
+        .any(|(key, fact)| source[key.start..key.end].trim() == "value"
+            && fact.is_send
+            && fact.is_sync
+            && fact.acquisition == crate::ClosureCaptureAcquisition::Snapshot));
+    let output = check_source("fn launch(value: string) { let task = fork { await sleep(1ms); println(value); }; println(value); } fn main() {}");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .closure_capture_facts
+        .values()
+        .flatten()
+        .any(|capture| capture.name == "value"
+            && capture.acquisition == crate::ClosureCaptureAcquisition::Snapshot));
+    let output = check_source("type Label { value: string } fn launch(data: bytes, label: Label) { let task = fork { println(label.value); data }; println(label.value); let retained = data; } fn main() {}");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn fork_cannot_promote_an_affine_borrow() {
+    let output = check_source("#[resource] type Socket {} impl Socket { fn close(consuming self) {} } fn launch(socket: Socket) { let task = fork { socket.close(); }; } fn main() {}");
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| matches!(error.kind, crate::error::TypeErrorKind::OwnConsumeBorrowed)),
+        output.errors.iter().any(|error| matches!(
+            error.kind,
+            crate::error::TypeErrorKind::OwnConsumeBorrowed
+                | crate::error::TypeErrorKind::ForkBorrowCapture { .. }
+        )),
         "{:?}",
         output.errors
     );

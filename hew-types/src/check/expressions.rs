@@ -564,6 +564,7 @@ impl Checker {
                 None,
                 span,
                 false,
+                false,
             ),
 
             // Await
@@ -2908,19 +2909,20 @@ impl Checker {
                     None,
                     span,
                     false,
+                    true,
                 );
 
                 self.check_fork_transfer(expr, span, &lambda_ty);
 
                 // Ordinary parameters are borrowed at Hew call boundaries.
-                // Moving one into a child would let the child outlive the
-                // caller-owned value, so reject it before HIR can manufacture
-                // an owning environment field.
+                // Value snapshots acquire an independent child owner; an affine
+                // borrowed parameter or explicit view cannot escape that way.
                 let capture_key = SpanKey::in_module(span, self.current_module_idx);
                 if let Some(captures) = self.closure_capture_facts.get(&capture_key).cloned() {
                     for capture in captures {
                         let capture_is_copy = self.ty_is_non_owning(&capture.ty);
                         let borrowed_parameter = !capture_is_copy
+                            && capture.acquisition == crate::ClosureCaptureAcquisition::Move
                             && self.env.lookup_ref(&capture.name).is_some_and(|binding| {
                                 binding.id == capture.binding_id && binding.is_param()
                             });
@@ -2965,8 +2967,18 @@ impl Checker {
                 // recursive self-sends (a Duplex capture called from within its own
                 // actor body). Nested fn-closures inside the body pass is_actor_body=false,
                 // so they correctly see in_lambda_actor_body=false.
-                let lambda_ty =
-                    self.check_lambda(*is_move, &[], None, params, None, body, None, span, true);
+                let lambda_ty = self.check_lambda(
+                    *is_move,
+                    &[],
+                    None,
+                    params,
+                    None,
+                    body,
+                    None,
+                    span,
+                    true,
+                    false,
+                );
                 // Check captures for Send (E_DUPLEX_NON_SEND).
                 let body_ret = match &lambda_ty {
                     Ty::Function { ret, .. } | Ty::Closure { ret, .. } => {
@@ -3504,6 +3516,7 @@ impl Checker {
                     body,
                     Some((expected_params, ret)),
                     span,
+                    false,
                     false,
                 );
                 self.expect_type(expected, &result, span);
@@ -7637,6 +7650,7 @@ impl Checker {
         expected: Option<(&[Ty], &Ty)>,
         span: &Span,
         is_actor_body: bool,
+        is_fork_body: bool,
     ) -> Ty {
         let key = SpanKey::in_module(span, self.current_module_idx);
         let owner = super::effects::EffectBody::Closure(key.clone());
@@ -7656,6 +7670,7 @@ impl Checker {
             expected,
             span,
             is_actor_body,
+            is_fork_body,
         );
         self.effect_graph.current_body = previous;
         result
@@ -7677,6 +7692,7 @@ impl Checker {
         expected: Option<(&[Ty], &Ty)>,
         span: &Span,
         is_actor_body: bool,
+        is_fork_body: bool,
     ) -> Ty {
         let private_bindings = self.resolve_private_captures(private_captures);
         let body_environment = self
@@ -7873,6 +7889,7 @@ impl Checker {
             &body_environment,
             is_move,
             span,
+            is_fork_body,
         );
         let capabilities = self.closure_capabilities(&capture_facts);
         self.closure_capture_facts.insert(

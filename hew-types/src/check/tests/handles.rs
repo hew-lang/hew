@@ -1428,8 +1428,8 @@ actor Sink {
                     let d2 = spawn Sink();
                     let s = Socket { fd: 1 };
                     select {
-                        a from d1.ask_socket(s) => { let _ = a; },
-                        b from d2.ask_socket(s) => { let _ = b; },
+                        a = d1.ask_socket(s) => { let _ = a; },
+                        b = d2.ask_socket(s) => { let _ = b; },
                     }
                 }
             }
@@ -1454,8 +1454,8 @@ actor Sink {
                     let s = Socket { fd: 1 };
                     let t = Socket { fd: 2 };
                     select {
-                        a from d1.ask_socket(s) => { let _ = a; },
-                        b from d2.ask_socket(t) => { let _ = b; },
+                        a = d1.ask_socket(s) => { let _ = a; },
+                        b = d2.ask_socket(t) => { let _ = b; },
                     }
                 }
             }

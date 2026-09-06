@@ -144,6 +144,7 @@ impl Checker {
         body: &TypeEnv,
         is_move: bool,
         span: &Span,
+        is_fork_body: bool,
     ) -> Vec<ClosureCaptureFact> {
         let mut seen = HashSet::new();
         let mut captures = Vec::new();
@@ -152,7 +153,11 @@ impl Checker {
                 continue;
             }
             fact.ty = self.subst.resolve(&fact.ty).materialize_literal_defaults();
-            fact.acquisition = if is_move {
+            let promote_borrow = is_fork_body
+                && self.env.place_borrows_parameter(&fact.name, &[])
+                && !matches!(fact.ty, Ty::Borrow { .. })
+                && self.parameter_has_independent_clone(&fact.ty);
+            fact.acquisition = if is_move && !promote_borrow {
                 ClosureCaptureAcquisition::Move
             } else {
                 ClosureCaptureAcquisition::Snapshot
@@ -172,7 +177,7 @@ impl Checker {
             fact.is_send = self.registry.implements_marker(&fact.ty, MarkerTrait::Send);
             fact.is_sync = self.registry.is_sync(&fact.ty);
             let is_copy = self.registry.implements_marker(&fact.ty, MarkerTrait::Copy);
-            if is_move {
+            if is_move && !promote_borrow {
                 if !is_copy
                     && !self.reject_borrowed_consumption(&Expr::Identifier(fact.name.clone()), span)
                 {

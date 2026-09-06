@@ -242,7 +242,8 @@ fn eval_inner(
         // exhaustive over the remaining variants so a future Expr variant
         // fails the build here rather than being silently treated as
         // NotConstant.
-        Expr::Clone(_)
+        Expr::Send(_)
+        | Expr::Clone(_)
         | Expr::Coalesce { .. }
         | Expr::Handle { .. }
         | Expr::Literal(_)

@@ -668,6 +668,11 @@ impl Checker {
         };
 
         let resolved = self.project_assoc_types(&self.subst.resolve(ty));
+        if self.reject_sealed_delivery_access(&resolved, span) {
+            self.invalid_pattern_plan_spans.insert(key);
+            return;
+        }
+
         let Some(type_name) = resolved.type_name() else {
             return;
         };

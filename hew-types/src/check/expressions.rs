@@ -443,6 +443,7 @@ impl Checker {
             // Types with no clone path fail closed downstream with the existing
             // clone diagnostic.
             Expr::Clone(operand) => self.check_method_call(operand, "clone", &[], span),
+            Expr::Send(operand) => self.check_actor_submission(operand, span),
 
             // Call
             Expr::Call {
@@ -6745,6 +6746,7 @@ impl Checker {
             }
             Expr::Binary { .. }
             | Expr::Unary { .. }
+            | Expr::Send(_)
             | Expr::Clone(_)
             | Expr::Literal(_)
             | Expr::Identifier(_)
@@ -7144,6 +7146,10 @@ impl Checker {
             }
         }
         let resolved = self.subst.resolve(&obj_ty);
+        if self.reject_sealed_delivery_access(&resolved, span) {
+            return Ty::Error;
+        }
+
         match &resolved {
             Ty::Named { name, args, .. } => {
                 // Actor children produce ChildRef<T>; nested supervisors remain LocalPid<S>.
@@ -8247,6 +8253,16 @@ impl Checker {
         let qualified_owned = self
             .published_bare_type_qualified(name)
             .or_else(|| self.flat_file_import_type_owner(name));
+        let delivery_owner = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| qualified_owned.clone().unwrap_or_else(|| name.to_string()));
+        if self.reject_sealed_delivery_access(
+            &crate::actor_delivery::nominal(&delivery_owner, Vec::new()),
+            span,
+        ) {
+            return Ty::Error;
+        }
+
         if let Some(qualified) = qualified_owned.as_deref() {
             // `qualified` is the full owner-qualified source identity
             // (`owner.TypeName`), and `owner` itself may be a dotted module

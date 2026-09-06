@@ -47,7 +47,8 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(arg, out);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
@@ -339,9 +340,9 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
     assert!(
         exprs.iter().any(|expr| matches!(
             &expr.kind,
-            HirExprKind::ActorSend { method_id, .. } if method_id == "Counter::increment"
+            HirExprKind::ActorMessage { method_id, .. } if method_id == "Counter::increment"
         )),
-        "c.increment(10) should lower to HirExprKind::ActorSend: {:#?}",
+        "c.increment(10) should lower to HirExprKind::ActorMessage: {:#?}",
         main.body
     );
     assert!(

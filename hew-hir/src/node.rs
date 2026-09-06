@@ -1514,20 +1514,19 @@ pub enum HirExprKind {
         actor_name: String,
         args: Vec<(String, HirExpr)>,
     },
-    /// Fire-and-forget actor receive dispatch, selected from the checker's
-    /// `actor_method_dispatch` side table. HIR does not reclassify receiver
-    /// types; absence of a checker discriminator for an actor receiver is a
-    /// boundary diagnostic.
-    ActorSend {
+    /// Owned message construction; this does not enqueue or suspend.
+    ActorMessage {
         receiver: Box<HirExpr>,
         method_id: String,
         args: Vec<HirExpr>,
-        /// `true` when the target actor declares a loss- or rejection-capable
-        /// mailbox policy and the call returns `Result<(), SendError>`.
-        checked: bool,
-        /// `true` when a bounded `block` mailbox send must cooperatively
-        /// suspend from an execution-context caller rather than park its worker.
-        blocking: bool,
+        policy: hew_types::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+    },
+    /// Checker-selected policy, destination change or submission operation.
+    ActorDelivery {
+        receiver: Box<HirExpr>,
+        args: Vec<HirExpr>,
+        operation: hew_types::actor_delivery::ActorDeliveryCall,
     },
     /// Request/reply actor receive dispatch, selected from the checker's
     /// `actor_method_dispatch` side table. `reply_ty` is checker-resolved and

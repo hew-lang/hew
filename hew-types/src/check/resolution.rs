@@ -3585,8 +3585,19 @@ impl Checker {
                     if builtin == BuiltinType::CancellationToken && args.is_empty() {
                         return Ty::CancellationToken;
                     }
+                    // Name resolution has selected this builtin declaration. Keep
+                    // its generated owner identity through annotations and fields,
+                    // just as compiler-created error values already do.
+                    let canonical_name =
+                        crate::builtin_enums::monomorphic_builtin_enum(&resolved_name)
+                            .filter(|declaration| {
+                                crate::lookup_builtin_type(declaration.name) == Some(builtin)
+                            })
+                            .map_or(resolved_name.clone(), |declaration| {
+                                declaration.canonical_name.to_string()
+                            });
                     Ty::Named {
-                        name: resolved_name,
+                        name: canonical_name,
                         args,
                         builtin: Some(builtin),
                     }

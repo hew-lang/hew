@@ -2289,6 +2289,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::ScopeDeadline { .. }
             | Expr::Select { .. }
             | Expr::Join(_)
+            | Expr::Send(_)
             | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)

@@ -15,6 +15,7 @@ pub(super) use hew_parser::ast::IntRadix;
 pub(super) use hew_parser::ast::{ImportName, TraitMethod, TypeExpr, Visibility};
 pub(super) use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
+mod actor_delivery;
 mod actor_fields;
 mod basic;
 mod branch_join;

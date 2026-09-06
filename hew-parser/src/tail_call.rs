@@ -150,6 +150,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::AwaitRestart(operand)
         | Expr::PostfixTry(operand)
         | Expr::ReturnError(operand)
+        | Expr::Send(operand)
         | Expr::Clone(operand) => expr_contains_defer(&operand.0),
         Expr::Literal(_)
         | Expr::Identifier(_)
@@ -380,6 +381,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         | Expr::AwaitRestart(operand)
         | Expr::PostfixTry(operand)
         | Expr::ReturnError(operand)
+        | Expr::Send(operand)
         | Expr::Clone(operand) => {
             mark_expr(&mut operand.0, false);
         }

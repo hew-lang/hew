@@ -20,6 +20,7 @@ use hew_parser::ast::{
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
+mod actor_delivery;
 pub(crate) mod admissibility;
 mod branch_join;
 mod callables;
@@ -2016,13 +2017,15 @@ impl Checker {
             .into_iter()
             .map(|(k, kind)| {
                 let resolved_kind = match kind {
-                    ActorMethodKind::Fire(method_id) => ActorMethodKind::Fire(method_id),
-                    ActorMethodKind::BlockingFire(method_id) => {
-                        ActorMethodKind::BlockingFire(method_id)
-                    }
-                    ActorMethodKind::CheckedFire(method_id) => {
-                        ActorMethodKind::CheckedFire(method_id)
-                    }
+                    ActorMethodKind::Message {
+                        method_id,
+                        policy,
+                        argument_order,
+                    } => ActorMethodKind::Message {
+                        method_id,
+                        policy,
+                        argument_order,
+                    },
                     ActorMethodKind::Ask(method_id, reply_ty) => {
                         ActorMethodKind::Ask(method_id, self.finalize_type_for_handoff(&reply_ty))
                     }
@@ -2313,6 +2316,7 @@ impl Checker {
             width_cast_lowerings: std::mem::take(&mut self.width_cast_lowerings),
             try_width_cast_lowerings: std::mem::take(&mut self.try_width_cast_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
+            actor_delivery_calls: std::mem::take(&mut self.actor_delivery_calls),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             conn_await_reads: std::mem::take(&mut self.conn_await_reads),
             listener_await_accepts: std::mem::take(&mut self.listener_await_accepts),
@@ -3158,7 +3162,10 @@ impl Checker {
                 self.classify_escapes_in_expr(&left.0, &left.1, in_fork, AnonContext::Other);
                 self.classify_escapes_in_expr(&right.0, &right.1, in_fork, AnonContext::Other);
             }
-            Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
+            Expr::Unary { operand, .. }
+            | Expr::ReturnError(operand)
+            | Expr::Send(operand)
+            | Expr::Clone(operand) => {
                 self.classify_escapes_in_expr(&operand.0, &operand.1, in_fork, AnonContext::Other);
             }
             Expr::FieldAccess { object, .. } => {
@@ -3590,7 +3597,10 @@ fn collect_lambda_spans_in_expr(
             collect_lambda_spans_in_expr(&left.0, &left.1, out);
             collect_lambda_spans_in_expr(&right.0, &right.1, out);
         }
-        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. }
+        | Expr::ReturnError(operand)
+        | Expr::Send(operand)
+        | Expr::Clone(operand) => {
             collect_lambda_spans_in_expr(&operand.0, &operand.1, out);
         }
         Expr::FieldAccess { object, .. } => {

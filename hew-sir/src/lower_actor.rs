@@ -278,34 +278,34 @@ impl Builder<'_, '_> {
                 }
                 Ok((crate::ActorOperation::Spawn(id), values, argument_order))
             }
-            HirExprKind::ActorSend {
+            HirExprKind::ActorDelivery {
                 receiver,
-                method_id,
                 args,
-                checked,
-                blocking,
+                operation: hew_types::actor_delivery::ActorDeliveryCall::Submit { policy },
             } => {
-                if *checked || *blocking {
-                    return Err(
-                        "bounded actor send requires its selected suspension or rejection result"
-                            .into(),
-                    );
+                if !args.is_empty() {
+                    return Err("submission has unexpected operands".into());
                 }
-                let id = self.service.require_actor(&self.ty(&receiver.ty))?;
-                let handler = self.service.actors[id.0 as usize]
-                    .handlers
-                    .iter()
-                    .find(|handler| handler.declaration.full_path() == method_id.as_str())
-                    .ok_or("send has no exact protocol member")?;
+                let message_ty = self.ty(&receiver.ty);
+                let ResolvedTy::Named {
+                    args: type_args, ..
+                } = &message_ty
+                else {
+                    return Err("submission has no message type arguments".into());
+                };
+                let target = type_args.first().ok_or("message has no target type")?;
+                let actor = self.service.require_actor(target)?;
+                let result_ty = self.ty(&expression.ty);
+                self.service.require_type_facts(&result_ty)?;
                 Ok((
-                    crate::ActorOperation::Send {
-                        actor: id,
-                        message: handler.message_id,
+                    crate::ActorOperation::Submit {
+                        actor,
+                        policy: *policy,
+                        message_ty,
+                        result_ty,
                     },
-                    std::iter::once((**receiver).clone())
-                        .chain(args.iter().cloned())
-                        .collect(),
-                    (0..=args.len()).collect(),
+                    vec![(**receiver).clone()],
+                    vec![0],
                 ))
             }
             _ => Err("actor boundary requires a checked spawn or send".into()),
@@ -474,5 +474,176 @@ impl Builder<'_, '_> {
             // No EndLifetime or implicit extraction belongs to the handler.
         }
         Ok(())
+    }
+}
+
+impl Builder<'_, '_> {
+    fn delivery_target(&mut self, receiver: &HirExpr) -> Result<(ValueId, ResolvedTy), String> {
+        let ty = self.ty(&receiver.ty);
+        let value =
+            lower_initial_value_transfer(self, receiver, "sender target", OwnedBindingUse::Copy)?;
+        if hew_types::actor_delivery::sender_parts(&ty.to_ty()).is_none() {
+            return Ok((value, ty));
+        }
+        let ResolvedTy::Named { args, .. } = &ty else {
+            unreachable!()
+        };
+        let target_ty = args[0].clone();
+        let shape = self.service.require_aggregate_shape(&ty)?;
+        let target = self.emit_typed(
+            crate::Provenance::Site(receiver.site),
+            &target_ty,
+            crate::SemOpKind::AggregateProjectCopy {
+                shape,
+                aggregate: Operand { value },
+                field: 0,
+            },
+        )?;
+        Ok((target, target_ty))
+    }
+
+    pub(super) fn lower_actor_message(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+        let HirExprKind::ActorMessage {
+            receiver,
+            method_id,
+            args,
+            policy,
+            argument_order,
+        } = &expression.kind
+        else {
+            unreachable!()
+        };
+        let (target, target_ty) = self.delivery_target(receiver)?;
+        let actor = self.service.require_actor(&target_ty)?;
+        let handler = self.service.actors[actor.0 as usize]
+            .handlers
+            .iter()
+            .find(|handler| handler.declaration.full_path() == method_id.as_str())
+            .ok_or("message description has no exact receive member")?
+            .clone();
+        if handler.return_ty != ResolvedTy::Unit
+            || handler.params.len() != args.len()
+            || argument_order.len() != args.len()
+            || argument_order.iter().copied().collect::<BTreeSet<_>>() != (0..args.len()).collect()
+            || handler
+                .params
+                .iter()
+                .zip(argument_order)
+                .any(|(expected, index)| *expected != self.ty(&args[*index].ty))
+        {
+            return Err("message description disagrees with its receive protocol".into());
+        }
+        let ty = self.ty(&expression.ty);
+        let expected = hew_types::actor_delivery::message_type(
+            target_ty.to_ty(),
+            hew_types::Ty::Tuple(handler.params.iter().map(ResolvedTy::to_ty).collect()),
+            *policy,
+        );
+        if ty.to_ty() != expected {
+            return Err("message description changes its checked value type".into());
+        }
+        let payload_ty = ResolvedTy::Tuple(handler.params);
+        let mut values = Vec::new();
+        for arg in args {
+            values.push(lower_initial_value_transfer(
+                self,
+                arg,
+                "message argument",
+                OwnedBindingUse::Copy,
+            )?);
+        }
+        let fields = argument_order
+            .iter()
+            .map(|index| Operand {
+                value: values[*index],
+            })
+            .collect();
+        let shape = self.service.require_aggregate_shape(&payload_ty)?;
+        let payload = self.emit_typed(
+            crate::Provenance::Site(expression.site),
+            &payload_ty,
+            crate::SemOpKind::AggregateMake { shape, fields },
+        )?;
+        for value in values {
+            self.owned_live.remove(&value);
+        }
+        let message = self.emit_typed(
+            crate::Provenance::Site(expression.site),
+            &ResolvedTy::U32,
+            crate::SemOpKind::ConstI64(i64::from(handler.message_id)),
+        )?;
+        self.make_delivery_record(expression, vec![target, message, payload])
+    }
+
+    fn make_delivery_record(
+        &mut self,
+        expression: &HirExpr,
+        fields: Vec<ValueId>,
+    ) -> Result<ValueId, String> {
+        let shape = self
+            .service
+            .require_aggregate_shape(&self.ty(&expression.ty))?;
+        let value = self.emit(
+            expression,
+            crate::SemOpKind::AggregateMake {
+                shape,
+                fields: fields
+                    .iter()
+                    .map(|value| Operand { value: *value })
+                    .collect(),
+            },
+        )?;
+        for field in fields {
+            self.owned_live.remove(&field);
+        }
+        Ok(value)
+    }
+
+    pub(super) fn lower_actor_delivery(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+        use hew_types::actor_delivery::ActorDeliveryCall;
+        let HirExprKind::ActorDelivery {
+            receiver,
+            args,
+            operation,
+        } = &expression.kind
+        else {
+            unreachable!()
+        };
+        match operation {
+            ActorDeliveryCall::Policy { .. } => {
+                let (target, _) = self.delivery_target(receiver)?;
+                self.make_delivery_record(expression, vec![target])
+            }
+            ActorDeliveryCall::Readdress { .. } => {
+                let [destination] = args.as_slice() else {
+                    return Err("readdressing requires one destination".into());
+                };
+                // Keep the original description alive through destination evaluation.
+                let message = lower_initial_value_transfer(
+                    self,
+                    receiver,
+                    "readdressed message",
+                    OwnedBindingUse::Move,
+                )?;
+                let (target, _) = self.delivery_target(destination)?;
+                let ty = self.ty(&receiver.ty);
+                let shape = self.service.require_aggregate_shape(&ty)?;
+                let fields = self.emit_destructure_value(
+                    message,
+                    &ty,
+                    shape,
+                    crate::Provenance::Site(expression.site),
+                )?;
+                let [_, message, payload] = fields.as_slice() else {
+                    return Err(
+                        "message description must contain its target, member and payload".into(),
+                    );
+                };
+                self.make_delivery_record(expression, vec![target, message.id, payload.id])
+            }
+            ActorDeliveryCall::Submit { .. } => self
+                .lower_actor_boundary(expression)?
+                .ok_or_else(|| "submission has no result".into()),
+        }
     }
 }

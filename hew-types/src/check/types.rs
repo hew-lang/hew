@@ -424,6 +424,7 @@ pub struct TypeCheckOutput {
     /// HIR lowering consumes this side table before the generic method-call
     /// rewrite bridge and never reclassifies the receiver type downstream.
     pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    pub actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
     /// Checker-owned machine method dispatch decisions keyed by the method call span.
     ///
     /// Populated for every accepted `.step()` / `.state_name()` call on a
@@ -1372,6 +1373,7 @@ impl Default for TypeCheckOutput {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_delivery_calls: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
             listener_await_accepts: HashSet::new(),
@@ -2086,17 +2088,12 @@ pub struct TryWidthCastLowering {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorMethodKind {
-    /// Fire-and-forget dispatch to an actor receive handler that returns `()`.
-    Fire(String),
-    /// Unit-returning dispatch whose bounded `block` mailbox may suspend the
-    /// caller until capacity is available.
-    BlockingFire(String),
-    /// Policy-sensitive dispatch to a unit-returning actor receive handler.
-    ///
-    /// A bounded mailbox that can lose or reject a message (`drop_new`,
-    /// `drop_old`, `coalesce`, or `fail`) reports `Result<(), SendError>` so
-    /// the call site can observe its policy outcome.
-    CheckedFire(String),
+    /// Construct an owned description without submitting it to the mailbox.
+    Message {
+        method_id: String,
+        policy: crate::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+    },
     /// Request/reply dispatch to an actor receive handler with a non-unit reply.
     Ask(String, Ty),
     /// Dispatch to a `receive gen fn` handler: a per-call, channel-backed
@@ -2775,6 +2772,7 @@ pub struct Checker {
     pub(super) width_cast_lowerings: HashMap<SpanKey, WidthCastLowering>,
     pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    pub(super) actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
     /// Mailbox overflow policy keyed by the actor's canonical declaration
     /// identity. Absence means an unbounded mailbox. A bounded declaration
     /// with no explicit policy is recorded as `Block`.
@@ -3820,6 +3818,7 @@ impl Checker {
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_delivery_calls: HashMap::new(),
             actor_overflow_policies: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),

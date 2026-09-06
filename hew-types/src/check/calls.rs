@@ -1539,6 +1539,9 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if self.is_actor_policy_builtin(&func.0) {
+            return self.check_actor_policy(args, span);
+        }
         if let Expr::ContextVariant(context) = &func.0 {
             for arg in args {
                 let (expr, arg_span) = arg.expr();

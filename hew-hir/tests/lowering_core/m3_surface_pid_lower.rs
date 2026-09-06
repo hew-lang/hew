@@ -31,7 +31,8 @@ fn expr_contains_remote_actor_ask(expr: &HirExpr) -> bool {
             expr_contains_remote_actor_ask(callee)
                 || args.iter().any(expr_contains_remote_actor_ask)
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. } => {

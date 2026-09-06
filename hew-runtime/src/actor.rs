@@ -3747,45 +3747,32 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
 /// Transfer one native message envelope through a stable actor incarnation.
 ///
 /// # Safety
-/// `envelope` carries one unique caller-owned reference. This function consumes
-/// it on every outcome. Its payload and destructor describe the target protocol.
+/// `envelope` is uniquely owned and transfers only on successful admission.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn send_native_envelope(
+pub(crate) unsafe fn try_submit_native_envelope(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     envelope: *mut crate::mailbox::HewMsgEnvelope,
-) -> i32 {
+) -> crate::mailbox::SendOutcome {
     let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
-        // SAFETY: this outcome still owns the transferred reference.
-        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-        return HewError::ErrActorStopped as i32;
+        return mailbox::SendOutcome::Closed;
     };
-    let delivered = live_actors::with_actor_send_by_id(actor_id, |actor| {
-        // SAFETY: the send guard pins this exact actor and its mailbox.
+    live_actors::with_actor_send_by_id(actor_id, |actor| {
+        // SAFETY: this guard pins the exact actor incarnation and its mailbox.
         let a = unsafe { &*actor };
-        if actor_send_is_terminal(a) || crate::deterministic::check_drop_fault(a.id) {
-            // SAFETY: no queue owns the envelope on this path.
-            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-            return if actor_send_is_terminal(a) {
-                HewError::ErrActorStopped as i32
-            } else {
-                0
-            };
+        if actor_send_is_terminal(a) {
+            return mailbox::SendOutcome::Closed;
         }
-        // SAFETY: the mailbox consumes the reference on all enqueue outcomes.
-        let status =
-            unsafe { mailbox::hew_mailbox_send_aliased(a.mailbox.cast(), message, envelope) };
-        if status == 0 {
+        // SAFETY: the pinned mailbox consumes only an admitted envelope.
+        let outcome =
+            unsafe { mailbox::try_admit_native_envelope(&*a.mailbox.cast(), message, envelope) };
+        if matches!(outcome, mailbox::SendOutcome::Enqueued) {
             // SAFETY: a message reached the live, pinned actor's mailbox.
             unsafe { schedule_actor_after_enqueue(actor, a, message) };
         }
-        status
-    });
-    delivered.unwrap_or_else(|| {
-        // SAFETY: lookup failed before the closure could consume the reference.
-        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-        HewError::ErrActorStopped as i32
+        outcome
     })
+    .unwrap_or(mailbox::SendOutcome::Closed)
 }
 
 /// WASM fork of [`hew_actor_spawn_opts_adopt`]. Same contract.

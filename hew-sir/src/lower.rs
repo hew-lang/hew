@@ -396,21 +396,11 @@ impl<'a> CallableTable<'a> {
             };
             let prior_shape_count = aggregate_shapes.len();
             let prior_variant_shape_count = variant_shapes.len();
-            if let Err(reason) = require_signature_aggregate_shapes(
+            if let Err(reason) = require_signature_shapes(
+                module,
                 facts,
                 &mut aggregate_shapes,
                 &mut aggregate_shapes_by_type,
-                &signature,
-            ) {
-                aggregate_shapes.truncate(prior_shape_count);
-                aggregate_shapes_by_type
-                    .retain(|_, id| usize::try_from(id.0).is_ok_and(|id| id < prior_shape_count));
-                ineligible.insert(function.declaration.clone(), reason);
-                continue;
-            }
-            if let Err(reason) = require_signature_variant_shapes(
-                module,
-                facts,
                 &mut variant_shapes,
                 &mut variant_shapes_by_type,
                 &signature,
@@ -613,25 +603,6 @@ fn require_aggregate_shape(
     });
     shapes_by_type.insert(aggregate_ty.clone(), id);
     Ok(AggregateShapeRef::Record(id))
-}
-
-fn require_signature_aggregate_shapes(
-    facts: &mut TypeFactService,
-    shapes: &mut Vec<SemAggregateShape>,
-    shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
-    signature: &SemSignature,
-) -> Result<(), String> {
-    for ty in signature
-        .params
-        .iter()
-        .map(|parameter| &parameter.ty)
-        .chain(std::iter::once(&signature.return_ty))
-    {
-        if is_concrete_aggregate_type(facts, ty) {
-            require_aggregate_shape(facts, shapes, shapes_by_type, ty)?;
-        }
-    }
-    Ok(())
 }
 
 fn concrete_variant_shape(
@@ -865,11 +836,13 @@ fn require_variant_shape(
     Ok(id)
 }
 
-fn require_signature_variant_shapes(
+fn require_signature_shapes(
     module: &HirModule,
     facts: &mut TypeFactService,
-    shapes: &mut Vec<SemVariantShape>,
-    shapes_by_type: &mut HashMap<ResolvedTy, VariantShapeId>,
+    aggregate_shapes: &mut Vec<SemAggregateShape>,
+    aggregate_shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
+    variant_shapes: &mut Vec<SemVariantShape>,
+    variant_shapes_by_type: &mut HashMap<ResolvedTy, VariantShapeId>,
     signature: &SemSignature,
 ) -> Result<(), String> {
     for ty in signature
@@ -878,9 +851,79 @@ fn require_signature_variant_shapes(
         .map(|parameter| &parameter.ty)
         .chain(std::iter::once(&signature.return_ty))
     {
-        if is_concrete_variant_type(module, ty) {
-            require_variant_shape(module, facts, shapes, shapes_by_type, ty)?;
+        require_type_shapes(
+            module,
+            facts,
+            aggregate_shapes,
+            aggregate_shapes_by_type,
+            variant_shapes,
+            variant_shapes_by_type,
+            ty,
+        )?;
+    }
+    Ok(())
+}
+
+/// Publish the complete shape closure using exact checked type identities.
+/// Header admission uses the same walk as demanded bodies, without lowering
+/// those bodies merely to discover nested payload shapes.
+fn require_type_shapes(
+    module: &HirModule,
+    facts: &mut TypeFactService,
+    aggregate_shapes: &mut Vec<SemAggregateShape>,
+    aggregate_shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
+    variant_shapes: &mut Vec<SemVariantShape>,
+    variant_shapes_by_type: &mut HashMap<ResolvedTy, VariantShapeId>,
+    ty: &ResolvedTy,
+) -> Result<(), String> {
+    let mut pending = vec![ty.clone()];
+    let mut seen = BTreeSet::new();
+    while let Some(ty) = pending.pop() {
+        if !seen.insert(ty.clone()) {
+            continue;
         }
+        require_type_facts(facts, &ty)?;
+        if let Some((builtin, arguments)) = collection_type_arguments(&ty) {
+            for argument in arguments {
+                if !is_supported_call_value(module, facts, argument) {
+                    let component = if builtin == hew_types::BuiltinType::Vec {
+                        "vector element"
+                    } else {
+                        "collection component"
+                    };
+                    return Err(format!(
+                        "{component} `{}` has no semantic value contract",
+                        argument.user_facing(),
+                    ));
+                }
+            }
+            // Execution-domain admission is distinct from copyability.
+            // Publish facts/shapes; the shared dependency verifier owns
+            // recursive collection copy admissibility.
+            pending.extend(arguments.iter().cloned());
+        } else if is_concrete_variant_type(module, &ty) {
+            let id =
+                require_variant_shape(module, facts, variant_shapes, variant_shapes_by_type, &ty)?;
+            pending.extend(
+                variant_shapes[id.0 as usize]
+                    .variants
+                    .iter()
+                    .flat_map(|variant| &variant.fields)
+                    .map(|field| field.ty.clone()),
+            );
+        } else if is_concrete_aggregate_type(facts, &ty) {
+            if let AggregateShapeRef::Record(id) =
+                require_aggregate_shape(facts, aggregate_shapes, aggregate_shapes_by_type, &ty)?
+            {
+                pending.extend(
+                    aggregate_shapes[id.0 as usize]
+                        .fields
+                        .iter()
+                        .map(|field| field.ty.clone()),
+                );
+            }
+        }
+        hew_types::push_type_components(&ty, &mut pending);
     }
     Ok(())
 }
@@ -1024,53 +1067,15 @@ impl<'a> InstanceService<'a> {
     }
 
     fn require_type_facts(&mut self, ty: &ResolvedTy) -> Result<(), String> {
-        let mut pending = vec![ty.clone()];
-        let mut seen = BTreeSet::new();
-        while let Some(ty) = pending.pop() {
-            if !seen.insert(ty.clone()) {
-                continue;
-            }
-            require_type_facts(&mut self.checked_facts, &ty)?;
-            if let Some((builtin, arguments)) = collection_type_arguments(&ty) {
-                for argument in arguments {
-                    if !is_supported_call_value(self.module, &self.checked_facts, argument) {
-                        let component = if builtin == hew_types::BuiltinType::Vec {
-                            "vector element"
-                        } else {
-                            "collection component"
-                        };
-                        return Err(format!(
-                            "{component} `{}` has no semantic value contract",
-                            argument.user_facing(),
-                        ));
-                    }
-                }
-                // Execution-domain admission is distinct from copyability.
-                // Publish facts/shapes; the shared dependency verifier owns
-                // recursive collection copy admissibility.
-                pending.extend(arguments.iter().cloned());
-            } else if is_concrete_variant_type(self.module, &ty) {
-                let id = self.require_variant_shape(&ty)?;
-                pending.extend(
-                    self.variant_shapes[id.0 as usize]
-                        .variants
-                        .iter()
-                        .flat_map(|variant| &variant.fields)
-                        .map(|field| field.ty.clone()),
-                );
-            } else if is_concrete_aggregate_type(&self.checked_facts, &ty) {
-                if let AggregateShapeRef::Record(id) = self.require_aggregate_shape(&ty)? {
-                    pending.extend(
-                        self.aggregate_shapes[id.0 as usize]
-                            .fields
-                            .iter()
-                            .map(|field| field.ty.clone()),
-                    );
-                }
-            }
-            hew_types::push_type_components(&ty, &mut pending);
-        }
-        Ok(())
+        require_type_shapes(
+            self.module,
+            &mut self.checked_facts,
+            &mut self.aggregate_shapes,
+            &mut self.aggregate_shapes_by_type,
+            &mut self.variant_shapes,
+            &mut self.variant_shapes_by_type,
+            ty,
+        )
     }
 
     /// Intern the exact checker-resolved shape of one concrete aggregate.
@@ -1138,32 +1143,15 @@ impl<'a> InstanceService<'a> {
     fn require_signature_shapes(&mut self, signature: &SemSignature) -> Result<(), String> {
         let prior_aggregate_count = self.aggregate_shapes.len();
         let prior_variant_count = self.variant_shapes.len();
-        let result = require_signature_aggregate_shapes(
+        let result = require_signature_shapes(
+            self.module,
             &mut self.checked_facts,
             &mut self.aggregate_shapes,
             &mut self.aggregate_shapes_by_type,
+            &mut self.variant_shapes,
+            &mut self.variant_shapes_by_type,
             signature,
-        )
-        .and_then(|()| {
-            require_signature_variant_shapes(
-                self.module,
-                &mut self.checked_facts,
-                &mut self.variant_shapes,
-                &mut self.variant_shapes_by_type,
-                signature,
-            )
-        });
-        let result = result.and_then(|()| {
-            for ty in signature
-                .params
-                .iter()
-                .map(|parameter| &parameter.ty)
-                .chain(std::iter::once(&signature.return_ty))
-            {
-                self.require_type_facts(ty)?;
-            }
-            Ok(())
-        });
+        );
         if result.is_err() {
             self.aggregate_shapes.truncate(prior_aggregate_count);
             self.aggregate_shapes_by_type

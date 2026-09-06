@@ -441,3 +441,55 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
         "statuses must be addressable by declaration identity"
     );
 }
+
+#[test]
+fn unreached_headers_publish_nested_record_and_variant_shapes() {
+    let (hir, facts) = lower_hir(
+        r#"
+        type Payload { text: string }
+        fn stranded(value: Result<Option<Option<Payload>>, string>) {
+            defer { println("unreached"); }
+        }
+        fn main() {}
+        "#,
+    );
+    assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);
+    let lowered = lower_module(&hir, &facts);
+    assert!(matches!(
+        status_of(&lowered, "stranded"),
+        SirLoweringStatus::NotReached
+    ));
+    assert!(matches!(
+        status_of(&lowered, "main"),
+        SirLoweringStatus::Lowered
+    ));
+    assert_eq!(lowered.module.functions.len(), 1);
+    let callable = lowered
+        .module
+        .callables
+        .iter()
+        .find(|callable| callable.symbol == "stranded")
+        .expect("the unreached declaration must retain its admitted header");
+    let result = lowered
+        .module
+        .variant_shape_for_type(&callable.signature.params[0].ty)
+        .expect("the header result must have a shape");
+    let outer = lowered
+        .module
+        .variant_shape_for_type(&result.variants[0].fields[0].ty)
+        .expect("the nested outer Option must have a shape");
+    let inner = lowered
+        .module
+        .variant_shape_for_type(&outer.variants[0].fields[0].ty)
+        .expect("the nested inner Option must have a shape");
+    let payload = lowered
+        .module
+        .aggregate_shape_for_type(&inner.variants[0].fields[0].ty)
+        .expect("the nested record payload must have a shape");
+    assert_eq!(payload.fields[0].ty, hew_types::ResolvedTy::String);
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "{:#?}",
+        verify_module(&lowered.module)
+    );
+}

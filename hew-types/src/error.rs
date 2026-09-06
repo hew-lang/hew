@@ -323,29 +323,6 @@ impl TypeError {
         .with_suggestion(format!("consider changing this to `var {name}`"))
     }
 
-    /// Create a mutability error for an assignment rooted at a **by-value
-    /// aggregate parameter**, whose mutation the caller can never observe.
-    ///
-    /// Deliberately does not suggest `var {name}`. On such a parameter `var`
-    /// is itself rejected (`reject_ineffective_mutable_value_param`), so the
-    /// generic suggestion routed the user straight into a construct the
-    /// compiler refuses — and, before that guard was widened in #2810, into a
-    /// mutation that silently applied to a throwaway copy. The advice here is
-    /// the advice that guard already gives.
-    #[must_use]
-    pub fn value_param_mutability_error(span: Span, name: &str, ty: &str) -> Self {
-        Self::new(
-            TypeErrorKind::MutabilityError,
-            span,
-            format!("cannot assign to immutable variable `{name}`"),
-        )
-        .with_suggestion(format!(
-            "`{name}` is a by-value parameter of type `{ty}`; mutating it has no caller-visible effect"
-        ))
-        .with_suggestion("return the modified value to the caller".to_string())
-        .with_suggestion("move the mutation into an actor or a mutable receiver method".to_string())
-    }
-
     /// Create a mutability error for an assignment to an immutable actor
     /// state field outside `init { }`.
     ///
@@ -824,6 +801,8 @@ pub enum TypeErrorKind {
     UseAfterConsume,
     /// A consuming operation requires ownership of a borrowed parameter.
     OwnConsumeBorrowed,
+    /// Mutation of a borrowed callable requires an independent clone or owner.
+    OwnMutateBorrowed,
     /// Consuming a local aggregate field requires explicit destructuring.
     OwnPartialConsume,
     /// Yield used outside a generator function
@@ -1535,6 +1514,7 @@ impl TypeErrorKind {
             Self::UseAfterMove => "UseAfterMove",
             Self::UseAfterConsume => "UseAfterConsume",
             Self::OwnConsumeBorrowed => "E_OWN_CONSUME_BORROWED",
+            Self::OwnMutateBorrowed => "E_OWN_MUTATE_BORROWED",
             Self::OwnPartialConsume => "E_OWN_PARTIAL_CONSUME",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
@@ -1950,26 +1930,6 @@ mod tests {
         assert!(err
             .suggestions
             .contains(&"consider changing this to `var count`".to_string()));
-    }
-
-    #[test]
-    fn test_value_param_mutability_error_display() {
-        let err = TypeError::value_param_mutability_error(0..10, "acc", "Account");
-        assert_eq!(
-            err.to_string(),
-            "cannot assign to immutable variable `acc`\n  help: `acc` is a by-value parameter of \
-             type `Account`; mutating it has no caller-visible effect\n  help: return the modified \
-             value to the caller\n  help: move the mutation into an actor or a mutable receiver \
-             method"
-        );
-        assert_eq!(err.kind, TypeErrorKind::MutabilityError);
-        assert!(
-            !err.suggestions
-                .iter()
-                .any(|s| s.contains("consider changing this to `var")),
-            "a by-value parameter must never be steered into `var`: {:?}",
-            err.suggestions
-        );
     }
 
     #[test]

@@ -214,6 +214,46 @@ impl Checker {
                 .all(|fact| self.capture_is_cloneable(&fact.ty)),
         }
     }
+    /// Match the independent entry copy required for mutable Borrow parameters.
+    pub(super) fn parameter_has_independent_clone(&self, ty: &Ty) -> bool {
+        self.parameter_clone_kind(ty)
+            .is_some_and(|clone| clone != crate::type_facts::CloneKind::None)
+    }
+
+    fn parameter_clone_kind(&self, ty: &Ty) -> Option<crate::type_facts::CloneKind> {
+        let resolved =
+            ResolvedTy::from_ty(&self.subst.resolve(ty).materialize_literal_defaults()).ok()?;
+        let declarations = self.class_declarations();
+        let context = crate::value_class::ClassContext::new(&declarations);
+        crate::value_class::classify_ty(&resolved, &context)
+            .ok()
+            .map(|(_, clone)| clone)
+    }
+
+    /// Private writes require either a replaced place or an independent entry
+    /// copy. An unresolved generic type does not prove absence of Clone.
+    pub(super) fn reject_borrowed_parameter_mutation(
+        &mut self,
+        root: &str,
+        path: &[String],
+        span: &Span,
+    ) {
+        if self.is_current_closure_capture(root)
+            || !self.env.place_borrows_parameter(root, path)
+            || !self.env.lookup_ref(root).is_some_and(|binding| {
+                self.parameter_clone_kind(&binding.ty) == Some(crate::type_facts::CloneKind::None)
+            })
+        {
+            return;
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::OwnMutateBorrowed,
+            span,
+            format!("cannot mutate through borrowed parameter `{root}`: its type has no independent clone"),
+            vec![format!("add `consume` to parameter `{root}` to transfer ownership")],
+        );
+    }
+
     fn capture_is_cloneable(&self, ty: &Ty) -> bool {
         let Ok(resolved) = ResolvedTy::from_ty(ty) else {
             return false;
@@ -275,6 +315,19 @@ impl Checker {
                         .is_some_and(|binding| binding.is_mutable)
                 });
                 if writable {
+                    if !capabilities.clone {
+                        if let Some((root, path)) = &place {
+                            if !self.is_current_closure_capture(root)
+                                && self.env.place_borrows_parameter(root, path)
+                            {
+                                self.report_error_with_suggestions(TypeErrorKind::OwnMutateBorrowed, &callee.1,
+                                format!("cannot invoke this mutable callable through borrowed parameter `{root}`: its type does not guarantee an independent clone"),
+                                vec![format!("add `consume` to parameter `{root}` to transfer ownership"),
+                                    "require `fn[var, clone]` so the callee can mutate an independent copy".to_string()]);
+                                return;
+                            }
+                        }
+                    }
                     if let Some((root, _)) = place {
                         self.env.mark_written(&root);
                     }
@@ -319,15 +372,11 @@ impl Checker {
     }
 
     fn reject_borrowed_callable_consumption(&mut self, expr: &Expr, span: &Span) -> bool {
-        let Some((root, _)) = self.expr_place(expr) else {
+        let Some((root, path)) = self.expr_place(expr) else {
             return false;
         };
         // A closure environment capture follows its existing acquisition contract.
-        if self.is_current_closure_capture(&root)
-            || !self.env.lookup_ref(&root).is_some_and(|binding| {
-                binding.is_param()
-                    && binding.parameter_ownership == crate::env::ParameterOwnership::Borrow
-            })
+        if self.is_current_closure_capture(&root) || !self.env.place_borrows_parameter(&root, &path)
         {
             return false;
         }

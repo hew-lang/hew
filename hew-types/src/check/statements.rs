@@ -271,51 +271,6 @@ impl Checker {
         }
     }
 
-    /// Whether an assignment target crosses a compiler-proven caller-visible
-    /// shared-handle boundary before reaching the storage it writes.
-    ///
-    /// `holder.items[0]` is caller-visible because the `Index` receiver has
-    /// type `Vec<_>`. `holder.items = replacement` is not: its receiver is the
-    /// private `Holder` copy, even though the field being replaced happens to
-    /// contain a handle. Recursing through the target also covers projections
-    /// such as `holders[0].count`, whose write starts inside shared Vec storage.
-    /// A root `string`, `bytes`, or registered shared-handle binding is itself
-    /// the caller-visible storage boundary; admitting it uses the same exact
-    /// checker type facts as parameter classification.
-    /// The builtin boundary test shares the declaration-time authority in
-    /// `BuiltinType::is_caller_visible_shared_handle`, so nested actor, channel,
-    /// stream, and reference handles cannot drift from aggregate admission.
-    fn mutation_projection_reaches_caller_visible_storage(&self, target: &Expr) -> bool {
-        match target {
-            Expr::Identifier(name) => self.env.lookup_ref(name).is_some_and(|binding| {
-                match self.subst.resolve(&binding.ty) {
-                    Ty::String | Ty::Bytes => true,
-                    Ty::Named {
-                        builtin: Some(builtin),
-                        ..
-                    } => builtin.is_caller_visible_shared_handle(),
-                    _ => false,
-                }
-            }),
-            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
-                let object_ty = self
-                    .expr_types
-                    .get(&SpanKey::in_module(&object.1, self.current_module_idx))
-                    .map(|ty| self.subst.resolve(ty));
-                object_ty.is_some_and(|ty| {
-                    matches!(
-                        ty,
-                        Ty::Named {
-                            builtin: Some(builtin),
-                            ..
-                        } if builtin.is_caller_visible_shared_handle()
-                    )
-                }) || self.mutation_projection_reaches_caller_visible_storage(&object.0)
-            }
-            _ => false,
-        }
-    }
-
     /// The synthetic span the `for (k, v) in m` desugar uses for the `keys()`
     /// projection call.
     ///
@@ -1575,63 +1530,14 @@ impl Checker {
                                     field.decl_span.clone(),
                                 ));
                             } else {
-                                // Suggest `var` only when this exact projection
-                                // reaches storage the caller shares. A root
-                                // type can contain both kinds of storage:
-                                // `holder.items[0]` reaches a Vec allocation,
-                                // while `holder.count` and replacing
-                                // `holder.items` mutate only the private Holder
-                                // copy. Keying help on the root type would steer
-                                // the latter cases back into the silent trap.
-                                let ineffective_var_param = if binding.is_param() {
-                                    let binding_ty = self.subst.resolve(&binding.ty);
-                                    let has_visible_projection =
-                                        self.param_ty_has_caller_visible_projection(&binding_ty);
-                                    (self.param_var_has_no_caller_visible_effect(&binding_ty)
-                                        || (has_visible_projection
-                                            && !self
-                                                .mutation_projection_reaches_caller_visible_storage(
-                                                    &target.0,
-                                                )))
-                                    .then(|| binding_ty.user_facing().to_string())
-                                } else {
-                                    None
-                                };
-                                let error = match ineffective_var_param {
-                                    Some(ty) => TypeError::value_param_mutability_error(
-                                        span.clone(),
-                                        name,
-                                        &ty,
-                                    ),
-                                    None => TypeError::mutability_error(span.clone(), name),
-                                };
-                                self.errors.push(error);
+                                self.errors
+                                    .push(TypeError::mutability_error(span.clone(), name));
                             }
-                        } else if binding.is_param() && !binding.is_receiver() {
-                            let binding_ty = self.subst.resolve(&binding.ty);
-                            // Value aggregates that contain a collection are
-                            // admitted at the declaration because some
-                            // projections genuinely reach shared storage.
-                            // Reject a concrete write that stays on the private
-                            // side of that boundary.
-                            if self.param_ty_has_caller_visible_projection(&binding_ty)
-                                && !self
-                                    .mutation_projection_reaches_caller_visible_storage(&target.0)
-                            {
-                                self.report_error_with_suggestions(
-                                    TypeErrorKind::MutabilityError,
-                                    span,
-                                    format!(
-                                        "`var {name}` on a by-value parameter of type `{}` \
-                                         has no caller-visible effect",
-                                        binding_ty.user_facing()
-                                    ),
-                                    vec![
-                                        "return the modified value to the caller".to_string(),
-                                        "mutate through a shared collection projection instead"
-                                            .to_string(),
-                                    ],
-                                );
+                        } else if let Some((root, path)) = self.expr_place(&target.0) {
+                            // Replacing the root acquires a fresh local value;
+                            // a projection instead writes through its owner.
+                            if !path.is_empty() {
+                                self.reject_borrowed_parameter_mutation(&root, &path, span);
                             }
                         }
                     }

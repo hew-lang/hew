@@ -612,3 +612,186 @@ fn declared_consume_arguments_invalidate_cloneable_callables() {
     let output = check_source("fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(consume f: fn[once, clone]() -> i64) { take(f); } fn main() { forward(|| 7); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
+
+#[test]
+fn borrowed_mutable_callable_requires_clone_only_when_invoked() {
+    let output = check_source(
+        "fn unused(var cb: fn[var]() -> i64) {} fn invoked(var cb: fn[var]() -> i64) { cb(); }",
+    );
+    let errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::OwnMutateBorrowed)
+        .collect();
+    assert_eq!(errors.len(), 1, "{:?}", output.errors);
+    assert!(errors[0]
+        .suggestions
+        .iter()
+        .any(|text| text.contains("consume") && text.contains("cb")));
+    assert!(errors[0]
+        .suggestions
+        .iter()
+        .any(|text| text.contains("fn[var, clone]")));
+    for source in [
+        "fn invoke(var cb: fn[var, clone]() -> i64) { cb(); cb(); }",
+        "fn invoke(consume var cb: fn[var]() -> i64) { cb(); cb(); }",
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+    }
+}
+
+const FRESH_MUTABLE_CALLBACK: &str =
+    "fn fresh_owned() -> fn[var]() -> i64 { let n = 0; capture(var n) || { n += 1; n } }";
+
+#[test]
+fn borrowed_mutable_callable_accepts_definite_replacement() {
+    for body in [
+        "cb = fresh_owned(); cb();",
+        "if flag { cb = fresh_owned(); } else { cb = fresh_owned(); } cb();",
+        "if flag { return; } else { cb = fresh_owned(); } cb();",
+        "match flag { true => { cb = fresh_owned(); }, false => { cb = fresh_owned(); } } cb();",
+        "cb = fresh_owned(); if flag { cb(); } cb();",
+    ] {
+        let source = format!(
+            "{FRESH_MUTABLE_CALLBACK} fn invoke(var cb: fn[var]() -> i64, flag: bool) {{ {body} }}"
+        );
+        let output = check_source(&source);
+        assert!(output.errors.is_empty(), "{body}: {:?}", output.errors);
+    }
+}
+
+#[test]
+fn borrowed_mutable_callable_keeps_borrow_on_any_reaching_branch() {
+    for body in [
+        "if flag { cb = fresh_owned(); } cb();",
+        "if flag { cb = fresh_owned(); } else {} cb();",
+        "if flag {} else { cb = fresh_owned(); } cb();",
+        "if flag { cb = fresh_owned(); } else { cb(); }",
+        "match flag { true => { cb = fresh_owned(); }, false => {} } cb();",
+    ] {
+        let source = format!(
+            "{FRESH_MUTABLE_CALLBACK} fn invoke(var cb: fn[var]() -> i64, flag: bool) {{ {body} }}"
+        );
+        let output = check_source(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::OwnMutateBorrowed),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn borrowed_mutable_callable_loop_replacement_cannot_hide_zero_iterations() {
+    for body in [
+        "while flag { cb = fresh_owned(); cb(); } cb();",
+        "for i in 0..n { cb = fresh_owned(); cb(); } cb();",
+    ] {
+        let source = format!("{FRESH_MUTABLE_CALLBACK} fn invoke(var cb: fn[var]() -> i64, flag: bool, n: i64) {{ {body} }}");
+        let output = check_source(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::OwnMutateBorrowed),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn borrowed_mutable_callable_field_uses_the_selected_guarantee() {
+    let output = check_source("type Holder { next: fn[var]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { holder.next(); }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::OwnMutateBorrowed),
+        "{:?}",
+        output.errors
+    );
+    let output = check_source("type Holder { next: fn[var, clone]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { holder.next(); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn borrowed_mutable_callable_shadowing_does_not_replace_the_parameter() {
+    let source = format!("{FRESH_MUTABLE_CALLBACK} fn invoke(var cb: fn[var]() -> i64) {{ {{ var cb = fresh_owned(); cb(); }} cb(); }}");
+    let output = check_source(&source);
+    assert_eq!(
+        output
+            .errors
+            .iter()
+            .filter(|error| error.kind == TypeErrorKind::OwnMutateBorrowed)
+            .count(),
+        1,
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn borrowed_mutable_callable_plain_aggregate_clone_control() {
+    for source in [
+        "type Holder { next: fn[var, clone]() -> i64, label: string } fn invoke(var holder: Holder) { if true { holder.next(); } }",
+        "fn invoke(var pair: (fn[var, clone]() -> i64, string)) { for i in 0..2 { pair.0(); } }",
+        "fn invoke(var pair: (fn[var, clone]() -> i64, i64)) { for i in 0..2 { pair.0(); } }",
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+    }
+}
+
+#[test]
+fn borrowed_once_callable_uses_the_same_replacement_provenance() {
+    for body in [
+        "cb = || 7; cb();",
+        "if flag { cb = || 7; } else { cb = || 8; } cb();",
+    ] {
+        let source = format!("fn invoke(var cb: fn[once]() -> i64, flag: bool) {{ {body} }}");
+        let output = check_source(&source);
+        assert!(output.errors.is_empty(), "{body}: {:?}", output.errors);
+    }
+    let output = check_source(
+        "fn invoke(var cb: fn[once]() -> i64, flag: bool) { if flag { cb = || 7; } cb(); }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::OwnConsumeBorrowed),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn mutable_clone_parameter_owns_an_independent_once_copy() {
+    let output = check_source("fn invoke(var cb: fn[once, clone]() -> i64) -> i64 { cb() } fn main() { let cb: fn[once, clone]() -> i64 = || 7; invoke(cb); cb(); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source("fn take(consume cb: fn[once, clone]() -> i64) { cb(); } fn forward(var cb: fn[once, clone]() -> i64) { take(cb); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source("fn invoke(var cb: fn[once, clone]() -> i64) { cb(); cb(); }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "{:?}",
+        output.errors
+    );
+    let output = check_source("fn invoke(cb: fn[once, clone]() -> i64) { cb(); }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::OwnConsumeBorrowed),
+        "{:?}",
+        output.errors
+    );
+}

@@ -982,6 +982,37 @@ impl Checker {
         actual
     }
 
+    /// Bind parameters and establish independent mutable parameter values.
+    fn bind_function_parameters(&mut self, fd: &FnDecl, in_actor: bool) {
+        // Only the first parameter can be the receiver.
+        for (i, p) in fd.params.iter().enumerate() {
+            let (ty, is_receiver) = self.resolve_param_binding_ty(i, p);
+            let private_copy = p.is_mutable
+                && !p.is_consume
+                && !is_receiver
+                && self.parameter_has_independent_clone(&ty);
+            if in_actor {
+                self.check_shadowing(&p.name, &p.ty.1);
+            }
+            if is_receiver {
+                self.env.define_receiver_param_with_span(
+                    p.name.clone(),
+                    ty,
+                    p.is_mutable,
+                    p.ty.1.clone(),
+                );
+            } else {
+                self.env
+                    .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
+            }
+            self.env
+                .set_parameter_consume(&p.name, p.is_consume || (is_receiver && fd.consumes_self));
+            if private_copy {
+                self.env.reinit_place(&p.name, &[]);
+            }
+        }
+    }
+
     /// Check a function body using `fn_name` for the `fn_sigs` lookup.
     ///
     /// Impl methods are registered under qualified names (e.g. `Connection::close`)
@@ -1020,28 +1051,7 @@ impl Checker {
             self.env.push_scope();
         }
 
-        // Bind params — only the first parameter can be the receiver
-        for (i, p) in fd.params.iter().enumerate() {
-            let (ty, is_receiver) = self.resolve_param_binding_ty(i, p);
-            self.reject_ineffective_mutable_value_param(p, &ty, is_receiver);
-            // If inside an actor, check that params don't shadow actor fields
-            if in_actor {
-                self.check_shadowing(&p.name, &p.ty.1);
-            }
-            if is_receiver {
-                self.env.define_receiver_param_with_span(
-                    p.name.clone(),
-                    ty,
-                    p.is_mutable,
-                    p.ty.1.clone(),
-                );
-            } else {
-                self.env
-                    .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
-            }
-            self.env
-                .set_parameter_consume(&p.name, p.is_consume || (is_receiver && fd.consumes_self));
-        }
+        self.bind_function_parameters(fd, in_actor);
 
         // Use the return type from the already-registered fn signature so that
         // TypeExpr::Infer (-> _) reuses the same Ty::Var that call sites see.
@@ -2682,170 +2692,6 @@ impl Checker {
             args: self_args.clone(),
         });
         (receiver_ty, true)
-    }
-
-    fn reject_ineffective_mutable_value_param(
-        &mut self,
-        param: &Param,
-        ty: &Ty,
-        is_receiver: bool,
-    ) {
-        let resolved_param_ty = self.subst.resolve(ty);
-
-        if !param.is_mutable
-            || is_receiver
-            || !self.param_var_has_no_caller_visible_effect(&resolved_param_ty)
-        {
-            return;
-        }
-        self.report_error_with_suggestions(
-            TypeErrorKind::MutabilityError,
-            &param.ty.1,
-            format!(
-                "`var {}` on a by-value parameter of type `{}` has no caller-visible effect",
-                param.name,
-                resolved_param_ty.user_facing()
-            ),
-            vec![
-                "return the modified value to the caller".to_string(),
-                "move the mutation into an actor or a mutable receiver method".to_string(),
-            ],
-        );
-    }
-
-    /// Whether every mutable projection of this by-value parameter is private
-    /// to the callee.
-    ///
-    /// Value aggregates are walked structurally. `Option` and `Result` are
-    /// inline sum wrappers, not handles, so their payloads are inspected just
-    /// like tuple elements, array elements, record fields, and enum payloads.
-    /// This closes the one-wrapper-deep form of the #2810 trap: replacing an
-    /// `Option<Account>` or `Result<Account, E>` mutates only the callee's copy.
-    ///
-    /// A compiler-proven caller-visible handle is a shared storage or process
-    /// boundary. The exact authority is
-    /// [`crate::BuiltinType::is_caller_visible_shared_handle`]: collections,
-    /// `Rc`/`Weak`, channel and stream handles, actor handles, and
-    /// `SupervisorPool`. A value aggregate containing one is therefore not
-    /// rejected wholesale: `holder.items[0] = value` reaches storage the caller
-    /// still references, and `holder.pid.send(value)` reaches actor state. The
-    /// assignment checker separately validates the concrete projection, so
-    /// `holder.count = value` and replacing `holder.items` are still diagnosed
-    /// as private-copy writes.
-    ///
-    /// Unknown leaves, opaque builtins, bare type parameters, pointers,
-    /// functions, and scalars are not guessed to be aggregates or shared
-    /// storage. This is deliberately fail-closed when descending through a
-    /// value wrapper: only the compiler-known shared-handle authority proves a
-    /// caller-visible projection. Recursive nominal types are cycle-broken by
-    /// definition identity; other fields and variants are still inspected.
-    ///
-    /// Copy-ness remains irrelevant. A `Copy` aggregate is more certainly a
-    /// private copy, not less (#2810).
-    pub(super) fn param_var_has_no_caller_visible_effect(&self, ty: &Ty) -> bool {
-        self.param_ty_is_value_aggregate(ty) && !self.param_ty_has_caller_visible_projection(ty)
-    }
-
-    /// Whether `ty` itself is an inline value aggregate whose binding carries
-    /// private storage at the call boundary.
-    fn param_ty_is_value_aggregate(&self, ty: &Ty) -> bool {
-        match self.subst.resolve(ty) {
-            Ty::Named {
-                builtin: None,
-                name,
-                ..
-            } => self.lookup_type_def(&name).is_some(),
-            Ty::Named {
-                builtin: Some(crate::BuiltinType::Option | crate::BuiltinType::Result),
-                ..
-            }
-            | Ty::Tuple(_)
-            | Ty::Array(_, _) => true,
-            _ => false,
-        }
-    }
-
-    /// Whether some projection from `ty` reaches compiler-proven storage shared
-    /// with the caller. This is a possibility query; an actual assignment is
-    /// checked against its concrete projection in `statements.rs`.
-    pub(super) fn param_ty_has_caller_visible_projection(&self, ty: &Ty) -> bool {
-        self.param_ty_has_caller_visible_projection_inner(
-            &self.subst.resolve(ty),
-            &mut std::collections::HashSet::new(),
-        )
-    }
-
-    fn param_ty_has_caller_visible_projection_inner(
-        &self,
-        ty: &Ty,
-        visiting_nominals: &mut std::collections::HashSet<String>,
-    ) -> bool {
-        match self.subst.resolve(ty) {
-            // Hew's CoW descriptor values are borrowed across an ordinary
-            // function boundary. A bytes mutator can replace the descriptor's
-            // backing representation, so the positive checker fact must
-            // survive even though String/Bytes are not `BuiltinType` handles.
-            Ty::String | Ty::Bytes => true,
-            Ty::Named {
-                builtin: Some(builtin),
-                args: _,
-                ..
-            } if builtin.is_caller_visible_shared_handle() => true,
-            Ty::Named {
-                builtin: Some(crate::BuiltinType::Option | crate::BuiltinType::Result),
-                args,
-                ..
-            } => args.iter().any(|arg| {
-                self.param_ty_has_caller_visible_projection_inner(arg, visiting_nominals)
-            }),
-            Ty::Named {
-                builtin: None,
-                name,
-                args,
-            } => {
-                let Some(def) = self.lookup_type_def(&name) else {
-                    return false;
-                };
-                if !visiting_nominals.insert(name.clone()) {
-                    return false;
-                }
-
-                let substitutions: std::collections::HashMap<String, Ty> =
-                    def.type_params.iter().cloned().zip(args).collect();
-                let mut projected_tys = def
-                    .fields
-                    .values()
-                    .map(|field| field.substitute_named_params_parallel(&substitutions))
-                    .collect::<Vec<_>>();
-                for variant in def.variants.values() {
-                    match variant {
-                        VariantDef::Unit => {}
-                        VariantDef::Tuple(fields) => {
-                            projected_tys.extend(fields.iter().map(|field| {
-                                field.substitute_named_params_parallel(&substitutions)
-                            }));
-                        }
-                        VariantDef::Struct(fields) => {
-                            projected_tys.extend(fields.iter().map(|(_, field)| {
-                                field.substitute_named_params_parallel(&substitutions)
-                            }));
-                        }
-                    }
-                }
-                let has_shared = projected_tys.iter().any(|projected| {
-                    self.param_ty_has_caller_visible_projection_inner(projected, visiting_nominals)
-                });
-                visiting_nominals.remove(&name);
-                has_shared
-            }
-            Ty::Tuple(items) => items.iter().any(|item| {
-                self.param_ty_has_caller_visible_projection_inner(item, visiting_nominals)
-            }),
-            Ty::Array(item, _) => {
-                self.param_ty_has_caller_visible_projection_inner(&item, visiting_nominals)
-            }
-            _ => false,
-        }
     }
 }
 

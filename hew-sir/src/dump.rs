@@ -142,6 +142,25 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         }
     }
     match &op.kind {
+        SemOpKind::FunctionMake { callable } => {
+            writeln!(out, "function.make @{}", callable.0).expect("write to String");
+        }
+        SemOpKind::ClosureMake { closure, fields } => {
+            write!(out, "closure.make #{}", closure.0).expect("write to String");
+            for field in fields {
+                write!(out, " %{}", field.value.0).expect("write to String");
+            }
+            writeln!(out).expect("write to String");
+        }
+        SemOpKind::CallableCoerce { source } => {
+            writeln!(out, "callable.coerce %{}", source.value.0).expect("write to String");
+        }
+        SemOpKind::LoadBorrow { place, environment } => writeln!(
+            out,
+            "load.borrow p{} from %{}",
+            place.0, environment.value.0
+        )
+        .expect("write to String"),
         SemOpKind::ConstI64(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstBool(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::TupleMake { elements } => {

@@ -1314,6 +1314,9 @@ impl<'a> InstanceService<'a> {
                 )
             })?;
         let substitution = match &callable_meta.instance {
+            CallableInstance::Closure(_) => {
+                return Err("closure body demand has no source contract".to_string())
+            }
             CallableInstance::Monomorphic => {
                 if !function.type_params.is_empty() {
                     return Err(format!(
@@ -1587,6 +1590,7 @@ impl<'a> InstanceService<'a> {
             &variant_shapes,
         );
         SemModule {
+            closures: Vec::new(),
             callables: table.callables,
             generic_templates,
             root_unit_callables: table.root_unit_callables,

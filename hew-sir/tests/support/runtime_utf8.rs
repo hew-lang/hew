@@ -144,6 +144,7 @@ pub(super) fn decode_module() -> SemModule {
         type_facts.insert(TypeInstanceKey(ty), row);
     }
     SemModule {
+        closures: Vec::new(),
         value_capabilities: BTreeMap::new(),
         callables: vec![SemCallable {
             id: CallableId(0),

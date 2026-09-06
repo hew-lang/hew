@@ -7,6 +7,7 @@
 //! SIR -> MIR and deletes its established HIR -> MIR body lowering.
 
 mod analysis;
+mod callable;
 mod capability;
 mod dump;
 mod lifetime;
@@ -19,6 +20,10 @@ mod verify;
 pub use analysis::{
     build_cfg_index, build_def_use, compute_dominators, replace_all_uses, replace_use, CfgIndex,
     DefUseIndex, Dominators, EdgeRef, RewriteError,
+};
+pub use callable::{
+    callable_parts, callable_value_signature, verify_callable_coercion, ClosureId,
+    ClosureInstanceKey, SemCaptureField, SemClosure,
 };
 pub use capability::{derived_capability_components, SemValueMethodPlan};
 pub use dump::{dump_lowering, dump_sir};
@@ -43,7 +48,7 @@ pub use ownership::{
     aggregate_field_recipes, aggregate_field_types, checked_binary_failure_kinds,
     runtime_failure_trap_kind, variant_field_recipes, variant_field_types, AggregateFieldRecipe,
     Binding, BindingId, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl,
-    PlaceId, SnapshotDecision, StringLiteralId, SuspendKind, TrapKind,
+    PlaceId, PlaceOrigin, SnapshotDecision, StringLiteralId, SuspendKind, TrapKind,
 };
 pub use verify::{
     verify_function, verify_function_in_module, verify_module, CfgDiscardSafetyReason,

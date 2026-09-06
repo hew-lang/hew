@@ -228,6 +228,7 @@ pub struct SirDiagnostic {
 #[derive(Debug)]
 pub(crate) struct CallableContext<'a> {
     by_id: BTreeMap<CallableId, &'a SemCallable>,
+    closures: &'a [crate::SemClosure],
 }
 
 /// Index an already-verified module's callable table.
@@ -236,8 +237,12 @@ pub(crate) struct CallableContext<'a> {
 /// already run [`verify_module`] over the same callables needs only the index,
 /// and building it here lets that pass hold the table while it mutates the
 /// module's bodies.
-pub(crate) fn callable_context(callables: &[SemCallable]) -> CallableContext<'_> {
+pub(crate) fn callable_context<'a>(
+    callables: &'a [SemCallable],
+    closures: &'a [crate::SemClosure],
+) -> CallableContext<'a> {
     CallableContext {
+        closures,
         by_id: callables
             .iter()
             .map(|callable| (callable.id, callable))
@@ -849,6 +854,14 @@ pub(crate) fn verify_function_with_context(
     };
     for block in &function.blocks {
         for op in &block.ops {
+            verify_callable_operation(
+                function,
+                op,
+                &types,
+                facts,
+                callable_context,
+                &mut diagnostics,
+            );
             verify_operation_shape(
                 function,
                 op,
@@ -959,6 +972,22 @@ fn verify_callable_table<'a>(
     module: &'a SemModule,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) -> CallableContext<'a> {
+    let mut instances = HashSet::new();
+    for closure in &module.closures {
+        let result = closure.validate(module).and_then(|()| {
+            if instances.insert(closure.instance) {
+                Ok(())
+            } else {
+                Err("closure literal is repeated within its enclosing instance".to_string())
+            }
+        });
+        if let Err(reason) = result {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                callable: closure.body,
+                reason,
+            }));
+        }
+    }
     let generic_templates = verify_generic_template_headers(module, diagnostics);
     let mut by_id = BTreeMap::new();
     let mut ids = HashSet::new();
@@ -985,6 +1014,18 @@ fn verify_callable_table<'a>(
             )));
         }
         match &callable.instance {
+            CallableInstance::Closure(id) => {
+                if module
+                    .closure(*id)
+                    .is_none_or(|closure| closure.body != callable.id)
+                {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "closure body has no matching canonical environment descriptor"
+                            .to_string(),
+                    }));
+                }
+            }
             CallableInstance::Monomorphic => {
                 if !monomorphic_declarations.insert(callable.declaration.clone()) {
                     diagnostics.push(module_diag(
@@ -1041,11 +1082,15 @@ fn verify_callable_table<'a>(
                     .to_string(),
             }));
         }
-        if callable.kind != SemCallableKind::HewDirect {
+        let expected_kind = if matches!(callable.instance, CallableInstance::Closure(_)) {
+            SemCallableKind::HewClosure
+        } else {
+            SemCallableKind::HewDirect
+        };
+        if callable.kind != expected_kind {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                 callable: callable.id,
-                reason: "initial SIR callable table admits only ordinary HewDirect bodies"
-                    .to_string(),
+                reason: "callable kind differs from its source instance contract".to_string(),
             }));
         }
         for (parameter, abi) in callable.signature.params.iter().enumerate() {
@@ -1057,6 +1102,11 @@ fn verify_callable_table<'a>(
                         abi.ty.user_facing()
                     ),
                 }));
+            }
+            if parameter == 0 && matches!(callable.instance, CallableInstance::Closure(_)) {
+                // The closure descriptor validates its exact receiver type,
+                // access permission and ownership together.
+                continue;
             }
             let expected_passing = match crate::OwnKind::of_ty(&abi.ty, &module.type_facts) {
                 Ok(crate::OwnKind::Owned) => SemParamPassing::Borrow,
@@ -1175,7 +1225,10 @@ fn verify_callable_table<'a>(
             Some(_) => {}
         }
     }
-    CallableContext { by_id }
+    CallableContext {
+        by_id,
+        closures: &module.closures,
+    }
 }
 
 /// Collect and verify body-free semantic template headers before checking
@@ -1418,6 +1471,95 @@ fn verify_function_callable_identity(
     }
 }
 
+fn verify_callable_operation(
+    function: &SemFunction,
+    operation: &SemOp,
+    types: &HashMap<ValueId, ResolvedTy>,
+    facts: &TypeFactTable,
+    context: Option<&CallableContext<'_>>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    if !matches!(
+        operation.kind,
+        SemOpKind::FunctionMake { .. }
+            | SemOpKind::ClosureMake { .. }
+            | SemOpKind::CallableCoerce { .. }
+    ) {
+        return;
+    }
+    let [result] = operation.results.as_slice() else {
+        return;
+    };
+    let checked = (|| {
+        let context = context.ok_or_else(|| {
+            "callable construction requires its module's semantic contract".to_string()
+        })?;
+        match &operation.kind {
+            SemOpKind::FunctionMake { callable } => {
+                let target = context
+                    .callable(*callable)
+                    .ok_or_else(|| "function value has no exact callable target".to_string())?;
+                if target.kind != SemCallableKind::HewDirect {
+                    return Err(
+                        "a closure body cannot be exposed without its environment".to_string()
+                    );
+                }
+                let ResolvedTy::Function { capabilities, .. } = &result.ty else {
+                    return Err(
+                        "a function value requires a capture-free function type".to_string()
+                    );
+                };
+                if *capabilities != hew_types::CallableCapabilities::FUNCTION_ITEM
+                    || crate::callable_value_signature(&result.ty, facts)? != target.signature
+                {
+                    return Err(
+                        "function value signature or capabilities differ from its exact target"
+                            .to_string(),
+                    );
+                }
+            }
+            SemOpKind::ClosureMake { closure, fields } => {
+                let descriptor = context
+                    .closures
+                    .get(closure.0 as usize)
+                    .filter(|descriptor| descriptor.id == *closure)
+                    .ok_or_else(|| {
+                        "closure construction has no canonical environment descriptor".to_string()
+                    })?;
+                if descriptor.instance.enclosing != function.callable
+                    || descriptor.ty != result.ty
+                    || fields.len() != descriptor.fields.len()
+                {
+                    return Err("closure construction disagrees with its enclosing instance, type or field count".to_string());
+                }
+                for (value, field) in fields.iter().zip(&descriptor.fields) {
+                    if types.get(&value.value) != Some(&field.ty) {
+                        return Err(
+                            "closure construction changes a captured field type".to_string()
+                        );
+                    }
+                }
+            }
+            SemOpKind::CallableCoerce { source } => {
+                let source_ty = types
+                    .get(&source.value)
+                    .ok_or_else(|| "callable coercion has no input definition".to_string())?;
+                crate::verify_callable_coercion(source_ty, &result.ty, facts)?;
+            }
+            _ => unreachable!("selected callable construction operation"),
+        }
+        if result.own != crate::OwnKind::Owned {
+            return Err(
+                "a callable value must carry its environment ownership obligation".to_string(),
+            );
+        }
+        Ok(())
+    })();
+    if let Err(reason) = checked {
+        invalid_operation(function, operation.id, reason, diagnostics);
+    }
+}
+
 fn is_initial_scalar(ty: &ResolvedTy) -> bool {
     ty.is_integer() || matches!(ty, ResolvedTy::Bool | ResolvedTy::F64 | ResolvedTy::Char)
 }
@@ -1441,6 +1583,7 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
 fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
     is_initial_call_value(ty)
         || hew_types::runtime_call::collection_type_arguments(ty).is_some()
+        || matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
         || matches!(ty, ResolvedTy::Tuple(fields) if !fields.is_empty())
         || module.aggregate_shape_for_type(ty).is_some()
         || module.variant_shape_for_type(ty).is_some()
@@ -2091,10 +2234,14 @@ fn verify_operation_shape(
         | SemOpKind::ConstF64(_)
         | SemOpKind::ConstChar(_)
         | SemOpKind::ConstStr(_)
-        | SemOpKind::ConstBytes(_) => {}
+        | SemOpKind::ConstBytes(_)
+        | SemOpKind::FunctionMake { .. }
+        | SemOpKind::ClosureMake { .. }
+        | SemOpKind::CallableCoerce { .. } => {}
         // Dormant operations remain fail-closed until their producer and
         // complete semantic validation land together.
-        SemOpKind::ConstUnit
+        SemOpKind::LoadBorrow { .. }
+        | SemOpKind::ConstUnit
         | SemOpKind::ConstDuration(_)
         | SemOpKind::StrEq { .. }
         | SemOpKind::BytesEq { .. }
@@ -3391,7 +3538,7 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_borrow_slot_parameter_the_class_kind_contradicts() {
         let function = function(ResolvedTy::String, OwnKind::Owned);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
-        let context = callable_context(&callables);
+        let context = callable_context(&callables, &[]);
         let diagnostics = verify_function_with_context(
             &function,
             Some(&context),
@@ -3410,7 +3557,7 @@ mod parameter_own_kind_tests {
     fn verifier_admits_a_borrow_slot_parameter_that_is_guaranteed() {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
-        let context = callable_context(&callables);
+        let context = callable_context(&callables, &[]);
         let diagnostics = verify_function_with_context(
             &function,
             Some(&context),
@@ -3428,7 +3575,7 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_read_only_slot_parameter_that_claims_guaranteed() {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
-        let context = callable_context(&callables);
+        let context = callable_context(&callables, &[]);
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
         let diagnostics =

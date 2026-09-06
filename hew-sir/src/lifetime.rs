@@ -480,7 +480,9 @@ impl<'a> Flow<'a> {
 fn operation_consumes_operands(kind: &SemOpKind) -> bool {
     matches!(
         kind,
-        SemOpKind::TupleMake { .. }
+        SemOpKind::ClosureMake { .. }
+            | SemOpKind::CallableCoerce { .. }
+            | SemOpKind::TupleMake { .. }
             | SemOpKind::AggregateMake { .. }
             | SemOpKind::VariantMake { .. }
             | SemOpKind::DestroyValue { .. }

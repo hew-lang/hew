@@ -543,7 +543,9 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         .expect("nested forwarding must request id<i64>");
     let id_i64_key = match &id_i64.instance {
         CallableInstance::Generic(key) => key,
-        CallableInstance::Monomorphic => panic!("id<i64> must retain a semantic instance key"),
+        CallableInstance::Monomorphic | CallableInstance::Closure(_) => {
+            panic!("id<i64> must retain a semantic instance key")
+        }
     };
     assert_eq!(
         lowered

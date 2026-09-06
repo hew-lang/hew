@@ -65,7 +65,7 @@ pub fn canonicalize_module_constant_cfg(
     // The callables are not touched by a CFG rewrite, so one index over them
     // serves every body. `verify_module` above already validated the table.
     let callables = candidate.callables.clone();
-    let context = crate::verify::callable_context(&callables);
+    let context = crate::verify::callable_context(&callables, &candidate.closures);
     let mut reports = Vec::with_capacity(candidate.functions.len());
     for function in &mut candidate.functions {
         let report = canonicalize_verified_function(

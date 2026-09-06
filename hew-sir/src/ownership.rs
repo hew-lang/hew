@@ -270,13 +270,24 @@ pub struct PlaceId(pub u32);
 
 /// One place a function body can address.
 ///
-/// `runtime_owned` distinguishes an actor state field or an environment slot,
-/// whose exit obligations §1.3.6 states, from an ordinary function-owned place.
+/// The origin records who owns the place and its exit obligations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaceDecl {
     pub id: PlaceId,
     pub ty: ResolvedTy,
-    pub runtime_owned: bool,
+    pub origin: PlaceOrigin,
+}
+
+/// The semantic owner of a memory place, without a physical field offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceOrigin {
+    Local,
+    Runtime,
+    /// An initialized field of this closure body's explicit receiver.
+    Capture {
+        environment: ValueId,
+        field: u32,
+    },
 }
 
 /// Module-local interned identity of a `string` literal (§1.3.1).

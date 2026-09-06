@@ -1593,3 +1593,12 @@ structural substitution now uses the existing child mapper so callable
 capabilities cannot diverge between duplicated substitution walkers. This is a
 compiling syntax and field checkpoint; capture enforcement, directional
 coercions, capability-derived ownership and native execution remain unfinished.
+
+## Concrete callable environments
+
+SIR now identifies a closure by its literal and enclosing instance, with one
+ordered capture descriptor and an explicit receiver body. Construction and
+capability weakening are semantic operations. Descriptor checks reject mismatched
+capture types, receiver permissions and ownership-erasing coercions. Capture
+places retain their environment identity; their execution and source production
+are the next connected layer.

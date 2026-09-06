@@ -5075,6 +5075,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            closures: Vec::new(),
             value_capabilities: BTreeMap::new(),
             callables: vec![callable],
             generic_templates: vec![],
@@ -5257,6 +5258,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            closures: Vec::new(),
             callables: vec![callable],
             generic_templates: vec![],
             root_unit_callables: vec![CallableId(0)],

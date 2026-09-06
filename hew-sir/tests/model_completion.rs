@@ -90,7 +90,7 @@ fn mutable_source_binding_can_target_a_place() {
         vec![PlaceDecl {
             id: place,
             ty: ResolvedTy::I64,
-            runtime_owned: false,
+            origin: hew_sir::PlaceOrigin::Local,
         }],
     );
 

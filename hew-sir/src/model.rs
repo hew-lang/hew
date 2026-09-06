@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::{ClosureId, SemClosure};
+
 use hew_hir::{ItemId, SiteId};
 use hew_parser::ast::Span;
 use hew_types::{
@@ -56,6 +58,8 @@ pub struct SirInstanceKey {
 pub enum CallableInstance {
     Monomorphic,
     Generic(SirInstanceKey),
+    /// A concrete closure body, resolved by its environment descriptor.
+    Closure(ClosureId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,6 +288,8 @@ pub enum SemCallConv {
 pub enum SemCallableKind {
     /// An ordinary Hew user function or flattened impl-method body.
     HewDirect,
+    /// A closure body with an explicit environment receiver.
+    HewClosure,
 }
 
 /// ABI disposition for one semantic callable parameter.
@@ -566,6 +572,8 @@ pub fn runtime_variant_shape_refs(
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
+    /// Concrete environments in canonical module-local identity order.
+    pub closures: Vec<SemClosure>,
     /// Checker-selected operations demanded by concrete collection keys.
     /// User methods retain their resolved declaration and specialization;
     /// derived operations compose the separately selected component plans.
@@ -917,6 +925,24 @@ pub struct CheckedFailure {
 /// ordinary SSA operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemOpKind {
+    /// Create a callable value for an exact demanded function, with no captures.
+    FunctionMake {
+        callable: CallableId,
+    },
+    /// Consume the ordered capture operands into one owned environment.
+    ClosureMake {
+        closure: ClosureId,
+        fields: Vec<Operand>,
+    },
+    /// Transfer a callable while weakening only its proved capabilities.
+    CallableCoerce {
+        source: Operand,
+    },
+    /// Borrow a captured field, retaining its explicit environment dependency.
+    LoadBorrow {
+        place: PlaceId,
+        environment: Operand,
+    },
     ConstI64(i64),
     ConstBool(bool),
     /// Construct a semantic tuple value from its ordered elements.
@@ -1079,7 +1105,8 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         match self {
-            Self::ConstI64(_)
+            Self::FunctionMake { .. }
+            | Self::ConstI64(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
             | Self::ConstChar(_)
@@ -1102,7 +1129,9 @@ impl SemOpKind {
                 }
             }
             Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
-            Self::AggregateMake { fields, .. } | Self::VariantMake { fields, .. } => {
+            Self::AggregateMake { fields, .. }
+            | Self::VariantMake { fields, .. }
+            | Self::ClosureMake { fields, .. } => {
                 for (index, field) in fields.iter().enumerate() {
                     visit(
                         OperandSlot(
@@ -1123,7 +1152,11 @@ impl SemOpKind {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::CopyValue { source: value }
+            Self::CallableCoerce { source: value }
+            | Self::LoadBorrow {
+                environment: value, ..
+            }
+            | Self::CopyValue { source: value }
             | Self::Move { source: value }
             | Self::Fork { source: value }
             | Self::DestroyValue { value }
@@ -1145,7 +1178,8 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         match self {
-            Self::ConstI64(_)
+            Self::FunctionMake { .. }
+            | Self::ConstI64(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
             | Self::ConstChar(_)
@@ -1168,7 +1202,9 @@ impl SemOpKind {
                 }
             }
             Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
-            Self::AggregateMake { fields, .. } | Self::VariantMake { fields, .. } => {
+            Self::AggregateMake { fields, .. }
+            | Self::VariantMake { fields, .. }
+            | Self::ClosureMake { fields, .. } => {
                 for (index, field) in fields.iter_mut().enumerate() {
                     visit(
                         OperandSlot(
@@ -1189,7 +1225,11 @@ impl SemOpKind {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::CopyValue { source: value }
+            Self::CallableCoerce { source: value }
+            | Self::LoadBorrow {
+                environment: value, ..
+            }
+            | Self::CopyValue { source: value }
             | Self::Move { source: value }
             | Self::Fork { source: value }
             | Self::DestroyValue { value }
@@ -1210,6 +1250,7 @@ impl SemOpKind {
     pub const fn borrow_parent(&self) -> Option<&Operand> {
         match self {
             Self::BeginBorrow { owner } => Some(owner),
+            Self::LoadBorrow { environment, .. } => Some(environment),
             Self::AggregateProjectBorrow { aggregate, .. } => Some(aggregate),
             _ => None,
         }
@@ -1227,7 +1268,10 @@ impl SemOpKind {
             // values: two `copy_value`s of one value are two retains and must
             // never be common-subexpression-eliminated into one, and a
             // `destroy_value` or a place write is observable.
-            Self::CopyValue { .. }
+            Self::ClosureMake { .. }
+            | Self::CallableCoerce { .. }
+            | Self::LoadBorrow { .. }
+            | Self::CopyValue { .. }
             | Self::DestroyValue { .. }
             | Self::BeginBorrow { .. }
             | Self::EndBorrow { .. }
@@ -1244,7 +1288,8 @@ impl SemOpKind {
             | Self::StoreInit { .. }
             | Self::StoreAssign { .. }
             | Self::EndLifetime { .. } => EffectSet::IMPURE,
-            Self::ConstI64(_)
+            Self::FunctionMake { .. }
+            | Self::ConstI64(_)
             | Self::ConstBool(_)
             | Self::ConstF64(_)
             | Self::ConstChar(_)
@@ -1270,7 +1315,9 @@ impl SemOpKind {
     pub const fn transfers_obligation(&self) -> bool {
         matches!(
             self,
-            Self::DestroyValue { .. }
+            Self::ClosureMake { .. }
+                | Self::CallableCoerce { .. }
+                | Self::DestroyValue { .. }
                 | Self::Move { .. }
                 | Self::Fork { .. }
                 | Self::AggregateMake { .. }

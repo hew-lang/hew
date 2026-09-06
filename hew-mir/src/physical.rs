@@ -1746,6 +1746,12 @@ impl FunctionLowerer<'_> {
                     source: self.value(borrow.value)?,
                 })
             }
+            SemOpKind::FunctionMake { .. }
+            | SemOpKind::ClosureMake { .. }
+            | SemOpKind::CallableCoerce { .. }
+            | SemOpKind::LoadBorrow { .. } => Err(PhysicalError::new(
+                "callable environment operations require their physical contract",
+            )),
             SemOpKind::AllocPlace { place } => {
                 Self::no_results(operation)?;
                 one(PhysicalOp::StorageLive {
@@ -5098,6 +5104,7 @@ mod tests {
             },
         );
         SemModule {
+            closures: Vec::new(),
             value_capabilities: BTreeMap::new(),
             callables: vec![callable],
             generic_templates: vec![],

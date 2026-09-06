@@ -873,8 +873,21 @@ impl<'a> Flow<'a> {
                 ..
             } => {
                 if let Some(place) = place {
-                    self.require_active(id, *place, &state, emit);
-                    self.require_no_live_borrows(id, PlaceBase::Place(*place), &state, emit);
+                    let root = self
+                        .projections
+                        .projection(*place)
+                        .map_or(OwnerRoot::Local(*place), |projection| projection.root);
+                    let base = match root {
+                        OwnerRoot::Local(root) => {
+                            self.require_active(id, root, &state, emit);
+                            PlaceBase::Place(root)
+                        }
+                        OwnerRoot::Value(root) => {
+                            self.access(id, root, false, &mut state, emit);
+                            PlaceBase::Value(root)
+                        }
+                    };
+                    self.require_no_live_borrows(id, base, &state, emit);
                 }
                 state.fault = combine_fault(state.fault, DEAD | LIVE);
                 state.exit |= TRAP;

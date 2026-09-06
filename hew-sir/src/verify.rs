@@ -4137,7 +4137,11 @@ fn verify_terminator_shape(
                                 inputs.is_empty()
                                     && function.places.iter().any(|declaration| {
                                         declaration.id == *place
-                                            && declaration.origin == crate::PlaceOrigin::Local
+                                            && matches!(
+                                                declaration.origin,
+                                                crate::PlaceOrigin::Local
+                                                    | crate::PlaceOrigin::Aggregate { .. }
+                                            )
                                             && crate::OwnKind::of_ty(
                                                 &declaration.ty,
                                                 variants.facts,

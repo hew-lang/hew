@@ -83,6 +83,12 @@ impl Builder<'_, '_> {
         value: ValueId,
         provenance: Provenance,
     ) -> Result<(), String> {
+        if self.value_needs_close(&self.places[place.0 as usize].ty) {
+            // Keep the incoming owner live until the old contents have drained.
+            // A cleanup fault must release both values before unwinding.
+            self.close_value(Some(place), None)?;
+            self.dispatch_value_cleanup()?;
+        }
         self.emit_place_operation(
             SemOpKind::StoreAssign {
                 place,

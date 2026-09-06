@@ -1010,6 +1010,13 @@ pub enum HirShutdownDirective {
     Infinity,
 }
 
+/// Semantic declaration kind, including enums with no inhabited variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirTypeDeclKind {
+    Struct,
+    Enum,
+}
+
 /// Lowered top-level type declaration.
 ///
 /// Carries the `#[resource]` / `#[linear]` marker (if any), the list of
@@ -1018,6 +1025,7 @@ pub enum HirShutdownDirective {
 /// recorded for snapshot stability and future analysis passes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirTypeDecl {
+    pub kind: HirTypeDeclKind,
     pub id: ItemId,
     pub node: HirNodeId,
     /// Checker-owned canonical declaration identity. This is the semantic key

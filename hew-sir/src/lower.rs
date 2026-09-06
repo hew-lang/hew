@@ -708,7 +708,8 @@ fn concrete_user_variant_shape(
         .iter()
         .find_map(|item| match item {
             HirItem::TypeDecl(decl)
-                if decl.declaration == *declaration && !decl.variants.is_empty() =>
+                if decl.declaration == *declaration
+                    && decl.kind == hew_hir::HirTypeDeclKind::Enum =>
             {
                 Some(decl)
             }
@@ -834,9 +835,6 @@ fn require_variant_shape(
     }
     require_type_facts(facts, enum_ty)?;
     let (is_indirect, variants) = concrete_variant_shape(module, enum_ty)?;
-    if variants.is_empty() {
-        return Err(format!("enum `{}` has no variants", enum_ty.user_facing()));
-    }
     for variant in &variants {
         for field in &variant.fields {
             require_type_facts(facts, &field.ty)?;
@@ -3498,9 +3496,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// later lowering can realize its call/continuation CFG edge.
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         match &expr.kind {
-            HirExprKind::Return { value } => {
-                return self.lower_function_return(value.as_deref());
-            }
+            HirExprKind::Return { value } => return self.lower_function_return(value.as_deref()),
             HirExprKind::Call {
                 target: CallTarget::Builtin { endpoint },
                 args,
@@ -3532,7 +3528,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } if self.ty(&expr.ty) == ResolvedTy::Unit => {
                 return self.lower_unit_if(condition, then_expr, else_expr.as_deref());
             }
-            HirExprKind::Match { scrutinee, arms } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+            HirExprKind::Match { scrutinee, arms }
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
                 self.lower_match_control(expr, scrutinee, arms)?;
                 return Ok(());
             }
@@ -4577,9 +4575,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if scrutinee_ty.is_integer() || matches!(scrutinee_ty, ResolvedTy::Bool | ResolvedTy::Char)
         {
             return self.lower_scalar_match(whole, scrutinee_expr, source_arms);
-        }
-        if source_arms.is_empty() {
-            return Err("variant match has no source arms".to_string());
         }
         let enum_ty = self.ty(&scrutinee_expr.ty);
         let shape = self.service.require_variant_shape(&enum_ty)?;

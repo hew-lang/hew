@@ -7421,7 +7421,28 @@ impl Checker {
         expected: Option<&Ty>,
     ) -> Ty {
         if arms.is_empty() {
-            return Ty::Unit;
+            let resolved = self.subst.resolve(scrutinee_ty);
+            let uninhabited = match &resolved {
+                Ty::Never => true,
+                Ty::Named { name, .. } => self.lookup_type_def(name).is_some_and(|definition| {
+                    definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+                }),
+                _ => false,
+            };
+            if uninhabited {
+                return Ty::Never;
+            }
+            if resolved != Ty::Error {
+                self.report_error(
+                    TypeErrorKind::NonExhaustiveMatch,
+                    span,
+                    format!(
+                        "an empty match cannot cover inhabited type `{}`",
+                        resolved.user_facing()
+                    ),
+                );
+            }
+            return Ty::Error;
         }
 
         // If the enclosing context supplies a concrete expected type (e.g. the
@@ -8178,6 +8199,17 @@ impl Checker {
             }
         }
         let name = qualified_owned.as_deref().unwrap_or(name);
+        if self
+            .lookup_type_def(name)
+            .is_some_and(|definition| definition.kind == TypeDefKind::Enum)
+        {
+            self.report_error(
+                TypeErrorKind::TypeUsedAsValue,
+                span,
+                format!("enum `{name}` requires a declared variant; it cannot be constructed as a record"),
+            );
+            return Ty::Error;
+        }
         // Fail closed on opaque handle direct construction — but ONLY for
         // cross-module constructions. The module that DECLARES an `#[opaque]`
         // type is the producer: its impl blocks contain the legitimate FFI

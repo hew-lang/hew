@@ -1,0 +1,40 @@
+enum QuietOutput {}
+enum QuietStepDisposition { Taken, Ignored }
+type QuietStep {
+    outputs: Vec<QuietOutput>,
+    disposition: QuietStepDisposition,
+    label: string,
+}
+
+fn impossible(output: QuietOutput) -> i64 {
+    match output {}
+}
+
+fn step(label: string) -> QuietStep {
+    QuietStep { outputs: [], disposition: .Taken, label: label }
+}
+
+fn main() -> i64 {
+    var report = step("original".to_upper());
+    let saved = report;
+    report.label = "changed";
+    report.outputs.clear();
+    var visits = 0;
+    for output in saved.outputs {
+        visits = visits + impossible(output);
+    }
+    if visits != 0 || saved.outputs.len() != 0 || report.outputs.len() != 0 {
+        return 1;
+    }
+    match saved.outputs.get(0) {
+        .Some(output) => { return impossible(output); },
+        .None => {},
+    }
+    match saved.disposition {
+        .Taken => {},
+        .Ignored => { return 2; },
+    }
+    println(saved.label);
+    println(report.label);
+    0
+}

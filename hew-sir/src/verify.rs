@@ -356,9 +356,6 @@ fn verify_variant_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic
                 shape.enum_ty.user_facing()
             ));
         }
-        if shape.variants.is_empty() {
-            refuse("variant descriptor has no variants".to_string());
-        }
         let mut variant_names = HashSet::new();
         for variant in &shape.variants {
             if !variant_names.insert(&variant.name) {

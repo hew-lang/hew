@@ -25,6 +25,17 @@ stdout = "original:2:7\nreplacement:3\nretained:7\nkey:branch\n"
 exit = 0
 
 [[case]]
+id = "empty-enum-values"
+intent = "Reports with uninhabited output elements copy and drop independently, iterate zero times and return None for lookup while zero-arm elimination remains exhaustive."
+source = "cases/empty-enum-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "ORIGINAL\nchanged\n"
+exit = 0
+
+[[case]]
 id = "vector-zero-sized"
 intent = "Empty record vector elements preserve logical length through copying, extraction and mutation without reading payload bytes."
 source = "cases/vector-zero-sized.hew"

@@ -207,8 +207,8 @@ pub fn run_layout_mono_pass(
                 all_type_params.extend(td.type_params.iter().cloned());
                 // A struct-kind type decl contributes a record layout; an
                 // enum-kind type decl contributes an enum layout. The two are
-                // disjoint (a type decl has either `fields` or `variants`).
-                if td.variants.is_empty() {
+                // disjoint even when an enum has no variants.
+                if td.kind == crate::HirTypeDeclKind::Struct {
                     record_decls.insert(
                         td.qualified_name(),
                         RecordDecl {
@@ -299,7 +299,7 @@ pub fn run_layout_mono_pass(
             }
             HirItem::TypeDecl(td) => {
                 all_type_params.extend(td.type_params.iter().cloned());
-                if td.variants.is_empty() {
+                if td.kind == crate::HirTypeDeclKind::Struct {
                     record_decls
                         .entry(td.qualified_name())
                         .or_insert_with(|| RecordDecl {

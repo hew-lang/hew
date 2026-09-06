@@ -52,7 +52,7 @@ use crate::node::{
     HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
     HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
     HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
-    HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
@@ -4176,7 +4176,7 @@ pub fn lower_program_with_mono_cap(
             // Snapshot the enum's variant descriptors so call/struct-init
             // lowering can resolve payload ctors to `MachineVariantCtor`
             // without re-walking the parser AST.
-            if !hir_decl.variants.is_empty() {
+            if hir_decl.kind == HirTypeDeclKind::Enum {
                 ctx.enum_variants_by_name
                     .insert(hir_decl.name.clone(), hir_decl.variants.clone());
                 if hir_decl.is_indirect {
@@ -4242,7 +4242,7 @@ pub fn lower_program_with_mono_cap(
                                 continue;
                             };
                             let canonical_name = format!("{source_module}.{}", hir_decl.name);
-                            if !hir_decl.variants.is_empty() {
+                            if hir_decl.kind == HirTypeDeclKind::Enum {
                                 ctx.enum_variants_by_name
                                     .insert(canonical_name.clone(), hir_decl.variants.clone());
                                 if hir_decl.is_indirect {
@@ -4378,7 +4378,7 @@ pub fn lower_program_with_mono_cap(
                             {
                                 qualified_entry.1 = close_method;
                             }
-                            if !hir_decl.variants.is_empty() {
+                            if hir_decl.kind == HirTypeDeclKind::Enum {
                                 ctx.enum_variants_by_name.insert(
                                     format!("{source_module}.{}", hir_decl.name),
                                     hir_decl.variants.clone(),
@@ -4586,7 +4586,7 @@ pub fn lower_program_with_mono_cap(
                 .values()
                 .filter(|d| {
                     d.marker == ResourceMarker::None
-                        && d.variants.is_empty()
+                        && d.kind == HirTypeDeclKind::Struct
                         && d.type_params.is_empty()
                         && !d.fields.is_empty()
                 })
@@ -6011,7 +6011,7 @@ fn admit_resource_record_lifecycles(
         HirItem::TypeDecl(decl)
             if !decl.is_opaque
                 && decl.marker == ResourceMarker::Resource
-                && decl.variants.is_empty() =>
+                && decl.kind == HirTypeDeclKind::Struct =>
         {
             Some(decl)
         }
@@ -6339,7 +6339,7 @@ fn admit_declared_opaque_resource_lifecycles(
         }
         _ => None,
     }) {
-        if !decl.variants.is_empty() {
+        if decl.kind == HirTypeDeclKind::Enum {
             // Every sibling rejection under this filter emits a diagnostic;
             // a variant-bearing `#[resource]` opaque declaration has no
             // single-representation lifecycle boundary to admit and must not
@@ -14170,6 +14170,10 @@ impl LowerCtx {
             ResourceMarker::from(decl.resource_marker)
         };
         Some(HirTypeDecl {
+            kind: match decl.kind {
+                TypeDeclKind::Struct => HirTypeDeclKind::Struct,
+                TypeDeclKind::Enum => HirTypeDeclKind::Enum,
+            },
             id,
             node: self.ids.node(),
             declaration: self.source_declaration(&span, hew_types::DeclarationKind::Type, 0)?,
@@ -30434,9 +30438,18 @@ impl LowerCtx {
             );
         }
 
-        // Empty arms list is rejected by the parser/checker before reaching
-        // here; treat the unexpected case as fail-closed.
+        // A checker-proven uninhabited match has no successor or result value.
+        // SIR checks exhaustiveness against the exact enum descriptor.
         if hir_arms.is_empty() {
+            if self.checker_expr_ty(span, "empty match") == Some(ResolvedTy::Never) {
+                return (
+                    HirExprKind::Match {
+                        scrutinee: Box::new(scrutinee_hir),
+                        arms: hir_arms,
+                    },
+                    ResolvedTy::Never,
+                );
+            }
             self.unsupported(
                 span.clone(),
                 "match expression with no arms",
@@ -40288,6 +40301,7 @@ impl Widget {
     fn opaque_resource_with_variants_emits_checker_boundary_violation() {
         use crate::HirNodeId;
         let decl = HirTypeDecl {
+            kind: HirTypeDeclKind::Enum,
             id: ItemId(0),
             node: HirNodeId(0),
             declaration: hew_types::DefId::for_test("app.Handle"),

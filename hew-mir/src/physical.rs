@@ -3174,7 +3174,7 @@ fn verify_variant_glue(
         )));
     };
     let expected_tag_bits = match glue.variants.len() {
-        1..=256 => 8,
+        0..=256 => 8,
         257..=65_536 => 16,
         count => {
             return Err(PhysicalError::new(format!(

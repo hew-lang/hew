@@ -243,12 +243,6 @@ fn realize_layout(
                 ty.user_facing()
             )));
         }
-        if shape.variants.is_empty() {
-            return Err(CodegenError::FailClosed(format!(
-                "physical variant `{}` has no declaration-order cases",
-                ty.user_facing()
-            )));
-        }
         let mut variant_layouts = Vec::with_capacity(shape.variants.len());
         for fields in &shape.variants {
             let mut layouts = Vec::with_capacity(fields.len());
@@ -321,7 +315,7 @@ fn realize_layout(
             repr: payload_repr,
         };
         let tag_bits = match shape.variants.len() {
-            1..=256 => 8,
+            0..=256 => 8,
             257..=65_536 => 16,
             count => {
                 return Err(CodegenError::FailClosed(format!(

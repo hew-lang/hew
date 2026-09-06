@@ -1753,3 +1753,83 @@ Focused source checks validate callable composition with conditional nested
 Result/Option payloads and record cloning. The stored mutable callback regression
 still identifies the HIR temporary-copy rewrite, whose replacement is pending
 composition. Native acceptance awaits physical integration.
+
+## Physical callable receiver boundary
+
+Callable values now use a target-measured pair of environment and descriptor
+pointers. Physical calls preserve the explicit exclusive receiver mode and
+pass its caller storage by address; the callee uses that storage directly.
+Consuming parameters retain their owned obligation. Runtime operations still
+require their existing argument contracts.
+
+The MIR/codegen library suites pass, including O0/O2 execution of the exclusive
+receiver ABI and rejection of an incompatible carrier or shared call argument.
+This is a receiver-layer checkpoint. Closure environment recipes, capture masks,
+independent copies and indirect invocation still await the semantic descriptor
+contract.
+
+## Masked callable environment storage
+
+Physical target data now measures capture environments as an initialization mask
+followed by aligned fields. Empty callables have no environment allocation;
+zero-size captures still retain mask storage. Generated clone callbacks reset
+copied mask bytes and mark each successfully copied field. Generated drop
+callbacks clear each live bit before releasing its capture. Copy failure rolls
+back only initialized destination fields through that same drop callback.
+
+Focused codegen tests execute independent captured vector copies and partial-mask
+cleanup at O0/O2 using the runtime callable helpers. Layout checks cover Linux,
+Windows, macOS and WASI target data; native execution was run on Linux. Scoped
+MIR/codegen Clippy passes. Source closure construction, indirect calls and capture
+place transitions still require the incoming semantic producer contract.
+
+## Nested callable value recipes
+
+Callable captures use the shared value-copy and destruction recipe machinery.
+A value-layout clone callback forwards the runtime helper's status so enclosing
+environment clones can roll back their completed fields. A direct semantic copy
+aborts on failure without inventing a language fault. Callable destruction clears
+and releases its owning environment through the runtime helper.
+
+The nested-copy failure control passes at O0/O2: a completed vector copy is
+released, a failed nested capture is never dropped as an owner, the source stays
+live, and the caller's output is unchanged. The focused callable suite and scoped
+MIR/codegen Clippy pass. Semantic type facts must publish independent copying;
+legacy retain-only callable facts remain refused.
+
+## Physical callable construction and invocation
+
+Physical MIR now retains demanded closure identities, canonical capture storage,
+function and closure construction, capability weakening and typed indirect calls.
+LLVM emits erased adapters over the private result/fault ABI. Mutable receivers
+address their original heap fields; capture live bits follow assignment and take.
+Concrete once bodies own their cleanup, while adapters for weakened borrowed
+bodies dispose the environment after either outcome.
+
+Verified SIR execution controls cover escaping and copied mutable counters,
+consuming invocation and preservation of fault results at O0 and O2. Earlier
+field-glue controls continue to cover partial initialization and failed nested
+copies. Source producer composition remains the next integration milestone.
+
+## Native callable source composition
+
+Composed the demanded source bodies and final capture syntax. Source-to-LLVM
+execution now covers ordinary function values, a snapshot that outlives its
+factory, independent mutable counters copied through a binding, and once erasure
+at O0 and O2. The existing verified semantic environment and fault controls pass
+with that composition.
+
+Explicit `clone first` currently stops in SIR with an unsupported HIR expression;
+the equivalent ordinary binding copy executes and preserves private state. This
+producer gap is reported to the source owner. The broader Make lint graph reaches
+the pre-existing JobState transparent-record refusal in dogfood compilation;
+workspace Clippy and the callable component execution checks pass.
+
+## Native consumed captures and argument faults
+
+Composed the capture-loan cleanup fix and extended source execution controls.
+A detached nested string closure survives both creating environments, a captured
+once-callable transfers into invocation, another field remains callable after a
+take, and an argument evaluation fault releases the outstanding capture loan.
+These paths pass through verified SIR, physical MIR and LLVM at O0 and O2. The
+fault control also proves that failure leaves result-out storage untouched.

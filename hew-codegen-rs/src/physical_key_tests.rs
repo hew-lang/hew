@@ -6,6 +6,9 @@ use inkwell::execution_engine::{ExecutionEngine, JitFunction};
 
 use super::*;
 
+#[path = "physical_callable_tests.rs"]
+mod callables;
+
 type HashCallback = unsafe extern "C" fn(*const c_void, *mut u64, *mut *mut c_void) -> i32;
 type EqCallback =
     unsafe extern "C" fn(*const c_void, *const c_void, *mut bool, *mut *mut c_void) -> i32;
@@ -192,6 +195,9 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         vec::hew_vec_get_clone,
         vec::hew_vec_get_owned,
         vec::hew_vec_len,
+        callable::hew_callable_env_alloc,
+        callable::hew_callable_clone,
+        callable::hew_callable_drop,
         fault::hew_fault_new,
         fault::hew_fault_drop,
         fault::hew_fault_report,

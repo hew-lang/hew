@@ -4,6 +4,9 @@
 //! storage, layout, and private ABI choices are already explicit in the
 //! verified physical module.
 
+#[path = "physical_callable.rs"]
+mod callable;
+
 #[path = "physical_key.rs"]
 mod key;
 
@@ -173,6 +176,34 @@ fn realize_layout(
             ty.user_facing()
         )));
     }
+    let captures = match ty {
+        ResolvedTy::Closure { captures, .. } => Some(captures.as_slice()),
+        ResolvedTy::Function { .. } => Some([].as_slice()),
+        _ => None,
+    };
+    if let Some(captures) = captures {
+        for capture in captures {
+            realize_layout(
+                ctx,
+                data,
+                target,
+                capture,
+                aggregate_fields,
+                variant_shapes,
+                visiting,
+            )?;
+        }
+        let fields = captures
+            .iter()
+            .map(|ty| {
+                target.layout(ty).cloned().ok_or_else(|| {
+                    CodegenError::FailClosed("capture lacks its target layout".into())
+                })
+            })
+            .collect::<CodegenResult<Vec<_>>>()?;
+        let environment = callable_environment_layout(ctx, data, fields)?;
+        target.insert_environment_layout(ty.clone(), environment);
+    }
     if let Some(shape) = variant_shapes.get(ty) {
         if shape.is_indirect {
             return Err(CodegenError::FailClosed(format!(
@@ -315,6 +346,37 @@ fn realize_layout(
     Ok(())
 }
 
+/// Mask bits track logical capture initialization, including zero-sized values.
+/// LLVM lays out the mask array and aligned fields as a single native struct.
+fn callable_environment_layout(
+    ctx: &Context,
+    target: &TargetData,
+    fields: Vec<PhysicalLayout>,
+) -> CodegenResult<PhysicalLayout> {
+    let repr = if fields.is_empty() {
+        PhysicalRepr::Unit
+    } else {
+        let mask_len = u32::try_from(fields.len().div_ceil(8)).map_err(|_| {
+            CodegenError::FailClosed("capture initialization mask exceeds u32 bytes".into())
+        })?;
+        let mask_repr = PhysicalRepr::Array {
+            element: Box::new(integer_layout(ctx, target, 8)?),
+            len: mask_len,
+        };
+        let (size, align) = measure_layout(target, llvm_type(ctx, &mask_repr)?);
+        let mut storage = Vec::with_capacity(fields.len() + 1);
+        storage.push(PhysicalLayout {
+            size,
+            align,
+            repr: mask_repr,
+        });
+        storage.extend(fields);
+        PhysicalRepr::Struct(storage)
+    };
+    let (size, align) = measure_layout(target, llvm_type(ctx, &repr)?);
+    Ok(PhysicalLayout { size, align, repr })
+}
+
 /// Emit one native object and, when requested, diagnostic LLVM IR from
 /// verified physical MIR.
 ///
@@ -451,6 +513,10 @@ fn primitive_repr(
         ResolvedTy::F32 => PhysicalRepr::Float { bits: 32 },
         ResolvedTy::F64 => PhysicalRepr::Float { bits: 64 },
         ResolvedTy::String | ResolvedTy::CancellationToken => PhysicalRepr::Pointer,
+        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => PhysicalRepr::Struct(vec![
+            pointer_layout(ctx, target)?,
+            pointer_layout(ctx, target)?,
+        ]),
         collection if collection_type_arguments(collection).is_some() => PhysicalRepr::Pointer,
         ResolvedTy::Bytes => PhysicalRepr::Struct(vec![
             pointer_layout(ctx, target)?,
@@ -621,6 +687,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         action: CloneAction,
     ) -> CodegenResult<BasicValueEnum<'ctx>> {
         match action {
+            CloneAction::Callable => self.clone_callable_value(value, layout),
             CloneAction::Bitwise => Ok(value),
             CloneAction::StringRetain => {
                 let pointer = value.into_pointer_value();
@@ -747,6 +814,19 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         action: DestroyAction,
     ) -> CodegenResult<()> {
         match action {
+            DestroyAction::Callable => {
+                let slot =
+                    self.entry_scratch(llvm_type(self.ctx, &layout.repr)?, "callable.drop.slot")?;
+                self.builder
+                    .build_store(slot, value)
+                    .llvm_ctx("stage callable destruction")?;
+                let drop = external_drop(self.ctx, self.llvm, "hew_callable_drop")?;
+                self.builder
+                    .build_call(drop, &[slot.into()], "")
+                    .llvm_ctx("destroy callable environment")?;
+                Ok(())
+            }
+
             DestroyAction::StringRelease | DestroyAction::BytesRelease => {
                 let pointer = match action {
                     DestroyAction::StringRelease => value.into_pointer_value(),
@@ -755,7 +835,9 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                         .build_extract_value(value.into_struct_value(), 0, "bytes.drop.ptr")
                         .llvm_ctx("extract bytes release pointer")?
                         .into_pointer_value(),
-                    DestroyAction::Aggregate(_) => unreachable!("matched primitive release"),
+                    DestroyAction::Callable | DestroyAction::Aggregate(_) => {
+                        unreachable!("matched primitive release")
+                    }
                     DestroyAction::Variant(_) => unreachable!("matched primitive release"),
                     DestroyAction::Vector(_) | DestroyAction::Map(_) | DestroyAction::Set(_) => {
                         unreachable!("matched primitive release")
@@ -764,7 +846,9 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 let symbol = match action {
                     DestroyAction::StringRelease => "hew_string_drop",
                     DestroyAction::BytesRelease => "hew_bytes_drop",
-                    DestroyAction::Aggregate(_) => unreachable!("matched primitive release"),
+                    DestroyAction::Callable | DestroyAction::Aggregate(_) => {
+                        unreachable!("matched primitive release")
+                    }
                     DestroyAction::Variant(_) => unreachable!("matched primitive release"),
                     DestroyAction::Vector(_) | DestroyAction::Map(_) | DestroyAction::Set(_) => {
                         unreachable!("matched primitive release")
@@ -1149,6 +1233,8 @@ fn build_module<'ctx>(
     };
     emitter.declare_functions()?;
     emitter.emit_collection_value_descriptors()?;
+    emitter.emit_environment_descriptors()?;
+    emitter.emit_callable_descriptors()?;
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;
@@ -1258,6 +1344,25 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 CodegenError::FailClosed("element clone lacks destination parameter".into())
             })?
             .into_pointer_value();
+        if action == CloneAction::Callable {
+            let clone = callable::callable_clone_function(self.ctx, &self.llvm)?;
+            let status = builder
+                .build_call(
+                    clone,
+                    &[source.into(), destination.into()],
+                    "callable.clone.status",
+                )
+                .llvm_ctx("copy nested callable environment")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("callable clone returned no status".into())
+                })?;
+            builder
+                .build_return(Some(&status))
+                .llvm_ctx("forward callable value clone status")?;
+            return Ok(function.as_global_value().as_pointer_value());
+        }
         let original = builder
             .build_load(llvm_type(self.ctx, &layout.repr)?, source, "element.source")
             .llvm_ctx("load borrowed value")?;
@@ -1473,6 +1578,33 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .storage
             .iter()
             .map(|storage| {
+                if matches!(
+                    storage.origin,
+                    hew_mir::physical::StorageOrigin::Capture { .. }
+                ) {
+                    return callable::capture_parameter_slot(
+                        module, function, callable, value, &builder, storage,
+                    );
+                }
+                if let Some((index, _)) = function
+                    .parameters
+                    .iter()
+                    .zip(&callable.params)
+                    .enumerate()
+                    .find(|(_, (id, param))| {
+                        **id == storage.id
+                            && param.passing == hew_mir::physical::SemParamPassing::BorrowMut
+                    })
+                {
+                    return value
+                        .get_nth_param(u32::try_from(index).map_err(|_| {
+                            CodegenError::FailClosed("parameter index exceeds u32".into())
+                        })?)
+                        .map(|parameter| parameter.into_pointer_value())
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed("missing exclusive parameter address".into())
+                        });
+                }
                 let slot = builder
                     .build_alloca(
                         llvm_type(ctx, &storage.layout.repr)?,
@@ -1513,6 +1645,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .zip(&function.parameters)
             .zip(&callable.params)
         {
+            if physical_param.passing == hew_mir::physical::SemParamPassing::BorrowMut {
+                param_index += 1;
+                continue;
+            }
             let loaded = match physical_param.carrier {
                 ParamCarrier::Direct => parameter,
                 ParamCarrier::Indirect => builder
@@ -1606,13 +1742,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.builder
             .build_store(self.slots[id.0 as usize], value)
             .llvm_ctx("store physical storage")?;
+        self.set_capture_initialized(id, true)?;
         Ok(())
     }
 
     fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
+        self.set_capture_initialized(id, false)?;
         if self.storage(id)?.own == OwnKind::Owned {
             let zero = llvm_type(self.ctx, &self.storage(id)?.layout.repr)?.const_zero();
-            self.store(id, zero)?;
+            self.builder
+                .build_store(self.slots[id.0 as usize], zero)
+                .llvm_ctx("clear transferred physical owner")?;
         }
         Ok(())
     }
@@ -1623,6 +1763,18 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     )]
     fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
         match operation {
+            PhysicalOp::FunctionMake { dest, callee } => self.emit_function_make(*dest, *callee),
+            PhysicalOp::ClosureMake {
+                dest,
+                closure,
+                fields,
+            } => self.emit_closure_make(*dest, *closure, fields),
+            PhysicalOp::CallableCoerce { dest, source } => {
+                let value = self.load(*source, "callable.coerce")?;
+                self.store(*dest, value)?;
+                self.clear_owned(*source)
+            }
+
             PhysicalOp::Const { dest, value } => self.emit_const(*dest, value),
             PhysicalOp::Unary { dest, op, source } => {
                 let source_value = self.load(*source, "unary.source")?;
@@ -2157,14 +2309,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn destroy_value(&self, source: StorageId, action: DestroyAction) -> CodegenResult<()> {
         let value = self.load(source, "destroy.source")?;
+        self.clear_owned(source)?;
         self.value_emitter()
-            .destroy_loaded_value(value, &self.storage(source)?.layout, action)?;
-        let zero = llvm_type(self.ctx, &self.storage(source)?.layout.repr)?.const_zero();
-        self.store(source, zero)
+            .destroy_loaded_value(value, &self.storage(source)?.layout, action)
     }
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::IndirectCall {
+                callee,
+                signature,
+                args,
+                result,
+                normal,
+                unwind,
+            } => {
+                self.emit_indirect_call(*callee, signature, args, *result, normal, unwind.as_ref())
+            }
+
             PhysicalTerminator::Return { value } => self.emit_return(*value),
             PhysicalTerminator::Goto(edge) => self.emit_edge(edge),
             PhysicalTerminator::Branch {
@@ -2571,7 +2733,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let mut moved = Vec::new();
         for (transfer, parameter) in transfers.iter().zip(&callee.params) {
             let (source, value) = match transfer {
-                ArgumentTransfer::Borrow(source) => (*source, None),
+                ArgumentTransfer::Borrow(source) | ArgumentTransfer::BorrowMut(source) => {
+                    (*source, None)
+                }
                 ArgumentTransfer::Move(source) => {
                     moved.push(*source);
                     (*source, None)
@@ -4260,7 +4424,9 @@ fn entry_integer_is_signed(kind: EntryIntegerType) -> bool {
 
 const fn argument_source(transfer: &ArgumentTransfer) -> StorageId {
     match transfer {
-        ArgumentTransfer::Borrow(source) | ArgumentTransfer::Move(source) => *source,
+        ArgumentTransfer::Borrow(source)
+        | ArgumentTransfer::BorrowMut(source)
+        | ArgumentTransfer::Move(source) => *source,
         ArgumentTransfer::Clone { source, .. } => *source,
     }
 }

@@ -12,11 +12,14 @@ mod capability;
 pub use capability::{PhysicalValueCapability, PhysicalValueMethod};
 
 use hew_parser::ast::{BinaryOp, UnaryOp};
+#[path = "physical_callable.rs"]
+mod callable;
+
 use hew_sir::{
     AggregateShapeRef, BoundaryDecision, CallResult, CallUnwind, Edge, SemFunction, SemModule,
     SemOp, SemOpKind, SemTerminator, SnapshotDecision, ValueId,
 };
-pub use hew_sir::{BlockId, CallableId, OwnKind, TrapKind};
+pub use hew_sir::{BlockId, CallableId, ClosureId, OwnKind, SemParamPassing, TrapKind};
 use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp};
 use hew_types::{
     vector_element_type, BuiltinType, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect,
@@ -172,6 +175,7 @@ pub struct PhysicalTarget {
     pub data_layout: String,
     layouts: BTreeMap<TypeInstanceKey, PhysicalLayout>,
     variant_layouts: BTreeMap<TypeInstanceKey, PhysicalVariantLayout>,
+    environment_layouts: BTreeMap<TypeInstanceKey, PhysicalLayout>,
 }
 
 impl PhysicalTarget {
@@ -182,6 +186,7 @@ impl PhysicalTarget {
             data_layout: data_layout.into(),
             layouts: BTreeMap::new(),
             variant_layouts: BTreeMap::new(),
+            environment_layouts: BTreeMap::new(),
         }
     }
 
@@ -193,6 +198,16 @@ impl PhysicalTarget {
     #[must_use]
     pub fn layout(&self, ty: &ResolvedTy) -> Option<&PhysicalLayout> {
         self.layouts.get(&TypeInstanceKey(ty.clone()))
+    }
+
+    /// Register the target-measured initialization mask and capture storage.
+    pub fn insert_environment_layout(&mut self, ty: ResolvedTy, layout: PhysicalLayout) {
+        self.environment_layouts.insert(TypeInstanceKey(ty), layout);
+    }
+
+    #[must_use]
+    pub fn environment_layout(&self, ty: &ResolvedTy) -> Option<&PhysicalLayout> {
+        self.environment_layouts.get(&TypeInstanceKey(ty.clone()))
     }
 
     pub fn insert_variant_layout(&mut self, layout: PhysicalVariantLayout) {
@@ -208,6 +223,7 @@ impl PhysicalTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageOrigin {
+    Capture { environment: StorageId, field: u32 },
     Parameter(ValueId),
     BlockArgument(ValueId),
     Value(ValueId),
@@ -268,6 +284,7 @@ pub enum PhysicalConst {
 /// A clone selected once from an explicit SIR copy plus concrete type facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloneAction {
+    Callable,
     Bitwise,
     StringRetain,
     BytesRetain,
@@ -281,6 +298,7 @@ pub enum CloneAction {
 /// A release selected once from an explicit SIR destroy plus concrete type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DestroyAction {
+    Callable,
     StringRelease,
     BytesRelease,
     Aggregate(PhysicalAggregateId),
@@ -297,6 +315,30 @@ pub struct PhysicalValueRecipe {
     pub own: OwnKind,
     pub clone: Option<CloneAction>,
     pub destroy: Option<DestroyAction>,
+}
+
+/// One exact closure body and its already selected concrete environment type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalClosure {
+    pub id: ClosureId,
+    pub body: CallableId,
+    pub ty: ResolvedTy,
+}
+
+/// The user argument/result ABI of an indirect invocation, excluding its receiver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalCallSignature {
+    pub params: Vec<PhysicalParam>,
+    pub return_ty: ResolvedTy,
+    pub return_layout: Option<PhysicalLayout>,
+}
+
+/// Capture recipes shared by concrete environments of an exact closure type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalEnvironmentGlue {
+    pub ty: ResolvedTy,
+    pub fields: Vec<PhysicalValueRecipe>,
+    pub cloneable: bool,
 }
 
 /// Shared physical glue for one exact concrete aggregate type.
@@ -444,6 +486,19 @@ impl PhysicalSetOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
+    FunctionMake {
+        dest: StorageId,
+        callee: CallableId,
+    },
+    ClosureMake {
+        dest: StorageId,
+        closure: ClosureId,
+        fields: Vec<StorageId>,
+    },
+    CallableCoerce {
+        dest: StorageId,
+        source: StorageId,
+    },
     Const {
         dest: StorageId,
         value: PhysicalConst,
@@ -547,6 +602,7 @@ pub struct PhysicalEdge {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgumentTransfer {
     Borrow(StorageId),
+    BorrowMut(StorageId),
     Move(StorageId),
     Clone {
         source: StorageId,
@@ -645,6 +701,14 @@ impl PhysicalRuntimeAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
+    IndirectCall {
+        callee: ArgumentTransfer,
+        signature: PhysicalCallSignature,
+        args: Vec<ArgumentTransfer>,
+        result: Option<StorageId>,
+        normal: PhysicalEdge,
+        unwind: Option<PhysicalEdge>,
+    },
     Return {
         value: Option<ReturnTransfer>,
     },
@@ -725,6 +789,8 @@ pub struct PhysicalModule {
     pub value_capabilities:
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), PhysicalValueCapability>,
     pub target: PhysicalTarget,
+    pub closures: Vec<PhysicalClosure>,
+    pub environment_glue: Vec<PhysicalEnvironmentGlue>,
     pub aggregate_glue: Vec<PhysicalAggregateGlue>,
     pub variant_glue: Vec<PhysicalVariantGlue>,
     pub vector_glue: Vec<PhysicalVectorGlue>,
@@ -801,6 +867,7 @@ pub fn lower_physical_module(
     }
 
     let PhysicalGlue {
+        environment_glue,
         aggregate_glue,
         variant_glue,
         vector_glue,
@@ -822,10 +889,11 @@ pub fn lower_physical_module(
                         ty: param.ty.clone(),
                         layout: required_layout(&target, &param.ty)?.clone(),
                         passing: param.passing,
-                        carrier: if matches!(
-                            required_layout(&target, &param.ty)?.repr,
-                            PhysicalRepr::Struct(_)
-                        ) {
+                        carrier: if param.passing == hew_sir::SemParamPassing::BorrowMut
+                            || matches!(
+                                required_layout(&target, &param.ty)?.repr,
+                                PhysicalRepr::Struct(_)
+                            ) {
                             ParamCarrier::Indirect
                         } else {
                             ParamCarrier::Direct
@@ -858,6 +926,16 @@ pub fn lower_physical_module(
 
     let physical = PhysicalModule {
         value_capabilities: capability::build(module, &ids)?,
+        closures: module
+            .closures
+            .iter()
+            .map(|closure| PhysicalClosure {
+                id: closure.id,
+                body: closure.body,
+                ty: closure.ty.clone(),
+            })
+            .collect(),
+        environment_glue,
         target,
         aggregate_glue,
         variant_glue,
@@ -886,6 +964,7 @@ struct PhysicalGlueIds {
 }
 
 struct PhysicalGlue {
+    environment_glue: Vec<PhysicalEnvironmentGlue>,
     aggregate_glue: Vec<PhysicalAggregateGlue>,
     variant_glue: Vec<PhysicalVariantGlue>,
     vector_glue: Vec<PhysicalVectorGlue>,
@@ -1096,7 +1175,42 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
             })
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
+    let environment_glue = inventory
+        .types()
+        .filter_map(|ty| {
+            let captures = match ty {
+                ResolvedTy::Closure { captures, .. } => captures.as_slice(),
+                ResolvedTy::Function { .. } => &[],
+                _ => return None,
+            };
+            Some((|| {
+                let facts = module
+                    .type_facts
+                    .get(&TypeInstanceKey(ty.clone()))
+                    .ok_or_else(|| {
+                        PhysicalError::new("callable environment lacks concrete type facts")
+                    })?;
+                if !matches!(
+                    facts.clone,
+                    CloneKind::None | CloneKind::DeepCopy | CloneKind::FieldWise
+                ) {
+                    return Err(PhysicalError::new(
+                        "callable environment requires independent-copy type facts",
+                    ));
+                }
+                Ok(PhysicalEnvironmentGlue {
+                    ty: ty.clone(),
+                    fields: captures
+                        .iter()
+                        .map(value_recipe)
+                        .collect::<Result<Vec<_>, PhysicalError>>()?,
+                    cloneable: facts.clone != CloneKind::None,
+                })
+            })())
+        })
+        .collect::<Result<Vec<_>, PhysicalError>>()?;
     Ok(PhysicalGlue {
+        environment_glue,
         aggregate_glue,
         variant_glue,
         vector_glue,
@@ -1134,6 +1248,11 @@ fn clone_action_for_type(
         CloneKind::Bits => CloneAction::Bitwise,
         CloneKind::Retain if ty == &ResolvedTy::String => CloneAction::StringRetain,
         CloneKind::Retain if ty == &ResolvedTy::Bytes => CloneAction::BytesRetain,
+        CloneKind::DeepCopy | CloneKind::FieldWise
+            if matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }) =>
+        {
+            CloneAction::Callable
+        }
         CloneKind::DeepCopy | CloneKind::FieldWise if ids.vectors.contains_key(ty) => {
             CloneAction::Vector(ids.vectors[ty])
         }
@@ -1167,6 +1286,7 @@ fn clone_action_for_type(
 
 fn destroy_action_for_type(ty: &ResolvedTy, ids: &PhysicalGlueIds) -> Option<DestroyAction> {
     match ty {
+        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => Some(DestroyAction::Callable),
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
         _ if ids.vectors.contains_key(ty) => Some(DestroyAction::Vector(ids.vectors[ty])),
@@ -1238,6 +1358,12 @@ fn collect_inventory_type(
         return;
     }
     inventory.types.insert(ty.clone());
+    if let ResolvedTy::Closure { captures, .. } = ty {
+        for capture in captures {
+            collect_inventory_type(module, inventory, capture);
+        }
+        return;
+    }
     if let Some(element) = vector_element_type(ty) {
         inventory.vectors.insert(
             ty.clone(),
@@ -1430,7 +1556,15 @@ fn lower_function(
             ty: place.ty.clone(),
             layout: required_layout(target, &place.ty)?.clone(),
             own: OwnKind::of_ty(&place.ty, &module.type_facts).map_err(PhysicalError::new)?,
-            origin: StorageOrigin::Place(place.id),
+            origin: match place.origin {
+                hew_sir::PlaceOrigin::Capture { environment, field } => StorageOrigin::Capture {
+                    environment: lowerer.value(environment)?,
+                    field,
+                },
+                hew_sir::PlaceOrigin::Local | hew_sir::PlaceOrigin::Runtime => {
+                    StorageOrigin::Place(place.id)
+                }
+            },
             borrow_parent: None,
         });
     }
@@ -1438,7 +1572,10 @@ fn lower_function(
     for operation in function.blocks.iter().flat_map(|block| &block.ops) {
         if let Some(parent) = operation.kind.borrow_parent() {
             let dest = lowerer.one_result(operation)?;
-            let source = lowerer.value(parent.value)?;
+            let source = match operation.kind {
+                SemOpKind::LoadBorrow { place, .. } => lowerer.place(place)?,
+                _ => lowerer.value(parent.value)?,
+            };
             lowerer.storage[dest.0 as usize].borrow_parent = Some(source);
         }
     }
@@ -1746,12 +1883,26 @@ impl FunctionLowerer<'_> {
                     source: self.value(borrow.value)?,
                 })
             }
-            SemOpKind::FunctionMake { .. }
-            | SemOpKind::ClosureMake { .. }
-            | SemOpKind::CallableCoerce { .. }
-            | SemOpKind::LoadBorrow { .. } => Err(PhysicalError::new(
-                "callable environment operations require their physical contract",
-            )),
+            SemOpKind::FunctionMake { callable } => one(PhysicalOp::FunctionMake {
+                dest: self.one_result(operation)?,
+                callee: *callable,
+            }),
+            SemOpKind::ClosureMake { closure, fields } => one(PhysicalOp::ClosureMake {
+                dest: self.one_result(operation)?,
+                closure: *closure,
+                fields: fields
+                    .iter()
+                    .map(|field| self.value(field.value))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            SemOpKind::CallableCoerce { source } => one(PhysicalOp::CallableCoerce {
+                dest: self.one_result(operation)?,
+                source: self.value(source.value)?,
+            }),
+            SemOpKind::LoadBorrow { place, .. } => one(PhysicalOp::Borrow {
+                dest: self.one_result(operation)?,
+                source: self.place(*place)?,
+            }),
             SemOpKind::AllocPlace { place } => {
                 Self::no_results(operation)?;
                 one(PhysicalOp::StorageLive {
@@ -1781,11 +1932,16 @@ impl FunctionLowerer<'_> {
             SemOpKind::StoreAssign { place, value } => {
                 Self::no_results(operation)?;
                 let dest = self.place(*place)?;
-                one(PhysicalOp::Assign {
-                    dest,
-                    source: self.value(value.value)?,
-                    destroy_old: self.destroy_action(&self.storage[dest.0 as usize].ty)?,
-                })
+                let source = self.value(value.value)?;
+                if self.storage[dest.0 as usize].own == OwnKind::None {
+                    one(PhysicalOp::Transfer { dest, source })
+                } else {
+                    one(PhysicalOp::Assign {
+                        dest,
+                        source,
+                        destroy_old: self.destroy_action(&self.storage[dest.0 as usize].ty)?,
+                    })
+                }
             }
             SemOpKind::EndLifetime { place } => {
                 Self::no_results(operation)?;
@@ -1925,9 +2081,7 @@ impl FunctionLowerer<'_> {
                     CallUnwind::Cleanup(edge) => Some(self.lower_edge(edge)?),
                 },
             }),
-            SemTerminator::IndirectCall { .. } => Err(PhysicalError::new(
-                "indirect calls require checked callable value lowering",
-            )),
+            call @ SemTerminator::IndirectCall { .. } => self.lower_indirect_call(call),
             SemTerminator::ValueCall {
                 ty,
                 capability,
@@ -2053,11 +2207,7 @@ impl FunctionLowerer<'_> {
         let source = self.value(value)?;
         Ok(match decision {
             BoundaryDecision::Borrow => ArgumentTransfer::Borrow(source),
-            BoundaryDecision::BorrowMut => {
-                return Err(PhysicalError::new(
-                    "exclusive callable arguments require a physical receiver contract",
-                ));
-            }
+            BoundaryDecision::BorrowMut => ArgumentTransfer::BorrowMut(source),
             BoundaryDecision::Move => ArgumentTransfer::Move(source),
             BoundaryDecision::Copy => ArgumentTransfer::Clone {
                 source,
@@ -2404,7 +2554,83 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
     Ok(())
 }
 
+fn verify_environment_glue(module: &PhysicalModule) -> Result<(), PhysicalError> {
+    callable::verify_closures(module)?;
+    let mut environment_types = BTreeSet::new();
+    for glue in &module.environment_glue {
+        if !environment_types.insert(&glue.ty) {
+            return Err(PhysicalError::new("duplicate physical environment type"));
+        }
+        let captures = match &glue.ty {
+            ResolvedTy::Closure { captures, .. } => captures.as_slice(),
+            ResolvedTy::Function { .. } => &[],
+            _ => {
+                return Err(PhysicalError::new(
+                    "environment recipe has no callable type",
+                ))
+            }
+        };
+        let facts = semantic_type_facts(module, &glue.ty)?;
+        if !matches!(
+            facts.clone,
+            CloneKind::None | CloneKind::DeepCopy | CloneKind::FieldWise
+        ) || glue.cloneable != (facts.clone != CloneKind::None)
+            || captures.len() != glue.fields.len()
+        {
+            return Err(PhysicalError::new(
+                "environment recipe differs from concrete callable facts",
+            ));
+        }
+        let layout = module
+            .target
+            .environment_layout(&glue.ty)
+            .ok_or_else(|| PhysicalError::new("environment recipe lacks a target layout"))?;
+        if captures.is_empty() {
+            if layout.size != 0 || layout.align != 1 {
+                return Err(PhysicalError::new("empty callable environment has storage"));
+            }
+        } else {
+            let PhysicalRepr::Struct(fields) = &layout.repr else {
+                return Err(PhysicalError::new(
+                    "captured environment lacks its mask and field struct",
+                ));
+            };
+            if fields.len() != captures.len() + 1 {
+                return Err(PhysicalError::new("environment field layout count differs"));
+            }
+            let PhysicalRepr::Array { element, len } = &fields[0].repr else {
+                return Err(PhysicalError::new("environment mask is not a byte array"));
+            };
+            if element.repr != (PhysicalRepr::Integer { bits: 8 })
+                || usize::try_from(*len).ok() != Some(captures.len().div_ceil(8))
+                || fields[0].size != u64::from(*len)
+            {
+                return Err(PhysicalError::new(
+                    "environment mask differs from logical capture count",
+                ));
+            }
+            for (ty, layout) in captures.iter().zip(&fields[1..]) {
+                if Some(layout) != module.target.layout(ty) {
+                    return Err(PhysicalError::new(
+                        "environment capture layout differs from target type",
+                    ));
+                }
+            }
+        }
+        for (capture, recipe) in captures.iter().zip(&glue.fields) {
+            if capture != &recipe.ty || (glue.cloneable && recipe.clone.is_none()) {
+                return Err(PhysicalError::new(
+                    "environment field lacks its exact copy contract",
+                ));
+            }
+            verify_value_recipe(module, recipe)?;
+        }
+    }
+    Ok(())
+}
+
 fn verify_collection_glue_tables(module: &PhysicalModule) -> Result<(), PhysicalError> {
+    verify_environment_glue(module)?;
     let mut vector_types = BTreeSet::new();
     for (index, glue) in module.vector_glue.iter().enumerate() {
         if !vector_types.insert(&glue.ty) {
@@ -2698,6 +2924,7 @@ fn verify_physical_function(
             callable.params.len()
         )));
     }
+    callable::verify_capture_slots(module, function)?;
     for (index, storage) in function.storage.iter().enumerate() {
         if usize::try_from(storage.id.0).ok() != Some(index) {
             return Err(PhysicalError::new(format!(
@@ -2732,13 +2959,21 @@ fn verify_physical_function(
         let slot = storage(function, *parameter)?;
         let expected_own = match abi.passing {
             hew_sir::SemParamPassing::ReadOnly => OwnKind::None,
-            hew_sir::SemParamPassing::Borrow => OwnKind::Guaranteed,
-            hew_sir::SemParamPassing::BorrowMut | hew_sir::SemParamPassing::Consume => {
-                return Err(PhysicalError::new(
-                    "callable receiver parameters require a physical ownership contract",
-                ));
+            hew_sir::SemParamPassing::Borrow | hew_sir::SemParamPassing::BorrowMut => {
+                OwnKind::Guaranteed
+            }
+            hew_sir::SemParamPassing::Consume => {
+                OwnKind::of_param(&abi.ty, abi.passing, &module.type_facts)
+                    .map_err(PhysicalError::new)?
             }
         };
+        if abi.passing == hew_sir::SemParamPassing::BorrowMut
+            && abi.carrier != ParamCarrier::Indirect
+        {
+            return Err(PhysicalError::new(
+                "physical exclusive parameter requires caller storage by address",
+            ));
+        }
         if slot.ty != abi.ty || slot.own != expected_own {
             return Err(PhysicalError::new(format!(
                 "physical callable {} parameter {index} disagrees with its ABI type or ownership",
@@ -2859,12 +3094,21 @@ fn verify_clone_action(
             )
             | (
                 CloneKind::DeepCopy | CloneKind::FieldWise,
-                CloneAction::Vector(_) | CloneAction::Map(_) | CloneAction::Set(_)
+                CloneAction::Callable
+                    | CloneAction::Vector(_)
+                    | CloneAction::Map(_)
+                    | CloneAction::Set(_)
             )
     );
     let valid = clone_kind_matches
         && own == OwnKind::of_class(facts.class)
         && match action {
+            CloneAction::Callable => {
+                own == OwnKind::Owned
+                    && matches!(ty,
+                    ResolvedTy::Function { capabilities, .. } | ResolvedTy::Closure { capabilities, .. }
+                    if capabilities.clone)
+            }
             CloneAction::Bitwise => own == OwnKind::None,
             CloneAction::StringRetain => ty == &ResolvedTy::String && own == OwnKind::Owned,
             CloneAction::BytesRetain => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
@@ -2921,6 +3165,10 @@ fn verify_destroy_action(
     let own_from_facts = OwnKind::of_class(semantic_type_facts(module, ty)?.class);
     let valid = own == own_from_facts
         && match action {
+            DestroyAction::Callable => {
+                own == OwnKind::Owned
+                    && matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+            }
             DestroyAction::StringRelease => ty == &ResolvedTy::String && own == OwnKind::Owned,
             DestroyAction::BytesRelease => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
             DestroyAction::Aggregate(id) => {
@@ -3257,6 +3505,11 @@ fn verify_operation_storage(
     operation: &PhysicalOp,
 ) -> Result<(), PhysicalError> {
     match operation {
+        operation @ (PhysicalOp::FunctionMake { .. }
+        | PhysicalOp::ClosureMake { .. }
+        | PhysicalOp::CallableCoerce { .. }) => {
+            callable::verify_operation(module, function, operation)?;
+        }
         PhysicalOp::Const { dest, value } => {
             verify_constant(module, function, *dest, value)?;
         }
@@ -3519,6 +3772,11 @@ fn verify_initialization(function: &PhysicalFunction) -> Result<(), PhysicalErro
         })? = InitState::Initialized;
     }
 
+    for slot in &function.storage {
+        if matches!(slot.origin, StorageOrigin::Capture { .. }) {
+            entry.slots[slot.id.0 as usize] = InitState::Initialized;
+        }
+    }
     let mut incoming = BTreeMap::from([(function.entry, entry)]);
     let mut pending = vec![function.entry];
     while let Some(block_id) = pending.pop() {
@@ -3610,7 +3868,8 @@ fn require_no_live_borrows(
     source: StorageId,
 ) -> Result<(), PhysicalError> {
     if function.storage.iter().any(|slot| {
-        slot.borrow_parent == Some(source)
+        slot.borrow_parent
+            .is_some_and(|parent| callable::depends_on(function, parent, source))
             && state.slots[slot.id.0 as usize] != InitState::Uninitialized
     }) {
         return Err(PhysicalError::new(format!(
@@ -3626,13 +3885,16 @@ fn consume_if_owned(
     state: &mut FlowState,
     id: StorageId,
 ) -> Result<(), PhysicalError> {
-    if storage(function, id)?.own == OwnKind::Owned {
+    if storage(function, id)?.own == OwnKind::Owned
+        || matches!(storage(function, id)?.origin, StorageOrigin::Capture { .. })
+    {
         require_no_live_borrows(function, state, id)?;
         *state
             .slots
             .get_mut(id.0 as usize)
             .ok_or_else(|| PhysicalError::new(format!("unknown physical storage {}", id.0)))? =
             InitState::Uninitialized;
+        callable::invalidate_captures(function, state, id);
     }
     Ok(())
 }
@@ -3644,8 +3906,10 @@ fn apply_operation(
     block: BlockId,
 ) -> Result<(), PhysicalError> {
     match operation {
-        PhysicalOp::Const { dest, .. } | PhysicalOp::StorageLive { storage: dest } => {
-            if matches!(operation, PhysicalOp::Const { .. }) {
+        PhysicalOp::FunctionMake { dest, .. }
+        | PhysicalOp::Const { dest, .. }
+        | PhysicalOp::StorageLive { storage: dest } => {
+            if !matches!(operation, PhysicalOp::StorageLive { .. }) {
                 define(function, state, *dest, block, "constant")?;
             } else if state.slots[dest.0 as usize] != InitState::Uninitialized {
                 return Err(PhysicalError::new(format!(
@@ -3668,7 +3932,8 @@ fn apply_operation(
             initialized(state, *tuple, block, "tuple projection")?;
             define(function, state, *dest, block, "tuple projection")?;
         }
-        PhysicalOp::AggregateMake { dest, fields, .. } => {
+        PhysicalOp::AggregateMake { dest, fields, .. }
+        | PhysicalOp::ClosureMake { dest, fields, .. } => {
             for field in fields {
                 initialized(state, *field, block, "aggregate construction")?;
             }
@@ -3709,7 +3974,7 @@ fn apply_operation(
             initialized(state, *rhs, block, "binary operation")?;
             define(function, state, *dest, block, "binary operation")?;
         }
-        PhysicalOp::Transfer { dest, source } => {
+        PhysicalOp::Transfer { dest, source } | PhysicalOp::CallableCoerce { dest, source } => {
             initialized(state, *source, block, "transfer")?;
             if dest != source {
                 define(function, state, *dest, block, "transfer")?;
@@ -3724,6 +3989,7 @@ fn apply_operation(
             initialized(state, *source, block, "destroy or end-borrow")?;
             require_no_live_borrows(function, state, *source)?;
             state.slots[source.0 as usize] = InitState::Uninitialized;
+            callable::invalidate_captures(function, state, *source);
         }
         PhysicalOp::Assign { dest, source, .. } => {
             initialized(state, *dest, block, "assignment destination")?;
@@ -3735,6 +4001,7 @@ fn apply_operation(
             initialized(state, *id, block, "end-lifetime")?;
             require_no_live_borrows(function, state, *id)?;
             state.slots[id.0 as usize] = InitState::Uninitialized;
+            callable::invalidate_captures(function, state, *id);
         }
     }
     Ok(())
@@ -3786,14 +4053,20 @@ fn call_successors(
     }
     for argument in args {
         let (source, moves) = match argument {
-            ArgumentTransfer::Borrow(source) | ArgumentTransfer::Clone { source, .. } => {
-                (*source, false)
-            }
+            ArgumentTransfer::Borrow(source)
+            | ArgumentTransfer::BorrowMut(source)
+            | ArgumentTransfer::Clone { source, .. } => (*source, false),
             ArgumentTransfer::Move(source) => (*source, true),
         };
+        if matches!(argument, ArgumentTransfer::BorrowMut(_)) {
+            require_no_live_borrows(function, &state, source)?;
+        }
         initialized(&state, source, block, "call argument")?;
         if storage(function, source)?.own == OwnKind::Guaranteed
-            && !matches!(argument, ArgumentTransfer::Borrow(_))
+            && !matches!(
+                argument,
+                ArgumentTransfer::Borrow(_) | ArgumentTransfer::BorrowMut(_)
+            )
         {
             return Err(PhysicalError::new(
                 "physical guaranteed call argument must use its borrow contract",
@@ -3844,7 +4117,30 @@ fn terminator_successors(
         ));
     }
     match terminator {
+        PhysicalTerminator::IndirectCall {
+            callee,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => {
+            let transfers = std::iter::once(*callee)
+                .chain(args.iter().copied())
+                .collect::<Vec<_>>();
+            call_successors(
+                function,
+                &transfers,
+                *result,
+                normal,
+                unwind.as_ref(),
+                state,
+                block,
+            )
+        }
+
         PhysicalTerminator::Return { value } => {
+            callable::verify_capture_return(function, &state)?;
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new(format!(
                     "physical bb{} returns normally while owning an active fault",
@@ -3959,14 +4255,17 @@ fn terminator_successors(
             }
             for argument in args {
                 let (source, moves) = match argument {
-                    ArgumentTransfer::Borrow(source) | ArgumentTransfer::Clone { source, .. } => {
-                        (*source, false)
-                    }
+                    ArgumentTransfer::Borrow(source)
+                    | ArgumentTransfer::BorrowMut(source)
+                    | ArgumentTransfer::Clone { source, .. } => (*source, false),
                     ArgumentTransfer::Move(source) => (*source, true),
                 };
                 initialized(&state, source, block, "runtime call argument")?;
                 if storage(function, source)?.own == OwnKind::Guaranteed
-                    && !matches!(argument, ArgumentTransfer::Borrow(_))
+                    && !matches!(
+                        argument,
+                        ArgumentTransfer::Borrow(_) | ArgumentTransfer::BorrowMut(_)
+                    )
                 {
                     return Err(PhysicalError::new(
                         "physical guaranteed runtime argument must use its borrow contract",
@@ -4096,6 +4395,22 @@ fn verify_terminator(
         }
     };
     match terminator {
+        PhysicalTerminator::IndirectCall {
+            callee,
+            signature,
+            args,
+            result,
+            normal,
+            unwind,
+        } => {
+            callable::verify_indirect_call(module, function, *callee, signature, args, *result)?;
+            edge(normal)?;
+            edge(unwind.as_ref().ok_or_else(|| {
+                PhysicalError::new("indirect invocation requires a fault cleanup edge")
+            })?)?;
+            Ok(())
+        }
+
         PhysicalTerminator::Return { value } => {
             let returned = value.map(|value| match value {
                 ReturnTransfer::Borrow(id)
@@ -4241,12 +4556,31 @@ fn verify_terminator(
             for (argument, parameter) in args.iter().zip(&callee.params) {
                 let id = match argument {
                     ArgumentTransfer::Borrow(id)
+                    | ArgumentTransfer::BorrowMut(id)
                     | ArgumentTransfer::Move(id)
                     | ArgumentTransfer::Clone { source: id, .. } => *id,
                 };
                 if slot(id)?.ty != parameter.ty {
                     return Err(PhysicalError::new(
                         "physical call argument type disagrees with callee ABI",
+                    ));
+                }
+                let valid_transfer = match parameter.passing {
+                    SemParamPassing::ReadOnly => {
+                        !matches!(argument, ArgumentTransfer::BorrowMut(_))
+                    }
+                    SemParamPassing::Borrow => matches!(argument, ArgumentTransfer::Borrow(_)),
+                    SemParamPassing::BorrowMut => {
+                        matches!(argument, ArgumentTransfer::BorrowMut(_))
+                    }
+                    SemParamPassing::Consume => {
+                        matches!(argument, ArgumentTransfer::Move(_))
+                            && slot(id)?.own == OwnKind::Owned
+                    }
+                };
+                if !valid_transfer {
+                    return Err(PhysicalError::new(
+                        "physical call argument transfer disagrees with parameter passing",
                     ));
                 }
             }
@@ -4339,6 +4673,7 @@ fn verify_terminator(
                 .map(|argument| {
                     let id = match argument {
                         ArgumentTransfer::Borrow(id)
+                        | ArgumentTransfer::BorrowMut(id)
                         | ArgumentTransfer::Move(id)
                         | ArgumentTransfer::Clone { source: id, .. } => *id,
                     };
@@ -4357,6 +4692,11 @@ fn verify_terminator(
             for (argument, expected) in args.iter().zip(contract.arguments) {
                 let (id, actual_effect) = match argument {
                     ArgumentTransfer::Borrow(id) => (*id, RuntimeArgumentEffect::Borrow),
+                    ArgumentTransfer::BorrowMut(_) => {
+                        return Err(PhysicalError::new(
+                            "physical runtime operation has no exclusive argument contract",
+                        ));
+                    }
                     ArgumentTransfer::Move(id) => {
                         if slot(*id)?.own != OwnKind::Owned {
                             return Err(PhysicalError::new(format!(
@@ -4713,6 +5053,73 @@ mod tests {
     };
 
     use super::*;
+
+    fn exclusive_receiver() -> (PhysicalModule, CallableId) {
+        let semantic = lower_source(
+            r"
+            fn inspect(values: Vec<i64>) -> i64 { values.len() }
+            fn main() -> i64 {
+                var values: Vec<i64> = Vec.new();
+                values.push(3);
+                inspect(values)
+            }
+            ",
+        );
+        let mut physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
+            .unwrap()
+            .into_unverified();
+        let callee = physical
+            .callables
+            .iter_mut()
+            .find(|callee| callee.symbol == "inspect")
+            .unwrap();
+        callee.params[0].passing = SemParamPassing::BorrowMut;
+        callee.params[0].carrier = ParamCarrier::Indirect;
+        let id = callee.id;
+        for function in &mut physical.functions {
+            for block in &mut function.blocks {
+                if let PhysicalTerminator::Call { callee, args, .. } = &mut block.terminator {
+                    if *callee == id {
+                        let ArgumentTransfer::Borrow(source) = args[0] else {
+                            panic!("source fixture must borrow its vector");
+                        };
+                        args[0] = ArgumentTransfer::BorrowMut(source);
+                    }
+                }
+            }
+        }
+        verify_physical_module(&physical).unwrap();
+        (physical, id)
+    }
+
+    #[test]
+    fn exclusive_receiver_rejects_value_carriers_and_shared_call_arguments() {
+        let (physical, id) = exclusive_receiver();
+        let mut invalid = physical.clone();
+        invalid.callables[id.0 as usize].params[0].carrier = ParamCarrier::Direct;
+        assert!(verify_physical_module(&invalid)
+            .unwrap_err()
+            .message
+            .contains("caller storage by address"));
+
+        let mut invalid = physical;
+        for function in &mut invalid.functions {
+            for block in &mut function.blocks {
+                if let PhysicalTerminator::Call { callee, args, .. } = &mut block.terminator {
+                    if *callee == id {
+                        let ArgumentTransfer::BorrowMut(source) = args[0] else {
+                            unreachable!()
+                        };
+                        args[0] = ArgumentTransfer::Borrow(source);
+                    }
+                }
+            }
+        }
+        assert!(verify_physical_module(&invalid)
+            .unwrap_err()
+            .message
+            .contains("transfer disagrees with parameter passing"));
+    }
 
     fn i64_layout() -> PhysicalLayout {
         PhysicalLayout {
@@ -6219,6 +6626,8 @@ mod tests {
             ],
         };
         let physical = PhysicalModule {
+            closures: vec![],
+            environment_glue: vec![],
             value_capabilities: BTreeMap::new(),
             target: physical_target,
             aggregate_glue: vec![],
@@ -6816,6 +7225,7 @@ mod tests {
             };
             let parent = match args[0] {
                 ArgumentTransfer::Borrow(source)
+                | ArgumentTransfer::BorrowMut(source)
                 | ArgumentTransfer::Move(source)
                 | ArgumentTransfer::Clone { source, .. } => source,
             };

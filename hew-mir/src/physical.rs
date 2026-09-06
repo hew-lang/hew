@@ -2047,6 +2047,11 @@ impl FunctionLowerer<'_> {
         let source = self.value(value)?;
         Ok(match decision {
             BoundaryDecision::Borrow => ArgumentTransfer::Borrow(source),
+            BoundaryDecision::BorrowMut => {
+                return Err(PhysicalError::new(
+                    "exclusive callable arguments require a physical receiver contract",
+                ));
+            }
             BoundaryDecision::Move => ArgumentTransfer::Move(source),
             BoundaryDecision::Copy => ArgumentTransfer::Clone {
                 source,
@@ -2070,6 +2075,11 @@ impl FunctionLowerer<'_> {
         let source = self.value(value)?;
         Ok(match decision {
             BoundaryDecision::Borrow => ReturnTransfer::Borrow(source),
+            BoundaryDecision::BorrowMut => {
+                return Err(PhysicalError::new(
+                    "exclusive callable loans cannot escape through a return",
+                ));
+            }
             BoundaryDecision::Move => ReturnTransfer::Move(source),
             BoundaryDecision::Copy => ReturnTransfer::Clone {
                 source,
@@ -2717,6 +2727,11 @@ fn verify_physical_function(
         let expected_own = match abi.passing {
             hew_sir::SemParamPassing::ReadOnly => OwnKind::None,
             hew_sir::SemParamPassing::Borrow => OwnKind::Guaranteed,
+            hew_sir::SemParamPassing::BorrowMut | hew_sir::SemParamPassing::Consume => {
+                return Err(PhysicalError::new(
+                    "callable receiver parameters require a physical ownership contract",
+                ));
+            }
         };
         if slot.ty != abi.ty || slot.own != expected_own {
             return Err(PhysicalError::new(format!(

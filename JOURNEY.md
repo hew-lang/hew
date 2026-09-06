@@ -1561,3 +1561,15 @@ Introduce the shared callable invocation and duplication capabilities and the
 three independent capture axes: acquisition, private access and consumption.
 This prerequisite defines the vocabulary only; parser and checker integration
 follow separately. No callable behaviour changes in this checkpoint.
+
+## Callable receiver ownership contract
+
+SIR distinguishes exclusive borrowed receivers from consuming receivers. Borrowed
+receivers retain the caller's obligation; a consuming parameter requires a concrete
+owning type and enters the body's normal and fault cleanup set. Indirect-call
+lifetime tests cover both continuations, reject reuse after consumption and retain
+cleanup obligations after borrowing. Exclusive loans also cannot escape by return.
+
+This is a contract checkpoint. Source receiver selection and physical receiver
+storage remain explicit refusals until the closure environment implementation
+connects them; no executable closure acceptance is claimed here.

@@ -2123,12 +2123,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let value = ValueId(values);
                 values += 1;
                 bindings.insert(param.id, value);
-                // §1.2 rule 3: the header slot decides before the type's
-                // class does. A `Borrow` slot makes the parameter
-                // `Guaranteed` for the whole body, so a consuming use of it is
-                // rule 3's `E_OWN_CONSUME_BORROWED` wall and not rule 1's
-                // leak. No lowering emits that slot yet, so every parameter
-                // here takes the class table's answer.
+                // The header decides whether the caller retains the obligation
+                // or transfers it to this body's normal and fault cleanup.
                 let own = OwnKind::of_param(&ty, abi.passing, service.checked_facts.rows())?;
                 Ok((
                     BlockArg { value, ty, own },
@@ -2145,6 +2141,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             })
             .collect::<Result<Vec<(BlockArg, Binding)>, String>>()?;
         let (params, source_bindings): (Vec<BlockArg>, Vec<Binding>) = params.into_iter().unzip();
+        let owned_live = params
+            .iter()
+            .filter(|param| param.own == OwnKind::Owned)
+            .map(|param| (param.value, param.ty.clone()))
+            .collect();
         let binding_declarations = function
             .params
             .iter()
@@ -2162,7 +2163,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             ops: 0,
             bindings,
             binding_declarations,
-            owned_live: BTreeMap::new(),
+            owned_live,
             move_protected_bindings: std::collections::HashSet::new(),
             source_bindings,
             params,
@@ -5003,6 +5004,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 decision: match expected.passing {
                     SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
                     SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
+                    SemParamPassing::BorrowMut | SemParamPassing::Consume => {
+                        return Err(
+                            "direct-call receiver transfer has no source operation contract"
+                                .to_string(),
+                        );
+                    }
                 },
             });
         }
@@ -6290,6 +6297,33 @@ mod tests {
             OwnKind::of_param(&conn_ty(), SemParamPassing::Borrow, &none)
         );
         assert!(OwnKind::of_param(&conn_ty(), SemParamPassing::ReadOnly, &none).is_err());
+    }
+
+    #[test]
+    fn consuming_parameters_require_concrete_owners() {
+        let mut service = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
+        service.require(&ResolvedTy::String).unwrap();
+        service.require(&ResolvedTy::I64).unwrap();
+        assert_eq!(
+            OwnKind::of_param(
+                &ResolvedTy::String,
+                SemParamPassing::Consume,
+                service.rows()
+            ),
+            Ok(OwnKind::Owned)
+        );
+        assert!(
+            OwnKind::of_param(&ResolvedTy::I64, SemParamPassing::Consume, service.rows()).is_err()
+        );
+        assert!(OwnKind::of_param(&conn_ty(), SemParamPassing::Consume, service.rows()).is_err());
+        assert_eq!(
+            OwnKind::of_param(
+                &ResolvedTy::String,
+                SemParamPassing::BorrowMut,
+                service.rows()
+            ),
+            Ok(OwnKind::Guaranteed)
+        );
     }
 
     fn conn_ty() -> ResolvedTy {

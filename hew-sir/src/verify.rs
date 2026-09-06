@@ -2196,6 +2196,8 @@ fn verify_direct_call_terminator(
         let expected_decision = match parameter.passing {
             SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
             SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
+            SemParamPassing::BorrowMut => crate::BoundaryDecision::BorrowMut,
+            SemParamPassing::Consume => crate::BoundaryDecision::Move,
         };
         if argument.decision != expected_decision {
             invalid_operation(

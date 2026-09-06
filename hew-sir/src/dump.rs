@@ -550,6 +550,7 @@ fn operand(operand: &crate::Operand) -> String {
 fn boundary_operand(input: &crate::BoundaryOperand) -> String {
     let decision = match input.decision {
         crate::BoundaryDecision::Borrow => "borrow",
+        crate::BoundaryDecision::BorrowMut => "borrow_mut",
         crate::BoundaryDecision::Copy => "copy",
         crate::BoundaryDecision::Move => "move",
         crate::BoundaryDecision::Snapshot(crate::SnapshotDecision::Share) => "snapshot.share",

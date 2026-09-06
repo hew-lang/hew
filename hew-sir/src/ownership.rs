@@ -237,10 +237,9 @@ impl OwnKind {
     /// The §1.2 kind of a parameter, which is its ABI slot before it is its
     /// type's class.
     ///
-    /// Rule 3: a parameter whose header slot is [`SemParamPassing::Borrow`] is
-    /// a `Guaranteed` value for the whole body whatever its type's class says,
-    /// because the caller keeps the obligation. Every other slot takes the
-    /// class table's answer.
+    /// Shared and exclusive borrow slots are `Guaranteed` for the whole body
+    /// because the caller keeps the obligation. Consuming slots require an
+    /// owning concrete type and transfer its obligation to the callee.
     ///
     /// # Errors
     ///
@@ -252,7 +251,14 @@ impl OwnKind {
         facts: &TypeFactTable,
     ) -> Result<Self, String> {
         match passing {
-            SemParamPassing::Borrow => Ok(Self::Guaranteed),
+            SemParamPassing::Borrow | SemParamPassing::BorrowMut => Ok(Self::Guaranteed),
+            SemParamPassing::Consume => {
+                let own = Self::of_ty(ty, facts)?;
+                if own != Self::Owned {
+                    return Err("consuming parameter requires an owning concrete type".to_string());
+                }
+                Ok(own)
+            }
             SemParamPassing::ReadOnly => Self::of_ty(ty, facts),
         }
     }
@@ -405,6 +411,8 @@ pub enum SnapshotDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BoundaryDecision {
     Borrow,
+    /// Exclusive access to caller-owned storage for a synchronous call.
+    BorrowMut,
     Copy,
     Move,
     Snapshot(SnapshotDecision),

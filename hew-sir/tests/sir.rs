@@ -2006,7 +2006,8 @@ fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
             value: ValueId(0),
             ty: ResolvedTy::I64,
             own: match passing {
-                SemParamPassing::Borrow => OwnKind::Guaranteed,
+                SemParamPassing::Borrow | SemParamPassing::BorrowMut => OwnKind::Guaranteed,
+                SemParamPassing::Consume => OwnKind::Owned,
                 SemParamPassing::ReadOnly => OwnKind::None,
             },
         }],

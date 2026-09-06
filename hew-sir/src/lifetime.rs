@@ -454,7 +454,10 @@ impl<'a> Flow<'a> {
                         | SemTerminator::RtCall { .. }
                         | SemTerminator::ValueCall { .. }
                         | SemTerminator::IndirectCall { .. }
-                ) && operand.decision == BoundaryDecision::Borrow;
+                ) && matches!(
+                    operand.decision,
+                    BoundaryDecision::Borrow | BoundaryDecision::BorrowMut
+                );
                 if !scoped_call_borrow {
                     emit(Violation {
                         block: id,
@@ -656,6 +659,7 @@ mod tests {
     fn a_local_loan_cannot_escape_through_a_return_boundary() {
         for decision in [
             BoundaryDecision::Borrow,
+            BoundaryDecision::BorrowMut,
             BoundaryDecision::Copy,
             BoundaryDecision::Move,
         ] {
@@ -687,6 +691,63 @@ mod tests {
     }
 
     #[test]
+    fn indirect_receivers_preserve_or_transfer_ownership_on_both_outcomes() {
+        for decision in [
+            BoundaryDecision::Borrow,
+            BoundaryDecision::BorrowMut,
+            BoundaryDecision::Move,
+        ] {
+            let cleanup = if decision == BoundaryDecision::Move {
+                vec![]
+            } else {
+                vec![destroy(0, 0)]
+            };
+            let mut f = function(vec![
+                block(
+                    0,
+                    vec![],
+                    SemTerminator::IndirectCall {
+                        id: OpId(0),
+                        callee: BoundaryOperand {
+                            operand: operand(0),
+                            decision,
+                        },
+                        signature: crate::SemSignature {
+                            params: vec![],
+                            return_ty: ResolvedTy::Unit,
+                        },
+                        args: vec![],
+                        result: CallResult::Unit,
+                        normal: edge(1, &[]),
+                        unwind: CallUnwind::Cleanup(edge(2, &[])),
+                    },
+                ),
+                block(1, cleanup.clone(), done()),
+                block(2, cleanup, SemTerminator::ResumeUnwind),
+            ]);
+            f.params[0].ty = ResolvedTy::Function {
+                params: vec![],
+                ret: Box::new(ResolvedTy::Unit),
+            };
+            assert!(verify(&f).is_empty(), "{decision:?}: {:?}", verify(&f));
+            if decision == BoundaryDecision::Move {
+                for continuation in [1, 2] {
+                    let mut reused = f.clone();
+                    reused.blocks[continuation].ops.push(destroy(1, 0));
+                    assert!(verify(&reused)
+                        .iter()
+                        .any(|violation| violation.value == Some(ValueId(0))));
+                }
+            } else {
+                f.blocks[2].ops.clear();
+                assert!(verify(&f)
+                    .iter()
+                    .any(|violation| violation.value == Some(ValueId(0))));
+            }
+        }
+    }
+
+    #[test]
     fn consumed_parameter_has_no_remaining_obligation() {
         assert!(verify(&function(vec![block(0, vec![destroy(0, 0)], done())])).is_empty());
     }
@@ -703,6 +764,7 @@ mod tests {
         for decision in [
             BoundaryDecision::Move,
             BoundaryDecision::Borrow,
+            BoundaryDecision::BorrowMut,
             BoundaryDecision::Copy,
         ] {
             let mut f = function(vec![block(

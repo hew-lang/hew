@@ -421,3 +421,75 @@ fn user_extern_with_canonical_value_arguments_never_gains_encoding_authority() {
         CallTarget::Runtime(crate::RuntimeCallFamily::Encoding { .. })
     )));
 }
+
+#[test]
+fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
+    for (format, kind) in [
+        ("json", BuiltinType::JsonValue),
+        ("yaml", BuiltinType::YamlValue),
+    ] {
+        let source = format!(
+            r#"
+            import std.encoding.{format}.{{self, Value}};
+            fn required_field(obj: Value, key: string) -> Result<Value, string> {{
+                match obj.get_field(key) {{
+                    .Ok(.Some(value)) => Ok(value),
+                    .Ok(.None) => Err("missing field"),
+                    .Err(error) => Err(error),
+                }}
+            }}
+            fn result_probe(obj: Value) -> Result<Value, string> {{
+                let child = required_field(obj, "field")?;
+                Ok(child)
+            }}
+            fn optional_field(obj: Value) -> Option<Value> {{ Some(obj) }}
+            fn option_probe(obj: Value) -> Option<Value> {{
+                let child = optional_field(obj)?;
+                Some(child)
+            }}
+        "#
+        );
+        let mut items = parsed_items(&source);
+        let Item::Import(import) = &mut items[0].0 else {
+            panic!("import fixture")
+        };
+        import.resolved_items = Some(parsed_items(&format!(
+            r"
+            {VALUE_SOURCE}
+            impl Value {{
+                pub fn get_field(self, key: string) -> Result<Option<Value>, string> {{
+                    Ok(Some(self))
+                }}
+            }}
+        "
+        )));
+        import.resolved_source_paths = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join(format!("std/encoding/{format}/{format}.hew"))];
+        let output = check_items(items);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let expected = encoding_ty(kind);
+        for (call, function, container) in [
+            (
+                "required_field(obj, \"field\")",
+                "required_field",
+                Ty::result(expected.clone(), Ty::String),
+            ),
+            (
+                "optional_field(obj)",
+                "optional_field",
+                Ty::option(expected.clone()),
+            ),
+        ] {
+            assert_eq!(output.fn_sigs[function].return_type, container);
+            let start = source.rfind(call).unwrap();
+            let end = start + call.len();
+            assert_eq!(output.expr_types[&SpanKey::from(&(start..end))], container);
+            assert_eq!(
+                output.expr_types[&SpanKey::from(&(start..end + 1))],
+                expected
+            );
+        }
+    }
+}

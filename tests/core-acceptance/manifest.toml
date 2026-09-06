@@ -1323,3 +1323,40 @@ timeout_seconds = 15
 [case.expected]
 stdout = ""
 exit = 0
+
+[[case]]
+id = "file-resource-lifetimes"
+intent = "File owners transfer into records and call-once closures, release on scope and early return, and consume exactly once through close and collection."
+source = "cases/file-resource-lifetimes.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "known file: héllo 🌲\nknown file: héllo 🌲\n7\nknown file: héllo 🌲\nreleased\n"
+exit = 0
+
+[[case]]
+id = "file-resource-read-errors"
+intent = "Checked file reads distinguish missing paths, directories and invalid UTF-8 from successful empty and embedded-NUL contents."
+source = "cases/file-resource-read-errors.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "read results\n"
+exit = 0
+
+[[case]]
+id = "file-resource-fault"
+intent = "A checked arithmetic fault releases simultaneous local, record, captured and caller file owners while preserving the original failure."
+source = "cases/file-resource-fault.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

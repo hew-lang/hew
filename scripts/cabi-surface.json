@@ -13958,6 +13958,21 @@
     },
     {
       "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_has_error() -> bool",
+        "wasm32-wasip1": "fn hew_stream_has_error() -> bool"
+      },
+      "symbol": "hew_stream_has_error"
+    },
+    {
+      "availability": [
         "native"
       ],
       "classification": "stable",

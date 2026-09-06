@@ -73,6 +73,7 @@ impl<'a> HostExport<'a> {
             for block in &body.blocks {
                 match &block.terminator {
                     PhysicalTerminator::IndirectCall { .. }
+                    | PhysicalTerminator::Sleep { .. }
                     | PhysicalTerminator::ValueCall { .. }
                     | PhysicalTerminator::SwitchVariant { .. } => {
                         return Err(fail(
@@ -92,6 +93,10 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::CheckedBinary { .. }
                     | PhysicalTerminator::Call { .. }
                     | PhysicalTerminator::Panic { .. }
+                    | PhysicalTerminator::EnterDefer { .. }
+                    | PhysicalTerminator::FinishDefer { .. }
+                    | PhysicalTerminator::CleanupDispatch { .. }
+                    | PhysicalTerminator::CheckedRaiseFault { .. }
                     | PhysicalTerminator::Trap(_)
                     | PhysicalTerminator::PropagateFault
                     | PhysicalTerminator::Unreachable => {}

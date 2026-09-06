@@ -21,6 +21,9 @@ mod defer;
 mod defer_tests;
 #[path = "physical_partial.rs"]
 mod partial;
+
+#[path = "physical_suspend.rs"]
+mod suspend;
 pub use partial::{
     PhysicalAggregateStep, PhysicalCleanup, PhysicalPlaceLeaf, PhysicalPlaceStorage,
 };
@@ -328,6 +331,10 @@ pub struct PhysicalCallable {
     pub params: Vec<PhysicalParam>,
     pub return_ty: ResolvedTy,
     pub return_layout: Option<PhysicalLayout>,
+    /// The private body uses the resumable status/result/fault convention.
+    /// Derived from verified suspension and call edges, then checked again
+    /// against the physical CFG before emission.
+    pub is_resumable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -792,6 +799,12 @@ impl PhysicalRuntimeAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
+    Sleep {
+        duration: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     EnterDefer {
         defer: DeferId,
         park: FaultParkId,
@@ -994,6 +1007,7 @@ pub fn lower_physical_module(
         ids,
     } = build_glue(module)?;
 
+    let resumable = suspend::semantic_callables(module);
     let callables = module
         .callables
         .iter()
@@ -1032,6 +1046,7 @@ pub fn lower_physical_module(
                 params,
                 return_ty: callable.signature.return_ty.clone(),
                 return_layout,
+                is_resumable: resumable.contains(&callable.id),
             })
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
@@ -2401,8 +2416,21 @@ impl FunctionLowerer<'_> {
             SemTerminator::Trap { kind } => Ok(PhysicalTerminator::Trap(*kind)),
             SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::Sleep,
+                inputs,
+                resumes,
+                cancel,
+                unwind,
+                ..
+            } => Ok(PhysicalTerminator::Sleep {
+                duration: self.value(inputs[0].operand.value)?,
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
             SemTerminator::Suspend { .. } => Err(PhysicalError::new(
-                "runtime and suspending calls need explicit status ABI wrappers",
+                "suspension lacks a physical operation contract",
             )),
         }
     }
@@ -2778,6 +2806,7 @@ fn verify_resources(module: &PhysicalModule) -> Result<(), PhysicalError> {
 }
 
 fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> {
+    suspend::verify_callables(module)?;
     capability::verify(module)?;
     verify_resources(module)?;
     if module.target.triple.is_empty() || module.target.data_layout.is_empty() {
@@ -4634,6 +4663,25 @@ fn terminator_successors(
         ));
     }
     match terminator {
+        PhysicalTerminator::Sleep {
+            duration,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            initialized(function, &state, *duration, block, "sleep duration")?;
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new("sleep cannot overwrite an active fault"));
+            }
+            let mut successors = vec![apply_edge(function, normal, state.clone(), block)?];
+            state.fault = FaultState::Active;
+            let mut cancelled = state.clone();
+            cancelled.exit = defer::CANCEL;
+            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            state.exit = defer::TRAP;
+            successors.push(apply_edge(function, unwind, state, block)?);
+            Ok(successors)
+        }
         PhysicalTerminator::EnterDefer { .. }
         | PhysicalTerminator::FinishDefer { .. }
         | PhysicalTerminator::CleanupDispatch { .. }
@@ -4962,6 +5010,20 @@ fn verify_terminator(
         }
     };
     match terminator {
+        PhysicalTerminator::Sleep {
+            duration,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            if slot(*duration)?.ty != ResolvedTy::Duration || slot(*duration)?.own != OwnKind::None
+            {
+                return Err(PhysicalError::new("sleep input must be a trivial duration"));
+            }
+            edge(normal)?;
+            edge(cancel)?;
+            edge(unwind)
+        }
         PhysicalTerminator::EnterDefer { body, .. }
         | PhysicalTerminator::FinishDefer { next: body, .. }
         | PhysicalTerminator::CheckedRaiseFault { cleanup: body, .. } => edge(body),
@@ -5088,9 +5150,17 @@ fn verify_terminator(
             normal,
             failures,
         } => {
-            require_same_storage_type(function, *lhs, *rhs, "physical checked binary")?;
-            require_same_storage_type(function, *lhs, *result, "physical checked binary result")?;
-            let ty = &slot(*lhs)?.ty;
+            if !hew_sir::checked_binary_types_match(
+                *op,
+                &slot(*lhs)?.ty,
+                &slot(*rhs)?.ty,
+                &slot(*result)?.ty,
+            ) {
+                return Err(PhysicalError::new(
+                    "physical checked binary type relation is invalid",
+                ));
+            }
+            let ty = &slot(*result)?.ty;
             let required = hew_sir::checked_binary_failure_kinds(*op, ty).ok_or_else(|| {
                 PhysicalError::new(
                     "physical checked binary uses an operator or type without checked failures",
@@ -5715,6 +5785,7 @@ mod tests {
     fn target() -> PhysicalTarget {
         let mut target = PhysicalTarget::new("x86_64-unknown-linux-gnu", "e-p:64:64-i64:64");
         target.insert_layout(ResolvedTy::I64, i64_layout());
+        target.insert_layout(ResolvedTy::Duration, i64_layout());
         target.insert_layout(
             ResolvedTy::Bool,
             PhysicalLayout {
@@ -7177,6 +7248,7 @@ mod tests {
             declaration: hew_types::DefId::for_test("malformed_owner_merge"),
             instance: CallableInstance::Monomorphic,
             symbol: "malformed_owner_merge".to_string(),
+            is_resumable: false,
             params: vec![],
             return_ty: ResolvedTy::Unit,
             return_layout: None,

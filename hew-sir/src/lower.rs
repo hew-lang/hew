@@ -11,6 +11,9 @@ mod binding;
 #[path = "lower_var_self.rs"]
 mod var_self;
 
+#[path = "lower_suspend.rs"]
+mod suspend;
+
 #[path = "lower_scalar_match.rs"]
 mod scalar_match;
 
@@ -1962,7 +1965,7 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
     ty.is_integer()
         || matches!(
             ty,
-            hew_types::ResolvedTy::Bool | ResolvedTy::F64 | ResolvedTy::Char
+            hew_types::ResolvedTy::Bool | ResolvedTy::F64 | ResolvedTy::Char | ResolvedTy::Duration
         )
 }
 
@@ -3972,6 +3975,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 let literal = self.service.intern_bytes(value);
                 self.emit(expr, SemOpKind::ConstBytes(literal))
             }
+            HirLiteral::Duration(value) if self.ty(&expr.ty) == ResolvedTy::Duration => {
+                self.emit(expr, SemOpKind::ConstDuration(*value))
+            }
             _ => Err("unsupported HIR literal kind in the initial SIR subset".to_string()),
         }
     }
@@ -5979,6 +5985,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             );
         };
         match target {
+            CallTarget::Builtin { endpoint } if endpoint == "sleep" => {
+                self.lower_sleep(expr, args)?;
+                Ok(None)
+            }
             CallTarget::Extern {
                 declaration,
                 endpoint,

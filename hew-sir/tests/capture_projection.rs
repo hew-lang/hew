@@ -21,7 +21,11 @@ fn capture_module(body: &str) -> SemModule {
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
-    let lowered = hew_sir::lower_module(&hir.module, &checked);
+    let lowered = hew_sir::lower_module_with_demand(
+        &hir.module,
+        &checked,
+        hew_sir::SirLoweringDemand::EveryCallable,
+    );
     assert!(
         lowered
             .callable_statuses

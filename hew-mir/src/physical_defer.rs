@@ -11,6 +11,7 @@ use super::{
 
 pub(super) const ORDINARY: u8 = 1;
 pub(super) const TRAP: u8 = 2;
+pub(super) const CANCEL: u8 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Pending {
@@ -107,6 +108,12 @@ pub(super) type Plan = BTreeMap<BlockId, Region>;
 
 fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
     match term {
+        PhysicalTerminator::Sleep {
+            normal,
+            cancel,
+            unwind,
+            ..
+        } => vec![normal, cancel, unwind],
         PhysicalTerminator::EnterDefer { body, .. }
         | PhysicalTerminator::FinishDefer { next: body, .. }
         | PhysicalTerminator::CheckedRaiseFault { cleanup: body, .. }
@@ -275,7 +282,9 @@ pub(super) fn verify_calls(
                     inspect(module, &block.terminator, seen)?;
                 }
             }
-            PhysicalTerminator::IndirectCall { .. } | PhysicalTerminator::ValueCall { .. } => {
+            PhysicalTerminator::Sleep { .. }
+            | PhysicalTerminator::IndirectCall { .. }
+            | PhysicalTerminator::ValueCall { .. } => {
                 return Err(PhysicalError::new(
                     "physical defer call has unproven effects",
                 ));

@@ -118,6 +118,7 @@ fn add_recipe_callback<'ctx>(
         module: physical,
         llvm,
         functions: BTreeMap::new(),
+        ramps: BTreeMap::new(),
         value_callbacks: BTreeMap::new(),
     };
     let mut emitter = SelectedValueEmitter::new(&parent, &callbacks, function, capability).unwrap();
@@ -168,6 +169,21 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         })*};
     }
     bind!(
+        cont::hew_cont_frame_alloc,
+        cont::hew_cont_frame_free,
+        cont::hew_cont_resume,
+        cont::hew_cont_destroy,
+        coro_root::hew_coro_run_root,
+        coro_state::hew_coro_state_child,
+        coro_state::hew_coro_state_free,
+        coro_state::hew_coro_state_waker,
+        coro_state::hew_coro_state_status,
+        coro_state::hew_coro_state_private_status,
+        coro_state::hew_coro_state_is_cancelled,
+        coro_state::hew_coro_state_finish,
+        coro_sleep::hew_coro_sleep_new,
+        coro_sleep::hew_coro_sleep_status,
+        coro_sleep::hew_coro_sleep_free,
         string::hew_string_hash_fnv1a,
         string::hew_string_equals,
         string::hew_string_is_empty,
@@ -430,6 +446,7 @@ fn user_fault_preserves_status_pointer_and_unwritten_callback_result() {
             module: &physical,
             llvm,
             functions: BTreeMap::new(),
+            ramps: BTreeMap::new(),
             value_callbacks: BTreeMap::new(),
         };
         emitter.declare_functions().unwrap();
@@ -580,6 +597,7 @@ fn key_descriptors_require_construction_and_complete_selected_plans() {
         module: &physical,
         llvm: ctx.create_module("missing_key"),
         functions: BTreeMap::new(),
+        ramps: BTreeMap::new(),
         value_callbacks: BTreeMap::new(),
     };
     assert!(emitter
@@ -689,6 +707,7 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
         module: &physical,
         llvm: ctx.create_module("missing_component"),
         functions: BTreeMap::new(),
+        ramps: BTreeMap::new(),
         value_callbacks: BTreeMap::new(),
     };
     assert!(emitter
@@ -712,6 +731,7 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
             module: &malformed,
             llvm: ctx.create_module("unadmitted_recipe"),
             functions: BTreeMap::new(),
+            ramps: BTreeMap::new(),
             value_callbacks: BTreeMap::new(),
         };
         assert!(emitter

@@ -814,12 +814,27 @@ impl<'a> Flow<'a> {
                 scrutinee, arms, ..
             } => successors.extend(self.variant_switch(id, scrutinee, arms, &state, emit)),
             SemTerminator::Suspend {
-                resumes, cancel, ..
+                resumes,
+                cancel,
+                unwind,
+                ..
             } => {
-                for edge in resumes {
-                    successors.extend(self.edge(id, edge, state.clone(), emit));
+                Self::require_fault(id, DEAD, &state, emit);
+                for (index, edge) in resumes.iter().enumerate() {
+                    let mut resumed = state.clone();
+                    if index == 0 {
+                        block
+                            .terminator
+                            .visit_results(|result| self.define(id, result.id, &mut resumed, emit));
+                    }
+                    successors.extend(self.edge(id, edge, resumed, emit));
                 }
+                let mut failed = state.clone();
+                failed.fault = LIVE;
+                mark_trap(&mut failed);
+                successors.extend(self.edge(id, unwind, failed, emit));
                 state.exit = (state.exit & !ORDINARY) | CANCEL;
+                state.fault = LIVE;
                 successors.extend(self.edge(id, cancel, state, emit));
             }
             SemTerminator::Return { .. }
@@ -1680,9 +1695,8 @@ mod tests {
 
     #[test]
     fn cancellation_and_mixed_predecessors_never_certify_a_trap_cleanup() {
-        // Suspend remains outside module admission. Exercise the existing flow
-        // transfer directly so future suspension support cannot conflate its
-        // cancellation edge with the currently admitted trap fault carrier.
+        // Cancellation owns a fault but does not certify trap-only disposal.
+        // A mixed success/cancellation merge must preserve that distinction.
         for mixed in [false, true] {
             let analysis = cleanup_analysis(vec![
                 block(
@@ -1691,11 +1705,20 @@ mod tests {
                     SemTerminator::Suspend {
                         kind: crate::SuspendKind::Await,
                         inputs: vec![],
+                        result: CallResult::Unit,
                         resumes: vec![edge(if mixed { 1 } else { 2 }, &[])],
                         cancel: edge(1, &[]),
+                        unwind: edge(3, &[]),
                     },
                 ),
-                block(1, vec![local_end()], trap_endpoint()),
+                block(
+                    1,
+                    vec![local_end()],
+                    SemTerminator::CleanupDispatch {
+                        normal: edge(4, &[]),
+                        fault: edge(5, &[]),
+                    },
+                ),
                 block(
                     2,
                     vec![op(
@@ -1707,6 +1730,19 @@ mod tests {
                     )],
                     done(),
                 ),
+                block(
+                    3,
+                    vec![op(
+                        25,
+                        SemOpKind::EndLifetime {
+                            place: crate::PlaceId(0),
+                        },
+                        vec![],
+                    )],
+                    SemTerminator::ResumeUnwind,
+                ),
+                block(4, vec![], done()),
+                block(5, vec![], SemTerminator::ResumeUnwind),
             ]);
             assert!(analysis.violations.is_empty(), "{:?}", analysis.violations);
             assert_eq!(

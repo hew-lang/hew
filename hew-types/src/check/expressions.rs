@@ -570,10 +570,8 @@ impl Checker {
 
             // Await
             Expr::Await(inner) => {
-                // When the user writes `await { method_call }` the inner expression
-                // is an `Expr::Block` wrapping a single trailing method call, not a
-                // bare `Expr::MethodCall`.  Unwrap one level of block so the ask-
-                // dispatch guard and span-key lookup below can find the right node.
+                // Locate a directly awaited method through a transparent block
+                // so suspension permission belongs to the call's exact span.
                 let (effective_expr, effective_span) = match &inner.0 {
                     Expr::Block(block)
                         if block.stmts.is_empty()
@@ -592,7 +590,7 @@ impl Checker {
                     .insert(SpanKey::in_module(effective_span, self.current_module_idx));
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
 
-                // await Task<T> → T (simplified)
+                // Join one Task layer; calls already own their result contract.
                 match inner_ty {
                     Ty::Task(inner) => *inner,
                     // `await close(actor)` or bare actor handle → Unit (actor termination).
@@ -602,22 +600,6 @@ impl Checker {
                         && !matches!(effective_expr, Expr::MethodCall { .. }) =>
                     {
                         Ty::Unit
-                    }
-                    // Named-actor ask: `await ref.method(args)` (bare or block-wrapped)
-                    // where the method is an ask-shaped receive fn (non-unit return).
-                    // The checker recorded an `ActorMethodKind::Ask` entry for the
-                    // inner method-call span; unify with the lambda/remote paths by
-                    // returning `Result<R, AskError>`.
-                    _ if matches!(effective_expr, Expr::MethodCall { .. }) => {
-                        let dispatch_key =
-                            SpanKey::in_module(effective_span, self.current_module_idx);
-                        if let Some(ActorMethodKind::Ask(_, reply_ty)) =
-                            self.actor_method_dispatch.get(&dispatch_key).cloned()
-                        {
-                            Ty::result(reply_ty, Ty::ask_error())
-                        } else {
-                            inner_ty
-                        }
                     }
                     _ => inner_ty,
                 }

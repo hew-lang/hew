@@ -1018,9 +1018,13 @@ impl Checker {
             }
             ActorMethodKind::Ask(method_id, reply_ty.clone())
         };
+        let call_ty = match &dispatch {
+            ActorMethodKind::Ask(_, reply) => Ty::result(reply.clone(), Ty::ask_error()),
+            _ => reply_ty,
+        };
         self.actor_method_dispatch
             .insert(SpanKey::in_module(span, self.current_module_idx), dispatch);
-        reply_ty
+        call_ty
     }
 
     pub(super) fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {

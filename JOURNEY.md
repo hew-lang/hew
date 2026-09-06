@@ -2253,3 +2253,17 @@ wrappers and behavioural tests pass parsing and type checking but still reach an
 HIR conflict from the old generated resource lifecycle metadata. Native value
 copy/drop and consuming-child runtime operation integration remain necessary
 before these source tests can execute. No source runtime acceptance is claimed.
+
+## Check the ordinary encoding source APIs
+
+After retiring the old generated resource lifecycle contracts, the canonical
+compiler checks both JSON/YAML wrappers and their migrated behavioural suites
+successfully. TOML's independent implementation also passes source checking.
+JSON float construction now uses the existing runtime validation and converts
+its private invalid result into `EncodeError.NonFiniteFloat`; the wrapper does
+not duplicate the format's floating-point range rules.
+
+The compiler builds. Full lint passes Rust and shell checks, then stops at the
+dogfood benchmark's unsupported `JobState` aggregate transfer. Native execution
+of the encoding suites still needs the runtime-call and physical value protocols;
+source checking alone does not establish runtime copy or cleanup correctness.

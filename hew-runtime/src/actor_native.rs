@@ -5,9 +5,92 @@
 //! ABI and never encode a fault as a continuation or unwind a native frame.
 
 use std::ptr;
+use std::sync::Arc;
 
 use crate::execution_context::HewExecutionContext;
 use crate::fault::HewFault;
+use crate::lifetime::live_actors::ActorIncarnation;
+
+unsafe extern "C" fn wake_actor(context: *mut std::ffi::c_void) {
+    // SAFETY: each descriptor retains the immutable incarnation allocation.
+    let target = unsafe { *context.cast::<ActorIncarnation>() };
+    crate::scheduler::enqueue_resume_by_incarnation(target);
+}
+
+unsafe extern "C" fn retain_actor_wake(context: *mut std::ffi::c_void) {
+    // SAFETY: the descriptor's owner keeps an Arc reference live during retain.
+    unsafe { Arc::increment_strong_count(context.cast::<ActorIncarnation>()) };
+}
+
+unsafe extern "C" fn release_actor_wake(context: *mut std::ffi::c_void) {
+    // SAFETY: consumes exactly one reference acquired by descriptor retention.
+    unsafe { Arc::decrement_strong_count(context.cast::<ActorIncarnation>()) };
+}
+
+/// Create a handler invocation whose readiness resumes its exact actor turn.
+/// Operations may retain the wake target after the invocation or actor is gone;
+/// the live incarnation registry rejects those late notifications.
+///
+/// # Safety
+/// The current execution context must belong to the live actor dispatch that
+/// owns this invocation. Release the state only after destroying its frame.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_coro_state_new() -> *mut crate::coro_state::HewCoroState {
+    let context = crate::execution_context::current_context();
+    // SAFETY: the generated dispatch adapter runs under its live context.
+    let context = unsafe { &*context };
+    // SAFETY: activation ownership keeps the actor alive during capture.
+    let target = Arc::new(unsafe { ActorIncarnation::of(context.actor) });
+    let waker = crate::wake::HewWaker {
+        context: Arc::as_ptr(&target).cast_mut().cast(),
+        wake: wake_actor,
+        retain: retain_actor_wake,
+        release: release_actor_wake,
+    };
+    // SAFETY: the local Arc and current context retain both inputs for creation.
+    let state =
+        unsafe { crate::coro_state::hew_coro_state_new(&raw const waker, context.cancel_token) };
+    // SAFETY: this activation owns the actor and its one strict turn. The
+    // adapter clears the borrowed slot after child completion under the same
+    // activation ownership, before another turn can start.
+    unsafe { &*context.actor }
+        .checked_invocation
+        .store(state.cast(), std::sync::atomic::Ordering::Release);
+    state
+}
+
+/// Publish a completed handler fault through the current resume context.
+///
+/// # Safety
+/// The current context is the exclusively owned actor activation. `fault` is
+/// null or an owned logical fault, relinquished by the completed handler.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_coro_set_fault(fault: *mut HewFault) {
+    let context = crate::execution_context::current_context();
+    // SAFETY: this activation exclusively owns the completed checked turn.
+    unsafe { &*(*context).actor }
+        .checked_invocation
+        .store(ptr::null_mut(), std::sync::atomic::Ordering::Release);
+    // SAFETY: resume installs a fresh context before entering generated code.
+    unsafe { hew_actor_dispatch_set_fault(context, fault) };
+}
+
+/// Request cooperative cleanup while preserving the scheduler's strict turn.
+///
+/// # Safety
+/// The caller owns the actor activation, excluding execution and invocation
+/// teardown. External stoppers must latch mailbox stop and wake the actor.
+pub(crate) unsafe fn cancel_checked_turn(actor: &crate::actor::HewActor) -> bool {
+    let state = actor
+        .checked_invocation
+        .load(std::sync::atomic::Ordering::Acquire);
+    if state.is_null() {
+        return false;
+    }
+    // SAFETY: activation ownership keeps the borrowed invocation state live.
+    unsafe { crate::coro_state::hew_coro_state_cancel(state.cast()) };
+    true
+}
 
 /// Finish the process root after its source cleanup and child joins complete.
 /// Queued actor work and supervisor decisions use the existing shutdown path.
@@ -225,6 +308,37 @@ mod tests {
     use std::ffi::c_void;
     use std::sync::atomic::Ordering;
 
+    #[test]
+    fn checked_waker_retains_incarnation_after_invocation_and_actor_replacement() {
+        let _guard = crate::runtime_test_guard();
+        let scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let actor = crate::test_actor::TrackedTestActor::install_parked();
+        let mut context = HewExecutionContext {
+            actor: actor.ptr(),
+            ..HewExecutionContext::default()
+        };
+        let previous = crate::execution_context::set_current_context(&raw mut context);
+        // SAFETY: the fixture owns the installed actor context and invocation.
+        // The retained operation descriptor outlives both, as a late I/O wake can.
+        let operation = unsafe {
+            let state = hew_actor_coro_state_new();
+            let operation =
+                crate::wake::OwnedWaker::retain(&*crate::coro_state::hew_coro_state_waker(state));
+            operation.wake();
+            crate::test_actor::assert_woken(&scheduler, &actor, "checked handler");
+            crate::coro_state::hew_coro_state_free(state);
+            hew_actor_coro_set_fault(ptr::null_mut());
+            operation
+        };
+        assert_eq!(
+            crate::execution_context::set_current_context(previous),
+            &raw mut context
+        );
+        actor.reincarnate_parked_reusing_id();
+        operation.wake();
+        crate::test_actor::assert_not_woken(&scheduler, &actor, "checked handler");
+    }
+
     unsafe extern "C-unwind" fn checked_failure(
         ctx: *mut HewExecutionContext,
         state: *mut c_void,
@@ -367,5 +481,80 @@ mod tests {
         }
         assert_eq!(crate::reply_channel::active_channel_count(), baseline);
         assert!(crate::execution_context::current_context().is_null());
+    }
+
+    unsafe extern "C" fn resume_checked_cleanup(frame: *mut c_void) {
+        // SAFETY: the fixture's scheduler owns this scratch frame and installs
+        // its actor context. The first cleanup poll deliberately stays pending.
+        unsafe {
+            let frame = &mut *frame.cast::<crate::coro_exec::test_support::ScratchFrame>();
+            let actor = &*(*crate::execution_context::current_context()).actor;
+            let state = actor.checked_invocation.load(Ordering::Acquire).cast();
+            assert_eq!(crate::coro_state::hew_coro_state_is_cancelled(state), 1);
+            if frame.resumes.fetch_add(1, Ordering::AcqRel) == 1 {
+                crate::coro_state::hew_coro_state_publish(
+                    state,
+                    crate::coro_state::CoroStatus::Cancelled as i32,
+                );
+                crate::coro_state::hew_coro_state_free(state);
+                hew_actor_coro_set_fault(ptr::null_mut());
+                frame.resume = None;
+            }
+        }
+    }
+
+    #[test]
+    fn checked_stop_keeps_turn_until_pending_cleanup_finishes() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let (_, waker) = crate::wake::blocking::Readiness::new();
+        let mut actor = crate::test_actor::stub_actor();
+        let mut frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        frame.resume = Some(resume_checked_cleanup);
+        // SAFETY: all fixture resources remain locally owned until scheduler
+        // completion; the frame relinquishes its state on its terminal poll.
+        unsafe {
+            let state = crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+            actor
+                .checked_invocation
+                .store(state.cast(), Ordering::Release);
+            actor
+                .suspended_cont
+                .store(frame.handle(), Ordering::Release);
+            actor.cont_tag.store(
+                crate::internal::types::ContTag::Parked as i32,
+                Ordering::Release,
+            );
+            actor.actor_state.store(
+                crate::internal::types::HewActorState::Runnable as i32,
+                Ordering::Release,
+            );
+            let mailbox = crate::mailbox::hew_mailbox_new();
+            actor.mailbox = mailbox.cast();
+            crate::mailbox::mailbox_close(mailbox);
+            crate::mailbox::mailbox_request_stop(mailbox);
+            crate::scheduler::activate_actor_for_test(&raw mut actor);
+            assert_eq!(frame.resumes.load(Ordering::Acquire), 1);
+            assert_eq!(frame.destroyed.load(Ordering::Acquire), 0);
+            assert_eq!(
+                actor.actor_state.load(Ordering::Acquire),
+                crate::internal::types::HewActorState::Suspended as i32
+            );
+            assert!(!actor.checked_invocation.load(Ordering::Acquire).is_null());
+            actor.actor_state.store(
+                crate::internal::types::HewActorState::Runnable as i32,
+                Ordering::Release,
+            );
+            crate::scheduler::activate_actor_for_test(&raw mut actor);
+            assert_eq!(frame.resumes.load(Ordering::Acquire), 2);
+            assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
+            assert_eq!(
+                actor.actor_state.load(Ordering::Acquire),
+                crate::internal::types::HewActorState::Stopped as i32
+            );
+            assert!(actor.checked_invocation.load(Ordering::Acquire).is_null());
+            assert!(actor.suspended_cont.load(Ordering::Acquire).is_null());
+            crate::mailbox::hew_mailbox_free(mailbox);
+        }
     }
 }

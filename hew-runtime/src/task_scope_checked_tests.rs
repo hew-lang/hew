@@ -321,3 +321,80 @@ fn closing_scope_releases_unobserved_result_before_remaining_handle() {
         assert_eq!(drops.load(Ordering::SeqCst), 11);
     }
 }
+
+#[test]
+fn select_observation_retains_both_results_after_a_task_or_timer_wins() {
+    for timeout in [false, true] {
+        let (readiness, waker) = Readiness::new();
+        let (started, receive) = mpsc::channel();
+        let first_gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let second_gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // SAFETY: observations borrow source handles; ordinary waits consume
+        // those handles only after selection has detached, then drain the scope.
+        unsafe {
+            let scope = hew_checked_scope_new(ptr::null_mut());
+            let tasks = [
+                spawn(
+                    scope,
+                    started.clone(),
+                    Arc::clone(&first_gate),
+                    Arc::clone(&drops),
+                    ResultValue::Scalar(17),
+                ),
+                spawn(
+                    scope,
+                    started,
+                    Arc::clone(&second_gate),
+                    Arc::clone(&drops),
+                    ResultValue::Scalar(42),
+                ),
+            ];
+            receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            let selection = hew_checked_task_select_new(
+                tasks.as_ptr(),
+                tasks.len(),
+                i32::from(timeout),
+                0,
+                waker.descriptor(),
+            );
+            if !timeout {
+                assert_eq!(hew_checked_task_select_poll(selection), -1);
+                release(&second_gate);
+            }
+            let winner = loop {
+                let winner = hew_checked_task_select_poll(selection);
+                if winner != -1 {
+                    break winner;
+                }
+                readiness.wait();
+            };
+            assert_eq!(winner, if timeout { 2 } else { 1 });
+            assert_eq!(hew_checked_task_select_poll(selection), winner);
+            hew_checked_task_select_free(selection);
+            release(&first_gate);
+            release(&second_gate);
+            for (task, expected) in tasks.into_iter().zip([17, 42]) {
+                let wait = hew_checked_task_wait_new(task, waker.descriptor());
+                while hew_checked_task_wait_status(wait) == PENDING {
+                    readiness.wait();
+                }
+                let mut output = 0_i64;
+                let mut fault = ptr::null_mut();
+                assert_eq!(
+                    hew_checked_task_wait_take(wait, (&raw mut output).cast(), &raw mut fault),
+                    READY
+                );
+                assert_eq!(output, expected);
+                assert!(fault.is_null());
+                hew_checked_task_wait_free(wait);
+            }
+            let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+            assert_eq!(hew_checked_scope_wait_status(drain), 1);
+            hew_checked_scope_wait_free(drain);
+            hew_checked_scope_close(scope);
+            assert_eq!(drops.load(Ordering::SeqCst), 2);
+        }
+    }
+}

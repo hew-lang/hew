@@ -141,6 +141,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
             match &block.terminator {
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::Sleep { .. }
+                | PhysicalTerminator::TaskSelect { .. }
                 | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::TaskScopeJoin { .. } => {

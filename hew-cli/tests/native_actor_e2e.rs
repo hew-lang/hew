@@ -22,7 +22,9 @@ fn run_actor(source: &str, expected: &str, status: i32, diagnostic: &str) {
             .arg(&binary);
         let output = run_bounded_command(build, format!("build native actor O{opt}"));
         assert!(output.status.success(), "{}", describe_output(&output));
-        let output = run_bounded_command(Command::new(binary), format!("run native actor O{opt}"));
+        let mut run = Command::new(binary);
+        run.env("HEW_WORKERS", "1");
+        let output = run_bounded_command(run, format!("run native actor O{opt}"));
         assert_eq!(
             output.status.code(),
             Some(status),
@@ -175,6 +177,60 @@ fn main() {
 }
 
 #[test]
+fn suspended_turn_preserves_state_and_releases_the_only_worker() {
+    run_actor(
+        r#"actor Probe {
+    receive fn run() { println("other-actor"); }
+}
+actor Gate {
+    var phase: string,
+    receive fn observe() { println(phase); }
+    receive fn slow(message: string) {
+        phase = "before";
+        await sleep(20ms);
+        phase = message;
+        println("finished");
+    }
+}
+fn main() {
+    let probe = spawn Probe();
+    let gate = spawn Gate(phase: "initial");
+    let _ = send gate.slow("after".to_upper());
+    let _ = send gate.observe();
+    let _ = send probe.run();
+}
+"#,
+        "other-actor\nfinished\nAFTER\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn resumed_handler_fault_runs_owned_defers_before_actor_failure() {
+    run_actor(
+        r#"actor Worker {
+    var label: string,
+    receive fn fail(message: string) {
+        defer { println(label); }
+        defer { println(message); }
+        await sleep(1ms);
+        label = "actor-cleanup";
+        panic("resumed-handler-fault");
+    }
+}
+fn main() {
+    let worker = spawn Worker(label: "initial");
+    let _ = send worker.fail("message-cleanup".to_upper());
+}
+"#,
+        "MESSAGE-CLEANUP\nactor-cleanup\n",
+        1,
+        "actor crash",
+    );
+}
+
+#[test]
 fn initializer_fault_cleans_state_and_root_before_publication() {
     run_actor(
         r#"actor Broken {
@@ -314,6 +370,26 @@ fn main() {
 }
 "#,
         "discarded\nfull\nRETRY:OWNED\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn a_handler_can_submit_an_owned_message_to_its_own_actor() {
+    run_actor(
+        r"actor Gate {
+    receive fn observe() { println(42); }
+    receive fn relay(me: LocalPid<Gate>) {
+        let _ = send me.observe();
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let _ = send gate.relay(gate);
+}
+",
+        "42\n",
         0,
         "",
     );

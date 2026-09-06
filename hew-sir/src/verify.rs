@@ -4049,6 +4049,31 @@ fn verify_terminator_shape(
                         && resumes.len() == 1
                         && matches!(result, crate::CallResult::Unit)
                 }
+                crate::SuspendKind::Select { has_timeout } => {
+                    let tasks = if *has_timeout {
+                        inputs.split_last().and_then(|(duration, tasks)| {
+                            (duration.decision == crate::BoundaryDecision::Copy
+                                && types.get(&duration.operand.value)
+                                    == Some(&ResolvedTy::Duration))
+                            .then_some(tasks)
+                        })
+                    } else {
+                        Some(inputs.as_slice())
+                    };
+                    resumes.len() == 1
+                        && matches!(result, crate::CallResult::Value(value)
+                            if value.ty == ResolvedTy::I64 && value.own == crate::OwnKind::None)
+                        && tasks.is_some_and(|tasks| {
+                            (*has_timeout || !tasks.is_empty())
+                                && tasks.iter().all(|input| {
+                                    input.decision == crate::BoundaryDecision::Borrow
+                                        && matches!(
+                                            types.get(&input.operand.value),
+                                            Some(ResolvedTy::Task(_))
+                                        )
+                                })
+                        })
+                }
                 _ => false,
             };
             if !valid {

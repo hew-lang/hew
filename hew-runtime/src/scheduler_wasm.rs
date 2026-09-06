@@ -159,6 +159,11 @@ pub struct HewActor {
     pub parked_ask_channel: AtomicPtr<c_void>,
     // Payload ownership contract; mirrors the canonical actor tail.
     pub dispatch_ownership: crate::actor::HewDispatchOwnership,
+
+    /// Borrowed invocation state of the active checked handler, protected by
+    /// activation ownership. Stop requests cancel and drain this invocation
+    /// before its frame can be destroyed. Null between checked turns.
+    pub checked_invocation: AtomicPtr<c_void>,
 }
 
 /// The dispatch entry point selected for one dequeued message — the WASM twin
@@ -2771,6 +2776,7 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -7678,6 +7684,7 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

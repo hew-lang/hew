@@ -62,6 +62,23 @@ fn main() {
 }
 
 #[test]
+fn selecting_a_never_returning_child_propagates_its_fault() {
+    run_task(
+        r#"
+fn main() {
+    scope {
+        let child = fork { panic("selected bottom child"); };
+        select { value = await child => println("incorrect arm") };
+    } handle failure { println("recovered selection"); };
+}
+"#,
+        "recovered selection\n",
+        0,
+        "",
+    );
+}
+
+#[test]
 fn returning_past_recovery_does_not_catch_an_outer_child_fault() {
     run_task(
         r#"
@@ -207,6 +224,133 @@ fn main() {
         "inner cleanup\nouter cleanup\nouter recovered\ndone\n",
         0,
         "",
+    );
+}
+
+#[test]
+fn task_selection_preserves_the_loser_and_transfers_owned_results() {
+    run_task(
+        r#"
+fn main() {
+    let first = fork { await sleep(1ms); "first" };
+    let second = fork { "second" };
+    let result = select {
+        a = await first => { let b = await second; a + ":" + b },
+        b = await second => { let a = await first; a + ":" + b },
+    };
+    println(result);
+}
+"#,
+        "first:second\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn task_selection_timer_preserves_both_tasks_and_evaluates_duration_once() {
+    run_task(
+        r#"
+fn duration() -> duration { println("timer"); 0ms }
+fn main() {
+    let first = fork { await sleep(100ms); 17 };
+    let second = fork { await sleep(100ms); 42 };
+    let result = select {
+        a = await first => a + await second,
+        b = await second => b + await first,
+        after duration() => { println("timeout"); await first + await second },
+    };
+    println(result);
+    select { after 0ms => println("only timer") };
+}
+"#,
+        "timer\ntimeout\n59\nonly timer\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn task_selection_cancellation_drains_children_before_the_parent_defer() {
+    run_task(
+        r#"
+fn main() {
+    scope within 20ms {
+        defer println("parent cleanup");
+        let child = fork { await sleep(1s); println("late"); 42 };
+        select { value = await child => println(value) };
+    };
+}
+"#,
+        "parent cleanup\n",
+        254,
+        "Deadline",
+    );
+}
+
+#[test]
+fn task_selection_propagates_child_faults_without_entering_the_arm() {
+    run_task(
+        r#"
+fn fail() -> i64 { panic("selected child failed"); }
+fn main() {
+    defer println("parent cleanup");
+    let child = fork {
+        defer println("child cleanup");
+        await sleep(1ms);
+        fail()
+    };
+    select { value = await child => println(value) };
+}
+"#,
+        "child cleanup\nparent cleanup\n",
+        212,
+        "selected child failed",
+    );
+}
+
+#[test]
+fn task_selection_handles_projected_temporary_and_unit_tasks() {
+    run_task(
+        r#"
+fn main() {
+    let pair = (fork { await sleep(1ms); 17 }, fork { 42 });
+    let sum = select {
+        a = await pair.0 => a + await pair.1,
+        b = await pair.1 => b + await pair.0,
+    };
+    println(sum);
+    let result = select {
+        value = await fork { println("created"); 42 } => value,
+    };
+    println(result);
+    let child = fork { await sleep(1ms); println("child"); };
+    select { done = await child => println("selected") };
+}
+"#,
+        "59\ncreated\n42\nchild\nselected\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn task_selection_releases_prepared_loans_when_timer_evaluation_faults() {
+    run_task(
+        r#"
+fn duration() -> duration { panic("timer preparation failed"); }
+fn main() {
+    defer println("parent cleanup");
+    let child = fork { await sleep(1s); 42 };
+    select {
+        value = await child => println(value),
+        after duration() => println("timer"),
+    };
+}
+"#,
+        "parent cleanup\n",
+        212,
+        "timer preparation failed",
     );
 }
 

@@ -1202,6 +1202,10 @@ pub struct HirFn {
     pub name: String,
     pub type_params: Vec<String>,
     pub params: Vec<HirBinding>,
+    /// Exact receiver binding transferred into a recognized `var self` body
+    /// and returned in the second field of its `(result, Self)` result.
+    /// This internal transfer is independent of source `consume` spelling.
+    pub var_self_receiver: Option<BindingId>,
     /// For ordinary functions this is the declared return type. For generator
     /// functions (`is_generator`) this remains the declared `-> T` yield element
     /// type; the body itself lowers with unit expectation and produces a

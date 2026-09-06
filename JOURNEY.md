@@ -2478,3 +2478,13 @@ declarations before imports, and HIR consumes those facts for encoding annotatio
 and expression types. The declaring module's ordinary methods retain their bodies;
 opaque lookalikes acquire no encoding authority. Source regressions exercise
 selected imports, nested field-selection matches, and Result/Option propagation.
+
+## Carry the receiver transfer explicitly for mutable methods
+
+A `var self` body now names its exact receiver binding in HIR. The marker
+connects the incoming receiver to the existing `(result, Self)` return without
+changing source `consume` metadata or inferring ownership from a tuple or method
+name. HIR verifies the first-parameter identity, mutability and returned type,
+and retains structured declaration targets on mutable method calls. Concrete and
+generic source tests cover explicit and fallthrough receiver returns; malformed
+markers and endpoint-only targets are rejected.

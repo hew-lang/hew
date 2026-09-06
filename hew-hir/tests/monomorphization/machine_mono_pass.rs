@@ -250,6 +250,7 @@ fn machine_mono_fails_closed_when_unresolved_type_var_survives() {
         span: 0..0,
         is_generator: false,
         intrinsic_id: None,
+        var_self_receiver: None,
     };
 
     // Degenerate `T -> T` substitution: a real function-mono closure
@@ -496,6 +497,7 @@ fn machine_mono_emits_cap_diagnostic_when_distinct_instantiations_exceed_cap() {
         span: 0..0,
         is_generator: false,
         intrinsic_id: None,
+        var_self_receiver: None,
     };
 
     let distinct_args = [

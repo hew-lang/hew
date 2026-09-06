@@ -15,7 +15,7 @@ use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, HirNodeId, ResolvedRef, SiteId};
 use crate::node::{
     HirBlock, HirExpr, HirExprKind, HirGenCaptureSource, HirItem, HirLiteral, HirMatchArmPredicate,
-    HirModule, HirStmtKind,
+    HirModule, HirStmtKind, HirVarSelfMethodTarget,
 };
 use hew_types::{BuiltinType, RcIntrinsicOp, ResolvedTy};
 
@@ -73,6 +73,23 @@ impl Verifier {
             match item {
                 HirItem::Function(func) => {
                     self.node(func.node, func.span.clone());
+                    if let Some(receiver) = func.var_self_receiver {
+                        let valid = !func.is_generator && func.params.first().is_some_and(|param| {
+                            param.id == receiver && param.mutable
+                                && matches!(&func.return_ty, ResolvedTy::Tuple(fields)
+                                    if matches!(fields.as_slice(), [_, returned] if *returned == param.ty))
+                        });
+                        if !valid {
+                            self.diagnostics.push(self.diagnostic(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "var self receiver".to_string(),
+                                    reason: "marker must name the mutable first parameter returned as Self".to_string(),
+                                },
+                                func.span.clone(),
+                                "var self transfer requires one exact receiver binding and (result, Self) return type",
+                            ));
+                        }
+                    }
                     for param in &func.params {
                         self.binding(param.id, param.span.clone());
                     }
@@ -554,11 +571,31 @@ impl Verifier {
             }
             HirExprKind::VarSelfMethodCall {
                 call_target,
+                target,
                 receiver,
                 args,
                 ..
             } => {
                 self.executable_call_target(call_target, expr);
+                if !matches!(
+                    (target, call_target),
+                    (
+                        HirVarSelfMethodTarget::Direct,
+                        hew_types::CallTarget::User(_) | hew_types::CallTarget::ImplMethod(_)
+                    ) | (
+                        HirVarSelfMethodTarget::StaticTrait { .. },
+                        hew_types::CallTarget::StaticTraitMethod { .. }
+                    )
+                ) {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "var self call target".to_string(),
+                            reason: "dispatch must retain its structured direct or static-trait target".to_string(),
+                        },
+                        expr.span.clone(),
+                        "var self calls cannot select a receiver transfer from an endpoint spelling",
+                    ));
+                }
 
                 self.expr(receiver);
                 for arg in args {
@@ -1232,6 +1269,7 @@ mod tests {
             span: 0..0,
             is_generator: false,
             intrinsic_id: None,
+            var_self_receiver: None,
         })
     }
 

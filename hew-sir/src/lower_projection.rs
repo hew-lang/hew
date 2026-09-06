@@ -31,7 +31,21 @@ impl Builder<'_, '_> {
             return Err("aggregate projection changed its exact binding type".into());
         }
         let base = match target {
-            super::BindingTarget::Place(place) => PlaceBase::Place(place),
+            super::BindingTarget::Place(root) => {
+                // A capture belongs to its environment, not to this body's
+                // local aggregate partition. Projected reads must borrow
+                // through that owner instead of declaring independently
+                // initialized aggregate places beneath its field.
+                if !place.projections.is_empty()
+                    && matches!(
+                        self.places[root.0 as usize].origin,
+                        PlaceOrigin::Capture { .. } | PlaceOrigin::Runtime
+                    )
+                {
+                    return Ok(None);
+                }
+                PlaceBase::Place(root)
+            }
             super::BindingTarget::Value(root) => {
                 if place.projections.is_empty() || self.value_own_kind(root) != Some(OwnKind::Owned)
                 {

@@ -55,7 +55,7 @@ fn canonical_string_length_uses_a_borrowing_runtime_operation() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "echo_len")
+        .find(|function| function.declaration.full_path() == "echo_len")
         .expect("the imported string-length caller must have a SIR body");
     assert!(echo_len.blocks.iter().any(|block| matches!(
         &block.terminator,
@@ -135,7 +135,7 @@ fn scalar_eval_print_uses_a_typed_runtime_operation() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .expect("the eval wrapper main must have a SIR body");
     assert!(main.blocks.iter().any(|block| matches!(
         block.terminator,
@@ -158,7 +158,7 @@ fn constant_owned_branch_that_needs_cleanup_remains_executable() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .expect("owned branch acceptance entry must lower")
         .clone();
     let reports = canonicalize_module_constant_cfg(&mut lowered.module)
@@ -190,7 +190,7 @@ fn bytes_runtime_transform_and_failure_edges_are_explicit_and_checked() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .expect("bytes acceptance entry must lower");
 
     let (push_result, push_normal) = main
@@ -338,7 +338,7 @@ fn owned_string_and_bytes_calls_copy_borrows_and_clean_both_exits() {
         .module
         .callables
         .iter()
-        .filter(|callable| callable.symbol != "main")
+        .filter(|callable| callable.declaration.full_path() != "main")
     {
         assert!(callable
             .signature
@@ -346,12 +346,10 @@ fn owned_string_and_bytes_calls_copy_borrows_and_clean_both_exits() {
             .iter()
             .all(|param| param.passing == SemParamPassing::Borrow));
     }
-    for function in lowered
-        .module
-        .functions
-        .iter()
-        .filter(|function| function.name == "keep_text" || function.name == "keep_bytes")
-    {
+    for function in lowered.module.functions.iter().filter(|function| {
+        function.declaration.full_path() == "keep_text"
+            || function.declaration.full_path() == "keep_bytes"
+    }) {
         assert!(function
             .blocks
             .iter()
@@ -436,7 +434,7 @@ fn owned_binding_aliases_copy_and_preserve_source() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .expect("main must lower");
     assert_eq!(
         main.blocks
@@ -583,7 +581,7 @@ fn owned_block_expressions_destroy_inner_locals_at_scope_exit() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .expect("main must lower");
     for source in ["scratch", "branch"] {
         let literal = lowered
@@ -656,7 +654,7 @@ fn nested_owned_call_arguments_live_until_outer_call() {
             .module
             .functions
             .iter()
-            .find(|function| function.name == "main")
+            .find(|function| function.declaration.full_path() == "main")
             .expect("main must lower");
         assert!(main.blocks.iter().any(|block| matches!(
             &block.terminator,
@@ -717,7 +715,7 @@ fn owned_string_reassignment_loop_and_early_return_verify() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "choose")
+        .find(|function| function.declaration.full_path() == "choose")
         .expect("choose must lower");
     let hew_sir::BindingTarget::Place(selected) = choose
         .bindings
@@ -779,7 +777,7 @@ fn checked_arithmetic_failure_cleans_live_owner_before_exact_trap() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "increment")
+        .find(|function| function.declaration.full_path() == "increment")
         .expect("increment must lower");
     let failures = increment
         .blocks

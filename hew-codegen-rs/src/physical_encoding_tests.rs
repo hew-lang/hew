@@ -111,7 +111,7 @@ fn string_emptiness_borrows_managed_strings_and_preserves_later_reads_at_o0_o2()
         physical
             .callables
             .iter()
-            .find(|callable| callable.symbol == "probe")
+            .find(|callable| callable.declaration.full_path() == "probe")
             .unwrap(),
     );
     for optimized in [false, true] {

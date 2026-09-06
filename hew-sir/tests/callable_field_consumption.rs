@@ -49,7 +49,7 @@ fn assert_once_field_transfer(source: &str) {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .unwrap();
     let callee = main
         .blocks
@@ -306,7 +306,7 @@ fn explicit_destructure_exposes_owned_callable_fields_and_live_siblings() {
             .module
             .functions
             .iter()
-            .find(|function| function.name == "main")
+            .find(|function| function.declaration.full_path() == "main")
             .unwrap();
         let fields = main
             .blocks

@@ -3,86 +3,72 @@ mod support;
 use std::process::Command;
 use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
 
-const CONTENTS: &str = "known file: héllo 🌲";
-
 #[test]
-fn file_resource_lifetimes_and_fault_cleanup_execute_at_both_optimization_levels() {
+fn private_source_symbols_do_not_interpose_native_file_io() {
     require_codegen();
     let dir = tempdir();
-    for name in [
-        "read",
-        "collect",
-        "close",
-        "scope",
-        "return",
-        "record",
-        "capture-drop",
-        "capture-call",
-        "fault-record",
-        "fault-capture",
-        "fault-local",
-        "fault-caller",
-    ] {
-        std::fs::write(dir.path().join(format!("resource-{name}.txt")), CONTENTS).unwrap();
-    }
-    std::fs::write(dir.path().join("resource-invalid.txt"), [b'o', b'k', 0xff]).unwrap();
-    std::fs::write(dir.path().join("resource-empty.txt"), []).unwrap();
-    std::fs::write(dir.path().join("resource-nul.txt"), b"a\0b").unwrap();
-    let cases = [
-        (
-            "errors",
-            include_str!("../../tests/core-acceptance/cases/file-resource-read-errors.hew"),
-            0,
-            "read results\n".to_string(),
-            "",
-        ),
-        (
-            "lifetimes",
-            include_str!("../../tests/core-acceptance/cases/file-resource-lifetimes.hew"),
-            0,
-            format!("{CONTENTS}\n{CONTENTS}\n7\n{CONTENTS}\nreleased\n"),
-            "",
-        ),
-        (
-            "fault",
-            include_str!("../../tests/core-acceptance/cases/file-resource-fault.hew"),
-            202,
-            String::new(),
-            "hew: failure: DivideByZero (202)\n",
-        ),
-    ];
-    for (name, source, exit, stdout, stderr) in cases {
-        let input = dir.path().join(format!("{name}.hew"));
-        std::fs::write(&input, source).unwrap();
-        for opt in ["0", "2"] {
-            let binary = hew_testutil::compiled_binary_path(dir.path(), &format!("{name}-{opt}"));
-            let mut build = Command::new(hew_binary());
-            build
-                .arg("build")
-                .arg(&input)
-                .arg("--opt-level")
-                .arg(opt)
-                .arg("-o")
-                .arg(&binary)
-                .current_dir(dir.path());
-            let compilation = run_bounded_command(build, format!("build resource {name} O{opt}"));
+    let input = dir.path().join("private_names.hew");
+    std::fs::write(dir.path().join("input.bin"), b"native file contents\n").unwrap();
+    std::fs::write(
+        &input,
+        r#"import std.fs;
+            pub fn open(value: i64) -> i64 { value + 1 }
+            pub fn read(value: i64) -> i64 { value + 2 }
+            fn main_body(value: i64) -> i64 { value + 3 }
+            fn identity<T>(value: T) -> T { value }
+            fn main() -> i64 {
+                let named: fn(i64) -> i64 = read;
+                let anonymous = |value: i64| value + 4;
+                if open(5) != 6 { return 1; }
+                if named(5) != 7 { return 2; }
+                if identity(main_body(5)) != 8 { return 3; }
+                if anonymous(5) != 9 { return 4; }
+                match fs.read("input.bin") {
+                    .Ok(text) => { if text != "native file contents\n" { return 5; } },
+                    .Err(_) => return 6,
+                }
+                println("private source calls and native file I/O");
+                0
+            }
+        "#,
+    )
+    .unwrap();
+    for level in ["0", "2"] {
+        let output_dir = dir.path().join(format!("o{level}"));
+        std::fs::create_dir(&output_dir).unwrap();
+        let binary = hew_testutil::compiled_binary_path(&output_dir, "private_names");
+        let mut build = Command::new(hew_binary());
+        build
+            .arg("build")
+            .arg(&input)
+            .arg("--opt-level")
+            .arg(level)
+            .arg("--emit-llvm")
+            .arg("-o")
+            .arg(&binary)
+            .current_dir(dir.path());
+        let output = run_bounded_command(build, format!("compile private names O{level}"));
+        assert!(output.status.success(), "{}", describe_output(&output));
+        let llvm = std::fs::read_to_string(output_dir.join("private_names.ll")).unwrap();
+        for native in ["open", "read", "main_body"] {
             assert!(
-                compilation.status.success(),
-                "{}",
-                describe_output(&compilation)
+                !llvm.lines().any(
+                    |line| line.starts_with("define ") && line.contains(&format!("@{native}("))
+                ),
+                "source body exposed the native symbol {native}"
             );
-            let mut run = Command::new(&binary);
-            run.current_dir(dir.path());
-            let output = run_bounded_command(run, format!("execute resource {name} O{opt}"));
-            assert_eq!(
-                output.status.code(),
-                Some(exit),
-                "{}",
-                describe_output(&output)
-            );
-            assert_eq!(String::from_utf8_lossy(&output.stdout), stdout);
-            assert_eq!(String::from_utf8_lossy(&output.stderr), stderr);
         }
+        let mut run = Command::new(&binary);
+        run.current_dir(dir.path());
+        let output = run_bounded_command(run, format!("execute private names O{level}"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            describe_output(&output)
+        );
+        assert_eq!(output.stdout, b"private source calls and native file I/O\n");
+        assert!(output.stderr.is_empty(), "{}", describe_output(&output));
     }
 }
 

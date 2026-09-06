@@ -8,14 +8,14 @@ fn failed(path: string) -> bool {
 }
 
 fn main() -> i64 {
-    if !failed("resource-missing.txt") { return 1; }
-    if !failed("resource-invalid.txt") { return 2; }
+    if !failed("resource-missing.bin") { return 1; }
+    if !failed("resource-invalid.bin") { return 2; }
     if !failed(".") { return 3; }
-    match fs.read("resource-empty.txt") {
+    match fs.read("resource-empty.bin") {
         .Ok(text) => { if text != "" { return 4; } },
         .Err(_) => return 5,
     }
-    match fs.read("resource-nul.txt") {
+    match fs.read("resource-nul.bin") {
         .Ok(text) => { if text != "a\0b" { return 6; } },
         .Err(_) => return 7,
     }

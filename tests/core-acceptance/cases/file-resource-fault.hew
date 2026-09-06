@@ -10,14 +10,14 @@ fn open(path: string) -> Stream<string> {
 }
 
 fn fail(divisor: i64) -> i64 {
-    let _reader = Reader { input: open("resource-fault-record.txt"), label: "owned record".to_upper() };
-    let input = open("resource-fault-capture.txt");
+    let _reader = Reader { input: open("resource-fault-record.bin"), label: "owned record".to_upper() };
+    let input = open("resource-fault-capture.bin");
     let _uncalled: fn[once]() -> string = move || input.collect();
-    let _local = open("resource-fault-local.txt");
+    let _local = open("resource-fault-local.bin");
     7 / divisor
 }
 
 fn main() -> i64 {
-    let _caller = open("resource-fault-caller.txt");
+    let _caller = open("resource-fault-caller.bin");
     fail(0)
 }

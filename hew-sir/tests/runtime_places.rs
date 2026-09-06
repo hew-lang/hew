@@ -81,7 +81,7 @@ fn field_push_transfers_the_leaf_without_copying_its_container() {
     let main = module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .unwrap();
     let initial = main
         .bindings
@@ -152,7 +152,7 @@ fn assert_receiver_update_order(module: &SemModule) {
     let main = module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .unwrap();
     let BindingTarget::Place(root) = main
         .bindings
@@ -300,7 +300,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
     let main = module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .unwrap();
     let (call, moved, cleanup) = main
         .blocks
@@ -352,7 +352,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
     let fault = missing_cleanup
         .functions
         .iter_mut()
-        .find(|f| f.name == "main")
+        .find(|f| f.declaration.full_path() == "main")
         .unwrap()
         .blocks
         .iter_mut()
@@ -485,7 +485,9 @@ fn malformed_mutable_places_cannot_bypass_root_or_projection_checks() {
             .items
             .iter_mut()
             .find_map(|item| match item {
-                HirItem::Function(function) if function.name == "main" => Some(function),
+                HirItem::Function(function) if function.declaration.full_path() == "main" => {
+                    Some(function)
+                }
                 _ => None,
             })
             .unwrap();

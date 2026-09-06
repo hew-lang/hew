@@ -84,7 +84,7 @@ fn an_entry_fact_naming_a_non_main_declaration_selects_and_lowers_that_callable(
             .module
             .callable(entry)
             .map(|callable| callable.symbol.as_str()),
-        Some("start"),
+        Some("__hew_fn_start"),
         "entry selection must follow the HIR fact, not the `main` spelling"
     );
     assert!(
@@ -116,7 +116,7 @@ fn the_unmodified_entry_fact_still_selects_main() {
             .module
             .callable(entry)
             .map(|callable| callable.symbol.as_str()),
-        Some("main")
+        Some("__hew_fn_main")
     );
 }
 
@@ -133,8 +133,8 @@ fn removing_the_entry_fact_leaves_no_entry_callable_to_rediscover_by_name() {
             .module
             .callables
             .iter()
-            .any(|callable| callable.symbol == "main"),
-        "the fixture must still contain a callable whose symbol is `main`"
+            .any(|callable| callable.declaration.full_path() == "main"),
+        "the fixture must still contain a callable whose declaration is `main`"
     );
     assert_eq!(
         lowered.module.entry_callable, None,

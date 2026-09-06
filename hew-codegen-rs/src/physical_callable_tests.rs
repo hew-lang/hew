@@ -20,7 +20,7 @@ fn exclusive_receiver() -> (PhysicalModule, CallableId) {
     let callee = physical
         .callables
         .iter_mut()
-        .find(|callee| callee.symbol == "inspect")
+        .find(|callee| callee.declaration.full_path() == "inspect")
         .unwrap();
     callee.params[0].passing = SemParamPassing::BorrowMut;
     callee.params[0].carrier = ParamCarrier::Indirect;

@@ -63,7 +63,7 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .expect("main must have a body");
     assert!(main.blocks.iter().flat_map(|block| &block.ops).any(|op| {
         matches!(
@@ -150,7 +150,7 @@ fn owned_record_shape_and_field_order_are_exact() {
         .module
         .functions
         .iter()
-        .find(|f| f.name == "main")
+        .find(|f| f.declaration.full_path() == "main")
         .unwrap();
     let plan = hew_sir::place_plan(
         main,
@@ -267,7 +267,7 @@ fn aggregate_call_borrows_caller_and_returns_an_independent_owner() {
         .module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "echo")
+        .find(|callable| callable.declaration.full_path() == "echo")
         .expect("echo must have an exact callable header");
     assert_eq!(echo.signature.params[0].passing, SemParamPassing::Borrow);
     assert_eq!(
@@ -295,7 +295,7 @@ fn aggregate_call_borrows_caller_and_returns_an_independent_owner() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .expect("main must have a body");
     assert!(main.blocks.iter().any(|block| {
         matches!(
@@ -371,7 +371,7 @@ fn aggregate_patterns_consume_copies_and_bind_every_owned_field() {
         .module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.declaration.full_path() == "main")
         .expect("main must have a body");
     let destructures = main
         .blocks
@@ -458,7 +458,7 @@ fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
         .module
         .functions
         .iter()
-        .find(|f| f.name == "main")
+        .find(|f| f.declaration.full_path() == "main")
         .unwrap();
     let loans: Vec<_> = main
         .blocks
@@ -561,7 +561,7 @@ fn borrowed_temporary_fields_can_return_an_independent_owner() {
         .module
         .functions
         .iter()
-        .find(|f| f.name == "main")
+        .find(|f| f.declaration.full_path() == "main")
         .unwrap();
     assert_eq!(
         main.blocks
@@ -575,7 +575,7 @@ fn borrowed_temporary_fields_can_return_an_independent_owner() {
         .module
         .functions
         .iter()
-        .find(|f| f.name == "echo")
+        .find(|f| f.declaration.full_path() == "echo")
         .unwrap();
     assert!(
         echo.blocks.iter().flat_map(|b| &b.ops).any(|op| {
@@ -606,13 +606,13 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
             .module
             .callables
             .iter()
-            .find(|c| c.symbol == "read")
+            .find(|c| c.declaration.full_path() == "read")
             .unwrap();
         let main = lowered
             .module
             .functions
             .iter()
-            .find(|f| f.name == "main")
+            .find(|f| f.declaration.full_path() == "main")
             .unwrap();
         let captured = main
             .blocks
@@ -653,7 +653,7 @@ fn scalar_arguments_copy_the_exact_nested_leaf() {
         .module
         .functions
         .iter()
-        .find(|f| f.name == "main")
+        .find(|f| f.declaration.full_path() == "main")
         .unwrap();
     let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
     let plan = hew_sir::place_plan(
@@ -715,7 +715,7 @@ fn runtime_read_keeps_bindings_replaced_by_index_evaluation() {
         .module
         .functions
         .iter()
-        .find(|f| f.name == "main")
+        .find(|f| f.declaration.full_path() == "main")
         .unwrap();
     assert!(
         main.blocks.iter().flat_map(|b| &b.ops).any(|op| {

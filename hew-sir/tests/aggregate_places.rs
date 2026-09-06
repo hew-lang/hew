@@ -50,7 +50,7 @@ fn probe(module: &mut SemModule) -> &mut SemFunction {
     module
         .functions
         .iter_mut()
-        .find(|body| body.name == "probe")
+        .find(|body| body.declaration.full_path() == "probe")
         .unwrap()
 }
 
@@ -616,7 +616,7 @@ fn call_failure_cleanup_keeps_the_partially_consumed_root() {
     let callee = module
         .functions
         .iter()
-        .find(|function| function.name == "consume_text")
+        .find(|function| function.declaration.full_path() == "consume_text")
         .unwrap()
         .callable;
     probe(&mut module).blocks = vec![

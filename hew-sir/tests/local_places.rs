@@ -28,7 +28,7 @@ fn fixture(source: &str) -> SemModule {
             .module
             .functions
             .iter()
-            .any(|function| function.name == "probe"),
+            .any(|function| function.declaration.full_path() == "probe"),
         "{:?}",
         lowered.statuses
     );
@@ -87,7 +87,7 @@ fn probe(module: &mut SemModule) -> &mut SemFunction {
     module
         .functions
         .iter_mut()
-        .find(|function| function.name == "probe")
+        .find(|function| function.declaration.full_path() == "probe")
         .unwrap()
 }
 
@@ -203,7 +203,7 @@ fn valid(module: &mut SemModule) {
     let function = module
         .functions
         .iter()
-        .find(|function| function.name == "probe")
+        .find(|function| function.declaration.full_path() == "probe")
         .unwrap();
     assert!(place_lifetimes(module, function).is_ok());
 }
@@ -225,7 +225,7 @@ fn refuses(module: &mut SemModule, expected: &str) {
     let function = module
         .functions
         .iter()
-        .find(|function| function.name == "probe")
+        .find(|function| function.declaration.full_path() == "probe")
         .unwrap();
     assert!(place_lifetimes(module, function).is_err());
 }
@@ -548,7 +548,7 @@ fn checked_module_retains_the_local_plan_and_cleanup_for_each_body() {
     let checked = hew_sir::check_module(&module).unwrap();
     for function in &checked.module().functions {
         let analysis = checked.function(function.callable).unwrap();
-        if function.name == "probe" {
+        if function.declaration.full_path() == "probe" {
             assert_eq!(
                 analysis
                     .place_plan()
@@ -679,7 +679,7 @@ fn checked_module_rejects_duplicate_identities_and_missing_literal_pool_entries(
         let probe = missing
             .functions
             .iter()
-            .find(|function| function.name == "probe")
+            .find(|function| function.declaration.full_path() == "probe")
             .unwrap();
         assert!(place_lifetimes(&missing, probe).is_ok());
         rejects_module_context(&missing, |kind| {

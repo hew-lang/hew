@@ -100,7 +100,7 @@ fn collection_failure_cannot_replace_or_abandon_its_callback_fault() {
     let function = module
         .functions
         .iter()
-        .position(|function| function.name == "main")
+        .position(|function| function.declaration.full_path() == "main")
         .unwrap();
     let (cleanup, raw_result) = module.functions[function]
         .blocks

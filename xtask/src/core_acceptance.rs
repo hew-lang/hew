@@ -19,6 +19,8 @@ struct Case {
     id: String,
     intent: String,
     source: PathBuf,
+    /// Flat input directory copied independently for each execution profile.
+    fixtures: Option<PathBuf>,
     suites: Vec<String>,
     timeout_seconds: u64,
     expected: ExpectedOutcome,
@@ -451,9 +453,52 @@ impl Runner<'_> {
         }
     }
 
+    fn prepare_inputs(&self, case: &Case, profile: Profile) -> Result<PathBuf> {
+        let Some(fixtures) = &case.fixtures else {
+            return Ok(self.root.to_path_buf());
+        };
+        let source = self.root.join("tests/core-acceptance").join(fixtures);
+        let destination = self
+            .run_dir
+            .join(&case.id)
+            .join(profile.label())
+            .join("inputs");
+        fs::create_dir_all(&destination)
+            .map_err(|err| format!("create fixture directory: {err}"))?;
+        for entry in fs::read_dir(&source)
+            .map_err(|err| format!("read fixture directory {}: {err}", source.display()))?
+        {
+            let entry = entry.map_err(|err| format!("read fixture entry: {err}"))?;
+            if !entry
+                .file_type()
+                .map_err(|err| format!("inspect fixture: {err}"))?
+                .is_file()
+            {
+                return Err(format!(
+                    "fixture must be a regular file: {}",
+                    entry.path().display()
+                ));
+            }
+            fs::copy(entry.path(), destination.join(entry.file_name()))
+                .map_err(|err| format!("copy fixture {}: {err}", entry.path().display()))?;
+        }
+        Ok(destination)
+    }
+
     fn execute(&self, case: &Case, profile: Profile, binary: &Path) -> bool {
         let mut command = Command::new(binary);
-        command.current_dir(self.root);
+        let working_dir = match self.prepare_inputs(case, profile) {
+            Ok(directory) => directory,
+            Err(err) => {
+                println!(
+                    "FAIL {} profile={} class=environment-failure detail={err}",
+                    case.id,
+                    profile.label()
+                );
+                return false;
+            }
+        };
+        command.current_dir(working_dir);
         if self.instrumentation_request == "address" {
             configure_safety_environment(&mut command);
         }
@@ -674,6 +719,37 @@ mod tests {
         let error = select_cases(&manifest(), "acceptance", Some("missing"))
             .expect_err("unknown focused case must fail rather than silently running a suite");
         assert!(error.contains("unknown core acceptance case"));
+    }
+
+    #[test]
+    fn profile_inputs_are_isolated_and_missing_inputs_fail() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("tests/core-acceptance/fixtures");
+        fs::create_dir_all(&fixture).unwrap();
+        let bytes = b"a\0b\xff";
+        fs::write(fixture.join("input.txt"), bytes).unwrap();
+        let mut case = manifest().cases.remove(0);
+        case.fixtures = Some("fixtures".into());
+        let options = Options {
+            suite: "acceptance".into(),
+            case: None,
+            hew_bin: directory.path().join("hew"),
+            timeout_seconds: None,
+        };
+        let runner = Runner {
+            options: &options,
+            root: directory.path(),
+            run_dir: directory.path(),
+            instrumentation_request: "none",
+        };
+        let first = runner.prepare_inputs(&case, Profile::O0).unwrap();
+        assert_eq!(fs::read(first.join("input.txt")).unwrap(), bytes);
+        fs::write(first.join("input.txt"), "changed by program").unwrap();
+        let second = runner.prepare_inputs(&case, Profile::O2).unwrap();
+        assert_eq!(fs::read(second.join("input.txt")).unwrap(), bytes);
+        assert_eq!(fs::read(fixture.join("input.txt")).unwrap(), bytes);
+        case.fixtures = Some("missing".into());
+        assert!(runner.prepare_inputs(&case, Profile::O0).is_err());
     }
 
     #[test]

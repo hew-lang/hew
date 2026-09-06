@@ -2199,3 +2199,12 @@ non-copyable callables, private copies of borrowed parameters and partial local
 aggregates. The combined SIR, physical MIR and codegen suites pass. Lexical
 source promotion and physical Local execution remain separate implementation
 steps; the physical boundary continues to refuse Local storage explicitly.
+
+## Validate borrowed string prefix execution
+
+The complete native acceptance and paired generated/runtime ASan/LSan suites
+pass at O0 and O2 with the prefix operation. Prefix and equality predicates
+preserve their distinct runtime result ABIs while sharing the boolean
+normalization path. The full lint run has clean Rust diagnostics; its benchmark
+now reaches the next unsupported string operation, `trim`. Machine lowering
+and the pinned grammar remain separate unfinished capabilities.

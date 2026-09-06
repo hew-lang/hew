@@ -2,6 +2,42 @@ use super::check_source;
 use crate::check::effects::SuspensionEffect;
 
 #[test]
+fn deferred_pure_scopes_inherit_contents_without_admitting_suspension() {
+    let source = "fn pure() -> i64 { 42 } fn cleanup() { defer { let value = scope { scope { pure() } }; println(value); } } fn main() { cleanup(); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let start = source.rfind("cleanup()").unwrap();
+    assert_eq!(
+        output
+            .suspension_effects
+            .calls
+            .get(&crate::check::SpanKey::in_module(
+                &(start..start + "cleanup()".len()),
+                0
+            )),
+        Some(&SuspensionEffect::Never)
+    );
+    for body in [
+        "scope { await sleep(1ms); }",
+        "scope { sleep(1ms); }",
+        "scope { let child = fork { 1 }; }",
+        "scope { let child = fork pure(); }",
+        "scope { work(); }",
+        "scope within 1ms { pure(); }",
+    ] {
+        let output = check_source(&format!("fn pure() -> i64 {{ 1 }} fn work() {{ await sleep(1ms); }} fn main() {{ defer {{ {body}; }} }}"));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("a deferred body cannot")),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
 fn lazy_generator_creators_do_not_inherit_deferred_body_effects() {
     let source = r"
 gen fn delayed() -> i64 { await sleep(1ms); yield 1; }

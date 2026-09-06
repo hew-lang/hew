@@ -143,7 +143,6 @@ impl Checker {
                     | Expr::Await(_)
                     | Expr::AwaitRestart(_)
                     | Expr::Yield(_)
-                    | Expr::Scope { .. }
                     | Expr::ScopeDeadline { .. }
                     | Expr::ForkChild { .. }
                     | Expr::ForkBlock { .. }

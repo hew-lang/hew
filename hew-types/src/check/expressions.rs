@@ -3134,14 +3134,17 @@ impl Checker {
                 // sequentially; the same goes for the timeout duration, which
                 // arms the deadline before any arm fires.
                 let mut source_tys = Vec::with_capacity(arms.len());
+                let mut sources = Vec::with_capacity(arms.len());
                 for arm in arms {
                     self.env.push_scope();
-                    source_tys.push(self.synthesize_actor_concurrency_source(
-                        &arm.source.0,
-                        &arm.source.1,
-                        "select arm source",
-                    ));
+                    let (ty, source) = self.synthesize_select_source(&arm.source.0, &arm.source.1);
+                    source_tys.push(ty);
+                    sources.push(source);
                     self.env.pop_scope();
+                }
+                if let Some(checked) = sources.iter().cloned().collect::<Option<Vec<_>>>() {
+                    self.select_sources
+                        .insert(SpanKey::in_module(span, self.current_module_idx), checked);
                 }
                 if let Some(tc) = timeout {
                     self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
@@ -3150,9 +3153,16 @@ impl Checker {
                 // Dispatch happens here: from this state exactly one body runs.
                 let entry = self.env.ownership_snapshot();
                 let mut arm_exits = Vec::with_capacity(arms.len() + 1);
-                for (arm, source_ty) in arms.iter().zip(&source_tys) {
+                for ((arm, source_ty), source) in arms.iter().zip(&source_tys).zip(&sources) {
                     self.env.push_scope();
                     self.env.restore_ownership(&entry);
+                    if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
+                        if let Expr::Await(task) = &arm.source.0 {
+                            if !self.reject_borrowed_consumption(&task.0, &task.1) {
+                                self.mark_expr_moved(&task.0, &task.1);
+                            }
+                        }
+                    }
                     self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
                     let body_ty = if let Some(expected) = &result_ty {
                         self.check_against(&arm.body.0, &arm.body.1, expected)

@@ -2,6 +2,71 @@ use super::check_source;
 use crate::check::effects::SuspensionEffect;
 
 #[test]
+fn select_join_ignores_a_diverging_winner() {
+    let output = check_source("fn choose() -> i64 { let first = fork { 41 }; let second = fork { 0 }; select { a = await first => return a, b = await second => b }; await first } fn main() {} ");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn select_classifies_an_awaited_actor_ask_by_checked_dispatch() {
+    let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker(); let result = select { value = await worker.value() => value }; }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(matches!(
+        output
+            .select_sources
+            .values()
+            .next()
+            .and_then(|sources| sources.first()),
+        Some(crate::check::CheckedSelectSource::ActorAsk { .. })
+    ));
+}
+
+#[test]
+fn select_prepares_task_handles_and_consumes_only_the_winner() {
+    let source = "fn main() { let first = fork { 41 }; let second = fork { 0 }; let value = select { a = await first => a + await second, b = await second => b + await first }; }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let sources = output
+        .select_sources
+        .values()
+        .next()
+        .expect("checked select");
+    assert_eq!(sources.len(), 2);
+    for (entry, expected) in sources.iter().zip(["first", "second"]) {
+        let crate::check::CheckedSelectSource::TaskAwait { operand } = entry else {
+            panic!("{entry:?}")
+        };
+        assert_eq!(source[operand.start..operand.end].trim(), expected);
+    }
+}
+
+#[test]
+fn select_winner_is_unavailable_in_its_arm_and_after_a_join() {
+    for tail in [
+        "select { a = await first => await first, b = await second => b };",
+        "select { a = await first => a, b = await second => b }; let again = await first;",
+    ] {
+        let output = check_source(&format!(
+            "fn main() {{ let first = fork {{ 41 }}; let second = fork {{ 0 }}; {tail} }}"
+        ));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, crate::error::TypeErrorKind::UseAfterMove)),
+            "{:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn select_timeout_retains_every_task() {
+    let output = check_source("fn main() { let first = fork { 41 }; let second = fork { 0 }; let value = select { a = await first => a, b = await second => b, after 1ms => await first + await second }; }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
 fn fork_rejects_non_send_arguments_and_indirect_captures() {
     for source in [
         "fn use_value(value: Rc<i64>) -> i64 { 1 } fn main() { let value = Rc.new(1); let task = fork use_value(value); }",

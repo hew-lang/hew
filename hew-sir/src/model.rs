@@ -860,14 +860,15 @@ impl EffectSet {
 /// This carries no target layout and adds no parallel value descriptor table.
 ///
 /// # Errors
-/// Refuses missing facts, missing nominal shapes and noncopyable elements.
+/// Refuses missing facts and missing nominal ownership recipes.
 pub fn collection_value_dependencies(
     collection: &ResolvedTy,
     facts: &crate::ownership::TypeFactTable,
     aggregates: &[SemAggregateShape],
     variants: &[SemVariantShape],
+    resources: &BTreeMap<ResolvedTy, crate::ResourceRelease>,
 ) -> Result<(), String> {
-    let (_, arguments) = hew_types::runtime_call::collection_type_arguments(collection)
+    let (kind, arguments) = hew_types::runtime_call::collection_type_arguments(collection)
         .ok_or_else(|| "collection value requires a canonical collection identity".to_string())?;
     let mut pending = arguments.to_vec();
     let mut seen = std::collections::BTreeSet::new();
@@ -883,11 +884,15 @@ pub fn collection_value_dependencies(
                     ty.user_facing()
                 )
             })?;
-        if row.clone == hew_types::CloneKind::None {
+        if kind != hew_types::BuiltinType::Vec && row.clone == hew_types::CloneKind::None {
             return Err(format!(
                 "collection component `{}` has no semantic copy",
                 ty.user_facing()
             ));
+        }
+        if resources.contains_key(&ty) {
+            // An opaque owner's exact release recipe replaces structural fields.
+            continue;
         }
         if matches!(&ty, ResolvedTy::Named {
             builtin: Some(hew_types::BuiltinType::LocalPid), args, ..

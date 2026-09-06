@@ -229,6 +229,20 @@ pub enum RuntimeArgumentEffect {
     Borrow,
     Copy,
     Move,
+    /// Clone a value with a copy recipe; otherwise transfer its unique owner.
+    Value,
+}
+
+impl RuntimeArgumentEffect {
+    /// Resolve value ingress from the checker-authored copy capability.
+    #[must_use]
+    pub const fn resolve(self, clone: crate::CloneKind) -> Self {
+        match self {
+            Self::Value if matches!(clone, crate::CloneKind::None) => Self::Move,
+            Self::Value => Self::Borrow,
+            effect => effect,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -322,6 +336,18 @@ pub struct RuntimeSemanticContract {
 }
 
 impl RuntimeSemanticContract {
+    /// A bounds failure happens before a receiver transform mutates or takes
+    /// any input. Its cleanup edge retains those owners for ordinary cleanup.
+    #[must_use]
+    pub fn preserves_inputs_on_failure(self) -> bool {
+        self.failures == [RuntimeLogicalFailure::IndexOutOfBounds]
+            && matches!(
+                self.result,
+                RuntimeResultEffect::UpdatedReceiver(_)
+                    | RuntimeResultEffect::UpdatedReceiverAndValue(_)
+            )
+    }
+
     /// All failures on this call's cleanup edge carry an active fault owner.
     /// Static failures sharing a callback edge are materialized by the runtime
     /// boundary before cleanup, preserving a single fault transfer path.
@@ -538,7 +564,7 @@ impl VecValueOp {
         };
         const ELEMENT: RuntimeArgumentContract = RuntimeArgumentContract {
             ty: ELEMENT_TYPE,
-            effect: Borrow,
+            effect: RuntimeArgumentEffect::Value,
         };
         match self {
             Self::New => runtime_semantic_contract(&[], FreshOwned(VECTOR), &[]),
@@ -3188,8 +3214,12 @@ impl RuntimeCallFamily {
                     effect: RuntimeArgumentEffect::Move,
                     ..
                 }) => ConsumeVerdict::ProvenConsume,
+                Some(RuntimeArgumentContract {
+                    effect: RuntimeArgumentEffect::Value,
+                    ..
+                })
+                | None => ConsumeVerdict::ConservativeConsume,
                 Some(_) => ConsumeVerdict::ProvenBorrow,
-                None => ConsumeVerdict::ConservativeConsume,
             };
         }
         if index == 0 {
@@ -4630,10 +4660,7 @@ mod tests {
                         op: EncodingOp::ArrayPush,
                         ..
                     } if index == 1 => ConsumeVerdict::ProvenConsume,
-                    RuntimeCallFamily::Map(MapValueOp::Insert)
-                    | RuntimeCallFamily::Vector(VecValueOp::Set)
-                        if index <= 2 =>
-                    {
+                    RuntimeCallFamily::Map(MapValueOp::Insert) if index <= 2 => {
                         ConsumeVerdict::ProvenBorrow
                     }
                     RuntimeCallFamily::Encoding {
@@ -4654,7 +4681,7 @@ mod tests {
                         SetValueOp::Contains | SetValueOp::Insert | SetValueOp::Remove,
                     )
                     | RuntimeCallFamily::Vector(
-                        VecValueOp::Index | VecValueOp::Get | VecValueOp::Push,
+                        VecValueOp::Index | VecValueOp::Get | VecValueOp::Set,
                     ) if index == 1 => ConsumeVerdict::ProvenBorrow,
                     RuntimeCallFamily::HashMapInsertLayout if matches!(index, 1 | 2) => {
                         ConsumeVerdict::ProvenConsume

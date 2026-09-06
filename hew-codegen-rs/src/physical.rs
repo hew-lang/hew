@@ -3551,9 +3551,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalVectorOp::Push | PhysicalVectorOp::Clear => {
                 if operation == PhysicalVectorOp::Push {
+                    let moved = matches!(transfers.get(1), Some(ArgumentTransfer::Move(_)));
                     let function = get_or_declare_external(
                         self.llvm,
-                        "hew_vec_push_owned",
+                        if moved {
+                            "hew_vec_push_owned_move"
+                        } else {
+                            "hew_vec_push_owned"
+                        },
                         self.ctx
                             .void_type()
                             .fn_type(&[pointer.into(), pointer.into()], false),
@@ -3563,6 +3568,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         &[vector.into(), self.slots[source(1)?.0 as usize].into()],
                         "vector.push",
                     )?;
+                    if moved {
+                        self.clear_owned(source(1)?)?;
+                    }
                 } else {
                     let function = external_drop(self.ctx, self.llvm, "hew_vec_clear")?;
                     self.runtime_call_void(function, &[vector.into()], "vector.clear")?;
@@ -3591,12 +3599,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .build_conditional_branch(in_bounds, safe, failed)
                     .llvm_ctx("select vector replacement outcome")?;
                 self.builder.position_at_end(failed);
-                self.release_failed_vector_receiver(receiver, vector, glue_id)?;
                 self.emit_edge(failure()?)?;
                 self.builder.position_at_end(safe);
+                let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_vec_set_owned",
+                    if moved {
+                        "hew_vec_set_owned_move"
+                    } else {
+                        "hew_vec_set_owned"
+                    },
                     self.ctx
                         .void_type()
                         .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
@@ -3610,6 +3622,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ],
                     "vector.set",
                 )?;
+                if moved {
+                    self.clear_owned(source(2)?)?;
+                }
                 self.clear_owned(receiver)?;
                 self.store(result, vector.into())?;
             }
@@ -3705,7 +3720,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .build_conditional_branch(found, present, absent)
                     .llvm_ctx("select vector pop outcome")?;
                 self.builder.position_at_end(absent);
-                self.release_failed_vector_receiver(receiver, vector, glue_id)?;
                 self.emit_edge(failure()?)?;
                 self.builder.position_at_end(present);
                 let element = self
@@ -4165,20 +4179,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_load(self.ctx.i8_type(), output, "collection.presence")
             .llvm_ctx("read successful callback presence")?
             .into_int_value())
-    }
-
-    fn release_failed_vector_receiver(
-        &self,
-        receiver: StorageId,
-        vector: PointerValue<'ctx>,
-        glue: PhysicalVectorId,
-    ) -> CodegenResult<()> {
-        self.value_emitter().destroy_loaded_value(
-            vector.into(),
-            &self.storage(receiver)?.layout,
-            DestroyAction::Vector(glue),
-        )?;
-        self.clear_owned(receiver)
     }
 
     fn emit_utf8_decode(
@@ -5328,7 +5328,9 @@ mod tests {
                 ty: ty.clone(),
                 own: if borrowed { OwnKind::Guaranteed } else { own },
             });
-            let (value, decision) = match contract.effect {
+            let (value, decision) = match contract.effect.resolve(facts.require(ty).unwrap().clone)
+            {
+                RuntimeArgumentEffect::Value => unreachable!("value ingress was resolved"),
                 RuntimeArgumentEffect::Borrow => (ValueId(index), BoundaryDecision::Borrow),
                 RuntimeArgumentEffect::Copy => (ValueId(index), BoundaryDecision::Copy),
                 RuntimeArgumentEffect::Move => {
@@ -5358,6 +5360,22 @@ mod tests {
         let own = OwnKind::of_class(facts.require(&result_ty).unwrap().class);
         let raw = ValueId(2 * count);
         let value = ValueId(2 * count + 1);
+        let failed_inputs = operands
+            .iter()
+            .filter(|argument| {
+                contract.preserves_inputs_on_failure()
+                    && argument.decision == BoundaryDecision::Move
+            })
+            .enumerate()
+            .map(|(index, argument)| SemOp {
+                id: hew_sir::OpId(count + 1 + u32::try_from(index).unwrap()),
+                results: vec![],
+                kind: SemOpKind::DestroyValue {
+                    value: argument.operand.clone(),
+                },
+                provenance: Provenance::Synthesized,
+            })
+            .collect();
         let unwind = if contract.failures.is_empty() {
             hew_sir::CallUnwind::NotApplicable
         } else {
@@ -5407,7 +5425,7 @@ mod tests {
             function.blocks.push(SemBlock {
                 id: BlockId(2),
                 args: vec![],
-                ops: vec![],
+                ops: failed_inputs,
                 terminator: if contract.propagates_fault() {
                     SemTerminator::ResumeUnwind
                 } else {

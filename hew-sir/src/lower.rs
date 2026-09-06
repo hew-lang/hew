@@ -6281,17 +6281,38 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         for ty in &instantiated.arguments {
             self.service.require_type_facts(ty)?;
         }
+        if matches!(contract.result, RuntimeResultEffect::IndependentValue(_)) {
+            self.service.require_type_facts(&instantiated.result_ty)?;
+            if self.service.checked_facts.rows()[&TypeInstanceKey(instantiated.result_ty.clone())]
+                .clone
+                == hew_types::CloneKind::None
+            {
+                return Err(
+                    "runtime read cannot copy an affine element; use an owning removal".into(),
+                );
+            }
+        }
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut transformed_place = None;
         let mut lowered_args = Vec::with_capacity(args.len());
         let mut loans = Vec::new();
-        let read_only = contract
+        let effects = contract
             .arguments
             .iter()
-            .all(|argument| argument.effect != RuntimeArgumentEffect::Move);
-        for (index, (&arg, expected)) in args.iter().zip(contract.arguments).enumerate() {
-            let (value, decision) = match expected.effect {
+            .zip(&parameter_types)
+            .map(|(argument, ty)| {
+                argument
+                    .effect
+                    .resolve(self.service.checked_facts.rows()[&TypeInstanceKey(ty.clone())].clone)
+            })
+            .collect::<Vec<_>>();
+        let read_only = effects
+            .iter()
+            .all(|effect| *effect != RuntimeArgumentEffect::Move);
+        for (index, (&arg, effect)) in args.iter().zip(effects).enumerate() {
+            let (value, decision) = match effect {
+                RuntimeArgumentEffect::Value => unreachable!("value ingress was resolved"),
                 RuntimeArgumentEffect::Borrow => {
                     let stable_tail = args[index + 1..]
                         .iter()
@@ -6403,6 +6424,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.service
                 .require_runtime_variant_result_shapes(kind, &instantiated.result_ty)?;
         }
+        let mut live_on_failure = live_at_call.clone();
+        if contract.preserves_inputs_on_failure() {
+            for argument in &lowered_args {
+                if argument.decision == crate::BoundaryDecision::Move {
+                    let value = argument.operand.value;
+                    live_on_failure.insert(
+                        value,
+                        self.value_ty(value).ok_or("runtime input has no type")?,
+                    );
+                }
+            }
+        }
         let semantic_result_ty =
             (instantiated.result_ty != ResolvedTy::Unit).then_some(instantiated.result_ty);
         match (contract.result, &semantic_result_ty) {
@@ -6488,7 +6521,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
         if let (Some(failure), Some(block)) = (failure, failure_block) {
             self.current = block;
-            self.owned_live = live_at_call.clone();
+            self.owned_live = live_on_failure;
             self.end_call_loans(&loans)?;
             if contract.propagates_fault() {
                 self.finish_fault_exit()?;

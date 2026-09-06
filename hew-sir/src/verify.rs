@@ -502,6 +502,7 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
                 &module.type_facts,
                 &module.aggregate_shapes,
                 &module.variant_shapes,
+                &module.resources,
             ) {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidCollectionType {
                     ty: key.0.clone(),
@@ -3083,7 +3084,14 @@ fn verify_runtime_call_terminator(
         }
     };
     for (index, (argument, expected)) in args.iter().zip(contract.arguments).enumerate() {
-        let expected_decision = match expected.effect {
+        let Some(facts) = shapes
+            .facts
+            .get(&hew_types::TypeInstanceKey(parameter_types[index].clone()))
+        else {
+            continue;
+        };
+        let expected_decision = match expected.effect.resolve(facts.clone) {
+            RuntimeArgumentEffect::Value => unreachable!("value ingress was resolved"),
             RuntimeArgumentEffect::Borrow => crate::BoundaryDecision::Borrow,
             RuntimeArgumentEffect::Copy => crate::BoundaryDecision::Copy,
             RuntimeArgumentEffect::Move => crate::BoundaryDecision::Move,
@@ -3109,6 +3117,19 @@ fn verify_runtime_call_terminator(
         | RuntimeResultEffect::FreshOwnedVariant(_)
         | RuntimeResultEffect::UpdatedReceiverAndValue(_) => Some(crate::OwnKind::Owned),
         RuntimeResultEffect::IndependentValue(_) => {
+            if shapes
+                .facts
+                .get(&hew_types::TypeInstanceKey(instantiated.result_ty.clone()))
+                .is_some_and(|facts| facts.clone == hew_types::CloneKind::None)
+            {
+                invalid_operation(
+                    function,
+                    id,
+                    "runtime read has no semantic copy for its result".into(),
+                    diagnostics,
+                );
+                return;
+            }
             match crate::OwnKind::of_ty(&instantiated.result_ty, shapes.facts) {
                 Ok(own) => Some(own),
                 Err(reason) => {

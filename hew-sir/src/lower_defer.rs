@@ -125,9 +125,28 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
+    /// A temporary's asynchronous cleanup can fail between source expressions.
+    /// Propagate that fault before evaluating the next ordinary expression.
+    pub(super) fn dispatch_value_cleanup(&mut self) -> Result<(), String> {
+        self.cleanup_may_fail = false;
+        let normal = self.new_block(Vec::new());
+        let fault = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::CleanupDispatch {
+            normal: edge(normal),
+            fault: edge(fault),
+        })?;
+        let saved = self.control_state();
+        self.current = fault;
+        self.finish_fault_exit()?;
+        self.restore_control_state(&saved);
+        self.current = normal;
+        Ok(())
+    }
+
     /// Generate a fault successor without changing its sibling's lexical state.
     pub(super) fn finish_fault_exit(&mut self) -> Result<(), String> {
         let saved = self.control_state();
+        self.cleanup_draining = true;
         let boundary = self
             .defer_bodies
             .last()
@@ -167,6 +186,8 @@ impl Builder<'_, '_> {
     /// Run actions before ending their locals. A failed normal drain escalates
     /// through the enclosing cleanup boundary instead of resuming the source exit.
     pub(super) fn drain_scopes(&mut self, floor: usize, dispatch: bool) -> Result<(), String> {
+        let previous_draining = self.cleanup_draining;
+        self.cleanup_draining = true;
         let mut ran = false;
         for index in (floor..self.scopes.len()).rev() {
             while self
@@ -182,6 +203,7 @@ impl Builder<'_, '_> {
                 self.end_binding_scope(binding)?;
             }
         }
+        self.cleanup_draining = previous_draining;
         if ran || self.cleanup_may_fail {
             self.cleanup_may_fail = false;
             if !dispatch {
@@ -224,6 +246,8 @@ impl Builder<'_, '_> {
             body: edge(body),
         })?;
         self.current = body;
+        self.cleanup_draining = false;
+        self.cleanup_may_fail = false;
         self.defer_bodies.push(BodyBoundary {
             floor: self.scopes.len(),
             finish,

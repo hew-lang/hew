@@ -658,7 +658,7 @@ fn generator_cleanup_cannot_discard_a_fault_or_cancel_successor() {
                     matches!(
                         block.terminator,
                         SemTerminator::Suspend {
-                            kind: hew_sir::SuspendKind::GeneratorClose { .. },
+                            kind: hew_sir::SuspendKind::ValueClose { .. },
                             ..
                         }
                     )
@@ -673,7 +673,7 @@ fn generator_cleanup_cannot_discard_a_fault_or_cancel_successor() {
                 matches!(
                     block.terminator,
                     SemTerminator::Suspend {
-                        kind: hew_sir::SuspendKind::GeneratorClose { .. },
+                        kind: hew_sir::SuspendKind::ValueClose { .. },
                         ..
                     }
                 )
@@ -689,7 +689,7 @@ fn generator_cleanup_cannot_discard_a_fault_or_cancel_successor() {
         }
         assert!(verify_module(&invalid).iter().any(|diagnostic|
             matches!(&diagnostic.kind, hew_sir::SirDiagnosticKind::InvalidTerminator { reason }
-                if reason.contains("GeneratorClose"))));
+                if reason.contains("ValueClose"))));
     }
 }
 

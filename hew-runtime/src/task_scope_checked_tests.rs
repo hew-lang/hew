@@ -66,6 +66,7 @@ unsafe extern "C" fn invoke(
 }
 
 static ENVIRONMENT: HewValueLayout = HewValueLayout {
+    visit_close: None,
     size: size_of::<Environment>(),
     align: align_of::<Environment>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -73,6 +74,7 @@ static ENVIRONMENT: HewValueLayout = HewValueLayout {
     drop_fn: Some(drop_environment),
 };
 static RESULT: HewValueLayout = HewValueLayout {
+    visit_close: None,
     size: size_of::<i64>(),
     align: align_of::<i64>(),
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -88,6 +90,7 @@ unsafe extern "C" fn drop_result(slot: *mut c_void) {
     }
 }
 static OWNED_RESULT: HewValueLayout = HewValueLayout {
+    visit_close: None,
     size: size_of::<*mut c_void>(),
     align: align_of::<*mut c_void>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,

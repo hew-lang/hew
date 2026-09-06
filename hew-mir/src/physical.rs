@@ -855,7 +855,8 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
-    GeneratorClose {
+    ValueClose {
+        destroy: Option<DestroyAction>,
         generator: StorageId,
         conditional: bool,
         next: PhysicalEdge,
@@ -2586,7 +2587,7 @@ impl FunctionLowerer<'_> {
                 kind:
                     hew_sir::SuspendKind::Yield
                     | hew_sir::SuspendKind::GeneratorNext
-                    | hew_sir::SuspendKind::GeneratorClose { .. },
+                    | hew_sir::SuspendKind::ValueClose { .. },
                 ..
             } => self.lower_generator_suspend(term),
             SemTerminator::Suspend {
@@ -5001,7 +5002,7 @@ fn terminator_successors(
         }
         PhysicalTerminator::GeneratorYield { .. }
         | PhysicalTerminator::GeneratorNext { .. }
-        | PhysicalTerminator::GeneratorClose { .. } => {
+        | PhysicalTerminator::ValueClose { .. } => {
             generators::successors(function, terminator, state, block)
         }
         PhysicalTerminator::TaskAwait {
@@ -5485,7 +5486,7 @@ fn verify_terminator(
         }
         PhysicalTerminator::GeneratorYield { .. }
         | PhysicalTerminator::GeneratorNext { .. }
-        | PhysicalTerminator::GeneratorClose { .. } => {
+        | PhysicalTerminator::ValueClose { .. } => {
             generators::verify_suspend(module, function, terminator)?;
             for successor in defer::edges(terminator) {
                 edge(successor)?;

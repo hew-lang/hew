@@ -325,6 +325,7 @@ macro_rules! key_layout {
         #[no_mangle]
         pub static $name: HewMapKeyLayout = HewMapKeyLayout {
             value: HewValueLayout {
+                visit_close: None,
                 size: core::mem::size_of::<$ty>(),
                 align: core::mem::align_of::<$ty>(),
                 ownership_kind: $ownership,
@@ -392,6 +393,7 @@ key_layout!(
 #[no_mangle]
 pub static hew_layout_key_bool: HewMapKeyLayout = HewMapKeyLayout {
     value: HewValueLayout {
+        visit_close: None,
         size: 1,
         align: 1,
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -406,6 +408,7 @@ pub static hew_layout_key_bool: HewMapKeyLayout = HewMapKeyLayout {
 #[no_mangle]
 pub static hew_layout_key_char: HewMapKeyLayout = HewMapKeyLayout {
     value: HewValueLayout {
+        visit_close: None,
         size: 4,
         align: 4,
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -420,6 +423,7 @@ pub static hew_layout_key_char: HewMapKeyLayout = HewMapKeyLayout {
 #[no_mangle]
 pub static hew_layout_key_string: HewMapKeyLayout = HewMapKeyLayout {
     value: HewValueLayout {
+        visit_close: None,
         size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
         align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
         ownership_kind: HewTypeOwnershipKind::String,
@@ -434,6 +438,7 @@ pub static hew_layout_key_string: HewMapKeyLayout = HewMapKeyLayout {
 #[no_mangle]
 pub static hew_layout_key_bytes: HewMapKeyLayout = HewMapKeyLayout {
     value: HewValueLayout {
+        visit_close: None,
         size: core::mem::size_of::<BytesTripleRepr>(),
         align: core::mem::align_of::<BytesTripleRepr>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -458,6 +463,7 @@ macro_rules! val_layout_plain {
     ($name:ident, $ty:ty) => {
         #[no_mangle]
         pub static $name: HewValueLayout = HewValueLayout {
+            visit_close: None,
             size: core::mem::size_of::<$ty>(),
             align: core::mem::align_of::<$ty>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -476,6 +482,7 @@ val_layout_plain!(hew_layout_val_f64, f64);
 
 #[no_mangle]
 pub static hew_layout_val_bool: HewValueLayout = HewValueLayout {
+    visit_close: None,
     size: 1,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -485,6 +492,7 @@ pub static hew_layout_val_bool: HewValueLayout = HewValueLayout {
 
 #[no_mangle]
 pub static hew_layout_val_char: HewValueLayout = HewValueLayout {
+    visit_close: None,
     size: 4,
     align: 4,
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -494,6 +502,7 @@ pub static hew_layout_val_char: HewValueLayout = HewValueLayout {
 
 #[no_mangle]
 pub static hew_layout_val_string: HewValueLayout = HewValueLayout {
+    visit_close: None,
     size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
     align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
     ownership_kind: HewTypeOwnershipKind::String,
@@ -503,6 +512,7 @@ pub static hew_layout_val_string: HewValueLayout = HewValueLayout {
 
 #[no_mangle]
 pub static hew_layout_val_bytes: HewValueLayout = HewValueLayout {
+    visit_close: None,
     size: core::mem::size_of::<BytesTripleRepr>(),
     align: core::mem::align_of::<BytesTripleRepr>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -515,6 +525,7 @@ pub static hew_layout_val_bytes: HewValueLayout = HewValueLayout {
 // no drop, no clone.
 #[no_mangle]
 pub static hew_layout_val_unit: HewValueLayout = HewValueLayout {
+    visit_close: None,
     size: 0,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,

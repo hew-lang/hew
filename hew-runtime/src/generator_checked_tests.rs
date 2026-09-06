@@ -8,6 +8,7 @@ struct Counts {
     starts: AtomicUsize,
     captures: AtomicUsize,
     returns: AtomicUsize,
+    closes: AtomicUsize,
 }
 
 unsafe extern "C" fn drop_capture(slot: *mut c_void) {
@@ -23,6 +24,7 @@ unsafe extern "C" fn drop_return(slot: *mut c_void) {
 }
 
 const CAPTURE: HewValueLayout = HewValueLayout {
+    visit_close: None,
     size: size_of::<*const Counts>(),
     align: align_of::<*const Counts>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -31,6 +33,7 @@ const CAPTURE: HewValueLayout = HewValueLayout {
 };
 
 const RETURN: HewValueLayout = HewValueLayout {
+    visit_close: None,
     drop_fn: Some(drop_return),
     ..CAPTURE
 };
@@ -130,4 +133,83 @@ fn repeated_completion_keeps_one_return_owner_until_close() {
         hew_coro_state_free(parent);
     }
     assert_eq!(counts.returns.load(Ordering::SeqCst), 1);
+}
+
+unsafe extern "C" fn close_count(
+    owner: *mut c_void,
+    _parent: *mut c_void,
+    _fault: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: both descriptors retain the test counters until final release.
+    let counts = unsafe { &*owner.cast::<Counts>() };
+    (if counts.closes.fetch_add(1, Ordering::SeqCst) == 0 {
+        CoroStatus::Pending
+    } else {
+        CoroStatus::Complete
+    }) as i32
+}
+
+unsafe extern "C" fn visit_count(slot: *mut c_void, context: *mut c_void) {
+    // SAFETY: the initialized output/capture contains the retained counter pointer.
+    unsafe {
+        crate::value_close::hew_value_close_push(
+            context,
+            (*slot.cast::<*mut Counts>()).cast(),
+            close_count,
+        );
+    }
+}
+
+#[test]
+fn pending_nested_close_retains_lazy_captures_and_terminal_outputs() {
+    for lazy in [true, false] {
+        let counts = Counts::default();
+        let capture = HewValueLayout {
+            visit_close: lazy.then_some(visit_count),
+            ..CAPTURE
+        };
+        let returned = HewValueLayout {
+            visit_close: (!lazy).then_some(visit_count),
+            ..RETURN
+        };
+        let descriptor = HewCallableDescriptor {
+            environment: &raw const capture,
+            ..descriptor()
+        };
+        let (_readiness, waker) = crate::wake::blocking::Readiness::new();
+        // SAFETY: descriptors, counters and parent remain live until close/free.
+        unsafe {
+            let parent = hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+            let environment = hew_callable_env_alloc(&raw const descriptor);
+            environment.cast::<*const Counts>().write(&raw const counts);
+            let mut callable = HewCallableValue {
+                environment,
+                descriptor: &raw const descriptor,
+            };
+            let generator =
+                hew_checked_generator_new(&raw mut callable, &CAPTURE, &raw const returned);
+            if !lazy {
+                assert_eq!(
+                    hew_checked_generator_poll(generator, parent, false),
+                    CoroStatus::Complete as i32
+                );
+            }
+            assert_eq!(
+                hew_checked_generator_poll(generator, parent, true),
+                CoroStatus::Pending as i32
+            );
+            assert_eq!(counts.captures.load(Ordering::SeqCst), usize::from(!lazy));
+            assert_eq!(counts.returns.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                hew_checked_generator_poll(generator, parent, true),
+                CoroStatus::Complete as i32
+            );
+            hew_checked_generator_free(generator);
+            hew_coro_state_free(parent);
+        }
+        assert_eq!(counts.starts.load(Ordering::SeqCst), usize::from(!lazy));
+        assert_eq!(counts.captures.load(Ordering::SeqCst), 1);
+        assert_eq!(counts.returns.load(Ordering::SeqCst), usize::from(!lazy));
+        assert_eq!(counts.closes.load(Ordering::SeqCst), 2);
+    }
 }

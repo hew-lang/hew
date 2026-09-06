@@ -1201,6 +1201,7 @@ mod tests {
 
     fn blocking_elem_layout() -> HewValueLayout {
         HewValueLayout {
+            visit_close: None,
             size: size_of::<u64>(),
             align: align_of::<u64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -1369,6 +1370,7 @@ mod tests {
 
     fn owned_elem_layout() -> HewValueLayout {
         HewValueLayout {
+            visit_close: None,
             size: size_of::<OwnedElem>(),
             align: align_of::<OwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

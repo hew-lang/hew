@@ -74,7 +74,7 @@ impl<'a> HostExport<'a> {
                 match &block.terminator {
                     PhysicalTerminator::GeneratorYield { .. }
                     | PhysicalTerminator::GeneratorNext { .. }
-                    | PhysicalTerminator::GeneratorClose { .. }
+                    | PhysicalTerminator::ValueClose { .. }
                     | PhysicalTerminator::IndirectCall { .. }
                     | PhysicalTerminator::Sleep { .. }
                     | PhysicalTerminator::TaskSelect { .. }

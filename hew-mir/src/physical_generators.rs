@@ -64,12 +64,17 @@ impl FunctionLowerer<'_> {
                     unwind: self.lower_edge(unwind)?,
                 }
             }
-            hew_sir::SuspendKind::GeneratorClose { place } => PhysicalTerminator::GeneratorClose {
+            hew_sir::SuspendKind::ValueClose { place } => PhysicalTerminator::ValueClose {
                 generator: if let Some(place) = place {
                     self.place(*place)?
                 } else {
                     self.value(inputs[0].operand.value)?
                 },
+                destroy: self.optional_destroy(if let Some(place) = place {
+                    self.place(*place)?
+                } else {
+                    self.value(inputs[0].operand.value)?
+                })?,
                 conditional: place.is_some(),
                 next: normal,
             },
@@ -153,18 +158,22 @@ pub(super) fn verify_suspend(
                 return Err(PhysicalError::new("generator next changes its output type"));
             }
         }
-        PhysicalTerminator::GeneratorClose {
+        PhysicalTerminator::ValueClose {
+            destroy,
             generator,
             conditional,
             ..
         } => {
             let slot = storage(function, *generator)?;
-            if hew_sir::generator_parts(&slot.ty).is_none()
-                || slot.own != OwnKind::Owned
+            let action = destroy.ok_or_else(|| {
+                PhysicalError::new("value close lacks its owning destruction recipe")
+            })?;
+            super::verify_destroy_action(module, &slot.ty, slot.own, action)?;
+            if slot.own != OwnKind::Owned
                 || (*conditional && !matches!(slot.origin, StorageOrigin::Local(_)))
             {
                 return Err(PhysicalError::new(
-                    "generator close lacks its initialized owner contract",
+                    "value close lacks its initialized owner contract",
                 ));
             }
         }
@@ -193,10 +202,11 @@ pub(super) fn successors(
             cancel,
             unwind,
         } => (*generator, Some(*result), normal, cancel, unwind),
-        PhysicalTerminator::GeneratorClose {
+        PhysicalTerminator::ValueClose {
             generator,
             conditional,
             next,
+            ..
         } => {
             if *conditional {
                 if state.active[generator.0 as usize] != InitState::Initialized {

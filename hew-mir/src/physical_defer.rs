@@ -138,7 +138,7 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         } => normal.iter().chain([cancel, unwind]).collect(),
-        PhysicalTerminator::GeneratorClose { next: body, .. }
+        PhysicalTerminator::ValueClose { next: body, .. }
         | PhysicalTerminator::EnterDefer { body, .. }
         | PhysicalTerminator::FinishDefer { next: body, .. }
         | PhysicalTerminator::CheckedRaiseFault { cleanup: body, .. }

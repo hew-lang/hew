@@ -195,6 +195,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     fn take_generator_fault(&self, generator: BasicValueEnum<'ctx>) -> CodegenResult<()> {
+        self.take_cleanup_fault(generator, "hew_checked_generator_take_fault")
+    }
+
+    fn take_cleanup_fault(
+        &self,
+        generator: BasicValueEnum<'ctx>,
+        symbol: &str,
+    ) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let child_slot = self
             .value_emitter()
@@ -204,7 +212,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("initialize producer fault slot")?;
         let take = coro::external(
             self.llvm,
-            "hew_checked_generator_take_fault",
+            symbol,
             self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
         )?;
         let child_status = suspend::call_value(
@@ -428,69 +436,95 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_edge(unwind)
     }
 
-    pub(super) fn emit_generator_close(
+    pub(super) fn emit_value_close(
         &self,
-        generator: StorageId,
+        owner: StorageId,
+        destroy: Option<super::DestroyAction>,
         conditional: bool,
         next: &PhysicalEdge,
     ) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
         let frame = self.generator_frame()?;
-        let start = self
-            .ctx
-            .append_basic_block(self.value, "generator.close.start");
-        let poll = self
-            .ctx
-            .append_basic_block(self.value, "generator.close.poll");
-        let wait = self
-            .ctx
-            .append_basic_block(self.value, "generator.close.wait");
-        let failed = self
-            .ctx
-            .append_basic_block(self.value, "generator.close.failed");
-        let done = self
-            .ctx
-            .append_basic_block(self.value, "generator.close.done");
+        let context = self
+            .value_emitter()
+            .entry_scratch(pointer.into(), "close.collector")?;
+        self.builder
+            .build_store(context, pointer.const_null())
+            .llvm_ctx("initialize child collector")?;
+        let leaves = if conditional {
+            self.function.place_storage.get(&owner).map(|projection| {
+                projection
+                    .leaves
+                    .iter()
+                    .rev()
+                    .map(|leaf| (leaf.storage, leaf.destroy))
+                    .collect::<Vec<_>>()
+            })
+        } else {
+            None
+        };
+        for (storage, action) in leaves.unwrap_or_else(|| vec![(owner, destroy)]) {
+            let Some(action) = action else {
+                continue;
+            };
+            let visit = self.ctx.append_basic_block(self.value, "close.visit");
+            let after = self.ctx.append_basic_block(self.value, "close.after");
+            if conditional {
+                self.builder
+                    .build_conditional_branch(self.place_initialized(storage)?, visit, after)
+                    .llvm_ctx("select initialized owner")?;
+            } else {
+                self.builder
+                    .build_unconditional_branch(visit)
+                    .llvm_ctx("select owned value")?;
+            }
+            self.builder.position_at_end(visit);
+            self.value_emitter().visit_close(
+                self.slots[storage.0 as usize],
+                &self.storage(storage)?.layout,
+                action,
+                context,
+            )?;
+            self.builder
+                .build_unconditional_branch(after)
+                .llvm_ctx("finish child selection")?;
+            self.builder.position_at_end(after);
+        }
+        let collector = self
+            .builder
+            .build_load(pointer, context, "close.children")
+            .llvm_ctx("load selected children")?;
+        let poll = self.ctx.append_basic_block(self.value, "close.poll");
+        let wait = self.ctx.append_basic_block(self.value, "close.wait");
+        let done = self.ctx.append_basic_block(self.value, "close.done");
         let invalid = self
             .ctx
-            .append_basic_block(self.value, "generator.close.invalid.destroy");
-        if conditional {
-            self.builder
-                .build_conditional_branch(self.place_initialized(generator)?, start, done)
-                .llvm_ctx("close only initialized generator storage")?;
-        } else {
-            self.builder
-                .build_unconditional_branch(start)
-                .llvm_ctx("close owned generator")?;
-        }
-        self.builder.position_at_end(start);
-        let handle = self.load(generator, "generator.close.handle")?;
+            .append_basic_block(self.value, "close.invalid.destroy");
         self.builder
             .build_unconditional_branch(poll)
-            .llvm_ctx("begin cooperative producer close")?;
+            .llvm_ctx("begin cooperative child cleanup")?;
         self.builder.position_at_end(poll);
-        let status = self.poll_generator(handle, self.ctx.bool_type().const_int(1, false))?;
+        let poll_fn = coro::external(
+            self.llvm,
+            "hew_value_close_poll",
+            self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
+        )?;
+        let status = suspend::call_value(
+            &self.builder,
+            poll_fn,
+            &[collector.into(), frame.state.into()],
+            "close.status",
+        )?
+        .into_int_value();
         self.builder
-            .build_switch(
-                status,
-                failed,
-                &[
-                    (self.ctx.i32_type().const_int(0, false), wait),
-                    (self.ctx.i32_type().const_int(1, false), done),
-                    (self.ctx.i32_type().const_int(3, false), done),
-                    (self.ctx.i32_type().const_int(4, false), poll),
-                ],
-            )
-            .llvm_ctx("drain producer cancellation before synchronous release")?;
+            .build_switch(status, done, &[(self.ctx.i32_type().const_zero(), wait)])
+            .llvm_ctx("wait for child cleanup")?;
         self.builder.position_at_end(wait);
         frame.suspend(self.ctx, self.llvm, &self.builder, poll, invalid, false)?;
         self.builder.position_at_end(invalid);
         self.reject_generator_destroy()?;
-        self.builder.position_at_end(failed);
-        self.take_generator_fault(handle)?;
-        self.builder
-            .build_unconditional_branch(done)
-            .llvm_ctx("continue cleanup with producer fault")?;
         self.builder.position_at_end(done);
+        self.take_cleanup_fault(collector, "hew_value_close_finish")?;
         self.emit_edge(next)
     }
 }

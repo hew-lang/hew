@@ -3523,7 +3523,7 @@ fn failure_cfg_matches_exit(
             SemTerminator::Suspend {
                 kind:
                     crate::SuspendKind::Join { cancel: true, .. }
-                    | crate::SuspendKind::GeneratorClose { .. },
+                    | crate::SuspendKind::ValueClose { .. },
                 resumes,
                 cancel,
                 unwind,
@@ -4093,7 +4093,7 @@ fn verify_terminator_shape(
                             .is_some_and(|(yielded, _)| matches!(result, crate::CallResult::Value(value)
                                 if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![yielded.clone()]))))
                 }
-                crate::SuspendKind::GeneratorClose { place } => {
+                crate::SuspendKind::ValueClose { place } => {
                     resumes.len() == 1
                         && resumes.first() == Some(cancel)
                         && resumes.first() == Some(unwind)
@@ -4104,12 +4104,17 @@ fn verify_terminator_shape(
                                     && function.places.iter().any(|declaration| {
                                         declaration.id == *place
                                             && declaration.origin == crate::PlaceOrigin::Local
-                                            && crate::generator_parts(&declaration.ty).is_some()
+                                            && crate::OwnKind::of_ty(
+                                                &declaration.ty,
+                                                variants.facts,
+                                            )
+                                            .ok()
+                                                == Some(crate::OwnKind::Owned)
                                     })
                             }
                             None => matches!(inputs.as_slice(), [input]
                                 if input.decision == crate::BoundaryDecision::Borrow
-                                && types.get(&input.operand.value).and_then(crate::generator_parts).is_some()),
+                                && types.get(&input.operand.value).is_some_and(|ty| crate::OwnKind::of_ty(ty, variants.facts).ok() == Some(crate::OwnKind::Owned))),
                         }
                 }
                 crate::SuspendKind::Join { .. } => {

@@ -99,8 +99,8 @@ impl Builder<'_, '_> {
         let declaration = self.binding_declarations[&binding];
         if let BindingTarget::Place(place) = self.source_bindings[declaration].target {
             if self.places[place.0 as usize].origin == PlaceOrigin::Local {
-                if crate::generator_parts(&self.places[place.0 as usize].ty).is_some() {
-                    self.close_generator(Some(place), None)?;
+                if self.value_needs_close(&self.places[place.0 as usize].ty) {
+                    self.close_value(Some(place), None)?;
                 }
                 self.emit_place_operation(
                     SemOpKind::EndLifetime { place },

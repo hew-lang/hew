@@ -74,9 +74,45 @@ pub struct HewCheckedGenerator {
     frame: *mut c_void,
     fault: *mut HewFault,
     closed: bool,
+    children: *mut crate::value_close::HewValueClose,
+    children_collected: bool,
 }
 
 impl HewCheckedGenerator {
+    unsafe fn close_children(&mut self, parent: *mut HewCoroState, lazy: bool) -> bool {
+        use crate::value_close::{
+            hew_value_close_collect, hew_value_close_finish, hew_value_close_poll,
+        };
+        // SAFETY: the generator retains the output or lazy environment unchanged
+        // across every Pending result until all recursively selected owners drain.
+        unsafe {
+            if !self.children_collected {
+                if lazy {
+                    if let Some(callable) = self.callable.as_mut() {
+                        crate::callable::hew_callable_visit_close(
+                            callable,
+                            (&raw mut self.children).cast(),
+                        );
+                    }
+                } else if let Some(layout) = self.initialized {
+                    hew_value_close_collect(self.output, layout, (&raw mut self.children).cast());
+                }
+                self.children_collected = true;
+            }
+            if hew_value_close_poll(self.children, parent.cast()) == CoroStatus::Pending as i32 {
+                return false;
+            }
+            let mut fault = ptr::null_mut();
+            hew_value_close_finish(
+                std::mem::replace(&mut self.children, ptr::null_mut()),
+                &raw mut fault,
+            );
+            self.fault = crate::fault::hew_fault_combine(self.fault, fault);
+            self.children_collected = false;
+            true
+        }
+    }
+
     unsafe fn discard_output(&mut self) {
         if let Some(layout) = self.initialized.take() {
             // SAFETY: the publication status selected this initialized layout;
@@ -138,6 +174,8 @@ pub unsafe extern "C" fn hew_checked_generator_new(
         frame: ptr::null_mut(),
         fault: ptr::null_mut(),
         closed: false,
+        children: ptr::null_mut(),
+        children_collected: false,
     }))
 }
 
@@ -149,6 +187,10 @@ pub unsafe extern "C" fn hew_checked_generator_new(
 /// invocation state through this call. A previous yield must be taken before
 /// advancing, except that closing disposes it. Only this call drives the frame.
 #[no_mangle]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one poll advances the lazy, yielded and terminal producer states"
+)]
 pub unsafe extern "C" fn hew_checked_generator_poll(
     generator: *mut HewCheckedGenerator,
     parent: *mut HewCoroState,
@@ -160,12 +202,20 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
         return CoroStatus::Complete as i32;
     }
     if closing && generator.state.is_null() {
+        // SAFETY: the lazy environment is retained until its captures finish cleanup.
+        if !unsafe { generator.close_children(parent, true) } {
+            return CoroStatus::Pending as i32;
+        }
         if let Some(mut callable) = generator.callable.take() {
             // SAFETY: the lazy callable has not transferred its environment.
             unsafe { hew_callable_drop(&raw mut callable) };
         }
         generator.closed = true;
-        return CoroStatus::Complete as i32;
+        return if generator.fault.is_null() {
+            CoroStatus::Complete
+        } else {
+            CoroStatus::Fault
+        } as i32;
     }
     // SAFETY: parent is retained for this call; the relay retains its waker.
     let waker = unsafe { hew_coro_state_waker(parent) };
@@ -190,6 +240,10 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
     let resuming_yield = before == CoroStatus::Yielded as i32;
     if resuming_yield {
         if closing {
+            // SAFETY: the output remains initialized while its children drain.
+            if !unsafe { generator.close_children(parent, false) } {
+                return CoroStatus::Pending as i32;
+            }
             // SAFETY: closing consumes any previously published yield.
             unsafe { generator.discard_output() };
         } else if generator.initialized.is_some() {
@@ -250,10 +304,14 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
             generator.frame = ptr::null_mut();
         }
         if closing {
+            // SAFETY: terminal output remains owned through recursive cleanup.
+            if !unsafe { generator.close_children(parent, false) } {
+                return CoroStatus::Pending as i32;
+            }
             // SAFETY: close consumes the final return value, if any.
             unsafe { generator.discard_output() };
             generator.closed = true;
-            if status == CoroStatus::Cancelled as i32 {
+            {
                 // SAFETY: this close requested cancellation solely to drain.
                 // Retain real producer cleanup failures, not that control marker.
                 generator.fault =
@@ -334,6 +392,31 @@ pub unsafe extern "C" fn hew_checked_generator_free(generator: *mut HewCheckedGe
         hew_fault_drop(generator.fault);
         hew_coro_state_free(generator.state);
         dealloc(generator.output.cast(), generator.allocation);
+    }
+}
+
+/// Cooperatively close one borrowed generator without releasing its storage.
+/// # Safety
+/// The owner and parent invocation state remain live until completion; the
+/// output receives the unique optional fault on a terminal result.
+#[no_mangle]
+pub unsafe extern "C" fn hew_checked_generator_close_poll(
+    owner: *mut c_void,
+    parent: *mut c_void,
+    fault: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: the descriptor visitor selected this exact generator handle.
+    unsafe {
+        loop {
+            let status = hew_checked_generator_poll(owner.cast(), parent.cast(), true);
+            if status == CoroStatus::Yielded as i32 {
+                continue;
+            }
+            if status == CoroStatus::Fault as i32 {
+                hew_checked_generator_take_fault(owner.cast(), fault.cast());
+            }
+            return status;
+        }
     }
 }
 

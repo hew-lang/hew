@@ -29,8 +29,11 @@ mod suspend;
 #[path = "physical_tasks.rs"]
 mod tasks;
 
+#[path = "physical_close.rs"]
+mod close;
 #[path = "physical_host.rs"]
 mod host;
+
 pub use host::HostExport;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1311,6 +1314,7 @@ fn value_descriptor_type<'ctx>(
             ctx.i8_type().into(),
             pointer.into(),
             pointer.into(),
+            pointer.into(),
         ],
         false,
     )
@@ -1440,6 +1444,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.ctx.i8_type().const_int(ownership as u64, false).into(),
             clone.into(),
             drop.into(),
+            self.emit_value_close_callback(&format!("{name}_close"), layout, recipe.destroy)?
+                .into(),
         ]))
     }
 
@@ -2535,11 +2541,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_generator_next(generator, *result, normal, cancel, unwind),
-            PhysicalTerminator::GeneratorClose {
+            PhysicalTerminator::ValueClose {
+                destroy,
                 generator,
                 conditional,
                 next,
-            } => self.emit_generator_close(*generator, *conditional, next),
+            } => self.emit_value_close(*generator, *destroy, *conditional, next),
             PhysicalTerminator::TaskAwait {
                 task,
                 result,
@@ -5229,6 +5236,7 @@ mod tests {
             offset_of!(HewValueLayout, ownership_kind),
             offset_of!(HewValueLayout, clone_fn),
             offset_of!(HewValueLayout, drop_fn),
+            offset_of!(HewValueLayout, visit_close),
         ]
         .into_iter()
         .enumerate()

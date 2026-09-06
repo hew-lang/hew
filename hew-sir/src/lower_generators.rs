@@ -52,7 +52,11 @@ impl Builder<'_, '_> {
                     binding: capture.binding,
                     name: capture.name.clone(),
                     ty,
-                    acquisition: hew_types::ClosureCaptureAcquisition::Snapshot,
+                    acquisition: if facts.clone == hew_types::CloneKind::None {
+                        hew_types::ClosureCaptureAcquisition::Move
+                    } else {
+                        hew_types::ClosureCaptureAcquisition::Snapshot
+                    },
                     access: hew_types::ClosureCaptureAccess::Read,
                     consumption: hew_types::ClosureCaptureConsumption::Consumed,
                     is_send: facts.send == hew_types::SendFact::Known(true),
@@ -207,16 +211,78 @@ impl Builder<'_, '_> {
         Ok(value)
     }
 
+    pub(super) fn value_needs_close(&self, ty: &ResolvedTy) -> bool {
+        fn visit(
+            ty: &ResolvedTy,
+            service: &super::InstanceService<'_>,
+            seen: &mut Vec<ResolvedTy>,
+        ) -> bool {
+            if seen.contains(ty) {
+                return false;
+            }
+            seen.push(ty.clone());
+            let result = match ty {
+                ResolvedTy::Function { capabilities, .. } => !capabilities.clone,
+                ResolvedTy::Closure { captures, .. } | ResolvedTy::Tuple(captures) => {
+                    captures.iter().any(|ty| visit(ty, service, seen))
+                }
+                ResolvedTy::Named {
+                    builtin: Some(hew_types::BuiltinType::Generator),
+                    ..
+                } => true,
+                ResolvedTy::Named {
+                    builtin:
+                        Some(
+                            hew_types::BuiltinType::Vec
+                            | hew_types::BuiltinType::HashMap
+                            | hew_types::BuiltinType::HashSet
+                            | hew_types::BuiltinType::Option
+                            | hew_types::BuiltinType::Result,
+                        ),
+                    args,
+                    ..
+                } => args.iter().any(|ty| visit(ty, service, seen)),
+                _ => {
+                    service
+                        .aggregate_shapes
+                        .iter()
+                        .find(|shape| shape.aggregate_ty == *ty)
+                        .is_some_and(|shape| {
+                            shape
+                                .fields
+                                .iter()
+                                .any(|field| visit(&field.ty, service, seen))
+                        })
+                        || service
+                            .variant_shapes
+                            .iter()
+                            .find(|shape| shape.enum_ty == *ty)
+                            .is_some_and(|shape| {
+                                shape.variants.iter().any(|variant| {
+                                    variant
+                                        .fields
+                                        .iter()
+                                        .any(|field| visit(&field.ty, service, seen))
+                                })
+                            })
+                }
+            };
+            seen.pop();
+            result
+        }
+        visit(ty, self.service, &mut Vec::new())
+    }
+
     /// Cleanup combines any producer fault with the current fault. The enclosing
     /// lexical cleanup dispatch decides whether source execution can continue.
-    pub(super) fn close_generator(
+    pub(super) fn close_value(
         &mut self,
         place: Option<PlaceId>,
         value: Option<ValueId>,
     ) -> Result<(), String> {
         let next = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::GeneratorClose { place },
+            kind: SuspendKind::ValueClose { place },
             inputs: value
                 .into_iter()
                 .map(|value| BoundaryOperand {

@@ -2244,6 +2244,7 @@ struct ControlState {
     defers: Vec<deferred::PendingDefer>,
     task_scopes: Vec<(crate::TaskScopeId, usize)>,
     cleanup_may_fail: bool,
+    cleanup_draining: bool,
 }
 
 struct MatchExit {
@@ -2397,6 +2398,7 @@ struct Builder<'hir, 'service> {
     recovery_bodies: Vec<deferred::BodyBoundary>,
     task_scopes: Vec<(crate::TaskScopeId, usize)>,
     cleanup_may_fail: bool,
+    cleanup_draining: bool,
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
@@ -2497,6 +2499,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             recovery_bodies: Vec::new(),
             task_scopes: Vec::new(),
             cleanup_may_fail: false,
+            cleanup_draining: false,
         };
         builder.bind_captures(source)?;
         builder.bind_actor_state(source)?;
@@ -3075,10 +3078,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if self
             .value_ty(value)
             .as_ref()
-            .and_then(crate::generator_parts)
-            .is_some()
+            .is_some_and(|ty| self.value_needs_close(ty))
         {
-            self.close_generator(None, Some(value))?;
+            self.close_value(None, Some(value))?;
         }
         let id = OpId(self.ops);
         self.current_block_mut().append_op(SemOp {
@@ -3091,6 +3093,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })?;
         self.ops += 1;
         self.owned_live.remove(&value);
+        if self.cleanup_may_fail && !self.cleanup_draining {
+            self.dispatch_value_cleanup()?;
+        }
         Ok(())
     }
 
@@ -3115,6 +3120,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             defers: self.defers.clone(),
             task_scopes: self.task_scopes.clone(),
             cleanup_may_fail: self.cleanup_may_fail,
+            cleanup_draining: self.cleanup_draining,
         }
     }
 
@@ -3128,6 +3134,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.defers.clone_from(&state.defers);
         self.task_scopes.clone_from(&state.task_scopes);
         self.cleanup_may_fail = state.cleanup_may_fail;
+        self.cleanup_draining = state.cleanup_draining;
     }
 
     fn retain_bindings(
@@ -3169,6 +3176,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.bindings = Self::retain_bindings(&self.bindings, outer_bindings);
         self.binding_declarations
             .retain(|binding, _| outer_bindings.contains(binding));
+        if self.cleanup_may_fail && !self.cleanup_draining {
+            self.dispatch_value_cleanup()?;
+        }
         Ok(())
     }
 
@@ -4568,6 +4578,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             defers: self.defers.clone(),
             task_scopes: self.task_scopes.clone(),
             cleanup_may_fail: self.cleanup_may_fail,
+            cleanup_draining: self.cleanup_draining,
         })
     }
 

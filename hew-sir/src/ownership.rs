@@ -476,7 +476,7 @@ pub enum SuspendKind {
     Yield,
     GeneratorNext,
     /// Drain an initialized generator local; preserve and combine cleanup faults.
-    GeneratorClose {
+    ValueClose {
         place: Option<crate::PlaceId>,
     },
     Sleep,

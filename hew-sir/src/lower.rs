@@ -2829,7 +2829,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             return Ok(value);
         }
         self.service.require_type_facts(target)?;
-        crate::verify_callable_coercion(&source, target, self.service.checked_facts.rows())?;
+        crate::verify_callable_coercion(&source, target, self.service.checked_facts.rows())
+            .map_err(|reason| {
+                format!("value coercion from {source:?} to {target:?} refused: {reason}")
+            })?;
         self.owned_live.remove(&value);
         self.emit_typed(
             provenance,

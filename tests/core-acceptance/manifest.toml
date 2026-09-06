@@ -1037,3 +1037,14 @@ timeout_seconds = 15
 [case.expected]
 stdout = "PRIVATE RECORD\n12\n11\nPRIVATE TUPLE\n13\n12\n12\nPRIVATE RECORD\nPRIVATE TUPLE\n"
 exit = 0
+
+[[case]]
+id = "callable-private-parameter-replacement"
+intent = "Definite replacement on every reaching branch gives a mutable non-Clone parameter private callback state; a Clone once parameter consumes its entry copy while the caller remains usable."
+source = "cases/callable-private-parameter-replacement.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\n2\n2\n2\n3\n77\n4\n2\n5\nPRIVATE ONCE\nPRIVATE ONCE\n"
+exit = 0

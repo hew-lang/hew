@@ -3312,7 +3312,17 @@ impl Checker {
                 self.in_generator = true;
                 self.current_return_type = Some(gen_ty.clone());
 
+                let effect_body = super::effects::EffectBody::GeneratorBlock(SpanKey::in_module(
+                    span,
+                    self.current_module_idx,
+                ));
+                self.effect_graph
+                    .bodies
+                    .entry(effect_body.clone())
+                    .or_default();
+                let previous_effect_body = self.effect_graph.current_body.replace(effect_body);
                 let body_ty = self.check_block(body, None);
+                self.effect_graph.current_body = previous_effect_body;
 
                 self.in_generator = prev_in_generator;
                 self.current_return_type = prev_return_type;

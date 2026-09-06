@@ -11,6 +11,10 @@ use crate::{env::TypeBindingId, DefId};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EffectBody {
     Declaration(DefId),
+    /// Deferred execution of a named generator, separate from its creator.
+    Generator(DefId),
+    /// Deferred execution of a generator block.
+    GeneratorBlock(SpanKey),
     /// Also identifies the lifted body of a fork block.
     Closure(SpanKey),
 }

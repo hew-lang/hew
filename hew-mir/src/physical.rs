@@ -575,7 +575,8 @@ pub enum PhysicalOp {
         scope: hew_sir::TaskScopeId,
         callable: StorageId,
         dest: StorageId,
-        output: PhysicalValueRecipe,
+        /// Absent only for the uninhabited result of Task<!>.
+        output: Option<PhysicalValueRecipe>,
     },
     /// Static scheduling marker; dependencies alias existing storage.
     RegisterDefer {
@@ -822,7 +823,7 @@ pub enum PhysicalTerminator {
     TaskAwait {
         task: ArgumentTransfer,
         result: Option<StorageId>,
-        normal: PhysicalEdge,
+        normal: Option<PhysicalEdge>,
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
@@ -1083,10 +1084,9 @@ pub fn lower_physical_module(
                     })
                 })
                 .collect::<Result<Vec<_>, PhysicalError>>()?;
-            let return_layout = if callable.signature.return_ty == ResolvedTy::Unit {
-                None
-            } else {
-                Some(required_layout(&target, &callable.signature.return_ty)?.clone())
+            let return_layout = match &callable.signature.return_ty {
+                ResolvedTy::Unit | ResolvedTy::Never => None,
+                ty => Some(required_layout(&target, ty)?.clone()),
             };
             Ok(PhysicalCallable {
                 id: callable.id,
@@ -2218,7 +2218,9 @@ impl FunctionLowerer<'_> {
                     scope: *scope,
                     callable: self.value(callable.value)?,
                     dest,
-                    output: physical_value_recipe(self.module, self.glue_ids, output)?,
+                    output: (output.as_ref() != &ResolvedTy::Never)
+                        .then(|| physical_value_recipe(self.module, self.glue_ids, output))
+                        .transpose()?,
                 })
             }
             SemOpKind::ClosureMake { closure, fields } => one(PhysicalOp::ClosureMake {
@@ -2442,7 +2444,7 @@ impl FunctionLowerer<'_> {
                 callee: *callee,
                 args: self.argument_transfers(args)?,
                 result: match result {
-                    CallResult::Unit => None,
+                    CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
                 },
                 normal: self.lower_edge(normal)?,
@@ -2462,7 +2464,7 @@ impl FunctionLowerer<'_> {
                 operation: operation.clone(),
                 args: self.argument_transfers(args)?,
                 result: match result {
-                    CallResult::Unit => None,
+                    CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
                 },
                 normal: self.lower_edge(normal)?,
@@ -2482,7 +2484,7 @@ impl FunctionLowerer<'_> {
                 action: self.runtime_action(*family, args, result)?,
                 args: self.argument_transfers(args)?,
                 result: match result {
-                    CallResult::Unit => None,
+                    CallResult::Unit | CallResult::Never => None,
                     CallResult::Value(value) => Some(self.value(value.id)?),
                 },
                 normal: self.lower_edge(normal)?,
@@ -2547,9 +2549,12 @@ impl FunctionLowerer<'_> {
                 task: self.argument_transfers(inputs)?[0],
                 result: match result {
                     CallResult::Value(value) => Some(self.value(value.id)?),
-                    CallResult::Unit => None,
+                    CallResult::Unit | CallResult::Never => None,
                 },
-                normal: self.lower_edge(&resumes[0])?,
+                normal: resumes
+                    .first()
+                    .map(|edge| self.lower_edge(edge))
+                    .transpose()?,
                 cancel: self.lower_edge(cancel)?,
                 unwind: self.lower_edge(unwind)?,
             }),
@@ -4040,14 +4045,23 @@ fn verify_operation_storage(
                 hew_sir::callable_parts(&input.ty).map_err(PhysicalError::new)?;
             if !params.is_empty()
                 || capabilities.call != hew_types::CallableCallMode::Once
-                || ret != &output.ty
-                || result.ty != ResolvedTy::Task(Box::new(output.ty.clone()))
+                || result.ty != ResolvedTy::Task(Box::new(ret.clone()))
             {
                 return Err(PhysicalError::new(
                     "task spawn disagrees with its callable/result contract",
                 ));
             }
-            verify_value_recipe(module, output)?;
+            match output {
+                Some(output) if &output.ty == ret && *ret != ResolvedTy::Never => {
+                    verify_value_recipe(module, output)?;
+                }
+                None if *ret == ResolvedTy::Never => {}
+                _ => {
+                    return Err(PhysicalError::new(
+                        "task result recipe differs from its callable result",
+                    ))
+                }
+            }
         }
         PhysicalOp::RegisterDefer { dependencies, .. } => {
             for dependency in dependencies {
@@ -4869,7 +4883,12 @@ fn terminator_successors(
             if let Some(result) = result {
                 define(function, &mut completed, *result, block, "await result")?;
             }
-            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            let mut successors = normal
+                .as_ref()
+                .map(|normal| apply_edge(function, normal, completed, block))
+                .transpose()?
+                .into_iter()
+                .collect::<Vec<_>>();
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
@@ -5297,11 +5316,17 @@ fn verify_terminator(
                 return Err(PhysicalError::new("await requires an exact Task type"));
             };
             match result {
-                Some(result) if slot(*result)?.ty == **output => {}
-                None if **output == ResolvedTy::Unit => {}
+                Some(result)
+                    if slot(*result)?.ty == **output
+                        && normal.is_some()
+                        && **output != ResolvedTy::Never => {}
+                None if **output == ResolvedTy::Unit && normal.is_some() => {}
+                None if **output == ResolvedTy::Never && normal.is_none() => {}
                 _ => return Err(PhysicalError::new("await output differs from task result")),
             }
-            edge(normal)?;
+            if let Some(normal) = normal {
+                edge(normal)?;
+            }
             edge(cancel)?;
             edge(unwind)
         }

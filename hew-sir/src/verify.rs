@@ -2184,7 +2184,7 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
 }
 
 fn is_supported_call_return(module: &SemModule, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Unit) || is_supported_call_value(module, ty)
+    matches!(ty, ResolvedTy::Unit | ResolvedTy::Never) || is_supported_call_value(module, ty)
 }
 
 #[allow(
@@ -3073,6 +3073,7 @@ fn verify_runtime_call_terminator(
     };
     let result_ty = match result {
         crate::CallResult::Unit => ResolvedTy::Unit,
+        crate::CallResult::Never => ResolvedTy::Never,
         crate::CallResult::Value(value) => value.ty.clone(),
     };
     let instantiated = match contract.instantiate(&parameter_types, &result_ty) {
@@ -4032,13 +4033,15 @@ fn verify_terminator_shape(
                         && types.get(&input.operand.value) == Some(&ResolvedTy::Duration))
                 }
                 crate::SuspendKind::Await => {
-                    resumes.len() == 1
+                    resumes.len() == usize::from(!matches!(result, crate::CallResult::Never))
                         && matches!(inputs.as_slice(), [input]
                         if input.decision == crate::BoundaryDecision::Move
                         && matches!(types.get(&input.operand.value), Some(ResolvedTy::Task(output))
                             if match result {
                                 crate::CallResult::Unit => **output == ResolvedTy::Unit,
-                                crate::CallResult::Value(value) => value.ty == **output,
+                                crate::CallResult::Never => **output == ResolvedTy::Never,
+                                crate::CallResult::Value(value) => value.ty == **output
+                                    && value.ty != ResolvedTy::Never,
                             }))
                 }
                 crate::SuspendKind::Join { .. } => {

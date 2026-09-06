@@ -929,7 +929,9 @@ fn require_type_shapes(
             continue;
         }
         require_type_facts(facts, &ty)?;
-        if ty != ResolvedTy::Unit && !is_supported_call_value(module, facts, &ty) {
+        if !matches!(ty, ResolvedTy::Unit | ResolvedTy::Never)
+            && !is_supported_call_value(module, facts, &ty)
+        {
             return Err(format!(
                 "nested type `{}` has no semantic value contract",
                 ty.user_facing()
@@ -2056,7 +2058,7 @@ fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &Res
 }
 
 fn is_supported_call_return(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Unit) || is_supported_call_value(module, facts, ty)
+    matches!(ty, ResolvedTy::Unit | ResolvedTy::Never) || is_supported_call_value(module, facts, ty)
 }
 
 /// The first aggregate value family admitted into SIR.
@@ -3593,7 +3595,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 return Ok(());
             }
 
-            HirExprKind::AwaitTask { operand, .. } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+            HirExprKind::AwaitTask { operand, .. }
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
                 self.lower_task_await(expr, operand)?;
                 return Ok(());
             }
@@ -3626,7 +3630,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } if endpoint == "panic" => return self.lower_panic(expr, args),
             _ => {}
         }
-        if self.ty(&expr.ty) != ResolvedTy::Unit || expr.intent != IntentKind::Consume {
+        if !matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
+            || expr.intent != IntentKind::Consume
+        {
             require_initial_scalar_read(expr.intent)
                 .map_err(|reason| format!("discarded expression: {reason}"))?;
         }
@@ -3647,7 +3653,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 condition,
                 then_expr,
                 else_expr,
-            } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+            } if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) => {
                 return self.lower_unit_if(condition, then_expr, else_expr.as_deref());
             }
             HirExprKind::Match { scrutinee, arms }

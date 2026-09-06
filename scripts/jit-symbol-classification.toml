@@ -113,6 +113,26 @@
 #                    drain, and conservative runtime-control hooks. Never
 #                    JIT-reachable. AOT-linkable only.
 
+# Experimental same-build public C SDK, AOT-only. These tiers confer no JIT
+# or source extern-rt admission; hew_host.h is the deliberate public surface.
+public-host = [
+  "hew_host_error_code",
+  "hew_host_error_message",
+  "hew_host_error_release",
+  "hew_host_text_data",
+  "hew_host_text_from_utf8",
+  "hew_host_text_release",
+]
+
+public-host-stdlib = [
+  "hew_host_json_copy",
+  "hew_host_json_encode",
+  "hew_host_json_get_text",
+  "hew_host_json_parse",
+  "hew_host_json_release",
+  "hew_host_json_set_text",
+]
+
 # jit: stable — handle-oriented/user-visible runtime surface that JIT
 # modules may reference directly.
 stable = [
@@ -1611,6 +1631,7 @@ internal = [
   "hew_fault_inject_crash",
   "hew_fault_inject_delay",
   "hew_fault_inject_drop",
+  "hew_fault_into_host_error",
   "hew_fault_new",
   "hew_fault_new_panic",
   "hew_fault_report",
@@ -1790,6 +1811,8 @@ internal = [
   "hew_trace_clear",
   "hew_trace_drain",
   "hew_trace_reset",
+  # Compiler-private consumed-string normalization; absent from hew_host.h.
+  "hew_host_text_from_owned",
 ]
 
 # ---------------------------------------------------------------------------
@@ -6877,3 +6900,110 @@ result = "none"
 params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
+
+# Public host outputs carry ownership through explicitly empty out-parameters.
+# The legacy result axis describes the scalar status only; header contracts
+# establish exactly one independent output or error owner, not a borrowed result.
+
+[[ownership.contracts]]
+symbol = "hew_host_text_from_utf8"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_json_parse"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_json_copy"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_json_get_text"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_json_set_text"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_json_encode"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_error_code"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# Interior byte view borrowed until the corresponding owner is released.
+[[ownership.contracts]]
+symbol = "hew_host_text_data"
+result = "borrowed"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# Interior byte view borrowed until the corresponding owner is released.
+[[ownership.contracts]]
+symbol = "hew_host_error_message"
+result = "borrowed"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_text_release"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_error_release"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_host_json_release"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# Compiler-private consuming bridge; never part of hew_host.h.
+[[ownership.contracts]]
+symbol = "hew_fault_into_host_error"
+result = "fresh"
+params = ["consume"]
+release-symbol = "hew_host_error_release"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_host_text_from_owned"
+result = "owned"
+params = ["consume"]
+release-symbol = "hew_host_text_release"
+discharge-depth = "shallow"
+result-retention = "transferred"

@@ -75,6 +75,12 @@ pub unsafe fn string_alloc_utf8_unchecked(source: *const u8, len: usize) -> *mut
     if len == 0 {
         return core::ptr::null_mut();
     }
+    // SAFETY: the caller supplies readable UTF-8 bytes of nonzero length.
+    unsafe { string_alloc_nonnull(source, len) }
+}
+
+// Shared allocator for the private null-empty and public non-null-empty views.
+unsafe fn string_alloc_nonnull(source: *const u8, len: usize) -> *mut HewString {
     if source.is_null() {
         std::process::abort();
     }
@@ -105,6 +111,28 @@ pub unsafe fn string_alloc_utf8_unchecked(source: *const u8, len: usize) -> *mut
         );
     }
     allocation.cast()
+}
+
+/// Copy UTF-8 into a non-null managed string, including the empty string.
+/// Uses the canonical allocator and the usual [`string_release`] pairing.
+#[must_use]
+pub fn string_from_str_nonnull(value: &str) -> *mut HewString {
+    // SAFETY: str supplies non-null storage and valid UTF-8 even when empty.
+    unsafe { string_alloc_nonnull(value.as_ptr(), value.len()) }
+}
+
+/// Normalize a transferred managed string owner for the public host boundary.
+/// Non-null allocations are transferred unchanged; null becomes an allocated empty.
+///
+/// # Safety
+/// `value` is null or one live owned managed string, consumed by this operation.
+#[must_use]
+pub unsafe fn string_into_nonnull(value: *mut HewString) -> *mut HewString {
+    if value.is_null() {
+        string_from_str_nonnull("")
+    } else {
+        value
+    }
 }
 
 /// Allocate one managed string by copying a Rust string slice.

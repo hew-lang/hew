@@ -94,6 +94,29 @@ pub unsafe extern "C" fn hew_fault_combine(
     primary
 }
 
+/// Consume one private logical fault into a public host error without reporting.
+/// The diagnostic preserves the complete primary and secondary report bytes;
+/// the public category is independent of internal trap-code numbering.
+///
+/// # Safety
+/// `fault` is one live non-null unique owner, with no outstanding borrows.
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn hew_fault_into_host_error(
+    fault: *mut HewFault,
+) -> *mut hew_cabi::host_error::HewError {
+    use hew_cabi::host_error::{HewError, HostStatus};
+    // SAFETY: the caller transfers a non-null unique fault allocation.
+    let fault = unsafe { Box::from_raw(fault) };
+    let mut diagnostic = Vec::new();
+    // Writing to Vec cannot return an I/O error; allocation failure is fatal.
+    let _ = write_report(&fault, &mut diagnostic);
+    // SAFETY: write_report concatenates UTF-8 str components and ASCII formatting.
+    // Taking the bytes preserves all text without replacement or a second copy.
+    let message = unsafe { String::from_utf8_unchecked(diagnostic) };
+    HewError::new(HostStatus::LogicalFault, message).into_raw()
+}
+
 /// Release one fault owner. Null is accepted for an empty fault output slot.
 ///
 /// # Safety

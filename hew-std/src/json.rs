@@ -5,6 +5,8 @@
 //! transfer an independent managed owner. Null is the canonical empty string.
 //! All returned [`HewJsonValue`] pointers are heap-allocated
 //! via `Box` and must be freed with [`hew_json_free`].
+pub mod host_api;
+
 use base64::Engine as _;
 use hew_cabi::string::{string_as_str, string_from_str, string_release, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};

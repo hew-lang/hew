@@ -2010,3 +2010,15 @@ to accept a second release hidden in an `if`. Ownership snapshot joins now rejec
 that use of moved `self` before HIR. The control requires the source diagnostic
 and still lowers the malformed body to prove it cannot acquire HIR automatic
 cleanup authority. The focused two-boundary control passes.
+
+## Preserve consuming callable owners at conditional joins
+
+A unit `if` after consuming a mutable callback tried to forward the dead owner,
+while an `if` result tried to copy a non-cloneable callback from either branch.
+Unit branches now use the existing control-state join instead of their separate
+merge implementation. Non-cloneable owned bindings retain move semantics inside
+conditional expressions. The full SIR suite passes with both source regressions.
+
+A consuming callback followed by `break` remains a separate loop-exit defect:
+the zero-iteration path owns the callback while the taken path has consumed it.
+The verifier correctly rejects the unconditional owner transfer at that join.

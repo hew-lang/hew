@@ -2652,26 +2652,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     } => self.move_protected_bindings.contains(binding),
                     _ => false,
                 };
-                let binding_use = if !protected
-                    && self
-                        .service
-                        .checked_facts
-                        .rows()
-                        .get(&TypeInstanceKey(ty.clone()))
-                        .is_some_and(|row| row.clone == hew_types::CloneKind::None)
+                let binding_use = if self
+                    .service
+                    .checked_facts
+                    .rows()
+                    .get(&TypeInstanceKey(ty.clone()))
+                    .is_some_and(|row| row.clone == hew_types::CloneKind::None)
                 {
                     OwnedBindingUse::Move
+                } else if protected {
+                    OwnedBindingUse::Copy
                 } else {
                     binding_use
                 };
-                match (binding_use, protected) {
-                    (OwnedBindingUse::Copy, _) | (OwnedBindingUse::Move, true) => self.emit(
+                match binding_use {
+                    OwnedBindingUse::Copy => self.emit(
                         expr,
                         SemOpKind::CopyValue {
                             source: Operand { value: source },
                         },
                     ),
-                    (OwnedBindingUse::Move, false) => {
+                    OwnedBindingUse::Move => {
                         self.owned_live.remove(&source);
                         self.emit(
                             expr,
@@ -6361,34 +6362,24 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             },
         })?;
 
-        let before_bindings = self.bindings.clone();
-        let before_live = self.owned_live.clone();
+        let before = self.control_state();
         self.current = then_block;
-        self.bindings = before_bindings.clone();
-        self.owned_live = before_live.clone();
         self.lower_discarded_expr(then_expr)?;
-        let then_state = self
-            .is_open()
-            .then(|| (self.current, self.bindings.clone(), self.owned_live.clone()));
+        let then_state = self.is_open().then(|| self.control_state());
 
+        self.restore_control_state(&before);
         self.current = else_block;
-        self.bindings = before_bindings;
-        self.owned_live = before_live;
         if let Some(else_expr) = else_expr {
             self.lower_discarded_expr(else_expr)?;
         }
-        let else_state = self
-            .is_open()
-            .then(|| (self.current, self.bindings.clone(), self.owned_live.clone()));
+        let else_state = self.is_open().then(|| self.control_state());
 
         match (then_state, else_state) {
             (Some(then_state), Some(else_state)) => {
-                self.merge_unit_branches(then_state, else_state)
+                self.merge_control_states(vec![then_state, else_state])
             }
-            (Some((block, bindings, live)), None) | (None, Some((block, bindings, live))) => {
-                self.current = block;
-                self.bindings = bindings;
-                self.owned_live = live;
+            (Some(state), None) | (None, Some(state)) => {
+                self.restore_control_state(&state);
                 Ok(())
             }
             (None, None) => {
@@ -6396,89 +6387,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 Ok(())
             }
         }
-    }
-
-    fn merge_unit_branches(
-        &mut self,
-        then_state: (
-            BlockId,
-            HashMap<BindingId, ValueId>,
-            BTreeMap<ValueId, ResolvedTy>,
-        ),
-        else_state: (
-            BlockId,
-            HashMap<BindingId, ValueId>,
-            BTreeMap<ValueId, ResolvedTy>,
-        ),
-    ) -> Result<(), String> {
-        let (then_block, then_bindings, mut then_live) = then_state;
-        let (else_block, else_bindings, mut else_live) = else_state;
-        let then_keys: std::collections::HashSet<_> = then_bindings.keys().copied().collect();
-        let else_keys: std::collections::HashSet<_> = else_bindings.keys().copied().collect();
-        if then_keys != else_keys {
-            return Err("if branches expose different source bindings at their join".to_string());
-        }
-        let mut args = Vec::new();
-        let mut then_args = Vec::new();
-        let mut else_args = Vec::new();
-        let mut joined_bindings = then_bindings.clone();
-        let mut joined_owners = Vec::new();
-
-        for binding in self.mutable_bindings() {
-            let Some(&then_value) = then_bindings.get(&binding) else {
-                continue;
-            };
-            let else_value = *else_bindings.get(&binding).ok_or_else(|| {
-                format!("mutable binding `{binding}` is missing from one if branch")
-            })?;
-            let ty = self.value_ty(then_value).ok_or_else(|| {
-                format!("mutable binding `{binding}` has no concrete type at its if join")
-            })?;
-            if self.value_ty(else_value).as_ref() != Some(&ty) {
-                return Err(format!(
-                    "mutable binding `{binding}` has mismatched types at its if join"
-                ));
-            }
-            self.service.require_type_facts(&ty)?;
-            let own = OwnKind::of_ty(&ty, self.service.checked_facts.rows())?;
-            let joined = self.fresh_value();
-            args.push(BlockArg {
-                value: joined,
-                own,
-                ty: ty.clone(),
-            });
-            then_args.push(Operand { value: then_value });
-            else_args.push(Operand { value: else_value });
-            joined_bindings.insert(binding, joined);
-            then_live.remove(&then_value);
-            else_live.remove(&else_value);
-            if own == OwnKind::Owned {
-                joined_owners.push((joined, ty));
-            }
-            self.record_binding_version(binding, joined)?;
-        }
-        if then_live != else_live {
-            return Err(
-                "if branches leave different non-binding owned values live at their join"
-                    .to_string(),
-            );
-        }
-        let join = self.new_block(args);
-        self.current = then_block;
-        self.set_terminator(SemTerminator::Goto(Edge {
-            target: join,
-            args: then_args,
-        }))?;
-        self.current = else_block;
-        self.set_terminator(SemTerminator::Goto(Edge {
-            target: join,
-            args: else_args,
-        }))?;
-        self.current = join;
-        self.bindings = joined_bindings;
-        self.owned_live = then_live;
-        self.owned_live.extend(joined_owners);
-        Ok(())
     }
 
     fn loop_edge(&mut self, scope: &LoopScope, target: BlockId) -> Result<Edge, String> {

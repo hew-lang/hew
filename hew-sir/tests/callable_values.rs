@@ -450,3 +450,34 @@ fn mutable_aggregate_parameters_keep_callable_fields_private_across_control_flow
         "#,
     );
 }
+
+#[test]
+fn consumed_mutable_callable_is_not_revived_by_a_later_unit_if() {
+    lower_source(
+        r#"
+        fn answer() -> i64 { 42 }
+        fn probe(flag: bool) -> i64 {
+            var callback: fn[once]() -> i64 = answer;
+            callback();
+            if flag { println("yes"); } else { println("no"); }
+            0
+        }
+        fn main() -> i64 { probe(true) + probe(false) }
+    "#,
+    );
+}
+
+#[test]
+fn non_clone_callable_can_transfer_through_either_if_arm() {
+    lower_source(
+        r"
+        fn answer() -> i64 { 42 }
+        fn probe(flag: bool) -> i64 {
+            let callback: fn[once]() -> i64 = answer;
+            let selected = if flag { callback } else { callback };
+            selected()
+        }
+        fn main() -> i64 { probe(true) + probe(false) }
+    ",
+    );
+}

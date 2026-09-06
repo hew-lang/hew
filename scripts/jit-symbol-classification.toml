@@ -1048,6 +1048,8 @@ stable-stdlib = [
   "hew_json_array_push_int",
   "hew_json_array_push_null",
   "hew_json_array_push_string",
+  "hew_json_clone",
+  "hew_json_eq",
   "hew_json_free",
   "hew_json_from_bool",
   "hew_json_from_float",
@@ -1251,6 +1253,8 @@ stable-stdlib = [
   "hew_yaml_array_push_int",
   "hew_yaml_array_push_null",
   "hew_yaml_array_push_string",
+  "hew_yaml_clone",
+  "hew_yaml_eq",
   "hew_yaml_free",
   "hew_yaml_from_bool",
   "hew_yaml_from_float",
@@ -5494,6 +5498,21 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_json_clone"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_json_eq"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_json_free"
 result = "none"
 params = ["consume"]
@@ -6060,6 +6079,21 @@ symbol = "hew_yaml_array_push_string"
 result = "none"
 params = ["borrow", "borrow"]
 resource-param-types = ["std.encoding.yaml.Value", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_clone"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_eq"
+result = "none"
+params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

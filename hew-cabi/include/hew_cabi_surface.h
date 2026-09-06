@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1503u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1507u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1503] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1507] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -2708,6 +2708,18 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1503] = {
      "{\"native\": \"fn hew_json_array_push_string( *mut HewJsonValue, *const "
      "HewString)\", \"wasm32-wasip1\": \"fn hew_json_array_push_string( *mut "
      "HewJsonValue, *const HewString)\"}",
+     "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_clone",
+     "{\"native\": \"fn hew_json_clone( *const HewJsonValue) -> *mut "
+     "HewJsonValue\", \"wasm32-wasip1\": \"fn hew_json_clone( *const "
+     "HewJsonValue) -> *mut HewJsonValue\"}",
+     "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_eq",
+     "{\"native\": \"fn hew_json_eq( *const HewJsonValue, *const HewJsonValue) "
+     "-> i32\", \"wasm32-wasip1\": \"fn hew_json_eq( *const HewJsonValue, "
+     "*const HewJsonValue) -> i32\"}",
      "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_json_free",
@@ -7235,6 +7247,18 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1503] = {
      "{\"native\": \"fn hew_yaml_array_push_string( *mut HewYamlValue, *const "
      "HewString)\", \"wasm32-wasip1\": \"fn hew_yaml_array_push_string( *mut "
      "HewYamlValue, *const HewString)\"}",
+     "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_yaml_clone",
+     "{\"native\": \"fn hew_yaml_clone( *const HewYamlValue) -> *mut "
+     "HewYamlValue\", \"wasm32-wasip1\": \"fn hew_yaml_clone( *const "
+     "HewYamlValue) -> *mut HewYamlValue\"}",
+     "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_yaml_eq",
+     "{\"native\": \"fn hew_yaml_eq( *const HewYamlValue, *const HewYamlValue) "
+     "-> i32\", \"wasm32-wasip1\": \"fn hew_yaml_eq( *const HewYamlValue, "
+     "*const HewYamlValue) -> i32\"}",
      "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_yaml_free",

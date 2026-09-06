@@ -7597,6 +7597,36 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_json_clone( *const HewJsonValue) -> *mut HewJsonValue",
+        "wasm32-wasip1": "fn hew_json_clone( *const HewJsonValue) -> *mut HewJsonValue"
+      },
+      "symbol": "hew_json_clone"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_eq( *const HewJsonValue, *const HewJsonValue) -> i32",
+        "wasm32-wasip1": "fn hew_json_eq( *const HewJsonValue, *const HewJsonValue) -> i32"
+      },
+      "symbol": "hew_json_eq"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_json_free( *mut HewJsonValue)",
         "wasm32-wasip1": "fn hew_json_free( *mut HewJsonValue)"
       },
@@ -20480,6 +20510,36 @@
         "wasm32-wasip1": "fn hew_yaml_array_push_string( *mut HewYamlValue, *const HewString)"
       },
       "symbol": "hew_yaml_array_push_string"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_yaml_clone( *const HewYamlValue) -> *mut HewYamlValue",
+        "wasm32-wasip1": "fn hew_yaml_clone( *const HewYamlValue) -> *mut HewYamlValue"
+      },
+      "symbol": "hew_yaml_clone"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_yaml_eq( *const HewYamlValue, *const HewYamlValue) -> i32",
+        "wasm32-wasip1": "fn hew_yaml_eq( *const HewYamlValue, *const HewYamlValue) -> i32"
+      },
+      "symbol": "hew_yaml_eq"
     },
     {
       "availability": [

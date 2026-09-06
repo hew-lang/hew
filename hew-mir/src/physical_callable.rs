@@ -254,10 +254,10 @@ pub(super) fn verify_indirect_call(
         verify_argument(module, function, param, semantic, source)?;
     }
     match (result, &signature.return_ty) {
-        (None, ResolvedTy::Unit) => {}
+        (None, ResolvedTy::Unit | ResolvedTy::Never) => {}
         (Some(id), ty)
             if storage(function, id)?.ty == *ty
-                && *ty != ResolvedTy::Unit
+                && !matches!(ty, ResolvedTy::Unit | ResolvedTy::Never)
                 && storage(function, id)?.own
                     == OwnKind::of_class(semantic_type_facts(module, ty)?.class) => {}
         _ => {
@@ -410,7 +410,10 @@ impl FunctionLowerer<'_> {
                 CallResult::Unit | CallResult::Never => None,
                 CallResult::Value(value) => Some(self.value(value.id)?),
             },
-            normal: self.lower_edge(normal)?,
+            normal: normal
+                .as_ref()
+                .map(|edge| self.lower_edge(edge))
+                .transpose()?,
             unwind: match unwind {
                 CallUnwind::NotApplicable => None,
                 CallUnwind::Cleanup(edge) => Some(self.lower_edge(edge)?),

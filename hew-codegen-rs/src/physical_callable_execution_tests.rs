@@ -218,10 +218,10 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
                     signature: sir::callable_value_signature(&exposed, &module.type_facts).unwrap(),
                     args: vec![boundary(3, sir::BoundaryDecision::Copy)],
                     result: sir::CallResult::Value(result(4)),
-                    normal: sir::Edge {
+                    normal: Some(sir::Edge {
                         target: BlockId(1),
                         args: vec![operand(4)],
-                    },
+                    }),
                     unwind: sir::CallUnwind::Cleanup(sir::Edge {
                         target: BlockId(2),
                         args: vec![],

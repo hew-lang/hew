@@ -218,7 +218,7 @@ pub fn module(failing: bool) -> SemModule {
                     callee: fail,
                     args: vec![boundary(newer, BoundaryDecision::Borrow)],
                     result: CallResult::Unit,
-                    normal: edge(6),
+                    normal: Some(edge(6)),
                     unwind: CallUnwind::Cleanup(edge(7)),
                 }
             } else {

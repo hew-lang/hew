@@ -806,7 +806,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         signature: &PhysicalCallSignature,
         args: &[ArgumentTransfer],
         result: Option<StorageId>,
-        normal: &PhysicalEdge,
+        normal: Option<&PhysicalEdge>,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let source = argument_source(&callee);

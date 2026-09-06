@@ -338,7 +338,7 @@ fn allocated_closure() -> hew_sir::SemModule {
         decision: BoundaryDecision::Move,
     };
     *output = CallResult::Value(result(4));
-    *normal = edge(3, &[4]);
+    *normal = Some(edge(3, &[4]));
     *unwind = CallUnwind::Cleanup(edge(6, &[]));
     let SemTerminator::RtCall {
         args,

@@ -55,10 +55,10 @@ fn call(
         callee: CallableId(callee),
         args,
         result,
-        normal: Edge {
+        normal: Some(Edge {
             target: BlockId(normal),
             args: normal_args,
-        },
+        }),
         unwind: CallUnwind::NotApplicable,
     }
 }

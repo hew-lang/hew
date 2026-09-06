@@ -1985,6 +1985,7 @@ fn verify_indirect_call(
         signature,
         args,
         result,
+        normal,
         unwind,
         ..
     } = terminator
@@ -2040,6 +2041,9 @@ fn verify_indirect_call(
             );
         }
     }
+    if normal.is_none() != (signature.return_ty == ResolvedTy::Never) {
+        return Err("indirect call normal edge differs from its return type".to_string());
+    }
     match result {
         crate::CallResult::Value(value)
             if value.ty == signature.return_ty && value.ty != ResolvedTy::Unit =>
@@ -2047,6 +2051,7 @@ fn verify_indirect_call(
             Ok(())
         }
         crate::CallResult::Unit if signature.return_ty == ResolvedTy::Unit => Ok(()),
+        crate::CallResult::Never if signature.return_ty == ResolvedTy::Never => Ok(()),
         _ => Err("indirect call result differs from its signature".to_string()),
     }
 }
@@ -2931,6 +2936,7 @@ fn verify_direct_call_terminator(
     callee: CallableId,
     args: &[crate::BoundaryOperand],
     result: &crate::CallResult,
+    normal: Option<&crate::Edge>,
     types: &HashMap<ValueId, ResolvedTy>,
     callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
@@ -2956,7 +2962,19 @@ fn verify_direct_call_terminator(
             diagnostics,
         );
     }
-    let expected_results = usize::from(target.signature.return_ty != ResolvedTy::Unit);
+    let never = target.signature.return_ty == ResolvedTy::Never;
+    if normal.is_none() != never || matches!(result, crate::CallResult::Never) != never {
+        invalid_operation(
+            function,
+            id,
+            "direct call result and normal edge differ from its return type".to_string(),
+            diagnostics,
+        );
+    }
+    let expected_results = usize::from(!matches!(
+        target.signature.return_ty,
+        ResolvedTy::Unit | ResolvedTy::Never
+    ));
     let actual_results = usize::from(matches!(result, crate::CallResult::Value(_)));
     if actual_results != expected_results {
         diagnostics.push(diag(
@@ -3914,6 +3932,7 @@ fn verify_terminator_shape(
             callee,
             args,
             result,
+            normal,
             ..
         } => verify_direct_call_terminator(
             function,
@@ -3921,6 +3940,7 @@ fn verify_terminator_shape(
             *callee,
             args,
             result,
+            normal.as_ref(),
             types,
             callable_context,
             diagnostics,
@@ -4256,15 +4276,17 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
     // The canonical visitor orders control inputs before normal-edge
     // arguments. Only that interval can see the terminator result.
     let normal_slots = match term {
-        SemTerminator::Call { args, normal, .. }
-        | SemTerminator::RtCall { args, normal, .. }
+        SemTerminator::Call { args, normal, .. } => {
+            args.len()..args.len() + normal.as_ref().map_or(0, |edge| edge.args.len())
+        }
+        SemTerminator::RtCall { args, normal, .. }
         | SemTerminator::ActorCall { args, normal, .. }
         | SemTerminator::ValueCall { args, normal, .. } => {
             args.len()..args.len() + normal.args.len()
         }
         SemTerminator::IndirectCall { args, normal, .. } => {
             let start = 1 + args.len();
-            start..start + normal.args.len()
+            start..start + normal.as_ref().map_or(0, |edge| edge.args.len())
         }
         SemTerminator::CheckedBinary { normal, .. } => 2..2 + normal.args.len(),
         SemTerminator::RecoverFault { normal, .. } => 0..normal.args.len(),

@@ -563,10 +563,10 @@ mod tests {
                             ty: ResolvedTy::I64,
                             own: OwnKind::None,
                         }),
-                        normal: Edge {
+                        normal: Some(Edge {
                             target: BlockId(1),
                             args: vec![Operand { value: ValueId(2) }],
-                        },
+                        }),
                         unwind: CallUnwind::Cleanup(Edge {
                             target: BlockId(2),
                             args: vec![],

@@ -1424,6 +1424,7 @@ pub enum RuntimeCallFamily {
     StringConcat,
     StringEquals,
     StringStartsWith,
+    StringIsEmpty,
     StructuralFormat,
     StringFind,
     StringGet,
@@ -1718,6 +1719,14 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
         symbol: "hew_string_starts_with",
         family: Some(RuntimeCallFamily::StringStartsWith),
         params: STRING,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::is_empty",
+        symbol: "hew_string_is_empty",
+        family: Some(RuntimeCallFamily::StringIsEmpty),
+        params: EMPTY,
         result: CanonicalExternTy::Bool,
     },
     CanonicalStdlibExternSignature {
@@ -2210,6 +2219,7 @@ impl RuntimeCallFamily {
             Self::StringConcat => "hew_string_concat",
             Self::StringEquals => "hew_string_equals",
             Self::StringStartsWith => "hew_string_starts_with",
+            Self::StringIsEmpty => "hew_string_is_empty",
             Self::StructuralFormat => "hew_structural_format",
             Self::StringFind => "hew_string_find",
             Self::StringGet => "hew_string_get",
@@ -2589,6 +2599,7 @@ impl RuntimeCallFamily {
             "hew_string_concat" => Self::StringConcat,
             "hew_string_equals" => Self::StringEquals,
             "hew_string_starts_with" => Self::StringStartsWith,
+            "hew_string_is_empty" => Self::StringIsEmpty,
             "hew_structural_format" => Self::StructuralFormat,
             "hew_string_find" => Self::StringFind,
             "hew_string_get" => Self::StringGet,
@@ -3244,6 +3255,9 @@ impl RuntimeCallFamily {
             Self::StringEquals | Self::StringStartsWith => {
                 runtime_semantic_contract(STRING_PAIR_BORROW, BitCopy(Bool), NO_FAILURES)
             }
+            Self::StringIsEmpty => {
+                runtime_semantic_contract(STRING_BORROW, BitCopy(Bool), NO_FAILURES)
+            }
             Self::StringConcat => {
                 runtime_semantic_contract(STRING_PAIR_BORROW, FreshOwned(String), NO_FAILURES)
             }
@@ -3626,6 +3640,7 @@ impl RuntimeCallFamily {
             | F::StringConcat
             | F::StringEquals
             | F::StringStartsWith
+            | F::StringIsEmpty
             | F::StructuralFormat
             | F::StringFind
             | F::StringGet
@@ -4671,6 +4686,7 @@ mod tests {
                 "bytes::set",
                 "string::byte_len",
                 "string::starts_with",
+                "string::is_empty",
                 "string::find",
                 "string::char_at",
                 "string::get",

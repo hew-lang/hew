@@ -2039,3 +2039,16 @@ allocations. The Job source cases also execute through Make at O0 and O2,
 preserving siblings and restoring callbacks while propagating argument and
 callback-body faults. Full integration acceptance and sanitizer execution remain
 separate checks.
+
+## Captured partial ownership and mutable siblings
+
+The job-history acceptance programs consume a once callable inside an owned
+aggregate capture, retain its heap-owning siblings, and append owned strings to
+a vector sibling after taking another job's callable. The fault program fails
+after the captured field is consumed and the remaining siblings are read. Its
+cleanup must therefore follow the partially consumed local root without also
+releasing it through the closure environment.
+
+The expected reports independently check callback results, sibling contents and
+vector growth. Source checks pass; native and paired generated/runtime sanitizer
+execution remains pending.

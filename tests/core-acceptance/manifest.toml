@@ -1094,3 +1094,26 @@ timeout_seconds = 15
 stdout = "callback entered\n"
 stderr = "hew: failure: DivideByZero (202)\n"
 exit = 202
+
+[[case]]
+id = "partial-captured-job-history"
+intent = "A consumed aggregate capture retains readable heap-owning siblings after its once field is called; mutating a vector sibling of another partially consumed job preserves its contents and remaining fields."
+source = "cases/partial-captured-job-history.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "RUN:CAPTURED:CAPTURED:QUEUED:8\nMUTABLE:3:QUEUED:RUN:MUTABLE:DONE:7\n"
+exit = 0
+
+[[case]]
+id = "partial-captured-job-later-fault"
+intent = "A fault after consuming a captured job callback and reading its remaining fields unwinds the partially consumed local root, its environment and heap-owning caller locals exactly once."
+source = "cases/partial-captured-job-later-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "RUN:FAULT:FAULT:QUEUED:5\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 202

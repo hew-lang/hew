@@ -1546,6 +1546,16 @@ impl Checker {
                     }
                     _ => None,
                 };
+                if let Some((root, path)) = self.expr_place(&target.0) {
+                    if path.is_empty() {
+                        self.reject_prepared_task_access(
+                            &root,
+                            &path,
+                            span,
+                            TypeErrorKind::OwnMutateBorrowed,
+                        );
+                    }
+                }
                 if let Some(name) = root_binding_name {
                     if let Some(binding) = self.env.lookup_ref(name) {
                         if !binding.is_mutable {

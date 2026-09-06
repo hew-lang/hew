@@ -467,7 +467,10 @@ pub enum SuspendKind {
     StreamNext,
     StreamSend,
     CallClosure,
-    Select,
+    /// Borrowed task observations, followed by an optional copied duration.
+    Select {
+        has_timeout: bool,
+    },
     Timeout,
     Join {
         scope: TaskScopeId,
@@ -475,6 +478,11 @@ pub enum SuspendKind {
     },
     ScopeDeadline,
     Yield,
+    GeneratorNext,
+    /// Drain an initialized generator local; preserve and combine cleanup faults.
+    ValueClose {
+        place: Option<crate::PlaceId>,
+    },
     Sleep,
     SleepUntil,
 }

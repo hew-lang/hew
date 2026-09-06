@@ -20,6 +20,8 @@ mod partial;
 mod defer;
 #[path = "physical_panic_tests.rs"]
 mod panic;
+#[path = "physical_select_tests.rs"]
+mod select;
 
 type HashCallback = unsafe extern "C" fn(*const c_void, *mut u64, *mut *mut c_void) -> i32;
 type EqCallback =
@@ -645,6 +647,7 @@ fn selected_vector_and_variant_equality_walks_live_elements_and_active_fields() 
         // SAFETY: the wrapper consumes the exact Option slot representation.
         let variant_eq = unsafe { engine.get_function::<EqCallback>("variant_eq").unwrap() };
         let layout = hew_runtime::vec::HewValueLayout {
+            visit_close: None,
             size: std::mem::size_of::<i64>(),
             align: std::mem::align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,

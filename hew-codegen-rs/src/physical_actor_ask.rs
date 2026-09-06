@@ -316,7 +316,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(parked);
         frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
         self.builder.position_at_end(destroyed);
-        self.reject_pending_destroy()?;
+        self.reject_invalid_task_state()?;
         self.builder.position_at_end(completed);
         self.close_ask(channel, timer)?;
         self.emit_ask_result(result, status, reply, handler)?;

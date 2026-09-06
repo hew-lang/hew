@@ -244,6 +244,7 @@ fn is_cleanup(kind: &SemOpKind) -> bool {
     matches!(
         kind,
         SemOpKind::EndBorrow { .. }
+            | SemOpKind::TaskScopeClose { .. }
             | SemOpKind::DestroyValue { .. }
             | SemOpKind::EndLifetime { .. }
     )
@@ -262,11 +263,33 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
                 continue;
             }
             let terminal = match &block.terminator {
-                SemTerminator::Trap { .. } | SemTerminator::ResumeUnwind => true,
+                SemTerminator::Trap { .. }
+                | SemTerminator::ResumeUnwind
+                | SemTerminator::RecoverFault { .. } => true,
+                SemTerminator::Suspend {
+                    kind: crate::SuspendKind::Join { cancel: true, .. },
+                    resumes,
+                    cancel,
+                    unwind,
+                    ..
+                } => resumes
+                    .iter()
+                    .chain([cancel, unwind])
+                    .all(|edge| suffixes.get(&edge.target) == Some(&0)),
+                SemTerminator::CleanupDispatch { fault, .. } => {
+                    suffixes.get(&fault.target) == Some(&0)
+                }
                 SemTerminator::EnterDefer { .. }
                 | SemTerminator::FinishDefer { .. }
                 | SemTerminator::CheckedRaiseFault { .. } => boundaries.is_some(),
                 SemTerminator::Goto(edge) => suffixes.get(&edge.target) == Some(&0),
+                SemTerminator::Suspend {
+                    kind: crate::SuspendKind::ValueClose { .. },
+                    resumes,
+                    ..
+                } => resumes
+                    .iter()
+                    .all(|edge| suffixes.get(&edge.target) == Some(&0)),
                 SemTerminator::Branch {
                     then_target,
                     else_target,
@@ -743,6 +766,20 @@ impl<'a> Flow<'a> {
                 }
                 successors.extend(self.edge(id, next, state, emit));
             }
+            SemTerminator::RecoverFault {
+                result,
+                normal,
+                unwind,
+                ..
+            } => {
+                Self::require_fault(id, LIVE, &state, emit);
+                let mut recovered = state.clone();
+                recovered.fault = DEAD;
+                recovered.exit = ORDINARY;
+                self.define(id, result.id, &mut recovered, emit);
+                successors.extend(self.edge(id, normal, recovered, emit));
+                successors.extend(self.edge(id, unwind, state, emit));
+            }
             SemTerminator::CleanupDispatch { normal, fault } => {
                 if state.fault & DEAD != 0 {
                     let mut success = state.clone();
@@ -816,6 +853,21 @@ impl<'a> Flow<'a> {
             SemTerminator::SwitchVariant {
                 scrutinee, arms, ..
             } => successors.extend(self.variant_switch(id, scrutinee, arms, &state, emit)),
+            SemTerminator::Suspend {
+                kind: crate::SuspendKind::ValueClose { place },
+                resumes,
+                ..
+            } => {
+                if let Some(place) = place {
+                    self.require_active(id, *place, &state, emit);
+                    self.require_no_live_borrows(id, PlaceBase::Place(*place), &state, emit);
+                }
+                state.fault = combine_fault(state.fault, DEAD | LIVE);
+                state.exit |= TRAP;
+                for edge in resumes {
+                    successors.extend(self.edge(id, edge, state.clone(), emit));
+                }
+            }
             SemTerminator::Suspend {
                 kind: crate::SuspendKind::Join { cancel: true, .. },
                 resumes,
@@ -950,7 +1002,7 @@ impl<'a> Flow<'a> {
                 .cleanup_suffixes
                 .get(&id)
                 .is_some_and(|&start| index >= start)
-                && (cleanup_exit == TRAP
+                && ((cleanup_exit != 0 && cleanup_exit & ORDINARY == 0)
                     || (cleanup_exit == ORDINARY
                         && matches!(self.blocks[&id].terminator, SemTerminator::Trap { .. })))
             {
@@ -1434,7 +1486,20 @@ impl<'a> Flow<'a> {
         let mut roots = BTreeMap::<_, bool>::new();
         terminator.visit_boundary_operands(|_, operand| {
             let value = operand.operand.value;
-            self.require_complete_environment(id, value, state, emit);
+            if matches!(
+                terminator,
+                SemTerminator::Suspend {
+                    kind: crate::SuspendKind::ValueClose { .. },
+                    ..
+                }
+            ) {
+                // Closing visits only initialized captures and retains the
+                // carrier until ordinary destruction. It never copies or
+                // invokes the partially consumed environment.
+                self.require_no_live_borrows(id, PlaceBase::Value(value), state, emit);
+            } else {
+                self.require_complete_environment(id, value, state, emit);
+            }
             let exclusive = operand.decision == BoundaryDecision::BorrowMut;
             if exclusive {
                 self.require_exclusive(id, value, state, emit);
@@ -1456,17 +1521,24 @@ impl<'a> Flow<'a> {
                 .and_modify(|previous| *previous |= exclusive)
                 .or_insert(exclusive);
             if self.guaranteed.contains(&value) {
-                // The boundary contract must separately prove a synchronous,
-                // non-retaining borrow. Other boundaries require an explicit
-                // owned copy so their lifetime never depends on this input.
+                // Calls prove a non-retaining borrow. Selection retains its
+                // own observation references before parking and releases them
+                // on every exit; it never transfers the borrowed task result.
                 let scoped_borrow = matches!(
                     terminator,
-                    SemTerminator::ActorCall { .. }
+                    SemTerminator::Suspend {
+                        kind: crate::SuspendKind::GeneratorNext,
+                        ..
+                    } | SemTerminator::ActorCall { .. }
                         | SemTerminator::Call { .. }
                         | SemTerminator::RtCall { .. }
                         | SemTerminator::ValueCall { .. }
                         | SemTerminator::IndirectCall { .. }
                         | SemTerminator::Panic { .. }
+                        | SemTerminator::Suspend {
+                            kind: crate::SuspendKind::Select { .. },
+                            ..
+                        }
                 ) && matches!(
                     operand.decision,
                     BoundaryDecision::Borrow | BoundaryDecision::BorrowMut
@@ -1494,7 +1566,8 @@ impl<'a> Flow<'a> {
 fn operation_consumes_operands(kind: &SemOpKind) -> bool {
     matches!(
         kind,
-        SemOpKind::TaskSpawn { .. }
+        SemOpKind::GeneratorMake { .. }
+            | SemOpKind::TaskSpawn { .. }
             | SemOpKind::ClosureMake { .. }
             | SemOpKind::CallableCoerce { .. }
             | SemOpKind::TupleMake { .. }

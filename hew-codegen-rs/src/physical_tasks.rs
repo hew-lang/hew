@@ -11,7 +11,12 @@ impl ModuleEmitter<'_, '_> {
     pub(super) fn emit_task_descriptors(&self) -> CodegenResult<()> {
         for function in &self.module.functions {
             for op in function.blocks.iter().flat_map(|block| &block.ops) {
-                if let PhysicalOp::TaskSpawn { dest, output, .. } = op {
+                if let PhysicalOp::TaskSpawn {
+                    dest,
+                    output: Some(output),
+                    ..
+                } = op
+                {
                     self.emit_value_descriptor(
                         &result_descriptor(function.callable, *dest),
                         output,
@@ -24,7 +29,7 @@ impl ModuleEmitter<'_, '_> {
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
-    fn task_pointer_call(
+    pub(super) fn task_pointer_call(
         &self,
         name: &str,
         args: &[BasicMetadataValueEnum<'ctx>],
@@ -121,6 +126,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let descriptor = self
             .llvm
             .get_global(&result_descriptor(self.function.callable, dest))
+            .map(|global| global.as_pointer_value())
+            .or_else(|| {
+                matches!(&self.function.storage[dest.0 as usize].ty,
+                ResolvedTy::Task(output) if **output == ResolvedTy::Never)
+                .then(|| self.ctx.ptr_type(AddressSpace::default()).const_null())
+            })
             .ok_or_else(|| {
                 CodegenError::FailClosed("task result lacks its exact value descriptor".into())
             })?;
@@ -129,20 +140,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[
                 self.task_scope_handle(scope)?.into(),
                 self.slots[callable.0 as usize].into(),
-                descriptor.as_pointer_value().into(),
+                descriptor.into(),
             ],
         )?;
         self.clear_owned(callable)?;
         self.store(dest, task.into())
     }
 
-    /// Checked owners cancel and resume until terminal before destroying a
-    /// frame. A raw destruction of pending task work violates that ABI.
-    pub(super) fn reject_pending_destroy(&self) -> CodegenResult<()> {
+    /// Premature frame destruction and a successful uninhabited result both
+    /// violate the checked task ABI.
+    pub(super) fn reject_invalid_task_state(&self) -> CodegenResult<()> {
         let abort = coro::external(self.llvm, "abort", self.ctx.void_type().fn_type(&[], false))?;
         self.builder
             .build_call(abort, &[], "")
-            .llvm_ctx("reject premature task frame destruction")?;
+            .llvm_ctx("reject an invalid task state")?;
         self.builder
             .build_unreachable()
             .llvm_ctx("terminate invalid frame owner")?;
@@ -157,7 +168,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         task: &ArgumentTransfer,
         result: Option<StorageId>,
-        normal: &PhysicalEdge,
+        normal: &Option<PhysicalEdge>,
         cancel: &PhysicalEdge,
         unwind: &PhysicalEdge,
     ) -> CodegenResult<()> {
@@ -229,7 +240,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(pending);
         frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
         self.builder.position_at_end(destroyed);
-        self.reject_pending_destroy()?;
+        self.reject_invalid_task_state()?;
         self.builder.position_at_end(complete);
         self.builder
             .build_conditional_branch(cancellation, abandoned, take)
@@ -268,7 +279,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("dispatch task outcome")?;
         self.builder.position_at_end(value);
-        self.emit_result_edge(result, normal)?;
+        if let Some(normal) = normal {
+            self.emit_result_edge(result, normal)?;
+        } else {
+            self.reject_invalid_task_state()?;
+        }
         self.builder.position_at_end(cancelled);
         self.emit_edge(cancel)?;
         self.builder.position_at_end(failure);
@@ -344,7 +359,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(pending);
         frame.suspend(self.ctx, self.llvm, &self.builder, poll, destroyed, false)?;
         self.builder.position_at_end(destroyed);
-        self.reject_pending_destroy()?;
+        self.reject_invalid_task_state()?;
         self.builder.position_at_end(complete);
         let child_fault_slot = self
             .builder

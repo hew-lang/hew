@@ -97,6 +97,7 @@ pub(crate) unsafe extern "C" fn string_pair_drop_thunk(slot: *mut c_void) {
 #[inline]
 pub(crate) fn string_pair_elem_layout() -> HewValueLayout {
     HewValueLayout {
+        visit_close: None,
         size: std::mem::size_of::<HewStringPair>(),
         align: std::mem::align_of::<HewStringPair>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,

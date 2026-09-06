@@ -21,7 +21,13 @@ pub const HEW_FAULT_DEADLINE: i32 = -2;
 pub struct HewFault {
     code: i32,
     message: Option<Box<str>>,
-    secondary_diagnostics: String,
+    secondary: Vec<FaultDiagnostic>,
+}
+
+#[derive(Debug)]
+struct FaultDiagnostic {
+    code: i32,
+    message: Option<Box<str>>,
 }
 
 impl HewFault {
@@ -40,7 +46,7 @@ pub extern "C" fn hew_fault_new(code: i32) -> *mut HewFault {
     Box::into_raw(Box::new(HewFault {
         code,
         message: None,
-        secondary_diagnostics: String::new(),
+        secondary: Vec::new(),
     }))
 }
 
@@ -58,7 +64,7 @@ pub unsafe extern "C" fn hew_fault_new_panic(message: *const HewString) -> *mut 
     Box::into_raw(Box::new(HewFault {
         code: HEW_TRAP_USER_PANIC,
         message: Some(message),
-        secondary_diagnostics: String::new(),
+        secondary: Vec::new(),
     }))
 }
 
@@ -87,21 +93,44 @@ pub unsafe extern "C" fn hew_fault_combine(
     let primary_fault = unsafe { &mut *primary };
     // SAFETY: secondary is a distinct allocation consumed exactly once here.
     let secondary = unsafe { Box::from_raw(secondary) };
-    let diagnostic = format!(
-        "hew: secondary failure: {} ({})",
-        fault_reason(secondary.code),
-        secondary.code
-    );
-    primary_fault.secondary_diagnostics.push_str(&diagnostic);
-    if let Some(message) = &secondary.message {
-        primary_fault.secondary_diagnostics.push_str(": ");
-        primary_fault.secondary_diagnostics.push_str(message);
-    }
-    primary_fault.secondary_diagnostics.push('\n');
+    let HewFault {
+        code,
+        message,
+        secondary,
+    } = *secondary;
     primary_fault
-        .secondary_diagnostics
-        .push_str(&secondary.secondary_diagnostics);
+        .secondary
+        .push(FaultDiagnostic { code, message });
+    primary_fault.secondary.extend(secondary);
     primary
+}
+
+/// Remove the cancellation used only to request cooperative cleanup.
+/// Preserve the first actual cleanup failure and every following diagnostic.
+///
+/// # Safety
+/// A non-null pointer transfers one unique fault owner without borrowers.
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn hew_fault_finish_cleanup(fault: *mut HewFault) -> *mut HewFault {
+    if fault.is_null() {
+        return fault;
+    }
+    // SAFETY: the caller transfers the unique allocation.
+    let mut fault = unsafe { Box::from_raw(fault) };
+    if !matches!(fault.code, HEW_FAULT_CANCELLED | HEW_FAULT_DEADLINE) {
+        return Box::into_raw(fault);
+    }
+    let mut secondary = fault.secondary.into_iter();
+    let Some(first) = secondary
+        .find(|diagnostic| !matches!(diagnostic.code, HEW_FAULT_CANCELLED | HEW_FAULT_DEADLINE))
+    else {
+        return std::ptr::null_mut();
+    };
+    fault.code = first.code;
+    fault.message = first.message;
+    fault.secondary = secondary.collect();
+    Box::into_raw(fault)
 }
 
 /// Consume one private logical fault into a public host error without reporting.
@@ -125,6 +154,22 @@ pub unsafe extern "C" fn hew_fault_into_host_error(
     // Taking the bytes preserves all text without replacement or a second copy.
     let message = unsafe { String::from_utf8_unchecked(diagnostic) };
     HewError::new(HostStatus::LogicalFault, message).into_raw()
+}
+
+/// Consume a logical fault into an owned diagnostic for scope recovery.
+///
+/// # Safety
+/// `fault` must be a live, unique, non-null fault owner without borrowers.
+#[no_mangle]
+#[must_use]
+pub unsafe extern "C" fn hew_fault_take_message(fault: *mut HewFault) -> *mut HewString {
+    // SAFETY: the caller transfers the unique fault allocation.
+    let fault = unsafe { Box::from_raw(fault) };
+    let mut diagnostic = Vec::new();
+    let _ = write_report(&fault, &mut diagnostic);
+    // SAFETY: reports consist entirely of UTF-8 strings and ASCII formatting.
+    let message = unsafe { String::from_utf8_unchecked(diagnostic) };
+    hew_cabi::string::string_from_str(&message)
 }
 
 /// Release one fault owner. Null is accepted for an empty fault output slot.
@@ -180,7 +225,20 @@ fn write_report(fault: &HewFault, output: &mut impl Write) -> io::Result<()> {
         output.write_all(message.as_bytes())?;
     }
     output.write_all(b"\n")?;
-    output.write_all(fault.secondary_diagnostics.as_bytes())
+    for diagnostic in &fault.secondary {
+        write!(
+            output,
+            "hew: secondary failure: {} ({})",
+            fault_reason(diagnostic.code),
+            diagnostic.code
+        )?;
+        if let Some(message) = &diagnostic.message {
+            output.write_all(b": ")?;
+            output.write_all(message.as_bytes())?;
+        }
+        output.write_all(b"\n")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -229,16 +287,46 @@ mod tests {
                         if has_primary { None } else { Some("secondary") }
                     );
                     assert_eq!(
-                        fault.secondary_diagnostics,
-                        if has_primary && has_secondary {
-                            "hew: secondary failure: UserPanic (212): secondary\n"
-                        } else {
-                            ""
-                        }
+                        fault.secondary.len(),
+                        usize::from(has_primary && has_secondary)
                     );
+                    if let Some(secondary) = fault.secondary.first() {
+                        assert_eq!(secondary.code, HEW_TRAP_USER_PANIC);
+                        assert_eq!(secondary.message.as_deref(), Some("secondary"));
+                    }
                 }
                 // SAFETY: transfer the sole remaining owner, including null.
                 unsafe { hew_fault_drop(combined) };
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_owns_complete_primary_and_secondary_diagnostics() {
+        let primary = panic_fault("primary\0é");
+        let secondary = panic_fault("cleanup 雪");
+        // SAFETY: both faults are distinct unique owners; recovery consumes them.
+        let message = unsafe { hew_fault_take_message(hew_fault_combine(primary, secondary)) };
+        // SAFETY: recovery returned a live managed string owned by this test.
+        assert_eq!(unsafe { string_as_str(message) }, "hew: failure: UserPanic (212): primary\0é\nhew: secondary failure: UserPanic (212): cleanup 雪\n");
+        // SAFETY: no borrow remains, so release the transferred owner once.
+        unsafe { hew_cabi::string::string_release(message) };
+    }
+
+    #[test]
+    fn internal_close_cancellation_promotes_cleanup_failure_without_losing_text() {
+        for code in [HEW_FAULT_CANCELLED, HEW_FAULT_DEADLINE] {
+            // SAFETY: each operation consumes one unique fault owner.
+            unsafe {
+                assert!(hew_fault_finish_cleanup(hew_fault_new(code)).is_null());
+                let failed = hew_fault_combine(hew_fault_new(code), panic_fault("cleanup\0雪"));
+                let failed = hew_fault_combine(failed, panic_fault("older cleanup"));
+                let failed = hew_fault_finish_cleanup(failed);
+                assert_eq!((*failed).code, HEW_TRAP_USER_PANIC);
+                let mut report = Vec::new();
+                write_report(&*failed, &mut report).unwrap();
+                assert_eq!(report, "hew: failure: UserPanic (212): cleanup\0雪\nhew: secondary failure: UserPanic (212): older cleanup\n".as_bytes());
+                hew_fault_drop(failed);
             }
         }
     }
@@ -333,7 +421,7 @@ mod tests {
             &HewFault {
                 code: 202,
                 message: None,
-                secondary_diagnostics: String::new(),
+                secondary: Vec::new(),
             },
             &mut output,
         )
@@ -352,7 +440,7 @@ mod tests {
                 &HewFault {
                     code,
                     message: None,
-                    secondary_diagnostics: String::new(),
+                    secondary: Vec::new(),
                 },
                 &mut output,
             )
@@ -378,7 +466,7 @@ mod tests {
                 &HewFault {
                     code: 202,
                     message: None,
-                    secondary_diagnostics: String::new(),
+                    secondary: Vec::new(),
                 },
                 &mut Unwritable
             )

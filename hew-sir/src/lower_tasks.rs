@@ -32,6 +32,13 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
     if function
         .blocks
         .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::RecoverFault { .. }))
+    {
+        return;
+    }
+    if function
+        .blocks
+        .iter()
         .flat_map(|block| &block.ops)
         .any(|op| {
             matches!(
@@ -138,6 +145,13 @@ impl Builder<'_, '_> {
         body: &HirBlock,
         duration: Option<&HirExpr>,
     ) -> Result<Option<ValueId>, String> {
+        // Deferred bodies cannot create children or suspend. A plain scope
+        // there only supplies lexical cleanup; it needs no asynchronous drain.
+        if duration.is_none() && self.in_deferred_body() {
+            return self
+                .lower_block(body, OwnedBindingUse::Return)
+                .map(|result| result.map(|result| result.value));
+        }
         let duration = duration
             .map(|duration| self.lower_expr(duration).map(|value| Operand { value }))
             .transpose()?;
@@ -221,13 +235,23 @@ impl Builder<'_, '_> {
             return Err("await result differs from its checked task output".into());
         }
         let task = self.lower_consuming_value(operand)?;
+        self.lower_task_await_value(task, &output)
+    }
+
+    pub(super) fn lower_task_await_value(
+        &mut self,
+        task: ValueId,
+        output: &ResolvedTy,
+    ) -> Result<Option<ValueId>, String> {
         self.owned_live.remove(&task);
         let live = self.owned_live.clone();
-        let (result, normal, continuation) = if output == ResolvedTy::Unit {
+        let (result, normal, continuation) = if *output == ResolvedTy::Never {
+            (CallResult::Never, edge(self.new_block(Vec::new())), None)
+        } else if *output == ResolvedTy::Unit {
             (CallResult::Unit, edge(self.new_block(Vec::new())), None)
         } else {
-            self.service.require_type_facts(&output)?;
-            let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
+            self.service.require_type_facts(output)?;
+            let own = OwnKind::of_ty(output, self.service.checked_facts.rows())?;
             let raw = self.fresh_value();
             let value = self.fresh_value();
             let target = self.new_block(vec![BlockArg {
@@ -258,7 +282,11 @@ impl Builder<'_, '_> {
                 decision: BoundaryDecision::Move,
             }],
             result,
-            resumes: vec![normal],
+            resumes: if *output == ResolvedTy::Never {
+                Vec::new()
+            } else {
+                vec![normal]
+            },
             cancel: edge(cancel),
             unwind: edge(unwind),
         })?;
@@ -269,8 +297,11 @@ impl Builder<'_, '_> {
         }
         self.current = resumed;
         self.owned_live = live;
+        if *output == ResolvedTy::Never {
+            self.set_terminator(SemTerminator::Unreachable)?;
+        }
         if let Some((value, OwnKind::Owned)) = continuation {
-            self.owned_live.insert(value, output);
+            self.owned_live.insert(value, output.clone());
         }
         Ok(continuation.map(|(value, _)| value))
     }

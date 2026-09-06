@@ -928,6 +928,8 @@ pub fn collection_value_dependencies(
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallResult {
     Unit,
+    /// The checked result is uninhabited; there is no normal continuation.
+    Never,
     Value(ValueDef),
 }
 
@@ -955,6 +957,11 @@ pub struct CheckedFailure {
 /// ordinary SSA operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemOpKind {
+    /// Transfer a nullary owning callable into a lazy generator.
+    GeneratorMake {
+        closure: ClosureId,
+        callable: Operand,
+    },
     /// Begin a lexical task lifetime with explicit cancellation ancestry.
     TaskScopeEnter {
         scope: crate::TaskScopeId,
@@ -1215,7 +1222,10 @@ impl SemOpKind {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::TaskSpawn {
+            Self::GeneratorMake {
+                callable: value, ..
+            }
+            | Self::TaskSpawn {
                 callable: value, ..
             }
             | Self::CallableCoerce { source: value }
@@ -1296,7 +1306,10 @@ impl SemOpKind {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::TaskSpawn {
+            Self::GeneratorMake {
+                callable: value, ..
+            }
+            | Self::TaskSpawn {
                 callable: value, ..
             }
             | Self::CallableCoerce { source: value }
@@ -1330,6 +1343,7 @@ impl SemOpKind {
             Self::TaskScopeEnter { .. }
             | Self::TaskScopeClose { .. }
             | Self::TaskSpawn { .. }
+            | Self::GeneratorMake { .. }
             | Self::FunctionMake { .. }
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
@@ -1393,6 +1407,7 @@ impl SemOpKind {
             | Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::TaskSpawn { .. }
+            | Self::GeneratorMake { .. }
             | Self::ClosureMake { .. }
             | Self::CallableCoerce { .. }
             | Self::CopyValue { .. }
@@ -1444,6 +1459,7 @@ impl SemOpKind {
                 | Self::TaskScopeClose { .. }
                 | Self::RegisterDefer { .. }
                 | Self::TaskSpawn { .. }
+                | Self::GeneratorMake { .. }
                 | Self::ClosureMake { .. }
                 | Self::CallableCoerce { .. }
                 | Self::DestroyValue { .. }
@@ -1486,6 +1502,15 @@ pub enum SemTerminator {
     CleanupDispatch {
         normal: Edge,
         fault: Edge,
+    },
+    /// Admit recovery after lexical cleanup, consuming the fault into its
+    /// checked source enum only when enclosing cancellation permits it.
+    RecoverFault {
+        result: ValueDef,
+        deadline_variant: u32,
+        fault_variant: u32,
+        normal: Edge,
+        unwind: Edge,
     },
     /// Materialize the original checked failure before any effectful cleanup.
     CheckedRaiseFault {
@@ -1677,6 +1702,7 @@ impl SemTerminator {
             | Self::FinishDefer { .. }
             | Self::CheckedRaiseFault { .. }
             | Self::CleanupDispatch { .. }
+            | Self::RecoverFault { .. }
             | Self::Return { value: None }
             | Self::Goto(_)
             | Self::Branch { .. }
@@ -1715,7 +1741,8 @@ impl SemTerminator {
                 result: CallResult::Value(result),
                 ..
             }
-            | Self::CheckedBinary { result, .. } => visit(result),
+            | Self::CheckedBinary { result, .. }
+            | Self::RecoverFault { result, .. } => visit(result),
             Self::SwitchVariant { arms, .. } => {
                 for arm in arms {
                     for field in &arm.fields {
@@ -1731,29 +1758,29 @@ impl SemTerminator {
             | Self::Goto(_)
             | Self::Branch { .. }
             | Self::Call {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::RtCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::ActorCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::IndirectCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::ValueCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::Panic { .. }
             | Self::Trap { .. }
             | Self::Suspend {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::ResumeUnwind
@@ -1787,7 +1814,12 @@ impl SemTerminator {
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
             | Self::Goto(edge) => edge.visit_operands(visit),
-            Self::CleanupDispatch { normal, fault } => {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
                 let mut index = 0;
                 for operand in normal.args.iter().chain(fault.args.iter()) {
                     visit(OperandSlot(index), operand);
@@ -1924,7 +1956,12 @@ impl SemTerminator {
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
             | Self::Goto(edge) => edge.visit_operands_mut(visit),
-            Self::CleanupDispatch { normal, fault } => {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
                 let mut index = 0;
                 for operand in normal.args.iter_mut().chain(fault.args.iter_mut()) {
                     visit(OperandSlot(index), operand);
@@ -2052,7 +2089,12 @@ impl SemTerminator {
     /// `u32` successor-slot range can represent.
     pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
-            Self::CleanupDispatch { normal, fault } => {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
                 visit(SuccessorSlot(0), normal);
                 visit(SuccessorSlot(1), fault);
             }
@@ -2134,7 +2176,12 @@ impl SemTerminator {
         mut visit: impl FnMut(SuccessorSlot, &mut Edge),
     ) {
         match self {
-            Self::CleanupDispatch { normal, fault } => {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
                 visit(SuccessorSlot(0), normal);
                 visit(SuccessorSlot(1), fault);
             }
@@ -2213,7 +2260,12 @@ impl SemTerminator {
     #[must_use]
     pub fn successor(&self, slot: SuccessorSlot) -> Option<&Edge> {
         match self {
-            Self::CleanupDispatch { normal, fault } => match slot.0 {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => match slot.0 {
                 0 => Some(normal),
                 1 => Some(fault),
                 _ => None,
@@ -2284,7 +2336,12 @@ impl SemTerminator {
     #[must_use]
     pub fn successor_mut(&mut self, slot: SuccessorSlot) -> Option<&mut Edge> {
         match self {
-            Self::CleanupDispatch { normal, fault } => match slot.0 {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => match slot.0 {
                 0 => Some(normal),
                 1 => Some(fault),
                 _ => None,
@@ -2442,7 +2499,8 @@ impl SemTerminator {
             Self::EnterDefer { .. }
             | Self::FinishDefer { .. }
             | Self::CheckedRaiseFault { .. }
-            | Self::CleanupDispatch { .. } => "cleanup edge operand",
+            | Self::CleanupDispatch { .. }
+            | Self::RecoverFault { .. } => "cleanup edge operand",
             Self::Trap { .. } => "trap terminator operand",
             Self::ResumeUnwind => "resume-unwind terminator operand",
             Self::Unreachable => "unreachable terminator operand",

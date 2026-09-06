@@ -90,6 +90,7 @@ fn remove_drops_stored_k_and_v_exactly_once_each() {
 
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -100,6 +101,7 @@ fn remove_drops_stored_k_and_v_exactly_once_each() {
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -159,6 +161,7 @@ fn remove_missing_key_invokes_no_drops() {
     V_DROP_COUNT.store(0, Ordering::SeqCst);
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -169,6 +172,7 @@ fn remove_missing_key_invokes_no_drops() {
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,

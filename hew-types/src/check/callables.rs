@@ -245,6 +245,9 @@ impl Checker {
         path: &[String],
         span: &Span,
     ) {
+        if self.reject_prepared_task_access(root, path, span, TypeErrorKind::OwnMutateBorrowed) {
+            return;
+        }
         if self.is_current_closure_capture(root)
             || !self.env.place_borrows_parameter(root, path)
             || !self.env.lookup_ref(root).is_some_and(|binding| {
@@ -376,6 +379,9 @@ impl Checker {
         let Some((root, path)) = self.expr_place(expr) else {
             return false;
         };
+        if self.reject_prepared_task_access(&root, &path, span, TypeErrorKind::OwnConsumeBorrowed) {
+            return true;
+        }
         // A closure environment capture follows its existing acquisition contract.
         if self.is_current_closure_capture(&root) || !self.env.place_borrows_parameter(&root, &path)
         {
@@ -389,6 +395,40 @@ impl Checker {
         self.report_error_with_suggestions(TypeErrorKind::OwnConsumeBorrowed, span,
             format!("E_OWN_CONSUME_BORROWED: cannot consume a value through borrowed parameter `{root}`"),
             vec![suggestion]);
+        true
+    }
+
+    pub(super) fn reject_prepared_task_access(
+        &mut self,
+        root: &str,
+        path: &[String],
+        span: &Span,
+        kind: TypeErrorKind,
+    ) -> bool {
+        let Some(binding) = self.env.lookup_ref(root) else {
+            return false;
+        };
+        let origin = self
+            .prepared_select_tasks
+            .iter()
+            .find(|loan| {
+                loan.binding == binding.id
+                    && (path.starts_with(&loan.path) || loan.path.starts_with(path))
+            })
+            .map(|loan| loan.span.clone());
+        let Some(origin) = origin else {
+            return false;
+        };
+        self.report_error_with_note(
+            kind,
+            span,
+            format!(
+                "cannot change prepared task `{}` while other selection sources are evaluated",
+                Self::render_place(root, path)
+            ),
+            &origin,
+            "selection borrows this task until its winning branch is chosen".into(),
+        );
         true
     }
 

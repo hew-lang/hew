@@ -606,6 +606,8 @@ pub mod coro_sleep;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod coro_root;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod generator_checked;
 pub mod hashmap;
 pub mod hashset;
 pub mod layout_intrinsics;
@@ -1189,3 +1191,5 @@ mod exit_code_resolution_tests {
 
 #[cfg(test)]
 mod test_string;
+
+pub mod value_close;

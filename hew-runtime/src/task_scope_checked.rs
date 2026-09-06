@@ -23,6 +23,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Weak;
 use std::sync::{Arc, Mutex};
 
+#[path = "task_scope_select.rs"]
+mod select;
+pub use select::{
+    hew_checked_task_select_free, hew_checked_task_select_new, hew_checked_task_select_poll,
+    HewCheckedTaskSelect,
+};
+
 const PENDING: i32 = 0;
 const READY: i32 = 1;
 const FAULT: i32 = 2;
@@ -33,7 +40,7 @@ static COMPLETION_ORDER: AtomicU64 = AtomicU64::new(1);
 pub(super) struct CheckedTaskState {
     callable: Option<HewCallableValue>,
     layout: *const HewValueLayout,
-    allocation: Layout,
+    allocation: Option<Layout>,
     result: *mut c_void,
     initialized: bool,
     completed: bool,
@@ -77,7 +84,9 @@ impl Drop for CheckedTaskState {
                     drop_fn(self.result);
                 }
             }
-            dealloc(self.result.cast(), self.allocation);
+            if let Some(allocation) = self.allocation {
+                dealloc(self.result.cast(), allocation);
+            }
             hew_fault_drop(self.fault);
         }
     }
@@ -150,6 +159,10 @@ unsafe extern "C" fn run(task: *mut HewTask) {
         );
         let waiters = {
             let mut state = checked(task).lock_or_recover();
+            if status == 0 && state.layout.is_null() {
+                // A callable returning ! cannot publish a successful result.
+                std::process::abort();
+            }
             state.initialized = status == 0;
             state.fault = fault.cast();
             state.status = status;
@@ -241,6 +254,7 @@ pub unsafe extern "C" fn hew_checked_scope_deadline(scope: *mut HewTaskScope, du
 /// # Safety
 /// Scope is live and exclusively accessed. Callable and layout have the exact
 /// checked Send input/result contract; the descriptor code outlives the scope.
+/// A null layout declares an uninhabited result: the callable must never succeed.
 /// This consumes and clears `callable` before starting its worker.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_task_spawn(
@@ -248,16 +262,19 @@ pub unsafe extern "C" fn hew_checked_task_spawn(
     callable: *mut HewCallableValue,
     layout: *const HewValueLayout,
 ) -> *mut HewTask {
-    // SAFETY: the compiler supplies a valid, immutable result layout.
-    let layout_ref = unsafe { &*layout };
-    let Ok(allocation) = Layout::from_size_align(layout_ref.size.max(1), layout_ref.align) else {
-        std::process::abort();
-    };
-    // SAFETY: the valid nonzero layout is released by the final task owner.
-    let result = unsafe { alloc(allocation) };
-    if result.is_null() {
-        handle_alloc_error(allocation);
-    }
+    // SAFETY: the compiler supplies an immutable layout, or null for !.
+    let allocation = unsafe { layout.as_ref() }.map(|layout| {
+        Layout::from_size_align(layout.size.max(1), layout.align)
+            .unwrap_or_else(|_| std::process::abort())
+    });
+    let result = allocation.map_or(ptr::null_mut(), |allocation| {
+        // SAFETY: the valid nonzero layout is released by the final task owner.
+        let result = unsafe { alloc(allocation) };
+        if result.is_null() {
+            handle_alloc_error(allocation);
+        }
+        result
+    });
     // SAFETY: caller transfers the owning carrier and exclusively borrows scope.
     unsafe {
         let owner = ptr::read(callable);

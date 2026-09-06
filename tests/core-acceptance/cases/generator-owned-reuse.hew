@@ -1,0 +1,12 @@
+gen fn repeated() -> string {
+    let value = "yield".to_upper();
+    yield value;
+    println(value);
+    yield value;
+}
+
+fn main() {
+    for value in repeated() {
+        println(value);
+    }
+}

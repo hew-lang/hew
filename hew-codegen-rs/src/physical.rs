@@ -19,13 +19,21 @@ mod partial;
 
 #[path = "physical_coro.rs"]
 mod coro;
+#[path = "physical_generators.rs"]
+mod generators;
+#[path = "physical_select.rs"]
+mod select;
 #[path = "physical_suspend.rs"]
 mod suspend;
+
 #[path = "physical_tasks.rs"]
 mod tasks;
 
+#[path = "physical_close.rs"]
+mod close;
 #[path = "physical_host.rs"]
 mod host;
+
 pub use host::HostExport;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -182,6 +190,9 @@ fn physical_target_for_parts<'a>(
         )?;
     }
     for ty in types {
+        if *ty == ResolvedTy::Never {
+            continue;
+        }
         realize_layout(
             &ctx,
             &data,
@@ -1303,6 +1314,7 @@ fn value_descriptor_type<'ctx>(
             ctx.i8_type().into(),
             pointer.into(),
             pointer.into(),
+            pointer.into(),
         ],
         false,
     )
@@ -1355,6 +1367,7 @@ fn build_module_with_host<'ctx>(
     emitter.declare_functions()?;
     emitter.emit_collection_value_descriptors()?;
     emitter.emit_task_descriptors()?;
+    emitter.emit_generator_descriptors()?;
     emitter.emit_environment_descriptors()?;
     emitter.emit_callable_descriptors()?;
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
@@ -1431,6 +1444,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.ctx.i8_type().const_int(ownership as u64, false).into(),
             clone.into(),
             drop.into(),
+            self.emit_value_close_callback(&format!("{name}_close"), layout, recipe.destroy)?
+                .into(),
         ]))
     }
 
@@ -1922,6 +1937,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     )]
     fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
         match operation {
+            PhysicalOp::GeneratorMake { callable, dest, .. } => {
+                self.emit_generator_make(*callable, *dest)
+            }
             PhysicalOp::RegisterDefer { .. } => Ok(()),
             PhysicalOp::FunctionMake { dest, callee } => self.emit_function_make(*dest, *callee),
             PhysicalOp::TaskScopeEnter {
@@ -2521,6 +2539,33 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             ),
+            PhysicalTerminator::TaskSelect {
+                tasks,
+                timeout,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_task_select(tasks, *timeout, *result, normal, cancel, unwind),
+            PhysicalTerminator::GeneratorYield {
+                value,
+                normal,
+                cancel,
+                ..
+            } => self.emit_generator_yield(value, normal, cancel),
+            PhysicalTerminator::GeneratorNext {
+                generator,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_generator_next(generator, *result, normal, cancel, unwind),
+            PhysicalTerminator::ValueClose {
+                destroy,
+                generator,
+                conditional,
+                next,
+            } => self.emit_value_close(*generator, *destroy, *conditional, next),
             PhysicalTerminator::TaskAwait {
                 task,
                 result,
@@ -2547,6 +2592,21 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalTerminator::CleanupDispatch { normal, fault } => {
                 self.emit_cleanup_dispatch(normal, fault)
             }
+            PhysicalTerminator::RecoverFault {
+                result,
+                glue,
+                deadline_variant,
+                fault_variant,
+                normal,
+                unwind,
+            } => self.emit_scope_recovery(
+                *result,
+                *glue,
+                *deadline_variant,
+                *fault_variant,
+                normal,
+                unwind,
+            ),
             PhysicalTerminator::CheckedRaiseFault { kind, cleanup } => {
                 self.initialize_active_fault(trap_code(*kind))?;
                 self.emit_edge(cleanup)
@@ -4591,6 +4651,91 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.emit_edge(next)
     }
 
+    fn emit_scope_recovery(
+        &self,
+        result: StorageId,
+        glue: PhysicalVariantId,
+        deadline_variant: u32,
+        fault_variant: u32,
+        normal: &PhysicalEdge,
+        unwind: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("scope recovery requires a resumable invocation".into())
+        })?;
+        let cancelled = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+        let cancelled = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                cancelled,
+                cancelled.get_type().const_zero(),
+                "recovery.parent.cancelled",
+            )
+            .llvm_ctx("test parent cancellation")?;
+        let bypass = self.ctx.append_basic_block(self.value, "recovery.bypass");
+        let recover = self.ctx.append_basic_block(self.value, "recovery.consume");
+        self.builder
+            .build_conditional_branch(cancelled, bypass, recover)
+            .llvm_ctx("dispatch scope recovery")?;
+        self.builder.position_at_end(bypass);
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(recover);
+        let code = self
+            .builder
+            .build_load(self.ctx.i32_type(), self.active_status, "recovery.code")
+            .llvm_ctx("load fault category")?
+            .into_int_value();
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let fault = self
+            .builder
+            .build_load(pointer, self.active_fault, "recovery.fault")
+            .llvm_ctx("load recovery fault")?;
+        let message = self.task_pointer_call("hew_fault_take_message", &[fault.into()])?;
+        self.clear_fault_pair(self.active_fault, self.active_status)?;
+        let is_deadline = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                code,
+                self.ctx.i32_type().const_int((-2_i32) as u64, true),
+                "recovery.deadline",
+            )
+            .llvm_ctx("classify scope failure")?;
+        let deadline = self
+            .ctx
+            .append_basic_block(self.value, "recovery.deadline.case");
+        let logical = self
+            .ctx
+            .append_basic_block(self.value, "recovery.fault.case");
+        let done = self.ctx.append_basic_block(self.value, "recovery.ready");
+        self.builder
+            .build_conditional_branch(is_deadline, deadline, logical)
+            .llvm_ctx("select failure variant")?;
+        self.builder.position_at_end(deadline);
+        self.write_variant_value(
+            self.slots[result.0 as usize],
+            deadline_variant,
+            &[message.into()],
+            glue,
+        )?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish deadline recovery")?;
+        self.builder.position_at_end(logical);
+        self.write_variant_value(
+            self.slots[result.0 as usize],
+            fault_variant,
+            &[message.into()],
+            glue,
+        )?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish fault recovery")?;
+        self.builder.position_at_end(done);
+        self.emit_edge(normal)
+    }
+
     fn emit_cleanup_dispatch(
         &self,
         normal: &PhysicalEdge,
@@ -5110,6 +5255,7 @@ mod tests {
             offset_of!(HewValueLayout, ownership_kind),
             offset_of!(HewValueLayout, clone_fn),
             offset_of!(HewValueLayout, drop_fn),
+            offset_of!(HewValueLayout, visit_close),
         ]
         .into_iter()
         .enumerate()

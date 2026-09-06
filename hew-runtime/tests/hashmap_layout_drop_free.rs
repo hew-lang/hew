@@ -87,6 +87,7 @@ unsafe extern "C" fn eq_i64(
 fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -97,6 +98,7 @@ fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -195,6 +197,7 @@ fn free_plain_descriptor_invokes_no_drops() {
     V_DROP_COUNT.store(0, Ordering::SeqCst);
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            visit_close: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -205,6 +208,7 @@ fn free_plain_descriptor_invokes_no_drops() {
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::Plain,

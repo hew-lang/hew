@@ -21,8 +21,14 @@ mod var_self;
 #[path = "lower_suspend.rs"]
 mod suspend;
 
+#[path = "lower_generators.rs"]
+mod generators;
+
 #[path = "lower_tasks.rs"]
 mod tasks;
+
+#[path = "lower_select.rs"]
+mod select;
 
 #[path = "lower_scalar_match.rs"]
 mod scalar_match;
@@ -929,7 +935,9 @@ fn require_type_shapes(
             continue;
         }
         require_type_facts(facts, &ty)?;
-        if ty != ResolvedTy::Unit && !is_supported_call_value(module, facts, &ty) {
+        if !matches!(ty, ResolvedTy::Unit | ResolvedTy::Never)
+            && !is_supported_call_value(module, facts, &ty)
+        {
             return Err(format!(
                 "nested type `{}` has no semantic value contract",
                 ty.user_facing()
@@ -1557,6 +1565,7 @@ impl<'a> InstanceService<'a> {
             return Err("closure symbol conflicts with another exact callable".to_string());
         }
         self.closures.push(crate::SemClosure {
+            generator_yield: None,
             id,
             instance,
             body,
@@ -1928,10 +1937,9 @@ fn function_source_origin(module: &HirModule, function: &HirFn) -> FunctionSourc
 }
 
 fn generic_template_admission(function: &HirFn) -> Result<(), String> {
-    if function.is_generator || function.intrinsic_id.is_some() {
+    if function.intrinsic_id.is_some() {
         return Err(
-            "generators and floor intrinsics remain outside SIR's ordinary direct-call domain"
-                .to_string(),
+            "floor intrinsics remain outside SIR's ordinary direct-call domain".to_string(),
         );
     }
     Ok(())
@@ -2034,6 +2042,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
                 | ResolvedTy::Function { .. }
                 | ResolvedTy::Closure { .. }
         )
+        || crate::generator_parts(ty).is_some()
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::LocalPid)
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
@@ -2056,7 +2065,7 @@ fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &Res
 }
 
 fn is_supported_call_return(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Unit) || is_supported_call_value(module, facts, ty)
+    matches!(ty, ResolvedTy::Unit | ResolvedTy::Never) || is_supported_call_value(module, facts, ty)
 }
 
 /// The first aggregate value family admitted into SIR.
@@ -2234,6 +2243,8 @@ struct ControlState {
     scopes: Vec<Vec<BindingId>>,
     defers: Vec<deferred::PendingDefer>,
     task_scopes: Vec<(crate::TaskScopeId, usize)>,
+    cleanup_may_fail: bool,
+    cleanup_draining: bool,
 }
 
 struct MatchExit {
@@ -2384,7 +2395,10 @@ struct Builder<'hir, 'service> {
     argument_receiver_loans: Vec<ValueId>,
     defers: Vec<deferred::PendingDefer>,
     defer_bodies: Vec<deferred::BodyBoundary>,
+    recovery_bodies: Vec<deferred::BodyBoundary>,
     task_scopes: Vec<(crate::TaskScopeId, usize)>,
+    cleanup_may_fail: bool,
+    cleanup_draining: bool,
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
@@ -2482,7 +2496,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             argument_receiver_loans: Vec::new(),
             defers: Vec::new(),
             defer_bodies: Vec::new(),
+            recovery_bodies: Vec::new(),
             task_scopes: Vec::new(),
+            cleanup_may_fail: false,
+            cleanup_draining: false,
         };
         builder.bind_captures(source)?;
         builder.bind_actor_state(source)?;
@@ -2621,10 +2638,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     .to_string(),
             );
         }
-        if self.function.is_generator || self.function.intrinsic_id.is_some() {
-            return Err(
-                "generators and floor intrinsics remain on the established MIR path".to_string(),
-            );
+        if self.function.intrinsic_id.is_some() {
+            return Err("floor intrinsic has no checked SIR operation contract".to_string());
         }
         match (
             &self.callable.instance,
@@ -3060,6 +3075,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn emit_destroy(&mut self, value: ValueId) -> Result<(), String> {
+        if self
+            .value_ty(value)
+            .as_ref()
+            .is_some_and(|ty| self.value_needs_close(ty))
+        {
+            self.close_value(None, Some(value))?;
+        }
         let id = OpId(self.ops);
         self.current_block_mut().append_op(SemOp {
             id,
@@ -3071,6 +3093,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })?;
         self.ops += 1;
         self.owned_live.remove(&value);
+        if self.cleanup_may_fail && !self.cleanup_draining {
+            self.dispatch_value_cleanup()?;
+        }
         Ok(())
     }
 
@@ -3094,6 +3119,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             scopes: self.scopes.clone(),
             defers: self.defers.clone(),
             task_scopes: self.task_scopes.clone(),
+            cleanup_may_fail: self.cleanup_may_fail,
+            cleanup_draining: self.cleanup_draining,
         }
     }
 
@@ -3106,6 +3133,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.scopes.clone_from(&state.scopes);
         self.defers.clone_from(&state.defers);
         self.task_scopes.clone_from(&state.task_scopes);
+        self.cleanup_may_fail = state.cleanup_may_fail;
+        self.cleanup_draining = state.cleanup_draining;
     }
 
     fn retain_bindings(
@@ -3147,6 +3176,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.bindings = Self::retain_bindings(&self.bindings, outer_bindings);
         self.binding_declarations
             .retain(|binding, _| outer_bindings.contains(binding));
+        if self.cleanup_may_fail && !self.cleanup_draining {
+            self.dispatch_value_cleanup()?;
+        }
         Ok(())
     }
 
@@ -3200,6 +3232,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
         let mut joined = first.clone();
+        joined.cleanup_may_fail = states.iter().any(|state| state.cleanup_may_fail);
         self.binding_declarations
             .clone_from(&first.binding_declarations);
         self.bindings.clone_from(&first.bindings);
@@ -3582,7 +3615,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     )]
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         match &expr.kind {
-            HirExprKind::AwaitTask { operand, .. } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+            HirExprKind::Yield { value, yield_ty } => {
+                return self.lower_generator_yield(expr, value.as_deref(), yield_ty)
+            }
+            HirExprKind::ScopeRecovery {
+                scope,
+                error,
+                handler,
+            } if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) => {
+                self.lower_scope_recovery(expr, scope, error, handler)?;
+                return Ok(());
+            }
+
+            HirExprKind::Select(select)
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
+                self.lower_task_select(expr, select)?;
+                return Ok(());
+            }
+            HirExprKind::AwaitTask { operand, .. }
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+            {
                 self.lower_task_await(expr, operand)?;
                 return Ok(());
             }
@@ -3615,7 +3668,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } if endpoint == "panic" => return self.lower_panic(expr, args),
             _ => {}
         }
-        if self.ty(&expr.ty) != ResolvedTy::Unit || expr.intent != IntentKind::Consume {
+        if !matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
+            || expr.intent != IntentKind::Consume
+        {
             require_initial_scalar_read(expr.intent)
                 .map_err(|reason| format!("discarded expression: {reason}"))?;
         }
@@ -3636,7 +3691,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 condition,
                 then_expr,
                 else_expr,
-            } if self.ty(&expr.ty) == ResolvedTy::Unit => {
+            } if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) => {
                 return self.lower_unit_if(condition, then_expr, else_expr.as_deref());
             }
             HirExprKind::Match { scrutinee, arms }
@@ -3789,6 +3844,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     ) -> Result<ValueId, String> {
         match &expr.kind {
             HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
+            HirExprKind::Select(select) => match self.lower_task_select(expr, select)? {
+                Some(value) => Ok(value),
+                None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
+                None => Err("divergent select cannot produce a SIR value".into()),
+            },
+            HirExprKind::GenBlock { .. } => self.lower_generator(expr),
+            HirExprKind::GeneratorNext { receiver, .. } => {
+                self.lower_generator_next(expr, receiver)
+            }
+            HirExprKind::Yield { value, yield_ty } => {
+                self.lower_generator_yield(expr, value.as_deref(), yield_ty)?;
+                self.emit(expr, SemOpKind::ConstUnit)
+            }
             HirExprKind::Closure { .. } => self.lower_closure(expr),
             HirExprKind::ForkBlock { body, captures, .. } => {
                 self.lower_fork_block(expr, body, captures)
@@ -3809,6 +3877,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     None => Err("divergent scope cannot produce a SIR value".into()),
                 }
             }
+            HirExprKind::ScopeRecovery {
+                scope,
+                error,
+                handler,
+            } => match self.lower_scope_recovery(expr, scope, error, handler)? {
+                Some(value) => Ok(value),
+                None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
+                None => Err("divergent recovery cannot produce a SIR value".into()),
+            },
             HirExprKind::RecordCloneCall { src, .. }
                 if matches!(
                     self.ty(&src.ty),
@@ -4501,6 +4578,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             scopes: self.scopes.clone(),
             defers: self.defers.clone(),
             task_scopes: self.task_scopes.clone(),
+            cleanup_may_fail: self.cleanup_may_fail,
+            cleanup_draining: self.cleanup_draining,
         })
     }
 
@@ -4638,12 +4717,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         arm: &HirMatchArm,
         result_ty: &ResolvedTy,
     ) -> Result<Option<Operand>, String> {
+        self.lower_selected_body(&arm.body, result_ty)
+    }
+
+    fn lower_selected_body(
+        &mut self,
+        body: &HirExpr,
+        result_ty: &ResolvedTy,
+    ) -> Result<Option<Operand>, String> {
         if *result_ty == ResolvedTy::Unit {
-            self.lower_discarded_expr(&arm.body)?;
+            self.lower_discarded_expr(body)?;
             return Ok(None);
         }
-        if matches!(self.ty(&arm.body.ty), ResolvedTy::Unit | ResolvedTy::Never) {
-            self.lower_discarded_expr(&arm.body)?;
+        if matches!(self.ty(&body.ty), ResolvedTy::Unit | ResolvedTy::Never) {
+            self.lower_discarded_expr(body)?;
             if self.is_open() {
                 return Err(
                     "non-divergent variant arm does not produce the match result".to_string(),
@@ -4651,13 +4738,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             return Ok(None);
         }
-        let value = lower_initial_value_transfer(
-            self,
-            &arm.body,
-            "variant match arm result",
-            OwnedBindingUse::Copy,
-        )?;
-        let value = self.coerce_value(value, result_ty, Provenance::Site(arm.body.site))?;
+        let value =
+            lower_initial_value_transfer(self, body, "selected arm result", OwnedBindingUse::Copy)?;
+        let value = self.coerce_value(value, result_ty, Provenance::Site(body.site))?;
         Ok(Some(Operand { value }))
     }
 
@@ -5830,20 +5913,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// Transfer a receiver or argument before evaluating later arguments. Its
     /// new owner remains live for argument-failure cleanup until the call starts.
     fn lower_consuming_value(&mut self, argument: &HirExpr) -> Result<ValueId, String> {
+        self.require_consuming_capture(argument)?;
         let mut source = argument;
         while let HirExprKind::SubsumedValue { source: inner } = &source.kind {
             source = inner;
-        }
-        if let HirExprKind::BindingRef {
-            resolved: ResolvedRef::Binding(binding),
-            ..
-        } = &source.kind
-        {
-            if let Some((_, field)) = self.capture_field(*binding) {
-                if field.consumption != hew_types::ClosureCaptureConsumption::Consumed {
-                    return Err("E_OWN_CONSUME_BORROWED: consuming a captured argument requires an owning capture transfer".into());
-                }
-            }
         }
         let value = match self.lower_consuming_projection(source)? {
             Some(value) => value,
@@ -5859,6 +5932,25 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 source: Operand { value },
             },
         )
+    }
+
+    fn require_consuming_capture(&self, expression: &HirExpr) -> Result<(), String> {
+        let mut source = expression;
+        while let HirExprKind::SubsumedValue { source: inner } = &source.kind {
+            source = inner;
+        }
+        if let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &source.kind
+        {
+            if let Some((_, field)) = self.capture_field(*binding) {
+                if field.consumption != hew_types::ClosureCaptureConsumption::Consumed {
+                    return Err("E_OWN_CONSUME_BORROWED: consuming a captured argument requires an owning capture transfer".into());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Direct and indirect user calls share argument capture and both cleanup paths.
@@ -6555,6 +6647,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn loop_edge(&mut self, scope: &LoopScope, target: BlockId) -> Result<Edge, String> {
+        let saved = self.control_state();
+        let recovery = self.recovery_bodies.clone();
+        let preserved = self
+            .owned_live
+            .iter()
+            .filter(|(value, _)| scope.preserved.contains(value))
+            .map(|(value, ty)| (*value, ty.clone()))
+            .collect();
+        self.finish_recovery_scopes(scope.scope_floor, &preserved)?;
         self.finish_task_scopes(scope.scope_floor, false)?;
         let args = scope
             .carried
@@ -6571,6 +6672,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.emit_destroy(value)?;
         }
         self.end_scopes(scope.scope_floor)?;
+        let terminal = self.current;
+        self.restore_control_state(&saved);
+        self.recovery_bodies = recovery;
+        self.current = terminal;
         Ok(Edge { target, args })
     }
 

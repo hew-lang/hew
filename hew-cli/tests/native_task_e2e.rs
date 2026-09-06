@@ -5,6 +5,355 @@ mod support;
 use std::process::Command;
 use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
 
+#[test]
+fn never_returning_children_can_be_awaited_and_recovered() {
+    run_task(
+        r#"
+fn main() {
+    scope {
+        let child = fork { defer println("child cleanup"); panic("bottom child"); };
+        await child;
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("wrong deadline"),
+            .Fault { message } => println(message),
+        }
+    };
+    let fail = true;
+    let result = scope {
+        let child = fork {
+            if fail { panic("implicit join"); } else { panic("other branch"); }
+        };
+        "unreachable"
+    } handle failure { "joined and recovered" };
+    println(result);
+}
+"#,
+        "child cleanup\nhew: failure: UserPanic (212): bottom child\n\njoined and recovered\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn a_deadline_cancels_and_drains_a_never_returning_child() {
+    run_task(
+        r#"
+fn main() {
+    scope within 5ms {
+        let child = fork {
+            defer println("child cleanup");
+            await sleep(1s);
+            panic("unexpected completion");
+        };
+        await child;
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("deadline recovered"),
+            .Fault { message } => println("wrong fault"),
+        }
+    };
+}
+"#,
+        "child cleanup\ndeadline recovered\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn selecting_a_never_returning_child_propagates_its_fault() {
+    run_task(
+        r#"
+fn main() {
+    scope {
+        let child = fork { panic("selected bottom child"); };
+        select { value = await child => println("incorrect arm") };
+    } handle failure { println("recovered selection"); };
+}
+"#,
+        "recovered selection\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn returning_past_recovery_does_not_catch_an_outer_child_fault() {
+    run_task(
+        r#"
+fn fail() -> i64 { await sleep(2ms); panic("outer child"); }
+fn choose() -> string {
+    let _outer = fork { await fail() };
+    scope { return "returned"; } handle failure { println("incorrect handler"); };
+    "fallback"
+}
+fn main() { println(await choose()); }
+"#,
+        "",
+        212,
+        "outer child",
+    );
+}
+
+#[test]
+fn recovery_preserves_child_and_deferred_fault_diagnostics() {
+    run_task(
+        r#"
+fn fail() -> i64 {
+    defer println("child cleanup");
+    panic("child fault");
+}
+fn main() {
+    let result = scope {
+        defer { scope { println("scope cleanup"); panic("cleanup fault"); }; }
+        let child = fork { fail() };
+        await child;
+        "unreachable"
+    } handle failure {
+        match failure {
+            .Deadline { message } => { println("unexpected deadline"); },
+            .Fault { message } => { println(message); },
+        }
+        "recovered"
+    };
+    println(result);
+}
+"#,
+        "child cleanup\nscope cleanup\nhew: failure: UserPanic (212): child fault\nhew: secondary failure: UserPanic (212): cleanup fault\n\nrecovered\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn recovery_handler_failure_reaches_the_outer_boundary() {
+    run_task(
+        r#"
+fn main() {
+    scope {
+        scope { panic("inner"); } handle failure {
+            println("inner recovered");
+            panic("handler fault");
+        };
+    } handle failure {
+        match failure {
+            .Deadline { message } => { println("unexpected deadline"); },
+            .Fault { message } => { println(message); },
+        }
+    };
+    let result = scope { "success" } handle failure { panic("incorrect handler"); };
+    println(result);
+}
+"#,
+        "inner recovered\nhew: failure: UserPanic (212): handler fault\n\nsuccess\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn recovery_transfers_an_owned_result_after_fault_cleanup() {
+    run_task(
+        r#"
+fn main() {
+    let result = scope {
+        defer println("scope cleanup");
+        panic("broken é");
+        "unreachable"
+    } handle failure {
+        match failure {
+            .Deadline { message } => { println("unexpected deadline"); },
+            .Fault { message } => { println(message); },
+        }
+        "recovered"
+    };
+    println(result);
+}
+"#,
+        "scope cleanup\nhew: failure: UserPanic (212): broken é\n\nrecovered\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn recovery_distinguishes_its_deadline_after_cleanup() {
+    run_task(
+        r#"
+fn main() {
+    let result = scope within 1ms {
+        defer println("scope cleanup");
+        await sleep(1s);
+        "unreachable"
+    } handle failure {
+        match failure {
+            .Deadline { message } => "deadline recovered",
+            .Fault { message } => "unexpected fault",
+        }
+    };
+    println(result);
+}
+"#,
+        "scope cleanup\ndeadline recovered\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn parent_cancellation_bypasses_inner_recovery() {
+    run_task(
+        r#"
+fn main() {
+    scope within 1ms {
+        defer println("outer cleanup");
+        scope {
+            defer println("inner cleanup");
+            await sleep(1s);
+        } handle failure { println("incorrect inner handler"); };
+    } handle failure {
+        match failure {
+            .Deadline { message } => { println("outer recovered"); },
+            .Fault { message } => { println("unexpected fault"); },
+        }
+    };
+    println("done");
+}
+"#,
+        "inner cleanup\nouter cleanup\nouter recovered\ndone\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn task_selection_preserves_the_loser_and_transfers_owned_results() {
+    run_task(
+        r#"
+fn main() {
+    let first = fork { await sleep(1ms); "first" };
+    let second = fork { "second" };
+    let result = select {
+        a = await first => { let b = await second; a + ":" + b },
+        b = await second => { let a = await first; a + ":" + b },
+    };
+    println(result);
+}
+"#,
+        "first:second\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn task_selection_timer_preserves_both_tasks_and_evaluates_duration_once() {
+    run_task(
+        r#"
+fn duration() -> duration { println("timer"); 0ms }
+fn main() {
+    let first = fork { await sleep(100ms); 17 };
+    let second = fork { await sleep(100ms); 42 };
+    let result = select {
+        a = await first => a + await second,
+        b = await second => b + await first,
+        after duration() => { println("timeout"); await first + await second },
+    };
+    println(result);
+    select { after 0ms => println("only timer") };
+}
+"#,
+        "timer\ntimeout\n59\nonly timer\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn task_selection_cancellation_drains_children_before_the_parent_defer() {
+    run_task(
+        r#"
+fn main() {
+    scope within 20ms {
+        defer println("parent cleanup");
+        let child = fork { await sleep(1s); println("late"); 42 };
+        select { value = await child => println(value) };
+    };
+}
+"#,
+        "parent cleanup\n",
+        254,
+        "Deadline",
+    );
+}
+
+#[test]
+fn task_selection_propagates_child_faults_without_entering_the_arm() {
+    run_task(
+        r#"
+fn fail() -> i64 { panic("selected child failed"); }
+fn main() {
+    defer println("parent cleanup");
+    let child = fork {
+        defer println("child cleanup");
+        await sleep(1ms);
+        fail()
+    };
+    select { value = await child => println(value) };
+}
+"#,
+        "child cleanup\nparent cleanup\n",
+        212,
+        "selected child failed",
+    );
+}
+
+#[test]
+fn task_selection_handles_projected_temporary_and_unit_tasks() {
+    run_task(
+        r#"
+fn main() {
+    let pair = (fork { await sleep(1ms); 17 }, fork { 42 });
+    let sum = select {
+        a = await pair.0 => a + await pair.1,
+        b = await pair.1 => b + await pair.0,
+    };
+    println(sum);
+    let result = select {
+        value = await fork { println("created"); 42 } => value,
+    };
+    println(result);
+    let child = fork { await sleep(1ms); println("child"); };
+    select { done = await child => println("selected") };
+}
+"#,
+        "59\ncreated\n42\nchild\nselected\n",
+        0,
+        "",
+    );
+}
+
+#[test]
+fn task_selection_releases_prepared_loans_when_timer_evaluation_faults() {
+    run_task(
+        r#"
+fn duration() -> duration { panic("timer preparation failed"); }
+fn main() {
+    defer println("parent cleanup");
+    let child = fork { await sleep(1s); 42 };
+    select {
+        value = await child => println(value),
+        after duration() => println("timer"),
+    };
+}
+"#,
+        "parent cleanup\n",
+        212,
+        "timer preparation failed",
+    );
+}
+
 fn run_task(source: &str, expected: &str, status: i32, diagnostic: &str) {
     require_codegen();
     let dir = tempdir();

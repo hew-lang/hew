@@ -591,7 +591,12 @@ impl Checker {
 
                 // Join one Task layer; calls already own their result contract.
                 match inner_ty {
-                    Ty::Task(inner) => *inner,
+                    Ty::Task(output) => {
+                        if !self.reject_borrowed_consumption(&inner.0, &inner.1) {
+                            self.mark_expr_moved(&inner.0, &inner.1);
+                        }
+                        *output
+                    }
                     // `await close(actor)` or bare actor handle → Unit (actor termination).
                     // But NOT for method calls that happen to return an actor handle —
                     // those should pass through the method's declared return type.
@@ -956,7 +961,14 @@ impl Checker {
     ) {
         let resolved = self.subst.resolve(operand_ty);
         if resolved.is_integer_literal() || matches!(resolved, Ty::Var(_)) {
-            self.check_against(&operand.0, &operand.1, common_ty);
+            if self.is_coercible_numeric(&operand.0) {
+                self.check_against(&operand.0, &operand.1, common_ty);
+            } else {
+                // The operand has already been checked. Rechecking an await
+                // or call would repeat its ownership effects.
+                self.expect_type(common_ty, operand_ty, &operand.1);
+                self.record_type(&operand.1, common_ty);
+            }
         }
     }
 
@@ -1238,14 +1250,23 @@ impl Checker {
             self.env
                 .define_with_span(name.clone(), error_ty, false, binding_span.clone());
         }
-        let body_ty = self.check_expr_with_expected(&body.0, &body.1, &payload);
+        let body_ty = if payload == Ty::Never {
+            self.synthesize(&body.0, &body.1)
+        } else {
+            self.check_expr_with_expected(&body.0, &body.1, &payload)
+        };
         let taken = BranchArmExit {
             ownership: self.env.ownership_snapshot(),
             diverges: Self::arm_skips_join(&body_ty),
         };
         self.env.pop_scope();
         self.join_fall_through(&entry, taken);
-        self.subst.resolve(&payload)
+        let payload = self.subst.resolve(&payload);
+        if payload == Ty::Never {
+            self.subst.resolve(&body_ty)
+        } else {
+            payload
+        }
     }
 
     pub(super) fn synthesize_array_literal(&mut self, elems: &[Spanned<Expr>], span: &Span) -> Ty {
@@ -1378,6 +1399,9 @@ impl Checker {
         let Some((root, path)) = self.expr_place(expr) else {
             return;
         };
+        if self.reject_prepared_task_access(&root, &path, span, TypeErrorKind::OwnConsumeBorrowed) {
+            return;
+        }
         if !path.is_empty() {
             if self.reject_borrowed_consumption(expr, span)
                 || self.reject_partial_place_consumption(&root, &path, span)
@@ -1561,7 +1585,7 @@ impl Checker {
     }
 
     /// Render a place for diagnostics: `h.sock`, or plain `h` for the root.
-    fn render_place(root: &str, path: &[String]) -> String {
+    pub(super) fn render_place(root: &str, path: &[String]) -> String {
         std::iter::once(root)
             .chain(path.iter().map(String::as_str))
             .collect::<Vec<_>>()
@@ -3120,6 +3144,7 @@ impl Checker {
             }
             Expr::Select { arms, timeout } => {
                 let mut result_ty: Option<Ty> = None;
+                let prepared_depth = self.prepared_select_tasks.len();
                 // Only the BODIES of a select are alternatives. Every arm's
                 // source is prepared before dispatch chooses a winner — all the
                 // asks are issued, all the receivers polled — so the sources run
@@ -3132,6 +3157,21 @@ impl Checker {
                 for arm in arms {
                     self.env.push_scope();
                     let (ty, source) = self.synthesize_select_source(&arm.source.0, &arm.source.1);
+                    if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
+                        if let Expr::Await(task) = &arm.source.0 {
+                            if let Some((root, path)) = self.expr_place(&task.0) {
+                                if let Some(binding) = self.env.lookup_ref(&root) {
+                                    self.prepared_select_tasks.push(
+                                        super::types::PreparedSelectTask {
+                                            binding: binding.id,
+                                            path,
+                                            span: task.1.clone(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
                     source_tys.push(ty);
                     sources.push(source);
                     self.env.pop_scope();
@@ -3143,6 +3183,7 @@ impl Checker {
                 if let Some(tc) = timeout {
                     self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
                 }
+                self.prepared_select_tasks.truncate(prepared_depth);
 
                 // Dispatch happens here: from this state exactly one body runs.
                 let entry = self.env.ownership_snapshot();
@@ -3648,8 +3689,11 @@ impl Checker {
                 let actual = self.check_binary_op(left, *op, right, span);
                 let actual_resolved = self.subst.resolve(&actual);
                 if actual_resolved.is_integer_literal() {
-                    self.check_against(&left.0, &left.1, expected);
-                    self.check_against(&right.0, &right.1, expected);
+                    for operand in [left, right] {
+                        let key = SpanKey::in_module(&operand.1, self.current_module_idx);
+                        let operand_ty = self.expr_types[&key].clone();
+                        self.record_concrete_integer_operand(expected, operand, &operand_ty);
+                    }
                     self.record_type(span, expected);
                     expected.clone()
                 } else if matches!(actual_resolved, Ty::Never | Ty::Error) {

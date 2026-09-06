@@ -72,8 +72,12 @@ impl<'a> HostExport<'a> {
             }
             for block in &body.blocks {
                 match &block.terminator {
-                    PhysicalTerminator::IndirectCall { .. }
+                    PhysicalTerminator::GeneratorYield { .. }
+                    | PhysicalTerminator::GeneratorNext { .. }
+                    | PhysicalTerminator::ValueClose { .. }
+                    | PhysicalTerminator::IndirectCall { .. }
                     | PhysicalTerminator::Sleep { .. }
+                    | PhysicalTerminator::TaskSelect { .. }
                     | PhysicalTerminator::TaskAwait { .. }
                     | PhysicalTerminator::ActorAsk { .. }
                     | PhysicalTerminator::TaskScopeJoin { .. }
@@ -102,6 +106,7 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::EnterDefer { .. }
                     | PhysicalTerminator::FinishDefer { .. }
                     | PhysicalTerminator::CleanupDispatch { .. }
+                    | PhysicalTerminator::RecoverFault { .. }
                     | PhysicalTerminator::CheckedRaiseFault { .. }
                     | PhysicalTerminator::Trap(_)
                     | PhysicalTerminator::PropagateFault

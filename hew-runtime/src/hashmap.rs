@@ -19,6 +19,28 @@ use core::ptr;
 use hew_cabi::map::{HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueLayout};
 use hew_cabi::vec::{HewTypeOwnershipKind, HewVec};
 
+/// Visit occupied keys and values using the map's exact value descriptors.
+/// # Safety
+/// The map remains exclusively borrowed until all selected children drain.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_visit_close(map: *mut HewLayoutHashMap, context: *mut c_void) {
+    // SAFETY: the caller retains every occupied entry and its descriptor.
+    unsafe {
+        let map = &*map;
+        for index in 0..map.cap {
+            if *slot_state(map.entries, index, map.stride) == OCCUPIED {
+                let entry = map.entries.add(index * map.stride);
+                if let Some(visit) = map.key_layout.value.visit_close {
+                    visit(entry.add(map.key_offset).cast(), context);
+                }
+                if let Some(visit) = map.val_layout.visit_close {
+                    visit(entry.add(map.val_offset).cast(), context);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "hashmap_zero_sized_tests.rs"]
 mod zero_sized_tests;

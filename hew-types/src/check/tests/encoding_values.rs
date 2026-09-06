@@ -321,3 +321,103 @@ fn encoding_value_import_alias_cannot_promote_a_same_named_user_resource() {
         (ValueClass::AffineResource, CloneKind::None)
     );
 }
+
+#[test]
+fn encoding_extern_calls_require_the_exact_shipped_declaration_and_signature() {
+    use crate::{EncodingFormat, EncodingOp, RuntimeCallFamily};
+    for (format, encoding) in [
+        ("json", EncodingFormat::Json),
+        ("yaml", EncodingFormat::Yaml),
+    ] {
+        let source = format!(
+            r#"
+            {VALUE_SOURCE}
+            extern "C" {{
+                fn hew_{format}_parse(text: string) -> Value;
+                fn hew_{format}_object_set(parent: Value, key: string, consume child: Value);
+                fn hew_{format}_get_int(value: Value) -> i64;
+                fn hew_{format}_eq(left: Value, right: Value) -> i32;
+            }}
+            pub fn probe(text: string, parent: Value) -> i64 {{
+                let parsed = unsafe {{ hew_{format}_parse(text) }};
+                unsafe {{ hew_{format}_object_set(parent, text, parsed); }}
+                let _ = unsafe {{ hew_{format}_eq(parent, parent) }};
+                unsafe {{ hew_{format}_get_int(parent) }}
+            }}
+        "#
+        );
+        let module = ["std", "encoding", format].map(str::to_string).to_vec();
+        let canonical = check_source_in_canonical_std_module(&source, &module);
+        assert!(canonical.errors.is_empty(), "{:?}", canonical.errors);
+        for op in [
+            EncodingOp::Parse,
+            EncodingOp::ObjectSet,
+            EncodingOp::GetInt,
+            EncodingOp::Eq,
+        ] {
+            assert!(
+                canonical.direct_call_targets.values().any(|target| {
+                    *target
+                        == CallTarget::Runtime(RuntimeCallFamily::Encoding {
+                            format: encoding,
+                            op,
+                        })
+                }),
+                "missing {op:?}: {:?}",
+                canonical.direct_call_targets
+            );
+        }
+        let lookalike = check_source_in_module(&source, module);
+        assert!(lookalike.errors.is_empty(), "{:?}", lookalike.errors);
+        assert!(lookalike
+            .direct_call_targets
+            .values()
+            .all(|target| !matches!(
+                target,
+                CallTarget::Runtime(RuntimeCallFamily::Encoding { .. })
+            )));
+
+        // A real source path cannot repair a malformed extern ABI. The value
+        // identity still resolves, but its endpoint receives no runtime family.
+        let malformed = source
+            .replace("-> i64;", "-> i32;")
+            .replace("-> i64 {", "-> i32 {");
+        let wrong = check_source_in_canonical_std_module(
+            &malformed,
+            &["std".into(), "encoding".into(), format.into()],
+        );
+        assert!(wrong.errors.is_empty(), "{:?}", wrong.errors);
+        assert!(!wrong.direct_call_targets.values().any(|target| *target
+            == CallTarget::Runtime(RuntimeCallFamily::Encoding {
+                format: encoding,
+                op: EncodingOp::GetInt
+            })));
+    }
+}
+
+#[test]
+fn user_extern_with_canonical_value_arguments_never_gains_encoding_authority() {
+    let mut items = parsed_items("import std.encoding.json as data;");
+    let Item::Import(import) = &mut items[0].0 else {
+        panic!("import fixture")
+    };
+    import.resolved_items = Some(parsed_items(VALUE_SOURCE));
+    import.resolved_source_paths = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("std/encoding/json/json.hew")];
+    items.extend(parsed_items(
+        r#"
+        extern "C" { fn hew_json_get_int(value: data.Value) -> i64; }
+        fn probe(value: data.Value) -> i64 { unsafe { hew_json_get_int(value) } }
+    "#,
+    ));
+    let output = check_items(items);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output.direct_call_targets.values().any(|target| matches!(target,
+        CallTarget::Extern { endpoint, trusted_compiled_stdlib: false, .. } if endpoint == "hew_json_get_int")));
+    assert!(output.direct_call_targets.values().all(|target| !matches!(
+        target,
+        CallTarget::Runtime(crate::RuntimeCallFamily::Encoding { .. })
+    )));
+}

@@ -1323,6 +1323,9 @@ impl Checker {
                     ),
                 };
             };
+            if let Some(family) = self.encoding_runtime_target(&declaration, extern_decl) {
+                return CallTarget::Runtime(family);
+            }
             return CallTarget::Extern {
                 declaration,
                 endpoint: extern_decl.symbol.clone(),
@@ -1469,6 +1472,49 @@ impl Checker {
                 "checker admitted `{signature_key}` without a source declaration or runtime family"
             ),
         }
+    }
+
+    /// A runtime symbol alone never authorizes an encoding operation. Read the
+    /// selected declaration's own module and signature, even when a different
+    /// declaration was first to mint the shared C ABI contract.
+    fn encoding_runtime_target(
+        &self,
+        declaration: &crate::DefId,
+        extern_decl: &crate::extern_table::ExternDeclaration,
+    ) -> Option<crate::RuntimeCallFamily> {
+        let module = extern_decl.declaring_module.as_deref()?;
+        if !self.canonical_std_module_sources.contains(module) {
+            return None;
+        }
+        let family = crate::RuntimeCallFamily::from_c_symbol(&extern_decl.symbol)?;
+        family.encoding_format()?;
+        let contract = self
+            .extern_table
+            .contract_for_declaration(declaration.full_path())?;
+        if contract.is_variadic {
+            return None;
+        }
+        let signature = self.fn_sigs.get(declaration.full_path())?;
+        if !signature.type_params.is_empty() {
+            return None;
+        }
+        let params = signature
+            .params
+            .iter()
+            .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let result = ResolvedTy::from_ty(&self.subst.resolve(&signature.return_type)).ok()?;
+        family
+            .matches_encoding_extern(
+                module,
+                declaration.full_path(),
+                &extern_decl.symbol,
+                &params,
+                &result,
+                &contract.consuming_params,
+            )
+            .then_some(family)
     }
 
     #[expect(

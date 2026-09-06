@@ -128,7 +128,10 @@ pub enum RuntimeResultAuthority {
 pub enum RuntimeValueKind {
     Bool,
     U8,
+    I32,
     I64,
+    U64,
+    F64,
     String,
     Bytes,
     /// The signature's receiver, constrained by canonical builtin identity.
@@ -148,7 +151,10 @@ impl RuntimeValueKind {
             (self, ty),
             (Self::Bool, ResolvedTy::Bool)
                 | (Self::U8, ResolvedTy::U8)
+                | (Self::I32, ResolvedTy::I32)
                 | (Self::I64, ResolvedTy::I64)
+                | (Self::U64, ResolvedTy::U64)
+                | (Self::F64, ResolvedTy::F64)
                 | (Self::String, ResolvedTy::String)
                 | (Self::Bytes, ResolvedTy::Bytes)
         )
@@ -160,12 +166,15 @@ impl RuntimeValueKind {
         Some(match self {
             Self::Bool => ResolvedTy::Bool,
             Self::U8 => ResolvedTy::U8,
+            Self::I32 => ResolvedTy::I32,
             Self::I64 => ResolvedTy::I64,
+            Self::U64 => ResolvedTy::U64,
+            Self::F64 => ResolvedTy::F64,
             Self::String => ResolvedTy::String,
             Self::Bytes => ResolvedTy::Bytes,
             Self::Receiver(expected) => {
                 let receiver = receiver?;
-                let (actual, _) = collection_type_arguments(receiver)?;
+                let actual = runtime_receiver_builtin(receiver)?;
                 if actual != expected {
                     return None;
                 }
@@ -270,7 +279,8 @@ pub enum RuntimeResultEffect {
     FreshOwnedVariant(RuntimeVariantResultKind),
     /// A successful transform consumes argument zero and yields its sole
     /// updated owner as a new SSA value. The physical ABI may use an out
-    /// pointer, but may not hide an in-place owner mutation from SIR.
+    /// pointer or return the same owner after a C-void in-place mutation, but
+    /// may not hide the semantic owner replacement from SIR.
     UpdatedReceiver(RuntimeValueKind),
 }
 
@@ -312,8 +322,9 @@ impl RuntimeSemanticContract {
     }
 
     /// Bind the receiver, element and result through one checked relationship.
-    /// `result_hint` supplies the type argument for a zero-argument constructor;
-    /// it never overrides a receiver's element type.
+    /// `result_hint` supplies a constructor's receiver binding, including an
+    /// encoding constructor with scalar arguments. It never overrides an
+    /// existing receiver's identity or collection element type.
     ///
     /// # Errors
     /// Rejects wrong arity, noncanonical receivers and mismatched type arguments.
@@ -331,12 +342,13 @@ impl RuntimeSemanticContract {
         }
         let receiver = params
             .first()
-            .filter(|ty| collection_type_arguments(ty).is_some())
+            .filter(|ty| runtime_receiver_builtin(ty).is_some())
             .or_else(|| {
-                params
-                    .is_empty()
-                    .then_some(result_hint)
-                    .filter(|ty| collection_type_arguments(ty).is_some())
+                (params.is_empty()
+                    || runtime_receiver_builtin(result_hint)
+                        .is_some_and(BuiltinType::is_encoding_value))
+                .then_some(result_hint)
+                .filter(|ty| runtime_receiver_builtin(ty).is_some())
             });
         let arguments = self
             .arguments
@@ -387,6 +399,25 @@ impl RuntimeSemanticContract {
 pub struct RuntimeInstantiatedContract {
     pub arguments: Vec<ResolvedTy>,
     pub result_ty: ResolvedTy,
+}
+
+/// Bind the existing canonical receiver itself, preserving representation facts
+/// such as opacity. Encoding values have no collection type arguments.
+fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
+    if let Some((builtin, _)) = collection_type_arguments(ty) {
+        return Some(builtin);
+    }
+    match ty {
+        ResolvedTy::Named {
+            name,
+            builtin: Some(builtin),
+            args,
+            ..
+        } if builtin.is_encoding_value() && name == builtin.canonical_name() && args.is_empty() => {
+            Some(*builtin)
+        }
+        _ => None,
+    }
 }
 
 /// Recognize supported canonical collection instances and their exact arity.
@@ -685,6 +716,181 @@ impl SetValueOp {
     }
 }
 
+/// Distinct owned serde representations; no normalization between formats.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+pub enum EncodingFormat {
+    #[default]
+    Json,
+    Yaml,
+}
+
+impl EncodingFormat {
+    #[must_use]
+    pub const fn builtin(self) -> BuiltinType {
+        match self {
+            Self::Json => BuiltinType::JsonValue,
+            Self::Yaml => BuiltinType::YamlValue,
+        }
+    }
+
+    #[must_use]
+    pub const fn module(self) -> &'static str {
+        match self {
+            Self::Json => "std.encoding.json",
+            Self::Yaml => "std.encoding.yaml",
+        }
+    }
+}
+
+// One closed list owns the common operation vocabulary and exact C endpoints.
+macro_rules! encoding_operations {
+    ($($(#[$attr:meta])* $op:ident => $suffix:literal),+ $(,)?) => {
+        #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+        pub enum EncodingOp { $($(#[$attr])* $op),+ }
+
+        impl EncodingOp {
+            #[must_use]
+            pub const fn c_symbol(self, format: EncodingFormat) -> &'static str {
+                match (format, self) {
+                    $((EncodingFormat::Json, Self::$op) => concat!("hew_json_", $suffix),
+                      (EncodingFormat::Yaml, Self::$op) => concat!("hew_yaml_", $suffix)),+
+                }
+            }
+
+            fn from_c_symbol(symbol: &str) -> Option<(EncodingFormat, Self)> {
+                match symbol {
+                    $(concat!("hew_json_", $suffix) => Some((EncodingFormat::Json, Self::$op)),
+                      concat!("hew_yaml_", $suffix) => Some((EncodingFormat::Yaml, Self::$op))),+,
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+encoding_operations! {
+    #[default]
+    Parse => "parse",
+    LastError => "last_error",
+    Stringify => "stringify",
+    Type => "type",
+    IntStatus => "int_status",
+    GetBool => "get_bool",
+    GetInt => "get_int",
+    GetU64 => "get_u64",
+    GetFloat => "get_float",
+    GetString => "get_string",
+    GetField => "get_field",
+    ArrayLen => "array_len",
+    ArrayGet => "array_get",
+    ObjectNew => "object_new",
+    ArrayNew => "array_new",
+    FromBool => "from_bool",
+    FromInt => "from_int",
+    FromU64 => "from_u64",
+    FromFloat => "from_float",
+    FromString => "from_string",
+    FromNull => "from_null",
+    Eq => "eq",
+    ObjectSet => "object_set",
+    ArrayPush => "array_push",
+    Clone => "clone",
+    Free => "free",
+}
+
+// Instantiate one semantic table for each canonical format. The operand slices
+// are static descriptor data, not a second registry of managed values.
+macro_rules! encoding_contract {
+    ($builtin:ident, $op:expr) => {{
+        use RuntimeArgumentEffect::{Borrow, Copy, Move};
+        use RuntimeResultEffect::{BitCopy, FreshOwned, Unit, UpdatedReceiver};
+        use RuntimeValueKind::{Receiver, String, F64, I32, I64, U64};
+        const VALUE: RuntimeValueKind = Receiver(BuiltinType::$builtin);
+        const READ: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: VALUE,
+            effect: Borrow,
+        };
+        const WRITE: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: VALUE,
+            effect: Move,
+        };
+        const TEXT: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: String,
+            effect: Borrow,
+        };
+        const INT: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: I32,
+            effect: Copy,
+        };
+        match $op {
+            EncodingOp::Parse | EncodingOp::FromString => {
+                runtime_semantic_contract(&[TEXT], FreshOwned(VALUE), &[])
+            }
+            EncodingOp::LastError => runtime_semantic_contract(&[], FreshOwned(String), &[]),
+            EncodingOp::Stringify | EncodingOp::GetString => {
+                runtime_semantic_contract(&[READ], FreshOwned(String), &[])
+            }
+            EncodingOp::Type
+            | EncodingOp::IntStatus
+            | EncodingOp::GetBool
+            | EncodingOp::ArrayLen => runtime_semantic_contract(&[READ], BitCopy(I32), &[]),
+            EncodingOp::GetInt => runtime_semantic_contract(&[READ], BitCopy(I64), &[]),
+            EncodingOp::GetU64 => runtime_semantic_contract(&[READ], BitCopy(U64), &[]),
+            EncodingOp::GetFloat => runtime_semantic_contract(&[READ], BitCopy(F64), &[]),
+            EncodingOp::GetField => {
+                runtime_semantic_contract(&[READ, TEXT], FreshOwned(VALUE), &[])
+            }
+            EncodingOp::ArrayGet => runtime_semantic_contract(&[READ, INT], FreshOwned(VALUE), &[]),
+            EncodingOp::ObjectNew | EncodingOp::ArrayNew | EncodingOp::FromNull => {
+                runtime_semantic_contract(&[], FreshOwned(VALUE), &[])
+            }
+            EncodingOp::FromBool => runtime_semantic_contract(&[INT], FreshOwned(VALUE), &[]),
+            EncodingOp::FromInt => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: I64,
+                    effect: Copy,
+                }],
+                FreshOwned(VALUE),
+                &[],
+            ),
+            EncodingOp::FromU64 => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: U64,
+                    effect: Copy,
+                }],
+                FreshOwned(VALUE),
+                &[],
+            ),
+            EncodingOp::FromFloat => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: F64,
+                    effect: Copy,
+                }],
+                FreshOwned(VALUE),
+                &[],
+            ),
+            EncodingOp::Eq => runtime_semantic_contract(&[READ, READ], BitCopy(I32), &[]),
+            EncodingOp::ObjectSet => {
+                runtime_semantic_contract(&[WRITE, TEXT, WRITE], UpdatedReceiver(VALUE), &[])
+            }
+            EncodingOp::ArrayPush => {
+                runtime_semantic_contract(&[WRITE, WRITE], UpdatedReceiver(VALUE), &[])
+            }
+            EncodingOp::Clone => runtime_semantic_contract(&[READ], FreshOwned(VALUE), &[]),
+            EncodingOp::Free => runtime_semantic_contract(&[WRITE], Unit, &[]),
+        }
+    }};
+}
+
+impl EncodingOp {
+    const fn contract(self, format: EncodingFormat) -> RuntimeSemanticContract {
+        match format {
+            EncodingFormat::Json => encoding_contract!(JsonValue, self),
+            EncodingFormat::Yaml => encoding_contract!(YamlValue, self),
+        }
+    }
+}
+
 const fn runtime_semantic_contract(
     arguments: &'static [RuntimeArgumentContract],
     result: RuntimeResultEffect,
@@ -867,6 +1073,13 @@ pub enum MathIntrinsic {
 /// next slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
 pub enum RuntimeCallFamily {
+    /// Semantic operations over a distinct, owning encoding value.
+    Encoding {
+        format: EncodingFormat,
+        op: EncodingOp,
+    },
+    /// JSON object keys are returned as an independently owned JSON array.
+    JsonObjectKeys,
     // --- Actor cooperate/link/monitor/unlink/spawn surface ------------------
     ActorAsk,
     ActorAskWithChannel,
@@ -1615,6 +1828,63 @@ pub const fn canonical_std_io_extern_signatures() -> &'static [CanonicalStdlibEx
 }
 
 impl RuntimeCallFamily {
+    #[must_use]
+    pub const fn encoding_format(self) -> Option<EncodingFormat> {
+        match self {
+            Self::Encoding { format, .. } => Some(format),
+            Self::JsonObjectKeys => Some(EncodingFormat::Json),
+            _ => None,
+        }
+    }
+
+    /// Admit an encoding extern only at its exact declaring identity and ABI.
+    /// The caller must additionally prove the module is the shipped source.
+    /// A C-void mutation retains its semantic updated-owner result; only the
+    /// child is consumed by the source ABI, while SIR also moves the receiver.
+    #[must_use]
+    pub fn matches_encoding_extern(
+        self,
+        module: &str,
+        declaration: &str,
+        symbol: &str,
+        params: &[ResolvedTy],
+        result: &ResolvedTy,
+        consuming: &[bool],
+    ) -> bool {
+        let Some(format) = self.encoding_format() else {
+            return false;
+        };
+        if module != format.module()
+            || symbol != self.c_symbol()
+            || declaration != format!("{module}.{symbol}")
+        {
+            return false;
+        }
+        let Some(contract) = self.semantic_contract() else {
+            return false;
+        };
+        let updates_receiver = matches!(contract.result, RuntimeResultEffect::UpdatedReceiver(_));
+        if consuming.len() != contract.arguments.len()
+            || !consuming.iter().zip(contract.arguments).enumerate().all(
+                |(index, (actual, argument))| {
+                    *actual
+                        == (argument.effect == RuntimeArgumentEffect::Move
+                            && !(updates_receiver && index == 0))
+                },
+            )
+        {
+            return false;
+        }
+        if updates_receiver {
+            *result == ResolvedTy::Unit
+                && params
+                    .first()
+                    .is_some_and(|receiver| contract.matches_signature(params, receiver))
+        } else {
+            contract.matches_signature(params, result)
+        }
+    }
+
     const fn text_variant_semantic_contract(self) -> Option<RuntimeSemanticContract> {
         use RuntimeArgumentEffect::Borrow;
         use RuntimeResultEffect::{BitCopy, FreshOwned, FreshOwnedVariant};
@@ -1725,6 +1995,8 @@ impl RuntimeCallFamily {
     )]
     pub fn c_symbol(self) -> &'static str {
         match self {
+            Self::Encoding { format, op } => op.c_symbol(format),
+            Self::JsonObjectKeys => "hew_json_object_keys",
             // Actor
             Self::ActorAsk => "hew_actor_ask",
             Self::ActorAskWithChannel => "hew_actor_ask_with_channel",
@@ -2095,6 +2367,12 @@ impl RuntimeCallFamily {
         reason = "inverse of the c_symbol enumeration; one arm per symbol"
     )]
     pub fn from_c_symbol(sym: &str) -> Option<Self> {
+        if let Some((format, op)) = EncodingOp::from_c_symbol(sym) {
+            return Some(Self::Encoding { format, op });
+        }
+        if sym == "hew_json_object_keys" {
+            return Some(Self::JsonObjectKeys);
+        }
         if let Some(family) = vec_scalar_from_c_symbol(sym) {
             return Some(family);
         }
@@ -2755,7 +3033,10 @@ impl RuntimeCallFamily {
     /// listing.
     #[must_use]
     pub fn consumes_receiver(self) -> bool {
-        if let Some(contract) = self.collection_semantic_contract() {
+        if let Some(contract) = self.collection_semantic_contract().or_else(|| {
+            self.encoding_format()
+                .and_then(|_| self.semantic_contract())
+        }) {
             return matches!(
                 contract.arguments.first(),
                 Some(RuntimeArgumentContract {
@@ -2829,7 +3110,10 @@ impl RuntimeCallFamily {
     ///   lowering decision.
     #[must_use]
     pub fn arg_consume_verdict(self, index: usize) -> ConsumeVerdict {
-        if let Some(contract) = self.collection_semantic_contract() {
+        if let Some(contract) = self.collection_semantic_contract().or_else(|| {
+            self.encoding_format()
+                .and_then(|_| self.semantic_contract())
+        }) {
             return match contract.arguments.get(index) {
                 Some(RuntimeArgumentContract {
                     effect: RuntimeArgumentEffect::Move,
@@ -2948,6 +3232,15 @@ impl RuntimeCallFamily {
         }
 
         Some(match self {
+            Self::Encoding { format, op } => op.contract(format),
+            Self::JsonObjectKeys => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: RuntimeValueKind::Receiver(BuiltinType::JsonValue),
+                    effect: Borrow,
+                }],
+                FreshOwned(RuntimeValueKind::Receiver(BuiltinType::JsonValue)),
+                NO_FAILURES,
+            ),
             Self::StringEquals | Self::StringStartsWith => {
                 runtime_semantic_contract(STRING_PAIR_BORROW, BitCopy(Bool), NO_FAILURES)
             }
@@ -2998,7 +3291,10 @@ impl RuntimeCallFamily {
                 | RuntimeResultEffect::FreshOwned(
                     RuntimeValueKind::Bool
                     | RuntimeValueKind::U8
+                    | RuntimeValueKind::I32
                     | RuntimeValueKind::I64
+                    | RuntimeValueKind::U64
+                    | RuntimeValueKind::F64
                     | RuntimeValueKind::Receiver(_)
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::Applied(_, _)
@@ -3163,6 +3459,8 @@ impl RuntimeCallFamily {
             F::Vector(_)
             | F::Map(_)
             | F::Set(_)
+            | F::Encoding { .. }
+            | F::JsonObjectKeys
             | F::StreamClose
             | F::StreamTryNextLayout
             | F::SinkTryWrite(_)
@@ -3931,6 +4229,11 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
     let mut out = Vec::new();
     for repr in F::iter() {
         match repr {
+            F::Encoding { .. } => {
+                for format in EncodingFormat::iter() {
+                    out.extend(EncodingOp::iter().map(|op| F::Encoding { format, op }));
+                }
+            }
             F::Vector(_) => out.extend(VecValueOp::iter().map(F::Vector)),
             F::Map(_) => out.extend(MapValueOp::iter().map(F::Map)),
             F::Set(_) => out.extend(SetValueOp::iter().map(F::Set)),
@@ -4235,13 +4538,29 @@ mod tests {
             // fail-closed default.
             for index in 1..=3 {
                 let expected = match family {
+                    RuntimeCallFamily::Encoding {
+                        op: EncodingOp::ObjectSet,
+                        ..
+                    } if index == 2 => ConsumeVerdict::ProvenConsume,
+                    RuntimeCallFamily::Encoding {
+                        op: EncodingOp::ArrayPush,
+                        ..
+                    } if index == 1 => ConsumeVerdict::ProvenConsume,
                     RuntimeCallFamily::Map(MapValueOp::Insert)
                     | RuntimeCallFamily::Vector(VecValueOp::Set)
                         if index <= 2 =>
                     {
                         ConsumeVerdict::ProvenBorrow
                     }
-                    RuntimeCallFamily::Map(
+                    RuntimeCallFamily::Encoding {
+                        op:
+                            EncodingOp::ObjectSet
+                            | EncodingOp::GetField
+                            | EncodingOp::ArrayGet
+                            | EncodingOp::Eq,
+                        ..
+                    }
+                    | RuntimeCallFamily::Map(
                         MapValueOp::Index
                         | MapValueOp::Get
                         | MapValueOp::ContainsKey
@@ -4534,6 +4853,12 @@ mod tests {
             "set.value.insert",
             "set.value.remove",
             "set.value.clear",
+            "hew_json_object_set",
+            "hew_yaml_object_set",
+            "hew_json_array_push",
+            "hew_yaml_array_push",
+            "hew_json_free",
+            "hew_yaml_free",
         ]
         .into_iter()
         .collect();
@@ -4847,6 +5172,9 @@ mod tests {
     // alongside the re-export shim and run as integration tests against
     // the same substrate.
 }
+
+#[cfg(test)]
+mod encoding_tests;
 
 #[cfg(test)]
 mod map_set_semantic_contract_tests {

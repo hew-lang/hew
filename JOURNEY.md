@@ -2384,3 +2384,20 @@ TOML's independent resource carrier. Runtime tag checks retain the same ABI
 assertions while naming the actual format wrapper contract. The obsolete JSON
 supertrait-import lint fixture is removed with its deleted import; independent
 generic supertrait coverage remains in place.
+
+## Describe encoding runtime operations through canonical source contracts
+
+JSON and YAML now have closed runtime operation descriptors for parsing,
+selection, scalar access, construction, equality and mutation. Exact shipped
+extern declarations acquire those families only when their module, declaration,
+symbol, resolved value identity, argument ownership and ABI signature agree.
+Matching user extern names and malformed signatures retain no encoding-family
+authority.
+
+Receiver binding preserves the complete value type, including opacity, and
+constructors bind their result even when they take scalar arguments. Mutations
+move the receiver and child semantically and yield the updated receiver; their
+existing C ABI still returns void and updates the same pointer. Types tests cover
+these relationships and provenance refusals. Ownership-SIR support and physical
+realization remain separate integration work; runtime-family selection alone
+does not establish native execution.

@@ -2392,6 +2392,12 @@ linear ownership duties. Unannotated expressions retain proved guarantees.
 Explicit annotations, assignments, arguments, returns and conditional joins
 use the same directional rules, including nested `Option` and `Result` types.
 
+Generic function declarations can be used as values with explicit type
+arguments (`identity<i64>`) or arguments inferred from an expected function
+type or a later call through the binding. Each reference is instantiated
+independently and must satisfy the declaration's generic bounds. Function
+values retain the read and clone guarantees of the selected declaration.
+
 **Untyped parameters when context provides types:**
 
 ```hew

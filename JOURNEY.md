@@ -1872,9 +1872,33 @@ clones, nested escaped closures, conditional Result/Option factories and callee
 loan cleanup at O0/O2. Two fixtures remain failing: lexical shadowing leaves a
 literal without its concrete closure descriptor, and a once-only callback
 parameter is still borrowed when invocation needs ownership. These are compiler
-gaps; the acceptance fixtures remain unchanged. Paired safety is running.
+gaps. Paired safety produces the same source failures; every compiled case
+passes generated-code and runtime ASan/LSan at both optimization levels.
 
 Added generic indirect-only and generic returned-function acceptance cases after
-the checker value-site instantiation checkpoint. Their native execution follows
-the ongoing combined repairs. Ordinary once-field invocation also requires the
-partial aggregate ownership extension before callable completion is claimed.
+the checker value-site instantiation checkpoint. Both pass native and paired
+safety at O0/O2 using the same compiler. D345/D346 forbid local partial moves:
+once-field invocation requires explicit destructuring, with no implicit copy.
+The declaration-only parameter rule likewise requires `consume callback` for
+consuming invocation through an ordinary parameter. Those are the existing
+contracts for the remaining diagnostic and producer work.
+
+### Callable editor grammar propagation
+
+The canonical generators keep `capture` and `once` contextual rather than
+colouring unrelated identifiers. Nano highlights callable qualifier lists and
+private capture prefixes. The spec records explicit and inferred generic
+function values next to callable guarantees.
+
+Tree-sitter, TextMate and Vim changes live in isolated downstream branches;
+Studio receives the same tested TextMate grammar. Tree-sitter's complete corpus,
+TextMate's tokenization and unit suites, Vim's actual syntax-group controls,
+and Nano's view-mode syntax load pass through Make. Compiler-wide grammar
+parity still fails on exactly the same file set at the pinned tree-sitter base
+and the new grammar commit; no new parity failures were introduced.
+Studio dependency installation is blocked by the existing ESLint 10 versus
+react-hooks plugin peer requirement, so its full application build is unrun.
+The current website and playground use compiler WASM semantic tokens, not a
+separate TextMate grammar; updating those packages belongs with the integrated
+compiler artefact. The compiler's tree-sitter lock is unchanged until the
+new downstream commit is available to the integration publisher.

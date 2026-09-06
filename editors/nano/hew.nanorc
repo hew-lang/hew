@@ -43,6 +43,10 @@ color brightwhite "\<(yield|defer|select|join|after|from|await|scope)\>"
 color green "\<(let|var|const|mut|fn|gen|async|pub|import|package)\>"
 color green "\<(extern|where|type|indirect|enum|trait|impl|as)\>"
 
+# Callable qualifiers and private capture prefixes
+color green "\<fn[[:space:]]*\[(clone|var|once)([[:space:]]*,[[:space:]]*(clone|var|once))?\]"
+color green "\<capture[[:space:]]*\([[:space:]]*var\>"
+
 # Actor & concurrency
 color brightgreen "\<(actor|supervisor|spawn|receive|init|scope|fork|move|select|join)\>"
 color brightgreen "\<(after|from|await|await_restart|this)\>"

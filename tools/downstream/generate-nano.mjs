@@ -153,6 +153,12 @@ for (const chunk of declChunks) {
 }
 blank();
 
+// Callable qualifiers and private capture prefixes remain contextual.
+emit('# Callable qualifiers and private capture prefixes');
+emit('color green "\\<fn[[:space:]]*\\[(clone|var|once)([[:space:]]*,[[:space:]]*(clone|var|once))?\\]"');
+emit('color green "\\<capture[[:space:]]*\\([[:space:]]*var\\>"');
+blank();
+
 // Actor & concurrency
 emit('# Actor & concurrency');
 const actorChunks = chunkArray([...kw.actors], 10);

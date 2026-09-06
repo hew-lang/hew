@@ -33,6 +33,7 @@ pub use self::dispatch::{
     Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
 };
+pub mod effects;
 mod expressions;
 mod generics;
 mod items;
@@ -76,9 +77,9 @@ pub use self::types::{
     OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
     OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, OptionResultMethod,
     PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField, PlanSub,
-    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, ResultReturnKind, SpanKey,
-    StackHint, TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind,
-    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
+    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResultReturnKind,
+    SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef,
+    TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
     WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
     WireLayoutTable, WireTextFormat,
 };
@@ -2272,8 +2273,11 @@ impl Checker {
         } else {
             (TypeFactContext::default(), BTreeMap::new())
         };
+        let suspension_effects = self.finish_suspension_effects();
         let mut output = TypeCheckOutput {
             normalized_machines: normalized_machines.clone(),
+            suspension_effects,
+            recovery_kinds: std::mem::take(&mut self.recovery_kinds),
             expr_types: resolved_expr_types,
             interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
             user_comparison_dispatch: std::mem::take(&mut self.user_comparison_dispatch),

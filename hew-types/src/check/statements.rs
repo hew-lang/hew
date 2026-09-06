@@ -854,11 +854,16 @@ impl Checker {
         name.contains("::") || self.bare_identifier_resolves_to_unit_variant(name)
     }
 
+    pub(super) fn check_stmt(&mut self, stmt: &Stmt, span: &Span) {
+        self.check_stmt_inner(stmt, span);
+        self.record_statement_effect_binding(stmt);
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "statement checking covers many Stmt variants"
     )]
-    pub(super) fn check_stmt(&mut self, stmt: &Stmt, span: &Span) {
+    fn check_stmt_inner(&mut self, stmt: &Stmt, span: &Span) {
         match stmt {
             Stmt::Let {
                 pattern,

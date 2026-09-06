@@ -1306,8 +1306,8 @@ impl Checker {
                 .checker_signature_key()
                 .expect("RcNew has a checker signature identity");
             self.register_builtin_fn(signature_key, vec![Ty::Var(t)], Ty::rc(Ty::Var(t)));
-            self.runtime_builtin_targets
-                .insert(signature_key.to_string(), family);
+            self.builtin_call_targets
+                .insert(signature_key.to_string(), CallTarget::Runtime(family));
         }
 
         // More print variants
@@ -1901,7 +1901,7 @@ impl Checker {
     /// `register_builtins_hew_impls`; this adds only lexical prelude bindings
     /// and must never mint a second synthetic source owner.
     fn register_builtin_error_prelude_bindings(&mut self) {
-        for name in ["LinkError", "LookupError"] {
+        for name in ["LinkError", "LookupError", "ScopeFailure"] {
             let canonical = format!("std.builtins.{name}");
             debug_assert!(
                 self.type_defs.contains_key(&canonical),
@@ -1984,11 +1984,19 @@ impl Checker {
             "instant::now" => "hew_instant_now".to_string(),
             _ => format!("hew_{name}"),
         };
-        if let Some(family) = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&runtime_symbol)
-        {
-            self.runtime_builtin_targets
-                .insert(name.to_string(), family);
+        let target = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&runtime_symbol)
+            .map_or_else(
+                || CallTarget::Builtin {
+                    endpoint: name.to_string(),
+                },
+                CallTarget::Runtime,
+            );
+        // Effects belong to these compiler declarations, so a source shadow
+        // retains its separately checked declaration identity and body effect.
+        if matches!(name, "sleep" | "sleep_until") {
+            self.effect_graph.builtin_suspensions.insert(target.clone());
         }
+        self.builtin_call_targets.insert(name.to_string(), target);
     }
 
     fn resolve_registered_annotation_ty(

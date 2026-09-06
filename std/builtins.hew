@@ -1221,3 +1221,10 @@ pub fn exit(code: i32) {}
 /// }
 /// ```
 pub fn panic(message: string) {}
+
+/// A structured scope failure, available only after child and deferred cleanup.
+/// Parent cancellation propagates to the enclosing scope and is not recoverable here.
+pub enum ScopeFailure {
+    Deadline { message: string },
+    Fault { message: string },
+}

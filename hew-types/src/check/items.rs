@@ -1005,6 +1005,7 @@ impl Checker {
                 self.env
                     .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
             }
+            self.record_callable_parameter(&p.name, i);
             self.env
                 .set_parameter_consume(&p.name, p.is_consume || (is_receiver && fd.consumes_self));
             if private_copy {
@@ -1019,6 +1020,21 @@ impl Checker {
     /// but `FnDecl::name` is bare (e.g. `close`). Using the qualified name prevents
     /// collisions with builtins or inlined functions from other modules.
     pub(super) fn check_function_as(&mut self, fd: &FnDecl, fn_name: &str) {
+        let body = self
+            .identity
+            .declaration_by_path(fn_name)
+            .cloned()
+            .or_else(|| self.impl_method_declaration_ids.get(fn_name).cloned())
+            .map(super::effects::EffectBody::Declaration);
+        let previous = std::mem::replace(&mut self.effect_graph.current_body, body.clone());
+        if let Some(body) = body {
+            self.effect_graph.bodies.entry(body).or_default();
+        }
+        self.check_function_body_as(fd, fn_name);
+        self.effect_graph.current_body = previous;
+    }
+
+    fn check_function_body_as(&mut self, fd: &FnDecl, fn_name: &str) {
         // Functions marked `#[intrinsic("key")]` are typed declaration stubs
         // whose bodies are empty placeholders; the real semantics live in the
         // catalog. Skip body type-checking entirely — the signature was already

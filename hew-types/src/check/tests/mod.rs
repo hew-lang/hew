@@ -44,6 +44,7 @@ mod output;
 mod patterns;
 mod records;
 mod supervisor;
+mod suspension_effects;
 mod traits;
 mod value_param_mutation;
 mod wasm;

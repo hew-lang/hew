@@ -1,4 +1,4 @@
-fn invoke(callback: fn[once](i64) -> i64) -> i64 {
+fn invoke(consume callback: fn[once](i64) -> i64) -> i64 {
     let caller = "once caller".to_upper();
     let result = callback(0);
     println(caller);

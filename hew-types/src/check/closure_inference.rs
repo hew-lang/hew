@@ -14,7 +14,7 @@ struct EscapeAccumulator {
     forked_use: bool,
     /// Some use is non-direct-call (Escapes unless Forked also fires).
     nonlocal_use: bool,
-    /// First non-local rule that fired (for advisory diagnostic).
+    /// First non-local rule that determines the published escape fact.
     nonlocal_rule: Option<ClosureEscapeRule>,
 }
 

@@ -894,9 +894,8 @@ pub enum ClosureEscapeKind {
 ///
 /// `Local` and `Forked` carry the positive rule that classified them;
 /// `Escapes` carries the conservative-default rule that rejected
-/// `Local`/`Forked`. The variant is consumed by the advisory diagnostic
-/// (`ClosureEscapeAdvisory`) so the user can see *why* `Local` was not
-/// admitted.
+/// `Local`/`Forked`. The rule remains part of the checker-owned fact so
+/// downstream consumers can inspect why the closure may escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClosureEscapeRule {
     /// Every use of the closure-bound name is a direct call `f(args)`.
@@ -3082,13 +3081,6 @@ pub struct Checker {
     /// Per-closure escape classification keyed by closure literal span.
     /// Moved into `TypeCheckOutput::closure_escape_facts` at `check_program` exit.
     pub(super) closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
-    /// Spans that already emitted the `ClosureEscapeAdvisory` warning. The
-    /// escape classifier visits a literal more than once (the let-bound block
-    /// walk and the anonymous-expression walk, and the top-level item list
-    /// plus the module graph both cover the entry module), so the advisory
-    /// is gated on first-insert per span — one warning per closure literal,
-    /// distinct literals still warn independently.
-    pub(super) closure_escape_advisory_spans: HashSet<SpanKey>,
     /// Maps actor name to its resolved `init()` parameter list.
     ///
     /// Used by the supervisor checker (S-B) to validate `wired_to:` type compatibility.
@@ -3870,7 +3862,6 @@ impl Checker {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
             closure_escape_facts: HashMap::new(),
-            closure_escape_advisory_spans: HashSet::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),

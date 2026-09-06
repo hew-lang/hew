@@ -943,13 +943,6 @@ pub enum TypeErrorKind {
     /// (distinct from returning `Escapes` conservatively). Structural
     /// bug in the classifier, not user-code shape.
     ClosureEscapeKindUnresolved,
-    /// Advisory (non-blocking): a closure was conservatively classified
-    /// `Escapes` and could be restructured to admit `Local`. Names the
-    /// inference rule that fired so the user can see why.
-    ClosureEscapeAdvisory {
-        /// Surface-facing label for the rule that rejected `Local`.
-        rule: String,
-    },
     /// A closure attempted to capture the binding being defined by the same
     /// closure literal. Recursive closures require a fixed-point surface that
     /// v0.5 intentionally does not expose.
@@ -1546,7 +1539,6 @@ impl TypeErrorKind {
             Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",
             Self::ClosureCaptureModeUnresolved { .. } => "ClosureCaptureModeUnresolved",
             Self::ClosureEscapeKindUnresolved => "ClosureEscapeKindUnresolved",
-            Self::ClosureEscapeAdvisory { .. } => "ClosureEscapeAdvisory",
             Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",
             Self::ClosureCapturesDuplexHandle { .. } => "ClosureCapturesDuplexHandle",
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",

@@ -2751,7 +2751,6 @@ impl Checker {
                             SpanKey::in_module(lambda_span, self.current_module_idx),
                             fact,
                         );
-                        self.maybe_emit_escape_advisory(lambda_span, fact);
                     }
                 }
             }
@@ -2947,7 +2946,6 @@ impl Checker {
                 self.closure_escape_facts
                     .entry(SpanKey::in_module(expr_span, self.current_module_idx))
                     .or_insert(fact);
-                self.maybe_emit_escape_advisory(expr_span, fact);
                 // Recurse into the body so nested closures inside this
                 // lambda get classified too.
                 self.classify_escapes_in_expr(
@@ -3231,57 +3229,6 @@ impl Checker {
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
         }
-    }
-
-    fn maybe_emit_escape_advisory(
-        &mut self,
-        lambda_span: &hew_parser::ast::Span,
-        fact: ClosureEscapeFact,
-    ) {
-        // Advisory diagnostic when conservatively classified `Escapes`
-        // AND the rule indicates restructuring could admit `Local`.
-        // Emitted at warning severity (the diagnostic surface has no
-        // Info level).
-        if !matches!(fact.kind, ClosureEscapeKind::Escapes) {
-            return;
-        }
-        // PassedToHigherOrder is intentionally excluded: inlining a let-bound
-        // closure at its call site does not relieve the escape — an anonymous
-        // closure in argument position is still classified PassedToHigherOrder
-        // (via AnonContext::PassedToHigherOrder), so the advisory would fire
-        // again.  Only rules where inlining genuinely admits Local are kept.
-        let admit_local = matches!(
-            fact.rule,
-            ClosureEscapeRule::EscapesViaBlockValue | ClosureEscapeRule::NoStaticBinding
-        );
-        if !admit_local {
-            return;
-        }
-        // One advisory per closure literal: the classifier visits the same
-        // span more than once (let-bound block walk + anonymous-expression
-        // walk; top-level item list + module graph for the entry module).
-        // Gate on first-insert; distinct spans still warn independently.
-        if !self
-            .closure_escape_advisory_spans
-            .insert(SpanKey::from(lambda_span))
-        {
-            return;
-        }
-        self.warnings.push(crate::error::TypeError {
-            severity: crate::error::Severity::Warning,
-            kind: TypeErrorKind::ClosureEscapeAdvisory {
-                rule: format!("{:?}", fact.rule),
-            },
-            span: lambda_span.clone(),
-            message: format!(
-                "closure conservatively classified as escaping ({:?}); \
-                 inlining the closure at its call site would admit `Local`",
-                fact.rule
-            ),
-            notes: vec![],
-            suggestions: vec![],
-            source_module: None,
-        });
     }
 
     /// Post-pass: walk the program once collecting every closure
